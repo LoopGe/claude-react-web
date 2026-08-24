@@ -19,7 +19,7 @@ import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
 import { createLogger } from './log.js'
 import { validateSessionHooksConfig, type SessionHooksConfig } from '../shared/hooks.js'
-import type { SessionMemorySettings } from '../shared/session-info.js'
+import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
 
 const log = createLogger('persistence')
 
@@ -50,6 +50,9 @@ export interface SessionMeta {
   /** User intent: reasoning effort level. Re-applied to the SDK on
    *  re-spawn (resume / restart / fork). */
   effortLevel?: EffortLevel
+  /** User intent: extended-thinking configuration (SDK ThinkingConfig
+   *  shape). Re-applied to the SDK on re-spawn (resume / restart / fork). */
+  thinking?: ThinkingSetting
   /** Structured hook configuration applied via Query.applyFlagSettings(). */
   hooks?: SessionHooksConfig
   /** Monotonic counter of user turns seen; used as a rough "is there
@@ -195,6 +198,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       r.effortLevel === 'xhigh' || r.effortLevel === 'max'
         ? r.effortLevel
         : undefined,
+    thinking: coerceThinkingSetting(r.thinking),
     hooks: coerceHooks(r.hooks),
     messageCount: typeof r.messageCount === 'number' ? r.messageCount : 0,
     terminated: typeof r.terminated === 'boolean' ? r.terminated : false,

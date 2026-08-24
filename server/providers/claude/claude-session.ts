@@ -92,6 +92,14 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.stopTask(taskId)
   }
 
+  /** Runtime extended-thinking change. The token mapping lives in the
+   *  session-manager (ThinkingSetting → number|null); this just forwards.
+   *  `thinkingDisplay` is left unset so the session-start display mode
+   *  (Options.thinking.display) is preserved. */
+  setMaxThinkingTokens(tokens: number | null): Promise<void> {
+    return this.query.setMaxThinkingTokens(tokens)
+  }
+
   setModel(model?: string): Promise<void> {
     return this.query.setModel(model)
   }

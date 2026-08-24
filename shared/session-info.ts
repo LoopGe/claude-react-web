@@ -61,6 +61,34 @@ export interface SessionMemorySettings {
   autoDreamEnabled?: boolean
 }
 
+/** Per-session extended-thinking setting (mirrors the SDK's ThinkingConfig
+ *  shape, JSON-serializable). `undefined` on a session means "no explicit
+ *  choice — use the SDK/model default". Persisted via SessionMeta so it
+ *  survives resume / fork / clear. */
+export type ThinkingSetting =
+  | { type: 'adaptive' }
+  | { type: 'disabled' }
+  | { type: 'enabled'; budgetTokens?: number }
+
+/** Defensive runtime validation + narrowing of an unknown value into a
+ *  ThinkingSetting. Returns undefined for anything malformed. */
+export function coerceThinkingSetting(v: unknown): ThinkingSetting | undefined {
+  if (typeof v !== 'object' || v === null) return undefined
+  const t = v as { type?: unknown; budgetTokens?: unknown }
+  if (t.type === 'adaptive') return { type: 'adaptive' }
+  if (t.type === 'disabled') return { type: 'disabled' }
+  if (t.type === 'enabled') {
+    // Absent budget = bare enabled (valid). A PRESENT but non-positive /
+    // non-numeric budget is malformed — returning bare enabled would silently
+    // change the user's meaning, so the whole value is dropped instead.
+    if (t.budgetTokens === undefined) return { type: 'enabled' }
+    return typeof t.budgetTokens === 'number' && t.budgetTokens > 0
+      ? { type: 'enabled', budgetTokens: Math.round(t.budgetTokens) }
+      : undefined
+  }
+  return undefined
+}
+
 export interface SessionInfoBase<PM = string> {
   id: string
   provider?: string
@@ -94,6 +122,14 @@ export interface SessionInfoBase<PM = string> {
    *  undefined = unknown → UI offers all 5; [] = unsupported → UI hides the
    *  chip; [subset] = UI offers only these. Not persisted. */
   effortLevels?: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[]
+  /** User intent: extended-thinking configuration for this session.
+   *  Undefined means no explicit choice (SDK/model default). Persisted. */
+  thinking?: ThinkingSetting
+  /** Whether the current model supports thinking at all (keyword-classified
+   *  from the model id, like effortLevels — the SDK's report is untrustworthy
+   *  on gateway deployments). undefined = unknown → UI shows the chip;
+   *  false = hide it. Not persisted. */
+  thinkingSupported?: boolean
   running: boolean
   /** True while the crash-recovery ladder is mid-flight (between a CLI
    *  crash and a successful in-place respawn or give-up). Lets the client

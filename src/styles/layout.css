@@ -504,6 +504,45 @@ body.resizing-col .app {
   opacity: 0.45;
 }
 
+/* Thinking badge — same pill language as the effort badge. Muted while on
+   auto (the default), dimmed further when explicitly disabled, accent-tinted
+   when a token budget is pinned. */
+.chat-panel-thinking-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  flex-shrink: 0;
+  user-select: none;
+  line-height: 1.35;
+  cursor: pointer;
+  text-transform: lowercase;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard), color var(--motion-duration-base) var(--motion-ease-standard), transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.chat-panel-thinking-badge.thinking-off {
+  opacity: 0.55;
+}
+.chat-panel-thinking-badge:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  transform: translateY(calc(-1 * var(--motion-distance-2xs)));
+}
+.chat-panel-thinking-badge:active:not(:disabled) { transform: translateY(0) scale(var(--motion-scale-press)); }
+.chat-panel-thinking-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.chat-panel-thinking-badge:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 /* Effort-level slider popover — anchored under the effort chip. Reuses the
    .ctx-menu surface language (elevated bg, border, shadow, pop-in). */
 .effort-slider {

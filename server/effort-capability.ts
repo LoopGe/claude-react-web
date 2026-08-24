@@ -36,3 +36,24 @@ export function effortLevelsForModel(model?: string): EffortLevel[] | undefined 
   // haiku and every non-Claude model (deepseek, mimo, …) don't support effort.
   return []
 }
+
+/** Whether `model` supports extended thinking at all. Same keyword-family
+ *  classification and the same gateway rationale as effortLevelsForModel:
+ *  the SDK's supportedModels() report (ModelInfo.supportsAdaptiveThinking /
+ *  supportsThinking) is unreliable on gateway/proxy deployments, but the
+ *  model-id prefix still says which family we're talking to.
+ *
+ *  Three-state, mirroring Session.thinkingSupported:
+ *    - undefined : no model set yet (capability unknown → UI shows the chip)
+ *    - false     : model can't think → UI hides the chip
+ *    - true      : model can think
+ *
+ *  Haiku: Haiku 4.5 does support thinking, but the plain `claude-haiku-*`
+ *  ids in this app's model list are the non-thinking variants — and any
+ *  gateway alias we can't classify should fail soft (hide), consistent
+ *  with effort's haiku/no-match → [] rule. */
+export function supportsThinkingForModel(model?: string): boolean | undefined {
+  if (!model) return undefined
+  const id = model.toLowerCase()
+  return id.includes('opus') || id.includes('sonnet')
+}

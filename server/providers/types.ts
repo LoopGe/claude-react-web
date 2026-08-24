@@ -2,7 +2,7 @@ import type { AgentMessage, AgentUserMessage } from '../agent-message.js'
 import type { HistoryEntry, HistoryPage } from '../history-reader.js'
 import type { SessionMeta } from '../persistence.js'
 import type { ResumableSession } from '../session-types.js'
-import type { SessionMemorySettings } from '../../shared/session-info.js'
+import type { SessionMemorySettings, ThinkingSetting } from '../../shared/session-info.js'
 
 export interface CreateSessionOptions {
   id: string
@@ -13,6 +13,9 @@ export interface CreateSessionOptions {
   title?: string
   betas?: string[]
   effortLevel?: string
+  /** Per-session extended-thinking config (SDK Options.thinking at spawn;
+   *  Query.setMaxThinkingTokens for runtime changes). */
+  thinking?: ThinkingSetting
   fastMode?: boolean
   /** Per-session auto-memory intent (SDK Settings keys applied post-spawn
    *  via applyFlagSettings — the SDK has no spawn-time Options.memory). */
@@ -104,6 +107,12 @@ export interface ProviderSessionHandle {
   /** Stop a running task by id. The SDK emits a task_notification with
    *  status 'stopped' afterwards. */
   stopTask?(taskId: string): Promise<void>
+  /** Runtime extended-thinking change (SDK Query.setMaxThinkingTokens —
+   *  deprecated in favour of spawn-time Options.thinking, but still the
+   *  ONLY runtime path; the SDK has no Settings key for this). Token
+   *  mapping is the caller's job: null = adaptive (model-decides),
+   *  0 = disabled, N = enabled with an N-token budget. */
+  setMaxThinkingTokens?(tokens: number | null): Promise<void>
   setModel?(model?: string): Promise<void>
   setPermissionMode?(mode: string): Promise<void>
   applyFlagSettings?(settings: Record<string, unknown>): Promise<void>
@@ -130,6 +139,7 @@ export interface ProviderCapabilities {
   supportsPlugins: boolean
   supportsFastMode: boolean
   supportsEffortLevel: boolean
+  supportsThinkingControl: boolean
   supportsCommands: boolean
   supportsAgents: boolean
   supportsContextUsage: boolean

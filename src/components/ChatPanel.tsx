@@ -23,10 +23,10 @@ import { AnimatePresence } from 'motion/react'
 import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { shortenPath } from '../utils/paths'
-import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconZap, IconListTodo } from './icons/ToolIcons'
+import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconZap, IconListTodo, IconBrain } from './icons/ToolIcons'
 import { useSessionField } from '../session-store/selectors'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
-import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand } from '../types'
+import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingSetting } from '../types'
 import type { Skin } from '../utils/theme'
 import type { SettingsTabName } from '../local-commands'
 import { PERMISSION_MODES, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../types'
@@ -313,6 +313,7 @@ export const ChatPanel = memo(function ChatPanel({
   const [permMenu, setPermMenu] = useState<{ x: number; y: number } | null>(null)
   /** Anchor for the effort-level menu. Non-null = menu visible. */
   const [effortMenu, setEffortMenu] = useState<{ x: number; y: number } | null>(null)
+  const [thinkingMenu, setThinkingMenu] = useState<{ x: number; y: number } | null>(null)
   // Confirmation dialog for destructive panel-menu actions (Delete session).
   // Mirrors SessionList's confirm plumbing so the panel menu's Delete uses
   // the same ConfirmDialog + busy state as the sidebar's.
@@ -448,6 +449,36 @@ export const ChatPanel = memo(function ChatPanel({
     )
   }
   const effortLevel = session.effortLevel ?? DEFAULT_EFFORT_LEVEL
+  const commitThinking = (setting: ThinkingSetting) => {
+    const prev = session.thinking
+    if (
+      prev != null &&
+      ((setting.type === 'adaptive' && prev.type === 'adaptive') ||
+        (setting.type === 'disabled' && prev.type === 'disabled') ||
+        (setting.type === 'enabled' && prev.type === 'enabled' && prev.budgetTokens === setting.budgetTokens))
+    ) return
+    onSessionUpdate({ ...session, thinking: setting })
+    commitWithRollback(
+      session,
+      `/sessions/${session.id}/thinking`,
+      { thinking: setting },
+      { thinking: session.thinking },
+      `Couldn't change thinking config`,
+      onSessionUpdate,
+      toast.error,
+    )
+  }
+  // Thinking chip gating (three-state like effort): undefined capability →
+  // show the chip (fail-open); false → hide it. The chip label shows the
+  // effective setting — Auto (model decides) unless the user pinned Off or a
+  // token budget.
+  const thinkingVisible = session.thinkingSupported !== false
+  const thinkingLabel = session.thinking == null || session.thinking.type === 'adaptive'
+    ? 'auto'
+    : session.thinking.type === 'disabled'
+      ? 'off'
+      : `${Math.round((session.thinking.budgetTokens ?? 0) / 1024)}k`
+  const THINKING_BUDGETS = [4096, 8192, 16384, 32768] as const
   // Effort chip gating from the model's reported capability (three-state):
   //   undefined → capability unknown → offer all 5 (fallback, chip visible)
   //   []        → model doesn't support effort → hide chip
@@ -695,6 +726,36 @@ export const ChatPanel = memo(function ChatPanel({
             </button>
           </Tooltip>
         )}
+        {/* Extended-thinking control. Shown unless the model is known to not
+            support thinking (thinkingSupported === false → chip hidden);
+            undefined capability fails open. Menu offers Auto (model decides),
+            Off, and a few token budgets — the shape POST /thinking accepts.
+            The chip label shows the effective setting. */}
+        {thinkingVisible && (
+          <Tooltip
+            label={`Thinking: ${thinkingLabel} · extended reasoning budget · click to change`}
+            placement="bottom"
+          >
+            <button
+              type="button"
+              key={`thinking-${thinkingLabel}`}
+              className={`chat-panel-thinking-badge${session.thinking?.type === 'disabled' ? ' thinking-off' : ''}`}
+              disabled={chipsDisabled}
+              aria-haspopup="menu"
+              aria-expanded={!!thinkingMenu}
+              aria-label={`Thinking: ${thinkingLabel} · click to change`}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                setThinkingMenu({ x: rect.left, y: rect.bottom + 4 })
+              }}
+            >
+              <IconBrain size={13} aria-hidden />
+              {thinkingLabel}
+            </button>
+          </Tooltip>
+        )}
         <div className="chat-panel-meta">
           <Tooltip label={`Model: ${session.model ?? 'default'} · click to change`} placement="bottom">
             <button
@@ -748,6 +809,35 @@ export const ChatPanel = memo(function ChatPanel({
               disabled={chipsDisabled}
               onSelect={(l) => commitEffortLevel(l)}
               onClose={() => setEffortMenu(null)}
+            />
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {thinkingMenu && (
+            <ContextMenu
+              key="thinking"
+              x={thinkingMenu.x}
+              y={thinkingMenu.y}
+              onClose={() => setThinkingMenu(null)}
+              items={[
+                {
+                  label: 'auto',
+                  icon: session.thinking == null || session.thinking.type === 'adaptive' ? <IconCheck size={14} /> : ' ',
+                  onClick: () => { setThinkingMenu(null); commitThinking({ type: 'adaptive' }) },
+                },
+                {
+                  label: 'off',
+                  icon: session.thinking?.type === 'disabled' ? <IconCheck size={14} /> : ' ',
+                  onClick: () => { setThinkingMenu(null); commitThinking({ type: 'disabled' }) },
+                },
+                ...THINKING_BUDGETS.map((n) => ({
+                  label: `${Math.round(n / 1024)}k tokens`,
+                  icon: session.thinking?.type === 'enabled' && session.thinking.budgetTokens === n
+                    ? <IconCheck size={14} />
+                    : ' ',
+                  onClick: () => { setThinkingMenu(null); commitThinking({ type: 'enabled', budgetTokens: n }) },
+                })),
+              ]}
             />
           )}
         </AnimatePresence>

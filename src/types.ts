@@ -32,6 +32,7 @@ export const PERMISSION_MODE_CYCLE: PermissionMode[] = [
  *  Defined in shared/model-info.ts so both server and client use the same
  *  type; re-exported here for backward-compatible client imports. */
 export type { EffortLevel } from '../shared/model-info'
+export type { ThinkingSetting } from '../shared/session-info'
 import type { EffortLevel } from '../shared/model-info'
 
 /** User-selectable effort levels, ordered low→max. Shown in the effort

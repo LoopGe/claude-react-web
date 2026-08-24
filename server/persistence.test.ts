@@ -255,4 +255,45 @@ describe('SessionStore', () => {
     expect(loaded[1].memory).toBeUndefined()
     expect(loaded[2].memory).toBeUndefined()
   })
+
+  // ── thinking (ThinkingSetting) persistence ──────────────────────
+  it('round-trips a valid thinking setting', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a', { thinking: { type: 'enabled', budgetTokens: 8192 } }))
+    store.upsert(makeMeta('b', { thinking: { type: 'adaptive' } }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    expect(store2.get('a')?.thinking).toEqual({ type: 'enabled', budgetTokens: 8192 })
+    expect(store2.get('b')?.thinking).toEqual({ type: 'adaptive' })
+  })
+
+  it('rounds fractional / non-integer budgets during coerce', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        { id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, thinking: { type: 'enabled', budgetTokens: 8191.6 } },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    expect(loaded[0].thinking).toEqual({ type: 'enabled', budgetTokens: 8192 })
+  })
+
+  it('drops malformed thinking values during coerce', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        { id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, thinking: { type: 'wild' } },
+        { id: 'b', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, thinking: 'adaptive' },
+        { id: 'c', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, thinking: { type: 'enabled', budgetTokens: -5 } },
+        { id: 'd', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, thinking: null },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    for (const m of loaded) expect(m.thinking).toBeUndefined()
+  })
 })

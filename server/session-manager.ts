@@ -59,9 +59,9 @@ import {
   endAllSubscribers,
 } from './session-types.js'
 import { HttpError } from './errors.js'
-import { effortLevelsForModel } from './effort-capability.js'
+import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
-import type { SessionMemorySettings } from '../shared/session-info.js'
+import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
@@ -883,6 +883,7 @@ export class SessionManager {
       fastMode: s.fastMode,
       memory: s.memory,
       effortLevel: s.effortLevel,
+      thinking: s.thinking,
       hooks: s.hooks,
       // Both rings count — parity with the old single mixed ring.
       messageCount: s.history.length + s.subagentHistory.length,
@@ -932,7 +933,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -953,6 +954,9 @@ export class SessionManager {
       // Effort passed at create time (Options.effort) becomes the session's
       // initial effortLevel so a create-time choice persists like the others.
       effortLevel: opts.effort,
+      // Same for thinking: a create-time Options.thinking becomes the
+      // session's initial thinking intent.
+      thinking: coerceThinkingSetting(opts.thinking),
       hooks: settingsHooks,
       // Capture the resolved MCP server names so the client can compute
       // "available" without the flaky mcp-status SDK control request.
@@ -1132,6 +1136,8 @@ export class SessionManager {
       // Carry the effort level forward so a resumed session keeps its
       // reasoning depth instead of falling back to the SDK default.
       effort: meta.effortLevel,
+      // Same for the extended-thinking config.
+      thinking: meta.thinking,
       // Carry beta flags forward — without this, a 1M-context session
       // silently downgrades to the model's default window on resume.
       // Cast: SDK types this as a literal-string union of known flags,
@@ -1196,6 +1202,7 @@ export class SessionManager {
       permissionMode: meta.permissionMode,
       title: meta.title,
       effort: meta.effortLevel,
+      thinking: meta.thinking,
       betas: meta.betas as Options['betas'],
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
       // Re-inject the persisted plugin subset so a turn-less session that
@@ -1451,8 +1458,11 @@ export class SessionManager {
       // history to this assistant uuid. Only honored because forkSession is
       // set (see method-header note).
       resumeSessionAt,
-      // Carry effort + beta flags forward so the fork matches the source.
+      // Carry effort + thinking + beta flags forward so the fork matches
+      // the source. Thinking is a spawn-time Options key, so unlike fastMode
+      // (re-applied post-spawn below) it rides the opts directly.
       effort: meta.effortLevel,
+      thinking: meta.thinking,
       // Same as resume: preserve `context-1m-...` etc. so the fork has
       // the same effective window as the source. See resume() for the cast rationale.
       betas: meta.betas as Options['betas'],
@@ -1827,6 +1837,7 @@ export class SessionManager {
       permissionMode: meta.permissionMode,
       title,
       effort: meta.effortLevel,
+      thinking: meta.thinking,
       betas: meta.betas as Options['betas'],
       enabledPlugins: meta.enabledPlugins,
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
@@ -2128,6 +2139,7 @@ export class SessionManager {
       title: fullOpts.title,
       betas: Array.isArray(fullOpts.betas) ? fullOpts.betas : undefined,
       effortLevel: session.effortLevel,
+      thinking: session.thinking,
       fastMode: session.fastMode,
       memory: session.memory,
       env: customEnv,
@@ -2160,6 +2172,9 @@ export class SessionManager {
     // the very first `created` frame below already carries the correct
     // visible/levels state — no follow-up update needed.
     session.effortLevels = effortLevelsForModel(session.model)
+    // Same for thinking capability — keyword-classified, synchronous, so the
+    // first `created` frame already carries the correct chip visibility.
+    session.thinkingSupported = supportsThinkingForModel(session.model)
     // Brand-new session (or a resume, which also "creates" as far as the
     // UI list is concerned): persist to disk, then broadcast `created`
     // instead of `update`. The frontend `created` handler is the one
@@ -2556,6 +2571,7 @@ export class SessionManager {
         permissionMode: s.permissionMode,
         title: s.title,
         effortLevel: s.effortLevel,
+        thinking: s.thinking,
         betas: s.betas,
         hooks: s.hooks,
         fastMode: s.fastMode,
@@ -2580,6 +2596,7 @@ export class SessionManager {
         permissionMode: settings.permissionMode,
         title: settings.title,
         effort: settings.effortLevel,
+        thinking: settings.thinking,
         betas: settings.betas as Options['betas'],
         settings: settings.hooks ? ({ hooks: toSdkHooksSettings(settings.hooks) } as Settings) : undefined,
         enabledPlugins: settings.enabledPlugins,
@@ -2844,6 +2861,8 @@ export class SessionManager {
     // synchronous). The persist() below broadcasts the session-update
     // carrying the new effortLevels.
     s.effortLevels = effortLevelsForModel(s.model)
+    // Thinking capability tracks the model family too — recompute on switch.
+    s.thinkingSupported = supportsThinkingForModel(s.model)
     this.persist(s)
     return this.info(s)
   }
@@ -3050,6 +3069,38 @@ export class SessionManager {
       'supportsEffortLevel',
     )({ effortLevel: level as 'low' | 'medium' | 'high' | 'xhigh' })
     s.effortLevel = level
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return this.info(s)
+  }
+
+  /** Change extended thinking on a LIVE session. Unlike effort (a Settings
+   *  key applied via applyFlagSettings), thinking has NO Settings key — the
+   *  SDK's only runtime path is the deprecated-but-functional
+   *  Query.setMaxThinkingTokens. The ThinkingSetting → token mapping:
+   *    - adaptive  → null (clears any explicit budget; model decides)
+   *    - disabled  → 0
+   *    - enabled N → N
+   *    - enabled (no budget) → not expressible via setMaxThinkingTokens;
+   *      rejected with a 400 so the client only offers the Auto/Off/budget
+   *      triple. The SDK-side effect survives respawn via Options.thinking
+   *      (session.thinking is re-applied at spawn), so the deprecated path is
+   *      only needed for the LIVE switch. */
+  async setThinking(id: string, setting: ThinkingSetting): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    if (setting.type === 'enabled' && (setting.budgetTokens == null || setting.budgetTokens <= 0)) {
+      throw new HttpError(400, "thinking 'enabled' requires a positive budgetTokens for a live switch")
+    }
+    const tokens = setting.type === 'adaptive' ? null
+      : setting.type === 'disabled' ? 0
+      : (setting.budgetTokens as number)
+    await this.requireHandleMethod<(tokens: number | null) => Promise<void>>(
+      s,
+      'setMaxThinkingTokens',
+      'thinking config',
+      'supportsThinkingControl',
+    )(tokens)
+    s.thinking = setting
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
@@ -4320,6 +4371,8 @@ export class SessionManager {
       fastModeState: s.fastModeState,
       effortLevel: s.effortLevel,
       effortLevels: s.effortLevels,
+      thinking: s.thinking,
+      thinkingSupported: s.thinkingSupported,
       running: s.running,
       recovering: s.recovering,
       terminated: s.terminated,
@@ -4386,6 +4439,7 @@ export class SessionManager {
       fastMode: meta.fastMode,
       memory: meta.memory,
       effortLevel: meta.effortLevel,
+      thinking: meta.thinking,
       // Dormant: no live Query, so the SDK isn't reporting a runtime state.
       // Leave fastModeState undefined — the UI hides the chip until resume.
       running: false,
@@ -4602,6 +4656,7 @@ export class SessionManager {
       permissionMode: session.permissionMode,
       title: session.title,
       effort: session.effortLevel,
+      thinking: session.thinking,
       betas: session.betas as Options['betas'],
       settings: session.hooks ? ({ hooks: toSdkHooksSettings(session.hooks) } as Settings) : undefined,
     }
@@ -4671,6 +4726,7 @@ export class SessionManager {
       title: session.title,
       betas: session.betas,
       effortLevel: session.effortLevel,
+      thinking: session.thinking,
       fastMode: session.fastMode,
       memory: session.memory,
       enabledPlugins: session.enabledPlugins,

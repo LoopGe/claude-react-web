@@ -7,6 +7,7 @@ import { safeJson } from './index.js'
 import type { MpStore } from '../mp-store.js'
 import { isUserSelectablePermissionMode, permissionModeList } from '../permission-modes.js'
 import { formatHooksValidationErrors, toSdkHooksSettings, validateSessionHooksConfig } from '../../shared/hooks.js'
+import { coerceThinkingSetting } from '../../shared/session-info.js'
 import { createLogger } from '../log.js'
 
 const log = createLogger('http')
@@ -124,6 +125,12 @@ function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Rec
   const effort = rest.effortLevel
   if (effort !== undefined && (typeof effort !== 'string' || !EFFORT_LEVELS.has(effort))) {
     return { ok: false, error: 'effortLevel must be one of low, medium, high, xhigh, max' }
+  }
+  // App-level `thinking` field (SDK ThinkingConfig shape, forwarded verbatim
+  // to Options.thinking at spawn). coerceThinkingSetting accepts the three
+  // documented variants; anything else is a 400 instead of reaching the CLI.
+  if (rest.thinking !== undefined && rest.thinking !== null && coerceThinkingSetting(rest.thinking) === undefined) {
+    return { ok: false, error: "thinking must be {type:'adaptive'} | {type:'disabled'} | {type:'enabled', budgetTokens?: number}" }
   }
   // App-level `memory` field (auto-memory intent — NOT an SDK Options key;
   // snapshotMeta captures it onto the session and the provider re-applies it
@@ -465,6 +472,21 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
       return c.json({ error: 'level must be one of low, medium, high, xhigh, max' }, 400)
     }
     const info = await sm.setEffortLevel(c.req.param('id'), level)
+    return c.json({ session: info })
+  })
+
+  // Set extended-thinking config ({type:'adaptive'} | {type:'disabled'} |
+  // {type:'enabled', budgetTokens}). Forwarded to the SDK via the
+  // setMaxThinkingTokens control request (thinking has no Settings key);
+  // persisted so it survives resume / fork / clear / restart via
+  // Options.thinking.
+  app.post('/sessions/:id/thinking', async (c) => {
+    const body = await safeJson<{ thinking?: unknown }>(c.req)
+    const setting = coerceThinkingSetting(body.thinking)
+    if (!setting) {
+      return c.json({ error: "thinking must be {type:'adaptive'} | {type:'disabled'} | {type:'enabled', budgetTokens?: number}" }, 400)
+    }
+    const info = await sm.setThinking(c.req.param('id'), setting)
     return c.json({ session: info })
   })
 

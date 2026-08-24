@@ -21,6 +21,7 @@ interface MockQueryHandle {
   interrupt: ReturnType<typeof vi.fn>
   backgroundTasks: ReturnType<typeof vi.fn>
   stopTask: ReturnType<typeof vi.fn>
+  setMaxThinkingTokens: ReturnType<typeof vi.fn>
   setModel: ReturnType<typeof vi.fn>
   setPermissionMode: ReturnType<typeof vi.fn>
   applyFlagSettings: ReturnType<typeof vi.fn>
@@ -126,6 +127,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         interrupt: vi.fn(async () => {}),
         backgroundTasks: vi.fn(async () => false),
         stopTask: vi.fn(async () => {}),
+        setMaxThinkingTokens: vi.fn(async () => {}),
         setModel: vi.fn(async () => {}),
         setPermissionMode: vi.fn(async () => {}),
         applyFlagSettings: vi.fn(async () => {}),
@@ -168,6 +170,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         interrupt: handle.interrupt,
         backgroundTasks: handle.backgroundTasks,
         stopTask: handle.stopTask,
+        setMaxThinkingTokens: handle.setMaxThinkingTokens,
         setModel: handle.setModel,
         setPermissionMode: handle.setPermissionMode,
         applyFlagSettings: handle.applyFlagSettings,
@@ -1931,6 +1934,80 @@ describe('SessionManager', () => {
     await sm.setEffortLevel(info.id, 'xhigh')
     await store.flush()
     expect(store.get(info.id)?.effortLevel).toBe('xhigh')
+  })
+
+  // --- thinking config (Options.thinking at spawn + setMaxThinkingTokens live) ---
+
+  it("setThinking() maps adaptive → null and forwards setMaxThinkingTokens(null)", async () => {
+    const info = sm.create({})
+    const updated = await sm.setThinking(info.id, { type: 'adaptive' })
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null)
+    expect(updated.thinking).toEqual({ type: 'adaptive' })
+    expect(sm.get(info.id).thinking).toEqual({ type: 'adaptive' })
+  })
+
+  it("setThinking() maps disabled → 0", async () => {
+    const info = sm.create({})
+    await sm.setThinking(info.id, { type: 'disabled' })
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(0)
+  })
+
+  it("setThinking() maps enabled N → N", async () => {
+    const info = sm.create({})
+    const updated = await sm.setThinking(info.id, { type: 'enabled', budgetTokens: 16384 })
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(16384)
+    expect(updated.thinking).toEqual({ type: 'enabled', budgetTokens: 16384 })
+  })
+
+  it("setThinking() 400s on enabled-without-budget (not expressible via setMaxThinkingTokens)", async () => {
+    const info = sm.create({})
+    await expect(sm.setThinking(info.id, { type: 'enabled' })).rejects.toThrow('budgetTokens')
+    expect(mockHandles[0].setMaxThinkingTokens).not.toHaveBeenCalled()
+  })
+
+  it('setThinking() persists the setting so it survives resume', async () => {
+    const info = sm.create({})
+    await sm.setThinking(info.id, { type: 'disabled' })
+    await store.flush()
+    expect(store.get(info.id)?.thinking).toEqual({ type: 'disabled' })
+  })
+
+  it('create({ thinking }) forwards Options.thinking to the SDK and records it', async () => {
+    const info = sm.create({ thinking: { type: 'enabled', budgetTokens: 8192 } } as unknown as Parameters<typeof sm.create>[0])
+    expect(mockHandles[0].options.thinking).toEqual({ type: 'enabled', budgetTokens: 8192 })
+    expect(info.thinking).toEqual({ type: 'enabled', budgetTokens: 8192 })
+  })
+
+  it('fork() carries the thinking config onto the new session', async () => {
+    const source = sm.create({})
+    await sm.setThinking(source.id, { type: 'enabled', budgetTokens: 4096 })
+    sm.send(source.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    const forked = await sm.fork(source.id)
+    expect(forked.thinking).toEqual({ type: 'enabled', budgetTokens: 4096 })
+    // Thinking is a spawn-time Options key — the fork's fresh Query must have
+    // received it directly (no post-spawn applyFlagSettings needed).
+    expect(mockHandles[1].options.thinking).toEqual({ type: 'enabled', budgetTokens: 4096 })
+  })
+
+  it('thinkingSupported is classified from the model id at spawn', async () => {
+    const opus = sm.create({ model: 'claude-opus-4-8' })
+    expect(sm.get(opus.id).thinkingSupported).toBe(true)
+    expect(opus.thinkingSupported).toBe(true)
+    const haiku = sm.create({ model: 'claude-haiku-4-5' })
+    expect(haiku.thinkingSupported).toBe(false)
+    const other = sm.create({ model: 'deepseek/deepseek-v4-pro' })
+    expect(other.thinkingSupported).toBe(false)
+  })
+
+  it('setModel() recomputes thinkingSupported for the new model', async () => {
+    const info = sm.create({ model: 'claude-opus-4-8' })
+    expect(sm.get(info.id).thinkingSupported).toBe(true)
+    const updated = await sm.setModel(info.id, 'deepseek/deepseek-v4-pro')
+    expect(updated.thinkingSupported).toBe(false)
+    await sm.setModel(info.id, 'claude-sonnet-4-6')
+    expect(sm.get(info.id).thinkingSupported).toBe(true)
   })
 
   it('setMemorySettings() forwards only present keys and records them on the session', async () => {

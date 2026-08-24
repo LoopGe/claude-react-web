@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { effortLevelsForModel } from './effort-capability.js'
+import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
 
 describe('effortLevelsForModel', () => {
   it('returns all 5 levels for opus-family ids (incl. provider prefixes)', () => {
@@ -44,5 +44,29 @@ describe('effortLevelsForModel', () => {
     expect(effortLevelsForModel('claude-opus-sonnet-weird')).toEqual([
       'low', 'medium', 'high', 'xhigh', 'max',
     ])
+  })
+})
+
+describe('supportsThinkingForModel', () => {
+  it('returns true for opus / sonnet family ids (incl. provider prefixes)', () => {
+    expect(supportsThinkingForModel('claude-opus-4-8')).toBe(true)
+    expect(supportsThinkingForModel('ppio/pa/claude-opus-4-8')).toBe(true)
+    expect(supportsThinkingForModel('anthropic/claude-sonnet-4-6')).toBe(true)
+  })
+
+  it('returns false for haiku and non-Claude models (fail soft → hide chip)', () => {
+    expect(supportsThinkingForModel('claude-haiku-4-5')).toBe(false)
+    expect(supportsThinkingForModel('deepseek/deepseek-v4-pro')).toBe(false)
+    expect(supportsThinkingForModel('xiaomi/mimo-v2.5-pro')).toBe(false)
+  })
+
+  it('is case-insensitive', () => {
+    expect(supportsThinkingForModel('PPIO/PA/Claude-OPUS-4-8')).toBe(true)
+    expect(supportsThinkingForModel('Claude-SONNET-4')).toBe(true)
+  })
+
+  it('returns undefined when no model is set (capability unknown → chip shown)', () => {
+    expect(supportsThinkingForModel(undefined)).toBeUndefined()
+    expect(supportsThinkingForModel('')).toBeUndefined()
   })
 })

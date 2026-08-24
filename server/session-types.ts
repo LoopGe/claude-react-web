@@ -18,7 +18,7 @@ import type { Pushable } from './pushable.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { MpStore } from './mp-store.js'
-import type { SessionInfoBase, SessionMemorySettings } from '../shared/session-info.js'
+import type { SessionInfoBase, SessionMemorySettings, ThinkingSetting } from '../shared/session-info.js'
 import type { ProviderRegistry } from './providers/registry.js'
 import type { ProviderSessionHandle } from './providers/types.js'
 import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../shared/hooks.js'
@@ -222,6 +222,18 @@ export interface Session {
    *  Not persisted — re-fetched on every spawn (capability tracks the
    *  model + SDK version, not the conversation). */
   effortLevels?: EffortLevel[]
+  /** User intent: extended-thinking config (SDK ThinkingConfig shape).
+   *  Persisted, re-applied on respawn via Options.thinking. Undefined means
+   *  no explicit choice (SDK/model default). */
+  thinking?: ThinkingSetting
+  /** Whether the CURRENT model supports extended thinking at all — keyword
+   *  classified from the model id (effort-capability.ts), NOT from the SDK's
+   *  supportedModels report (untrustworthy on gateways). Three-state:
+   *   - undefined: capability unknown → UI shows the chip (fail-open).
+   *   - false    : model can't think → UI hides the chip.
+   *   - true     : supported.
+   *  Not persisted — re-derived on every spawn / model switch. */
+  thinkingSupported?: boolean
   handle: ProviderSessionHandle
   subscribers: Map<string, Subscriber>
   permissionSubscribers: Map<string, PermissionSubscriber>

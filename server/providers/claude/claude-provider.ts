@@ -54,6 +54,7 @@ export class ClaudeProvider implements AgentProvider {
     supportsPlugins: true,
     supportsFastMode: true,
     supportsEffortLevel: true,
+    supportsThinkingControl: true,
     supportsCommands: true,
     supportsAgents: true,
     supportsContextUsage: true,
@@ -84,6 +85,9 @@ export class ClaudeProvider implements AgentProvider {
     if (opts.includeHookEvents !== undefined) sdkOptions.includeHookEvents = opts.includeHookEvents
     if (opts.forwardSubagentText !== undefined) sdkOptions.forwardSubagentText = opts.forwardSubagentText
     if (opts.effortLevel !== undefined) sdkOptions.effort = opts.effortLevel as Options['effort']
+    // Extended thinking is a first-class spawn-time option (unlike fastMode /
+    // effortLevel, which need a post-spawn applyFlagSettings round-trip).
+    if (opts.thinking !== undefined) sdkOptions.thinking = opts.thinking as Options['thinking']
     // Enable prompt suggestions by default — nearly free (piggybacks on
     // prompt cache) and provides a useful UX affordance.
     sdkOptions.promptSuggestions = opts.promptSuggestions ?? true
