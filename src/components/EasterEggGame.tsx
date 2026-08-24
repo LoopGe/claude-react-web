@@ -157,6 +157,11 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
         jumpRef.current()
       } else if (e.key === 'Escape') {
         e.preventDefault()
+        // stopPropagation: this press exits the game, it must not keep
+        // bubbling to App's escape chain — idle-Esc now opens the resume
+        // picker (escapeAction). The listener runs in CAPTURE phase (see
+        // below) so the stop actually beats App's bubble-phase handler.
+        e.stopPropagation()
         onExit()
       }
     }
@@ -165,10 +170,14 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
         releaseJumpRef.current()
       }
     }
-    window.addEventListener('keydown', onKey)
+    // Capture phase: the Escape branch's stopPropagation must run BEFORE
+    // App's bubble-phase escape chain, which it can't do from a later-
+    // registered bubble listener. The input-target guard above keeps
+    // capture-phase Space/ArrowUp from hijacking typing elsewhere.
+    window.addEventListener('keydown', onKey, true)
     window.addEventListener('keyup', onKeyUp)
     return () => {
-      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onKey, true)
       window.removeEventListener('keyup', onKeyUp)
     }
   }, [onExit])

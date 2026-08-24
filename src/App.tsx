@@ -218,12 +218,16 @@ export function App() {
   } = useAppOverlays()
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
   const [resumeDialogOpen, setResumeDialogOpen] = useState(false)
-  // Timestamp of the last interrupt fired by the Escape handler. Esc is
+  // The last interrupt fired for a session, keyed by session id. Esc is
   // context-sensitive by turn state (working → interrupt, idle → resume
   // picker), so an impatient double-press while a turn runs would otherwise
-  // land "interrupt + immediately open resume picker" — this ref suppresses
-  // the trailing press. Only the interrupt path writes it.
-  const interruptedAtRef = useRef(0)
+  // land "interrupt + immediately open resume picker" — the timestamp
+  // suppresses the trailing press (escapeAction's window). Keyed per
+  // session so interrupting in one panel never suppresses an idle Esc in
+  // another. Written by the Escape handler AND by Chat's interrupt path
+  // (onInterruptFired) so the Composer button's interrupt arms the same
+  // suppression window.
+  const lastInterruptRef = useRef<{ sessionId: string; at: number } | null>(null)
   // When set, the resume picker was opened from a panel's `/resume` local
   // command: the chosen session should REPLACE this panel's slot rather than
   // open in a new panel. Null = the global (Mod+Shift+O) resume flow.
@@ -499,6 +503,24 @@ export function App() {
   const backgroundFnsRef = useRef<CallbackRegistry<() => void>>(createCallbackRegistry())
   const registerBackground = useCallback((sessionId: string, fn: () => void) => {
     return backgroundFnsRef.current.register(sessionId, fn)
+  }, [])
+  // Per-session "turn active" getters registered by <Chat> components.
+  // The escape handler consults this alongside session.working: right
+  // after a send, the server snapshot hasn't flipped working=true yet
+  // (~1 frame + network), and an Esc in that gap should interrupt the
+  // just-started turn, not open the resume picker. Chat owns the
+  // optimistic signal (pendingTurnSince — the same bridge that keeps the
+  // WorkingBubble mounted across the gap).
+  const turnActiveFnsRef = useRef<CallbackRegistry<() => boolean>>(createCallbackRegistry())
+  const registerTurnActive = useCallback((sessionId: string, fn: () => boolean) => {
+    return turnActiveFnsRef.current.register(sessionId, fn)
+  }, [])
+  // Stamp the post-interrupt suppression window (see lastInterruptRef).
+  // Called by the Escape handler's interrupt path and by <Chat>'s own
+  // interrupt funnel (the Composer button) via onInterruptFired, so every
+  // interrupt — not just the keyboard one — arms the window.
+  const handleInterruptFired = useCallback((sessionId: string) => {
+    lastInterruptRef.current = { sessionId, at: Date.now() }
   }, [])
   // Per-session input-injection callbacks registered by <Chat> components.
   // Keep refs in sync with the latest state values. Assigned directly
@@ -1177,6 +1199,7 @@ export function App() {
       interruptFnsRef.current.delete(id)
       recapFnsRef.current.delete(id)
       backgroundFnsRef.current.delete(id)
+      turnActiveFnsRef.current.delete(id)
       setSidebarOrder((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : prev))
       setGroups((prev) => {
         let changed = false
@@ -2526,7 +2549,16 @@ export function App() {
           // sidebar. NOT ctrl+esc / shift+esc: OS / browser-reserved.
           combo: 'alt+b',
           handler: () => {
-            if (focusedIdRef.current) backgroundFnsRef.current.get(focusedIdRef.current)?.()
+            const fid = focusedIdRef.current
+            if (!fid) return
+            // Guard on turn activity (server working OR Chat's optimistic
+            // signal): with nothing in flight the POST either 410s on a
+            // terminated session (setLocalError renders a persistent red
+            // banner) or just toasts noise on an idle one. The Composer
+            // morph is gated the same way.
+            const focused = sessionsRef.current.find((s) => s.id === fid)
+            if (!focused?.working && !turnActiveFnsRef.current.get(fid)?.()) return
+            backgroundFnsRef.current.get(fid)?.()
           },
           allowInInput: true,
           description: 'Background current tasks',
@@ -2542,37 +2574,50 @@ export function App() {
             // bubble-phase handler only runs when the stack was empty.
             // The decision table (including the post-interrupt suppression
             // window that stops a double-tap's trailing press from popping
-            // the picker) lives in escapeAction. Date.now() is called at
+            // the picker) lives in escapeAction. The suppression timestamp
+            // is keyed per session (an interrupt in one panel must not
+            // swallow an idle Esc in another). Date.now() is called at
             // event-dispatch time, not during render — the handler is
             // defined in useMemo but invoked later by the keyboard
             // dispatcher.
             // eslint-disable-next-line react-hooks/purity
             const now = Date.now()
             const fid = focusedIdRef.current
-            const focused = fid ? sessionsRef.current.find((s) => s.id === fid) : undefined
+            // No focused panel: nothing to interrupt, nothing to resume
+            // into. (Also gives the interrupt branch its non-null fid.)
+            if (!fid) return
+            const focused = sessionsRef.current.find((s) => s.id === fid)
+            // Turn activity includes Chat's optimistic bridge (pendingTurn):
+            // right after a send, the server snapshot hasn't flipped
+            // working=true yet, and an Esc in that gap should interrupt the
+            // just-started turn, not open the resume picker.
+            const working = !!focused?.working || !!turnActiveFnsRef.current.get(fid)?.()
+            const last = lastInterruptRef.current
             const action = escapeAction({
-              working: !!focused?.working,
+              working,
               now,
-              lastInterruptedAt: interruptedAtRef.current,
+              // Suppression only applies to the SAME session's trailing
+              // press; a different session's idle Esc is unaffected.
+              lastInterruptedAt: last && last.sessionId === fid ? last.at : 0,
             })
 
             if (action === 'interrupt') {
               // Use the registered interrupt callback (set by <Chat>).
               // The result message's "interrupted" (?) label is derived
               // from the SDK `terminal_reason`, not from this call-path.
-              const fn = fid ? interruptFnsRef.current.get(fid) : undefined
+              const fn = interruptFnsRef.current.get(fid)
               if (fn) {
                 void fn()
-              } else if (fid) {
+              } else {
                 // Fallback: Chat hasn't registered yet (e.g. still
                 // mounting). Direct POST still interrupts the turn.
                 void api.post(`/sessions/${fid}/interrupt`)
               }
-              interruptedAtRef.current = now
+              lastInterruptRef.current = { sessionId: fid, at: now }
               return
             }
 
-            if (action === 'resume' && fid) requestResumeForPanel(fid)
+            if (action === 'resume') requestResumeForPanel(fid)
           },
           allowInInput: true, // Esc inside textarea should still close modals / interrupt
           description: 'Close overlay / Interrupt (or resume picker when idle)',
@@ -3775,6 +3820,8 @@ export function App() {
                       onRegisterInterrupt={registerInterrupt}
                       onRegisterRecap={registerRecap}
                       onRegisterBackground={registerBackground}
+                      onRegisterTurnActive={registerTurnActive}
+                      onInterruptFired={handleInterruptFired}
                       onAcceptSidebarDrop={handleAcceptSidebarDrop}
                       onRequestResumeForPanel={requestResumeForPanel}
                       resumeOpen={resumeDialogOpen && resumeTargetPanelId === s.id}

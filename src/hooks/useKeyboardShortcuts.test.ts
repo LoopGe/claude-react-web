@@ -83,4 +83,19 @@ describe('useKeyboardShortcuts', () => {
     press('w', { altKey: true })
     expect(handler).toHaveBeenCalledOnce()
   })
+
+  it('does not fire shortcuts during IME composition (isComposing)', () => {
+    const handler = vi.fn()
+    renderHook(() =>
+      useKeyboardShortcuts([{ combo: 'escape', handler, allowInInput: true }]),
+    )
+    // A CJK IME cancelling its candidate window dispatches Escape with
+    // isComposing=true — that press belongs to the IME, not the app. jsdom's
+    // KeyboardEventInit doesn't reliably carry isComposing, so define it on
+    // the instance (same trick as the target-override tests above).
+    const event = new KeyboardEvent('keydown', { key: 'Escape' })
+    Object.defineProperty(event, 'isComposing', { value: true })
+    window.dispatchEvent(event)
+    expect(handler).not.toHaveBeenCalled()
+  })
 })

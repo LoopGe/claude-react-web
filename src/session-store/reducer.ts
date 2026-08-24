@@ -2008,12 +2008,17 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
     // its tool_use phase, and clobbering that with 'thinking'/'writing'
     // breaks every phase consumer (WorkingBubble label, Composer's
     // Background morph) for the whole subagent run. Top-level events carry
-    // parent_tool_use_id === null. Only the phase branches are gated — child
-    // text deltas below still feed the token-rate estimate, which keeps the
-    // tok/s readout live while a subagent streams.
-    if (message.parent_tool_use_id != null) return { ...mirror, liveTurn }
+    // parent_tool_use_id === null. The phase assignment is gated; a
+    // sidechain TEXT start still seeds writingStartedAt, because the delta
+    // branch below gates its char-estimate samples on it — without the
+    // seed, a turn that streamed no top-level text (thinking → straight to
+    // tool_use) would freeze the tok/s readout for the whole subagent run.
     const block = (event as { content_block?: Record<string, unknown> }).content_block
-    if (block?.type === 'thinking') {
+    if (message.parent_tool_use_id != null) {
+      if (block?.type === 'text' && liveTurn.writingStartedAt == null) {
+        liveTurn = { ...liveTurn, writingStartedAt: Date.now() }
+      }
+    } else if (block?.type === 'thinking') {
       liveTurn = { ...liveTurn, phase: 'thinking' }
     } else if (block?.type === 'text') {
       // Mark when actual writing starts (skip thinking phase)
@@ -2065,7 +2070,13 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
     }
   }
 
-  return { ...mirror, liveTurn }
+  // Identity short-circuit (same discipline as the other early returns
+  // above): when nothing touched liveTurn — a sidechain thinking/tool_use
+  // start, an unrecognised event type — return the ORIGINAL mirror so
+  // withMirror's reference-equality check skips the SessionState clone.
+  // The spread path stays for the case where liveTurn was freshly
+  // initialized above (mirror.liveTurn was null).
+  return liveTurn === mirror.liveTurn ? mirror : { ...mirror, liveTurn }
 }
 
 /** Flatten a tool_result `content` payload to a plain string for signature

@@ -128,6 +128,36 @@ describe('Composer', () => {
     expect(container.querySelector('[aria-label="Send message"]')).toBeNull()
   })
 
+  it('slash-picker Escape is consumed by the escape stack and never reaches window', () => {
+    // CommandPicker owns Escape via useEscapeStack (window CAPTURE +
+    // stopPropagation): while the picker is open, the press closes it and
+    // dies there — it must NOT bubble to App's escape chain, whose idle
+    // semantics now open the resume picker on a single clean press. This
+    // test locks that invariant in.
+    // (scrollIntoView stub: jsdom lacks it; CommandPicker scrolls its
+    // active item on mount — same stub as MessageList.test.tsx.)
+    Element.prototype.scrollIntoView = vi.fn()
+    const windowKeydown = vi.fn()
+    window.addEventListener('keydown', windowKeydown)
+    try {
+      const { container } = render(
+        <Composer {...defaultProps} commands={[{ name: 'help', description: 'Show help', argumentHint: '' }] as SlashCommand[]} />,
+      )
+      const ta = container.querySelector('textarea')!
+      // Type '/' — the change handler opens the slash command picker.
+      fireEvent.change(ta, { target: { value: '/he' } })
+      expect(container.querySelector('[role="listbox"]')).not.toBeNull()
+
+      // Escape: picker closes…
+      fireEvent.keyDown(ta, { key: 'Escape' })
+      expect(container.querySelector('[role="listbox"]')).toBeNull()
+      // …and the keydown never reached window-level bubble listeners.
+      expect(windowKeydown).not.toHaveBeenCalled()
+    } finally {
+      window.removeEventListener('keydown', windowKeydown)
+    }
+  })
+
   it('keeps Interrupt (not Background) while a turn runs without a blocking tool', () => {
     const { container } = render(
       <Composer {...defaultProps} canInterrupt canBackground={false} onBackground={noop} />,

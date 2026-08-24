@@ -225,6 +225,10 @@ export const SessionCard = memo(function SessionCard({
                 void onCommitRename(s.id, renameDraft)
               } else if (e.key === 'Escape') {
                 e.preventDefault()
+                // stopPropagation: this press cancels the rename edit, it
+                // must not keep bubbling to App's escape chain — idle-Esc
+                // now opens the resume picker (escapeAction).
+                e.stopPropagation()
                 onCancelRename()
               }
             }}

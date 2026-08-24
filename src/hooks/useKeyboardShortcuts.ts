@@ -52,6 +52,15 @@ export function useKeyboardShortcuts(shortcuts: Shortcut[]): void {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // IME composition (CJK input): keydowns during composition carry
+      // isComposing=true. No shortcut may fire in that window — above all
+      // Escape, which the IME uses to cancel the candidate/composition
+      // window: without this guard that press would fall through to the
+      // escape chain and interrupt the turn / pop the resume picker
+      // mid-composition (and the dispatcher's preventDefault can block the
+      // IME cancel itself). Composer's own Enter/Tab handlers apply the
+      // same guard (Composer.tsx isComposing checks).
+      if (e.isComposing) return
       const combo = eventCombo(e)
       if (!combo) return
       for (const s of shortcutsRef.current) {

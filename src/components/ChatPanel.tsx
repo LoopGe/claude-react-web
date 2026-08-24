@@ -222,6 +222,16 @@ export interface ChatPanelProps {
   /** Forwarded to <Chat> so it can register its background-tasks callback.
    *  Enables the Alt+B shortcut in App. */
   onRegisterBackground?: (sessionId: string, fn: () => void) => () => void
+  /** Forwarded to <Chat> so it can register its optimistic turn-active
+   *  getter. App's escape handler consults it so an Esc right after a
+   *  send (before the server flips working=true) interrupts the turn
+   *  instead of opening the resume picker. */
+  onRegisterTurnActive?: (sessionId: string, fn: () => boolean) => () => void
+  /** Forwarded to <Chat>. Chat calls it whenever it fires an interrupt
+   *  (its own funnel covers the Composer button), so App can arm the
+   *  post-interrupt Esc suppression window for every interrupt path —
+   *  not just the keyboard one. */
+  onInterruptFired?: (sessionId: string) => void
   /** True while the session is being resumed from dormancy. */
   isResuming?: boolean
   /** Global composer-snippets api (single shared instance owned by App).
@@ -288,6 +298,8 @@ export const ChatPanel = memo(function ChatPanel({
   onRegisterInterrupt,
   onRegisterRecap,
   onRegisterBackground,
+  onRegisterTurnActive,
+  onInterruptFired,
   isResuming,
   snippets,
   onOpenSnippetsManager,
@@ -983,6 +995,8 @@ export const ChatPanel = memo(function ChatPanel({
             onRegisterInterrupt={onRegisterInterrupt}
             onRegisterRecap={onRegisterRecap}
             onRegisterBackground={onRegisterBackground}
+            onRegisterTurnActive={onRegisterTurnActive}
+            onInterruptFired={onInterruptFired}
             onOpenSettingsPanel={onOpenSettings}
             snippets={snippets}
             onOpenSnippetsManager={onOpenSnippetsManager}

@@ -167,13 +167,23 @@ export const PinnedUserMessage = memo(function PinnedUserMessage({ text, clearin
       }
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setExpanded(false)
+      // Capture + stopPropagation (same pattern as AppearancePanel's
+      // popover): this press collapses the expansion, it must not keep
+      // bubbling to App's escape chain — idle-Esc now opens the resume
+      // picker (escapeAction), and a plain bubble listener here fires
+      // AFTER App's (registered at App mount), so stopPropagation alone
+      // wouldn't help.
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        setExpanded(false)
+      }
     }
     window.addEventListener('mousedown', onDocMouseDown)
-    window.addEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
     return () => {
       window.removeEventListener('mousedown', onDocMouseDown)
-      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onKey, true)
     }
   }, [expanded])
 

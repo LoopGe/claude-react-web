@@ -446,6 +446,84 @@ describe('useChatStream', () => {
     })
   })
 
+  it('sidechain text starts seed the char-estimate rate without flipping the parent phase', async () => {
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    const dateSpy = vi.spyOn(Date, 'now')
+
+    act(() => {
+      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+
+      // Parent turn: straight to a tool_use (Task) with NO top-level text
+      // block — the shape that used to freeze the tok/s readout for the
+      // whole subagent run once the phase gate landed (nothing ever seeded
+      // writingStartedAt, so every child delta failed the sample gate).
+      dateSpy.mockReturnValue(1000)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          event: { type: 'content_block_start', content_block: { type: 'tool_use', name: 'Task' } },
+        },
+      })
+      // The subagent's sidechain text start: seeds writingStartedAt (the
+      // delta branch's sample gate) but must NOT flip the parent phase.
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          parent_tool_use_id: 'toolu_01',
+          event: { type: 'content_block_start', content_block: { type: 'text' } },
+        },
+      })
+      // Child delta at t=1000: inside the 500ms throttle → no sample yet.
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          parent_tool_use_id: 'toolu_01',
+          event: { type: 'content_block_delta', delta: { text: 'a'.repeat(40) } },
+        },
+      })
+      // t=1600: 400 chars → round(400/4) = 100 estimated tokens → first sample.
+      dateSpy.mockReturnValue(1600)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          parent_tool_use_id: 'toolu_01',
+          event: { type: 'content_block_delta', delta: { text: 'b'.repeat(360) } },
+        },
+      })
+      // t=2200: 800 chars → 200 estimated tokens → second sample →
+      // window rate (200-100)/0.6 = 166.7 → 167.
+      dateSpy.mockReturnValue(2200)
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          parent_tool_use_id: 'toolu_01',
+          event: { type: 'content_block_delta', delta: { text: 'c'.repeat(400) } },
+        },
+      })
+    })
+
+    await waitFor(() => {
+      // Parent phase never left tool_use…
+      expect(result.current.activePhase).toEqual({ type: 'tool_use', name: 'Task' })
+      // …and the tok/s readout stayed live from the child's text flow.
+      expect(result.current.tokenRate).toBe(167)
+    })
+  })
+
   it('resets token rate on result (message_stop clears baseline)', async () => {
     const { result } = renderHook(
       () => useChatStream('s1', noopPerms),

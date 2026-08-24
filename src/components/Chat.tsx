@@ -201,6 +201,19 @@ interface Props {
    *  sessions where the phase signal is missing (includePartialMessages
    *  off, store rebuilt mid-run) and the Composer morph can't key off it. */
   onRegisterBackground?: (sessionId: string, fn: () => void) => () => void
+  /** Called once on mount so the parent can poll this panel's optimistic
+   *  turn-active state (session.working OR the pendingTurn bridge that
+   *  covers the send→server-confirm gap). App's escape handler consults it
+   *  so an Esc right after a send interrupts the just-started turn instead
+   *  of opening the resume picker; Alt+B uses the same signal as its
+   *  guard. */
+  onRegisterTurnActive?: (sessionId: string, fn: () => boolean) => () => void
+  /** Called whenever this panel fires an interrupt (the single funnel
+   *  covers the Composer button and App's Esc path). Lets App arm the
+   *  post-interrupt Esc suppression window for EVERY interrupt path, not
+   *  just the keyboard one — without it, a trailing Esc right after a
+   *  button interrupt pops the resume picker. */
+  onInterruptFired?: (sessionId: string) => void
   /** When true, render the input-history browser as an in-panel overlay
    *  (Mod+Shift+H), scoped to this panel. App gates this on the focused panel
    *  so only one panel shows it at a time. */
@@ -291,7 +304,7 @@ export const Chat = memo(function Chat({
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   tasksPanelOpen, onCloseTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -372,6 +385,13 @@ export const Chat = memo(function Chat({
   // include `session.working`, so reading it directly there would be stale.
   const workingRef = useRef(session.working)
   workingRef.current = session.working
+  // Ref mirror of the FULL turn-active signal (server working OR the
+  // pendingTurn bridge above). App polls it via the registered getter
+  // (onRegisterTurnActive) for the escape handler's send-gap decision and
+  // Alt+B's guard — a ref so the getter stays fresh without re-registering
+  // on every transition.
+  const turnActiveRef = useRef(false)
+  turnActiveRef.current = session.working || pendingTurnSince != null
   const [localError, setLocalError] = useState<string | null>(null)
   /** Local /clear signal. No producer sets this to `true` today — the local
    *  `/clear` command drives the animation via the App-owned `clearingProp`,
@@ -1364,12 +1384,18 @@ export const Chat = memo(function Chat({
   const setGitOverlayOs = useOverlayScrollbar({ autoHide: 'leave' })
 
   const interrupt = useCallback(async () => {
+    // Arm App's post-interrupt Esc suppression window at REQUEST time (not
+    // after the await): the trailing Esc of an impatient double-press can
+    // land while the POST is still in flight. This is the single interrupt
+    // funnel — the Composer button and App's Esc path both route through
+    // here, so one stamp covers every path.
+    onInterruptFired?.(session.id)
     try {
       await api.post(`/sessions/${session.id}/interrupt`)
     } catch (e) {
       setLocalError((e as Error).message)
     }
-  }, [session.id])
+  }, [session.id, onInterruptFired])
 
   /** Background every in-flight foreground task (Ctrl+B semantics) — the
    *  turn continues while the running command/subagent detaches to the
@@ -1465,6 +1491,15 @@ export const Chat = memo(function Chat({
   useEffect(() => {
     return onRegisterBackground?.(session.id, handleBackground)
   }, [session.id, handleBackground, onRegisterBackground])
+
+  // Expose the optimistic turn-active getter (session.working OR
+  // pendingTurn). App's escape handler consults it so an Esc in the
+  // send→server-confirm gap interrupts the just-started turn instead of
+  // opening the resume picker; Alt+B uses it as its guard. turnActiveRef is
+  // defined near pendingTurnSince (far above), so no TDZ concern here.
+  useEffect(() => {
+    return onRegisterTurnActive?.(session.id, () => turnActiveRef.current)
+  }, [session.id, onRegisterTurnActive])
 
   return (
     <div className="chat">

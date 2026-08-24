@@ -706,6 +706,10 @@ export const SessionList = memo(function SessionList({
                   setNewGroupName('')
                   setShowNewGroupInput(false)
                 } else if (e.key === 'Escape') {
+                  // stopPropagation: this press cancels the new-group input,
+                  // it must not keep bubbling to App's escape chain —
+                  // idle-Esc now opens the resume picker (escapeAction).
+                  e.stopPropagation()
                   setNewGroupName('')
                   setShowNewGroupInput(false)
                 }
