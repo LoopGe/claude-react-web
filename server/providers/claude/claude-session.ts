@@ -159,6 +159,13 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.accountInfo()
   }
 
+  /** File-checkpoint rewind. The userMessageId here is the SDK on-disk uuid
+   *  (the manager maps the app-level uuid via the promptUuids sidecar);
+   *  the result is narrowed by the manager via coerceRewindResult. */
+  rewindFiles(userMessageId: string, options?: { dryRun?: boolean }): Promise<unknown> {
+    return this.query.rewindFiles(userMessageId, options)
+  }
+
   /** Structured /usage data (session cost/usage totals + claude.ai plan
    *  rate-limit windows). The SDK method is EXPERIMENTAL and its name will
    *  change when stabilized — this wrapper is the single call site, so the

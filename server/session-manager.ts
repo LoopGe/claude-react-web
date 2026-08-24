@@ -63,6 +63,7 @@ import { effortLevelsForModel, supportsThinkingForModel } from './effort-capabil
 import type { ModelInfo } from '../shared/model-info.js'
 import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
 import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
+import { coerceRewindResult, type RewindFilesResult } from '../shared/rewind.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
@@ -3497,6 +3498,49 @@ export class SessionManager {
     )
     const raw = await this.timeSdkControl(id, 'accountInfo', fn)
     return coerceAccountInfo(raw)
+  }
+
+  /** Restore the session's tracked files to their state at user message
+   *  `messageId` (SDK Query.rewindFiles, requires enableFileCheckpointing —
+   *  on by default in the claude provider). `messageId` is the app-level
+   *  (server-minted) uuid the client knows; it is mapped to the SDK's
+   *  on-disk uuid via the in-memory promptUuids pairs. `dryRun: true`
+   *  previews the diff without touching files.
+   *
+   *  Idle-only: rewinding mid-turn would race the running tool edits, so a
+   *  working/queued session gets a 409. A REAL (non-dry) rewind also fires
+   *  git-status-changed so open GitPanels refetch the now-changed worktree. */
+  async rewindFiles(id: string, messageId: string, opts?: { dryRun?: boolean }): Promise<RewindFilesResult> {
+    const s = this.requireLive(id)
+    switch (this.phaseOf(s)) {
+      case 'terminated':
+        throw new HttpError(410, `session ${id} is terminated`)
+      case 'dormant':
+        throw new HttpError(412, `session ${id} is dormant; resume it before rewinding`)
+      case 'working':
+        throw new HttpError(409, `session ${id} is working; wait for the turn to finish before rewinding`)
+    }
+    // Map the app-level uuid → the SDK on-disk uuid. The pair exists only
+    // once the SDK has echoed the prompt back (i.e. persisted it), which is
+    // exactly the precondition for a checkpoint existing at that message.
+    const sdkUuid = (s.promptUuids ?? []).find((e) => e.u === messageId && e.v != null)?.v
+    if (!sdkUuid) {
+      throw new HttpError(
+        400,
+        `no checkpoint target for message ${messageId} — the message was sent before uuid tracking, hasn't been persisted yet, or is not a sent user prompt`,
+      )
+    }
+    const fn = this.requireHandleMethod<(mid: string, options?: { dryRun?: boolean }) => Promise<unknown>>(
+      s,
+      'rewindFiles',
+      'file rewind',
+      'supportsRewindFiles',
+    )
+    const raw = await this.timeSdkControl(id, 'rewindFiles', () => fn(sdkUuid, opts))
+    const result = coerceRewindResult(raw)
+    // A real rewind rewrote the worktree — nudge git consumers to refetch.
+    if (result.canRewind && !opts?.dryRun) this.broadcastGitStatusChanged(id)
+    return result
   }
 
   /** List pending tool-permission requests for a session. */

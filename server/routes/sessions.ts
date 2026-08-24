@@ -112,7 +112,7 @@ function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Rec
     const err = validateStringArray(name, rest[name])
     if (err) return { ok: false, error: err }
   }
-  for (const name of ['includePartialMessages', 'includeHookEvents']) {
+  for (const name of ['includePartialMessages', 'includeHookEvents', 'enableFileCheckpointing']) {
     const v = rest[name]
     if (v !== undefined && typeof v !== 'boolean') {
       return { ok: false, error: `${name} must be a boolean` }
@@ -574,6 +574,22 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   app.get('/sessions/:id/account', async (c) => {
     const account = await sm.accountInfo(c.req.param('id'))
     return c.json({ account: account ?? null })
+  })
+
+  // Restore tracked files to their state at a user message (SDK
+  // rewindFiles; requires enableFileCheckpointing, on by default).
+  // `messageId` is the app-level user-message uuid (the server maps it to
+  // the SDK's on-disk uuid). `dryRun: true` previews the diff without
+  // modifying files — used by the client's confirm dialog.
+  app.post('/sessions/:id/rewind-files', async (c) => {
+    const body = await safeJson<{ messageId?: unknown; dryRun?: unknown }>(c.req)
+    if (typeof body.messageId !== 'string' || !body.messageId) {
+      return c.json({ error: 'messageId is required' }, 400)
+    }
+    const rewind = await sm.rewindFiles(c.req.param('id'), body.messageId, {
+      dryRun: body.dryRun === true,
+    })
+    return c.json({ rewind })
   })
 
   // Supported models — the manager translates the SDK's camelCase ModelInfo

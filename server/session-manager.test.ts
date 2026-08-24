@@ -32,6 +32,7 @@ interface MockQueryHandle {
   setMcpServers: ReturnType<typeof vi.fn>
   getContextUsage: ReturnType<typeof vi.fn>
   accountInfo: ReturnType<typeof vi.fn>
+  rewindFiles: ReturnType<typeof vi.fn>
 }
 
 const mockHandles: MockQueryHandle[] = []
@@ -143,6 +144,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         })),
         getContextUsage: vi.fn(async () => ({})),
         accountInfo: vi.fn(async () => ({})),
+        rewindFiles: vi.fn(async () => ({ canRewind: true })),
       }
       mockHandles.push(handle)
 
@@ -183,6 +185,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         setMcpServers: handle.setMcpServers,
         getContextUsage: handle.getContextUsage,
         accountInfo: handle.accountInfo,
+        rewindFiles: handle.rewindFiles,
       }
       return q
     },
@@ -2047,6 +2050,72 @@ describe('SessionManager', () => {
 
   it('accountInfo() 404s for an unknown session', async () => {
     await expect(sm.accountInfo('nope')).rejects.toThrow()
+  })
+
+  // --- rewindFiles (SDK file-checkpoint rewind) ---
+
+  it('rewindFiles() maps the app uuid to the paired SDK uuid and narrows the result', async () => {
+    const info = sm.create({})
+    const sent = sm.send(info.id, 'edit a file')
+    // The SDK echoes the persisted prompt back with its on-disk uuid —
+    // the pump hands that to onPromptEcho, which pairs u → v.
+    mockHandles[0].emit({ type: 'user', message: { role: 'user', content: 'edit a file' }, parent_tool_use_id: null, uuid: 'sdk-v-1' })
+    mockHandles[0].emit({ type: 'result', subtype: 'success' })
+    await tick()
+    mockHandles[0].rewindFiles.mockResolvedValueOnce({
+      canRewind: true,
+      filesChanged: ['a.ts', ''],
+      insertions: 2,
+      deletions: 'x',
+      junk: 'dropped',
+    })
+    const res = await sm.rewindFiles(info.id, sent.uuid!, { dryRun: true })
+    expect(mockHandles[0].rewindFiles).toHaveBeenCalledWith('sdk-v-1', { dryRun: true })
+    expect(res).toEqual({ canRewind: true, filesChanged: ['a.ts'], insertions: 2 })
+  })
+
+  it('rewindFiles() collapses a malformed SDK response to a safe error result', async () => {
+    const info = sm.create({})
+    const sent = sm.send(info.id, 'edit a file')
+    mockHandles[0].emit({ type: 'user', message: { role: 'user', content: 'edit a file' }, parent_tool_use_id: null, uuid: 'sdk-v-2' })
+    mockHandles[0].emit({ type: 'result', subtype: 'success' })
+    await tick()
+    mockHandles[0].rewindFiles.mockResolvedValueOnce('garbage')
+    expect(await sm.rewindFiles(info.id, sent.uuid!)).toEqual({
+      canRewind: false,
+      error: 'malformed rewind response',
+    })
+  })
+
+  it('rewindFiles() 400s when the message has no paired SDK uuid yet', async () => {
+    const info = sm.create({})
+    const sent = sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result', subtype: 'success' })
+    await tick()
+    await expect(sm.rewindFiles(info.id, sent.uuid!)).rejects.toThrow('checkpoint target')
+    expect(mockHandles[0].rewindFiles).not.toHaveBeenCalled()
+  })
+
+  it('rewindFiles() 409s while the session is working', async () => {
+    const info = sm.create({})
+    const sent = sm.send(info.id, 'hi') // pendingTurns=1 → phase 'working'
+    await expect(sm.rewindFiles(info.id, sent.uuid!)).rejects.toThrow('working')
+    expect(mockHandles[0].rewindFiles).not.toHaveBeenCalled()
+  })
+
+  it('rewindFiles() broadcasts a git-status refresh after a real rewind (not a dry run)', async () => {
+    const bcast = vi.spyOn(sm, 'broadcastGitStatusChanged').mockImplementation(() => {})
+    const info = sm.create({})
+    const sent = sm.send(info.id, 'edit a file')
+    mockHandles[0].emit({ type: 'user', message: { role: 'user', content: 'edit a file' }, parent_tool_use_id: null, uuid: 'sdk-v-3' })
+    mockHandles[0].emit({ type: 'result', subtype: 'success' })
+    await tick()
+    mockHandles[0].rewindFiles.mockResolvedValueOnce({ canRewind: true })
+    await sm.rewindFiles(info.id, sent.uuid!, { dryRun: true })
+    expect(bcast).not.toHaveBeenCalled()
+    await sm.rewindFiles(info.id, sent.uuid!)
+    expect(bcast).toHaveBeenCalledWith(info.id)
+    bcast.mockRestore()
   })
 
   it('setMemorySettings() forwards only present keys and records them on the session', async () => {

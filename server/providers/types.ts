@@ -131,6 +131,12 @@ export interface ProviderSessionHandle {
    *  organization / subscriptionType / tokenSource / apiKeySource /
    *  apiProvider. Read-only control request; needs a live session. */
   accountInfo?(): Promise<unknown>
+  /** Restore tracked files to their state at a user message (SDK
+   *  Query.rewindFiles). `userMessageId` is the SDK on-disk uuid of the
+   *  target user message (the caller maps the app-level uuid); `dryRun`
+   *  previews the diff without touching files. Requires sessions spawned
+   *  with enableFileCheckpointing. */
+  rewindFiles?(userMessageId: string, options?: { dryRun?: boolean }): Promise<unknown>
 }
 
 export interface ProviderCapabilities {
@@ -149,6 +155,7 @@ export interface ProviderCapabilities {
   supportsContextUsage: boolean
   supportsUsage: boolean
   supportsAccountInfo: boolean
+  supportsRewindFiles: boolean
   supportsTaskControl: boolean
 }
 

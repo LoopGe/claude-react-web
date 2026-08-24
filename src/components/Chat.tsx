@@ -66,7 +66,7 @@ import { exportConversation, exportConversationJson } from '../utils/exportConve
 import { useAllContributions } from '../app-plugins/PluginRegistryProvider'
 import { usePluginCommands } from '../app-plugins/usePluginCommands'
 import { buildWhenContext, filterContributions } from '../app-plugins/when'
-import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe, IconScissors } from './icons/ToolIcons'
+import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe, IconScissors, IconRotateCcw } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useToast } from '../hooks/useToast'
@@ -74,7 +74,7 @@ import { Overlay } from './Overlay'
 import { useWsHub } from '../hooks/useWsHub'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
-import type { AgentInfo, PermissionRequest, SessionInfo, SlashCommand } from '../types'
+import type { AgentInfo, PermissionRequest, RewindFilesResult, SessionInfo, SlashCommand } from '../types'
 import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
 import type { MessageJumpTarget } from '../../shared/message-jump'
@@ -818,6 +818,39 @@ export const Chat = memo(function Chat({
     })
   }, [discardAnchors, onDiscard])
 
+  // ── File-checkpoint rewind (SDK Query.rewindFiles) ────────────────
+  /** True when `uuid` resolves to a top-level user message in the current
+   *  transcript. Such a row's id IS the server-minted prompt uuid the
+   *  manager maps to the SDK on-disk uuid. Synthetic user frames (tool
+   *  results, task notifications) carry a non-null parent_tool_use_id and
+   *  never qualify. This is a UI nicety only — the server re-validates. */
+  const isRewindableUserMessage = useCallback((uuid: string | undefined) => {
+    if (!uuid) return false
+    const item = stream.items.find((i) => i.id === uuid)
+    return !!item && item.msg.type === 'user' && item.msg.parent_tool_use_id == null
+  }, [stream.items])
+
+  /** Rewind confirmation modal. On open we fire a dry-run POST so the
+   *  dialog can show the diff the rewind would apply (files / +/- lines);
+   *  confirm then posts the real rewind. */
+  const [rewindConfirm, setRewindConfirm] = useState<{
+    messageId: string
+    dry: RewindFilesResult | null
+    dryError: string | null
+    busy: boolean
+  } | null>(null)
+  const openRewindConfirm = useCallback((messageId: string) => {
+    setRewindConfirm({ messageId, dry: null, dryError: null, busy: false })
+    void api.post<{ rewind: RewindFilesResult }>(`/sessions/${session.id}/rewind-files`, { messageId, dryRun: true })
+      .then((res) => {
+        setRewindConfirm((prev) => (prev && prev.messageId === messageId ? { ...prev, dry: res.rewind } : prev))
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : 'preview failed'
+        setRewindConfirm((prev) => (prev && prev.messageId === messageId ? { ...prev, dryError: message } : prev))
+      })
+  }, [session.id])
+
   /** Build plugin ContextMenuItems for the current selection. Returns []
    *  when there's no selection or no enabled plugin contributes a
    *  `message.selectionContextMenu` command whose `when` holds. */
@@ -1458,6 +1491,27 @@ export const Chat = memo(function Chat({
                 }
               },
             } as ContextMenuItem, { label: '' } as ContextMenuItem] : []),
+            // File-checkpoint rewind: restore tracked files to their state
+            // at the right-clicked user message. Only idle sessions with a
+            // top-level user-message target are legal (the server re-guards
+            // with 409/412/410).
+            {
+              label: 'Rewind files to this message',
+              icon: <IconRotateCcw size={14} />,
+              danger: true,
+              disabled: !(session.phase === 'idle' && isRewindableUserMessage(exportMenuPos.targetId)),
+              title: session.phase !== 'idle'
+                ? 'Files can only be rewound while the session is idle'
+                : !isRewindableUserMessage(exportMenuPos.targetId)
+                  ? 'Can only rewind to a sent user message'
+                  : undefined,
+              onClick: () => {
+                const mid = exportMenuPos.targetId
+                if (mid && session.phase === 'idle' && isRewindableUserMessage(mid)) {
+                  openRewindConfirm(mid)
+                }
+              },
+            } as ContextMenuItem,
             { label: '' },
             {
               label: 'Export as Markdown',
@@ -1646,6 +1700,65 @@ export const Chat = memo(function Chat({
               }
             }}
             onCancel={() => { if (!discardConfirm.busy) setDiscardConfirm(null) }}
+          />
+        )}
+        {rewindConfirm && (
+          <ConfirmDialog
+            title="Rewind files to this message?"
+            message={
+              <>
+                <p>Tracked files will be restored to their state when this message was sent. The conversation itself is not truncated.</p>
+                {rewindConfirm.dryError && (
+                  <p className="confirm-dialog-hint">Preview failed: {rewindConfirm.dryError}</p>
+                )}
+                {!rewindConfirm.dryError && !rewindConfirm.dry && (
+                  <p className="confirm-dialog-hint">Loading diff preview…</p>
+                )}
+                {rewindConfirm.dry && !rewindConfirm.dry.canRewind && (
+                  <p className="confirm-dialog-hint">
+                    Cannot rewind: {rewindConfirm.dry.error ?? 'unknown reason'}.
+                  </p>
+                )}
+                {rewindConfirm.dry?.canRewind && (() => {
+                  const files = rewindConfirm.dry?.filesChanged ?? []
+                  const ins = rewindConfirm.dry?.insertions ?? 0
+                  const del = rewindConfirm.dry?.deletions ?? 0
+                  return (
+                    <p className="confirm-dialog-hint">
+                      {files.length > 0
+                        ? <>Affects {files.length} file{files.length > 1 ? 's' : ''} ({files.slice(0, 3).join(', ')}
+                          {files.length > 3 ? ', …' : ''}) — +{ins} / −{del} lines.</>
+                        : <>No file changes needed (+{ins} / −{del} lines).</>}
+                    </p>
+                  )
+                })()}
+              </>
+            }
+            confirmLabel="Rewind files"
+            destructive
+            busy={rewindConfirm.busy}
+            onConfirm={async () => {
+              setRewindConfirm((prev) => prev && { ...prev, busy: true })
+              try {
+                const res = await api.post<{ rewind: RewindFilesResult }>(
+                  `/sessions/${session.id}/rewind-files`,
+                  { messageId: rewindConfirm.messageId },
+                )
+                if (res.rewind.canRewind) {
+                  toast.success('Files rewound')
+                  setRewindConfirm(null)
+                } else {
+                  // canRewind:false came back on the REAL run — surface the
+                  // reason and refresh the preview so the dialog reflects it.
+                  toast.error(`Rewind failed: ${res.rewind.error ?? 'unknown reason'}`)
+                  setRewindConfirm((prev) => (prev ? { ...prev, busy: false, dry: res.rewind } : prev))
+                }
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : 'Rewind failed')
+                setRewindConfirm((prev) => prev && { ...prev, busy: false })
+              }
+            }}
+            onCancel={() => { if (!rewindConfirm.busy) setRewindConfirm(null) }}
           />
         )}
         </ReopenQuestionProvider>

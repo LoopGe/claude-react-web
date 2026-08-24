@@ -60,6 +60,7 @@ export class ClaudeProvider implements AgentProvider {
     supportsContextUsage: true,
     supportsUsage: true,
     supportsAccountInfo: true,
+    supportsRewindFiles: true,
     supportsTaskControl: true,
   }
 
@@ -96,6 +97,14 @@ export class ClaudeProvider implements AgentProvider {
     // prompt cache (~free, ~every 30s per subagent) and it feeds the
     // task_progress.summary the TasksPanel and subagent chips render.
     sdkOptions.agentProgressSummaries = opts.agentProgressSummaries ?? true
+    // Enable file checkpointing by default so Query.rewindFiles works out
+    // of the box (the feature is dead weight without it, and the cost is
+    // bounded backups of files the session modifies). An explicit
+    // `enableFileCheckpointing: false` in the create body reaches
+    // sdkOptions via providerExtras and is left verbatim.
+    if (sdkOptions.enableFileCheckpointing === undefined) {
+      sdkOptions.enableFileCheckpointing = true
+    }
 
     const requestedMode = (opts.permissionMode ?? sdkOptions.permissionMode) as PermissionMode | undefined
     this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins)
