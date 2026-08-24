@@ -25,7 +25,7 @@ import { useLayoutEffect, useRef } from 'react'
  *      through to App's interrupt branch while any overlay is open, and is what
  *      closes a per-panel overlay when focus sits in a sibling panel.
  *   3. Stack empty: no-op, so App's bubble-phase chain runs (interrupt /
- *      double-tap resume).
+ *      idle resume picker).
  *
  * Capture phase is mandatory: App's escape chain is a single bubble-phase
  * window keydown registered once at App mount, so a bubble listener here would
@@ -144,8 +144,8 @@ export function useEscapeStack(opts: {
   }, [active])
 }
 
-/** Number of entries currently in the stack (used by App's double-tap
- *  bookkeeping to know whether an overlay is open). */
+/** Number of entries currently in the stack (used by tests to know whether an
+ *  overlay is open). */
 export function getEscapeStackCount(): number {
   return stack.length
 }

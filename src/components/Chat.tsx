@@ -195,6 +195,12 @@ interface Props {
   /** Called once on mount so the parent can store a reference to this
    *  panel's recap.refresh() function. Enables the Alt+R shortcut in App. */
   onRegisterRecap?: (sessionId: string, fn: () => void) => () => void
+  /** Called once on mount so the parent can store a reference to this
+   *  panel's backgroundTasks() function. Enables the Alt+B shortcut in App —
+   *  the keyboard path to background in-flight tasks, which also covers
+   *  sessions where the phase signal is missing (includePartialMessages
+   *  off, store rebuilt mid-run) and the Composer morph can't key off it. */
+  onRegisterBackground?: (sessionId: string, fn: () => void) => () => void
   /** When true, render the input-history browser as an in-panel overlay
    *  (Mod+Shift+H), scoped to this panel. App gates this on the focused panel
    *  so only one panel shows it at a time. */
@@ -285,7 +291,7 @@ export const Chat = memo(function Chat({
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   tasksPanelOpen, onCloseTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -596,20 +602,22 @@ export const Chat = memo(function Chat({
   // between phases don't churn the label. `turnActive` above keeps the raw
   // activePhase so turn-end detection stays immediate.
   const displayPhase = usePhaseDwell(stream.activePhase)
-  // A blocking tool call is actually executing — the only state where
-  // backgrounding (Ctrl+B) has any effect. Uses the RAW stream phase, not
-  // the dwell-smoothed `displayPhase`: dwell exists to stop label flicker,
-  // and feeding it into a control decision makes the button lag phase
-  // reality by the dwell window (a click in the first 300ms of a tool call
-  // would route to Interrupt and kill the turn). phase→null commits
-  // immediately, so there is no post-turn leak on the other edge. The
-  // object branch of ActivePhase is the tool_use phase; the string branches
-  // ('thinking' / 'writing') have nothing to detach.
+  // A blocking tool call may be executing — Background is offered whenever
+  // the turn is running AND the phase isn't a KNOWN nothing-to-detach state.
+  // Known detachable: the tool_use phase (ActivePhase's object branch). Known
+  // empty: 'thinking' / 'writing'. Unknown (phase null): optimistic — show
+  // Background and let the toast cover a miss. Phase is unknown in three
+  // real cases: a store rebuild mid-tool-run (replay never carries
+  // stream_event deltas), sessions created with includePartialMessages:false
+  // (phase is null for the whole lifetime), and the beat before the first
+  // content_block_start. Uses the RAW stream phase, not the dwell-smoothed
+  // `displayPhase`: dwell exists to stop label flicker, and feeding it into
+  // a control decision makes the button lag phase reality by the dwell
+  // window. phase→null commits immediately, so no post-turn leak.
   const canBackground =
     session.working &&
-    typeof stream.activePhase === 'object' &&
-    stream.activePhase != null &&
-    stream.activePhase.type === 'tool_use'
+    (stream.activePhase == null ||
+      (typeof stream.activePhase === 'object' && stream.activePhase.type === 'tool_use'))
   /** A background (async) subagent still in flight after the parent turn
    *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
    *  such subagent exists, so the user sees that background work is ongoing
@@ -1448,6 +1456,15 @@ export const Chat = memo(function Chat({
   const handleSend = useCallback(() => void send(), [send])
   const handleInterrupt = useCallback(() => void interrupt(), [interrupt])
   const handleBackground = useCallback(() => void backgroundTasks(), [backgroundTasks])
+
+  // Expose the backgroundTasks callback to the parent so the Alt+B shortcut
+  // can background in-flight tasks for the focused session — same
+  // stale-guarded register/unregister pattern as interrupt/recap above.
+  // Declared AFTER handleBackground (deps are evaluated at render time — a
+  // registration effect placed before the definition would TDZ-throw).
+  useEffect(() => {
+    return onRegisterBackground?.(session.id, handleBackground)
+  }, [session.id, handleBackground, onRegisterBackground])
 
   return (
     <div className="chat">

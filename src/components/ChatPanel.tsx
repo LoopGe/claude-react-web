@@ -219,6 +219,9 @@ export interface ChatPanelProps {
   onRegisterInterrupt?: (sessionId: string, fn: () => void) => () => void
   /** Forwarded to <Chat> so it can register its recap-refresh callback. */
   onRegisterRecap?: (sessionId: string, fn: () => void) => () => void
+  /** Forwarded to <Chat> so it can register its background-tasks callback.
+   *  Enables the Alt+B shortcut in App. */
+  onRegisterBackground?: (sessionId: string, fn: () => void) => () => void
   /** True while the session is being resumed from dormancy. */
   isResuming?: boolean
   /** Global composer-snippets api (single shared instance owned by App).
@@ -284,6 +287,7 @@ export const ChatPanel = memo(function ChatPanel({
   onCloseTasksPanel,
   onRegisterInterrupt,
   onRegisterRecap,
+  onRegisterBackground,
   isResuming,
   snippets,
   onOpenSnippetsManager,
@@ -978,6 +982,7 @@ export const ChatPanel = memo(function ChatPanel({
             onCloseRecap={() => setRecapDismissedAt(session.recap?.generatedAt ?? null)}
             onRegisterInterrupt={onRegisterInterrupt}
             onRegisterRecap={onRegisterRecap}
+            onRegisterBackground={onRegisterBackground}
             onOpenSettingsPanel={onOpenSettings}
             snippets={snippets}
             onOpenSnippetsManager={onOpenSnippetsManager}

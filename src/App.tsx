@@ -85,6 +85,7 @@ import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './util
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
+import { escapeAction } from './utils/escape-action'
 
 /** Shallow-compare two SessionInfo objects across every own property.
  *
@@ -217,13 +218,12 @@ export function App() {
   } = useAppOverlays()
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
   const [resumeDialogOpen, setResumeDialogOpen] = useState(false)
-  // Double-tap Escape detection: timestamp of the last Escape press that
-  // reached this chain. Every overlay is registered in the escape stack
-  // (window CAPTURE + stopPropagation), so a press that closes an overlay
-  // never reaches this bubble-phase handler — only "clean" presses (no
-  // overlay open) update this ref, which is exactly what makes a double-tap
-  // mean "resume".
-  const lastEscapeAtRef = useRef(0)
+  // Timestamp of the last interrupt fired by the Escape handler. Esc is
+  // context-sensitive by turn state (working → interrupt, idle → resume
+  // picker), so an impatient double-press while a turn runs would otherwise
+  // land "interrupt + immediately open resume picker" — this ref suppresses
+  // the trailing press. Only the interrupt path writes it.
+  const interruptedAtRef = useRef(0)
   // When set, the resume picker was opened from a panel's `/resume` local
   // command: the chosen session should REPLACE this panel's slot rather than
   // open in a new panel. Null = the global (Mod+Shift+O) resume flow.
@@ -492,6 +492,13 @@ export function App() {
   const recapFnsRef = useRef<CallbackRegistry<() => void>>(createCallbackRegistry())
   const registerRecap = useCallback((sessionId: string, fn: () => void) => {
     return recapFnsRef.current.register(sessionId, fn)
+  }, [])
+  // Per-session background-tasks callbacks registered by <Chat> components.
+  // Enables the Alt+B shortcut to background in-flight tasks for the focused
+  // session.
+  const backgroundFnsRef = useRef<CallbackRegistry<() => void>>(createCallbackRegistry())
+  const registerBackground = useCallback((sessionId: string, fn: () => void) => {
+    return backgroundFnsRef.current.register(sessionId, fn)
   }, [])
   // Per-session input-injection callbacks registered by <Chat> components.
   // Keep refs in sync with the latest state values. Assigned directly
@@ -1169,6 +1176,7 @@ export function App() {
       setDeletingSessionIds((prev) => (prev.has(id) ? new Set([...prev].filter((x) => x !== id)) : prev))
       interruptFnsRef.current.delete(id)
       recapFnsRef.current.delete(id)
+      backgroundFnsRef.current.delete(id)
       setSidebarOrder((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : prev))
       setGroups((prev) => {
         let changed = false
@@ -2510,51 +2518,64 @@ export function App() {
           description: 'Refresh session recap',
         },
         {
+          // Background in-flight tasks for the focused session (Ctrl+B
+          // semantics). The keyboard path also covers sessions where the
+          // stream phase is missing (includePartialMessages off, store
+          // rebuilt mid-run) — there the Composer morph can't key off the
+          // phase, but this always works. NOT mod+b: that toggles the
+          // sidebar. NOT ctrl+esc / shift+esc: OS / browser-reserved.
+          combo: 'alt+b',
+          handler: () => {
+            if (focusedIdRef.current) backgroundFnsRef.current.get(focusedIdRef.current)?.()
+          },
+          allowInInput: true,
+          description: 'Background current tasks',
+        },
+        {
           combo: 'escape',
           handler: () => {
-            // Double-tap Escape opens the resume picker: two "clean" presses
-            // within 400ms. Clean is automatic here — every overlay is
-            // registered in the escape stack (window CAPTURE +
-            // stopPropagation), so if ANY overlay were open this bubble-phase
-            // handler would never run. Reaching this chain means the stack was
-            // empty, so the previous counted press was clean too. Date.now()
-            // is called at event-dispatch time, not during render — the
-            // handler is defined in useMemo but invoked later by the keyboard
+            // Escape is context-sensitive by turn state:
+            //   working → interrupt the focused panel's turn
+            //   idle    → single clean press opens the resume picker
+            // "Clean" is automatic — every overlay is registered in the
+            // escape stack (window CAPTURE + stopPropagation), so this
+            // bubble-phase handler only runs when the stack was empty.
+            // The decision table (including the post-interrupt suppression
+            // window that stops a double-tap's trailing press from popping
+            // the picker) lives in escapeAction. Date.now() is called at
+            // event-dispatch time, not during render — the handler is
+            // defined in useMemo but invoked later by the keyboard
             // dispatcher.
             // eslint-disable-next-line react-hooks/purity
             const now = Date.now()
-            const isDoubleTap = now - lastEscapeAtRef.current < 400
-            lastEscapeAtRef.current = now
+            const fid = focusedIdRef.current
+            const focused = fid ? sessionsRef.current.find((s) => s.id === fid) : undefined
+            const action = escapeAction({
+              working: !!focused?.working,
+              now,
+              lastInterruptedAt: interruptedAtRef.current,
+            })
 
-            if (isDoubleTap && focusedIdRef.current) {
-              requestResumeForPanel(focusedIdRef.current)
+            if (action === 'interrupt') {
+              // Use the registered interrupt callback (set by <Chat>).
+              // The result message's "interrupted" (?) label is derived
+              // from the SDK `terminal_reason`, not from this call-path.
+              const fn = fid ? interruptFnsRef.current.get(fid) : undefined
+              if (fn) {
+                void fn()
+              } else if (fid) {
+                // Fallback: Chat hasn't registered yet (e.g. still
+                // mounting). Direct POST still interrupts the turn.
+                void api.post(`/sessions/${fid}/interrupt`)
+              }
+              interruptedAtRef.current = now
               return
             }
 
-            // The escape stack already consumed Esc for every overlay
-            // (palette, history, help, resume, new-session, git, settings,
-            // subagent, workflow, permission dialogs…). Reaching here means
-            // none was open, so the only remaining job is the session
-            // interrupt — no overlay-open bookkeeping needed.
-            if (focusedIdRef.current) {
-              const focused = sessionsRef.current.find((s) => s.id === focusedIdRef.current)
-              if (focused?.working) {
-                // Use the registered interrupt callback (set by <Chat>).
-                // The result message's "interrupted" (?) label is derived
-                // from the SDK `terminal_reason`, not from this call-path.
-                const fn = interruptFnsRef.current.get(focusedIdRef.current)
-                if (fn) {
-                  void fn()
-                } else {
-                  // Fallback: Chat hasn't registered yet (e.g. still
-                  // mounting). Direct POST still interrupts the turn.
-                  void api.post(`/sessions/${focusedIdRef.current}/interrupt`)
-                }
-              }
-            }
+            if (action === 'resume' && fid) requestResumeForPanel(fid)
           },
           allowInInput: true, // Esc inside textarea should still close modals / interrupt
-          description: 'Close overlay / Interrupt / Double-tap for resume',
+          description: 'Close overlay / Interrupt (or resume picker when idle)',
         },
       ],
       [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, setSidebarCollapsed],
@@ -3753,6 +3774,7 @@ export function App() {
                       onSwap={swapPanels}
                       onRegisterInterrupt={registerInterrupt}
                       onRegisterRecap={registerRecap}
+                      onRegisterBackground={registerBackground}
                       onAcceptSidebarDrop={handleAcceptSidebarDrop}
                       onRequestResumeForPanel={requestResumeForPanel}
                       resumeOpen={resumeDialogOpen && resumeTargetPanelId === s.id}

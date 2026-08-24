@@ -771,7 +771,7 @@ export const Composer = memo(function Composer({
           type="button"
           onClick={backgroundMode ? onBackground : canInterrupt ? onInterrupt : onSend}
           disabled={!canInterrupt && !canSend}
-          title={backgroundMode ? 'Background current tasks (Esc interrupts)' : canInterrupt ? 'Interrupt the current turn' : 'Send message (Enter)'}
+          title={backgroundMode ? 'Background current tasks (Alt+B · Esc interrupts)' : canInterrupt ? 'Interrupt the current turn' : 'Send message (Enter)'}
           aria-label={backgroundMode ? 'Background current tasks' : canInterrupt ? 'Interrupt the current turn' : 'Send message'}
         >
           {sending && !canInterrupt ? (
