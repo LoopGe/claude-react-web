@@ -286,6 +286,12 @@ export function attachWebSocket(
                 sessionId: ev.sessionId,
                 request: ev.request,
               })
+            } else if (ev.kind === 'cli_notification') {
+              queue.enqueue({
+                kind: 'cli-notification',
+                sessionId: ev.sessionId,
+                notification: ev.notification,
+              })
             }
           }
         } catch (err) {

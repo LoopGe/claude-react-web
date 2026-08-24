@@ -100,6 +100,28 @@ export interface WsGlobalPermissionRequest<Perm> {
   request: Perm
 }
 
+/** A CLI notification frame (SDK `system/notification`) — transient UI
+ *  signal ("Claude is waiting for your input", idle nudges, …), NOT
+ *  transcript content. Narrowed from SDKNotificationMessage; browser-safe. */
+export interface CliNotification {
+  /** CLI-side dedup key (suppresses repeat notifications for the same
+   *  underlying condition). Absent on some emitters. */
+  key?: string
+  text: string
+  priority: 'low' | 'medium' | 'high' | 'immediate'
+  /** Suggested on-screen duration in ms. */
+  timeoutMs?: number
+}
+
+/** Global CLI-notification mirror — rides the global channel (like
+ *  `global-permission-request`) so App-level code can fire a browser/
+ *  OS notification even when the session's Chat panel isn't mounted. */
+export interface WsCliNotification {
+  kind: 'cli-notification'
+  sessionId: string
+  notification: CliNotification
+}
+
 /** Beginning of a per-session replay burst. Contains the full message
  *  history + any pending permissions, then a terminator frame. */
 export interface WsReplay<Msg, Perm> {
@@ -355,6 +377,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsSessionCreated<Session>
   | WsSessionRemoved
   | WsGlobalPermissionRequest<Perm>
+  | WsCliNotification
   | WsReplay<Msg, Perm>
   | WsReplayDone<Perm>
   | WsMessage<Msg>

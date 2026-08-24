@@ -22,6 +22,7 @@ import { parseAckAgentId } from './subagent-watcher.js'
 const LAUNCH_ACK_RE = /^async agent launched successfully/i
 import { createLogger } from './log.js'
 import type { HookRunRecord, HookRuntimeEvent, HookRunStatus } from '../shared/hooks.js'
+import type { CliNotification } from '../shared/ws-protocol.js'
 import { isTerminalTaskStatus } from '../shared/tasks.js'
 
 const MAX_HOOK_OUTPUT_CHARS = 20_000
@@ -358,6 +359,31 @@ export function fastModeStateOf(msg: SDKMessage): FastModeState | undefined {
   return fms === 'off' || fms === 'cooldown' || fms === 'on' ? fms : undefined
 }
 
+/** Narrow an SDK `system/notification` frame into a CliNotification.
+ *  Defensive: `text` and `priority` are required (returns null when either
+ *  is missing/wrong-typed — the frame is dropped with a warn in the pump);
+ *  `key` and `timeout_ms` are optional and pass through only when
+ *  well-typed. Pure — exported for tests. */
+export function cliNotificationOf(msg: SDKMessage): CliNotification | null {
+  const raw = msg as {
+    key?: unknown
+    text?: unknown
+    priority?: unknown
+    timeout_ms?: unknown
+  }
+  const text = typeof raw.text === 'string' ? raw.text : ''
+  if (!text) return null
+  if (raw.priority !== 'low' && raw.priority !== 'medium' && raw.priority !== 'high' && raw.priority !== 'immediate') {
+    return null
+  }
+  return {
+    ...(typeof raw.key === 'string' && raw.key ? { key: raw.key } : {}),
+    text,
+    priority: raw.priority,
+    ...(typeof raw.timeout_ms === 'number' && raw.timeout_ms > 0 ? { timeoutMs: raw.timeout_ms } : {}),
+  }
+}
+
 export interface PumpDeps {
   historyCap: number
   /** Separate FIFO budget for subagent frames (parent_tool_use_id != null).
@@ -426,6 +452,11 @@ export interface PumpDeps {
    *  the real completion isn't double-reported. Optional so test fixtures
    *  can omit it. */
   onTaskNotification?: (sessionId: string, toolUseId: string) => void
+  /** Called when a CLI notification frame (SDK `system/notification`) arrives.
+   *  The SessionManager mirrors it onto the global WS channel so App-level
+   *  code can fire a browser/OS notification even when the session's Chat
+   *  panel isn't mounted. Optional so test fixtures can omit it. */
+  onCliNotification?: (sessionId: string, notification: CliNotification) => void
   /** Called when the pump is about to drop the SDK's echo of a top-level user
    *  prompt (the SDK replays persisted user input through the Query stream).
    *  `echoUuid` is the SDK's on-disk uuid for that prompt. The SessionManager
@@ -732,6 +763,22 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             for (const sub of session.promptSuggestionSubscribers) {
               try { sub.push(suggestion) } catch { /* subscriber dead — skip */ }
             }
+          }
+          continue
+        }
+        // CLI notification (SDK `system/notification`): a transient UI signal
+        // ("waiting for your input", idle nudge, …) — NOT transcript content.
+        // Narrow the frame and hand it to the manager, which mirrors it onto
+        // the global WS channel (fire a browser/OS notification even when the
+        // session's panel isn't mounted). Early-continue: it never enters the
+        // history ring or the per-session message broadcast.
+        if (msg.type === 'system' && (msg as { subtype?: string }).subtype === 'notification') {
+          const n = cliNotificationOf(msg)
+          if (n) {
+            try { deps.onCliNotification?.(session.id, n) }
+            catch (err) { log.warn(`[session ${session.id}] onCliNotification threw: ${err}`) }
+          } else {
+            log.warn(`[session ${session.id}] dropped malformed notification frame (missing text/priority)`)
           }
           continue
         }

@@ -40,6 +40,7 @@ import type { RefObject } from 'react'
 import { useNotifications, type UseNotifications } from './useNotifications'
 import { useToast } from './useToast'
 import type { SessionInfo } from '../types'
+import type { CliNotification } from '../ws-types.js'
 
 /** How to surface an event, given window focus + which session is on
  *  screen. See the file header for the rationale behind each state. */
@@ -92,6 +93,13 @@ export interface UseSessionNotificationsResult {
      *  calls the decide API.  The SDK requires it on allow paths. */
     toolInput?: Record<string, unknown>,
   ) => void
+  /** Called from the WS `cli-notification` handler (SDK `system/notification`
+   *  frames mirrored onto the global channel). Fires a transient toast /
+   *  desktop notification iff the user isn't actively watching that session.
+   *  Unlike the permission toast it is NOT sticky — these are FYI nudges
+   *  ("waiting for your input", idle reminders), not blocking requests, so
+   *  the CLI-suggested timeout (or a short default) applies. */
+  maybeCliNotify: (sessionId: string, notification: CliNotification) => void
   /** Seed the edge-detector when a `session-created` frame lands.
    *  Without this, a session that spawns already working would fire a
    *  notification on its first true→false transition — even when the
@@ -220,6 +228,46 @@ export function useSessionNotifications({
     [focusedIdRef, sessionsRef, handleSelectRef],
   )
 
+  const maybeCliNotify = useCallback(
+    (sessionId: string, n: CliNotification) => {
+      const windowFocused = typeof document !== 'undefined' && document.hasFocus()
+      const isFocused = focusedIdRef.current === sessionId
+      const mode = presentation(windowFocused, isFocused)
+      if (mode === 'skip') return
+
+      const sessionsNow = sessionsRef.current ?? []
+      const session = sessionsNow.find((s) => s.id === sessionId)
+      const title = session?.title ?? sessionId.slice(0, 8)
+
+      // The CLI suggests an on-screen duration; clamp to something sane.
+      // 8s default matches the informational toasts elsewhere in the app.
+      const durationMs = n.timeoutMs != null ? Math.min(Math.max(n.timeoutMs, 2000), 30_000) : 8000
+      // low/medium nudges are status updates, not action requests — quiet
+      // on the desktop path (silent) per the same tradeoff maybeNotify makes
+      // for "turn complete".
+      const quiet = n.priority === 'low' || n.priority === 'medium'
+
+      if (mode === 'toast') {
+        toastRef.current.info(`🔔 ${title} · ${n.text}`, {
+          durationMs,
+          onClick: () => { handleSelectRef.current?.(sessionId) },
+        })
+        return
+      }
+
+      notifyRef.current({
+        title: `🔔 ${title}`,
+        body: n.text,
+        // Dedup key: same key → the OS replaces the prior toast instead of
+        // stacking repeats ("still waiting for input" every minute).
+        tag: `${sessionId}:cli${n.key ? `:${n.key}` : ''}`,
+        silent: quiet,
+        onClick: () => { handleSelectRef.current?.(sessionId) },
+      })
+    },
+    [focusedIdRef, sessionsRef, handleSelectRef],
+  )
+
   const maybeNotify = useCallback(
     (s: SessionInfo) => {
       const prev = prevWorkingRef.current.get(s.id) ?? false
@@ -284,5 +332,5 @@ export function useSessionNotifications({
     }
   }, [])
 
-  return { notifications, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession, dismissPermissionToast }
+  return { notifications, maybeNotify, maybePermissionNotify, maybeCliNotify, seedWorkingState, pruneSession, dismissPermissionToast }
 }

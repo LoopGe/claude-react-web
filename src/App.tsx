@@ -613,7 +613,7 @@ export function App() {
   // The hook owns notifyRef + prevWorkingRef internally; App keeps only
   // the bell-button-facing `notifications` slice and the three
   // session-event callbacks the WS hub effect calls into.
-  const { notifications, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession, dismissPermissionToast } =
+  const { notifications, maybeNotify, maybePermissionNotify, maybeCliNotify, seedWorkingState, pruneSession, dismissPermissionToast } =
     useSessionNotifications({ focusedIdRef, sessionsRef, handleSelectRef, swRegRef })
 
   // Single push-based subscription to the server's session list. All
@@ -931,6 +931,16 @@ export function App() {
           maybePermissionNotify(frame.sessionId, label as string, r.kind, r.id, toolInput)
           break
         }
+        case 'cli-notification': {
+          // CLI notification frames (SDK system/notification mirrored onto
+          // the global channel): "waiting for your input", idle nudges, …
+          // Routed through the same presentation-gated trigger as permission
+          // requests — toast when the user is elsewhere in the page, OS
+          // notification when the window is unfocused, nothing when they're
+          // watching the session.
+          maybeCliNotify(frame.sessionId, frame.notification)
+          break
+        }
         default:
           // Other frame kinds (per-session replay/message/etc.) are
           // consumed by useChatStream listeners. App-level code only
@@ -939,7 +949,7 @@ export function App() {
       }
     })
     return off
-  }, [hub, maybeNotify, maybePermissionNotify, seedWorkingState, pruneSession, dismissPermissionToast, setLastSeenTurn, setSidebarOrder, setGroups])
+  }, [hub, maybeNotify, maybePermissionNotify, maybeCliNotify, seedWorkingState, pruneSession, dismissPermissionToast, setLastSeenTurn, setSidebarOrder, setGroups])
 
   // Hub status → reconnecting banner is derived inline (single ternary
   // above) — no effect needed.

@@ -1303,3 +1303,61 @@ describe('pump: task lifecycle frames', () => {
     expect(session.tasks.get('t1')?.status).toBe('completed')
   })
 })
+
+// ---------------------------------------------------------------------------
+// pump: CLI notification frames (SDK system/notification)
+//
+// These are transient UI signals ("waiting for your input", idle nudges) —
+// NOT transcript content. The pump narrows them, hands the payload to the
+// manager (which mirrors it onto the global WS channel), and early-continues:
+// no ring slot, no message-channel broadcast. Malformed frames (missing
+// text/priority) are dropped with a warn rather than forwarded.
+// ---------------------------------------------------------------------------
+
+describe('pump: cli notification frames', () => {
+  it('narrows a notification frame, fires the dep, and skips ring + broadcast', async () => {
+    const { session, broadcasts } = makePumpSession([
+      sysFrame('notification', {
+        key: 'idle',
+        text: 'Claude is waiting for your input',
+        priority: 'medium',
+        timeout_ms: 5000,
+      }),
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const onCliNotification = vi.fn()
+    await pump(session, makePumpDeps({ onCliNotification }))
+
+    expect(onCliNotification).toHaveBeenCalledTimes(1)
+    expect(onCliNotification).toHaveBeenCalledWith('s-pump', {
+      key: 'idle',
+      text: 'Claude is waiting for your input',
+      priority: 'medium',
+      timeoutMs: 5000,
+    })
+    // Ephemeral: only the result entered the ring / message broadcast.
+    const ringSubtypes = session.history.map((m) => (m as { subtype?: string }).subtype)
+    expect(ringSubtypes).toEqual(['success'])
+    expect(broadcasts.map((m) => (m as { subtype?: string }).subtype)).toEqual(['success'])
+  })
+
+  it('drops a malformed notification frame (no text) without firing the dep', async () => {
+    const { session } = makePumpSession([
+      sysFrame('notification', { priority: 'high' }),
+    ])
+    const onCliNotification = vi.fn()
+    await pump(session, makePumpDeps({ onCliNotification }))
+    expect(onCliNotification).not.toHaveBeenCalled()
+    expect(session.history).toHaveLength(0)
+  })
+
+  it('drops a notification frame with an unknown priority', async () => {
+    const { session } = makePumpSession([
+      sysFrame('notification', { text: 'hi', priority: 'urgent' }),
+    ])
+    const onCliNotification = vi.fn()
+    await pump(session, makePumpDeps({ onCliNotification }))
+    expect(onCliNotification).not.toHaveBeenCalled()
+    expect(session.history).toHaveLength(0)
+  })
+})

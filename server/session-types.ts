@@ -25,6 +25,7 @@ import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../sha
 import type { SessionSkillOverride } from '../shared/skills.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
+import type { CliNotification } from '../shared/ws-protocol.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 
 /** Subscriber — each connected client gets one of these. */
@@ -558,6 +559,11 @@ export type GlobalSessionEvent =
    *  session's Chat panel isn't mounted. `sessionId` lets the frontend
    *  route-to-session on click. */
   | { kind: 'permission_request'; sessionId: string; request: PermissionRequestSnapshot }
+  /** A CLI notification frame (SDK `system/notification`) arrived. Mirrored
+   *  onto the global channel so App-level code can fire a browser/OS
+   *  notification even when the session's Chat panel isn't mounted —
+   *  same rationale as `permission_request`. */
+  | { kind: 'cli_notification'; sessionId: string; notification: CliNotification }
 
 export interface GlobalSubscriber {
   id: string

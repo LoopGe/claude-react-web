@@ -170,4 +170,62 @@ describe('useSessionNotifications — three-state dispatch', () => {
       expect(notify.mock.calls[0][0].requireInteraction).toBe(true)
     })
   })
+
+  describe('maybeCliNotify (CLI notification frames)', () => {
+    const n = { text: 'Claude is waiting for your input', priority: 'medium' as const, key: 'idle' }
+
+    it('skips when focused on the notifying session', () => {
+      setFocus(true)
+      const { api } = setup('s1')
+      api.maybeCliNotify('s1', n)
+      expect(notify).not.toHaveBeenCalled()
+      expect(toastInfo).not.toHaveBeenCalled()
+    })
+
+    it('fires a transient (non-sticky) toast with the CLI text when focused elsewhere', () => {
+      setFocus(true)
+      const { api, handleSelect } = setup('other')
+      api.maybeCliNotify('s1', n)
+      expect(notify).not.toHaveBeenCalled()
+      expect(toastInfo).toHaveBeenCalledTimes(1)
+      const [msg, opts] = toastInfo.mock.calls[0]
+      expect(msg).toContain('waiting for your input')
+      // NOT sticky like permission toasts — default 8s, no durationMs:0.
+      expect(opts.durationMs).toBe(8000)
+      opts.onClick()
+      expect(handleSelect).toHaveBeenCalledWith('s1')
+    })
+
+    it('honors the CLI-suggested timeout and clamps it into a sane range', () => {
+      setFocus(true)
+      const { api } = setup('other')
+      api.maybeCliNotify('s1', { ...n, timeoutMs: 500 })
+      expect(toastInfo.mock.calls[0][1].durationMs).toBe(2000) // clamped up
+      api.maybeCliNotify('s1', { ...n, timeoutMs: 120_000 })
+      expect(toastInfo.mock.calls[1][1].durationMs).toBe(30_000) // clamped down
+    })
+
+    it('fires a desktop notification with a key-tagged dedup tag when unfocused', () => {
+      setFocus(false)
+      const { api } = setup('s1')
+      api.maybeCliNotify('s1', n)
+      expect(toastInfo).not.toHaveBeenCalled()
+      expect(notify).toHaveBeenCalledTimes(1)
+      const arg = notify.mock.calls[0][0]
+      expect(arg.body).toBe('Claude is waiting for your input')
+      expect(arg.tag).toBe('s1:cli:idle')
+      // medium priority → quiet (silent), unlike a permission request's
+      // requireInteraction.
+      expect(arg.silent).toBe(true)
+      expect(arg.requireInteraction).toBeUndefined()
+    })
+
+    it('is loud (not silent) for immediate/high priority on the desktop path', () => {
+      setFocus(false)
+      const { api } = setup('s1')
+      api.maybeCliNotify('s1', { ...n, priority: 'immediate' })
+      expect(notify).toHaveBeenCalledTimes(1)
+      expect(notify.mock.calls[0][0].silent).toBe(false)
+    })
+  })
 })

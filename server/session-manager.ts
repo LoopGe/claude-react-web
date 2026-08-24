@@ -4452,6 +4452,14 @@ export class SessionManager {
           this.startBackgroundSubagentWatcher(sessionId, toolUseId, agentId),
         onTaskNotification: (sessionId, toolUseId) =>
           this.cancelBackgroundWatcher(sessionId, toolUseId),
+        // Mirror CLI notification frames onto the global WS channel so
+        // App-level code can fire a browser/OS notification even when the
+        // session's Chat panel isn't mounted (same rationale as the
+        // permission_request mirror).
+        onCliNotification: (sessionId, notification) => {
+          if (!this.sessions.has(sessionId)) return
+          this.broadcastGlobal({ kind: 'cli_notification', sessionId, notification })
+        },
         onPromptEcho: (s, echoUuid) => {
           if (this.sessions.has(s.id)) this.onPromptEcho(s, echoUuid)
         },
