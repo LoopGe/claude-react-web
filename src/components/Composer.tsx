@@ -399,8 +399,9 @@ export const Composer = memo(function Composer({
   // Background mode: the Send/Interrupt control morphs into the Background
   // action only when a turn is running AND the parent reports a blocking
   // tool call actually in flight. `canBackground` alone (without the turn)
-  // must not flip the control — the parent derives it from the stream phase
-  // which can lag a turn's true start/end by the dwell window.
+  // must not flip the control — the parent's phase signal is cleared by the
+  // result frame, but transient phase frames can still straddle the
+  // working=false transition.
   const backgroundMode = canInterrupt && canBackground === true && onBackground != null
 
   if (terminated) {

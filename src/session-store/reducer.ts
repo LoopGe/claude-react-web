@@ -2002,6 +2002,16 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
       }
     }
   } else if (event.type === 'content_block_start') {
+    // Sidechain stream events (parent_tool_use_id set — a subagent or
+    // workflow child streaming its own response) must NOT flip the top-level
+    // turn's phase: while the child thinks/writes, the parent is parked in
+    // its tool_use phase, and clobbering that with 'thinking'/'writing'
+    // breaks every phase consumer (WorkingBubble label, Composer's
+    // Background morph) for the whole subagent run. Top-level events carry
+    // parent_tool_use_id === null. Only the phase branches are gated — child
+    // text deltas below still feed the token-rate estimate, which keeps the
+    // tok/s readout live while a subagent streams.
+    if (message.parent_tool_use_id != null) return { ...mirror, liveTurn }
     const block = (event as { content_block?: Record<string, unknown> }).content_block
     if (block?.type === 'thinking') {
       liveTurn = { ...liveTurn, phase: 'thinking' }

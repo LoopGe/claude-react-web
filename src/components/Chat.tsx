@@ -597,11 +597,19 @@ export const Chat = memo(function Chat({
   // activePhase so turn-end detection stays immediate.
   const displayPhase = usePhaseDwell(stream.activePhase)
   // A blocking tool call is actually executing — the only state where
-  // backgrounding (Ctrl+B) has any effect. Derived from the dwell-smoothed
-  // phase so per-block flicker doesn't ripple into the Composer control.
-  // The object branch of ActivePhase is the tool_use phase; the string
-  // branches ('thinking' / 'writing') have nothing to detach.
-  const canBackground = session.working && displayPhase != null && typeof displayPhase === 'object'
+  // backgrounding (Ctrl+B) has any effect. Uses the RAW stream phase, not
+  // the dwell-smoothed `displayPhase`: dwell exists to stop label flicker,
+  // and feeding it into a control decision makes the button lag phase
+  // reality by the dwell window (a click in the first 300ms of a tool call
+  // would route to Interrupt and kill the turn). phase→null commits
+  // immediately, so there is no post-turn leak on the other edge. The
+  // object branch of ActivePhase is the tool_use phase; the string branches
+  // ('thinking' / 'writing') have nothing to detach.
+  const canBackground =
+    session.working &&
+    typeof stream.activePhase === 'object' &&
+    stream.activePhase != null &&
+    stream.activePhase.type === 'tool_use'
   /** A background (async) subagent still in flight after the parent turn
    *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
    *  such subagent exists, so the user sees that background work is ongoing

@@ -397,6 +397,55 @@ describe('useChatStream', () => {
     })
   })
 
+  // ── Phase mirror ──────────────────────────────────────────────
+
+  it('sidechain content_block_start events do not flip the top-level phase', async () => {
+    const { result } = renderHook(
+      () => useChatStream('s1', noopPerms),
+    )
+
+    act(() => {
+      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+      // Top-level tool_use block start — the parent turn enters its
+      // tool_use phase (this is what the Composer Background morph and the
+      // WorkingBubble label key off).
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          event: { type: 'content_block_start', content_block: { type: 'tool_use', name: 'Task' } },
+        },
+      })
+      // The subagent's own sidechain stream (parent_tool_use_id set): its
+      // thinking and text block starts must NOT clobber the parent phase —
+      // for the whole subagent run the parent is parked in tool_use.
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          parent_tool_use_id: 'toolu_01',
+          event: { type: 'content_block_start', content_block: { type: 'thinking' } },
+        },
+      })
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: {
+          type: 'stream_event',
+          parent_tool_use_id: 'toolu_01',
+          event: { type: 'content_block_start', content_block: { type: 'text' } },
+        },
+      })
+    })
+
+    await waitFor(() => {
+      expect(result.current.activePhase).toEqual({ type: 'tool_use', name: 'Task' })
+    })
+  })
+
   it('resets token rate on result (message_stop clears baseline)', async () => {
     const { result } = renderHook(
       () => useChatStream('s1', noopPerms),
