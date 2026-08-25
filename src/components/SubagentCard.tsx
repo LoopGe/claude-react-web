@@ -10,9 +10,9 @@ import { memo, useEffect, useState } from 'react'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useBackgroundTool } from '../hooks/useBackgroundTool'
 import { formatElapsed } from '../utils/format'
-import { ToolResultDetails } from './ToolCard'
+import { BackgroundToolButton, ToolResultDetails } from './ToolCard'
 import type { ToolResultEntry } from '../session-store/types'
-import { IconArrowDown, IconCheck, IconCircleDot, IconAlertTriangle, IconChevronRight, IconExternalLink } from './icons/ToolIcons'
+import { IconCheck, IconCircleDot, IconAlertTriangle, IconChevronRight, IconExternalLink } from './icons/ToolIcons'
 
 interface Props {
   toolUseId: string
@@ -114,20 +114,18 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
           above is a single <button> (drill-in), so a nested button would be
           invalid; this row is a sibling instead. 'background' / 'pending'
           records are already async (isBackgrounded or post-turn-end) —
-          nothing to detach. Clicking detaches exactly this subagent via
+          nothing to detach. Requires a POSITIVE record: the defaulted
+          'running' status for a missing record (stale hard-refresh index)
+          is absence of data, not evidence the subagent is live — an action
+          must not gate on it. Clicking detaches exactly this subagent via
           POST /tasks/background { toolUseId } and the turn continues. */}
-      {status === 'running' && !isAsync && backgroundTool && (
+      {record != null && status === 'running' && !isAsync && backgroundTool && (
         <div className="subagent-card-actions">
-          <button
-            type="button"
-            className="subagent-card-bg-btn"
+          <BackgroundToolButton
             onClick={() => backgroundTool(toolUseId)}
             title="Background this subagent — the turn continues while it runs in the background task list (Alt+B backgrounds every running task)"
-            aria-label="Background this subagent"
-          >
-            <IconArrowDown size={12} />
-            <span>background</span>
-          </button>
+            ariaLabel="Background this subagent"
+          />
         </div>
       )}
       {/* Present-tense progress summary (agentProgressSummaries —

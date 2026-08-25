@@ -93,6 +93,18 @@ export function useToolStatus(toolUseId: string | undefined): ToolStatus {
   return map.get(toolUseId) ?? 'running'
 }
 
+/** Resolve a tool's effective lifecycle status: an explicit status prop
+ *  wins, then the context map (via useToolStatus, including its 'running'
+ *  default). Shared by ToolStatusBadge and ToolCard's background-button
+ *  gate so the badge and the action can never disagree on the rule. */
+export function useResolvedToolStatus(
+  toolUseId: string | undefined,
+  explicitStatus: ToolStatus | undefined,
+): ToolStatus {
+  const ctxStatus = useToolStatus(toolUseId)
+  return explicitStatus ?? ctxStatus
+}
+
 /** Look up a tool's captured result by id. Returns `undefined` when the
  *  tool_result hasn't landed yet (the card then shows only its input +
  *  the running badge) or when the id belongs to a tool that owns its own

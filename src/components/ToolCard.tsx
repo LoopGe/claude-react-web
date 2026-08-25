@@ -19,7 +19,7 @@ import {
   IconLoader,
 } from './icons/ToolIcons'
 import { AnimatedDetails } from './AnimatedCollapse'
-import { useToolResult, useToolStatus } from '../hooks/usePlanStatus'
+import { useToolResult, useResolvedToolStatus } from '../hooks/usePlanStatus'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { useCopy } from '../hooks/useCopy'
 import type { ToolResultEntry, ToolStatus } from '../session-store/types'
@@ -101,8 +101,7 @@ export const ToolStatusBadge = memo(function ToolStatusBadge({
    *  horizontal space in dense rows like Grep/Read. */
   compact?: boolean
 }) {
-  const ctxStatus = useToolStatus(toolUseId)
-  const status = explicitStatus ?? ctxStatus
+  const status = useResolvedToolStatus(toolUseId, explicitStatus)
   const Icon =
     status === 'success' ? IconCheck : status === 'error' ? IconAlertCircle : IconLoader
   return (
@@ -117,6 +116,39 @@ export const ToolStatusBadge = memo(function ToolStatusBadge({
     </span>
   )
 })
+
+// ---------------------------------------------------------------------------
+// BackgroundToolButton
+// ---------------------------------------------------------------------------
+
+/** The shared "background this task" pill — rendered on a RUNNING generic
+ *  tool card (inside the header, before the status badge) and on a
+ *  synchronous subagent card (in its sibling actions row). One component +
+ *  one CSS class so the two surfaces can't drift apart. No
+ *  stopPropagation needed: neither the ToolCard header nor any ancestor up
+ *  to the document root carries a click handler. */
+export function BackgroundToolButton({
+  onClick,
+  title,
+  ariaLabel,
+}: {
+  onClick: () => void
+  title: string
+  ariaLabel: string
+}) {
+  return (
+    <button
+      type="button"
+      className="tool-card-bg-btn"
+      onClick={onClick}
+      title={title}
+      aria-label={ariaLabel}
+    >
+      <IconArrowDown size={12} />
+      <span>background</span>
+    </button>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // ToolResultDetails
@@ -361,10 +393,9 @@ export const ToolCard = memo(function ToolCard({
   // result is still pending or for tools that own their result rendering
   // (Plan/Question/Subagent never reach ToolCard anyway).
   const result = useToolResult(toolUseId)
-  // Resolved lifecycle status for the background-button gate (the badge
-  // resolves the same way internally). Explicit status wins, then context.
-  const ctxStatus = useToolStatus(toolUseId)
-  const resolvedStatus = status ?? ctxStatus
+  // Resolved lifecycle status for the background-button gate — the same
+  // resolver the badge below uses, so the two can never disagree.
+  const resolvedStatus = useResolvedToolStatus(toolUseId, status)
   // When this tool's pending permission dialog has been minimized, surface a
   // "Review permission" chip so the user can re-open it. Mirrors the inline
   // reopen button PlanCard/QuestionCard render when minimized.
@@ -389,21 +420,11 @@ export const ToolCard = memo(function ToolCard({
         )}
         <span className="tool-card-spacer" />
         {onBackground && resolvedStatus === 'running' && (
-          <button
-            type="button"
-            className="tool-card-bg-btn"
-            onClick={(e) => {
-              // Don't let the click fall through to card chrome (e.g. the
-              // header's click-to-copy title button).
-              e.stopPropagation()
-              onBackground()
-            }}
+          <BackgroundToolButton
+            onClick={onBackground}
             title="Background this task — the turn continues while it detaches to the background task list (Alt+B backgrounds every running task)"
-            aria-label="Background this task"
-          >
-            <IconArrowDown size={12} />
-            <span className="tool-card-bg-btn-label">background</span>
-          </button>
+            ariaLabel="Background this task"
+          />
         )}
         {!hideStatus && <ToolStatusBadge toolUseId={toolUseId} status={status} />}
         {copyValue && <CopyButton getValue={copyValue} label={copyLabel} />}

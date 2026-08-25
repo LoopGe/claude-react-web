@@ -334,11 +334,13 @@
   outline-offset: 1px;
 }
 
-/* Background-this-task action on a RUNNING tool card (Bash/PowerShell).
- * Only rendered while the card is live — the tool_result that backgrounding
- * itself produces settles the card and removes the button. Styled as a quiet
- * accent pill so it reads as an action without stealing focus from the
- * status badge next to it. */
+/* Background-this-task action pill — shared by RUNNING tool cards
+ * (Bash/PowerShell, rendered in the ToolCard header before the status
+ * badge) and synchronous subagent cards (rendered in their sibling actions
+ * row). Only rendered while the card is live — the tool_result that
+ * backgrounding itself produces settles the card and removes the button.
+ * Styled as a quiet accent pill so it reads as an action without stealing
+ * focus from the status badge next to it. */
 .tool-card-bg-btn {
   display: inline-flex;
   align-items: center;

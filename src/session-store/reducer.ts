@@ -167,16 +167,37 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         const isTerminal =
           task.status === 'completed' || task.status === 'failed' ||
           task.status === 'killed' || task.status === 'stopped'
+        // The SDK backgrounds a foreground task via is_backgrounded —
+        // flip the chip to `background` so it stays visible (same
+        // semantics as a run_in_background launch ack).
+        //
+        // The flip must also RESCUE a record the backgrounding ack just
+        // mis-settled: backgrounding makes the blocking tool call return
+        // immediately with a "running in the background" result, and when
+        // that tool_result lands BEFORE this snapshot the result-merge
+        // branch stamps 'done'/'interrupted' with the ack text as the
+        // record's result (a synchronous subagent's ack doesn't match the
+        // async launch-ack signature). A task record that is still live
+        // (non-terminal) + backgrounded contradicts that terminal state —
+        // a genuinely settled subagent's task record is terminal — so undo
+        // the bogus endedAt/result and flip to 'background'. The real
+        // completion arrives later via task_notification, which accepts
+        // 'background' records.
+        const rescueSettled =
+          task.isBackgrounded && !isTerminal &&
+          (record.status === 'done' || record.status === 'interrupted')
+        const flipToBackground =
+          task.isBackgrounded && !isTerminal &&
+          (record.status === 'running' || rescueSettled)
         activeSubagents.set(task.toolUseId, {
           ...record,
           taskId: task.taskId,
           progressSummary: isTerminal ? undefined : task.progressSummary ?? record.progressSummary,
           lastToolName: isTerminal ? undefined : task.lastToolName ?? record.lastToolName,
-          // The SDK backgrounds a foreground task via is_backgrounded —
-          // flip the chip to `background` so it stays visible (same
-          // semantics as a run_in_background launch ack).
-          ...(task.isBackgrounded && record.status === 'running'
-            ? { status: 'background' as const }
+          ...(flipToBackground
+            ? rescueSettled
+              ? { status: 'background' as const, endedAt: undefined, result: undefined }
+              : { status: 'background' as const }
             : {}),
         })
       }

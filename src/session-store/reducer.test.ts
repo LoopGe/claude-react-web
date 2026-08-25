@@ -3023,7 +3023,9 @@ describe('reducer: a task_notification for ONE async agent leaves the OTHER back
 // snapshots (server-side session.tasks). The reducer stores the list AND
 // enriches matching activeSubagent records: taskId / progressSummary /
 // lastToolName join by toolUseId, and an isBackgrounded flag flips a
-// 'running' record to 'background' (the SDK's backgrounding signal).
+// 'running' record to 'background' (the SDK's backgrounding signal) —
+// including RESCUING a record the backgrounding ack tool_result just
+// mis-settled to done/interrupted (the tool_result-before-snapshot race).
 // ---------------------------------------------------------------------------
 
 describe('reducer: TASKS_SNAPSHOT', () => {
@@ -3062,7 +3064,85 @@ describe('reducer: TASKS_SNAPSHOT', () => {
     })
   })
 
-  it('enriches without flipping a record that is not running (terminal / pending untouched)', () => {
+  it('rescues a record the backgrounding ack just mis-settled (done → background, bogus result cleared)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    // The backgrounding ack tool_result lands FIRST (the losing branch of the
+    // tool_result / tasks-snapshot race): a synchronous subagent's ack
+    // doesn't match the async launch-ack signature, so the result-merge
+    // branch settles the record as done with the ack text as its result.
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'user',
+        uuid: 'u1',
+        receivedAt: 1_000,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_a', content: 'running in the background', is_error: false }] },
+      } as unknown as SdkMessage,
+    })
+    const settled = state.mirror.activeSubagents.get('tu_a')
+    expect(settled?.status).toBe('done')
+    expect(settled?.result).toMatchObject({ isError: false })
+
+    // The tasks snapshot (task_updated is_backgrounded, still live) arrives
+    // after — it must contradict the bogus terminal state and resurrect the
+    // record, clearing the ack-written endedAt/result.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_a', isBackgrounded: true, progressSummary: 'compiling' })],
+    })
+    const rescued = state.mirror.activeSubagents.get('tu_a')
+    expect(rescued?.status).toBe('background')
+    expect(rescued?.result).toBeUndefined()
+    expect(rescued?.endedAt).toBeUndefined()
+    expect(rescued?.progressSummary).toBe('compiling')
+  })
+
+  it('rescues an interrupted record when the task was actually backgrounded (turn-end sweep was wrong)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    // Parent turn ends while the subagent is still 'running' → the sweep
+    // guesses 'interrupted'…
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'result', subtype: 'success', uuid: 'r1', receivedAt: 1_000 } as unknown as SdkMessage,
+    })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('interrupted')
+
+    // …but the task record says it was backgrounded and is still live —
+    // the sweep's guess is overridden.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_a', isBackgrounded: true })],
+    })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('background')
+  })
+
+  it('does NOT resurrect a genuinely settled record when the task record is terminal', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'user',
+        uuid: 'u1',
+        receivedAt: 1_000,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_a', content: 'all done', is_error: false }] },
+      } as unknown as SdkMessage,
+    })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('done')
+
+    // A completed task record — even one that WAS backgrounded before it
+    // finished — must not flip a done record back to 'background'.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_a', status: 'completed', isBackgrounded: true })],
+    })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('done')
+    expect(state.mirror.activeSubagents.get('tu_a')?.result).toMatchObject({ isError: false })
+  })
+
+  it('enriches without flipping when the record is settled and the task is NOT backgrounded', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
     state = reduceSessionState(state, {
@@ -3070,15 +3150,15 @@ describe('reducer: TASKS_SNAPSHOT', () => {
       message: { type: 'result', subtype: 'success', uuid: 'r1', receivedAt: 1_000 } as unknown as SdkMessage,
     })
     // Result sweep: a still-'running' (no async ack) subagent when the parent
-    // turn ends → 'interrupted' by the sweep. Not 'running' anymore, so the
-    // snapshot must NOT flip it to background.
+    // turn ends → 'interrupted' by the sweep. The task record is live but
+    // NOT backgrounded, so the sweep's verdict stands.
     expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('interrupted')
 
     state = reduceSessionState(state, {
       type: 'TASKS_SNAPSHOT',
-      tasks: [task({ toolUseId: 'tu_a', isBackgrounded: true, progressSummary: 'still going' })],
+      tasks: [task({ toolUseId: 'tu_a', progressSummary: 'still going' })],
     })
-    // interrupted stays interrupted (only 'running' flips to background).
+    // interrupted stays interrupted (only a backgrounded live task rescues).
     expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('interrupted')
     expect(state.mirror.activeSubagents.get('tu_a')?.progressSummary).toBe('still going')
   })

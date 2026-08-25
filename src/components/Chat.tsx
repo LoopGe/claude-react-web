@@ -197,9 +197,8 @@ interface Props {
   onRegisterRecap?: (sessionId: string, fn: () => void) => () => void
   /** Called once on mount so the parent can store a reference to this
    *  panel's backgroundTasks() function. Enables the Alt+B shortcut in App —
-   *  the keyboard path to background in-flight tasks, which also covers
-   *  sessions where the phase signal is missing (includePartialMessages
-   *  off, store rebuilt mid-run) and the Composer morph can't key off it. */
+   *  the keyboard path that backgrounds EVERY in-flight foreground task (the
+   *  per-card background buttons target one tool_use at a time). */
   onRegisterBackground?: (sessionId: string, fn: () => void) => () => void
   /** Called once on mount so the parent can poll this panel's optimistic
    *  turn-active state (session.working OR the pendingTurn bridge that
@@ -1384,17 +1383,27 @@ export const Chat = memo(function Chat({
   /** Background in-flight foreground tasks (Ctrl+B semantics) — the turn
    *  continues while the running command/subagent detaches to the background
    *  task list. With `toolUseId` only that ONE task is detached (the per-card
-   *  button); without it every foreground task goes (Alt+B). The response is
-   *  surfaced as a toast either way: without it the action reads as a silent
-   *  no-op when nothing was backgroundable (e.g. the card's tool_result
-   *  landed between render and click). */
+   *  button); without it every foreground task goes (Alt+B). Per the SDK
+   *  contract the result is `false` ONLY when a `toolUseId` was given and it
+   *  matched no foreground task (e.g. the card's tool_result landed between
+   *  render and click) — a no-arg call can't fail that way, and App's Alt+B
+   *  guard already keeps it from firing with no live turn. In-flight calls
+   *  for the same target are deduped so a double-click can't fire two POSTs
+   *  (the second would toast a contradictory "no longer running"). */
+  const pendingBackgroundRef = useRef<Set<string>>(new Set())
   const backgroundTasks = useCallback(async (toolUseId?: string) => {
+    const key = toolUseId ?? '*'
+    if (pendingBackgroundRef.current.has(key)) return
+    pendingBackgroundRef.current.add(key)
     try {
       const res = await api.post<{ backgrounded?: boolean }>(`/sessions/${session.id}/tasks/background`, toolUseId ? { toolUseId } : {})
       if (res.backgrounded) toast.success('Backgrounded — the turn continues')
+      else if (toolUseId) toast.info('This task is no longer running — its result may have landed just now')
       else toast.info('No running task to background')
     } catch (e) {
       setLocalError((e as Error).message)
+    } finally {
+      pendingBackgroundRef.current.delete(key)
     }
   }, [session.id, toast])
 
@@ -1474,6 +1483,13 @@ export const Chat = memo(function Chat({
   // Per-tool variant for the running-card background buttons (Bash cards +
   // synchronous subagent cards + subagent-overlay Bash cards).
   const handleBackgroundTool = useCallback((toolUseId: string) => void backgroundTasks(toolUseId), [backgroundTasks])
+  // Gate the per-card buttons on a live turn — the same signal App's Alt+B
+  // guard uses. A card stuck on 'running' without a live turn (subprocess
+  // died before its tool_result, a split disk page seeding an old tool_use)
+  // must not offer an action that POSTs against a dead session and surfaces
+  // a persistent 410 error banner instead of a toast. The context value
+  // flips to undefined the moment the turn ends, unmounting every button.
+  const backgroundToolAction = turnActive ? handleBackgroundTool : undefined
 
   // Expose the backgroundTasks callback to the parent so the Alt+B shortcut
   // can background in-flight tasks for the focused session — same
@@ -1723,7 +1739,7 @@ export const Chat = memo(function Chat({
           onPinnedUserMessageChange={handlePinnedUserMessageChange}
           onUserMessagesChange={handleUserMessagesChange}
           cwd={session.cwd}
-          onBackgroundTool={handleBackgroundTool}
+          onBackgroundTool={backgroundToolAction}
         />
         </div>
         {discardConfirm && (
@@ -2148,7 +2164,7 @@ export const Chat = memo(function Chat({
             planStatus={stream.planStatus}
             planContent={stream.planContent}
             questionAnswers={stream.questionAnswers}
-            onBackgroundTool={handleBackgroundTool}
+            onBackgroundTool={backgroundToolAction}
           />
         </SubagentProvider>
       )}

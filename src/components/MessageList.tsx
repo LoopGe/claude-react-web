@@ -204,7 +204,10 @@ interface Props {
    *  Provided to nested tool cards via the BackgroundTool context so running
    *  Bash cards / synchronous subagent cards can offer a "background this"
    *  button keyed on their own tool_use id. Undefined where backgrounding
-   *  isn't wired (Side Chat drawer, transcript exports). */
+   *  isn't wired (Side Chat drawer, WorkflowOverlay, transcript exports —
+   *  only the main Chat and SubagentOverlay message lists provide it), and
+   *  whenever no turn is active (Chat gates it on its turn-active signal so
+   *  a card stuck on 'running' can't offer a dead action). */
   onBackgroundTool?: (toolUseId: string) => void
 }
 
