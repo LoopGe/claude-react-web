@@ -245,4 +245,241 @@ describe('Composer', () => {
       expect(setInput).not.toHaveBeenCalled()
     })
   })
+
+  describe('mouse wheel history navigation', () => {
+    // The wheel listener is attached natively (React onWheel is passive and
+    // can't preventDefault), so dispatch a real cancellable Event with
+    // deltaY set — the handler normalizes deltaMode 0 (pixels).
+    function wheel(el: Element, deltaY: number) {
+      const e = new Event('wheel', { bubbles: true, cancelable: true })
+      Object.defineProperty(e, 'deltaY', { value: deltaY })
+      Object.defineProperty(e, 'deltaMode', { value: 0 })
+      el.dispatchEvent(e)
+      return e
+    }
+
+    function historyStub(overrides: Partial<{ prev: () => string | null; next: () => string | null; isBrowsing: () => boolean }>) {
+      return {
+        add: noop,
+        prev: () => '',
+        next: () => '',
+        isBrowsing: () => false,
+        reset: () => {},
+        ...overrides,
+      }
+    }
+
+    it('does not navigate when the textarea is not focused', () => {
+      const setInput = vi.fn()
+      const prev = vi.fn(() => 'older prompt')
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      // Composer autofocuses its textarea on mount (mirroring focusSignal),
+      // so blur first to reproduce the "pointer drifting over the composer
+      // while reading the transcript" case. Wheel is a pointer-position
+      // event, so without a focus gate an unfocused/empty composer would
+      // hijack page scroll and clobber the draft. History navigation must
+      // require the composer to be focused.
+      ta.blur()
+      const e = wheel(ta, -120)
+      expect(prev).not.toHaveBeenCalled()
+      expect(setInput).not.toHaveBeenCalled()
+      expect(e.defaultPrevented).toBe(false)
+    })
+
+    it('recalls an older history entry on wheel up', () => {
+      const setInput = vi.fn()
+      const prev = vi.fn(() => 'older prompt')
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      ta.focus()
+      const e = wheel(ta, -120)
+      expect(prev).toHaveBeenCalledWith('')
+      expect(setInput).toHaveBeenCalledWith('older prompt')
+      expect(e.defaultPrevented).toBe(true)
+    })
+
+    it('recalls a newer history entry on wheel down while browsing', () => {
+      const setInput = vi.fn()
+      const next = vi.fn(() => 'newer prompt')
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ next, isBrowsing: () => true })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      ta.focus()
+      wheel(ta, 120)
+      expect(next).toHaveBeenCalled()
+      expect(setInput).toHaveBeenCalledWith('newer prompt')
+    })
+
+    it('does not navigate on wheel down when not browsing history', () => {
+      const setInput = vi.fn()
+      const next = vi.fn(() => null)
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ next })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      ta.focus()
+      const e = wheel(ta, 120)
+      expect(next).toHaveBeenCalled()
+      expect(setInput).not.toHaveBeenCalled()
+      expect(e.defaultPrevented).toBe(false)
+    })
+
+    it('does not navigate when a wheel stays under the step threshold', () => {
+      const setInput = vi.fn()
+      const prev = vi.fn(() => 'older prompt')
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      ta.focus()
+      wheel(ta, -30) // |deltaY| < WHEEL_STEP_PX
+      expect(prev).not.toHaveBeenCalled()
+      expect(setInput).not.toHaveBeenCalled()
+    })
+
+    it('accumulates small deltas across events and steps once at threshold', () => {
+      const setInput = vi.fn()
+      const prev = vi.fn(() => 'older prompt')
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      ta.focus()
+      wheel(ta, -30)
+      wheel(ta, -30)
+      expect(prev).not.toHaveBeenCalled()
+      wheel(ta, -30) // total −90 crosses the threshold
+      expect(prev).toHaveBeenCalledTimes(1)
+      expect(setInput).toHaveBeenCalledWith('older prompt')
+    })
+
+    it('clamps fast consecutive steps to one per time window', async () => {
+      const setInput = vi.fn()
+      const prev = vi.fn(() => 'older prompt')
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      ta.focus()
+      wheel(ta, -120)
+      wheel(ta, -120) // within WHEEL_STEP_MS → blocked
+      expect(prev).toHaveBeenCalledTimes(1)
+      await new Promise((r) => setTimeout(r, 200))
+      wheel(ta, -120) // lock expired → steps again
+      expect(prev).toHaveBeenCalledTimes(2)
+    })
+
+    it('carries surplus delta across a blocked time-gate so fast flings do not lose a step', () => {
+      vi.useFakeTimers()
+      try {
+        const setInput = vi.fn()
+        const prev = vi.fn(() => 'older prompt')
+        const { container } = render(
+          <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
+        )
+        const ta = container.querySelector('textarea')!
+        ta.focus()
+        // Step 1: first notch navigates.
+        wheel(ta, -120)
+        expect(prev).toHaveBeenCalledTimes(1)
+        // Step 2: an immediate second notch is blocked by the time gate. Its
+        // 120px must be carried — not discarded — so the next wheel that lands
+        // after the gate opens steps immediately on a sub-threshold nudge.
+        wheel(ta, -120)
+        expect(prev).toHaveBeenCalledTimes(1)
+        // Advance past WHEEL_STEP_MS. The carried −120 + a fresh −30 (below
+        // the 80px threshold alone) must now cross and step.
+        vi.advanceTimersByTime(200)
+        wheel(ta, -30)
+        expect(prev).toHaveBeenCalledTimes(2)
+        expect(setInput).toHaveBeenCalledWith('older prompt')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('lets a scrollable textarea scroll internally instead of navigating', () => {
+      const setInput = vi.fn()
+      const prev = vi.fn(() => 'older prompt')
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      ta.focus()
+      Object.defineProperty(ta, 'scrollHeight', { value: 200, configurable: true })
+      Object.defineProperty(ta, 'clientHeight', { value: 100, configurable: true })
+      Object.defineProperty(ta, 'scrollTop', { value: 50, configurable: true })
+      wheel(ta, -120)
+      expect(prev).not.toHaveBeenCalled()
+    })
+
+    it('navigates when a scrollable textarea is at the top scroll edge', () => {
+      const setInput = vi.fn()
+      const prev = vi.fn(() => 'older prompt')
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      ta.focus()
+      Object.defineProperty(ta, 'scrollHeight', { value: 200, configurable: true })
+      Object.defineProperty(ta, 'clientHeight', { value: 100, configurable: true })
+      Object.defineProperty(ta, 'scrollTop', { value: 0, configurable: true })
+      wheel(ta, -120)
+      expect(prev).toHaveBeenCalled()
+    })
+
+    it('ignores wheel while an IME composition is active', () => {
+      const setInput = vi.fn()
+      const prev = vi.fn(() => 'older prompt')
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      ta.focus()
+      fireEvent.compositionStart(ta)
+      wheel(ta, -120)
+      expect(prev).not.toHaveBeenCalled()
+      fireEvent.compositionEnd(ta)
+      wheel(ta, -120)
+      expect(prev).toHaveBeenCalledTimes(1)
+    })
+
+    it('resets the IME guard on blur so wheel history works again', () => {
+      const setInput = vi.fn()
+      const prev = vi.fn(() => 'older prompt')
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      ta.focus()
+      // Some IMEs never fire compositionend on cancel (Escape / click-away),
+      // which would leave the guard stuck on and silently disable wheel
+      // history. Focus loss must reset it.
+      fireEvent.compositionStart(ta)
+      wheel(ta, -120)
+      expect(prev).not.toHaveBeenCalled()
+      ta.blur()
+      ta.focus()
+      wheel(ta, -120)
+      expect(prev).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not preventDefault when there is no older history', () => {
+      const prev = vi.fn(() => null)
+      const { container } = render(
+        <Composer {...defaultProps} history={historyStub({ prev })} />,
+      )
+      const ta = container.querySelector('textarea')!
+      ta.focus()
+      const e = wheel(ta, -120)
+      expect(prev).toHaveBeenCalled()
+      expect(e.defaultPrevented).toBe(false)
+    })
+  })
 })

@@ -19,6 +19,13 @@ import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader, IconFileText } from './icons/ToolIcons'
 
+// Mouse-wheel history navigation tuning. A single wheel notch fires several
+// wheel events totalling ~100px of deltaY; accumulate across events and gate
+// on time so one notch / trackpad swipe steps exactly one history entry.
+const WHEEL_STEP_PX = 80 // accumulated px (deltaMode-normalized) to step once
+const WHEEL_STEP_MS = 120 // min ms between history steps
+const WHEEL_ACCUM_TTL = WHEEL_STEP_MS * 4 // a pause longer than this discards stale accumulated delta
+
 interface Props {
   input: string
   setInput: (v: string) => void
@@ -227,6 +234,94 @@ export const Composer = memo(function Composer({
     if (focusSignal == null) return
     textareaRef.current?.focus()
   }, [focusSignal])
+
+  // ── Mouse-wheel history navigation ─────────────────────────────
+  //
+  // The textarea scrolls its own content once the draft overflows
+  // max-height. We hijack the wheel for history only at the scroll edges
+  // (or when the box isn't scrollable at all), so a long multi-line draft
+  // still scrolls normally — the terminal feel. React registers `onWheel`
+  // passively at the root (preventDefault is a no-op), so the listener is
+  // attached natively with `{ passive: false }`.
+  const wheelLockRef = useRef(-Infinity) // Date.now() of the last history step
+  const wheelAccumRef = useRef(0) // |deltaY| accumulated toward a step
+  const wheelAtRef = useRef(-Infinity) // Date.now() of the last wheel event
+  const composingRef = useRef(false) // IME composition in progress
+
+  // `history` (a new object literal each render) / `input` / `recall` change
+  // every keystroke, and `pickerOpen` / `disabled` flip on interaction; read
+  // them through refs so the native listener stays attached instead of
+  // rebinding per render.
+  const latestRef = useRef({ history, input, recall })
+  latestRef.current = { history, input, recall }
+  const pickerOpenRef = useRef(pickerOpen)
+  pickerOpenRef.current = pickerOpen
+  const disabledRef = useRef(disabled)
+  disabledRef.current = disabled
+
+  // The textarea is swapped for a preview div in preview mode and gone when
+  // terminated; re-attach the listener whenever its on-screen presence
+  // changes (the effect bails out on identical derived booleans otherwise).
+  const textareaShown = !terminated && !(expanded && previewMode)
+  useEffect(() => {
+    if (!textareaShown) return
+    const el = textareaRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      // Wheel is a pointer-position event (unlike the keyboard history keys,
+      // which are inherently focus-gated): only navigate when the composer is
+      // actually focused, so scrolling over an unfocused/empty box scrolls the
+      // page instead of clobbering the draft and stealing focus.
+      if (document.activeElement !== el) return
+      // Wheel events don't carry isComposing; track IME via composition
+      // events (mirrors the Enter/Tab guards). Focus loss ends composition
+      // even when some IMEs skip compositionend, so onBlur resets it too.
+      if (pickerOpenRef.current || disabledRef.current || composingRef.current) return
+
+      // deltaMode: 0 = pixels, 1 = lines, 2 = pages → normalize to px.
+      let dy = e.deltaY
+      if (e.deltaMode === 1) dy *= 16
+      else if (e.deltaMode === 2) dy *= el.clientHeight
+      if (dy === 0) return
+
+      const now = Date.now()
+      // A pause longer than the accumulator TTL means the previous partial
+      // notch is no longer in flight — start over so a stale surplus can't
+      // trigger a phantom step on the next tiny nudge.
+      if (now - wheelAtRef.current > WHEEL_ACCUM_TTL) wheelAccumRef.current = 0
+      wheelAtRef.current = now
+
+      // Accumulate; a direction flip resets so alternating jitter can't
+      // build up toward a step.
+      if (Math.sign(dy) !== Math.sign(wheelAccumRef.current)) wheelAccumRef.current = 0
+      wheelAccumRef.current += dy
+      if (Math.abs(wheelAccumRef.current) < WHEEL_STEP_PX) return
+
+      // Scroll-edge guard: let a long draft scroll internally first. When it
+      // diverts to native scroll the delta is consumed by the draft scroll,
+      // so drop the surplus.
+      const scrollable = el.scrollHeight > el.clientHeight + 1
+      if (scrollable) {
+        if (dy < 0 && el.scrollTop > 0) { wheelAccumRef.current = 0; return }
+        if (dy > 0 && el.scrollTop + el.clientHeight < el.scrollHeight - 1) { wheelAccumRef.current = 0; return }
+      }
+
+      // Time gate: one step per notch; clamps fast trackpad momentum. On a
+      // block, carry the surplus so a fast swipe doesn't lose a step.
+      if (now - wheelLockRef.current < WHEEL_STEP_MS) return
+
+      // Navigate exactly like Ctrl+P/N / bare arrows.
+      const { history, input, recall } = latestRef.current
+      const next = dy < 0 ? history.prev(input) : history.next()
+      if (next == null) { wheelAccumRef.current = 0; return } // at ends / empty history → keep native scroll
+      wheelAccumRef.current = 0
+      wheelLockRef.current = now
+      e.preventDefault()
+      recall(next)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [textareaShown])
 
   const openFilePicker = () => fileInputRef.current?.click()
 
@@ -530,9 +625,12 @@ export const Composer = memo(function Composer({
                 ? 'Run a shell command in the session cwd (Enter = run)'
                 : suggestion && input === ''
                   ? suggestion
-                  : 'Send a message (Enter = send, Shift/Ctrl+Enter = newline, ↑/↓ history)'
+                  : 'Send a message (Enter = send, Shift/Ctrl+Enter = newline, ↑/↓ or scroll history)'
           }
           value={input}
+          onCompositionStart={() => { composingRef.current = true }}
+          onCompositionEnd={() => { composingRef.current = false }}
+          onBlur={() => { composingRef.current = false }}
           onContextMenu={handleTextareaContextMenu}
           onPaste={(e) => {
             const items = e.clipboardData?.items
