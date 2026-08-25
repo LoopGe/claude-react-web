@@ -230,11 +230,14 @@ export function IconCopy(props: IconProps) {
 
 export function IconLoader(props: IconProps) {
   // The loader rotates at the .tool-status-running CSS rule. We render
-  // a partial arc so rotation is perceptible — a full circle wouldn't
-  // appear to spin.
+  // two OPPOSITE 135° arcs — 180°-rotationally symmetric — instead of a
+  // single 270° arc. A single partial arc's visual mass (centroid) is
+  // offset toward its solid side, so as it spins the mass orbits ~1px
+  // around the center: the "off-center wobble". Two opposite arcs cancel
+  // that, keeping the centroid on the rotation axis at every angle.
   return (
     <Icon {...props}>
-      <path d="M12 3a9 9 0 1 0 9 9" />
+      <path d="M15.444 20.315a9 9 0 0 1-11.759-11.759M8.556 3.685a9 9 0 0 1 11.759 11.759" />
     </Icon>
   )
 }

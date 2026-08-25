@@ -272,12 +272,12 @@
 }
 .tool-status-running svg {
   animation: tool-status-spin 0.9s linear infinite;
-  /* Pin rotation to the arc's geometric center. The Icon base component
-     applies verticalAlign:-0.125em which shifts the bounding box; the
-     default transform-origin (50% 50% of the bounding box) ends up
-     off-center and the arc orbits instead of spinning in place. Using
-     the SVG viewport center (50% 50% of the 24×24 viewBox, i.e. the
-     point (12,12) where the arc is drawn) keeps it stable. */
+  /* Pin rotation to the icon's geometric center. IconLoader is drawn
+     centered in the 24×24 viewBox, so resolving the origin to the SVG
+     viewport center (12,12) keeps the geometric center fixed while it
+     spins. (The visual-mass wobble — a single arc's centroid orbits the
+     center — is eliminated in the icon itself: IconLoader is two
+     opposite 135° arcs, 180°-rotationally symmetric.) */
   transform-box: fill-box;
   transform-origin: center;
 }
