@@ -2321,6 +2321,15 @@ export class SessionManager {
    *  the original; a reconnecting client still sees consumedAt via the
    *  stampConsumedAt fallback in history-utils. */
   private dispatchUserMessage(s: Session, userMsg: SDKUserMessage): void {
+    // A new top-level user turn invalidates the previous turn's predicted
+    // next-prompt. If we leave `lastPromptSuggestion` set, it resurfaces as
+    // the reconnect snapshot (subscribePromptSuggestion) and — when the SDK
+    // suppresses a fresh suggestion for this turn (plan mode / API error /
+    // first turn) — a later resubscribe resurrects the stale prediction.
+    // Clear it here, matching the client's own send-time clear.
+    if (s.lastPromptSuggestion != null) {
+      s.lastPromptSuggestion = undefined
+    }
     s.handle.enqueueUserMessage({ ...userMsg })
     this.pushToSession(s, userMsg)
     this.recordPromptUuid(s, userMsg)

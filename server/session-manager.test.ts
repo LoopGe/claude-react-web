@@ -1549,6 +1549,29 @@ describe('SessionManager', () => {
     sub!.unsubscribe()
   })
 
+  it('send() invalidates a stale prompt-suggestion snapshot', async () => {
+    const info = sm.create({})
+    // A previous turn produced a predicted next-prompt.
+    mockHandles[0].emit({ type: 'prompt_suggestion', suggestion: 'stale prediction' })
+    await tick()
+
+    // A tab attaching between turns would receive that as its snapshot.
+    const before = sm.subscribePromptSuggestion(info.id)
+    expect(before).not.toBeNull()
+    expect(before!.snapshot).toBe('stale prediction')
+    before?.unsubscribe()
+
+    // Starting a NEW user turn invalidates the old prediction. If the SDK
+    // suppresses a fresh suggestion for this turn (plan mode / error / first
+    // turn), a later resubscribe must NOT resurrect the stale value.
+    sm.send(info.id, 'a brand new turn')
+
+    const after = sm.subscribePromptSuggestion(info.id)
+    expect(after).not.toBeNull()
+    expect(after!.snapshot).toBeUndefined()
+    after?.unsubscribe()
+  })
+
   it('persists metadata on create and on send', async () => {
     const info = sm.create({ title: 'hello', cwd: '/x' })
     await store.flush()
