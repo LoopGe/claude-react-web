@@ -206,6 +206,48 @@ describe('WorkingBubble', () => {
     fireEvent.click(pill!)
     expect(onOpenTasks).toHaveBeenCalledTimes(1)
   })
+
+  it('renders the label + dots while a turn is active (default)', () => {
+    const { container } = render(<WorkingBubble active />)
+    expect(container.querySelector('.working-dots')).not.toBeNull()
+    expect(container.querySelector('.working-bar-label')).not.toBeNull()
+  })
+
+  it('shows only the task pill in the idle-with-tasks state (no label, no dots)', () => {
+    // The turn ended and nothing is genuinely "working", but a task record
+    // is still live (e.g. all ambient/skipTranscript tasks, or the user
+    // dismissed the Waiting banner). The bubble collapses to a quiet pill so
+    // the TasksPanel entry survives without a fake "Working" label.
+    const { container } = render(
+      <WorkingBubble active={false} waiting={false} runningTaskCount={3} onOpenTasks={() => {}} />,
+    )
+    expect(container.querySelector('.working-dots')).toBeNull()
+    expect(container.querySelector('.working-bar-label')).toBeNull()
+    const pill = container.querySelector('.working-tasks')
+    expect(pill).not.toBeNull()
+    expect(pill?.textContent).toContain('3')
+  })
+
+  it('renders a dismiss button in the Waiting state that calls onDismissWaiting', () => {
+    const onDismissWaiting = vi.fn()
+    const { container } = render(
+      <WorkingBubble waiting onDismissWaiting={onDismissWaiting} />,
+    )
+    const btn = container.querySelector('[aria-label="Dismiss waiting state"]')
+    expect(btn).not.toBeNull()
+    fireEvent.click(btn!)
+    expect(onDismissWaiting).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not render the dismiss button without a handler or outside the Waiting state', () => {
+    const { container: c1 } = render(<WorkingBubble waiting />)
+    expect(c1.querySelector('[aria-label="Dismiss waiting state"]')).toBeNull()
+
+    const { container: c2 } = render(
+      <WorkingBubble waiting={false} onDismissWaiting={() => {}} />,
+    )
+    expect(c2.querySelector('[aria-label="Dismiss waiting state"]')).toBeNull()
+  })
 })
 
 describe('MessageList', () => {

@@ -27,7 +27,7 @@ import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getBlocks, getEnterPlanToolUseIds, isHumanUserMessage, isTaskNotificationUserMessage, userMessageOriginKind } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare, IconClock, IconListTodo } from './icons/ToolIcons'
+import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare, IconClock, IconListTodo, IconX } from './icons/ToolIcons'
 import { countMatches, extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
@@ -3071,6 +3071,8 @@ export const WorkingBubble = memo(function WorkingBubble({
   runningTaskCount,
   onOpenTasks,
   onOpenSubagent,
+  active: _active,
+  onDismissWaiting,
 }: {
   startedAt?: number
   activeSubagents?: ActiveSubagent[]
@@ -3096,37 +3098,54 @@ export const WorkingBubble = memo(function WorkingBubble({
    *  with the chip's toolUseId — the host (Chat) opens the overlay
    *  pointed at that subagent. */
   onOpenSubagent?: (toolUseId: string) => void
+  /** Whether a turn is currently running in this panel. Defaults to true
+   *  (callers that only mount the bubble around live work — SideChatDrawer —
+   *  never hit the idle state). When false AND not waiting, the bubble is
+   *  "idle": the turn ended and only a task-count remnant remains, so it
+   *  collapses to a quiet pill with no "Working" label or animated dots. */
+  active?: boolean
+  /** Renders a dismiss ✕ in the Waiting state. Wired by the host (Chat) so
+   *  the user can silence a phantom "Waiting..." banner — e.g. a task record
+   *  the server never folded to terminal (the SDK exposes no task-list query
+   *  and the server only evicts terminal records). */
+  onDismissWaiting?: () => void
 }) {
   const hasSubagents = activeSubagents && activeSubagents.length > 0
   const taskCount = runningTaskCount ?? 0
+  const active = _active ?? true
+  const idle = !active && !waiting
 
   return (
     <div
-      className={`working-bar${hasSubagents ? ' working-bar-with-agents' : ''}${waiting ? ' working-bar-waiting' : ''}`}
+      className={`working-bar${hasSubagents ? ' working-bar-with-agents' : ''}${waiting ? ' working-bar-waiting' : ''}${idle ? ' working-bar-idle' : ''}`}
       aria-live="polite"
-      aria-label={waiting ? 'Waiting for background tasks' : 'Assistant is working'}
+      aria-label={waiting ? 'Waiting for background tasks' : idle ? 'Background tasks running' : 'Assistant is working'}
     >
-      <div className="working-dots" aria-hidden>
-        <span />
-        <span />
-        <span />
-      </div>
-      <span className="working-bar-label">
-        {waiting
-          ? 'Waiting...'
-          : activePhase === 'thinking'
-          ? 'Thinking...'
-          : activePhase === 'writing'
-          ? 'Writing...'
-          : activePhase
-          ? `Calling ${activePhase.name}...`
-          : 'Working'}
-      </span>
+      {!idle && (
+        <div className="working-dots" aria-hidden>
+          <span />
+          <span />
+          <span />
+        </div>
+      )}
+      {!idle && (
+        <span className="working-bar-label">
+          {waiting
+            ? 'Waiting...'
+            : activePhase === 'thinking'
+            ? 'Thinking...'
+            : activePhase === 'writing'
+            ? 'Writing...'
+            : activePhase
+            ? `Calling ${activePhase.name}...`
+            : 'Working'}
+        </span>
+      )}
       {/* The turn timer is only meaningful while the turn is active; hide it
           in the Waiting state (the parent turn has ended). Per-subagent chip
           timers below still show how long each background task has run. */}
-      {!waiting && <ElapsedTimer startedAt={startedAt} className="working-timer" />}
-      {!waiting && tokenRate != null && tokenRate > 0 && (
+      {!waiting && !idle && <ElapsedTimer startedAt={startedAt} className="working-timer" />}
+      {!waiting && !idle && tokenRate != null && tokenRate > 0 && (
         <span className="working-rate">
           <IconZap size={12} aria-hidden /> {tokenRate} tok/s
         </span>
@@ -3134,7 +3153,7 @@ export const WorkingBubble = memo(function WorkingBubble({
       {/* Redacted-thinking progress: no text deltas stream (tokenRate stays
           silent), so the SDK's own token estimate is the only signal. "~"
           marks it as an approximation of the current thinking block. */}
-      {!waiting && thinkingTokens != null && thinkingTokens > 0 && tokenRate == null && (
+      {!waiting && !idle && thinkingTokens != null && thinkingTokens > 0 && tokenRate == null && (
         <span className="working-rate">
           <IconZap size={12} aria-hidden /> ~{formatTokens(thinkingTokens)} tok
         </span>
@@ -3195,6 +3214,23 @@ export const WorkingBubble = memo(function WorkingBubble({
         <span className="subagent-overflow">
           +{activeSubagents.length - MAX_VISIBLE_SUBAGENTS} more
         </span>
+      )}
+      {/* Dismiss ✕ for the Waiting state. The SDK exposes no task-list query
+          and the server only evicts terminal records, so a task record that
+          never folds to terminal would otherwise leave the Waiting banner
+          mounted forever with no exit. Dismiss collapses the bubble to the
+          quiet idle pill (the task count / TasksPanel entry survives) — the
+          banner returns when a new waiting episode or turn begins. */}
+      {waiting && onDismissWaiting && (
+        <button
+          type="button"
+          className="working-dismiss"
+          onClick={onDismissWaiting}
+          aria-label="Dismiss waiting state"
+          title="Dismiss — hide this banner (tasks stay visible in the Tasks panel)"
+        >
+          <IconX size={12} aria-hidden />
+        </button>
       )}
     </div>
   )

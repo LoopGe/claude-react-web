@@ -225,6 +225,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         />
         {(session.working || waiting) && (
           <WorkingBubble
+            active={session.working}
             startedAt={session.workingSince}
             activeSubagents={stream.activeSubagents}
             tokenRate={stream.tokenRate}

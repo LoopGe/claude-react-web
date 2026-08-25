@@ -1604,6 +1604,34 @@
 }
 .working-bar-waiting .working-bar-label { color: var(--fg-muted); }
 
+/* Idle-with-tasks: the turn has fully ended and the only remnant is a
+   background-task count pill (ambient/housekeeping tasks still in flight,
+   or the user dismissed the Waiting banner). Nothing is actively working,
+   so kill the pulse + accent border and drop the timer/dots/rate. */
+.working-bar-idle {
+  animation: none;
+  border-color: var(--border);
+}
+/* Dismiss ✕ on the Waiting state. Muted, right-aligned; collapses the
+   Waiting banner down to the quiet idle pill (tasks stay visible in the
+   Tasks panel). */
+.working-dismiss {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+}
+.working-dismiss:hover {
+  color: var(--fg);
+  background: var(--btn-hover-bg);
+}
+
 /* ?? Subagent chips in the working bar ??????????????????????????????? */
 .working-bar-sep {
   width: 1px;

@@ -189,6 +189,9 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         const flipToBackground =
           task.isBackgrounded && !isTerminal &&
           (record.status === 'running' || rescueSettled)
+        // A record flipped to 'background' IS async work — stamp isAsync so
+        // the SubagentCard mode badge agrees (an isBackgrounded task was
+        // detached, never run synchronously).
         activeSubagents.set(task.toolUseId, {
           ...record,
           taskId: task.taskId,
@@ -196,8 +199,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
           lastToolName: isTerminal ? undefined : task.lastToolName ?? record.lastToolName,
           ...(flipToBackground
             ? rescueSettled
-              ? { status: 'background' as const, endedAt: undefined, result: undefined }
-              : { status: 'background' as const }
+              ? { status: 'background' as const, endedAt: undefined, result: undefined, isAsync: true }
+              : { status: 'background' as const, isAsync: true }
             : {}),
         })
       }

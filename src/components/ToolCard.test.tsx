@@ -3,14 +3,36 @@
 // gone once the tool_result settles (backgrounding itself lands a result, so
 // the button unmounts without extra state). Runs in jsdom (src/** .tsx).
 
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, cleanup, fireEvent } from '@testing-library/react'
-import { ToolCard } from './ToolCard'
+import { ToolCard, ToolStatusBadge } from './ToolCard'
 import { ToolUseBlock } from './ToolUseBlock'
 import { ToolStatusProvider } from '../hooks/usePlanStatus'
 import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
 import type { ToolStatus } from '../session-store/types'
 import type { Block } from '../types'
+
+// Spy on the status-resolver hooks (delegating to the real implementations)
+// so tests can assert the card badge reuses the card's resolved status
+// instead of subscribing to ToolStatusContext a second time.
+const { useResolvedToolStatusMock, useToolStatusMock } = vi.hoisted(() => ({
+  useResolvedToolStatusMock: vi.fn(),
+  useToolStatusMock: vi.fn(),
+}))
+
+vi.mock('../hooks/usePlanStatus', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../hooks/usePlanStatus')>()
+  return {
+    ...mod,
+    useResolvedToolStatus: useResolvedToolStatusMock.mockImplementation(mod.useResolvedToolStatus),
+    useToolStatus: useToolStatusMock.mockImplementation(mod.useToolStatus),
+  }
+})
+
+beforeEach(() => {
+  useResolvedToolStatusMock.mockClear()
+  useToolStatusMock.mockClear()
+})
 
 afterEach(() => cleanup())
 
@@ -79,5 +101,47 @@ describe('ToolCard background action', () => {
     fireEvent.click(buttons[0]!)
     expect(backgroundTool).toHaveBeenCalledTimes(1)
     expect(backgroundTool).toHaveBeenCalledWith('bash-1')
+  })
+})
+
+describe('ToolCard status badge — single subscription', () => {
+  it('reuses the card-resolved status instead of subscribing a second time', () => {
+    // ToolCard's background-button gate resolves the tool's status once and
+    // passes it down; the badge must render that same value rather than call
+    // the resolver again (a second ToolStatusContext subscription that
+    // re-renders the badge on every unrelated status change in the message).
+    renderCard()
+    expect(useResolvedToolStatusMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('badge reflects the card-resolved status from context', () => {
+    const { container } = render(
+      <ToolStatusProvider value={new Map([['tu-1', 'success']])}>
+        <ToolCard icon={<span data-testid="icon" />} title="bash" toolUseId="tu-1" />
+      </ToolStatusProvider>,
+    )
+    expect(container.querySelector('.tool-status-label')?.textContent).toBe('done')
+  })
+})
+
+describe('ToolStatusBadge (standalone)', () => {
+  it('renders an explicit status without touching the context', () => {
+    render(
+      <ToolStatusProvider value={new Map([['tu-1', 'error']])}>
+        <ToolStatusBadge toolUseId="tu-1" status="success" />
+      </ToolStatusProvider>,
+    )
+    expect(useResolvedToolStatusMock).not.toHaveBeenCalled()
+    expect(useToolStatusMock).not.toHaveBeenCalled()
+  })
+
+  it('reads from context when no explicit status is given', () => {
+    const { container } = render(
+      <ToolStatusProvider value={new Map([['tu-1', 'error']])}>
+        <ToolStatusBadge toolUseId="tu-1" />
+      </ToolStatusProvider>,
+    )
+    expect(useToolStatusMock).toHaveBeenCalledWith('tu-1')
+    expect(container.querySelector('.tool-status-label')?.textContent).toBe('failed')
   })
 })

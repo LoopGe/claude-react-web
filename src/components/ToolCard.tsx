@@ -19,7 +19,7 @@ import {
   IconLoader,
 } from './icons/ToolIcons'
 import { AnimatedDetails } from './AnimatedCollapse'
-import { useToolResult, useResolvedToolStatus } from '../hooks/usePlanStatus'
+import { useToolResult, useResolvedToolStatus, useToolStatus } from '../hooks/usePlanStatus'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { useCopy } from '../hooks/useCopy'
 import type { ToolResultEntry, ToolStatus } from '../session-store/types'
@@ -86,22 +86,20 @@ const STATUS_LABEL: Record<ToolStatus, string> = {
   error: 'failed',
 }
 
-/** Inline status pill: spinner for running, ✓ for success, ✕ for error.
- *  Reads from the ToolStatusContext when an id is provided; pass
- *  `status` directly to override (e.g. for cards that maintain their
- *  own lifecycle like Plan/Question). */
-export const ToolStatusBadge = memo(function ToolStatusBadge({
-  toolUseId,
-  status: explicitStatus,
+/** Presentational status pill for a concrete status — no context access.
+ *  The caller has already resolved the value (ToolCard computes it for the
+ *  background-button gate and passes it down), so rendering here must not
+ *  re-subscribe to ToolStatusContext. Keeping this split makes the badge a
+ *  leaf that only re-renders when its own status actually changes. */
+const ToolStatusBadgeResolved = memo(function ToolStatusBadgeResolved({
+  status,
   compact = false,
 }: {
-  toolUseId?: string
-  status?: ToolStatus
+  status: ToolStatus
   /** When true, render the badge as an icon-only dot (no text) — saves
    *  horizontal space in dense rows like Grep/Read. */
   compact?: boolean
 }) {
-  const status = useResolvedToolStatus(toolUseId, explicitStatus)
   const Icon =
     status === 'success' ? IconCheck : status === 'error' ? IconAlertCircle : IconLoader
   return (
@@ -115,6 +113,43 @@ export const ToolStatusBadge = memo(function ToolStatusBadge({
       {!compact && <span className="tool-status-label">{STATUS_LABEL[status]}</span>}
     </span>
   )
+})
+
+/** Context-reading badge: resolves a tool_use id's status from
+ *  ToolStatusContext. A dedicated leaf so the subscription stays inside a
+ *  component that always calls `useToolStatus` (rules-of-hooks — no
+ *  conditional hook calls in ToolStatusBadge). */
+const ToolStatusBadgeFromCtx = memo(function ToolStatusBadgeFromCtx({
+  toolUseId,
+  compact,
+}: {
+  toolUseId?: string
+  compact?: boolean
+}) {
+  const status = useToolStatus(toolUseId)
+  return <ToolStatusBadgeResolved status={status} compact={compact} />
+})
+
+/** Inline status pill: spinner for running, ✓ for success, ✕ for error.
+ *  Standalone helper that reads a tool's status from ToolStatusContext when
+ *  only an id is given; pass `status` directly (e.g. cards that maintain
+ *  their own lifecycle like Plan/Question) to render that fixed value
+ *  without a context subscription. ToolCard itself renders
+ *  ToolStatusBadgeResolved with its already-resolved status, so a card's
+ *  badge never double-subscribes. */
+export const ToolStatusBadge = memo(function ToolStatusBadge({
+  toolUseId,
+  status: explicitStatus,
+  compact = false,
+}: {
+  toolUseId?: string
+  status?: ToolStatus
+  compact?: boolean
+}) {
+  if (explicitStatus != null) {
+    return <ToolStatusBadgeResolved status={explicitStatus} compact={compact} />
+  }
+  return <ToolStatusBadgeFromCtx toolUseId={toolUseId} compact={compact} />
 })
 
 // ---------------------------------------------------------------------------
@@ -426,7 +461,7 @@ export const ToolCard = memo(function ToolCard({
             ariaLabel="Background this task"
           />
         )}
-        {!hideStatus && <ToolStatusBadge toolUseId={toolUseId} status={status} />}
+        {!hideStatus && <ToolStatusBadgeResolved status={resolvedStatus} />}
         {copyValue && <CopyButton getValue={copyValue} label={copyLabel} />}
       </div>
       {children != null && <div className="tool-card-body">{children}</div>}

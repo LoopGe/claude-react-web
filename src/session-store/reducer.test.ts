@@ -3064,6 +3064,48 @@ describe('reducer: TASKS_SNAPSHOT', () => {
     })
   })
 
+  it('flips the enriched record to isAsync:true when backgrounding (running → background)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    // No run_in_background flag on the input → isAsync starts undefined.
+    expect(state.mirror.activeSubagents.get('tu_a')?.isAsync).toBeUndefined()
+
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_a', isBackgrounded: true })],
+    })
+
+    // A record the snapshot flips to 'background' IS async work — the mode
+    // badge must say 'async', not the defaulted 'sync'.
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('background')
+    expect(state.mirror.activeSubagents.get('tu_a')?.isAsync).toBe(true)
+  })
+
+  it('marks a rescued record isAsync:true too (done → background rescue)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    // The backgrounding ack tool_result lands first and mis-settles the record.
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'user',
+        uuid: 'u1',
+        receivedAt: 1_000,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_a', content: 'running in the background', is_error: false }] },
+      } as unknown as SdkMessage,
+    })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('done')
+    expect(state.mirror.activeSubagents.get('tu_a')?.isAsync).toBeUndefined()
+
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_a', isBackgrounded: true })],
+    })
+
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('background')
+    expect(state.mirror.activeSubagents.get('tu_a')?.isAsync).toBe(true)
+  })
+
   it('rescues a record the backgrounding ack just mis-settled (done → background, bogus result cleared)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })

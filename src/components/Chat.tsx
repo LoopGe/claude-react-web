@@ -60,8 +60,9 @@ import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
-import { useSessionField } from '../session-store/selectors'
+import { useSessionTaskCounts } from '../session-store/selectors'
 import { computeWaiting } from '../session-store/normalize'
+import { createDedupGuard, shouldOfferBackgroundAction } from '../utils/task-actions'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
@@ -300,6 +301,13 @@ interface SendMessageResponse {
  *  bridge so the WorkingBubble can't stick forever. Far above the real
  *  send→confirm latency (sub-second); it only ever applies to that window. */
 const PENDING_TURN_SAFETY_MS = 30_000
+
+/** How long the background-task dedup key stays held after a successful POST.
+ *  Covers the window between the request resolving and the server reflecting
+ *  the change (the card's toolStatus flip arrives over WS a beat later), so a
+ *  double-click can't fire a duplicate POST that toasts a contradictory "no
+ *  longer running". */
+const BACKGROUND_DEDUP_HOLD_MS = 2_000
 
 export const Chat = memo(function Chat({
   session,
@@ -626,21 +634,16 @@ export const Chat = memo(function Chat({
   // between phases don't churn the label. `turnActive` above keeps the raw
   // activePhase so turn-end detection stays immediate.
   const displayPhase = usePhaseDwell(stream.activePhase)
-  // Authoritative running background-task count from the session store's
-  // `tasks` mirror (same data TasksPanel reads). Excludes terminal tasks and
-  // `skipTranscript` ambient/housekeeping tasks — the latter are SDK-flagged
-  // as not belonging in the inline transcript, so they must not keep the
-  // WorkingBubble in a phantom "Waiting..." state. Reference-stable across
-  // unrelated store updates.
-  const tasks = useSessionField(session.id, 'tasks')
-  const runningTaskCount = tasks.filter(
-    (t) =>
-      t.status !== 'completed' &&
-      t.status !== 'failed' &&
-      t.status !== 'killed' &&
-      t.status !== 'stopped' &&
-      !t.skipTranscript,
-  ).length
+  // Authoritative running background-task counts from the session store's
+  // `tasks` mirror (same data TasksPanel reads). Read via a primitive-count
+  // selector so unrelated task-list identity changes don't re-render Chat.
+  //   `taskCount` — ALL non-terminal tasks (the WorkingBubble count pill;
+  //     ambient/housekeeping tasks count toward the pill so the TasksPanel
+  //     entry stays available).
+  //   `waitingTaskCount` — non-terminal AND not skipTranscript. skipTranscript
+  //     tasks are SDK-flagged as not belonging in the inline transcript, so
+  //     they must not keep the WorkingBubble in a phantom "Waiting..." state.
+  const { all: taskCount, waiting: waitingTaskCount } = useSessionTaskCounts(session.id)
   /** A background (async) subagent still in flight after the parent turn
    *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
    *  such subagent exists, so the user sees that background work is ongoing
@@ -657,15 +660,64 @@ export const Chat = memo(function Chat({
    *  Gated on `!session.terminated`: a dead session will never receive the
    *  completion signal, so showing "Waiting..." forever (with only manual
    *  dismiss as an exit) would be a dead state. */
-  const waiting = computeWaiting({
+  const hasTranscriptBackground = stream.activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false
+  const waitingRaw = computeWaiting({
     turnActive,
     terminated: session.terminated,
-    runningCount: runningTaskCount,
-    hasTranscriptBackground: stream.activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false,
+    runningCount: waitingTaskCount,
+    hasTranscriptBackground,
   })
+  // The Waiting banner is dismissible. The SDK exposes no task-list query and
+  // the server only evicts terminal records, so a task record that never
+  // folds to terminal would otherwise leave the banner mounted forever with
+  // no exit. Dismissing collapses the bubble to the quiet idle pill.
+  //
+  // The dismissal is re-armed when the waiting set GROWS — a fresh task or
+  // subagent is a new episode the user should see — but preserved while the
+  // set shrinks or stays put. Deliberately NOT re-armed on `turnActive`:
+  // resetting on every new turn would make dismiss a one-turn snooze for a
+  // stuck/phantom task (the banner would reappear after every send instead
+  // of being a real escape).
+  const [waitingDismissed, setWaitingDismissed] = useState(false)
+  const waiting = waitingRaw && !waitingDismissed
+  // The subagent ids the Waiting state tracks (pending or background), for
+  // detecting when a NEW element joins the waiting set.
+  const waitingSubagentIds = useMemo(
+    () =>
+      (stream.activeSubagents ?? [])
+        .filter((a) => a.status === 'pending' || a.status === 'background')
+        .map((a) => a.toolUseId)
+        .sort(),
+    [stream.activeSubagents],
+  )
+  const somethingWaiting = waitingTaskCount > 0 || waitingSubagentIds.length > 0
+  // Compact signature of the current waiting set (count + sorted subagent
+  // ids). Identity-churn of `activeSubagents` is irrelevant — the string is
+  // the dependency that matters.
+  const waitingKey = `${waitingTaskCount}|${waitingSubagentIds.join(',')}`
+  const prevWaitingKeyRef = useRef(waitingKey)
+  useEffect(() => {
+    const prevKey = prevWaitingKeyRef.current
+    prevWaitingKeyRef.current = waitingKey
+    if (!somethingWaiting) {
+      setWaitingDismissed(false)
+      return
+    }
+    const [prevCountStr, prevIdsStr] = prevKey.split('|')
+    const prevCount = Number(prevCountStr ?? 0)
+    const prevIds = prevIdsStr ? new Set(prevIdsStr.split(',')) : new Set<string>()
+    const isNewEpisode = prevCount === 0 && prevIds.size === 0
+    const grew =
+      waitingTaskCount > prevCount ||
+      waitingSubagentIds.some((id) => !prevIds.has(id))
+    if (isNewEpisode || grew) setWaitingDismissed(false)
+  }, [waitingKey, somethingWaiting, waitingTaskCount, waitingSubagentIds])
   /** Open this panel's Tasks overlay. Stable callback so the memoized
    *  WorkingBubble count pill doesn't re-render on every Chat render. */
   const openTasksPanel = useCallback(() => onOpenTasksPanel?.(session.id), [onOpenTasksPanel, session.id])
+  /** Stable callback so the memoized WorkingBubble doesn't re-render on every
+   *  Chat render just because the dismiss arrow identity changed. */
+  const dismissWaiting = useCallback(() => setWaitingDismissed(true), [])
 
   // 鈹€鈹€ Subagent overlay state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // Stack of toolUseIds: empty = closed; otherwise the last entry is the
@@ -1416,24 +1468,31 @@ export const Chat = memo(function Chat({
    *  matched no foreground task (e.g. the card's tool_result landed between
    *  render and click) — a no-arg call can't fail that way, and App's Alt+B
    *  guard already keeps it from firing with no live turn. In-flight calls
-   *  for the same target are deduped so a double-click can't fire two POSTs
-   *  (the second would toast a contradictory "no longer running"). */
-  const pendingBackgroundRef = useRef<Set<string>>(new Set())
+   *  for the same target are deduped so a double-click can't fire two POSTs;
+   *  the dedup key is held a beat AFTER success so a click landing between
+   *  the response and the server's toolStatus flip is swallowed too (the
+   *  second POST would toast a contradictory "no longer running"). */
+  // Lazy-initialized once via useState (useRef(factory()) would run the
+  // factory on every render and throw the result away). The guard is torn
+  // down on unmount; a late in-flight POST resolving after that is a no-op
+  // (the guard is inert once disposed) — it can't schedule an orphaned hold
+  // timer.
+  const [backgroundDedupGuard] = useState(() => createDedupGuard(BACKGROUND_DEDUP_HOLD_MS))
+  useEffect(() => () => backgroundDedupGuard.dispose(), [backgroundDedupGuard])
   const backgroundTasks = useCallback(async (toolUseId?: string) => {
     const key = toolUseId ?? '*'
-    if (pendingBackgroundRef.current.has(key)) return
-    pendingBackgroundRef.current.add(key)
+    if (!backgroundDedupGuard.tryAcquire(key)) return
     try {
       const res = await api.post<{ backgrounded?: boolean }>(`/sessions/${session.id}/tasks/background`, toolUseId ? { toolUseId } : {})
       if (res.backgrounded) toast.success('Backgrounded — the turn continues')
       else if (toolUseId) toast.info('This task is no longer running — its result may have landed just now')
       else toast.info('No running task to background')
+      backgroundDedupGuard.releaseAfter(key)
     } catch (e) {
       setLocalError((e as Error).message)
-    } finally {
-      pendingBackgroundRef.current.delete(key)
+      backgroundDedupGuard.releaseNow(key)
     }
-  }, [session.id, toast])
+  }, [session.id, toast, backgroundDedupGuard])
 
   /** Force-stop the current in-flight `!`/`!!` command (SIGKILL the child),
    *  like Ctrl+C. The server then completes execInSession with
@@ -1517,7 +1576,19 @@ export const Chat = memo(function Chat({
   // must not offer an action that POSTs against a dead session and surfaces
   // a persistent 410 error banner instead of a toast. The context value
   // flips to undefined the moment the turn ends, unmounting every button.
-  const backgroundToolAction = turnActive ? handleBackgroundTool : undefined
+  //
+  // The one exception is an SDK auto-continuation turn (e.g. the model
+  // processing a background subagent's <task-notification> after the parent
+  // turn ended): there `turnActive` is false when includePartialMessages is
+  // off (no activePhase to signal the live stream), yet a synchronous
+  // subagent is genuinely mid-flight and the session is live. A live sync
+  // subagent record keeps the action available for that window.
+  const hasLiveSyncSubagent = stream.activeSubagents?.some((a) => a.status === 'running' && !a.isAsync) ?? false
+  const backgroundToolAction = shouldOfferBackgroundAction({
+    turnActive,
+    terminated: session.terminated,
+    hasLiveSyncSubagent,
+  }) ? handleBackgroundTool : undefined
 
   // Expose the backgroundTasks callback to the parent so the Alt+B shortcut
   // can background in-flight tasks for the focused session — same
@@ -1886,17 +1957,27 @@ export const Chat = memo(function Chat({
       >
         {error ?? ''}
       </div>
-      {(turnActive || waiting) && (
+      {/* Render the bubble while a turn is active, while waiting on
+          background work, OR while live task/subagent work remains. The
+          task/subagent terms are gated on !session.terminated — a dead
+          session's records are stale and would otherwise read as a live
+          "Background tasks running" pill. They keep the count pill (the only
+          entry to TasksPanel) and any subagent chips on screen even when the
+          work is all ambient/skipTranscript or the user dismissed the Waiting
+          banner (the bubble then collapses to the quiet idle state). */}
+      {(turnActive || waiting || (!session.terminated && (taskCount > 0 || hasTranscriptBackground || hasLiveSyncSubagent))) && (
         <WorkingBubble
+          active={turnActive}
           startedAt={turnStartedAt}
           activeSubagents={stream.activeSubagents}
           tokenRate={stream.tokenRate}
           thinkingTokens={stream.thinkingTokens}
           activePhase={displayPhase}
           waiting={waiting}
-          runningTaskCount={runningTaskCount}
+          runningTaskCount={taskCount}
           onOpenTasks={openTasksPanel}
           onOpenSubagent={openSubagent}
+          onDismissWaiting={dismissWaiting}
         />
       )}
 

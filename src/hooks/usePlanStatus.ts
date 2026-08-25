@@ -95,8 +95,10 @@ export function useToolStatus(toolUseId: string | undefined): ToolStatus {
 
 /** Resolve a tool's effective lifecycle status: an explicit status prop
  *  wins, then the context map (via useToolStatus, including its 'running'
- *  default). Shared by ToolStatusBadge and ToolCard's background-button
- *  gate so the badge and the action can never disagree on the rule. */
+ *  default). Used by ToolCard to compute the status it renders in the badge
+ *  and gates its background-button on, so the action and the badge can never
+ *  disagree on the rule. (ToolStatusBadge itself no longer resolves — it
+ *  receives the already-resolved value.) */
 export function useResolvedToolStatus(
   toolUseId: string | undefined,
   explicitStatus: ToolStatus | undefined,
