@@ -1545,6 +1545,29 @@
   border-radius: var(--radius-pill);
   white-space: nowrap;
 }
+/* Background-task count pill — clickable entry to the Tasks overlay.
+   Accent-tinted like the timer (an interactive affordance, not a passive
+   readout), with a hover state to signal clickability. */
+.working-tasks {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.working-tasks:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
 
 .working-dots {
   display: inline-flex;

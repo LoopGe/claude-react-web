@@ -27,7 +27,7 @@ import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getBlocks, getEnterPlanToolUseIds, isHumanUserMessage, isTaskNotificationUserMessage, userMessageOriginKind } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare, IconClock } from './icons/ToolIcons'
+import { IconArrowDown, IconZap, IconUser, IconExternalLink, IconSquare, IconClock, IconListTodo } from './icons/ToolIcons'
 import { countMatches, extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../search'
 import { BlockView, ToolResultBlock } from './message-list/blocks'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
@@ -3068,6 +3068,8 @@ export const WorkingBubble = memo(function WorkingBubble({
   thinkingTokens,
   activePhase,
   waiting,
+  runningTaskCount,
+  onOpenTasks,
   onOpenSubagent,
 }: {
   startedAt?: number
@@ -3084,18 +3086,25 @@ export const WorkingBubble = memo(function WorkingBubble({
    *  with calmed visuals instead of unmounting — surfacing that background
    *  work is ongoing after the turn. */
   waiting?: boolean
+  /** Authoritative running background-task count (non-terminal,
+   *  non-skipTranscript) from the session store. When > 0, renders a
+   *  clickable count pill that calls `onOpenTasks`. */
+  runningTaskCount?: number
+  /** Opens the Tasks overlay. Wired by the host (Chat) to open TasksPanel. */
+  onOpenTasks?: () => void
   /** When provided, each subagent chip becomes a button that calls this
    *  with the chip's toolUseId — the host (Chat) opens the overlay
    *  pointed at that subagent. */
   onOpenSubagent?: (toolUseId: string) => void
 }) {
   const hasSubagents = activeSubagents && activeSubagents.length > 0
+  const taskCount = runningTaskCount ?? 0
 
   return (
     <div
       className={`working-bar${hasSubagents ? ' working-bar-with-agents' : ''}${waiting ? ' working-bar-waiting' : ''}`}
       aria-live="polite"
-      aria-label={waiting ? 'Waiting for background subagents' : 'Assistant is working'}
+      aria-label={waiting ? 'Waiting for background tasks' : 'Assistant is working'}
     >
       <div className="working-dots" aria-hidden>
         <span />
@@ -3129,6 +3138,23 @@ export const WorkingBubble = memo(function WorkingBubble({
         <span className="working-rate">
           <IconZap size={12} aria-hidden /> ~{formatTokens(thinkingTokens)} tok
         </span>
+      )}
+      {/* Background-task count pill — the clickable entry to the Tasks
+          overlay. Shows the authoritative running count (not just
+          transcript-tracked subagents); visible in both the active and
+          Waiting states so a background task outliving its turn stays
+          surfaced. */}
+      {taskCount > 0 && onOpenTasks && (
+        <button
+          type="button"
+          className="working-tasks"
+          onClick={onOpenTasks}
+          title={`${taskCount} background task${taskCount === 1 ? '' : 's'} running — click to open Tasks`}
+          aria-label={`${taskCount} background task${taskCount === 1 ? '' : 's'} running`}
+        >
+          <IconListTodo size={12} aria-hidden />
+          {taskCount}
+        </button>
       )}
       {hasSubagents && (
         <span className="working-bar-sep" aria-hidden />

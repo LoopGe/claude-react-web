@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage } from './normalize'
+import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting } from './normalize'
 import type { SdkMessage } from '../types'
 
 /** Build a top-level `user` message with the given text content (string or
@@ -23,6 +23,28 @@ function userMsgBlocks(text: string, uuid = 'u1'): SdkMessage {
     parent_tool_use_id: null,
   } as unknown as SdkMessage
 }
+
+describe('computeWaiting', () => {
+  it('is false while the turn is active', () => {
+    expect(computeWaiting({ turnActive: true, terminated: false, runningCount: 2, hasTranscriptBackground: false })).toBe(false)
+  })
+
+  it('is false when the session is terminated even with background work', () => {
+    expect(computeWaiting({ turnActive: false, terminated: true, runningCount: 2, hasTranscriptBackground: true })).toBe(false)
+  })
+
+  it('stays mounted on the authoritative running task count alone (no transcript subagents)', () => {
+    expect(computeWaiting({ turnActive: false, terminated: false, runningCount: 1, hasTranscriptBackground: false })).toBe(true)
+  })
+
+  it('stays mounted on transcript pending/background subagents alone', () => {
+    expect(computeWaiting({ turnActive: false, terminated: false, runningCount: 0, hasTranscriptBackground: true })).toBe(true)
+  })
+
+  it('is false when nothing is running', () => {
+    expect(computeWaiting({ turnActive: false, terminated: false, runningCount: 0, hasTranscriptBackground: false })).toBe(false)
+  })
+})
 
 describe('isLocalCommandLogUserMessage', () => {
   it('recognizes a /model command-name invocation (string content)', () => {

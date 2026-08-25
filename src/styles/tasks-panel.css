@@ -214,25 +214,6 @@
 }
 .tasks-row-stop:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* --- header chip (ChatPanel row 2) -------------------------------------- */
-
-.chat-panel-tasks-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--fg);
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 8px;
-  cursor: pointer;
-  max-width: 200px;
-}
-.chat-panel-tasks-badge:hover { background: var(--btn-hover-bg); }
-.chat-panel-tasks-badge .chat-panel-git-badge-value { color: var(--fg-muted); }
-
 /* --- subagent card / overlay progress line ------------------------------ */
 
 .subagent-card-progress {

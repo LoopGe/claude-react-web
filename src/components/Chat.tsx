@@ -60,6 +60,8 @@ import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
+import { useSessionField } from '../session-store/selectors'
+import { computeWaiting } from '../session-store/normalize'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
@@ -166,6 +168,9 @@ interface Props {
    *  TasksPanel subscribes itself, no prop drilling of the list. */
   tasksPanelOpen?: boolean
   onCloseTasksPanel?: () => void
+  /** Open the Tasks overlay for this session. The WorkingBubble count pill
+   *  is the only trigger now that the header chip is gone. */
+  onOpenTasksPanel?: (sessionId: string) => void
   /** When true, render the floating Recap window at the top of the chat
    *  area. Owned by ChatPanel (which also renders the reopen button in the
    *  header); Chat just renders the window and calls onCloseRecap when the
@@ -301,7 +306,7 @@ export const Chat = memo(function Chat({
   clearing: clearingProp,
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
-  tasksPanelOpen, onCloseTasksPanel,
+  tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
   onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
@@ -621,6 +626,21 @@ export const Chat = memo(function Chat({
   // between phases don't churn the label. `turnActive` above keeps the raw
   // activePhase so turn-end detection stays immediate.
   const displayPhase = usePhaseDwell(stream.activePhase)
+  // Authoritative running background-task count from the session store's
+  // `tasks` mirror (same data TasksPanel reads). Excludes terminal tasks and
+  // `skipTranscript` ambient/housekeeping tasks — the latter are SDK-flagged
+  // as not belonging in the inline transcript, so they must not keep the
+  // WorkingBubble in a phantom "Waiting..." state. Reference-stable across
+  // unrelated store updates.
+  const tasks = useSessionField(session.id, 'tasks')
+  const runningTaskCount = tasks.filter(
+    (t) =>
+      t.status !== 'completed' &&
+      t.status !== 'failed' &&
+      t.status !== 'killed' &&
+      t.status !== 'stopped' &&
+      !t.skipTranscript,
+  ).length
   /** A background (async) subagent still in flight after the parent turn
    *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
    *  such subagent exists, so the user sees that background work is ongoing
@@ -637,7 +657,15 @@ export const Chat = memo(function Chat({
    *  Gated on `!session.terminated`: a dead session will never receive the
    *  completion signal, so showing "Waiting..." forever (with only manual
    *  dismiss as an exit) would be a dead state. */
-  const waiting = !turnActive && !session.terminated && (stream.activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false)
+  const waiting = computeWaiting({
+    turnActive,
+    terminated: session.terminated,
+    runningCount: runningTaskCount,
+    hasTranscriptBackground: stream.activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false,
+  })
+  /** Open this panel's Tasks overlay. Stable callback so the memoized
+   *  WorkingBubble count pill doesn't re-render on every Chat render. */
+  const openTasksPanel = useCallback(() => onOpenTasksPanel?.(session.id), [onOpenTasksPanel, session.id])
 
   // 鈹€鈹€ Subagent overlay state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // Stack of toolUseIds: empty = closed; otherwise the last entry is the
@@ -1866,6 +1894,8 @@ export const Chat = memo(function Chat({
           thinkingTokens={stream.thinkingTokens}
           activePhase={displayPhase}
           waiting={waiting}
+          runningTaskCount={runningTaskCount}
+          onOpenTasks={openTasksPanel}
           onOpenSubagent={openSubagent}
         />
       )}

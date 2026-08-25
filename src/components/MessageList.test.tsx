@@ -151,7 +151,7 @@ vi.mock('react-virtuoso', async () => {
   }
 })
 // Import AFTER mock.
-import { MessageList } from './MessageList'
+import { MessageList, WorkingBubble } from './MessageList'
 import { shouldArmEnterAnimation } from '../utils/enter-animation'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import type { ActiveSubagent } from '../session-store/types'
@@ -171,6 +171,42 @@ function toItems(msgs: SdkMessage[]): TranscriptItem[] {
       hiddenByDefault: shouldHideByDefault(msg),
     }))
 }
+
+describe('WorkingBubble', () => {
+  it('renders a background-task count pill when runningTaskCount > 0', () => {
+    const { container } = render(
+      <WorkingBubble runningTaskCount={2} onOpenTasks={() => {}} waiting />,
+    )
+    const pill = container.querySelector('.working-tasks')
+    expect(pill).toBeTruthy()
+    expect(pill?.textContent).toContain('2')
+  })
+
+  it('hides the pill when runningTaskCount is 0', () => {
+    const { container } = render(
+      <WorkingBubble runningTaskCount={0} onOpenTasks={() => {}} waiting />,
+    )
+    expect(container.querySelector('.working-tasks')).toBeNull()
+  })
+
+  it('does not render the pill without an onOpenTasks handler', () => {
+    const { container } = render(
+      <WorkingBubble runningTaskCount={2} waiting />,
+    )
+    expect(container.querySelector('.working-tasks')).toBeNull()
+  })
+
+  it('clicks the pill call onOpenTasks', () => {
+    const onOpenTasks = vi.fn()
+    const { container } = render(
+      <WorkingBubble runningTaskCount={1} onOpenTasks={onOpenTasks} waiting />,
+    )
+    const pill = container.querySelector('.working-tasks')
+    expect(pill).toBeTruthy()
+    fireEvent.click(pill!)
+    expect(onOpenTasks).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe('MessageList', () => {
   beforeEach(() => {
