@@ -15,6 +15,7 @@ import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
 import { TaskInfoProvider } from '../hooks/useTaskInfo'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { SessionCwdProvider } from '../hooks/useSessionCwd'
+import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
 import type { SdkMessage } from '../types'
 import { formatTokens, formatElapsed, formatClockTime, formatFullTimestamp } from '../utils/format'
 import { buildTaskStateMap } from '../utils/task-events'
@@ -199,6 +200,12 @@ interface Props {
    *  context so EditToolView can resolve real file line numbers via
    *  /api/edit-locate. Undefined when no cwd is in scope. */
   cwd?: string
+  /** Background ONE in-flight tool call (Ctrl+B semantics, per-tool precision).
+   *  Provided to nested tool cards via the BackgroundTool context so running
+   *  Bash cards / synchronous subagent cards can offer a "background this"
+   *  button keyed on their own tool_use id. Undefined where backgrounding
+   *  isn't wired (Side Chat drawer, transcript exports). */
+  onBackgroundTool?: (toolUseId: string) => void
 }
 
 /** An item in the Virtuoso data array. Pre-computing isCompactSummary
@@ -315,7 +322,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd }: Props) {
+export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, leadingItems, trailingItems, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Captures Virtuoso's underlying scroll element so a ResizeObserver
@@ -1739,6 +1746,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
 
   return (
     <SessionCwdProvider value={cwd}>
+    <BackgroundToolProvider value={onBackgroundTool}>
     <PlanStatusProvider value={planStatus}>
     <PlanContentProvider value={planContent}>
     <QuestionAnswersProvider value={questionAnswers}>
@@ -1821,6 +1829,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     </QuestionAnswersProvider>
     </PlanContentProvider>
     </PlanStatusProvider>
+    </BackgroundToolProvider>
     </SessionCwdProvider>
   )
 })

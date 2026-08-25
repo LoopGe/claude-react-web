@@ -48,6 +48,11 @@ interface Props {
   planStatus?: ReadonlyMap<string, PlanStatus>
   planContent?: ReadonlyMap<string, string>
   questionAnswers?: ReadonlyMap<string, QuestionAnswerEntry[]>
+  /** Background ONE in-flight tool call by tool_use id — forwarded to the
+   *  nested MessageList so Bash cards inside the subagent's conversation can
+   *  offer the per-card background button too (same session, tool ids are
+   *  session-scoped). */
+  onBackgroundTool?: (toolUseId: string) => void
 }
 
 
@@ -66,6 +71,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   planStatus,
   planContent,
   questionAnswers,
+  onBackgroundTool,
 }: Props) {
   const currentId = stack[stack.length - 1]
   const current = currentId ? index.get(currentId) : undefined
@@ -329,6 +335,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             planStatus={planStatus}
             planContent={planContent}
             questionAnswers={questionAnswers}
+            onBackgroundTool={onBackgroundTool}
             replayReady
             // Subagents are not interactive — you can't type into them.
             // The default ChatEmptyState ("Type a message below, or paste

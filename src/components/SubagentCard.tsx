@@ -8,10 +8,11 @@
 
 import { memo, useEffect, useState } from 'react'
 import { useSubagentContext } from '../hooks/useSubagentContext'
+import { useBackgroundTool } from '../hooks/useBackgroundTool'
 import { formatElapsed } from '../utils/format'
 import { ToolResultDetails } from './ToolCard'
 import type { ToolResultEntry } from '../session-store/types'
-import { IconCheck, IconCircleDot, IconAlertTriangle, IconChevronRight, IconExternalLink } from './icons/ToolIcons'
+import { IconArrowDown, IconCheck, IconCircleDot, IconAlertTriangle, IconChevronRight, IconExternalLink } from './icons/ToolIcons'
 
 interface Props {
   toolUseId: string
@@ -22,6 +23,9 @@ interface Props {
 
 export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabel }: Props) {
   const ctx = useSubagentContext()
+  // Session-level per-tool background action (same context the Bash card
+  // reads). Only used for synchronous subagents — see the actions row below.
+  const backgroundTool = useBackgroundTool()
   // When rendered outside a SubagentProvider (e.g. tests, exports), fall
   // back to a minimal inline display rather than crashing.
   const record = ctx?.index.get(toolUseId)
@@ -105,6 +109,27 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
           <span className="subagent-card-open" aria-hidden><IconExternalLink size={12} /></span>
         </span>
       </button>
+      {/* Per-card background action for a SYNCHRONOUS in-flight subagent
+          (status 'running' — the parent turn is blocked on it). The header
+          above is a single <button> (drill-in), so a nested button would be
+          invalid; this row is a sibling instead. 'background' / 'pending'
+          records are already async (isBackgrounded or post-turn-end) —
+          nothing to detach. Clicking detaches exactly this subagent via
+          POST /tasks/background { toolUseId } and the turn continues. */}
+      {status === 'running' && !isAsync && backgroundTool && (
+        <div className="subagent-card-actions">
+          <button
+            type="button"
+            className="subagent-card-bg-btn"
+            onClick={() => backgroundTool(toolUseId)}
+            title="Background this subagent — the turn continues while it runs in the background task list (Alt+B backgrounds every running task)"
+            aria-label="Background this subagent"
+          >
+            <IconArrowDown size={12} />
+            <span>background</span>
+          </button>
+        </div>
+      )}
       {/* Present-tense progress summary (agentProgressSummaries —
           task_progress.summary, ~every 30s). Only shown while the subagent
           is live; the record clears it when the task reaches a terminal

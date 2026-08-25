@@ -1769,6 +1769,43 @@
   align-items: center;
 }
 
+/* Per-card background action for a synchronous in-flight subagent — a
+   sibling row under the (button) header, since a nested button would be
+   invalid. Only rendered while status is 'running' and the subagent is
+   synchronous; detaching flips it to async and the row unmounts. */
+.subagent-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 12px 8px;
+}
+.subagent-card-bg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.subagent-card-bg-btn:hover {
+  background: var(--bg);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.subagent-card-bg-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* Subagent overlay — same per-panel pattern as .settings-overlay but
    pinned to the right half of the column instead of centred. Backdrop
    covers the rest of the column so the user can click outside the

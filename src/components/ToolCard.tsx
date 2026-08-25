@@ -13,6 +13,7 @@
 import { Fragment, memo, useEffect, useRef, type ReactNode } from 'react'
 import {
   IconAlertCircle,
+  IconArrowDown,
   IconCheck,
   IconCopy,
   IconLoader,
@@ -310,7 +311,14 @@ function toolResultPreview(content: unknown): string {
  *  far right of the header. Status badge sits to its left.
  *
  *  When you don't have a tool_use id (e.g. for cards that own their
- *  status), pass `hideStatus` to drop the badge entirely. */
+ *  status), pass `hideStatus` to drop the badge entirely.
+ *
+ *  `onBackground` (when provided AND the card is still running) renders a
+ *  "background this task" action in the header — the precise, per-card
+ *  replacement for the removed Composer morph: the card knows its own
+ *  tool_use id, so the click targets exactly this task instead of every
+ *  foreground task (which is what Alt+B does). The button disappears on
+ *  its own once the tool_result lands — backgrounding includes a result. */
 export const ToolCard = memo(function ToolCard({
   icon,
   title,
@@ -320,6 +328,7 @@ export const ToolCard = memo(function ToolCard({
   hideStatus = false,
   copyValue,
   copyLabel,
+  onBackground,
   className = '',
   children,
   searchQuery,
@@ -335,6 +344,10 @@ export const ToolCard = memo(function ToolCard({
   hideStatus?: boolean
   copyValue?: () => string
   copyLabel?: string
+  /** Background exactly this tool call (Ctrl+B semantics, per-tool). Only
+   *  offered while the card is running — a settled tool has nothing to
+   *  detach. Views pass it only for backgroundable tools (Bash/PowerShell). */
+  onBackground?: () => void
   className?: string
   children?: ReactNode
   /** Current search query — passed to inline tool result for highlighting. */
@@ -348,6 +361,10 @@ export const ToolCard = memo(function ToolCard({
   // result is still pending or for tools that own their result rendering
   // (Plan/Question/Subagent never reach ToolCard anyway).
   const result = useToolResult(toolUseId)
+  // Resolved lifecycle status for the background-button gate (the badge
+  // resolves the same way internally). Explicit status wins, then context.
+  const ctxStatus = useToolStatus(toolUseId)
+  const resolvedStatus = status ?? ctxStatus
   // When this tool's pending permission dialog has been minimized, surface a
   // "Review permission" chip so the user can re-open it. Mirrors the inline
   // reopen button PlanCard/QuestionCard render when minimized.
@@ -371,6 +388,23 @@ export const ToolCard = memo(function ToolCard({
           </button>
         )}
         <span className="tool-card-spacer" />
+        {onBackground && resolvedStatus === 'running' && (
+          <button
+            type="button"
+            className="tool-card-bg-btn"
+            onClick={(e) => {
+              // Don't let the click fall through to card chrome (e.g. the
+              // header's click-to-copy title button).
+              e.stopPropagation()
+              onBackground()
+            }}
+            title="Background this task — the turn continues while it detaches to the background task list (Alt+B backgrounds every running task)"
+            aria-label="Background this task"
+          >
+            <IconArrowDown size={12} />
+            <span className="tool-card-bg-btn-label">background</span>
+          </button>
+        )}
         {!hideStatus && <ToolStatusBadge toolUseId={toolUseId} status={status} />}
         {copyValue && <CopyButton getValue={copyValue} label={copyLabel} />}
       </div>

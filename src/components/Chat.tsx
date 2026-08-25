@@ -1381,14 +1381,16 @@ export const Chat = memo(function Chat({
     }
   }, [session.id, onInterruptFired])
 
-  /** Background every in-flight foreground task (Ctrl+B semantics) — the
-   *  turn continues while the running command/subagent detaches to the
-   *  background task list. The response is surfaced as a toast either way:
-   *  without it the action reads as a silent no-op when nothing was
-   *  backgroundable (e.g. the phase flipped between render and click). */
-  const backgroundTasks = useCallback(async () => {
+  /** Background in-flight foreground tasks (Ctrl+B semantics) — the turn
+   *  continues while the running command/subagent detaches to the background
+   *  task list. With `toolUseId` only that ONE task is detached (the per-card
+   *  button); without it every foreground task goes (Alt+B). The response is
+   *  surfaced as a toast either way: without it the action reads as a silent
+   *  no-op when nothing was backgroundable (e.g. the card's tool_result
+   *  landed between render and click). */
+  const backgroundTasks = useCallback(async (toolUseId?: string) => {
     try {
-      const res = await api.post<{ backgrounded?: boolean }>(`/sessions/${session.id}/tasks/background`, {})
+      const res = await api.post<{ backgrounded?: boolean }>(`/sessions/${session.id}/tasks/background`, toolUseId ? { toolUseId } : {})
       if (res.backgrounded) toast.success('Backgrounded — the turn continues')
       else toast.info('No running task to background')
     } catch (e) {
@@ -1469,6 +1471,9 @@ export const Chat = memo(function Chat({
   // Background (phase-keyed morph flickered on every phase transition), so
   // this callback's only consumer is the App-level shortcut registry.
   const handleBackground = useCallback(() => void backgroundTasks(), [backgroundTasks])
+  // Per-tool variant for the running-card background buttons (Bash cards +
+  // synchronous subagent cards + subagent-overlay Bash cards).
+  const handleBackgroundTool = useCallback((toolUseId: string) => void backgroundTasks(toolUseId), [backgroundTasks])
 
   // Expose the backgroundTasks callback to the parent so the Alt+B shortcut
   // can background in-flight tasks for the focused session — same
@@ -1718,6 +1723,7 @@ export const Chat = memo(function Chat({
           onPinnedUserMessageChange={handlePinnedUserMessageChange}
           onUserMessagesChange={handleUserMessagesChange}
           cwd={session.cwd}
+          onBackgroundTool={handleBackgroundTool}
         />
         </div>
         {discardConfirm && (
@@ -2142,6 +2148,7 @@ export const Chat = memo(function Chat({
             planStatus={stream.planStatus}
             planContent={stream.planContent}
             questionAnswers={stream.questionAnswers}
+            onBackgroundTool={handleBackgroundTool}
           />
         </SubagentProvider>
       )}

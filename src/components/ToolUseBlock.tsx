@@ -32,6 +32,7 @@ import { useQuestionAnswers } from '../hooks/useQuestionAnswers'
 import { useTaskInfo } from '../hooks/useTaskInfo'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { useSessionCwd } from '../hooks/useSessionCwd'
+import { useBackgroundTool } from '../hooks/useBackgroundTool'
 import { useCopy } from '../hooks/useCopy'
 import { useEditDiffInfo, type EditAnchor, type EditDiffInfo } from '../hooks/useEditDiffInfo'
 import { SubagentCard } from './SubagentCard'
@@ -1358,6 +1359,9 @@ const BASH_SINGLE_LINE_PREVIEW = 200
  * at a glance when both tools appear in the same transcript.
  */
 const BashToolView = memo(function BashToolView({ input, toolName, toolUseId, searchQuery, activeMatchIdx }: ToolViewProps) {
+  // Hook first (before the early return below) — the session-level
+  // background action from the BackgroundTool context.
+  const backgroundTool = useBackgroundTool()
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -1406,6 +1410,11 @@ const BashToolView = memo(function BashToolView({ input, toolName, toolUseId, se
       toolUseId={toolUseId}
       copyValue={() => command}
       copyLabel="Copy command"
+      // Per-card background action: only a FOREGROUND shell command is
+      // backgroundable (`run_in_background: true` already detached at spawn)
+      // and only when the parent wired the session action in. ToolCard
+      // further gates on the card still running.
+      onBackground={!inBackground && toolUseId && backgroundTool ? () => backgroundTool(toolUseId) : undefined}
       className="tool-card-bash"
       searchQuery={searchQuery}
       activeMatchIdx={activeMatchIdx}

@@ -334,6 +334,40 @@
   outline-offset: 1px;
 }
 
+/* Background-this-task action on a RUNNING tool card (Bash/PowerShell).
+ * Only rendered while the card is live — the tool_result that backgrounding
+ * itself produces settles the card and removes the button. Styled as a quiet
+ * accent pill so it reads as an action without stealing focus from the
+ * status badge next to it. */
+.tool-card-bg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.tool-card-bg-btn:hover {
+  background: var(--bg);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.tool-card-bg-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* --- Per-tool body adaptations -------------------------------------------
  *
  * Each ToolCard variant tweaks the body padding / colour to match the
