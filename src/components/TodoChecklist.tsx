@@ -275,10 +275,10 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
             type="button"
             className={`todo-panel-collapse${collapsed ? '' : ' open'}`}
             onClick={() => setCollapsed((c) => !c)}
-            title={collapsed ? '展开任务列表' : '折叠任务列表'}
+            title={collapsed ? 'Expand task list' : 'Collapse task list'}
             aria-expanded={!collapsed}
             aria-controls="todo-panel-list"
-            aria-label={collapsed ? '展开任务列表' : '折叠任务列表'}
+            aria-label={collapsed ? 'Expand task list' : 'Collapse task list'}
           >
             <IconChevronDown size={16} />
           </button>
@@ -289,9 +289,9 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
       </div>
       {hiddenVisibleCount > 0 && !undoDismissed && (
         <div className="todo-panel-undo">
-          <span>已隐藏 {hiddenVisibleCount} 项</span>
+          <span>Hidden {hiddenVisibleCount} item{hiddenVisibleCount === 1 ? '' : 's'}</span>
           <button type="button" className="todo-panel-undo-btn" onClick={undoHidden}>
-            <IconRotateCcw size={12} /> 撤销
+            <IconRotateCcw size={12} /> Undo
           </button>
         </div>
       )}

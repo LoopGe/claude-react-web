@@ -547,7 +547,7 @@ describe('TodoChecklist — collapse + long-press hide', () => {
     expect(container.querySelectorAll('.todo-item').length).toBe(1)
     expect(container.querySelector('.todo-text')?.textContent).toBe('B')
     expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/1')
-    expect(container.querySelector('.todo-panel-undo')?.textContent).toContain('已隐藏 1 项')
+    expect(container.querySelector('.todo-panel-undo')?.textContent).toContain('Hidden 1 item')
   })
 
   it('does not hide on a short press', () => {
