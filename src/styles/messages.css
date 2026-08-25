@@ -1382,8 +1382,51 @@
 }
 /* Status colours */
 .todo-completed { color: var(--fg-muted); }
-.todo-completed .todo-text { text-decoration: line-through; }
 .todo-completed .todo-icon { color: var(--ok); }
+/* Animated left→right strikethrough on completion. text-decoration can't be
+   animated, so draw a 1px line with a ::after on the content wrapper and
+   scale it in from the left. Anchored on .todo-text-shimmer (the content
+   span) rather than the .todo-text flex box so a short task like "Fix bug"
+   doesn't strike past its text; the ::after is position:absolute so it paints
+   over the glyphs, matching how text-decoration's line-through sits on top.
+   The static line is the default for completed items; the left→right sweep
+   only runs while .todo-strike-anim is present, which TodoChecklist adds on
+   the render where a task transitions to completed (so replayed / already-done
+   tasks stay static). */
+.todo-completed .todo-text-shimmer {
+  display: inline-block;
+  max-width: 100%;
+  position: relative;
+}
+.todo-completed .todo-text-shimmer::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(50% - 0.5px);
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(1);
+  transform-origin: left center;
+  pointer-events: none;
+}
+.todo-completed.todo-strike-anim .todo-text-shimmer::after {
+  transform: scaleX(0);
+  animation: todo-strike-in var(--motion-duration-slow) var(--motion-ease-standard) forwards;
+}
+@keyframes todo-strike-in {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Decorative motion — reduced-motion users get the line instantly, which is
+     visually identical to the old static line-through. The base strike rule
+     sets transform: scaleX(0) for the sweep; kill that too so the line shows. */
+  .todo-completed.todo-strike-anim .todo-text-shimmer::after {
+    animation: none;
+    transform: scaleX(1);
+  }
+}
 .todo-in_progress { color: var(--fg); }
 .todo-in_progress .todo-icon { color: var(--accent); }
 .todo-in_progress .todo-text { color: var(--fg); }
@@ -1567,7 +1610,22 @@
   min-width: 0;
 }
 .inline-todo-completed { color: var(--fg-muted); }
-.inline-todo-completed .inline-todo-text { text-decoration: line-through; }
+/* Animated left→right strikethrough for inline TodoWrite cards. Uses a
+   background line on the text span (not an ::after) because inline todo text
+   can WRAP to multiple lines — with box-decoration-break: clone each line
+   fragment gets its own line that sweeps in, matching text-decoration's
+   per-line line-through. The line sits behind the glyphs (a background, not a
+   painted decoration), which for a 1px strike reads the same. */
+.inline-todo-completed .inline-todo-text-shimmer {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  background: linear-gradient(currentColor, currentColor) left center / 100% 1px no-repeat;
+  animation: inline-strike-in var(--motion-duration-slow) var(--motion-ease-standard) forwards;
+}
+@keyframes inline-strike-in {
+  from { background-size: 0% 1px; }
+  to { background-size: 100% 1px; }
+}
 .inline-todo-completed .inline-todo-icon { color: var(--ok); }
 .inline-todo-in_progress { color: var(--fg); }
 .inline-todo-in_progress .inline-todo-icon {
@@ -1619,6 +1677,11 @@
     -webkit-text-fill-color: var(--accent);
     color: var(--accent);
     font-weight: 600;
+  }
+  /* Reduced-motion: the completed strike shows statically (background-size is
+     already 100% in the base rule) — no sweep. */
+  .inline-todo-completed .inline-todo-text-shimmer {
+    animation: none;
   }
   /* Mirror the transcript's reduced-motion clear: no animation; element stays
      visible (blur-only — no veil hides it now). */

@@ -211,6 +211,55 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
     if (pruned.length !== hiddenList.length) setHiddenList(pruned)
   }, [result, hiddenList, setHiddenList])
 
+  // --- fresh-completion strike animation -------------------------------
+  // A completed item's strike sweeps left→right ONLY on the render where it
+  // transitions to completed (live, while mounted) — not on initial load or
+  // history replay, where already-done tasks just show a static line. The
+  // transition is detected at render time by comparing each render's statuses
+  // against the previous COMMITTED render's (`prevStatusRef`, written by the
+  // effect below); the fresh keys are then merged into `struckKeys` (state)
+  // so the `.todo-strike-anim` class survives the renders that follow the
+  // transition frame — otherwise a message landing inside the sweep window
+  // would drop the class and cut the animation short.
+  const [struckKeys, setStruckKeys] = useState<ReadonlySet<string>>(new Set())
+  const prevStatusRef = useRef<Map<string, Todo['status']> | null>(null)
+  const freshCompletedKeys = useMemo(() => {
+    const out = new Set<string>()
+    const prev = prevStatusRef.current
+    if (!prev) return out
+    for (const t of todos) {
+      // Only a genuine pending / in_progress → completed transition animates.
+      // A task that first APPEARS as completed (a new key in the next snapshot,
+      // or history replay) is not a live completion and stays static.
+      if (t.status === 'completed') {
+        const was = prev.get(t.key)
+        if (was === 'pending' || was === 'in_progress') out.add(t.key)
+      }
+    }
+    return out
+  }, [todos])
+
+  useEffect(() => {
+    // Panel hidden (no todos rendered): keep the baseline so a re-shown list
+    // of already-completed tasks doesn't sweep on re-appear.
+    if (!renderResult) return
+    const map = new Map<string, Todo['status']>()
+    for (const t of todos) map.set(t.key, t.status)
+    setStruckKeys((prev) => {
+      const next = new Set<string>()
+      let changed = false
+      for (const k of prev) {
+        if (map.get(k) === 'completed') next.add(k)
+        else changed = true
+      }
+      for (const k of freshCompletedKeys) {
+        if (!next.has(k)) { next.add(k); changed = true }
+      }
+      return changed ? next : prev
+    })
+    prevStatusRef.current = map
+  }, [todos, freshCompletedKeys, renderResult])
+
   if (!renderResult) return null
 
   return (
@@ -254,7 +303,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
               // --press-ms feeds the long-press progress fill (`.todo-item::after`),
               // keeping the CSS animation duration in sync with LONG_PRESS_MS.
               style={{ '--press-ms': `${LONG_PRESS_MS}ms` } as React.CSSProperties}
-              className={`todo-item todo-${t.status}${pressingKey === t.key ? ' todo-item-pressing' : ''}`}
+              className={`todo-item todo-${t.status}${pressingKey === t.key ? ' todo-item-pressing' : ''}${t.status === 'completed' && (struckKeys.has(t.key) || freshCompletedKeys.has(t.key)) ? ' todo-strike-anim' : ''}`}
               onPointerDown={(e) => onItemPointerDown(e, t.key)}
               onPointerMove={onItemPointerMove}
               onPointerUp={onItemPointerEnd}
