@@ -26,6 +26,11 @@ export type DragPayload =
   /** A chat panel's header dragged within the main grid. Accepted by:
    *   - other panel headers  → swap positions */
   | { kind: 'main-panel'; id: string }
+  /** A session group dragged from a sidebar section header (vertical list)
+   *  or the top pill row (horizontal). Accepted by:
+   *   - other group headers → reorder before/after
+   *   - other group pills   → reorder left/right */
+  | { kind: 'group-card'; id: string }
 
 /** Call from `onDragStart`. Writes the payload as JSON onto dataTransfer
  *  under our custom MIME; also sets an `effectAllowed` so the browser

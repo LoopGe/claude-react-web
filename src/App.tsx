@@ -86,6 +86,7 @@ import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
 import { escapeAction } from './utils/escape-action'
+import { prepareGroupFlip } from './utils/flip'
 
 /** Shallow-compare two SessionInfo objects across every own property.
  *
@@ -2417,6 +2418,34 @@ export function App() {
         },
         description: `Activate group ${i + 1}`,
       })),
+      // Alt+Shift+ArrowUp/Down move the active group within the sidebar
+      // order — keyboard parallel to the pill context-menu items.
+      // allowInInput matches the Alt+1..9 activate-group shortcuts above:
+      // the composer usually holds focus, so an input-safe default would
+      // make this dead in the common flow. Reordering the sidebar doesn't
+      // touch the draft text, and the dispatcher's isComposing guard still
+      // prevents firing mid-IME-composition.
+      // handleMoveGroup is omitted from the deps array below (like
+      // requestResumeForPanel): it's declared after this useMemo and is
+      // stable (useCallback with stable deps).
+        {
+          combo: 'alt+shift+arrowup',
+          allowInInput: true,
+          handler: () => {
+            const gid = activeGroupIdRef.current
+            if (gid) handleMoveGroup(gid, 'up')
+          },
+          description: 'Move active group up',
+        },
+        {
+          combo: 'alt+shift+arrowdown',
+          allowInInput: true,
+          handler: () => {
+            const gid = activeGroupIdRef.current
+            if (gid) handleMoveGroup(gid, 'down')
+          },
+          description: 'Move active group down',
+        },
         {
           combo: 'mod+1',
           // allowInInput: the whole point is to switch panels while typing
@@ -2864,6 +2893,53 @@ export function App() {
       }
     },
     [orderedSessions, setSidebarOrder, setGroups, setOpenIds],
+  )
+
+  /** Reorder the `groups` array by moving `draggedId` before/after
+   *  `targetId`. Array position IS the persisted order (ui-state PUT is a
+   *  full replace), so no order field, sidebarOrder, or openIds changes are
+   *  needed. Read `groupsRef` synchronously (setGroups's updater runs on
+   *  React's schedule — same pattern as handleReorderSidebar) and return a
+   *  NEW array so useUiState's no-op guard lets the debounced PUT fire.
+   *  Wraps the mutation with the group FLIP so the pill row and section list
+   *  slide to their new slots — every path (pill/header drop, context menu,
+   *  keyboard) funnels through here, so wrapping once covers all of them. */
+  const handleReorderGroups = useCallback(
+    (draggedId: string, targetId: string, position: 'before' | 'after') => {
+      if (draggedId === targetId) return
+      const prev = groupsRef.current
+      const dragged = prev.find((g) => g.id === draggedId)
+      if (!dragged) return
+      const without = prev.filter((g) => g.id !== draggedId)
+      const targetIdx = without.findIndex((g) => g.id === targetId)
+      if (targetIdx < 0) return
+      const insertAt = position === 'before' ? targetIdx : targetIdx + 1
+      const next = [...without.slice(0, insertAt), dragged, ...without.slice(insertAt)]
+      const animateMove = prepareGroupFlip()
+      setGroups(() => next)
+      animateMove()
+    },
+    [setGroups],
+  )
+
+  /** Adjacent-swap fallback for the group pill context menu (Move up/down)
+   *  and the Alt+Shift+ArrowUp/Down shortcuts. Boundary no-op; returns a new
+   *  array for useUiState's no-op guard. FLIP-wrapped like handleReorderGroups
+   *  so all group moves share the same slide animation. */
+  const handleMoveGroup = useCallback(
+    (groupId: string, direction: 'up' | 'down') => {
+      const prev = groupsRef.current
+      const idx = prev.findIndex((g) => g.id === groupId)
+      if (idx < 0) return
+      const nextIdx = direction === 'up' ? idx - 1 : idx + 1
+      if (nextIdx < 0 || nextIdx >= prev.length) return
+      const next = [...prev]
+      ;[next[idx], next[nextIdx]] = [next[nextIdx], next[idx]]
+      const animateMove = prepareGroupFlip()
+      setGroups(() => next)
+      animateMove()
+    },
+    [setGroups],
   )
 
   // --- Session group management ----------------------------------------------
@@ -3586,6 +3662,8 @@ export function App() {
           onReorder={handleReorderSidebar}
           onDropIntoGroup={handleAddToGroup}
           onReorderInGroup={handleReorderInGroup}
+          onReorderGroups={handleReorderGroups}
+          onMoveGroup={handleMoveGroup}
           newSessionDialogOpen={newSessionDialogOpen}
           onNewSessionDialogChange={setNewSessionDialogOpen}
           groups={groups}

@@ -3,7 +3,8 @@
 // sidebar can dedicate its vertical space to listing sessions.
 
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { isInAppDrag, readDragPayload } from '../hooks/useDragPayload'
+import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
+import { prepareFlip } from '../utils/flip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { buildSessionAccentMap } from '../theme'
@@ -21,7 +22,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 // if a static import coexists with the lazy one in App.tsx).
 const PromptDialog = lazy(() => import('./PromptDialog').then((m) => ({ default: m.PromptDialog })))
 import { ContextMenu } from './ContextMenu'
-import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconPencil, IconTrash, IconSearch } from './icons/ToolIcons'
+import { IconX, IconChevronUp, IconChevronRight, IconChevronDown, IconSquare, IconPencil, IconTrash, IconSearch } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { Virtuoso } from 'react-virtuoso'
 import { useExitPresence } from '../hooks/useExitPresence'
@@ -86,6 +87,12 @@ interface Props {
     position: 'before' | 'after',
     groupId: string,
   ) => void
+  /** Drag-and-drop reorder of the `groups` array. Drag surface = section
+   *  headers (vertical) + top pills (horizontal). Position is relative to
+   *  the target group. */
+  onReorderGroups?: (draggedId: string, targetId: string, position: 'before' | 'after') => void
+  /** Keyboard / context-menu fallback — swap a group with its neighbour. */
+  onMoveGroup?: (groupId: string, direction: 'up' | 'down') => void
   /** New-session dialog open state is lifted so App-level shortcuts
    *  (Alt+N) can open it. Uncontrolled mode falls back to internal state. */
   newSessionDialogOpen?: boolean
@@ -167,6 +174,8 @@ export const SessionList = memo(function SessionList({
   onReorder,
   onDropIntoGroup,
   onReorderInGroup,
+  onReorderGroups,
+  onMoveGroup,
   newSessionDialogOpen,
   onNewSessionDialogChange,
   activeGroupId,
@@ -190,6 +199,13 @@ export const SessionList = memo(function SessionList({
    *  Paints the section as a drop target — distinct from `dropHint`
    *  which targets a specific card. */
   const [groupDropHint, setGroupDropHint] = useState<string | null>(null)
+  /** Id of the group currently being dragged (from its section header or a
+   *  pill), so we can fade the source. Mutually exclusive with `draggingId`. */
+  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null)
+  /** Group insertion-line hint (before/after a header or pill) during a
+   *  group-card drag. Separate from `groupDropHint` so dragging a group over
+   *  a header doesn't light the "drop session here" dashed ring. */
+  const [groupReorderHint, setGroupReorderHint] = useState<{ id: string; position: 'before' | 'after' } | null>(null)
   /** Which card is currently in inline-rename mode, and the draft text. */
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
@@ -302,35 +318,14 @@ export const SessionList = memo(function SessionList({
   }, [sidebarSections, filter])
 
   /** Capture the current sidebar card positions and return a function that
-   *  animates any moved cards after React applies a reorder. This is the
-   *  classic FLIP pattern, scope to explicit Move up/down actions so normal
-   *  drag/drop keeps its existing direct feel. */
-  const prepareMoveAnimation = useCallback(() => {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return () => {}
-    const before = new Map<string, DOMRect>()
-    for (const el of document.querySelectorAll<HTMLElement>('[data-session-card-id]')) {
-      before.set(el.dataset.sessionCardId ?? '', el.getBoundingClientRect())
-    }
-    return () => {
-      window.requestAnimationFrame(() => {
-        for (const el of document.querySelectorAll<HTMLElement>('[data-session-card-id]')) {
-          const id = el.dataset.sessionCardId ?? ''
-          const prev = before.get(id)
-          if (!prev) continue
-          const next = el.getBoundingClientRect()
-          const deltaY = prev.top - next.top
-          if (Math.abs(deltaY) < 1) continue
-          el.animate(
-            [
-              { transform: `translateY(${deltaY}px)` },
-              { transform: 'translateY(0)' },
-            ],
-            { duration: 180, easing: 'cubic-bezier(.2,.8,.2,1)' },
-          )
-        }
-      })
-    }
-  }, [])
+   *  animates any moved cards after React applies a reorder — the classic
+   *  FLIP pattern (see `src/utils/flip.ts`). Used by both drag/drop reorder
+   *  and keyboard/context-menu moves; the shared util keeps the curve and
+   *  reduced-motion gate identical to the group reorder. */
+  const prepareMoveAnimation = useCallback(
+    () => prepareFlip('[data-session-card-id]', 'data-session-card-id'),
+    [],
+  )
 
   // Auto-focus the new-group name input when it appears.
   useEffect(() => {
@@ -346,6 +341,8 @@ export const SessionList = memo(function SessionList({
 
   const handleCardDragStart = useCallback((_e: React.DragEvent, id: string) => {
     setDraggingId(id)
+    setDraggingGroupId(null)
+    setGroupReorderHint(null)
   }, [])
 
   const handleCardDragEnd = useCallback(() => {
@@ -362,6 +359,29 @@ export const SessionList = memo(function SessionList({
 
   const handleClearDropHint = useCallback(() => {
     setDropHint(null)
+  }, [])
+
+  // ── Group drag/reorder callbacks ──────────────────────────────
+  const handleGroupDragStart = useCallback((_e: React.DragEvent, id: string) => {
+    setDraggingGroupId(id)
+    setDraggingId(null)
+    setDropHint(null)
+    setGroupReorderHint(null)
+    // A cancelled session-card drag can leave the "drop session here" dashed
+    // ring (`groupDropHint`) on a group; a group drag must not inherit it.
+    setGroupDropHint(null)
+  }, [])
+
+  const handleGroupDragEnd = useCallback(() => {
+    setDraggingGroupId(null)
+    setGroupReorderHint(null)
+  }, [])
+
+  const handleSetGroupReorderHint = useCallback((id: string, position: 'before' | 'after') => {
+    setGroupReorderHint((prev) => {
+      if (prev && prev.id === id && prev.position === position) return prev
+      return { id, position }
+    })
   }, [])
 
   const handleRenameDraftChange = useCallback((draft: string) => {
@@ -671,14 +691,55 @@ export const SessionList = memo(function SessionList({
             <button
               key={g.id}
               type="button"
-              className={`group-pill ${g.id === activeGroupId ? 'active' : ''}`}
+              data-group-pill-id={g.id}
+              className={`group-pill ${g.id === activeGroupId ? 'active' : ''} ${
+                draggingGroupId === g.id ? 'dragging' : ''
+              } ${
+                groupReorderHint && groupReorderHint.id === g.id
+                  ? groupReorderHint.position === 'before'
+                    ? 'drop-before'
+                    : 'drop-after'
+                  : ''
+              }`}
               aria-pressed={g.id === activeGroupId}
-              title={`Activate "${g.name}" (${g.sessionIds.length} sessions)${i < 9 ? ` · Alt+${i + 1}` : ''} · right-click for options`}
+              title={`Activate "${g.name}" (${g.sessionIds.length} sessions)${i < 9 ? ` · Alt+${i + 1}` : ''} · right-click for options · drag to reorder`}
               onClick={() => onActivateGroup(g.id)}
               onContextMenu={(e) => {
                 e.preventDefault()
                 setGroupMenuTarget(g.id)
                 setGroupMenuPos({ x: e.clientX, y: e.clientY })
+              }}
+              draggable={!isMobile && !!onReorderGroups && groups.length > 1}
+              onDragStart={(e) => {
+                if (!onReorderGroups) return
+                handleGroupDragStart(e, g.id)
+                setDragPayload(e, { kind: 'group-card', id: g.id })
+              }}
+              onDragEnd={handleGroupDragEnd}
+              onDragOver={(e) => {
+                if (!onReorderGroups || !isInAppDrag(e)) return
+                if (draggingGroupId == null || draggingGroupId === g.id) return
+                e.preventDefault()
+                const rect = e.currentTarget.getBoundingClientRect()
+                const position: 'before' | 'after' =
+                  e.clientX < rect.left + rect.width / 2 ? 'before' : 'after'
+                handleSetGroupReorderHint(g.id, position)
+              }}
+              onDragLeave={(e) => {
+                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+                if (groupReorderHint?.id === g.id) setGroupReorderHint(null)
+              }}
+              onDrop={(e) => {
+                const payload = readDragPayload(e)
+                setGroupReorderHint(null)
+                setDraggingGroupId(null)
+                if (!payload || payload.kind !== 'group-card') return
+                if (!onReorderGroups) return
+                e.preventDefault()
+                const rect = e.currentTarget.getBoundingClientRect()
+                const position: 'before' | 'after' =
+                  e.clientX < rect.left + rect.width / 2 ? 'before' : 'after'
+                onReorderGroups(payload.id, g.id, position)
               }}
             >
               {showGroupHints && i < 9 && (
@@ -772,9 +833,17 @@ export const SessionList = memo(function SessionList({
               }
               const groupBodyId = `group-body-${sec.group.id}`
               return (
-                <div key={sec.group.id} className={`session-section ${active ? 'group-active' : ''}`}>
+                <div key={sec.group.id} data-group-section-id={sec.group.id} className={`session-section ${active ? 'group-active' : ''}`}>
                   <div
-                    className={`session-group-header ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
+                    className={`session-group-header ${groupDropHint === sec.group.id ? 'drop-target' : ''} ${
+                      draggingGroupId === sec.group.id ? 'dragging' : ''
+                    } ${
+                      groupReorderHint && groupReorderHint.id === sec.group.id
+                        ? groupReorderHint.position === 'before'
+                          ? 'drop-before'
+                          : 'drop-after'
+                        : ''
+                    }`}
                     role="button"
                     tabIndex={0}
                     aria-label={
@@ -809,8 +878,30 @@ export const SessionList = memo(function SessionList({
                         ? `${collapsed ? 'Expand' : 'Collapse'} ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
                         : `Activate ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
                     }
+                    draggable={!isMobile && !!onReorderGroups && groups.length > 1}
+                    onDragStart={(e) => {
+                      if (!onReorderGroups) return
+                      handleGroupDragStart(e, sec.group.id)
+                      setDragPayload(e, { kind: 'group-card', id: sec.group.id })
+                    }}
+                    onDragEnd={handleGroupDragEnd}
                     onDragOver={(e) => {
-                      if (!onDropIntoGroup || !isInAppDrag(e)) return
+                      if (!isInAppDrag(e)) return
+                      // Group-reorder branch — a group-card is being dragged.
+                      // The payload kind isn't readable mid-drag (browsers only
+                      // populate getData on drop), so we branch on our own drag
+                      // state, which is mutually exclusive with `draggingId`.
+                      if (draggingGroupId != null) {
+                        if (!onReorderGroups || draggingGroupId === sec.group.id) return
+                        e.preventDefault()
+                        const rect = e.currentTarget.getBoundingClientRect()
+                        const position: 'before' | 'after' =
+                          e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+                        handleSetGroupReorderHint(sec.group.id, position)
+                        return
+                      }
+                      // Session-card-into-group branch (existing behaviour).
+                      if (!onDropIntoGroup) return
                       // Don't accept drops if group is full (unless reordering within same group)
                       if (sec.group.sessionIds.length >= maxGroupSize && !sec.group.sessionIds.includes(draggingId ?? '')) return
                       e.preventDefault()
@@ -819,15 +910,29 @@ export const SessionList = memo(function SessionList({
                     onDragLeave={(e) => {
                       if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
                       if (groupDropHint === sec.group.id) setGroupDropHint(null)
+                      if (groupReorderHint?.id === sec.group.id) setGroupReorderHint(null)
                     }}
                     onDrop={(e) => {
-                      if (!onDropIntoGroup) return
                       const payload = readDragPayload(e)
                       setGroupDropHint(null)
+                      setGroupReorderHint(null)
                       setDraggingId(null)
-                      if (!payload || payload.kind !== 'sidebar-card') return
-                      e.preventDefault()
-                      animatedAddToGroup(payload.id, sec.group.id)
+                      setDraggingGroupId(null)
+                      if (!payload) return
+                      if (payload.kind === 'group-card') {
+                        if (!onReorderGroups) return
+                        e.preventDefault()
+                        const rect = e.currentTarget.getBoundingClientRect()
+                        const position: 'before' | 'after' =
+                          e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+                        onReorderGroups(payload.id, sec.group.id, position)
+                        return
+                      }
+                      if (payload.kind === 'sidebar-card') {
+                        if (!onDropIntoGroup) return
+                        e.preventDefault()
+                        animatedAddToGroup(payload.id, sec.group.id)
+                      }
                     }}
                   >
                     <button
@@ -874,6 +979,10 @@ export const SessionList = memo(function SessionList({
                         className={`group-sessions ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
                         onDragOver={(e) => {
                           if (!onDropIntoGroup || !isInAppDrag(e)) return
+                          // A group-card being dragged isn't a session-drop —
+                          // don't light the "drop session here" ring. The body
+                          // is not a group-reorder target (that's the header).
+                          if (draggingGroupId != null) return
                           // Accept drops anywhere in the group body that
                           // aren't intercepted by a specific card. The
                           // event bubbles up from cards, so we only
@@ -916,6 +1025,8 @@ export const SessionList = memo(function SessionList({
                         className={`group-empty ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
                         onDragOver={(e) => {
                           if (!onDropIntoGroup || !isInAppDrag(e)) return
+                          // Group-card drag — see the group body above.
+                          if (draggingGroupId != null) return
                           e.preventDefault()
                           if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
                         }}
@@ -1044,12 +1155,28 @@ export const SessionList = memo(function SessionList({
       {groupMenuTarget && groupMenuPos && (() => {
         const g = groups.find((grp) => grp.id === groupMenuTarget)
         if (!g) return null
+        const groupIdx = groups.findIndex((grp) => grp.id === g.id)
+        const groupCanMoveUp = groupIdx > 0
+        const groupCanMoveDown = groupIdx >= 0 && groupIdx < groups.length - 1
         return (
           <ContextMenu
             x={groupMenuPos.x}
             y={groupMenuPos.y}
             onClose={() => setGroupMenuTarget(null)}
             items={[
+              {
+                label: 'Move up',
+                icon: <IconChevronUp size={14} />,
+                disabled: !groupCanMoveUp,
+                onClick: () => onMoveGroup?.(g.id, 'up'),
+              },
+              {
+                label: 'Move down',
+                icon: <IconChevronDown size={14} />,
+                disabled: !groupCanMoveDown,
+                onClick: () => onMoveGroup?.(g.id, 'down'),
+              },
+              { label: '' }, // separator (ContextMenu trims/merges)
               {
                 label: 'Rename group…',
                 icon: <IconPencil size={14} />,

@@ -159,6 +159,33 @@
   width: 80px;
 }
 
+/* Group pill drag & drop — horizontal insertion line (left/right). */
+.group-pill.dragging {
+  opacity: 0.3;
+  cursor: grabbing;
+}
+.group-pill.dragging:hover { background: var(--bg-elev-2); }
+.group-pill.drop-before,
+.group-pill.drop-after { position: relative; }
+.group-pill.drop-before::before,
+.group-pill.drop-after::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: var(--radius-2xs);
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
+  transform: scaleY(0);
+  animation: drop-line-in-y var(--motion-duration-fast) var(--motion-ease-standard) forwards;
+}
+.group-pill.drop-before::before { left: -1px; transform-origin: center top; }
+.group-pill.drop-after::after { right: -1px; transform-origin: center bottom; }
+@keyframes drop-line-in-y {
+  to { transform: scaleY(1); }
+}
+
 /* ── Session section (grouped sidebar view) ── */
 .session-section {
   display: flex;
@@ -203,6 +230,31 @@
   border-left-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
+
+/* Group header drag & drop — vertical insertion line (before/after). */
+.session-group-header.dragging {
+  opacity: 0.3;
+  cursor: grabbing;
+}
+.session-group-header.dragging:hover { background: transparent; }
+.session-group-header.drop-before,
+.session-group-header.drop-after { position: relative; }
+.session-group-header.drop-before::before,
+.session-group-header.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  border-radius: var(--radius-2xs);
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
+  transform: scaleX(0);
+  animation: drop-line-in var(--motion-duration-fast) var(--motion-ease-standard) forwards;
+}
+.session-group-header.drop-before::before { top: -1px; transform-origin: left center; }
+.session-group-header.drop-after::after { bottom: -1px; transform-origin: right center; }
+
 .group-collapse-arrow {
   background: none;
   border: none;
@@ -399,6 +451,12 @@
   .session-item-shell.deleting { transform: none; }
   .session-item.drop-before::before,
   .session-item.drop-after::after { animation: none; transform: scaleX(1); }
+  .session-group-header.dragging,
+  .group-pill.dragging { transition: none; }
+  .session-group-header.drop-before::before,
+  .session-group-header.drop-after::after { animation: none; transform: scaleX(1); }
+  .group-pill.drop-before::before,
+  .group-pill.drop-after::after { animation: none; transform: scaleY(1); }
 }
 
 /* Idle tint for cards that have a per-session accent chosen. The left
