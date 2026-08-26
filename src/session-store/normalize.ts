@@ -97,7 +97,11 @@ export function isTrimBoundary(msg: SdkMessage): boolean {
   return false
 }
 
-export function toTranscriptItem(msg: SdkMessage, prev: TranscriptItem | undefined): TranscriptItem | null {
+export function toTranscriptItem(
+  msg: SdkMessage,
+  prev: TranscriptItem | undefined,
+  cachedPlainText?: string | null,
+): TranscriptItem | null {
   if (msg.type === 'stream_event') return null
   // `api_retry` is a TRANSIENT rate-limit-retry indicator routed to
   // `mirror.apiRetry` (see reducer applyMessage) — it never becomes a
@@ -121,7 +125,16 @@ export function toTranscriptItem(msg: SdkMessage, prev: TranscriptItem | undefin
   const item: TranscriptItem = {
     id,
     msg,
-    plainText: extractMessagePlainText(msg),
+    // `cachedPlainText` (string | null) skips the markdown-extraction
+    // pipeline on cache hydrate. It is ONLY supplied by loadFromStorage for
+    // v3 caches, where the value was computed once at persist time — running
+    // `extractMessagePlainText` (a full unified markdown parse per content
+    // block) for every cached message on every store construction was the
+    // dominant cost of group-switch / cold-load (hundreds of ms for a
+    // 600-message transcript). A stored null means "no extractable text" and
+    // must also skip the pipeline, so `undefined` (absent entry) is the
+    // only value that falls through to a live recompute.
+    plainText: cachedPlainText !== undefined ? cachedPlainText : extractMessagePlainText(msg),
     isCompactSummary: Boolean(
       msg.type === 'user' &&
       prev?.msg.type === 'system' &&
@@ -171,9 +184,20 @@ function deriveDeliveryStatus(msg: SdkMessage): 'queued' | 'consumed' | undefine
  *  system, tool_result-bearing user frames) — those have disk-stable uuids
  *  and are deduped by uuid, and a null here also marks the end of the
  *  contiguous leading-prompt run the caller scans. */
-export function topLevelUserPromptSignature(msg: SdkMessage): string | null {
+export function topLevelUserPromptSignature(
+  msg: SdkMessage,
+  cachedPlainText?: string | null,
+): string | null {
   if (msg.type !== 'user') return null
   if (msg.parent_tool_use_id != null) return null
+  // A cached TranscriptItem already carries the exact value
+  // extractMessagePlainText would produce (toTranscriptItem computed it at
+  // ingest / hydrate). Reusing it skips the full unified markdown pipeline —
+  // splitReplayAgainstCache scans EVERY cached item on every replay, so this
+  // was O(items) markdown re-derivations per group switch (~300-400ms on a
+  // 700-message transcript). The value is byte-identical, so dedup semantics
+  // are unchanged.
+  if (cachedPlainText !== undefined) return cachedPlainText ?? ''
   // Empty string (image-only prompt with no text) is a valid signature: the
   // on-disk copy of the same prompt also extracts to '', so they still match.
   return extractMessagePlainText(msg) ?? ''

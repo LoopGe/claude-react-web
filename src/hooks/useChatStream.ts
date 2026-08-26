@@ -187,6 +187,10 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   const subagentIndex = useSessionField(sessionId, 'subagentIndex')
   const workflowIndex = useSessionField(sessionId, 'workflowIndex')
   const replayReady = useSessionField(sessionId, 'replayReady')
+  // True once the store's deferred localStorage hydrate has completed. The
+  // subscribe effect gates on it so the WS subscribe carries the cached
+  // lastMessageUuid (incremental replay) instead of null (full replay).
+  const hydrateReady = useSessionField(sessionId, 'hydrateReady')
   const permsRef = useRef(permissions)
   // Set true when a `session-cleared` frame lands for this session. Blocks
   // loadOlder() from paging the pre-/clear transcript back in from disk
@@ -219,6 +223,13 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
 
   useEffect(() => {
     if (!sessionId) return
+    // The store hydrates its localStorage cache in a microtask after the
+    // constructor, so on a cold panel mount this effect's first run happens
+    // with an empty store. Subscribing now would send sinceUuid=null and force
+    // a full server replay; waiting for hydrateReady lets the incremental
+    // (sinceUuid) replay be used when a cache exists. hydrateReady is always
+    // set (cache or not), so this never deadlocks.
+    if (!hydrateReady) return
 
     let replayMessages: SdkMessage[] = []
     let replayPermissions: PermissionRequest[] = []
@@ -440,7 +451,7 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
       off()
       release()
     }
-  }, [hub, sessionId, store])
+  }, [hub, sessionId, store, hydrateReady])
 
   const displayedError = useMemo(() => {
     if (hubStatus === 'reconnecting') {

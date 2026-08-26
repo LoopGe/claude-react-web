@@ -57,7 +57,7 @@ describe('SessionStore hydration', () => {
     localStorage.clear()
   })
 
-  it('rebuilds toolStatus from cached messages on hydration', () => {
+  it('rebuilds toolStatus from cached messages on hydration', async () => {
     // Regression: older Read/Grep/Bash cards were stuck on the running
     // spinner after a page reload because the SessionStore constructor
     // restored items+messages from localStorage but didn't rebuild the
@@ -85,6 +85,8 @@ describe('SessionStore hydration', () => {
     )
 
     const store = new SessionStore(sessionId)
+    // Hydration is deferred off the render path (microtask) — wait for it.
+    await store.hydrateDone
     const snap = store.getSnapshot()
     expect(snap.toolStatus.get('tu_bash')).toBe('success')
     expect(snap.toolStatus.get('tu_read')).toBe('error')
@@ -93,7 +95,7 @@ describe('SessionStore hydration', () => {
     expect(snap.items).toHaveLength(messages.length)
   })
 
-  it('discards v1 cache shape (treats as no-cache)', () => {
+  it('discards v1 cache shape (treats as no-cache)', async () => {
     // v1 stored a duplicated items[] array; v2 drops it. Old v1 entries are
     // discarded on load — the cache is a non-essential render hint and the
     // WS replay repopulates within seconds.
@@ -110,6 +112,7 @@ describe('SessionStore hydration', () => {
     )
 
     const store = new SessionStore(sessionId)
+    await store.hydrateDone
     const snap = store.getSnapshot()
     expect(snap.items).toEqual([])
     expect(snap.replayReady).toBe(false)
@@ -135,19 +138,23 @@ describe('SessionStore hydration', () => {
     }
     const liveItems = store.getSnapshot().items
 
-    // destroy() calls save() synchronously, flushing the v2 projection to disk.
+    // destroy() calls save() synchronously, flushing the v3 projection to disk.
     store.destroy()
     const raw = localStorage.getItem(STORAGE_PREFIX + sessionId)
     expect(raw).not.toBeNull()
     const data = JSON.parse(raw!)
-    expect(data.v).toBe(2)
+    expect(data.v).toBe(3)
     expect(Array.isArray(data.messages)).toBe(true)
+    expect(Array.isArray(data.plainTexts)).toBe(true)
+    expect(data.plainTexts).toHaveLength(data.messages.length)
 
-    // Re-derive from the persisted messages and compare field-by-field.
+    // Re-derive from the persisted messages + cached plainTexts and compare
+    // field-by-field. plainText comes from the persisted array (no markdown
+    // pipeline), the rest is re-derived — the result must equal the live build.
     const rederived: typeof liveItems = []
     let prev: (typeof liveItems)[number] | undefined
-    for (const msg of data.messages as SdkMessage[]) {
-      const item = toTranscriptItem(msg, prev)
+    for (let i = 0; i < (data.messages as SdkMessage[]).length; i++) {
+      const item = toTranscriptItem(data.messages[i], prev, data.plainTexts[i])
       if (item) {
         rederived.push(item)
         prev = item
@@ -163,8 +170,11 @@ describe('SessionStore hydration', () => {
     }
   })
 
-  it('starts with an empty toolStatus when no cache exists', () => {
+  it('starts with an empty toolStatus when no cache exists', async () => {
     const store = new SessionStore('session-no-cache')
+    // No cache → hydrate leaves the empty state untouched; assert post-hydrate
+    // so the test covers the settled state, not just the initial synchronous one.
+    await store.hydrateDone
     expect(store.getSnapshot().toolStatus.size).toBe(0)
     expect(store.getSnapshot().replayReady).toBe(false)
   })
@@ -251,7 +261,7 @@ describe('SessionStore projection (persist-only capping)', () => {
     const raw = localStorage.getItem(STORAGE_PREFIX + id)
     expect(raw).not.toBeNull()
     const data = JSON.parse(raw!)
-    expect(data.v).toBe(2)
+    expect(data.v).toBe(3)
     const msgs = data.messages as SdkMessage[]
 
     // tool_result content capped (<= 8000 + marker).
@@ -274,6 +284,58 @@ describe('SessionStore projection (persist-only capping)', () => {
     expect(imgBlocks).toHaveLength(0)
     const textBlocks = blocksOf<{ type: string }>(msgs[3]).filter((b) => b.type === 'text')
     expect(textBlocks.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('persists a uuid-less message correctly on the over-budget trim path', () => {
+    // Regression: the v3 plainTexts array is zipped index-aligned with the
+    // projected messages. A uuid-less message can't be looked up in a
+    // uuid→plainText map (it has no uuid), so the old implementation left its
+    // entry `undefined` — and the over-budget size estimate then ran
+    // `JSON.stringify(undefined).length`, which THROWS. Index-zipping the
+    // items array must both survive the over-budget path AND round-trip the
+    // message's real plainText (not null — JSON mangles array-undefined to
+    // null, which would corrupt a uuid-less message's text on the next
+    // hydrate).
+    const id = 'proj-uuidless-budget'
+    const store = new SessionStore(id)
+    // Write tool_use messages project to ~64KB each AND their plainText is the
+    // same content verbatim (extractToolUseDiffText returns it raw), so the
+    // combined payload comfortably exceeds the 2MB per-session budget,
+    // forcing the over-budget trim loop. PlainText for Write is cheap (no
+    // markdown pipeline), so ingest stays fast.
+    for (let i = 0; i < 24; i++) {
+      store.dispatch({
+        type: 'MESSAGE',
+        message: {
+          type: 'assistant',
+          uuid: `a-w-${i}`,
+          message: {
+            role: 'assistant',
+            content: [{ type: 'tool_use', id: `tu-w-${i}`, name: 'Write', input: { file_path: `/x/${i}`, content: 'y'.repeat(64 * 1024) } }],
+          },
+        } as unknown as SdkMessage,
+      })
+    }
+    // uuid-less user message with extractable text, dispatched LAST so the
+    // largest-suffix trim keeps it.
+    store.dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'user',
+        message: { role: 'user', content: 'hello world' },
+      } as unknown as SdkMessage,
+    })
+    vi.runAllTimers()
+    const raw = localStorage.getItem(STORAGE_PREFIX + id)
+    expect(raw).not.toBeNull()
+    const data = JSON.parse(raw!)
+    expect(data.v).toBe(3)
+    expect(Array.isArray(data.plainTexts)).toBe(true)
+    expect(data.plainTexts).toHaveLength(data.messages.length)
+    // The uuid-less message is the newest → kept by the largest-suffix trim,
+    // and its persisted plainText is the real text, not null.
+    const lastPt = data.plainTexts[data.plainTexts.length - 1]
+    expect(lastPt).toBe('hello world')
   })
 
   it('substitutes a marker when an image-only message would be left empty', () => {
@@ -597,7 +659,7 @@ describe('SessionStore dismissed-subagent persistence', () => {
     localStorage.clear()
   })
 
-  it('a dismissed subagent stays hidden after a refresh-style rehydrate', () => {
+  it('a dismissed subagent stays hidden after a refresh-style rehydrate', async () => {
     // Store A: build an async subagent transcript and dismiss it, then force
     // the cache write (persistNow bypasses the 2s debounce).
     const storeA = new SessionStore('sess-dismiss')
@@ -616,11 +678,12 @@ describe('SessionStore dismissed-subagent persistence', () => {
 
     // A refresh = a brand-new store hydrating from the same localStorage key.
     const storeB = new SessionStore('sess-dismiss')
+    await storeB.hydrateDone
     const snap = storeB.getSnapshot()
     expect(snap.activeSubagents.some((a) => a.toolUseId === 'tu_x')).toBe(false)
   })
 
-  it('loads a v2 cache without dismissedSubagents as an empty set', () => {
+  it('loads a v2 cache without dismissedSubagents as an empty set', async () => {
     const key = STORAGE_PREFIX + 'sess-old'
     const msg: SdkMessage = {
       type: 'assistant', uuid: 'a-1', receivedAt: 0,
@@ -629,6 +692,7 @@ describe('SessionStore dismissed-subagent persistence', () => {
     // Old v2 shape: no dismissedSubagents field.
     localStorage.setItem(key, JSON.stringify({ v: 2, savedAt: Date.now(), messages: [msg], lastMessageUuid: null }))
     const store = new SessionStore('sess-old')
+    await store.hydrateDone
     expect(store.getState().intent.dismissedSubagents.size).toBe(0)
   })
 

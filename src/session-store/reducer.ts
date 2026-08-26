@@ -411,7 +411,14 @@ function replayReplace(
  *  portion are signature-deduped by prependMessages/countPromptOverlap, and
  *  prompts inside the overlap bracket are dropped with it. */
 function overlapAnchorUuid(msg: SdkMessage): string | null {
-  if (topLevelUserPromptSignature(msg) != null) return null // a prompt — never an anchor
+  // A top-level user prompt is never an anchor — but deciding that needs only
+  // the cheap type check, not the markdown pipeline. The prompt-signature
+  // VALUE is never matched against cacheUuids (which holds uuids, not
+  // signatures); only its non-null "is a prompt" fact is used, and the type
+  // check answers that exactly. Running extractMessagePlainText here made
+  // every replay pay O(replay top-level prompts) full unified-markdown parses
+  // for a result that was thrown away (~300ms on a 550-message replay).
+  if (msg.type === 'user' && msg.parent_tool_use_id == null) return null // a prompt — never an anchor
   return typeof msg.uuid === 'string' ? msg.uuid : null
 }
 
@@ -457,6 +464,9 @@ export function splitReplayAgainstCache(
   // un-bridged sessions (whose prompt uuids DON'T match) back on the dup path.
   let cacheHasAnchor = false
   for (const it of items) {
+    // Cheap uuid/type check only — overlapAnchorUuid no longer touches the
+    // markdown pipeline, so this loop is O(items) uuid lookups even though it
+    // runs over EVERY cached item on every replay.
     const key = overlapAnchorUuid(it.msg)
     if (key != null) {
       cacheUuids.add(key)
@@ -657,7 +667,7 @@ function countPromptOverlap(older: SdkMessage[], items: ServerMirror['items']): 
   // Length of the contiguous top-level-prompt run at the START of the
   // on-screen transcript (i.e. the prompts sitting above the paging anchor).
   let leadRun = 0
-  while (leadRun < items.length && topLevelUserPromptSignature(items[leadRun].msg) != null) {
+  while (leadRun < items.length && topLevelUserPromptSignature(items[leadRun].msg, items[leadRun].plainText) != null) {
     leadRun++
   }
   let n = 0
@@ -665,8 +675,9 @@ function countPromptOverlap(older: SdkMessage[], items: ServerMirror['items']): 
     const batchSig = topLevelUserPromptSignature(older[older.length - 1 - n])
     if (batchSig == null) break // batch tail is no longer a top-level prompt
     // items[leadRun - 1 - n] is within the leading run, so its signature is
-    // guaranteed non-null — only the content needs to match.
-    if (batchSig !== topLevelUserPromptSignature(items[leadRun - 1 - n].msg)) break
+    // guaranteed non-null — only the content needs to match. Pass the cached
+    // plainText to skip re-extraction through the markdown pipeline.
+    if (batchSig !== topLevelUserPromptSignature(items[leadRun - 1 - n].msg, items[leadRun - 1 - n].plainText)) break
     n++
   }
   return n

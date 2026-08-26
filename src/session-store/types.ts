@@ -491,6 +491,16 @@ export type SessionAction =
 
 export interface SessionSnapshot {
   replayReady: boolean
+  /** True once the store's synchronous-constructor localStorage hydrate has
+   *  completed (or was skipped because there was no cache). The constructor
+   *  now returns immediately with an empty state and hydrates in a microtask,
+   *  so the subscribe path must wait for this before issuing a WS subscribe —
+   *  otherwise it would read `lastMessageUuid` as null and force a full
+   *  replay instead of the sinceUuid incremental one. Distinct from
+   *  `replayReady`, which means "transcript content is on screen" (cache or
+   *  replay) — a fresh no-cache session has hydrateReady=true but
+   *  replayReady=false until the replay lands. */
+  hydrateReady: boolean
   items: TranscriptItem[]
   messages: SdkMessage[]
   streamingContent: string | null

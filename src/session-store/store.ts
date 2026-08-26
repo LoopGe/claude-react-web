@@ -152,10 +152,35 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   // the tab by design. The ONE exception is `dismissedSubagents`: it is the
   // only client-owned, non-derivable flag, so it rides along in the payload
   // to keep dismissed subagents hidden across refresh.
+  //
+  // v3 addition: `plainText` is ALSO persisted (as a parallel array), even
+  // though it is derivable. Re-deriving it on hydrate means running the full
+  // unified markdown pipeline (`extractMessagePlainText`) over every cached
+  // message on EVERY store construction — hundreds of ms of main-thread work
+  // on group switch / cold load for a 600-message transcript. The value is
+  // deterministic and was already computed at ingest, so we persist it and
+  // hydrate skips the pipeline entirely (loadFromStorage zips it back in).
+  // `items[]` itself is still NOT persisted — it is rebuilt cheaply from the
+  // messages + cached plainTexts, and its other derived fields
+  // (isCompactSummary / hiddenByDefault / deliveryStatus) are cheap flags.
   const mirror = state.mirror
   // Project each message (no-op ref for small messages). Live state is never
   // touched — projection is persist-only.
   const projected: SdkMessage[] = mirror.messages.map(projectMessage)
+  // plainText per message, zipped from the already-computed live items.
+  // `mirror.items` and `mirror.messages` are strictly index-aligned 1:1 —
+  // every mutation path (updateTranscriptMirror / prependMessages / trimFront
+  // / evictMessages) appends, slices, and filters them together, and a message
+  // only enters `messages` when its toTranscriptItem produced a non-null item.
+  // So items[i] IS the item for projected[i]. Zipping by index (rather than a
+  // uuid→plainText lookup) also sidesteps the uuid-less-message edge: a
+  // message with no string uuid can't be looked up in a uuid-keyed map, which
+  // would leave the entry `undefined` — and JSON mangles array-undefined to
+  // null, silently corrupting that message's plainText to null on the next
+  // hydrate. Index-zipping always yields a real value, so the parallel array
+  // stays correct AND never holds undefined (which the budget-trim size
+  // estimate below would choke on: JSON.stringify(undefined).length throws).
+  const plainTexts: (string | null)[] = projected.map((_, i) => mirror.items[i]?.plainText ?? null)
   const lastMessageUuid = mirror.lastMessageUuid
   const dismissedSubagents = Array.from(state.intent.dismissedSubagents)
 
@@ -164,9 +189,10 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   // Fast path: stringify once. The projection caps usually keep a session
   // well under the budget, so this single stringify is the common case.
   const fullPayload = JSON.stringify({
-    v: 2,
+    v: 3,
     savedAt: Date.now(),
     messages: projected,
+    plainTexts,
     lastMessageUuid,
     dismissedSubagents,
   })
@@ -179,9 +205,9 @@ function persistToStorage(sessionId: string, state: SessionState): void {
     // floor — a non-empty render hint is worth more than enforcing the budget
     // on pathological inputs (the on-disk log + loadOlder cover the dropped
     // older messages). +1 per message accounts for the array comma.
-    const sizes = projected.map((m) => JSON.stringify(m).length + 1)
+    const sizes = projected.map((m, i) => JSON.stringify(m).length + JSON.stringify(plainTexts[i]).length + 1)
     // Include the dismissed-array in the wrapper overhead estimate.
-    const wrapperOverhead = 96 + (lastMessageUuid?.length ?? 0) + JSON.stringify(dismissedSubagents).length
+    const wrapperOverhead = 110 + (lastMessageUuid?.length ?? 0) + JSON.stringify(dismissedSubagents).length
     let total = wrapperOverhead
     let kept = 0
     for (let i = sizes.length - 1; i >= 0; i--) {
@@ -190,10 +216,12 @@ function persistToStorage(sessionId: string, state: SessionState): void {
       kept++
     }
     const keptMessages = kept < projected.length ? projected.slice(projected.length - kept) : projected
+    const keptPlainTexts = kept < plainTexts.length ? plainTexts.slice(plainTexts.length - kept) : plainTexts
     toWrite = JSON.stringify({
-      v: 2,
+      v: 3,
       savedAt: Date.now(),
       messages: keptMessages,
+      plainTexts: keptPlainTexts,
       lastMessageUuid,
       dismissedSubagents,
     })
@@ -227,26 +255,43 @@ function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMe
     const raw = localStorage.getItem(STORAGE_PREFIX + sessionId)
     if (!raw) return null
     const data = JSON.parse(raw)
-    // v2 shape only: { v:2, savedAt, messages: SdkMessage[], lastMessageUuid }.
+    // v3 shape: { v:3, savedAt, messages: SdkMessage[], plainTexts,
+    //             lastMessageUuid }. v2 caches (same shape, no plainTexts) are
+    // still accepted — hydrate re-derives plainText through the markdown
+    // pipeline as before, and the next persist upgrades the cache to v3.
     // v1 caches (which stored a duplicated items[] array) are discarded —
     // the cache is a non-essential render hint and the WS replay repopulates
     // within seconds.
-    if (!data || data.v !== 2 || !Array.isArray(data.messages)) return null
+    if (!data || (data.v !== 3 && data.v !== 2) || !Array.isArray(data.messages)) return null
+    const plainTexts = Array.isArray(data.plainTexts) ? (data.plainTexts as (string | null | undefined)[]) : null
     // Strip transient `api_retry` from old caches (pre-cutover caches stored
     // it inside messages; it now lives in the apiRetry slot and must not be
     // re-persisted to IDB). toTranscriptItem already drops it from items;
-    // this keeps the raw messages array clean too.
-    const rawMessages = (data.messages as SdkMessage[]).filter(
-      (m) => !(m.type === 'system' && m.subtype === 'api_retry'),
-    )
+    // this keeps the raw messages array clean too. `rawPlainTexts` rides the
+    // SAME filter pass so it stays index-aligned with `rawMessages` even if a
+    // malformed v3 cache somehow contained api_retry — the plainText for the
+    // surviving message after a dropped one keeps its own (not the dropped
+    // one's) cached value.
+    const rawMessages: SdkMessage[] = []
+    const rawPlainTexts: (string | null | undefined)[] = []
+    for (let i = 0; i < (data.messages as SdkMessage[]).length; i++) {
+      const m = (data.messages as SdkMessage[])[i]
+      if (m.type === 'system' && m.subtype === 'api_retry') continue
+      rawMessages.push(m)
+      rawPlainTexts.push(plainTexts ? plainTexts[i] : undefined)
+    }
     // Re-derive TranscriptItems from the messages via the SAME producer the
     // live store uses (toTranscriptItem with prev-threading), so the hydrated
     // items are byte-identical to what a live build would produce. This drops
-    // the duplicated items[] array the v1 cache stored.
+    // the duplicated items[] array the v1 cache stored. For v3 caches the
+    // precomputed plainText rides along (index-aligned via the filter above),
+    // so the markdown pipeline is skipped.
     const messages: TranscriptItem[] = []
     let prev: TranscriptItem | undefined
-    for (const msg of rawMessages) {
-      const item = toTranscriptItem(msg, prev)
+    for (let i = 0; i < rawMessages.length; i++) {
+      // A missing entry (v2 cache, or a malformed/short plainTexts array)
+      // reads as undefined → toTranscriptItem recomputes via markdown.
+      const item = toTranscriptItem(rawMessages[i], prev, rawPlainTexts[i])
       if (item) {
         messages.push(item)
         prev = item
@@ -291,6 +336,15 @@ export class SessionStore {
    *  with SAVE_MAX_DEFER_MS to bound the window even under a tight write
    *  loop that keeps resetting the debounce. */
   private saveDirtySince: number | null = null
+  /** Set once the constructor's deferred localStorage hydrate has completed
+   *  (or been skipped for a cache-less session). Mirrored into SessionSnapshot
+   *  as `hydrateReady` so React consumers can gate subscriptions on it. */
+  private hydrateReady = false
+  /** Resolves when the deferred localStorage hydrate has finished (or was
+   *  skipped). Mirrors `hydrateReady` as a Promise for tests and async callers
+   *  that construct a store and then read its hydrated state. */
+  readonly hydrateDone: Promise<void>
+  private resolveHydrate!: () => void
   /** Per-instance subagent filter cache — moved off module scope so
    *  multiple SessionStore instances (multi-panel layouts) don't
    *  thrash a shared single-slot cache against each other. */
@@ -345,48 +399,109 @@ export class SessionStore {
 
   constructor(sessionId: string) {
     registerStoreForDebug(sessionId, this)
-    // Try to restore from localStorage cache first
-    const cached = loadFromStorage(sessionId)
-    if (cached && cached.messages.length > 0) {
-      // Only `messages`/`items` are persisted — the lifecycle index
-      // maps (toolStatus, planStatus, planContent, questionAnswers,
-      // activeSubagents) are derived state and start empty after
-      // hydrate. We MUST replay the cached messages through
-      // updateIndexes() to rebuild them; otherwise every cached
-      // tool_use card renders 'running' forever (useToolStatus
-      // defaults to 'running' for unknown ids, and the live-replay
-      // path only sees frames AFTER lastMessageUuid). This was the
-      // "older Grep/Read cards stuck spinning after several turns"
-      // bug — cards from previous turns lived in the cached items
-      // but their toolStatus entries had been thrown away.
-      const fresh = createInitialSessionState(sessionId)
-      const seededMirror: ServerMirror = {
-        ...fresh.mirror,
-        items: cached.messages,
-        messages: cached.rawMessages as ServerMirror['messages'],
-        lastMessageUuid: cached.lastMessageUuid,
-        replayReady: true, // Treat cached data as "replayed"
-      }
-      const seeded: SessionState = {
-        sessionId,
-        mirror: seededMirror,
-        intent: {
-          ...fresh.intent,
-          dismissedSubagents: new Set(cached.dismissedSubagents),
-        },
-      }
-      // Rebuild indexes from the cached messages, THEN re-apply persisted
-      // dismissals so dismissed subagents stay hidden across refresh.
-      this.state = reapplyDismissed(rebuildIndexesFromMessages(seeded, seededMirror.messages))
-      this.snapshot = this.buildSnapshot(this.state)
-    } else {
-      this.state = createInitialSessionState(sessionId)
-      this.snapshot = this.buildSnapshot(this.state)
+    // NEVER block render on the localStorage cache. Hydrating here used to
+    // re-derive every TranscriptItem through the full markdown pipeline
+    // (`extractMessagePlainText`) on the store's construction path — which
+    // runs inside React's render on group switch (getSessionStore → new
+    // SessionStore). For a 600-message transcript that was ~800ms of frozen
+    // main thread before the panel's first paint. The constructor now returns
+    // an empty state synchronously and hydrates from cache in a microtask —
+    // which still completes before the browser's first paint (microtasks drain
+    // at the end of the current task) and before any WS replay frame can
+    // arrive, so the first frame already shows cached content. Consumers that
+    // need the hydrated `lastMessageUuid` before subscribing (useChatStream)
+    // gate on `hydrateReady` (see the SessionSnapshot doc).
+    //
+    // A session with NO cache has nothing to hydrate, so it is marked ready
+    // synchronously (a single key probe — µs, not the JSON.parse + markdown
+    // re-derivation, which still happens off-render in the microtask). Only a
+    // session whose key actually exists waits for the microtask. This keeps
+    // cache-less mounts subscribing immediately (full replay) while cached
+    // mounts defer just long enough to pick up the incremental sinceUuid.
+    let hasCache = false
+    try {
+      hasCache = localStorage.getItem(STORAGE_PREFIX + sessionId) != null
+    } catch {
+      // localStorage unavailable (private mode) — nothing readable to hydrate.
     }
+    this.hydrateReady = !hasCache
+    this.state = createInitialSessionState(sessionId)
+    this.snapshot = this.buildSnapshot(this.state)
+    this.hydrateDone = new Promise((resolve) => {
+      this.resolveHydrate = resolve
+    })
+    queueMicrotask(() => this.hydrateFromCache(sessionId, hasCache))
     // Kick off async IDB hydration (open + scan + cold-load). Does not block
-    // construction — the LS tail is already painted sync above. IDB supersedes
-    // it with a fuller recent window when ready.
+    // construction — the LS tail is painted via the microtask above. IDB
+    // supersedes it with a fuller recent window when ready.
     this.idbReady = this.initIdb()
+  }
+
+  /** Restore the localStorage cache (v2/v3) into the store, off the render
+   *  path. Runs once, as a microtask from the constructor. With the v3 cache
+   *  the markdown pipeline is skipped entirely (plainText is persisted), so
+   *  this is ~10-20ms even for a 2MB cache; with a legacy v2 cache it pays the
+   *  one-time re-derive and the next persist upgrades the cache to v3. */
+  private hydrateFromCache(sessionId: string, hadCache: boolean): void {
+    try {
+      const cached = loadFromStorage(sessionId)
+      if (cached && cached.messages.length > 0) {
+        // Only `messages`/`items` are persisted — the lifecycle index
+        // maps (toolStatus, planStatus, planContent, questionAnswers,
+        // activeSubagents) are derived state and start empty after
+        // hydrate. We MUST replay the cached messages through
+        // updateIndexes() to rebuild them; otherwise every cached
+        // tool_use card renders 'running' forever (useToolStatus
+        // defaults to 'running' for unknown ids, and the live-replay
+        // path only sees frames AFTER lastMessageUuid). This was the
+        // "older Grep/Read cards stuck spinning after several turns"
+        // bug — cards from previous turns lived in the cached items
+        // but their toolStatus entries had been thrown away.
+        const fresh = createInitialSessionState(sessionId)
+        const seededMirror: ServerMirror = {
+          ...fresh.mirror,
+          items: cached.messages,
+          messages: cached.rawMessages as ServerMirror['messages'],
+          lastMessageUuid: cached.lastMessageUuid,
+          replayReady: true, // Treat cached data as "replayed"
+        }
+        const seeded: SessionState = {
+          sessionId,
+          mirror: seededMirror,
+          intent: {
+            ...fresh.intent,
+            dismissedSubagents: new Set(cached.dismissedSubagents),
+          },
+        }
+        // Rebuild indexes from the cached messages, THEN re-apply persisted
+        // dismissals so dismissed subagents stay hidden across refresh.
+        this.state = reapplyDismissed(rebuildIndexesFromMessages(seeded, seededMirror.messages))
+      }
+      // No cache (or empty): leave the empty state as-is — replayReady stays
+      // false so the skeleton shows until the WS replay lands.
+    } finally {
+      // Flip the flag BEFORE rebuilding the snapshot: buildSnapshot reads
+      // `this.hydrateReady`, so building while it's still false would publish
+      // a snapshot whose hydrateReady never reads true — useSessionField
+      // subscribers (useChatStream's subscribe gate) would never re-render
+      // and the WS subscribe would never fire with the cached sinceUuid.
+      this.hydrateReady = true
+      this.resolveHydrate()
+      // Re-snapshot + emit ONLY when the constructor's synchronous snapshot is
+      // stale — i.e. when a cache key existed (hadCache). For a cache-less
+      // session the constructor already published the final empty snapshot with
+      // hydrateReady=true, so emitting would be a redundant no-op render on
+      // every panel mount (useSyncExternalStore re-renders on a fresh-but-
+      // identical snapshot reference). The condition is `hadCache`, not
+      // `hydrated`: if the key existed at construction but the cache vanished
+      // before this microtask, the constructor snapshot still carries
+      // hydrateReady=false and MUST be refreshed (empty content, hydrateReady
+      // true) or the WS-subscribe gate never opens.
+      if (hadCache) {
+        this.snapshot = this.buildSnapshot(this.state)
+        this.emit()
+      }
+    }
   }
 
   /** Open IDB, rebuild persistedUuids/uuidToSeq/seq watermarks, and cold-load
@@ -923,6 +1038,7 @@ export class SessionStore {
       : [...mirror.messages, ...Array.from(intent.pendingPlaceholders.values()).map((p) => p.msg)]
     return {
       replayReady: mirror.replayReady,
+      hydrateReady: this.hydrateReady,
       items,
       messages,
       streamingContent: mirror.liveTurn?.flushedText ?? null,
