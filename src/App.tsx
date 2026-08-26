@@ -1812,7 +1812,7 @@ export function App() {
         // !s.slept: a deliberately-slept session isn't woken behind the
         // user's back. !s.terminated: a crashed session must not silently
         // re-run the poison turn — the user chooses via the banner.
-        if (s && !s.running && !s.slept && !s.terminated) {
+        if (s && !s.running && !s.slept && !s.terminated && !resumingRef.current.has(id)) {
           const pm = sessionsRef.current.find((s) => s.id === resumeTargetPanelIdRef.current)?.permissionMode
           void api.post(`/sessions/${id}/resume`, {
             permissionMode: pm,

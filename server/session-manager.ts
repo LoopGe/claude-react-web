@@ -1023,6 +1023,23 @@ export class SessionManager {
    *    a `result` message anyway.
    */
   async resume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo> {
+    // Coalesce: resume() awaits hasSdkTranscript / history / MCP refresh before
+    // spawning, so two racing calls (parallel /resume POSTs) both pass the live
+    // guard above and both reach spawn() — the second sessions.set() orphans the
+    // first Query, leaving a duplicate claude.exe (observed). Return the in-flight
+    // promise so a concurrent second call awaits the SAME spawn.
+    const inflight = this.resumeInFlight.get(id)
+    if (inflight) return inflight
+    const p = this.doResume(id, opts).finally(() => {
+      // Only clear if we're still tracked — a later resume may have replaced
+      // us while we were settling (don't remove the replacement).
+      if (this.resumeInFlight.get(id) === p) this.resumeInFlight.delete(id)
+    })
+    this.resumeInFlight.set(id, p)
+    return p
+  }
+
+  private async doResume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo> {
     const live = this.sessions.get(id)
     if (live) {
       // The pump's cleanup tail sets `terminated=true` but does NOT unload,
@@ -2193,6 +2210,22 @@ export class SessionManager {
     })
     session.handle = handle
 
+    // Same-id replacement (resume()/respawnFresh() spawn with an existing
+    // id): if a live handle already sits in the map under this id, destroy it
+    // BEFORE overwriting. Otherwise the previous Query is orphaned and keeps
+    // running — a duplicate claude.exe (observed with racing resume() calls).
+    // destroy() also detaches ProcessMonitor's onExit so the orphan's exit
+    // can't fire cleanup into the new session.
+    const superseded = this.sessions.get(id)
+    if (superseded && superseded.handle && superseded.handle !== handle) {
+      log.warn(`[session ${id}] spawn superseding a live session — destroying prior handle`)
+      try {
+        superseded.handle.destroy('session superseded by new spawn')
+      } catch (err) {
+        log.warn(`[session ${id}] failed to destroy superseded handle:`, err)
+      }
+    }
+
     session.pumpTask = this.pump(session)
     this.sessions.set(id, session)
     log.info(`[session ${id}] spawned model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
@@ -2219,14 +2252,6 @@ export class SessionManager {
       ...(replacesSource ? { replacesSource: true } : {}),
     })
     this.captureGitHead(session)
-
-    // [DEBUG MCP] Log the MCP servers passed to the SDK at spawn time, then
-    // probe context-usage (with retries) to report isLoaded for each tool.
-    const spawnMcpNames = fullOpts.mcpServers ? Object.keys(fullOpts.mcpServers as Record<string, unknown>) : []
-    if (spawnMcpNames.length > 0) {
-      log.info(`[session ${id}] [DEBUG MCP] spawn mcpServers=[${spawnMcpNames.join(', ')}]`)
-      void this.debugLogMcpToolLoadState(id, spawnMcpNames, 3000).catch(() => {})
-    }
 
     return this.info(session)
   }
@@ -3293,62 +3318,13 @@ export class SessionManager {
       'supportsMcp',
     )(servers)
 
-    // [DEBUG MCP] setMcpServers returned. Log the SDK result so we can see
-    // which servers were actually added and whether any errored.
-    log.info(`[session ${id}] setMcpServers result:`, JSON.stringify(result))
-
     // Update the tracked MCP server names so the client's "available"
     // computation stays in sync without relying on the flaky mcp-status.
     s.mcpServerNames = Object.keys(servers)
     this.writeStore(s)
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
 
-    // [DEBUG MCP] Probe whether the newly-added tools are loaded into the
-    // prompt (isLoaded:true) or deferred behind tool search (isLoaded:false).
-    // context-usage.mcpTools[].isLoaded is the authoritative signal here.
-    // Fire-and-forget; never blocks the response.
-    void this.debugLogMcpToolLoadState(id, Object.keys(servers)).catch(() => {})
-
     return result
-  }
-
-  /** [DEBUG MCP] Log per-tool isLoaded state from context-usage. isLoaded=false
-   *  means the tool is deferred behind tool search (defer_loading=true) and
-   *  won't appear in the model's tools list until discovered via ToolSearch. */
-  private async debugLogMcpToolLoadState(id: string, expectedServers: string[], delayMs = 1500) {
-    const expected = new Set(expectedServers)
-    if (expected.size === 0) return
-    // Retry the context-usage probe: right after spawn / setMcpServers the
-    // subprocess may still be mid-init-handshake, so the first probe can
-    // fail or return an empty mcpTools list. Back off and try again.
-    const attempts = 3
-    for (let i = 0; i < attempts; i++) {
-      await new Promise((r) => setTimeout(r, i === 0 ? delayMs : 2500))
-      let usage: unknown
-      try {
-        const fn = this.requireHandleMethod<() => Promise<unknown>>(
-          this.requireLive(id),
-          'getContextUsage',
-          'context usage (debug)',
-          'supportsContextUsage',
-        )
-        usage = await this.timeSdkControl(id, 'getContextUsage (debug)', fn)
-      } catch (e) {
-        log.info(`[session ${id}] [DEBUG MCP] context-usage probe ${i + 1}/${attempts} failed:`, (e as Error).message)
-        continue
-      }
-      const mcpTools = (usage as { mcpTools?: Array<{ name: string; serverName: string; isLoaded?: boolean }> })?.mcpTools ?? []
-      const relevant = mcpTools.filter((t) => expected.has(t.serverName))
-      if (relevant.length === 0) {
-        log.info(`[session ${id}] [DEBUG MCP] probe ${i + 1}/${attempts}: no mcpTools yet for [${[...expected].join(', ')}]`)
-        continue
-      }
-      const lines = relevant.map((t) => `  ${t.serverName}__${t.name}: isLoaded=${t.isLoaded}`)
-      log.info(`[session ${id}] [DEBUG MCP] tool load state for [${[...expected].join(', ')}] (probe ${i + 1}/${attempts}):`)
-      log.info(lines.join('\n'))
-      return
-    }
-    log.info(`[session ${id}] [DEBUG MCP] gave up after ${attempts} probes — tools never appeared for [${[...expected].join(', ')}]`)
   }
 
   /** Merge global MCP configs with session-specific overrides.
@@ -4609,7 +4585,7 @@ export class SessionManager {
           this.elicitBroker.cancelAll(s)
           this.dialogBroker.cancelAll(s)
         },
-        isLive: (id) => this.sessions.has(id),
+        isLive: (s) => this.sessions.get(s.id) === s,
         autoResume: this.autoResumeEnabled ? (s) => this.autoResume(s) : undefined,
         crashRecovery: this.crashRecoveryEnabled,
         attemptCrashRecovery: (s) => this.attemptCrashRecovery(s),
@@ -4692,6 +4668,14 @@ export class SessionManager {
    *  system/task_notification frame when it settles. Stopped on unload so a
    *  watcher can't fire into a dead session. */
   private backgroundWatchers = new Map<string, Map<string, () => void>>()
+
+  /** Per-session in-flight resume() promises. resume() awaits disk/transcript
+   *  probes before spawning, so two racing /resume calls (parallel browser
+   *  tabs, or the client's background resumer) can both pass the live-guard
+   *  and both reach spawn() — the second sessions.set() orphans the first
+   *  Query, leaving a duplicate claude.exe. Coalescing here makes the second
+   *  caller await the SAME spawn. */
+  private readonly resumeInFlight = new Map<string, Promise<SessionInfo>>()
 
   /** Re-spawn a session's Query after a clean exit (idle timeout).
    *  Returns true if the session was successfully re-spawned. */

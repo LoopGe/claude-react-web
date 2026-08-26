@@ -393,9 +393,13 @@ export interface PumpDeps {
   subagentHistoryCap: number
   persist: (session: Session) => void
   denyPendingPermissions: (session: Session) => void
-  /** Return true if the session is still tracked in the manager's live map.
-   *  Used to avoid overwriting state after unload() has already removed it. */
-  isLive: (id: string) => boolean
+  /** Return true if `session` is still the live entry for its id in the
+   *  manager's map (identity, not just presence). A same-id replacement (a
+   *  new spawn superseding an orphaned Query) must read the stale session as
+   *  not-live so its cleanup tail can't persist terminated=true over the new
+   *  session — without identity this the resurrected session would be
+   *  immediately stamped dead. */
+  isLive: (session: Session) => boolean
   /** Called when the Query exits cleanly (no error). If it returns true,
    *  the session is being auto-resumed — skip full cleanup (don't mark
    *  terminated, don't end subscribers). If it returns false or throws,
@@ -982,7 +986,19 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     // or graceful shutdown), it has already persisted the correct
     // state. Overwriting here would stamp terminated=true, which
     // prevents the user from resuming the session later. Skip.
-    if (!deps.isLive(session.id)) return
+    //
+    // Same-id replacement (spawn() superseded this session): the id is now
+    // owned by a fresh session object. Still settle the superseded session's
+    // parked permission awaits and end its subscriber queues — otherwise a
+    // client attached to the replaced session hangs on a dead message channel
+    // (it only recovers on a manual refresh), and parked SDK permits never
+    // resolve. Both are idempotent for the already-unloaded case (unload has
+    // already ended subscribers and cleared the pending maps).
+    if (!deps.isLive(session)) {
+      deps.denyPendingPermissions(session)
+      endAllSubscribers(session)
+      return
+    }
 
     // SessionManager.clear() drives its own respawn after destroying the
     // current handle. Skip both the auto-resume probe AND the cleanup

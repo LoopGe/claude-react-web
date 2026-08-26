@@ -2997,6 +2997,25 @@ describe('SessionManager', () => {
       mockGetSessionInfo.mockResolvedValueOnce(undefined)
       await expect(sm.resume('ghost')).rejects.toMatchObject({ status: 404 })
     })
+
+    it('coalesces concurrent resume() calls into a single spawn (no duplicate process)', async () => {
+      mockGetSessionInfo.mockResolvedValueOnce({
+        sessionId: 'orphan',
+        cwd: '/tmp/orphan',
+        summary: 'Orphaned session',
+        lastModified: 1234,
+        createdAt: 1000,
+      })
+
+      const p1 = sm.resume('orphan')
+      const p2 = sm.resume('orphan')
+      const [info1, info2] = await Promise.all([p1, p2])
+      expect(info1.id).toBe('orphan')
+      expect(info2.id).toBe('orphan')
+      const spawnedHandles = mockHandles.filter((h) => h.options.resume === 'orphan')
+      expect(spawnedHandles).toHaveLength(1)
+      expect(sm.get('orphan').running).toBe(true)
+    })
   })
 
   // `!`/`!!` exec abort — the "stop" button on a bash card. execCommand is
