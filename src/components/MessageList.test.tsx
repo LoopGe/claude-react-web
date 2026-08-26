@@ -172,6 +172,24 @@ function toItems(msgs: SdkMessage[]): TranscriptItem[] {
     }))
 }
 
+// Simulate a genuine user scroll-up away from the bottom — the ONLY legitimate
+// trigger for the jump-to-bottom button under the follow-gate (a transient
+// not-at-bottom geometry read while following is treated as a pin-lag, so it
+// can no longer surface the button). We drive the scroll handler's isScrollingUp
+// deterministically: first nudge scrollTop to a known-high "down" position (so
+// the listener latches a high lastScrollTopRef), then jump it to 0 and fire
+// again — 0 < prev ⇒ 'disable-now' (user-intent), which surfaces the button
+// immediately (no debounce). Wrapped in act so the state update flushes.
+function scrollUpFromBottom(container: HTMLElement) {
+  const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+  act(() => {
+    virtuosoMockState.scrollTop = 1000
+    fireEvent.scroll(scroller)
+    virtuosoMockState.scrollTop = 0
+    fireEvent.scroll(scroller)
+  })
+}
+
 describe('WorkingBubble', () => {
   it('renders a background-task count pill when runningTaskCount > 0', () => {
     const { container } = render(
@@ -912,12 +930,12 @@ describe('MessageList', () => {
     })
   })
 
-  it('shows jump-to-bottom when the scroller can scroll down', async () => {
+  it('shows jump-to-bottom after the user scrolls up from the bottom when there is content below', async () => {
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.scrollHeight = 200
     virtuosoMockState.clientHeight = 100
-    virtuosoMockState.scrollTop = 0
+    virtuosoMockState.scrollTop = 100 // start at the bottom (following)
 
     const msgs = [
       makeMsg('assistant', {
@@ -929,8 +947,124 @@ describe('MessageList', () => {
       <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
+    // At the bottom → no button while following.
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    })
+
+    // Genuine user scroll-up → disable-now → button surfaces.
+    scrollUpFromBottom(container)
     await waitFor(() => {
       expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+    })
+  })
+
+  it('keeps jump-to-bottom hidden while following, even across the follow-disable window (session-switch flicker guard)', async () => {
+    // Regression guard for the switch flicker. During a session's bulk replay
+    // the scroller is still following (`shouldFollowRef` true) but content
+    // growth makes geometry transiently read "not at bottom" (scrollTop lags
+    // the grown scrollHeight until the pin catches up). The 150ms follow-disable
+    // debounce must NOT treat that as a user scroll-away and surface the button
+    // — only `disable-now` (a genuine upward scroll) does. Geometry here report
+    // not-at-bottom for longer than FOLLOW_DEBOUNCE_MS; before the fix the
+    // debounce fired, flipped shouldFollowRef false, and flashed the button.
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 400
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 200 // lagging the grown bottom, so not at bottom while following
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Bulk-loaded message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
+    )
+
+    // Wait well past FOLLOW_DEBOUNCE_MS (a real bulk load would fire it several
+    // times). The button must stay hidden the whole window.
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    })
+  })
+
+  it('suppresses jump-to-bottom during the transcript reveal (replay) window', async () => {
+    // The render gate keys suppression on `isTranscriptRevealPending`, so the
+    // button must stay hidden while the transcript is (about to be) revealed,
+    // even if the user scrolls up in that window.
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 100 // start at the bottom (following)
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Scrollable message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} transcriptRevealKey="session-a" />,
+    )
+
+    // Synchronously (before the reveal rAFs complete) the transcript is in the
+    // reveal-pending window.
+    expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal-pending')).toBe(true)
+    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+
+    // Reveal completes; pending clears.
+    await waitFor(() => {
+      expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal-pending')).toBe(false)
+    })
+
+    // A genuine user scroll-up now surfaces the button — proving the pending
+    // suppression was window-scoped and the button isn't permanently broken.
+    scrollUpFromBottom(container)
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+    })
+  })
+
+  it('resets jump-to-bottom state on a session switch (no stale flash)', async () => {
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 100 // start at the bottom (following)
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Scrollable message' }] },
+      }),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+
+    const { container, rerender } = render(
+      <MessageList items={items} transcriptRevealKey="session-a" />,
+    )
+    // Wait for the transcript reveal to finish — the jump button is gated on
+    // `!isTranscriptRevealPending`, so it can't show before then.
+    await waitFor(() => {
+      expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal-pending')).toBe(false)
+    })
+    // User scrolls up → button visible.
+    scrollUpFromBottom(container)
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+    })
+
+    // Switch to a new session (new key). The component instance persists, so
+    // without resetting `canJumpToBottom`/`atBottom` STATE the previous
+    // session's values would render the button on the new session's first
+    // frame — the stale flash. Reset must kill it.
+    rerender(<MessageList items={items} transcriptRevealKey="session-b" />)
+
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
     })
   })
 
@@ -948,7 +1082,7 @@ describe('MessageList', () => {
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.scrollHeight = 200
     virtuosoMockState.clientHeight = 100
-    virtuosoMockState.scrollTop = 0
+    virtuosoMockState.scrollTop = 100 // start at the bottom (following)
 
     const msgs = [
       makeMsg('assistant', {
@@ -960,9 +1094,13 @@ describe('MessageList', () => {
       <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
-    // The jump button appears only after the 150ms follow-disable debounce
-    // fires (anti-flicker delay while atBottomRef was initially true).
-    act(() => { vi.advanceTimersByTime(150) })
+    // Surface the button via a genuine user scroll-up (disable-now), the only
+    // legitimate trigger under the follow-gate.
+    act(() => {
+      const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+      virtuosoMockState.scrollTop = 0
+      fireEvent.scroll(scroller)
+    })
     const button = container.querySelector('.chat-jump-to-bottom') as HTMLButtonElement | null
     expect(button).not.toBeNull()
 
@@ -1005,7 +1143,7 @@ describe('MessageList', () => {
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.scrollHeight = 200
     virtuosoMockState.clientHeight = 100
-    virtuosoMockState.scrollTop = 0
+    virtuosoMockState.scrollTop = 100 // start at the bottom (following)
 
     const msgs = [
       makeMsg('assistant', {
@@ -1016,7 +1154,14 @@ describe('MessageList', () => {
     const { container } = render(
       <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
-    act(() => { vi.advanceTimersByTime(150) })
+    // Surface the button via a genuine user scroll-up (disable-now). The rest
+    // of this test asserts the `scrollAnimatingRef` guard keeps it hidden while
+    // the returned-to-bottom animation plays.
+    act(() => {
+      const sc = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+      virtuosoMockState.scrollTop = 0
+      fireEvent.scroll(sc)
+    })
     const button = container.querySelector('.chat-jump-to-bottom') as HTMLButtonElement | null
     expect(button).not.toBeNull()
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement | null
