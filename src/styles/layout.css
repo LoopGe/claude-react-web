@@ -751,7 +751,8 @@ body.resizing-col .app {
   border-radius: var(--radius-circle);
   background: var(--accent);
   border: 2px solid var(--bg-elev);
-  box-shadow: 0 0 0 1px var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
+              var(--handle-shadow);
   cursor: pointer;
 }
 .effort-slider-range::-moz-range-thumb {
@@ -760,6 +761,8 @@ body.resizing-col .app {
   border-radius: var(--radius-circle);
   background: var(--accent);
   border: 2px solid var(--bg-elev);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
+              var(--handle-shadow);
   cursor: pointer;
 }
 .effort-slider-range:focus-visible::-webkit-slider-thumb {
