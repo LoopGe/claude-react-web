@@ -621,30 +621,38 @@ describe('liteContextUsageFromResult', () => {
     expect(liteContextUsageFromResult(msg)).toBeNull()
   })
 
-  it('returns null (keeps last good) when a cumulative cache_read bucket exceeds the context window', () => {
-    // Some proxies return a cumulative conversation counter in
+  it('drops a corrupt cache_read bucket and reports the non-cached input total', () => {
+    // Some proxies return a garbage conversation counter in
     // cache_read_input_tokens (4M for a long chat) instead of a per-request
     // value. A single bucket can never exceed the window in a valid response,
-    // so the payload is provably corrupt — and `input_tokens` alone is only
-    // the NON-cached portion (Anthropic docs), so emitting it would under-
-    // report a cached conversation by orders of magnitude. Return null → the
-    // pump keeps the last good snapshot instead of collapsing the bar.
+    // so the payload is provably corrupt — drop the bucket and report the
+    // surviving non-cached input_tokens. `input_tokens` alone under-reports a
+    // genuinely cached conversation, but a bucket over the window is *by
+    // definition* not a legitimate cache hit (the full prompt must fit in the
+    // window), so this is the best non-blocking estimate for a corrupt turn.
     const msg = makeResult({
       usage: { input_tokens: 50000, cache_read_input_tokens: 4000000 },
       modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
     })
-    expect(liteContextUsageFromResult(msg)).toBeNull()
+    const out = liteContextUsageFromResult(msg)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(50000)
+    expect(out!.percentage).toBe(25)
+    expect(out!.cacheReadTokens).toBeUndefined()
   })
 
-  it('returns null (keeps last good) when a cumulative cache_creation bucket exceeds the context window', () => {
+  it('drops a corrupt cache_creation bucket and reports the non-cached input total', () => {
     const msg = makeResult({
       usage: { input_tokens: 1000, cache_creation_input_tokens: 3000000 },
       modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
     })
-    expect(liteContextUsageFromResult(msg)).toBeNull()
+    const out = liteContextUsageFromResult(msg)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(1000)
+    expect(out!.cacheCreationTokens).toBeUndefined()
   })
 
-  it('returns null (keeps last good) when both cache buckets exceed the context window', () => {
+  it('drops both corrupt cache buckets and reports the non-cached input total', () => {
     const msg = makeResult({
       usage: {
         input_tokens: 1000,
@@ -653,19 +661,29 @@ describe('liteContextUsageFromResult', () => {
       },
       modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
     })
-    expect(liteContextUsageFromResult(msg)).toBeNull()
+    const out = liteContextUsageFromResult(msg)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(1000)
+    expect(out!.cacheCreationTokens).toBeUndefined()
+    expect(out!.cacheReadTokens).toBeUndefined()
   })
 
-  it('returns null for the production corruption shape (small input + cache_read over window)', () => {
+  it('reports the input-only fallback for the production corruption shape (small input + cache_read over window)', () => {
     // Regression: session 8481f67b flip-flopped between 67% (cache_read 0.67M
     // kept) and 0.04% (cache_read 1.3M dropped → input-only fallback of 400).
-    // With Guard 1 now rejecting the whole snapshot, the tiny reading is
-    // impossible — this shape keeps the last good value instead.
+    // The tiny reading is the best non-blocking estimate for a corrupt turn —
+    // the authoritative breakdown comes from the on-demand SettingsPanel REST
+    // endpoint. Rejecting the whole snapshot instead froze the bar empty on a
+    // proxy that returns a corrupt bucket on EVERY turn (no last-good to keep).
     const msg = makeResult({
       usage: { input_tokens: 400, cache_read_input_tokens: 1326080 },
       modelUsage: { 'deepseek/deepseek-v4-flash': { contextWindow: 1000000 } },
     })
-    expect(liteContextUsageFromResult(msg)).toBeNull()
+    const out = liteContextUsageFromResult(msg)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(400)
+    expect(out!.percentage).toBeCloseTo(0.04, 10)
+    expect(out!.cacheReadTokens).toBeUndefined()
   })
 
   it('returns null when input_tokens alone exceeds the context window', () => {
@@ -694,11 +712,10 @@ describe('liteContextUsageFromResult', () => {
     expect(out!.cacheReadTokens).toBe(200000)
   })
 
-  it('rejects a dropped cache bucket even when input is zero (Guard 1 short-circuit)', () => {
-    // input=0 with a cache_read bucket over the window: Guard 1 rejects the
-    // whole snapshot (dropped bucket → return null). This exercises the
-    // drop-path independently of the zero-total Guard 2, which no longer gets
-    // a chance to run for corrupt cache payloads.
+  it('rejects a corrupt bucket whose survivors total zero (Guard 2 zero-total)', () => {
+    // input=0 with a cache_read bucket over the window: Guard 1 drops the
+    // bucket, the recomputed total is 0, and Guard 2 (zero-total) returns
+    // null — so a dropped corrupt bucket can never broadcast a false 0%.
     const msg = makeResult({
       usage: { input_tokens: 0, cache_read_input_tokens: 4000000 },
       modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
@@ -814,11 +831,14 @@ describe('liteContextUsageFromAssistant', () => {
     expect(liteContextUsageFromAssistant(msg, cached)).toBeNull()
   })
 
-  it('returns null (keeps last good) when a cumulative cache_read bucket exceeds the cached window', () => {
+  it('drops a corrupt cache_read bucket and reports the non-cached input total', () => {
     const msg = makeAssistant({
       usage: { input_tokens: 1000, cache_read_input_tokens: 3000000 },
     })
-    expect(liteContextUsageFromAssistant(msg, cached)).toBeNull()
+    const out = liteContextUsageFromAssistant(msg, cached)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(1000)
+    expect(out!.cacheReadTokens).toBeUndefined()
   })
 })
 

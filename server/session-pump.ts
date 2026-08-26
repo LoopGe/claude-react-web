@@ -1130,33 +1130,43 @@ function assembleLiteUsage(opts: {
    *  suspicious payload ('result' = end-of-turn, 'assistant' = mid-turn). */
   source?: 'result' | 'assistant'
 }): LiteContextUsage | null {
-  // Guard 1 — reject impossible cache buckets. A single prompt-side bucket can
+  // Guard 1 — drop impossible cache buckets. A single prompt-side bucket can
   // never exceed the context window in a valid Anthropic response (the full
   // prompt = input + cache_read + cache_creation must fit in the window), so
-  // a bucket larger than the window is garbage. Some proxies return a
-  // CUMULATIVE conversation counter in cache_read_input_tokens (millions of
-  // tokens for a long chat); summing that against the window would make every
-  // snapshot look >100% and get rejected below, leaving the ContextBar empty
-  // forever.
+  // a bucket larger than the window is garbage. Some proxies return a garbage
+  // cache_read_input_tokens (millions of tokens — neither a per-request cache
+  // hit nor a monotonic cumulative counter); summing it against the window
+  // would make every snapshot look >100% and get rejected below, leaving the
+  // ContextBar empty forever. Drop the bad bucket and recompute from the
+  // survivors.
   //
-  // When a bucket IS corrupt we cannot reconstruct the true prompt size from
-  // the survivors: `input_tokens` is only the NON-cached portion (Anthropic
-  // docs), so emitting `totalTokens = inputTokens` alone would under-report a
-  // cached conversation by orders of magnitude — the ContextBar collapses to
-  // ~0% in the middle of a 67% turn. Reject the whole snapshot and keep the
-  // last known good value instead.
-  const { cacheCreation, cacheRead } = opts
-  if (
-    (cacheCreation != null && cacheCreation > opts.contextWindow) ||
-    (cacheRead != null && cacheRead > opts.contextWindow)
-  ) {
+  // A bucket over the window is *by definition* invalid: a legitimate cache
+  // hit reports cache_read <= window and is summed normally below, so dropping
+  // an over-window bucket never under-reports a genuinely cached conversation.
+  // `totalTokens = inputTokens` is then only the non-cached portion — the best
+  // non-blocking estimate available for a corrupt turn (the authoritative
+  // breakdown comes from the on-demand SettingsPanel REST endpoint). The
+  // earlier "reject the whole snapshot" version of this guard froze the
+  // ContextBar empty on proxies that return a corrupt bucket on EVERY turn,
+  // because there was never a last-good value to keep.
+  let { cacheCreation, cacheRead } = opts
+  if (cacheCreation != null && cacheCreation > opts.contextWindow) {
     log.debug(
-      `[context-usage] cache bucket > contextWindow → skipping update ` +
+      `[context-usage] cache_creation bucket > contextWindow → dropping ` +
       `(source=${opts.source ?? 'unknown'}, model=${opts.model}, ` +
       `inputTokens=${opts.inputTokens}, cacheCreation=${cacheCreation}, ` +
       `cacheRead=${cacheRead}, contextWindow=${opts.contextWindow})`,
     )
-    return null
+    cacheCreation = undefined
+  }
+  if (cacheRead != null && cacheRead > opts.contextWindow) {
+    log.debug(
+      `[context-usage] cache_read bucket > contextWindow → dropping ` +
+      `(source=${opts.source ?? 'unknown'}, model=${opts.model}, ` +
+      `inputTokens=${opts.inputTokens}, cacheCreation=${cacheCreation}, ` +
+      `cacheRead=${cacheRead}, contextWindow=${opts.contextWindow})`,
+    )
+    cacheRead = undefined
   }
   const totalTokens = opts.inputTokens + (cacheCreation ?? 0) + (cacheRead ?? 0)
   if (totalTokens > opts.contextWindow) {
@@ -1195,9 +1205,8 @@ function assembleLiteUsage(opts: {
     model: opts.model,
   }
   // Forward the cache buckets only when the proxy reported a number, so
-  // "absent" stays distinguishable from "zero". Corrupt buckets never reach
-  // here — Guard 1 already rejected the whole snapshot if one exceeded the
-  // context window.
+  // "absent" stays distinguishable from "zero". Corrupt buckets were dropped
+  // to undefined by Guard 1 and naturally fall out of the typeof check.
   if (typeof cacheCreation === 'number') out.cacheCreationTokens = cacheCreation
   if (typeof cacheRead === 'number') out.cacheReadTokens = cacheRead
   if (typeof opts.outputTokens === 'number') out.outputTokens = opts.outputTokens
