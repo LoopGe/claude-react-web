@@ -20,7 +20,11 @@ describe('StreamingFooter', () => {
     expect(bubble?.querySelector('.os-track')).toBeTruthy()
   })
 
-  it('renders a fenced code block live and keeps prose as plain text', () => {
+  /* Temporarily disabled along with the live code-block rendering in
+   * StreamingFooter (see transcript-chrome.tsx) — the streaming bubble now
+   * renders the whole turn as plain text. Uncomment together with the source
+   * to re-enable. */
+  /* it('renders a fenced code block live and keeps prose as plain text', () => {
     const { container } = render(
       <StreamingFooter content={'explain\n```js\nconst x = 1\n```\ndone'} />,
     )
@@ -36,5 +40,5 @@ describe('StreamingFooter', () => {
     const { container } = render(<StreamingFooter content={'```js\nconst x = 1'} />)
     expect(container.querySelector('.code-block')).toBeTruthy()
     expect(container.querySelector('.code-block-copy')).toBeFalsy()
-  })
+  }) */
 })

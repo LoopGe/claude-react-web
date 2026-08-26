@@ -1,10 +1,13 @@
-import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import { IconZap } from '../icons/ToolIcons'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
-import { CodeBlock } from '../Markdown'
-import { splitStreamSegments } from '../../utils/stream-segments'
+// Temporarily disabled: live fenced-code-block rendering in the streaming
+// bubble (StreamCodeSegment below + the segment split in StreamingFooter).
+// Restore these imports together with the commented-out logic to re-enable.
+// import { CodeBlock } from '../Markdown'
+// import { splitStreamSegments } from '../../utils/stream-segments'
 
 /** Top-of-transcript affordance for reverse infinite scroll. Renders a
  *  spinner while a page is loading, or a thin idle marker when older
@@ -25,15 +28,19 @@ export const OlderHistoryHeader = memo(function OlderHistoryHeader({ loading }: 
   )
 })
 
-/** One fenced-code segment of the live turn, with primitive-only props so
- *  memo actually bails out. Passing the <code> children JSX directly to the
- *  memoized CodeBlock defeated its shallow compare (a fresh element per
- *  render), re-rendering every closed code block on each ~80ms streaming
- *  flush — reconciliation cost that grows linearly with the number of code
- *  blocks in the turn. With this wrapper only the still-growing open tail
- *  segment re-renders; closed segments bail on identical (string | boolean)
- *  props. Text segments stay inline: a bare <span> render costs about as
- *  much as the memo compare itself. */
+/* Temporarily disabled — the streaming bubble now renders the whole turn as
+ * plain text (no fenced-code-block special-casing). Uncomment along with the
+ * restored imports and the segment-split in StreamingFooter to re-enable.
+
+ * One fenced-code segment of the live turn, with primitive-only props so
+ * memo actually bails out. Passing the <code> children JSX directly to the
+ * memoized CodeBlock defeated its shallow compare (a fresh element per
+ * render), re-rendering every closed code block on each ~80ms streaming
+ * flush — reconciliation cost that grows linearly with the number of code
+ * blocks in the turn. With this wrapper only the still-growing open tail
+ * segment re-renders; closed segments bail on identical (string | boolean)
+ * props. Text segments stay inline: a bare <span> render costs about as
+ * much as the memo compare itself.
 const StreamCodeSegment = memo(function StreamCodeSegment({
   lang,
   content,
@@ -54,6 +61,7 @@ const StreamCodeSegment = memo(function StreamCodeSegment({
     </CodeBlock>
   )
 })
+*/
 
 export const StreamingFooter = memo(function StreamingFooter({ content }: { content: string }) {
   // Render the in-progress turn as PLAIN TEXT, not Markdown. The live turn
@@ -110,11 +118,13 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
   // the blur and the displacement url() are applied as one backdrop-filter.
   const glassFilter = `blur(2px) url(#${filterId})`
 
-  // Live markdown-ish split: fenced code blocks render as real blocks while
-  // prose stays as plain text until the turn completes. Re-parses the whole
-  // accumulated string per flush (one streaming turn's string is small).
-  const segments = useMemo(() => splitStreamSegments(content), [content])
-  const last = segments[segments.length - 1]
+  // Temporarily disabled: the whole turn renders as plain text while
+  // streaming. Previously a live markdown-ish split rendered fenced code
+  // blocks as real blocks (via StreamCodeSegment) and kept prose as plain
+  // text until the turn completed. Re-enable by restoring the imports above
+  // and uncommenting the block below.
+  // const segments = useMemo(() => splitStreamSegments(content), [content])
+  // const last = segments[segments.length - 1]
 
   return (
     <div className="streaming-footer-wrapper">
@@ -158,7 +168,10 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
           />
         )}
         <div ref={setBodyRef} className="msg-body assistant-body streaming-plain" aria-live="polite" aria-atomic="false">
-          {segments.map((seg, i) => (
+          {content}
+          <span className="streaming-cursor" />
+          {/* StreamCodeSegment / splitStreamSegments disabled — see above. */}
+          {/* {segments.map((seg, i) => (
             <Fragment key={i}>
               {seg.type === 'text' ? (
                 <span>{seg.content}</span>
@@ -174,7 +187,7 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
           ))}
           {(segments.length === 0 || last.type === 'text' || (last.type === 'code' && last.closed)) && (
             <span className="streaming-cursor" />
-          )}
+          )} */}
         </div>
       </div>
     </div>
