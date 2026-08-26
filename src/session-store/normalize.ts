@@ -460,6 +460,15 @@ export function getEnterPlanToolUseIds(msg: SdkMessage): string[] {
  *  covers the transcript-derived pending/background subagent chips. Either one
  *  keeps the bubble alive. Gated on `!terminated`: a dead session will never
  *  receive a completion signal, so an eternal Waiting would be a dead state. */
+/** Pick the description used to auto-generate a session title: prefer the
+ *  user's typed text, fall back to the composed (preamble + text) message
+ *  (image-only first turns have empty typed text), then trim and truncate
+ *  so the title-generation LLM call stays cheap. */
+export function autoTitleDescription(text: string, full: string): string {
+  const src = text.trim() || full
+  return src.trim().slice(0, 300)
+}
+
 export function computeWaiting(args: {
   turnActive: boolean
   terminated: boolean
