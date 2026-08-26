@@ -130,6 +130,12 @@ export interface SessionInfoBase<PM = string> {
    *  on gateway deployments). undefined = unknown → UI shows the chip;
    *  false = hide it. Not persisted. */
   thinkingSupported?: boolean
+  /** User intent: absolute auto-compact window size in tokens (SDK
+   *  Settings.autoCompactWindow). Undefined means "auto" — the CLI derives
+   *  the threshold from the model's context window. Persisted so it survives
+   *  resume / fork / restart. The client converts this to a percentage of
+   *  the model's raw context window for the slider. */
+  autoCompactWindow?: number
   running: boolean
   /** True while the crash-recovery ladder is mid-flight (between a CLI
    *  crash and a successful in-place respawn or give-up). Lets the client

@@ -234,6 +234,13 @@ export interface Session {
    *   - true     : supported.
    *  Not persisted — re-derived on every spawn / model switch. */
   thinkingSupported?: boolean
+  /** User intent: absolute auto-compact window size in tokens (SDK
+   *  Settings.autoCompactWindow). Set via setAutoCompactWindow (forwarded to
+   *  the SDK as applyFlagSettings({ autoCompactWindow, autoCompactEnabled })),
+   *  persisted so it survives resume/restart, and re-applied on respawn.
+   *  Undefined means "auto" — the CLI derives the threshold from the model's
+   *  context window. */
+  autoCompactWindow?: number
   handle: ProviderSessionHandle
   subscribers: Map<string, Subscriber>
   permissionSubscribers: Map<string, PermissionSubscriber>

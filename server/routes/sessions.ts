@@ -492,6 +492,23 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ session: info })
   })
 
+  // Set the auto-compact window (absolute tokens). Body `{ window?: number |
+  // null }`: a positive finite number pins the window (and enables
+  // auto-compact); `null` clears back to "auto" (the CLI derives the
+  // threshold from the model's context window). Forwarded to the SDK via
+  // applyFlagSettings and persisted so it survives resume / fork / restart.
+  app.post('/sessions/:id/auto-compact-window', async (c) => {
+    const body = await safeJson<{ window?: unknown }>(c.req)
+    const w = body.window
+    if (w !== null && w !== undefined) {
+      if (typeof w !== 'number' || !Number.isFinite(w) || w <= 0) {
+        return c.json({ error: 'window must be a positive finite number or null' }, 400)
+      }
+    }
+    const info = await sm.setAutoCompactWindow(c.req.param('id'), w == null ? null : w)
+    return c.json({ session: info })
+  })
+
   // Set extended-thinking config ({type:'adaptive'} | {type:'disabled'} |
   // {type:'enabled', budgetTokens}). Forwarded to the SDK via the
   // setMaxThinkingTokens control request (thinking has no Settings key);

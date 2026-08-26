@@ -558,6 +558,53 @@ describe('liteContextUsageFromResult', () => {
     expect(liteContextUsageFromResult(msg)!.autoCompactThreshold).toBe(179000)
   })
 
+  it('surfaces the model maxOutputTokens on the lite snapshot', () => {
+    const msg = makeResult({
+      usage: { input_tokens: 50000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000, maxOutputTokens: 32000 } },
+    })
+    expect(liteContextUsageFromResult(msg)!.maxOutputTokens).toBe(32000)
+  })
+
+  it('omits maxOutputTokens when the model does not report it', () => {
+    const msg = makeResult({
+      usage: { input_tokens: 50000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+    expect(liteContextUsageFromResult(msg)!.maxOutputTokens).toBeUndefined()
+  })
+
+  it('derives autoCompactThreshold from windowOverride instead of the model contextWindow', () => {
+    // A 1M model (contextWindow 1000000) pinned to a 200K window via
+    // windowOverride. effective = 200000 - min(20000, 20000) = 180000;
+    // threshold = 180000 - 13000 = 167000 — NOT the model-derived value.
+    const msg = makeResult({
+      usage: { input_tokens: 1000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 1000000 } },
+    })
+    expect(liteContextUsageFromResult(msg, 200000)!.autoCompactThreshold).toBe(167000)
+  })
+
+  it('windowOverride respects the maxOutputTokens floor like the model window does', () => {
+    // maxOutputTokens 8000 < 20000 floor → effective = 200000 - 8000 = 192000
+    // threshold = 192000 - 13000 = 179000
+    const msg = makeResult({
+      usage: { input_tokens: 1000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 1000000, maxOutputTokens: 8000 } },
+    })
+    expect(liteContextUsageFromResult(msg, 200000)!.autoCompactThreshold).toBe(179000)
+  })
+
+  it('ignores a non-positive windowOverride (falls back to the model window)', () => {
+    // windowOverride 0 / undefined / negative must not produce a bogus
+    // threshold — the existing tests above already cover the undefined case.
+    const msg = makeResult({
+      usage: { input_tokens: 1000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000, maxOutputTokens: 32000 } },
+    })
+    expect(liteContextUsageFromResult(msg, 0)!.autoCompactThreshold).toBe(167000)
+  })
+
   it('returns null for a spawn/restart warm-up result with all-zero usage', () => {
     // The SDK emits a placeholder `result` at spawn/restart with iterations=[]
     // and every bucket zero. Broadcasting it would clobber the last good
@@ -684,6 +731,7 @@ describe('liteContextUsageFromAssistant', () => {
     percentage: 0.5,
     model: 'claude-opus-4-7',
     autoCompactThreshold: 167000,
+    maxOutputTokens: 32000,
   }
 
   it('returns null for non-assistant messages', () => {
@@ -733,6 +781,7 @@ describe('liteContextUsageFromAssistant', () => {
     expect(out!.model).toBe('claude-opus-4-7')
     expect(out!.outputTokens).toBe(4321)
     expect(out!.autoCompactThreshold).toBe(167000)
+    expect(out!.maxOutputTokens).toBe(32000)
     // Cache buckets forwarded from the assistant message's own usage.
     expect(out!.cacheCreationTokens).toBe(200)
     expect(out!.cacheReadTokens).toBe(5000)

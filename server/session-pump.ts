@@ -24,6 +24,7 @@ import { createLogger } from './log.js'
 import type { HookRunRecord, HookRuntimeEvent, HookRunStatus } from '../shared/hooks.js'
 import type { CliNotification } from '../shared/ws-protocol.js'
 import { isTerminalTaskStatus } from '../shared/tasks.js'
+import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 
 const MAX_HOOK_OUTPUT_CHARS = 20_000
 
@@ -861,7 +862,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // (skills/agents/memoryFiles/mcpTools) still comes from the
         // on-demand REST endpoint when the user opens SettingsPanel.
         if (msg.type === 'result') {
-          const usage = liteContextUsageFromResult(msg)
+          // Pass the session's pinned auto-compact window (undefined = auto)
+          // so the derived threshold reflects a user override, not just the
+          // model's raw context window.
+          const usage = liteContextUsageFromResult(msg, session.autoCompactWindow)
           if (usage) {
             // Cache regardless of current subscriber count so a tab that
             // attaches LATER (reconnect / new panel / refresh+resume) can
@@ -1081,14 +1085,12 @@ export interface LiteContextUsage {
    *  client renders "X% until auto-compact" from it. Carried forward onto
    *  mid-turn `assistant` snapshots so the warning stays live. */
   autoCompactThreshold?: number
+  /** The picked model's advertised max output tokens (from
+   *  `modelUsage[model].maxOutputTokens`). Surfaced so the client can invert
+   *  a marker position back into Settings.autoCompactWindow exactly instead of
+   *  assuming the 20000 floor. Carried forward like the threshold. */
+  maxOutputTokens?: number
 }
-
-/** Buffer the SDK reserves before triggering auto-compact. Matches the
- *  CLI's AUTOCOMPACT_BUFFER_TOKENS in src/services/compact/autoCompact.ts. */
-const AUTOCOMPACT_BUFFER_TOKENS = 13000
-/** The CLI subtracts at most this many tokens of output headroom when
- *  computing the effective context window for the auto-compact threshold. */
-const AUTOCOMPACT_MAX_OUTPUT_FLOOR = 20000
 
 /** Compute the auto-compact threshold (in tokens) from a model's advertised
  *  context window and max output, mirroring the CLI's formula:
@@ -1123,6 +1125,7 @@ function assembleLiteUsage(opts: {
   contextWindow: number
   model: string
   autoCompactThreshold?: number
+  maxOutputTokens?: number
   /** Caller tag so the diagnostic log can tell us which path produced a
    *  suspicious payload ('result' = end-of-turn, 'assistant' = mid-turn). */
   source?: 'result' | 'assistant'
@@ -1199,15 +1202,26 @@ function assembleLiteUsage(opts: {
   if (typeof cacheRead === 'number') out.cacheReadTokens = cacheRead
   if (typeof opts.outputTokens === 'number') out.outputTokens = opts.outputTokens
   if (typeof opts.autoCompactThreshold === 'number') out.autoCompactThreshold = opts.autoCompactThreshold
+  if (typeof opts.maxOutputTokens === 'number') out.maxOutputTokens = opts.maxOutputTokens
   return out
 }
 
 /** Build a LiteContextUsage from a `result` SDK message. Returns null when
  *  the message lacks the expected fields (e.g. result errors before the
  *  API call landed).
+ *
+ *  `windowOverride` is the session's pinned auto-compact window (absolute
+ *  tokens, SDK Settings.autoCompactWindow). When set to a positive number it
+ *  REPLACES the model's advertised context window in the auto-compact
+ *  threshold derivation — so a 1M model with a user-pinned 200k window warns
+ *  at 200k, not 1M. It does NOT change the bar's maxTokens/percentage, which
+ *  continue to reflect the model's real window.
  *  @internal — exported only for unit tests; not part of the module's
  *              public API. */
-export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | null {
+export function liteContextUsageFromResult(
+  msg: SDKMessage,
+  windowOverride?: number,
+): LiteContextUsage | null {
   if (msg.type !== 'result') return null
   // The result message's `usage` and `modelUsage` shapes are SDK-specific
   // and broader than what we read here — cast through unknown so we can
@@ -1297,7 +1311,10 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
   }
   // Surface the cache buckets of the picked iteration so the UI can show
   // cache hit rate, plus its output_tokens for the throughput readout, and
-  // derive the auto-compact threshold from the model's context window.
+  // derive the auto-compact threshold from the model's context window — or
+  // from the session's pinned window when one is set (windowOverride).
+  const effectiveWindow =
+    windowOverride && windowOverride > 0 ? windowOverride : contextWindow
   return assembleLiteUsage({
     inputTokens: source.input_tokens ?? 0,
     cacheCreation: source.cache_creation_input_tokens,
@@ -1305,7 +1322,8 @@ export function liteContextUsageFromResult(msg: SDKMessage): LiteContextUsage | 
     outputTokens: source.output_tokens,
     contextWindow,
     model,
-    autoCompactThreshold: computeAutoCompactThreshold(contextWindow, maxOutputTokens),
+    autoCompactThreshold: computeAutoCompactThreshold(effectiveWindow, maxOutputTokens),
+    maxOutputTokens,
     source: 'result',
   })
 }
@@ -1354,6 +1372,7 @@ export function liteContextUsageFromAssistant(
     // Carry the threshold forward from the last `result` so the warning
     // stays live between turn-end refreshes.
     autoCompactThreshold: cached.autoCompactThreshold,
+    maxOutputTokens: cached.maxOutputTokens,
     source: 'assistant',
   })
 }

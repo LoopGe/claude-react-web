@@ -73,6 +73,7 @@ import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, 
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useToast } from '../hooks/useToast'
+import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
 import { Overlay } from './Overlay'
 import { useWsHub } from '../hooks/useWsHub'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
@@ -1002,6 +1003,8 @@ export const Chat = memo(function Chat({
   }, [allContribs, executePluginCommand, session.id, session.working])
   // Export-success feedback now goes through the global toast hub.
   const toast = useToast()
+  // Shared POST path for the ContextBar's draggable auto-compact marker.
+  const { commitWindow } = useAutoCompactWindow(session, onSessionUpdate)
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedQuery = useDebouncedValue(searchQuery, 200)
   // Raw state; the value consumers see (`searchActiveIdx`, below) is
@@ -1982,7 +1985,13 @@ export const Chat = memo(function Chat({
       )}
 
       <div className="ctx-bar-row">
-        <ContextBar usage={stream.contextUsage} />
+        <ContextBar
+          usage={stream.contextUsage}
+          editable
+          custom={session.autoCompactWindow != null}
+          disabled={session.terminated || !session.running}
+          onSetWindow={commitWindow}
+        />
       </div>
 
       <Composer

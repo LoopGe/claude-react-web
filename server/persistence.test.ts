@@ -296,4 +296,43 @@ describe('SessionStore', () => {
     const loaded = await store.load()
     for (const m of loaded) expect(m.thinking).toBeUndefined()
   })
+
+  // ── autoCompactWindow (absolute token window) persistence ────────
+  it('round-trips a positive autoCompactWindow', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a', { autoCompactWindow: 180000 }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    expect(store2.get('a')?.autoCompactWindow).toBe(180000)
+  })
+
+  it('rounds fractional autoCompactWindow tokens during coerce', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        { id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, autoCompactWindow: 180000.6 },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    expect(loaded[0].autoCompactWindow).toBe(180001)
+  })
+
+  it('drops malformed autoCompactWindow values during coerce', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        { id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, autoCompactWindow: 0 },
+        { id: 'b', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, autoCompactWindow: -5000 },
+        { id: 'c', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, autoCompactWindow: '180000' },
+        { id: 'd', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, autoCompactWindow: null },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    for (const m of loaded) expect(m.autoCompactWindow).toBeUndefined()
+  })
 })

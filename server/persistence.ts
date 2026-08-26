@@ -53,6 +53,11 @@ export interface SessionMeta {
   /** User intent: extended-thinking configuration (SDK ThinkingConfig
    *  shape). Re-applied to the SDK on re-spawn (resume / restart / fork). */
   thinking?: ThinkingSetting
+  /** User intent: absolute auto-compact window size in tokens (SDK
+   *  Settings.autoCompactWindow). Undefined = "auto" (the CLI derives the
+   *  threshold from the model's context window). Re-applied to the SDK via
+   *  applyFlagSettings on every re-spawn (resume / restart / fork). */
+  autoCompactWindow?: number
   /** Structured hook configuration applied via Query.applyFlagSettings(). */
   hooks?: SessionHooksConfig
   /** Monotonic counter of user turns seen; used as a rough "is there
@@ -199,6 +204,10 @@ function coerceMeta(raw: unknown): SessionMeta | null {
         ? r.effortLevel
         : undefined,
     thinking: coerceThinkingSetting(r.thinking),
+    autoCompactWindow:
+      typeof r.autoCompactWindow === 'number' && Number.isFinite(r.autoCompactWindow) && r.autoCompactWindow > 0
+        ? Math.round(r.autoCompactWindow)
+        : undefined,
     hooks: coerceHooks(r.hooks),
     messageCount: typeof r.messageCount === 'number' ? r.messageCount : 0,
     terminated: typeof r.terminated === 'boolean' ? r.terminated : false,

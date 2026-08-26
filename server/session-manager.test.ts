@@ -1942,6 +1942,50 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.effortLevel).toBe('xhigh')
   })
 
+  // --- auto-compact window (SDK Settings.autoCompactWindow via applyFlagSettings) ---
+
+  it('setAutoCompactWindow() pins a positive token window and enables auto-compact', async () => {
+    const info = sm.create({})
+    expect(info.autoCompactWindow).toBeUndefined()
+    const updated = await sm.setAutoCompactWindow(info.id, 180000)
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
+      autoCompactWindow: 180000,
+      autoCompactEnabled: true,
+    })
+    expect(updated.autoCompactWindow).toBe(180000)
+    expect(sm.get(info.id).autoCompactWindow).toBe(180000)
+  })
+
+  it('setAutoCompactWindow() rounds fractional tokens', async () => {
+    const info = sm.create({})
+    const updated = await sm.setAutoCompactWindow(info.id, 180000.6)
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
+      autoCompactWindow: 180001,
+      autoCompactEnabled: true,
+    })
+    expect(updated.autoCompactWindow).toBe(180001)
+  })
+
+  it('setAutoCompactWindow() with null clears back to "auto"', async () => {
+    const info = sm.create({})
+    await sm.setAutoCompactWindow(info.id, 180000)
+    expect(sm.get(info.id).autoCompactWindow).toBe(180000)
+    const updated = await sm.setAutoCompactWindow(info.id, null)
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({
+      autoCompactWindow: null,
+      autoCompactEnabled: null,
+    })
+    expect(updated.autoCompactWindow).toBeUndefined()
+    expect(sm.get(info.id).autoCompactWindow).toBeUndefined()
+  })
+
+  it('setAutoCompactWindow() persists the window so it survives resume', async () => {
+    const info = sm.create({})
+    await sm.setAutoCompactWindow(info.id, 100000)
+    await store.flush()
+    expect(store.get(info.id)?.autoCompactWindow).toBe(100000)
+  })
+
   // --- thinking config (Options.thinking at spawn + setMaxThinkingTokens live) ---
 
   it("setThinking() maps adaptive → null and forwards setMaxThinkingTokens(null)", async () => {

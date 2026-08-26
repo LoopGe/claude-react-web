@@ -170,6 +170,17 @@ export class ClaudeProvider implements AgentProvider {
         log.warn(`[${opts.id}] applying effortLevel on spawn failed:`, err)
       })
     }
+    // Auto-compact window intent (SDK Settings key with no spawn-time Options
+    // equivalent) — re-applied post-spawn exactly like fastMode/effortLevel
+    // above. Only a positive token count pins a window; undefined = "auto".
+    if (opts.autoCompactWindow !== undefined && opts.autoCompactWindow > 0) {
+      void q.applyFlagSettings({
+        autoCompactWindow: Math.round(opts.autoCompactWindow),
+        autoCompactEnabled: true,
+      }).catch((err) => {
+        log.warn(`[${opts.id}] applying autoCompactWindow on spawn failed:`, err)
+      })
+    }
     // Auto-memory intent (enable / directory / auto-dream). These are SDK
     // Settings keys with no spawn-time Options equivalent, so they're
     // re-applied post-spawn exactly like fastMode above. Spawn-time values

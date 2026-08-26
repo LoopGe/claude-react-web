@@ -557,6 +557,58 @@
 /* All levels use accent ?urgency is conveyed by the percentage text. */
 .ctx-bar-empty .ctx-bar-fill { background: var(--border); }
 
+/* Draggable auto-compact threshold marker, fused onto the ContextBar track.
+   The marker sits at the pump's autoCompactThreshold (% of the model window):
+   drag it to pin Settings.autoCompactWindow so auto-compact triggers at that
+   spot; double-click to reset to auto. The wrap is the positioning context —
+   the track itself keeps overflow:hidden so the fill clips to its radius. */
+.ctx-bar-track-wrap {
+  position: relative;
+  height: 4px;
+}
+.ctx-bar-track-editable {
+  cursor: ew-resize;
+  touch-action: none;
+}
+.ctx-bar-marker {
+  position: absolute;
+  top: 50%;
+  left: 0%;
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border-radius: var(--radius-circle);
+  transform: translate(-50%, -50%);
+  background: var(--accent);
+  border: 2px solid var(--bg-elev);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+/* Auto (no custom pin): muted, reads as the model-default threshold. */
+.ctx-bar-marker-auto {
+  background: var(--border);
+  border-color: var(--bg-elev);
+  box-shadow: none;
+}
+.ctx-bar-marker-interactive {
+  cursor: grab;
+}
+.ctx-bar-marker-dragging {
+  cursor: grabbing;
+  transform: translate(-50%, -50%) scale(1.3);
+}
+.ctx-bar-marker:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+/* "Compact at N%" readout beside the warning while custom / dragging. */
+.ctx-bar-compact {
+  color: var(--fg-muted);
+  margin-right: 8px;
+}
+.ctx-bar-compact-dragging {
+  color: var(--accent);
+}
+
 /* Expanded textarea — Alt+Enter enlarges the composer textarea from its
    default 180px cap to a much larger area. */
 .chat-composer textarea.textarea-expanded {

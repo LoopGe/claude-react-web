@@ -49,6 +49,10 @@ export interface ContextUsage {
    *  `result` has supplied the model's context window; the bar renders
    *  "X% until auto-compact" from it. */
   autoCompactThreshold?: number
+  /** The model's advertised max output tokens, surfaced so the draggable
+   *  marker can invert a threshold position back into Settings.autoCompactWindow
+   *  exactly (mirror of the server's LiteContextUsage.maxOutputTokens). */
+  maxOutputTokens?: number
   skills?: {
     includedSkills: number
     totalSkills: number

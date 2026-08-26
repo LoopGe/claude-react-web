@@ -8,6 +8,7 @@ import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
+import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
 import { useSessionUsage } from '../hooks/useSessionUsage'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillLoadMode, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
@@ -266,6 +267,13 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     detailedUsage || contextUsage
       ? { ...detailedUsage, ...contextUsage }
       : null
+
+  // ── Auto-compact window (fused into the ContextBar as a draggable marker) ──
+  // The ContextBar owns the %→tokens inversion and the drag/double-click
+  // gestures; this panel only ships the commit (via the shared hook) and
+  // blocks interaction while busy / terminated / dormant.
+  const { commitWindow } = useAutoCompactWindow(session, onSessionUpdate)
+  const autoCompactDisabled = busy || session.terminated || !session.running
 
   const runAndRefresh = async (fn: () => Promise<{ session: SessionInfo }>) => {
     setBusy(true)
@@ -990,7 +998,31 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             no blocking request. The detail disclosures below lazy-load the
             full breakdown (a blocking SDK control request) only when the
             user actually opens one. */}
-        <ContextBar usage={usage} />
+        <ContextBar
+          usage={usage}
+          editable
+          custom={session.autoCompactWindow != null}
+          disabled={autoCompactDisabled}
+          onSetWindow={commitWindow}
+        />
+
+        <div className="settings-section">
+          <h4>Auto-compact window</h4>
+          {!session.running && !session.terminated && (
+            <span className="hint">Resume the session to change the auto-compact window.</span>
+          )}
+          <span className="hint">
+            Drag the marker on the bar above to pin when the conversation
+            auto-compacts (20–100%, step 5). Double-click it to reset to the
+            model default.
+          </span>
+          <span className="hint">
+            Auto-compact triggers when the conversation reaches the marked share
+            of the context window. Lower values compact earlier — cheaper turns
+            at the cost of more summarization.
+          </span>
+        </div>
+
         {usage?.skills && (
           <div className="settings-skill-reload-row">
             <AnimatedDetails

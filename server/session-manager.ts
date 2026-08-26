@@ -886,6 +886,7 @@ export class SessionManager {
       memory: s.memory,
       effortLevel: s.effortLevel,
       thinking: s.thinking,
+      autoCompactWindow: s.autoCompactWindow,
       hooks: s.hooks,
       // Both rings count — parity with the old single mixed ring.
       messageCount: s.history.length + s.subagentHistory.length,
@@ -935,7 +936,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -959,6 +960,15 @@ export class SessionManager {
       // Same for thinking: a create-time Options.thinking becomes the
       // session's initial thinking intent.
       thinking: coerceThinkingSetting(opts.thinking),
+      // Auto-compact window is an app-level custom opts field (no SDK
+      // Options key — it's re-applied post-spawn via applyFlagSettings, like
+      // fastMode/effortLevel). Carried through resume/fork/clear opts so a
+      // pinned window survives re-spawns; normalised to a positive finite
+      // token count (undefined = "auto").
+      autoCompactWindow: (() => {
+        const w = (opts as { autoCompactWindow?: unknown }).autoCompactWindow
+        return typeof w === 'number' && Number.isFinite(w) && w > 0 ? Math.round(w) : undefined
+      })(),
       hooks: settingsHooks,
       // Capture the resolved MCP server names so the client can compute
       // "available" without the flaky mcp-status SDK control request.
@@ -1124,7 +1134,7 @@ export class SessionManager {
     // resume-after-/clear persisted the short id and the NEXT /clear spawned
     // a fresh session the gateway rejected with `400 Unsupported model`.
     const resolvedModel = resolveConfiguredModel(meta.model ?? firstAssistantModel(historySeed))
-    const resumeOpts: Options & { provider?: string; enabledPlugins?: string[] } = {
+    const resumeOpts: Options & { provider?: string; enabledPlugins?: string[]; autoCompactWindow?: number } = {
       provider,
       resume: id,
       cwd: meta.cwd,
@@ -1140,6 +1150,8 @@ export class SessionManager {
       effort: meta.effortLevel,
       // Same for the extended-thinking config.
       thinking: meta.thinking,
+      // Same for the auto-compact window: a pinned threshold survives resume.
+      autoCompactWindow: meta.autoCompactWindow,
       // Carry beta flags forward — without this, a 1M-context session
       // silently downgrades to the model's default window on resume.
       // Cast: SDK types this as a literal-string union of known flags,
@@ -1197,7 +1209,7 @@ export class SessionManager {
    *  spawn()-doesn't-carry-parentId review. */
   private async respawnFresh(id: string, meta: SessionMeta): Promise<SessionInfo> {
     const provider = meta.provider ?? this.defaultProvider
-    const freshOpts: Options & { provider?: string; enabledPlugins?: string[] } = {
+    const freshOpts: Options & { provider?: string; enabledPlugins?: string[]; autoCompactWindow?: number } = {
       provider,
       cwd: meta.cwd,
       model: meta.model,
@@ -1205,6 +1217,7 @@ export class SessionManager {
       title: meta.title,
       effort: meta.effortLevel,
       thinking: meta.thinking,
+      autoCompactWindow: meta.autoCompactWindow,
       betas: meta.betas as Options['betas'],
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
       // Re-inject the persisted plugin subset so a turn-less session that
@@ -1447,7 +1460,7 @@ export class SessionManager {
     // same name, not a renamed fork.
     const title = opts?.inheritIdentity ? meta.title : (meta.title ? `${meta.title} (fork)` : undefined)
     const sourceProvider = meta.provider ?? this.defaultProvider
-    const forkOpts: Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown } = {
+    const forkOpts: Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number } = {
       provider: sourceProvider,
       resume: id,
       forkSession: true,
@@ -1465,6 +1478,9 @@ export class SessionManager {
       // (re-applied post-spawn below) it rides the opts directly.
       effort: meta.effortLevel,
       thinking: meta.thinking,
+      // Same for the auto-compact window (re-applied post-spawn via
+      // applyFlagSettings, like fastMode — snapshotMeta captures it from here).
+      autoCompactWindow: meta.autoCompactWindow,
       // Same as resume: preserve `context-1m-...` etc. so the fork has
       // the same effective window as the source. See resume() for the cast rationale.
       betas: meta.betas as Options['betas'],
@@ -1830,6 +1846,7 @@ export class SessionManager {
       forkBoundaryUuid?: string
       enabledPlugins?: string[]
       memory?: unknown
+      autoCompactWindow?: number
     } = {
       provider: sourceProvider,
       resume: parentId,
@@ -1840,6 +1857,7 @@ export class SessionManager {
       title,
       effort: meta.effortLevel,
       thinking: meta.thinking,
+      autoCompactWindow: meta.autoCompactWindow,
       betas: meta.betas as Options['betas'],
       enabledPlugins: meta.enabledPlugins,
       settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
@@ -2008,6 +2026,10 @@ export class SessionManager {
       // server restarts. New sessions get a fresh capture below.
       gitStartSha: existingMeta?.gitStartSha,
       fastMode: existingMeta?.fastMode,
+      // Auto-compact window intent. Resume paths (same id) restore from the
+      // persisted meta; create/fork/clear pass it on opts where snapshotMeta
+      // captured it. `??` so an explicit intent survives (undefined = "auto").
+      autoCompactWindow: existingMeta?.autoCompactWindow ?? metaSnapshot.autoCompactWindow,
       // Auto-memory intent. Resume paths (same id) restore from the
       // persisted meta; create/fork/clear pass the intent on opts where
       // snapshotMeta captured it. `??` so an explicit intent survives.
@@ -2132,6 +2154,9 @@ export class SessionManager {
     // applyFlagSettings by the provider. Leaving it in would hand the CLI
     // arg builder an unknown key.
     delete (sdkOptions as { memory?: unknown }).memory
+    // Same for autoCompactWindow: no SDK Options key (re-applied post-spawn
+    // via applyFlagSettings) — strip so the CLI arg builder never sees it.
+    delete (sdkOptions as { autoCompactWindow?: unknown }).autoCompactWindow
     const handle = provider.createSession({
       id,
       provider: providerName,
@@ -2143,6 +2168,7 @@ export class SessionManager {
       effortLevel: session.effortLevel,
       thinking: session.thinking,
       fastMode: session.fastMode,
+      autoCompactWindow: session.autoCompactWindow,
       memory: session.memory,
       env: customEnv,
       mcpServers: fullOpts.mcpServers as Record<string, unknown> | undefined,
@@ -2574,6 +2600,7 @@ export class SessionManager {
         title: s.title,
         effortLevel: s.effortLevel,
         thinking: s.thinking,
+        autoCompactWindow: s.autoCompactWindow,
         betas: s.betas,
         hooks: s.hooks,
         fastMode: s.fastMode,
@@ -2591,7 +2618,7 @@ export class SessionManager {
       // spawn() persists Y, broadcasts `created`, and starts its pump. Side
       // Chat sessions re-inject SIDE_DEVELOPER_INSTRUCTIONS so the boundary
       // survives — same logic as the old respawn.
-      const freshOpts: Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown } = {
+      const freshOpts: Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number } = {
         provider: settings.provider,
         cwd: settings.cwd,
         model: settings.model,
@@ -2599,6 +2626,7 @@ export class SessionManager {
         title: settings.title,
         effort: settings.effortLevel,
         thinking: settings.thinking,
+        autoCompactWindow: settings.autoCompactWindow,
         betas: settings.betas as Options['betas'],
         settings: settings.hooks ? ({ hooks: toSdkHooksSettings(settings.hooks) } as Settings) : undefined,
         enabledPlugins: settings.enabledPlugins,
@@ -2947,6 +2975,15 @@ export class SessionManager {
       'flag settings',
     )(forwarded)
     if (normalizedHooks) s.hooks = normalizedHooks
+    // Keep the session's persisted auto-compact window in sync when the
+    // generic /settings route forwards it directly (the dedicated
+    // setAutoCompactWindow route is the primary path). `autoCompactEnabled`
+    // alone (no window) is a plain toggle and doesn't pin a window — only
+    // `autoCompactWindow` writes the intent.
+    if ('autoCompactWindow' in forwarded) {
+      const w = forwarded.autoCompactWindow
+      s.autoCompactWindow = typeof w === 'number' && Number.isFinite(w) && w > 0 ? Math.round(w) : undefined
+    }
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
@@ -3071,6 +3108,31 @@ export class SessionManager {
       'supportsEffortLevel',
     )({ effortLevel: level as 'low' | 'medium' | 'high' | 'xhigh' })
     s.effortLevel = level
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return this.info(s)
+  }
+
+  /** Pin the auto-compact window for a session. `tokens > 0` sets an
+   *  absolute window (SDK Settings.autoCompactWindow) and enables
+   *  auto-compact; `null` clears both keys back to "auto" (the CLI derives
+   *  the threshold from the model's context window). Forwards the intent to
+   *  the SDK via applyFlagSettings and records it locally so it survives
+   *  resume/restart (re-applied on respawn). No capability gate — the
+   *  applyFlagSettings handle method is the only prerequisite, same as
+   *  setMemorySettings. */
+  async setAutoCompactWindow(id: string, tokens: number | null): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    const window = tokens && tokens > 0 ? Math.round(tokens) : undefined
+    const flags: Record<string, unknown> = window
+      ? { autoCompactWindow: window, autoCompactEnabled: true }
+      : { autoCompactWindow: null, autoCompactEnabled: null }
+    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+      s,
+      'applyFlagSettings',
+      'auto-compact window',
+    )(flags)
+    s.autoCompactWindow = window
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
@@ -4434,6 +4496,7 @@ export class SessionManager {
       effortLevels: s.effortLevels,
       thinking: s.thinking,
       thinkingSupported: s.thinkingSupported,
+      autoCompactWindow: s.autoCompactWindow,
       running: s.running,
       recovering: s.recovering,
       terminated: s.terminated,
@@ -4501,6 +4564,7 @@ export class SessionManager {
       memory: meta.memory,
       effortLevel: meta.effortLevel,
       thinking: meta.thinking,
+      autoCompactWindow: meta.autoCompactWindow,
       // Dormant: no live Query, so the SDK isn't reporting a runtime state.
       // Leave fastModeState undefined — the UI hides the chip until resume.
       running: false,
@@ -4789,6 +4853,7 @@ export class SessionManager {
       effortLevel: session.effortLevel,
       thinking: session.thinking,
       fastMode: session.fastMode,
+      autoCompactWindow: session.autoCompactWindow,
       memory: session.memory,
       enabledPlugins: session.enabledPlugins,
       includeHookEvents: true,
