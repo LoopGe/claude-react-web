@@ -382,10 +382,27 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // Background in-flight foreground tasks (the CLI's Ctrl+B semantics).
   // Optional `toolUseId` restricts the call to that single task; without it
   // every foreground task (Bash commands and subagents) is backgrounded.
+  //
+  // A per-task call can report `backgrounded: false` for two very different
+  // reasons, and the fallback below must only cover one of them. Proxy
+  // backends hand the CLI `call_...` tool_use ids it can't match against its
+  // own task registry, so per-task returns false even while the task is
+  // genuinely running — the per-card "background" button would otherwise be a
+  // no-op on those sessions. We fall back to the whole-turn (Ctrl+B) form,
+  // which detaches whatever is foreground: equivalent in the common
+  // single-task case, and backgrounds all foreground tasks on a multi-task
+  // turn. But a native `toolu_...` id that returns false means the targeted
+  // task genuinely isn't running (a stale or just-completed card) — falling
+  // back there would detach *unrelated* foreground work the user never asked
+  // to background, so only proxy-shaped ids escalate. An error from the
+  // per-task call still propagates (never swallowed by the fallback).
   app.post('/sessions/:id/tasks/background', async (c) => {
     const body = await safeJson<{ toolUseId?: string }>(c.req)
     const toolUseId = typeof body.toolUseId === 'string' && body.toolUseId ? body.toolUseId : undefined
-    const backgrounded = await sm.backgroundTasks(c.req.param('id'), toolUseId)
+    let backgrounded = await sm.backgroundTasks(c.req.param('id'), toolUseId)
+    if (toolUseId && !toolUseId.startsWith('toolu_') && !backgrounded) {
+      backgrounded = await sm.backgroundTasks(c.req.param('id'))
+    }
     return c.json({ ok: true, backgrounded })
   })
 
