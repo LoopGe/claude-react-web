@@ -362,7 +362,10 @@ body.resizing-col .app {
 .chat-panel-mode-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  /* Gap is zero: the icon↔label spacing lives on the label's own
+     padding-left (4px when expanded) so a collapsed label leaves no
+     phantom gap and the chip stays symmetric. */
+  gap: 0;
   padding: 2px 8px;
   font-size: 11px;
   font-weight: 600;
@@ -405,7 +408,6 @@ body.resizing-col .app {
 }
 .chat-panel-mode-badge:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 26%, transparent);
-  transform: translateY(calc(-1 * var(--motion-distance-2xs)));
 }
 .chat-panel-mode-badge:active:not(:disabled) { transform: translateY(0) scale(var(--motion-scale-press)); }
 .chat-panel-mode-badge:focus-visible {
@@ -417,13 +419,68 @@ body.resizing-col .app {
   opacity: 0.45;
 }
 
+/* Mode-badge label. Collapsed to zero width by default so the chip reads
+   as icon-only; expands on hover, keyboard focus, or while the mode menu
+   is open. The 3s delay on the base transition is what implements
+   "unhover, then 3s later it collapses" — the expanded rules zero the
+   delay so hovering expands instantly. Spacing between the icon and the
+   label lives on the label's padding-left (not the badge gap) so a
+   collapsed label leaves no phantom gap.
+
+   Width animates via the 0fr->1fr grid trick: the inner <span> carries
+   the clip, and the track animates to the content's exact width — no
+   fixed max-width cap to stall against on collapse, and a future longer
+   label is never truncated. */
+.chat-panel-mode-label {
+  display: grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  padding-left: 0;
+  transition:
+    grid-template-columns var(--motion-duration-base) var(--motion-ease-standard) 3s,
+    opacity var(--motion-duration-base) var(--motion-ease-standard) 3s,
+    padding-left var(--motion-duration-base) var(--motion-ease-standard) 3s;
+}
+/* Inner span carries the clip. Without min-width: 0 the 0fr track can't
+   actually shrink to zero. */
+.chat-panel-mode-label > span {
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
+}
+.chat-panel-mode-badge-wrap:hover .chat-panel-mode-label,
+.chat-panel-mode-badge-wrap:focus-within .chat-panel-mode-label,
+.chat-panel-mode-badge.mode-expanded .chat-panel-mode-label {
+  grid-template-columns: 1fr;
+  opacity: 1;
+  padding-left: 4px;
+  transition-delay: 0s;
+}
+/* The outgoing slide-out badge keeps its label collapsed even while the
+   wrap is hovered, so the old mode's text can't ghost over the incoming
+   badge during the ~240ms exit slide. */
+.chat-panel-mode-badge.mode-slide-out .chat-panel-mode-label {
+  grid-template-columns: 0fr;
+  opacity: 0;
+  padding-left: 0;
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-panel-mode-label {
+    transition: none;
+  }
+}
+
 /* Fast-mode badge — same pill shape as the mode badge. Muted when off
    (a quiet, opt-in control), tinted with --fast when on, and rendered in
    --warn with a "cooldown" label when rate-limited. */
 .chat-panel-fast-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  /* Gap is zero: the icon↔label spacing lives on the label's own
+     padding-left (4px when expanded) so a collapsed label leaves no
+     phantom gap and the chip stays symmetric. */
+  gap: 0;
   padding: 2px 8px;
   font-size: 11px;
   font-weight: 600;
@@ -448,7 +505,6 @@ body.resizing-col .app {
 }
 .chat-panel-fast-badge:hover:not(:disabled) {
   background: color-mix(in srgb, var(--fast) 22%, transparent);
-  transform: translateY(calc(-1 * var(--motion-distance-2xs)));
 }
 .chat-panel-fast-badge:active:not(:disabled) { transform: translateY(0) scale(var(--motion-scale-press)); }
 .chat-panel-fast-badge:focus-visible {
@@ -459,6 +515,37 @@ body.resizing-col .app {
   cursor: not-allowed;
   opacity: 0.45;
 }
+/* Fast-mode label — mirrors the mode badge's collapse: icon-only by
+   default, expands on hover or keyboard focus, then 3s after the pointer
+   leaves. Same 0fr->1fr grid width animation (exact content width, no
+   fixed cap to stall against or truncate a longer label). */
+.chat-panel-fast-label {
+  display: grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  padding-left: 0;
+  transition:
+    grid-template-columns var(--motion-duration-base) var(--motion-ease-standard) 3s,
+    opacity var(--motion-duration-base) var(--motion-ease-standard) 3s,
+    padding-left var(--motion-duration-base) var(--motion-ease-standard) 3s;
+}
+.chat-panel-fast-label > span {
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
+}
+.chat-panel-fast-badge:hover .chat-panel-fast-label,
+.chat-panel-fast-badge:focus-within .chat-panel-fast-label {
+  grid-template-columns: 1fr;
+  opacity: 1;
+  padding-left: 4px;
+  transition-delay: 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-panel-fast-label {
+    transition: none;
+  }
+}
 
 /* Effort-level badge — same pill shape as the mode badge. Neutral/muted by
    default; tinted with --accent when set above the default 'high' so the
@@ -466,7 +553,10 @@ body.resizing-col .app {
 .chat-panel-effort-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  /* Gap is zero: the icon↔label spacing lives on the label's own
+     padding-left (4px when expanded) so a collapsed label leaves no
+     phantom gap and the chip stays symmetric. */
+  gap: 0;
   padding: 2px 8px;
   font-size: 11px;
   font-weight: 600;
@@ -492,7 +582,6 @@ body.resizing-col .app {
 }
 .chat-panel-effort-badge:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
-  transform: translateY(calc(-1 * var(--motion-distance-2xs)));
 }
 .chat-panel-effort-badge:active:not(:disabled) { transform: translateY(0) scale(var(--motion-scale-press)); }
 .chat-panel-effort-badge:focus-visible {
@@ -503,6 +592,37 @@ body.resizing-col .app {
   cursor: not-allowed;
   opacity: 0.45;
 }
+/* Effort-level label — collapses to icon-only like the mode/fast labels,
+   expanding on hover, keyboard focus, or while the effort menu is open,
+   then 3s after the pointer leaves. Same 0fr->1fr grid width animation. */
+.chat-panel-effort-label {
+  display: grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  padding-left: 0;
+  transition:
+    grid-template-columns var(--motion-duration-base) var(--motion-ease-standard) 3s,
+    opacity var(--motion-duration-base) var(--motion-ease-standard) 3s,
+    padding-left var(--motion-duration-base) var(--motion-ease-standard) 3s;
+}
+.chat-panel-effort-label > span {
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
+}
+.chat-panel-effort-badge:hover .chat-panel-effort-label,
+.chat-panel-effort-badge:focus-within .chat-panel-effort-label,
+.chat-panel-effort-badge.effort-expanded .chat-panel-effort-label {
+  grid-template-columns: 1fr;
+  opacity: 1;
+  padding-left: 4px;
+  transition-delay: 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-panel-effort-label {
+    transition: none;
+  }
+}
 
 /* Thinking badge — same pill language as the effort badge. Muted while on
    auto (the default), dimmed further when explicitly disabled, accent-tinted
@@ -510,7 +630,10 @@ body.resizing-col .app {
 .chat-panel-thinking-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  /* Gap is zero: the icon↔label spacing lives on the label's own
+     padding-left (4px when expanded) so a collapsed label leaves no
+     phantom gap and the chip stays symmetric. */
+  gap: 0;
   padding: 2px 8px;
   font-size: 11px;
   font-weight: 600;
@@ -531,7 +654,6 @@ body.resizing-col .app {
 }
 .chat-panel-thinking-badge:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
-  transform: translateY(calc(-1 * var(--motion-distance-2xs)));
 }
 .chat-panel-thinking-badge:active:not(:disabled) { transform: translateY(0) scale(var(--motion-scale-press)); }
 .chat-panel-thinking-badge:focus-visible {
@@ -541,6 +663,37 @@ body.resizing-col .app {
 .chat-panel-thinking-badge:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+/* Thinking label — same collapse as the mode/fast/effort labels: icon-only
+   by default, expands on hover, keyboard focus, or while the thinking menu
+   is open, then 3s after the pointer leaves. */
+.chat-panel-thinking-label {
+  display: grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  padding-left: 0;
+  transition:
+    grid-template-columns var(--motion-duration-base) var(--motion-ease-standard) 3s,
+    opacity var(--motion-duration-base) var(--motion-ease-standard) 3s,
+    padding-left var(--motion-duration-base) var(--motion-ease-standard) 3s;
+}
+.chat-panel-thinking-label > span {
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
+}
+.chat-panel-thinking-badge:hover .chat-panel-thinking-label,
+.chat-panel-thinking-badge:focus-within .chat-panel-thinking-label,
+.chat-panel-thinking-badge.thinking-expanded .chat-panel-thinking-label {
+  grid-template-columns: 1fr;
+  opacity: 1;
+  padding-left: 4px;
+  transition-delay: 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-panel-thinking-label {
+    transition: none;
+  }
 }
 
 /* Effort-level slider popover — anchored under the effort chip. Reuses the
@@ -669,7 +822,6 @@ body.resizing-col .app {
 .chat-panel-model-badge:hover:not(:disabled),
 .chat-panel-git-badge:hover:not(:disabled) {
   background: var(--bg-elev-2);
-  transform: translateY(calc(-1 * var(--motion-distance-2xs)));
 }
 .chat-panel-model-badge:active:not(:disabled),
 .chat-panel-git-badge:active:not(:disabled) {

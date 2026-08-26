@@ -23,7 +23,7 @@ import { AnimatePresence } from 'motion/react'
 import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { shortenPath } from '../utils/paths'
-import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconZap, IconBrain } from './icons/ToolIcons'
+import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingSetting } from '../types'
 import type { Skin } from '../utils/theme'
@@ -652,13 +652,13 @@ export const ChatPanel = memo(function ChatPanel({
                 aria-hidden
               >
                 <PermissionModeIcon mode={modeTransitionFrom} />
-                {modeTransitionFrom}
+                <span className="chat-panel-mode-label"><span>{modeTransitionFrom}</span></span>
               </span>
             )}
             <button
               type="button"
               key={`mode-${permMode}`}
-              className={`chat-panel-mode-badge mode-${permMode}${modeTransitionFrom != null ? ' mode-slide-in' : ''}`}
+              className={`chat-panel-mode-badge mode-${permMode}${modeTransitionFrom != null ? ' mode-slide-in' : ''}${permMenu ? ' mode-expanded' : ''}`}
               disabled={chipsDisabled}
               aria-label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`}
               onAnimationEnd={() => setModeTransitionFrom(null)}
@@ -669,7 +669,7 @@ export const ChatPanel = memo(function ChatPanel({
               }}
             >
               <PermissionModeIcon mode={permMode} />
-              {permMode}
+              <span className="chat-panel-mode-label"><span>{permMode}</span></span>
             </button>
           </span>
         </Tooltip>
@@ -699,8 +699,8 @@ export const ChatPanel = memo(function ChatPanel({
                 commitFastMode()
               }}
             >
-              <IconZap size={13} aria-hidden />
-              {fastCooldown ? 'cooldown' : 'fast'}
+              <IconGauge size={13} aria-hidden />
+              <span className="chat-panel-fast-label"><span>{fastCooldown ? 'cooldown' : 'fast'}</span></span>
             </button>
           </Tooltip>
         )}
@@ -718,7 +718,7 @@ export const ChatPanel = memo(function ChatPanel({
             <button
               type="button"
               key={`effort-${effortLevel}`}
-              className={`chat-panel-effort-badge effort-${effortLevel}`}
+              className={`chat-panel-effort-badge effort-${effortLevel}${effortMenu ? ' effort-expanded' : ''}`}
               disabled={chipsDisabled}
               aria-haspopup="menu"
               aria-expanded={!!effortMenu}
@@ -730,7 +730,8 @@ export const ChatPanel = memo(function ChatPanel({
                 setEffortMenu({ x: rect.left, y: rect.bottom + 4 })
               }}
             >
-              {effortLevel}
+              <IconLayers size={13} aria-hidden />
+              <span className="chat-panel-effort-label"><span>{effortLevel}</span></span>
             </button>
           </Tooltip>
         )}
@@ -747,7 +748,7 @@ export const ChatPanel = memo(function ChatPanel({
             <button
               type="button"
               key={`thinking-${thinkingLabel}`}
-              className={`chat-panel-thinking-badge${session.thinking?.type === 'disabled' ? ' thinking-off' : ''}`}
+              className={`chat-panel-thinking-badge${session.thinking?.type === 'disabled' ? ' thinking-off' : ''}${thinkingMenu ? ' thinking-expanded' : ''}`}
               disabled={chipsDisabled}
               aria-haspopup="menu"
               aria-expanded={!!thinkingMenu}
@@ -760,7 +761,7 @@ export const ChatPanel = memo(function ChatPanel({
               }}
             >
               <IconBrain size={13} aria-hidden />
-              {thinkingLabel}
+              <span className="chat-panel-thinking-label"><span>{thinkingLabel}</span></span>
             </button>
           </Tooltip>
         )}
