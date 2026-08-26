@@ -61,7 +61,7 @@ import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { useSessionTaskCounts } from '../session-store/selectors'
-import { computeWaiting } from '../session-store/normalize'
+import { computeWaiting, autoTitleDescription, topLevelUserPromptSignature } from '../session-store/normalize'
 import { createDedupGuard, shouldOfferBackgroundAction } from '../utils/task-actions'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -442,6 +442,15 @@ export const Chat = memo(function Chat({
       setComposerFocusSignal((n) => n + 1)
     },
   })
+
+  // Mirror the live values into refs so the fire-and-forget auto-title guard
+  // inside `send` reads CURRENT messages/title without recreating `send` on
+  // every message (adding them to the deps would churn the composer submit
+  // handler — `stream.messages` changes on every streamed message).
+  const messagesRef = useRef(stream.messages)
+  messagesRef.current = stream.messages
+  const sessionTitleRef = useRef(session.title)
+  sessionTitleRef.current = session.title
 
   // Clear the optimistic turn bridge once the real turn is confirmed
   // (session.working rose OR the first stream phase arrived). The old fixed 4s
@@ -1376,6 +1385,10 @@ export const Chat = memo(function Chat({
     // ran AFTER await, so the broadcast arrived first and the dedup
     // (which compares content with ===) failed for image arrays,
     // leaving two "you" bubbles in the transcript.
+    // First real user turn? Only the session's first user message should
+    // trigger auto-title. Computed BEFORE the optimistic insert so the
+    // placeholder we just inserted can't skew the count.
+    const isFirstUserTurn = !messagesRef.current.some((m) => topLevelUserPromptSignature(m) !== null)
     const pendingId = full.trim() ? insertUserMessage(full) : null
 
     // POST with a bounded retry for the crash-recovery window: the server
@@ -1426,6 +1439,15 @@ export const Chat = memo(function Chat({
       // clicked the Send button it's currently on the button and the
       // next keystroke wouldn't show up.
       setComposerFocusSignal((n) => n + 1)
+      // Auto-title (fire-and-forget): on the first user turn of an untitled
+      // session, ask the server to generate a title from this message. The
+      // server no-ops if the user has already named the session, so a
+      // user-chosen title is never overwritten. A failed title call must
+      // never affect message sending.
+      if (isFirstUserTurn && !sessionTitleRef.current) {
+        const description = autoTitleDescription(text, full)
+        void api.post(`/sessions/${session.id}/title`, { description }).catch(() => {})
+      }
     } catch (e) {
       setLocalError((e as Error).message)
       // Roll back the optimistic placeholder so the user sees that the

@@ -3531,6 +3531,37 @@ export class SessionManager {
     return this.timeSdkControl(id, 'getUsage', fn)
   }
 
+  /** Auto-generate a session title from a short description, via the SDK's
+   *  `generate_session_title` control request (persisted to the CLI
+   *  transcript via `persist: true` so it survives resume). NO-OP when the
+   *  session already has a title — the user named it, or an earlier
+   *  auto-title landed — so a user-chosen title is never overwritten.
+   *  Mirrors usage()/accountInfo() as a capability-gated provider passthrough,
+   *  but additionally writes the title into SessionMeta + broadcasts a
+   *  session-update so every tab's sidebar refreshes. */
+  async autoGenerateTitle(id: string, description: string): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    // Guard FIRST: a named session must never trigger an LLM title call.
+    if (s.title) return this.info(s)
+    const fn = this.requireHandleMethod<(desc: string) => Promise<unknown>>(
+      s,
+      'generateTitle',
+      'auto-title',
+      'supportsSessionTitle',
+    )
+    const raw = await this.timeSdkControl(id, 'generateSessionTitle', () => fn(description))
+    const generated = String((raw as { title?: unknown } | undefined)?.title ?? '').trim()
+    if (!generated) {
+      log.warn(`[session ${id}] auto-title generated an empty title; leaving untitled`)
+      return this.info(s)
+    }
+    s.title = generated
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+    return this.info(s)
+  }
+
   /** Authenticated-account info for the session's CLI subprocess (email,
    *  organization, subscription type, auth backend). Live-Query-only control
    *  read like /usage; narrowed to the clean wire shape so the client never

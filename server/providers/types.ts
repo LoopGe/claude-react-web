@@ -143,6 +143,11 @@ export interface ProviderSessionHandle {
    *  previews the diff without touching files. Requires sessions spawned
    *  with enableFileCheckpointing. */
   rewindFiles?(userMessageId: string, options?: { dryRun?: boolean }): Promise<unknown>
+  /** Auto-generate a session title (SDK Query.generateSessionTitle —
+   *  `generate_session_title` control request). `description` is a short
+   *  text the CLI uses to synthesize a title. `persist: true` is passed to
+   *  the SDK so the title also survives resume via the CLI transcript. */
+  generateTitle?(description: string): Promise<unknown>
 }
 
 export interface ProviderCapabilities {
@@ -162,6 +167,7 @@ export interface ProviderCapabilities {
   supportsUsage: boolean
   supportsAccountInfo: boolean
   supportsRewindFiles: boolean
+  supportsSessionTitle: boolean
   supportsTaskControl: boolean
 }
 

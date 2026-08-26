@@ -166,6 +166,19 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.rewindFiles(userMessageId, options)
   }
 
+  /** Auto-generated session title (SDK `generate_session_title` control
+   *  request). `persist: true` writes the title into the CLI transcript so
+   *  it survives `--resume`. */
+  generateTitle(description: string): Promise<unknown> {
+    const q = this.query as typeof this.query & {
+      generateSessionTitle(
+        description: string,
+        options: { persist: boolean },
+      ): Promise<{ title: string }>
+    }
+    return q.generateSessionTitle(description, { persist: true })
+  }
+
   /** Structured /usage data (session cost/usage totals + claude.ai plan
    *  rate-limit windows). The SDK method is EXPERIMENTAL and its name will
    *  change when stabilized — this wrapper is the single call site, so the
