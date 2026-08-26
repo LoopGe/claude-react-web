@@ -163,7 +163,10 @@ export const SessionCard = memo(function SessionCard({
         s.terminated ? 'terminated' : '',
         dormant ? 'dormant' : '',
         isResuming ? 'resuming' : '',
-        hasUnread ? 'unread' : '',
+        // Unread only surfaces on OPEN sessions (folded into the slot badge).
+        // Closed sessions carry no unread signal at all — nobody's watching
+        // them. Gate the .unread class so even the title-brighten is skipped.
+        (hasUnread && isOpen) ? 'unread' : '',
         isDragging ? 'dragging' : '',
         isDeleting ? 'deleting' : '',
         dropPosition === 'before' ? 'drop-before' : '',
@@ -239,39 +242,55 @@ export const SessionCard = memo(function SessionCard({
       ) : (
       <div className="session-item-row">
         <strong className="session-item-title">
-          {pendingCount > 0 && (
-            <Tooltip
-              // Neutral wording: pendingCount mixes tool-permission requests
-              // and AskUserQuestion questions (no per-kind breakdown here), so
-              // "awaiting your response" reads correctly for both.
-              label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
-              placement="right"
-            >
-              <span
-                className="session-item-perm-badge"
-                aria-label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
-              >
-                {pendingCount > 9 ? '9+' : pendingCount}
-              </span>
-            </Tooltip>
-          )}
-          {hasUnread && <span className="session-item-unread" aria-label="unread" />}
-          {isOpen && (
+          {isOpen ? (
+            // Open session → the slot badge is the leading numeric badge. When
+            // it also has pending responses, fold the pending signal INTO the
+            // slot badge (amber fill + breathing, via the `pending` modifier)
+            // instead of rendering a second, visually duplicate square. The
+            // slot number stays — it still drives Ctrl+N focus; the pending
+            // count/label moves to the tooltip/aria (it mixes tool-permission
+            // requests and AskUserQuestion questions, so "awaiting your
+            // response" reads correctly for both).
             <Tooltip
               label={
-                isFocused
+                (isFocused
                   ? `Focused (slot ${slotIdx + 1}) · Ctrl+${slotIdx + 1} to refocus`
-                  : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`
+                  : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`)
+                + (pendingCount > 0
+                  ? ` · ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
+                  : hasUnread ? ' · unread' : '')
               }
               placement="right"
             >
               <span
-                className={`session-item-slot ${isFocused ? 'focused' : ''}`}
-                aria-label={isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`}
+                className={`session-item-slot ${isFocused ? 'focused' : ''}${pendingCount > 0 ? ' pending' : hasUnread ? ' unread' : ''}`}
+                aria-label={
+                  (isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`)
+                  + (pendingCount > 0
+                    ? `, ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
+                    : hasUnread ? ', unread' : '')
+                }
               >
                 {slotIdx + 1}
               </span>
             </Tooltip>
+          ) : (
+            // Closed session has no slot badge to carry a pending signal, so
+            // keep the standalone count badge as the attention cue. (Unread is
+            // intentionally NOT shown for closed sessions.)
+            pendingCount > 0 && (
+              <Tooltip
+                label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
+                placement="right"
+              >
+                <span
+                  className="session-item-perm-badge"
+                  aria-label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
+                >
+                  {pendingCount > 9 ? '9+' : pendingCount}
+                </span>
+              </Tooltip>
+            )
           )}
           <Tooltip label={permissionModeLabel(permissionMode)} placement="right">
             <span
