@@ -235,9 +235,9 @@ interface Props {
    *  message-area context menu can offer a "Close panel" item now that the
    *  header X button is gone. */
   onClosePanel?: (sessionId: string) => void
-  /** Delete the session entirely (App.handleDelete — exit animation +
-   *  Undo grace window). Offered as a "Delete session" item in the panel
-   *  context menu, mirroring the sidebar's. */
+  /** Delete the session entirely (App.handleDelete — exit animation then
+   *  immediate server delete). Offered as a "Delete session" item in the
+   *  panel context menu, mirroring the sidebar's. */
   onDelete?: (sessionId: string) => void
   /** Request a confirmation dialog (rendered by ChatPanel) before a
    *  destructive action. Mirrors SessionList's onAskConfirm so the panel
@@ -1749,10 +1749,9 @@ export const Chat = memo(function Chat({
                   },
                 ]
               : []),
-            // Delete the session entirely (same handler + Undo window as the
-            // sidebar's Delete). Confirm first when there's history at stake;
-            // empty scratch sessions delete immediately. Mirrors
-            // SessionContextMenu's Delete row.
+            // Delete the session entirely (same handler as the sidebar's
+            // Delete). Always confirm first, even for empty scratch
+            // sessions. Mirrors SessionContextMenu's Delete row.
             ...(onDelete
               ? [
                   { label: '' },
@@ -1762,8 +1761,7 @@ export const Chat = memo(function Chat({
                     danger: true,
                     onClick: () => {
                       const title = session.title ?? session.id.slice(0, 8)
-                      const hasHistory = session.messageCount > 0
-                      if (hasHistory && onAskConfirm) {
+                      if (onAskConfirm) {
                         onAskConfirm({
                           title: 'Delete session?',
                           message: (

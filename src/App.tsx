@@ -136,11 +136,13 @@ export function App() {
    *  branch on "this is the first snapshot" without re-registering the
    *  listener every time `sessionsLoaded` flips. */
   const firstSnapshotSeenRef = useRef(false)
-  /** Sessions queued for deletion but still within the Undo grace window.
-   *  Hidden from the sidebar optimistically; the real delete fires when the
-   *  timer lapses (or is cancelled by Undo). */
-  const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(new Set())
+  /** Ids playing the local delete-exit animation while the server DELETE is
+   *  in flight. The session is removed from the list once the delete lands. */
   const [deletingSessionIds, setDeletingSessionIds] = useState<Set<string>>(new Set())
+  /** Synchronous re-entrancy gate for handleDelete (deletingSessionIds is
+   *  state, so it can't gate the same-tick double-fire). Mirrors
+   *  deletingSessionIds; entries are removed when the delete settles. */
+  const deletingIdsRef = useRef<Set<string>>(new Set())
   /** Ordered list of open session ids (oldest first). Length <= maxOpen. */
   const [openIds, setOpenIds] = useState<string[]>([])
   /** Side Chat drawer state. Only one Side Chat can be open at a time.
@@ -822,15 +824,13 @@ export function App() {
             }
             return [frame.session, ...prev]
           })
-          // A (re-)created session is not pending-delete. Clear any stale
-          // pendingDeleteIds/deletingSessionIds entry left by a prior delete
-          // of the same id (e.g. a session deleted via /resume-replace, then
-          // re-resumed from the picker) — without this, orderedSessions
-          // filters the re-resumed session out of the sidebar until a reload.
-          // The updaters are no-ops when the id isn't present, so no state
-          // read is needed (keeps this WS handler free of stale closures).
+          // A (re-)created session is not mid-delete-animation. Clear any
+          // stale deletingSessionIds entry left by a prior delete of the same
+          // id (e.g. a session deleted via /resume-replace, then re-resumed
+          // from the picker). The updater is a no-op when the id isn't
+          // present, so no state read is needed (keeps this WS handler free
+          // of stale closures).
           const sid = frame.session.id
-          setPendingDeleteIds((prev) => (prev.has(sid) ? new Set([...prev].filter((x) => x !== sid)) : prev))
           setDeletingSessionIds((prev) => (prev.has(sid) ? new Set([...prev].filter((x) => x !== sid)) : prev))
           // Seed the edge-detector so a session that spawns already
           // working doesn't fire a notification on its first true→ false
@@ -1195,7 +1195,6 @@ export function App() {
         return next
       })
       pruneSession(id)
-      setPendingDeleteIds((prev) => (prev.has(id) ? new Set([...prev].filter((x) => x !== id)) : prev))
       setDeletingSessionIds((prev) => (prev.has(id) ? new Set([...prev].filter((x) => x !== id)) : prev))
       interruptFnsRef.current.delete(id)
       recapFnsRef.current.delete(id)
@@ -1634,9 +1633,8 @@ export function App() {
 
   /** The irreversible part: actually hit the server (which kills the Query
    *  subprocess and erases persistence) and clean up local references.
-   *  Used directly by Restart (create-then-delete) where an Undo toast
-   *  would be nonsensical, and by the delayed path below once the undo
-   *  window lapses. */
+   *  Used directly by Restart (create-then-delete) and by handleDelete once
+   *  the user confirms the delete dialog. */
   const performDelete = useCallback(
     async (id: string): Promise<boolean> => {
       try {
@@ -1673,112 +1671,40 @@ export function App() {
     [closeSession, setGroups, handleSessionColorChange, toast],
   )
 
-  /** Pending delete timers keyed by session id. The server delete is
-   *  irreversible (kills the subprocess + erases persistence), so "undo"
-   *  can only work as a Gmail-style grace period: hide the session from
-   *  the sidebar immediately, fire the real delete after a delay, and let
-   *  the user cancel the timer within the window. */
-  const pendingDeleteTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
-  const pendingDeleteHideTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
-
-  /** Cancel a queued delete (Undo). Restores the card by clearing the
-   *  optimistic-hide id. */
-  const cancelPendingDelete = useCallback((id: string) => {
-    const timer = pendingDeleteTimers.current.get(id)
-    if (timer) {
-      clearTimeout(timer)
-      pendingDeleteTimers.current.delete(id)
-    }
-    const hideTimer = pendingDeleteHideTimers.current.get(id)
-    if (hideTimer) {
-      clearTimeout(hideTimer)
-      pendingDeleteHideTimers.current.delete(id)
-    }
-    setDeletingSessionIds((prev) => {
-      if (!prev.has(id)) return prev
-      const next = new Set(prev)
-      next.delete(id)
-      return next
-    })
-    setPendingDeleteIds((prev) => {
-      if (!prev.has(id)) return prev
-      const next = new Set(prev)
-      next.delete(id)
-      return next
-    })
-  }, [])
-
+  /** Delete the session immediately. User-facing deletes confirm first via a
+   *  ConfirmDialog at the call site (sidebar card / context menu / panel
+   *  menu); resume-replace calls this directly without a confirm by design.
+   *  There's no Undo grace window. A short local exit animation plays while
+   *  the server DELETE is in flight; the card is removed once the
+   *  `session-removed` broadcast lands. */
   const handleDelete = useCallback(
     (id: string) => {
-      // Already queued? Ignore the repeat click.
-      if (pendingDeleteTimers.current.has(id)) return
-      const session = sessions.find((s) => s.id === id)
-      const label = session?.title ?? id.slice(0, 8)
-      // Play a short local exit animation first, then hide the card for
-      // the Undo grace window. The irreversible API call is still deferred.
+      // Re-entrancy guard: a delete for this id is already in flight (e.g. a
+      // fast double-click on a confirm button before the dialog unmounts).
+      // Without this, the second call would race a second DELETE → 404 toast.
+      if (deletingIdsRef.current.has(id)) return
+      deletingIdsRef.current.add(id)
       setDeletingSessionIds((prev) => new Set(prev).add(id))
-      const EXIT_ANIMATION_MS = 260
-      const UNDO_MS = 8000
-      const hideTimer = setTimeout(() => {
-        pendingDeleteHideTimers.current.delete(id)
-        setPendingDeleteIds((prev) => new Set(prev).add(id))
+      void performDelete(id).then((deleted) => {
+        // Clear the gate either way — a failed delete must be retryable.
+        deletingIdsRef.current.delete(id)
+        if (deleted) return
+        // Delete failed — restore the card by dropping the exit-animation flag.
         setDeletingSessionIds((prev) => {
           if (!prev.has(id)) return prev
           const next = new Set(prev)
           next.delete(id)
           return next
         })
-      }, EXIT_ANIMATION_MS)
-      pendingDeleteHideTimers.current.set(id, hideTimer)
-      const timer = setTimeout(() => {
-        clearTimeout(hideTimer)
-        pendingDeleteHideTimers.current.delete(id)
-        pendingDeleteTimers.current.delete(id)
-        void performDelete(id).then((deleted) => {
-          if (deleted) return
-          setPendingDeleteIds((prev) => {
-            if (!prev.has(id)) return prev
-            const next = new Set(prev)
-            next.delete(id)
-            return next
-          })
-          setDeletingSessionIds((prev) => {
-            if (!prev.has(id)) return prev
-            const next = new Set(prev)
-            next.delete(id)
-            return next
-          })
-        })
-      }, UNDO_MS)
-      pendingDeleteTimers.current.set(id, timer)
-      toast.info(`Deleted "${label}"`, {
-        actionLabel: 'Undo',
-        durationMs: UNDO_MS,
-        onClick: () => cancelPendingDelete(id),
       })
     },
-    [sessions, performDelete, cancelPendingDelete, toast],
+    [performDelete],
   )
-  // Stable ref so resumeIntoPanel can call the latest handleDelete (which
-  // depends on `sessions` for its label) without itself depending on it —
-  // keeps resumeIntoPanel's identity stable. Same pattern as handleSelectRef.
+  // Stable ref so resumeIntoPanel can call the latest handleDelete without
+  // itself depending on it — keeps resumeIntoPanel's identity stable. Same
+  // pattern as handleSelectRef.
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync
   handleDeleteRef.current = handleDelete
-
-  // Clear any queued delete timers on unmount so a pending timer can't fire
-  // after the component is gone. Note this ABANDONS the queued delete (the
-  // session survives) rather than committing it — a page close cancels the
-  // pending intent, which is the safe default for an irreversible action.
-  useEffect(() => {
-    const timers = pendingDeleteTimers.current
-    const hideTimers = pendingDeleteHideTimers.current
-    return () => {
-      for (const t of timers.values()) clearTimeout(t)
-      for (const t of hideTimers.values()) clearTimeout(t)
-      timers.clear()
-      hideTimers.clear()
-    }
-  }, [])
 
   /** Create a fresh session with the same config, then delete the old one.
    *  Create-first ensures the old session is preserved if creation fails. */
@@ -2664,11 +2590,8 @@ export function App() {
    *  saved order but no longer present on the server are dropped. */
   const orderedSessions = useMemo(() => {
     // Side Chat sessions are ephemeral — they only exist in panels, never
-    // in the sidebar.  Sessions in the Undo grace window are also hidden.
-    let visible = sessions.filter((s) => !s.parentId)
-    if (pendingDeleteIds.size) {
-      visible = visible.filter((s) => !pendingDeleteIds.has(s.id))
-    }
+    // in the sidebar.
+    const visible = sessions.filter((s) => !s.parentId)
     const byId = new Map(visible.map((s) => [s.id, s]))
     const ordered: SessionInfo[] = []
     const seen = new Set<string>()
@@ -2681,7 +2604,7 @@ export function App() {
     }
     for (const s of visible) if (!seen.has(s.id)) ordered.push(s)
     return ordered
-  }, [sessions, sidebarOrder, pendingDeleteIds])
+  }, [sessions, sidebarOrder])
 
   // ── App Plugin command palette merge ───────────────────────────────
   // Global, palette-visible plugin commands are merged into the Command
@@ -3311,10 +3234,11 @@ export function App() {
   //
   // "Replaces the current one" is literal: the picked session takes the old
   // session's panel slot AND group membership (openAtSlot syncs both), and
-  // the old session is deleted — same path as a normal sidebar delete, incl.
-  // the Undo grace window — so it doesn't linger in the sidebar. Without the
-  // delete, the replaced session would just drop to the sidebar (still alive,
-  // still in the way), which is "removed" not "replaced".
+  // the old session is deleted — silently, by design (picking in the resume
+  // dialog is the confirmation; unlike the sidebar/panel deletes there's no
+  // ConfirmDialog on this path) — so it doesn't linger in the sidebar.
+  // Without the delete, the replaced session would just drop to the sidebar
+  // (still alive, still in the way), which is "removed" not "replaced".
   const resumeIntoPanel = useCallback(
     (pickedId: string, targetPanelId: string) => {
       const known = sessionsRef.current.find((s) => s.id === pickedId)

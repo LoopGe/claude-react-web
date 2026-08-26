@@ -50,7 +50,8 @@ interface Props {
   /** Map of sessionId → true when the session has a newer lastTurnAt than
    *  the user has seen (and isn't currently open). */
   unread?: Record<string, boolean>
-  /** Ids playing the local delete-exit animation before the Undo grace hide. */
+  /** Ids playing the local delete-exit animation while the server DELETE is
+   *  in flight. */
   deletingIds?: Set<string>
   onSelect: (id: string) => void
   onCreate: (form: NewSessionForm) => void

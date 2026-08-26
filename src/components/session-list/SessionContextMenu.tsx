@@ -287,13 +287,10 @@ export function SessionContextMenu({
       icon: <IconTrash size={14} />,
       danger: true,
       onClick: () => {
-        // Ask for confirmation when there's conversation history at stake.
-        // Sessions with zero messages fall through to an immediate delete
-        // — those are essentially scratch sessions the user created and
-        // abandoned without typing anything.
-        const hasHistory = session.messageCount > 0
-        if (hasHistory && onAskConfirm) {
-          const title = session.title ?? session.id.slice(0, 8)
+        // Always confirm before an irreversible delete, even for empty
+        // scratch sessions. The delete fires only after the user confirms.
+        const title = session.title ?? session.id.slice(0, 8)
+        if (onAskConfirm) {
           onAskConfirm({
             title: 'Delete session?',
             message: (

@@ -366,7 +366,7 @@ export const SessionCard = memo(function SessionCard({
               aria-label="Delete session"
               onClick={(e) => {
                 e.stopPropagation()
-                if (s.messageCount > 0 && onAskConfirm) {
+                if (onAskConfirm) {
                   const title = s.title ?? s.id.slice(0, 8)
                   onAskConfirm({
                     title: 'Delete session?',
