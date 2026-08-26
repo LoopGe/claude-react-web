@@ -866,16 +866,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // so the derived threshold reflects a user override, not just the
           // model's raw context window.
           const usage = liteContextUsageFromResult(msg, session.autoCompactWindow)
-          if (usage) {
-            // Cache regardless of current subscriber count so a tab that
-            // attaches LATER (reconnect / new panel / refresh+resume) can
-            // be handed the value immediately via subscribeContextUsage's
-            // snapshot, instead of waiting for the next `result`.
-            session.lastContextUsage = usage
-            for (const sub of session.contextUsageSubscribers) {
-              try { sub.push(usage) } catch { /* subscriber dead — skip */ }
-            }
-          }
+          if (usage) applyContextUsage(session, usage)
         }
         // Also derive a snapshot from each main-thread `assistant` message
         // so the bar refreshes MID-TURN (per API response) instead of only
@@ -886,12 +877,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // and we skip. Subagent frames are filtered out inside the helper.
         if (msg.type === 'assistant') {
           const usage = liteContextUsageFromAssistant(msg, session.lastContextUsage)
-          if (usage) {
-            session.lastContextUsage = usage
-            for (const sub of session.contextUsageSubscribers) {
-              try { sub.push(usage) } catch { /* subscriber dead — skip */ }
-            }
-          }
+          if (usage) applyContextUsage(session, usage)
         }
         // `result` marks a completed turn.
         //
@@ -1090,6 +1076,13 @@ export interface LiteContextUsage {
    *  a marker position back into Settings.autoCompactWindow exactly instead of
    *  assuming the 20000 floor. Carried forward like the threshold. */
   maxOutputTokens?: number
+  /** Set when Guard 1 dropped a corrupt cache bucket, so this snapshot is the
+   *  input-only fallback rather than the true prompt size. The pump uses this
+   *  to avoid overwriting a healthy last-good value: an intermittently corrupt
+   *  proxy must not flip-flop the ContextBar between the real fill level and
+   *  the under-reported fallback on every turn. Present only on the affected
+   *  snapshot — a healthy snapshot leaves it undefined. */
+  degraded?: boolean
 }
 
 /** Compute the auto-compact threshold (in tokens) from a model's advertised
@@ -1150,6 +1143,12 @@ function assembleLiteUsage(opts: {
   // ContextBar empty on proxies that return a corrupt bucket on EVERY turn,
   // because there was never a last-good value to keep.
   let { cacheCreation, cacheRead } = opts
+  // True when Guard 1 dropped a corrupt bucket, so this snapshot is the
+  // input-only fallback rather than the true prompt size. The pump refuses to
+  // let a degraded snapshot overwrite a healthy last-good (see
+  // applyContextUsage), which stops an intermittently corrupt proxy from
+  // flip-flopping the ContextBar every turn.
+  let degraded = false
   if (cacheCreation != null && cacheCreation > opts.contextWindow) {
     log.debug(
       `[context-usage] cache_creation bucket > contextWindow → dropping ` +
@@ -1158,6 +1157,7 @@ function assembleLiteUsage(opts: {
       `cacheRead=${cacheRead}, contextWindow=${opts.contextWindow})`,
     )
     cacheCreation = undefined
+    degraded = true
   }
   if (cacheRead != null && cacheRead > opts.contextWindow) {
     log.debug(
@@ -1167,6 +1167,7 @@ function assembleLiteUsage(opts: {
       `cacheRead=${cacheRead}, contextWindow=${opts.contextWindow})`,
     )
     cacheRead = undefined
+    degraded = true
   }
   const totalTokens = opts.inputTokens + (cacheCreation ?? 0) + (cacheRead ?? 0)
   if (totalTokens > opts.contextWindow) {
@@ -1204,6 +1205,7 @@ function assembleLiteUsage(opts: {
     percentage: (totalTokens / opts.contextWindow) * 100,
     model: opts.model,
   }
+  if (degraded) out.degraded = true
   // Forward the cache buckets only when the proxy reported a number, so
   // "absent" stays distinguishable from "zero". Corrupt buckets were dropped
   // to undefined by Guard 1 and naturally fall out of the typeof check.
@@ -1213,6 +1215,42 @@ function assembleLiteUsage(opts: {
   if (typeof opts.autoCompactThreshold === 'number') out.autoCompactThreshold = opts.autoCompactThreshold
   if (typeof opts.maxOutputTokens === 'number') out.maxOutputTokens = opts.maxOutputTokens
   return out
+}
+
+/** Apply a freshly-derived context-usage snapshot to the session: cache it on
+ *  `lastContextUsage` (so a tab attaching LATER gets it via the
+ *  subscribeContextUsage snapshot) and broadcast it to every live subscriber.
+ *
+ *  Guards against a degraded snapshot (Guard 1 dropped a corrupt cache bucket)
+ *  overwriting a healthy last-good value. Without this, an intermittently
+ *  corrupt proxy flip-flops the ContextBar between the true fill level and the
+ *  input-only fallback on every turn — e.g. 67% on a turn where a bogus
+ *  0.67M cache_read is under the window, then 0.04% on the next turn where
+ *  the same proxy reports 1.3M and Guard 1 drops it. The healthy reading is
+ *  the closest estimate of reality; a corrupt turn's fallback tells us nothing
+ *  new, so we keep the last good bar and log instead.
+ *
+ *  A degraded snapshot still lands when there is no last-good at all (a proxy
+ *  that returns a corrupt bucket on EVERY turn — the very case 1dd57aa fixed,
+ *  where rejecting the snapshot froze the bar empty forever). In that situation
+ *  `lastContextUsage` is either undefined (first turn) or already degraded, so
+ *  the guard below doesn't fire and the input-only estimate is what the bar
+ *  shows, keeping it live. */
+function applyContextUsage(session: Session, usage: LiteContextUsage): void {
+  const last = session.lastContextUsage
+  if (usage.degraded && last && !last.degraded) {
+    log.debug(
+      `[context-usage] degraded snapshot over healthy last-good → keeping ` +
+      `last-good (model=${last.model}, ` +
+      `totalTokens=${last.totalTokens}/${last.maxTokens}) ` +
+      `instead of degraded (totalTokens=${usage.totalTokens}/${usage.maxTokens})`,
+    )
+    return
+  }
+  session.lastContextUsage = usage
+  for (const sub of session.contextUsageSubscribers) {
+    try { sub.push(usage) } catch { /* subscriber dead — skip */ }
+  }
 }
 
 /** Build a LiteContextUsage from a `result` SDK message. Returns null when

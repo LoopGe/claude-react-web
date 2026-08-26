@@ -639,6 +639,7 @@ describe('liteContextUsageFromResult', () => {
     expect(out!.totalTokens).toBe(50000)
     expect(out!.percentage).toBe(25)
     expect(out!.cacheReadTokens).toBeUndefined()
+    expect(out!.degraded).toBe(true)
   })
 
   it('drops a corrupt cache_creation bucket and reports the non-cached input total', () => {
@@ -650,6 +651,7 @@ describe('liteContextUsageFromResult', () => {
     expect(out).not.toBeNull()
     expect(out!.totalTokens).toBe(1000)
     expect(out!.cacheCreationTokens).toBeUndefined()
+    expect(out!.degraded).toBe(true)
   })
 
   it('drops both corrupt cache buckets and reports the non-cached input total', () => {
@@ -666,6 +668,7 @@ describe('liteContextUsageFromResult', () => {
     expect(out!.totalTokens).toBe(1000)
     expect(out!.cacheCreationTokens).toBeUndefined()
     expect(out!.cacheReadTokens).toBeUndefined()
+    expect(out!.degraded).toBe(true)
   })
 
   it('reports the input-only fallback for the production corruption shape (small input + cache_read over window)', () => {
@@ -684,6 +687,7 @@ describe('liteContextUsageFromResult', () => {
     expect(out!.totalTokens).toBe(400)
     expect(out!.percentage).toBeCloseTo(0.04, 10)
     expect(out!.cacheReadTokens).toBeUndefined()
+    expect(out!.degraded).toBe(true)
   })
 
   it('returns null when input_tokens alone exceeds the context window', () => {
@@ -710,6 +714,8 @@ describe('liteContextUsageFromResult', () => {
     expect(out!.totalTokens).toBe(200000)
     expect(out!.percentage).toBe(100)
     expect(out!.cacheReadTokens).toBe(200000)
+    // Bucket at the window is legitimate, not degraded.
+    expect(out!.degraded).toBeUndefined()
   })
 
   it('rejects a corrupt bucket whose survivors total zero (Guard 2 zero-total)', () => {
@@ -802,6 +808,8 @@ describe('liteContextUsageFromAssistant', () => {
     // Cache buckets forwarded from the assistant message's own usage.
     expect(out!.cacheCreationTokens).toBe(200)
     expect(out!.cacheReadTokens).toBe(5000)
+    // All buckets fit in the window — a healthy snapshot, not degraded.
+    expect(out!.degraded).toBeUndefined()
   })
 
   it('omits cache/output keys when the assistant usage lacks them', () => {
@@ -839,6 +847,7 @@ describe('liteContextUsageFromAssistant', () => {
     expect(out).not.toBeNull()
     expect(out!.totalTokens).toBe(1000)
     expect(out!.cacheReadTokens).toBeUndefined()
+    expect(out!.degraded).toBe(true)
   })
 })
 
@@ -1376,6 +1385,101 @@ describe('pump: task lifecycle frames', () => {
     expect(onTaskNotification).not.toHaveBeenCalled()
     // The frame itself still folded + broadcast as usual.
     expect(session.tasks.get('t1')?.status).toBe('completed')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pump: context-usage degraded-snapshot guard
+//
+// Guard 1 (assembleLiteUsage) DROPS a corrupt cache bucket that exceeds the
+// context window and reports the surviving input-only total, flagging the
+// snapshot `degraded`. applyContextUsage refuses to let a degraded snapshot
+// overwrite a healthy last-good value — otherwise an intermittently corrupt
+// proxy flip-flops the ContextBar between the true fill level and the near-0%
+// fallback on every turn. The regression is the 8481f67b shape: 67% one turn
+// (bogus 0.67M cache_read under the window), 0.04% the next (1.3M cache_read
+// dropped → input-only 400).
+// ---------------------------------------------------------------------------
+
+function addContextSubscriber(
+  session: Session,
+  pushes: LiteContextUsage[],
+): void {
+  ;(session.contextUsageSubscribers as Set<{ push: (u: LiteContextUsage) => void }>).add({
+    push: (u: LiteContextUsage) => pushes.push(u),
+  })
+}
+
+describe('pump: context-usage degraded-snapshot guard', () => {
+  it('keeps the last healthy snapshot when a corrupt result arrives (flip-flop guard)', async () => {
+    const { session } = makePumpSession([
+      // Healthy turn: cache_read 0.67M is under the 1M window → 804k/1M ≈ 80%.
+      makeResult({
+        usage: { input_tokens: 134000, cache_read_input_tokens: 670000 },
+        modelUsage: { 'deepseek/deepseek-v4-flash': { contextWindow: 1000000 } },
+      }),
+      // Corrupt turn: cache_read 1.33M exceeds the window → dropped, leaving
+      // the degraded input-only fallback of 400. Must NOT clobber the 80%.
+      makeResult({
+        usage: { input_tokens: 400, cache_read_input_tokens: 1326080 },
+        modelUsage: { 'deepseek/deepseek-v4-flash': { contextWindow: 1000000 } },
+      }),
+    ])
+    const contextPushes: LiteContextUsage[] = []
+    addContextSubscriber(session, contextPushes)
+    await pump(session, makePumpDeps())
+
+    expect(session.lastContextUsage).not.toBeUndefined()
+    expect(session.lastContextUsage!.totalTokens).toBe(804000)
+    expect(session.lastContextUsage!.degraded).toBeUndefined()
+    // Subscribers saw only the healthy snapshot — the degraded 0.04% blip
+    // never reached the ContextBar.
+    expect(contextPushes).toHaveLength(1)
+    expect(contextPushes[0].totalTokens).toBe(804000)
+    expect(contextPushes[0].degraded).toBeUndefined()
+  })
+
+  it('applies a degraded snapshot when no healthy last-good exists (always-corrupt proxy)', async () => {
+    const { session } = makePumpSession([
+      makeResult({
+        usage: { input_tokens: 400, cache_read_input_tokens: 1326080 },
+        modelUsage: { 'deepseek/deepseek-v4-flash': { contextWindow: 1000000 } },
+      }),
+    ])
+    const contextPushes: LiteContextUsage[] = []
+    addContextSubscriber(session, contextPushes)
+    await pump(session, makePumpDeps())
+
+    // No prior healthy value to protect → the input-only estimate lands so
+    // the bar shows *something* instead of freezing empty (the 1dd57aa fix).
+    expect(session.lastContextUsage!.totalTokens).toBe(400)
+    expect(session.lastContextUsage!.degraded).toBe(true)
+    expect(contextPushes).toHaveLength(1)
+    expect(contextPushes[0].degraded).toBe(true)
+  })
+
+  it('lets a healthy snapshot replace a prior degraded one (recovery)', async () => {
+    const { session } = makePumpSession([
+      // Corrupt first turn → degraded lands (no last-good to protect).
+      makeResult({
+        usage: { input_tokens: 400, cache_read_input_tokens: 1326080 },
+        modelUsage: { 'deepseek/deepseek-v4-flash': { contextWindow: 1000000 } },
+      }),
+      // Healthy next turn → replaces the degraded fallback with the real fill.
+      makeResult({
+        usage: { input_tokens: 134000, cache_read_input_tokens: 670000 },
+        modelUsage: { 'deepseek/deepseek-v4-flash': { contextWindow: 1000000 } },
+      }),
+    ])
+    const contextPushes: LiteContextUsage[] = []
+    addContextSubscriber(session, contextPushes)
+    await pump(session, makePumpDeps())
+
+    expect(contextPushes).toHaveLength(2)
+    expect(contextPushes[0].degraded).toBe(true)
+    expect(contextPushes[1].degraded).toBeUndefined()
+    expect(session.lastContextUsage!.totalTokens).toBe(804000)
+    expect(session.lastContextUsage!.degraded).toBeUndefined()
   })
 })
 
