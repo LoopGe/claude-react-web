@@ -14,13 +14,19 @@ A local browser UI for [`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/
 
 ## Features
 
-- **Multi-session chat** — Up to 3 conversations side-by-side in a 3-column grid
-- **Streaming responses** — Real-time SSE streaming with fine-grained status (thinking / writing / tool use)
-- **Permission management** — Visual tool-usage approval with per-session and global persistence
-- **Git integration** — Status, diff, branches, stashes, and AI-generated commit messages
-- **Image paste** — Drag & drop or paste images directly into the chat
-- **Keyboard shortcuts** — `Cmd+K` command palette, `Shift+Tab` permission cycling, global shortcuts
-- **Flexible config** — Model, permission mode, MCP servers, and more via in-app settings or `config.json`
+- **Multi-session chat** — Up to 3 conversations side-by-side, organised into reorderable session groups that persist across refreshes
+- **Streaming responses** — Real-time WebSocket streaming with fine-grained status (thinking / writing / tool use) and predicted next-prompt suggestions after each turn
+- **Permission management** — Visual tool-usage approval with per-session and global persistence, plan-mode approval with "stop & take over", and `Shift+Tab` permission-mode cycling
+- **Git integration** — Status, diff, branches, stashes, AI-generated commit messages, and rewinding tracked files to any point in the conversation
+- **Background tasks** — Background an in-flight task (`Ctrl+B`), watch subagents, and follow their progress live
+- **App plugins (Mods)** — Install plugins from a marketplace or a local directory to add menus, commands, settings, and panels to the app shell; each plugin runs its own trusted background service
+- **Image paste** — Drag & drop or paste images directly into the chat (inline multimodal content)
+- **Session search** — Full-text message search with highlighted matches and jump-to-result
+- **AI recaps** — One-click AI-generated summaries of a session
+- **MCP** — Configure global servers, add dynamic per-session servers, reconnect/toggle at runtime, and complete OAuth elicitation inline
+- **Keyboard shortcuts** — `Cmd+K` command palette and a full set of global shortcuts
+- **Themes & skins** — Dark / light / system modes with selectable skins (default, glow, Anthropic, high-contrast)
+- **Flexible config** — Model, permission mode, MCP servers, thinking/effort level, and more via in-app settings or `config.json`
 - **LAN access** — Scan a QR code to use from your phone on the same network
 
 Each chat session holds its own stateful `Query` (the SDK's streaming async generator), so multi-turn conversations, mid-run interruption, model switching, and permission-mode changes all drive a live subprocess.
@@ -78,12 +84,16 @@ claude-react-web [options]
                              Auto-generated when the host is non-loopback.
   -o, --open                 Open browser on start (default)
       --no-open              Do not open a browser window
-      --cwd <path>           Default cwd for new sessions
-      --model <name>         Default model for new sessions
+      --cwd <path>           Default cwd advertised to new sessions
+      --model <name>         Default model advertised to new sessions
       --state-dir <path>     Where session metadata + config.json are kept
                              (default: ~/.claude-react-web)
       --claude-binary <path> Path to the claude CLI binary (overrides
                              CLAUDE_CODE_BINARY / PATH auto-detection)
+      --disable-app-plugins  Disable the App Plugins (Mods) subsystem
+      --safe-mode            Load app plugins in safe mode — static UI
+                             contributions only, no background subprocesses
+  -V, --version              Print version and exit
   -h, --help                 Show help
 ```
 
@@ -96,8 +106,9 @@ Anthropic credentials live in `config.json` (`authToken` / `baseUrl`), not in en
 | Variable | What it does | Default |
 | --- | --- | --- |
 | `CLAUDE_CODE_BINARY` | Path to the `claude` CLI binary (same as `--claude-binary`) | auto-detected on `PATH` |
-| `LOG_LEVEL` | Log verbosity (`error` / `warn` / `info` / `debug`) | `info` |
+| `LOG_LEVEL` | Log verbosity (`error` / `warn` / `info` / `debug` / `trace`) | `info` |
 | `LOG_SCOPES` | Comma-separated scope filter for logs | all scopes |
+| `DEBUG_SESSION` | Set to `1` to force `LOG_LEVEL=debug` (back-compat alias) | — |
 | `EVENT_LOOP_PROBE` | Set to `0` to disable the event-loop stall probe | enabled |
 
 Any other `ANTHROPIC_*` variable in the environment is forwarded to the SDK subprocess as-is (except `ANTHROPIC_API_KEY`, which is intentionally stripped in favour of the `authToken` Bearer flow).
@@ -131,6 +142,7 @@ Useful scripts:
 | `npm run lint`      | ESLint (includes `react-hooks`)                          |
 | `npm run format`    | Prettier write                                           |
 | `npm test`          | Vitest (server unit tests + client hook tests)           |
+| `npm run verify`    | `typecheck` + `lint` + `test` + `build` in one go        |
 
 ## Architecture
 
@@ -149,25 +161,29 @@ graph TB
   subgraph SM["Session Manager — one live session per tab"]
     direction TB
     Pool["Session pool"]
-    Pump["Session Pump → history ring (500) → fan-out"]
+    Pump["Session Pump → history ring (500) → fan-out + task state"]
     Broker["Permission Broker (canUseTool)"]
+    Dialogs["Dialog / Elicitation brokers<br/>(refusal fallback · MCP OAuth)"]
     Health["Health Monitor (stuck-session GC)"]
-    Pool --> Pump & Broker & Health
+    Pool --> Pump & Broker & Dialogs & Health
   end
 
   Reg["Provider Registry<br/>(pluggable AgentProvider)"]
   Claude["claude provider → SDK Query"]
   SDK["Claude Agent SDK<br/>spawns claude CLI subprocess"]
-  Anthro["Anthropic Messages API<br/>recap · commit-message (direct)"]
-  Stores["Disk-backed stores<br/>sessions.json · config.json · MCP · marketplace→plugins · snippets · UI state"]
+  Anthro["Anthropic Messages API<br/>recap · commit-message · plugin ai-broker"]
+  Stores["Disk-backed stores<br/>sessions.json · config.json · MCP · marketplace→plugins · snippets · UI state · app-plugins"]
+  Plugins["App Plugins (Mods)<br/>marketplace · local installs · per-plugin Node service"]
   Git["Git Layer — git.ts owns all execution"]
   Disk[("~/.claude/projects/<br/>full transcripts · resumed via options.resume")]
 
   Routers --> Pool
   Pool --> Reg --> Claude --> SDK
   Broker -.->|canUseTool| Claude
+  Dialogs -.->|onUserDialog / elicitation| Claude
   Routers --> Anthro
   Routers --> Stores
+  Routers --> Plugins
   Pump --> Git
   Claude --> Disk
   Pump -.->|history-reader| Disk
@@ -177,22 +193,30 @@ graph TB
 server/
   cli.ts                # bin entry — argv, startup banner, QR, browser open
   app.ts                # Hono app: auth gate, CORS, body-limit, route mounting, static serve
-  routes/               # REST routers: sessions, permissions, uploads, recap, config,
-                        # health, marketplace (mp), git-write, update, search, skills, hooks
+  routes/               # REST routers: sessions, permissions, uploads, recap, config, health,
+                        # marketplace (mp), git-write, update, search, skills, hooks, dialog,
+                        # elicitation, reset, usage, ui-state
   session-manager.ts    # multi-session pool, provider wiring, WS fan-out, idle GC
-  session-pump.ts       # drains each provider stream → history ring + subscribers
+  session-pump.ts       # drains each provider stream → history ring + subscribers + task state
   providers/            # AgentProvider interface + registry; claude provider wraps the SDK Query
   permission-broker.ts  # parks canUseTool requests until the client decides
+  elicitation-broker.ts # MCP OAuth elicitation requests
+  user-dialog-broker.ts # user dialogs (refusal-fallback prompt)
+  subagent-watcher.ts   # tracks background Agent dispatches → TaskRecordUi seeds
   session-health.ts     # stuck-session detector (mid-turn silence GC)
   recap.ts              # AI session summaries, via anthropic-api.ts
+  commit-message.ts     # AI commit messages, via anthropic-api.ts
+  compact-summary.ts    # session compaction summaries
   history-reader.ts     # reads ~/.claude/projects transcripts; resume / fork anchors
   ws.ts                 # WebSocket hub (single connection, multiplexed channels)
   git.ts                # owns ALL git execution (runGit); git-broadcast.ts debounces mutations
   git-routes.ts         # read-only git endpoints (status, diff, log)
+  fs-routes.ts          # directory-only browser for the cwd picker
   mcp-config.ts         # global MCP server store; mcp-routes.ts exposes it
   mp-store.ts           # homegrown git-repo marketplace → injects Options.plugins
   snippet-store.ts      # composer text macros (snippet-routes.ts)
   ui-state-store.ts     # session groups + sidebar order (json-file-store.ts backed)
+  app-plugins/          # Mods: manager, store, per-plugin Node process, marketplace, host API
   config.ts             # centralised defaults from config.json
   persistence.ts        # ~/.claude-react-web/sessions.json read/write
   auth.ts               # web-access token gating (LAN)
@@ -201,22 +225,29 @@ server/
   log.ts                # createLogger(scope) — all diagnostics go through this
 
 shared/                 # types + logic shared by server and client
-                        # ws-protocol, hooks, skills, mcp-types, permission-request, search/, …
+                        # ws-protocol, tasks, elicitation, user-dialog, rewind, reset, usage,
+                        # account-info, app-plugins, hooks, skills, mcp-types, permission-request,
+                        # search/, …
 
 src/
   App.tsx               # multi-panel chat grid, sidebar, settings overlay, command palette
-  components/           # Chat, Composer, MessageList, SessionList, GitPanel, CommandPalette,
-                        # MarketplaceTab, McpInstaller, UpdateBanner, SubagentOverlay, …
+  components/           # Chat, Composer, MessageList, SessionList, GitPanel, TasksPanel,
+                        # CommandPalette, MarketplaceTab, McpInstaller, AppPluginsTab,
+                        # UsagePanel, RecapWindow, SubagentOverlay, …
   hooks/                # useWsHub, useChatStream, usePastedImages, usePermissionChannel,
-                        # useGitStatus, useUpdateInfo, useUiState, useSessionRecap, …
-  session-store/        # client-side message store (reducer + selectors)
+                        # useGitStatus, useUpdateInfo, useUiState, useSessionRecap, useTaskInfo, …
+  session-store/        # client-side message store (reducer + selectors, IDB transcript cache)
+  search/               # full-text message search (extract, match, highlight)
+  app-plugins/          # plugin UI contributions (menus, commands, panels)
 ```
 
 The server keeps one live provider session per tab — the default `claude` provider wraps the SDK `Query`, and `session-pump.ts` drains it, fanning each SDK message out to every WebSocket subscriber via a single multiplexed connection per tab. Metadata is persisted in `~/.claude-react-web/sessions.json`, so sessions survive restarts; the SDK itself stores full conversation history in `~/.claude/projects/` and resumes them via `options.resume`. Server-side defaults (model list, recap model, commit-message model, upload limits, etc.) are centralised in `config.ts` and configurable via `~/.claude-react-web/config.json` — see [CONFIG.md](./CONFIG.md).
 
+The separate **App Plugins (Mods)** system (`server/app-plugins/`, `shared/app-plugins/`, `src/app-plugins/`) lets plugins extend the app shell with menus, commands, settings, and panels. Each plugin's background code runs in its own trusted Node subprocess over JSON-RPC/stdio; plugins are installed from a marketplace repo (the official catalog lives in [`plugins/`](./plugins/), published as a separate lightweight GitHub repo) or a local directory. `--disable-app-plugins` and `--safe-mode` control the subsystem at launch.
+
 ## Contributing
 
-Issues and pull requests welcome. The codebase has 800+ tests across ~45 files covering the session pool, persistence, git execution, permission broker, WebSocket hub, keyboard shortcuts, and the client hooks — please keep them green (`npm test`).
+Issues and pull requests welcome. The codebase has 2,500+ tests across ~170 files covering the session pool, persistence, git execution, permission broker, WebSocket hub, app-plugin runtime, keyboard shortcuts, and the client hooks — please keep them green (`npm test`).
 
 ## License
 
