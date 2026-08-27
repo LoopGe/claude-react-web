@@ -195,6 +195,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     lastActivityAt,
     cwd: typeof r.cwd === 'string' ? r.cwd : undefined,
     model: typeof r.model === 'string' ? r.model : undefined,
+    modelGroupId: typeof r.modelGroupId === 'string' ? r.modelGroupId : undefined,
     permissionMode: typeof r.permissionMode === 'string' ? (r.permissionMode as PermissionMode) : undefined,
     title: typeof r.title === 'string' ? r.title : undefined,
     betas: Array.isArray(r.betas) && r.betas.every((b) => typeof b === 'string')

@@ -379,6 +379,67 @@ describe('SessionManager', () => {
       expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('gw/some-model')
       expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('gw/some-model')
     })
+
+    it('create rejects an unknown modelGroupId with 400', () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      expect(() => sm.create({ cwd: '/tmp', modelGroupId: 'g_missing' } as Parameters<SessionManager['create']>[0])).toThrow(/model group g_missing not found/)
+    })
+
+    it('setModelGroup resolves main, switches model live, applies fallback, persists', async () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp', model: 'gw/start' })
+      const updated = await sm.setModelGroup(info.id, 'g_flagship')
+      expect(updated.model).toBe('anthropic/claude-opus-4-20250514')
+      expect(updated.modelGroupId).toBe('g_flagship')
+      expect(mockHandles[0].setModel).toHaveBeenCalledWith('anthropic/claude-opus-4-20250514')
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: ['sonnet', 'haiku'] })
+      expect(store.get(info.id)?.modelGroupId).toBe('g_flagship')
+    })
+
+    it('setModelGroup rejects an unknown group with 400', async () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp' })
+      await expect(sm.setModelGroup(info.id, 'g_missing')).rejects.toThrow(/model group g_missing not found/)
+    })
+
+    it('setModel clears modelGroupId and the fallback chain', async () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      mockHandles[0].applyFlagSettings.mockClear()
+      const updated = await sm.setModel(info.id, 'gw/other')
+      expect(updated.modelGroupId).toBeUndefined()
+      expect(updated.model).toBe('gw/other')
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: null })
+    })
+
+    it('respawn with a deleted group self-heals: clears the reference and collapses', async () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      const id = info.id
+      // Unload the session so it goes dormant — self-heal triggers on respawn
+      await sm.unload(id)
+      __setConfigForTest({ modelGroups: [] }) // delete the group
+      const resumed = await sm.resume(id)
+      expect(resumed.modelGroupId).toBeUndefined()
+      // The persisted resolved main is kept; the provider collapses to it.
+      expect(resumed.model).toBe('anthropic/claude-opus-4-20250514')
+      const last = mockHandles[mockHandles.length - 1].options.env as Record<string, string>
+      expect(last.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-opus-4-20250514')
+      expect(last.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('anthropic/claude-opus-4-20250514')
+      expect(last.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('anthropic/claude-opus-4-20250514')
+    })
+
+    it('respawn re-applies the persisted group', async () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      // Unload so resume goes through spawn() and re-applies the group
+      await sm.unload(info.id)
+      const resumed = await sm.resume(info.id)
+      expect(resumed.modelGroupId).toBe('g_flagship')
+      const last = mockHandles[mockHandles.length - 1].options.env as Record<string, string>
+      expect(last.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-opus-4-20250514')
+      expect(last.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('claude-haiku-3-5-20241022')
+    })
   })
 
   it('global stream emits `created` on spawn and `update` on subsequent changes', async () => {
