@@ -2010,8 +2010,9 @@ export class SessionManager {
       // session enters the map — restores the invariant so replay / reconnect
       // / second-panel subscribe all see the history with zero client-side
       // special-casing. readHistoryPage already normalizes to the live wire
-      // shape (see history-reader.ts), so seeded and live frames are
-      // indistinguishable downstream.
+      // shape AND applies the same oversized-tool_result cap the live pump
+      // does (see history-reader.ts / trimLargeToolResults), so seeded and
+      // live frames are indistinguishable downstream.
       // Seed split by frame origin: main-thread frames go to `history`,
       // subagent frames (parent_tool_use_id != null — only present in seeds
       // built from a live session's merged view, e.g. discard(); the disk

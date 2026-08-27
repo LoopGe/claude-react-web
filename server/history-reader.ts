@@ -40,7 +40,8 @@ import { readFile, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { glob } from 'node:fs/promises'
-import { BROADCAST_SYSTEM_SUBTYPES } from './history-utils.js'
+import { BROADCAST_SYSTEM_SUBTYPES, trimLargeToolResults } from './history-utils.js'
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createLogger } from './log.js'
 
 const log = createLogger('history')
@@ -212,8 +213,15 @@ function pickTopLevel(o: RawLine, fields: string[]): Record<string, unknown> {
   return out
 }
 
-/** Normalize a raw JSONL line into the live SDKMessage wire shape. */
-function normalize(o: RawLine, sessionId: string): unknown {
+/** Normalize a raw JSONL line into the live SDKMessage wire shape.
+ *  `trim` applies the same oversized tool_result cap the live pump does
+ *  (see trimLargeToolResults). The render/replay paths (paginateJsonl —
+ *  resume seed, lazy-load, WS replay) MUST trim so a multi-MB tool_result
+ *  can't blow WsWriteQueue.MAX_QUEUE_CHARS. The search/index path
+ *  (historyEntriesFromJsonl) reads content only to extract plain text and
+ *  build small snippets — it never ships the full message over WS — so it
+ *  passes `trim: false` to keep full recall on the on-disk text. */
+function normalize(o: RawLine, sessionId: string, trim: boolean): unknown {
   const parent = o.type === 'user' ? toolResultParentId(o.message?.content) : null
   // The SDK writes an ISO `timestamp` on every persisted line. Carry it as
   // receivedAt (epoch ms) so disk-restored history (resume historySeed +
@@ -222,7 +230,7 @@ function normalize(o: RawLine, sessionId: string): unknown {
   // rendering via toTranscriptItem's undefined fallback.
   const ts = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN
   const hasTs = Number.isFinite(ts)
-  return {
+  const out = {
     type: o.type,
     ...(typeof o.subtype === 'string' ? { subtype: o.subtype } : {}),
     uuid: o.uuid,
@@ -276,6 +284,15 @@ function normalize(o: RawLine, sessionId: string): unknown {
       ? pickTopLevel(o, ['summary', 'preceding_tool_use_ids'])
       : {}),
   }
+  // Apply the same oversized tool_result cap the live pump does. Disk lines
+  // pass `message.content` through verbatim, so without this a resumed seed /
+  // lazy-load page could replay a multi-MB tool_result over WS and trip
+  // WsWriteQueue.MAX_QUEUE_CHARS (the "Stream reconnecting…" loop).
+  // trimLargeToolResults is a no-op for non-user frames and the on-disk
+  // camelCase `toolUseResult` top-level field is already dropped above by
+  // omission, so only the content blocks are touched here.
+  if (trim) trimLargeToolResults(out as SDKMessage)
+  return out
 }
 
 /**
@@ -464,7 +481,7 @@ export function paginateJsonl(
   const slice = renderable.slice(start, end)
 
   return {
-    messages: slice.map((o) => normalize(o, sessionId)),
+    messages: slice.map((o) => normalize(o, sessionId, true)),
     totalCount: total,
     startIndex: start,
     hasMore: start > 0,
@@ -478,7 +495,11 @@ export function historyEntriesFromJsonl(
 ): HistoryEntry[] {
   return parseRenderable(raw, opts).map((message, index) => ({
     index,
-    message: normalize(message, sessionId),
+    // No trim: this path feeds search (extractMessagePlainText) and discard
+    // anchor previews (assistant text), which read content to build snippets /
+    // previews and never ship the full message over WS. Trimming here would
+    // only destroy on-disk search recall.
+    message: normalize(message, sessionId, false),
   }))
 }
 

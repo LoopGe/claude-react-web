@@ -11,14 +11,13 @@ import {
   liteContextUsageFromResult,
   pump,
   toolResultIds,
-  trimLargeToolResults,
   userMessageHasToolResult,
   type PumpDeps,
 } from './session-pump.js'
 import type { LiteContextUsage } from './session-pump.js'
 import type { Session } from './session-types.js'
 import type { TaskRecordUi } from '../shared/tasks.js'
-import { isTranscriptMessage, shouldBroadcastMessage } from './history-utils.js'
+import { isTranscriptMessage, shouldBroadcastMessage, trimLargeToolResults } from './history-utils.js'
 
 // ---------------------------------------------------------------------------
 // Drop-filter discriminators
@@ -1090,6 +1089,148 @@ describe('trimLargeToolResults', () => {
     const content = (msg as { message: { content: unknown[] } }).message.content
     const block = content[0] as { input: { data: string } }
     expect(block.input.data).toBe(big)
+  })
+
+  // --- Top-level `tool_use_result` ---
+  //
+  // The SDK ALSO writes the full tool output at the TOP LEVEL of a user
+  // frame (`tool_use_result`, snake_case on the live Query stream — the CLI's
+  // on-disk JSONL spells it `toolUseResult`), separate from the
+  // `message.content` tool_result block. trimLargeToolResultBlock above only
+  // shrinks the in-content block; without this drop a multi-MB tool output
+  // (e.g. a WebFetch page) rides into the history ring and WS replay in full,
+  // blowing past MAX_QUEUE_CHARS on every subscribe → 1011 force-close → the
+  // "Stream reconnecting…" loop. The field is read nowhere in the app.
+
+  it('drops a large top-level tool_use_result on a user message', () => {
+    const msg = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_tr1', content: 'small' }] },
+      tool_use_result: [{ type: 'text', text: 'x'.repeat(2_000_000) }],
+    } as unknown as SDKMessage
+    trimLargeToolResults(msg)
+    expect((msg as { tool_use_result?: unknown }).tool_use_result).toBeUndefined()
+    // The in-content tool_result block is untouched when small.
+    const block = (msg as { message: { content: Array<{ content: string }> } }).message.content[0]
+    expect(block.content).toBe('small')
+  })
+
+  it('drops tool_use_result even when the content block is also trimmed', () => {
+    const big = 'z'.repeat(80_000)
+    const msg = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_tr2', content: big }] },
+      tool_use_result: [{ type: 'text', text: big }],
+    } as unknown as SDKMessage
+    trimLargeToolResults(msg)
+    expect((msg as { tool_use_result?: unknown }).tool_use_result).toBeUndefined()
+    const block = (msg as { message: { content: Array<{ content: string }> } }).message.content[0]
+    expect(block.content).toContain('chars omitted')
+  })
+
+  it('only drops tool_use_result on user messages (non-user frames untouched)', () => {
+    const msg = {
+      type: 'assistant',
+      message: { content: [] },
+      tool_use_result: [{ type: 'text', text: 'stays' }],
+    } as unknown as SDKMessage
+    trimLargeToolResults(msg)
+    expect((msg as { tool_use_result?: unknown }).tool_use_result).toBeDefined()
+  })
+
+  // --- Oversized base64 `image` blocks inside tool_result content ---
+  //
+  // A screenshot / MCP image result puts a base64 `image` block in the
+  // tool_result content array (the client RENDERS these as real <img>s — see
+  // ToolResultDetails), so unlike the persist path we must NOT drop all
+  // images. But an un-capped multi-MB image is the same 8M WS-frame poison as
+  // the top-level tool_use_result above. Oversized images are REPLACED with a
+  // text marker (truncating base64 would decode-fail and render as a broken
+  // <img>); small images pass through untouched so screenshots keep working.
+
+  it('replaces an oversized base64 image block inside array tool_result content with a text marker', () => {
+    const msg = userMsg([{
+      type: 'tool_result',
+      tool_use_id: 'tu_img1',
+      content: [
+        { type: 'text', text: 'screenshot:' },
+        { type: 'image', source: { type: 'base64', data: 'x'.repeat(2_500_000), media_type: 'image/png' } },
+      ],
+    }])
+    trimLargeToolResults(msg)
+    const content = (msg as { message: { content: Array<{ content: Array<{ type: string; text?: string }> }> } })
+      .message.content[0].content
+    expect(content[0].text).toBe('screenshot:') // text neighbor untouched
+    expect(content[1].type).toBe('text')
+    expect(content[1].text).toContain('image omitted')
+    // The multi-MB base64 must not survive anywhere in the message.
+    expect(JSON.stringify(msg)).not.toContain('x'.repeat(100))
+  })
+
+  it('replaces an oversized image-only tool_result (single object content) with a text marker', () => {
+    const msg = userMsg([{
+      type: 'tool_result',
+      tool_use_id: 'tu_img2',
+      content: { type: 'image', source: { type: 'base64', data: 'x'.repeat(2_500_000), media_type: 'image/png' } },
+    }])
+    trimLargeToolResults(msg)
+    const block = (msg as { message: { content: Array<{ content: unknown }> } }).message.content[0]
+    expect(block.content).toEqual({ type: 'text', text: '[image omitted — too large to sync]' })
+  })
+
+  it('head+tail truncates a bare single-object text tool_result content', () => {
+    const big = 'z'.repeat(80_000)
+    const msg = userMsg([{
+      type: 'tool_result',
+      tool_use_id: 'tu_singletxt',
+      content: { type: 'text', text: big },
+    }])
+    trimLargeToolResults(msg)
+    const block = (msg as { message: { content: Array<{ content: { type: string; text: string } }> } })
+      .message.content[0]
+    // Single-object shape preserved, text head+tail truncated in place.
+    expect(block.content.type).toBe('text')
+    expect(block.content.text.length).toBeLessThan(big.length)
+    expect(block.content.text).toContain('chars omitted')
+  })
+
+  it('keeps small base64 image blocks untouched (screenshot tools keep rendering)', () => {
+    const img = { type: 'image', source: { type: 'base64', data: 'small-img', media_type: 'image/png' } }
+    const msg = userMsg([{ type: 'tool_result', tool_use_id: 'tu_img3', content: [img] }])
+    trimLargeToolResults(msg)
+    const content = (msg as { message: { content: Array<{ content: Array<unknown> }> } })
+      .message.content[0].content
+    expect(content[0]).toBe(img) // same reference — untouched
+  })
+
+  it('keeps an image at exactly the 2M cap and replaces one char over', () => {
+    const atLimit = 'a'.repeat(2_000_000)
+    const over = 'b'.repeat(2_000_001)
+    const msg = userMsg([
+      { type: 'tool_result', tool_use_id: 'tu_img4', content: [
+        { type: 'image', source: { type: 'base64', data: atLimit, media_type: 'image/png' } },
+      ] },
+      { type: 'tool_result', tool_use_id: 'tu_img5', content: [
+        { type: 'image', source: { type: 'base64', data: over, media_type: 'image/png' } },
+      ] },
+    ])
+    trimLargeToolResults(msg)
+    const blocks = (msg as { message: { content: Array<{ content: Array<{ type: string }> }> } })
+      .message.content
+    expect(blocks[0].content[0].type).toBe('image') // at limit → kept
+    expect(blocks[1].content[0].type).toBe('text') // one over → replaced
+  })
+
+  it('does not cap url-source image blocks', () => {
+    const msg = userMsg([{
+      type: 'tool_result',
+      tool_use_id: 'tu_img6',
+      content: [{ type: 'image', source: { type: 'url', url: 'http://x' } }],
+    }])
+    trimLargeToolResults(msg)
+    const content = (msg as { message: { content: Array<{ content: Array<{ type: string }> }> } })
+      .message.content[0].content
+    expect(content[0].type).toBe('image')
   })
 })
 

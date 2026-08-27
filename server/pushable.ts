@@ -169,8 +169,11 @@ export function createPushable<T>(
         // (e.g. contextUsageSubscribers, where each WS subscriber creates
         // a new iterator). `end()` is the proper way to terminate the
         // producer; `return()` only closes the current consumer.
+        // That makes `return()` a normal teardown event (any WS unsub),
+        // not a warning — log it at debug so routine disconnects don't
+        // spam the default level.
         return(): Promise<IteratorResult<T>> {
-          log.warn(`[${id}] return() called on iterator — waiter: ${!!waiter}, queue: ${queue.length}, ended: ${ended}`)
+          log.debug(`[${id}] return() called on iterator — waiter: ${!!waiter}, queue: ${queue.length}, ended: ${ended}`)
           if (waiter) {
             const w = waiter
             waiter = null

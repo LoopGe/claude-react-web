@@ -213,6 +213,94 @@ describe('paginateJsonl — normalization', () => {
   })
 })
 
+describe('paginateJsonl — oversized tool_result trimming (disk path)', () => {
+  // Regression for the "Stream reconnecting…" loop: disk-restored history that
+  // SHIPS over WS (resume seed, lazy-load page — both via paginateJsonl) must
+  // apply the same oversized-tool_result cap as the live pump, otherwise a
+  // multi-MB tool_result replays over WS and trips WsWriteQueue.MAX_QUEUE_CHARS.
+  // The search/index path (historyEntriesFromJsonl) is deliberately NOT trimmed
+  // — it only builds snippets and never ships full messages — so the two disk
+  // readers diverge here. trimLargeToolResults runs inside normalize(), so the
+  // page returned here must already be trimmed.
+
+  it('head+tail truncates oversized string tool_result content', () => {
+    const big = 'A'.repeat(60_000)
+    const raw = jsonl([
+      {
+        type: 'user',
+        uuid: 'tr1',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: big }],
+        },
+      },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    const block = (page.messages[0] as { message: { content: Array<{ content: string }> } })
+      .message.content[0]
+    // 30K head + omission marker + 15K tail — strictly smaller than the 60K input.
+    expect(block.content.length).toBeLessThan(big.length)
+    expect(block.content.startsWith('A'.repeat(30_000))).toBe(true)
+    expect(block.content.endsWith('A'.repeat(15_000))).toBe(true)
+    expect(block.content).toContain('chars omitted')
+  })
+
+  it('replaces an oversized base64 image block with the omission marker', () => {
+    const huge = 'i'.repeat(2_000_001) // > MAX_TOOL_RESULT_IMAGE_CHARS
+    const raw = jsonl([
+      {
+        type: 'user',
+        uuid: 'tr1',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tool-1',
+            content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: huge } }],
+          }],
+        },
+      },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    const block = (page.messages[0] as { message: { content: Array<{ content: unknown }> } })
+      .message.content[0] as { content: Array<{ type: string; text?: string }> }
+    expect(block.content).toEqual([{ type: 'text', text: '[image omitted — too large to sync]' }])
+  })
+
+  it('keeps a small base64 image block untouched', () => {
+    const small = 'i'.repeat(100)
+    const raw = jsonl([
+      {
+        type: 'user',
+        uuid: 'tr1',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tool-1',
+            content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: small } }],
+          }],
+        },
+      },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    const block = (page.messages[0] as { message: { content: Array<{ content: Array<{ source: { data: string } }> }> } })
+      .message.content[0]
+    expect(block.content[0].source.data).toBe(small)
+  })
+
+  it('leaves non-user frames untouched (trim only applies to user tool_result frames)', () => {
+    const big = 'A'.repeat(60_000)
+    const raw = jsonl([
+      { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: big }] } },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    const block = (page.messages[0] as { message: { content: Array<{ text: string }> } })
+      .message.content[0]
+    expect(block.text).toBe(big)
+  })
+})
+
 describe('paginateJsonl — pagination', () => {
   // 5 renderable messages: indices 0..4
   const raw = jsonl([

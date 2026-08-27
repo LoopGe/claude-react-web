@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import type { FastModeState, SDKMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk'
 import type { Session, SessionBroadcaster } from './session-types.js'
 import { endAllSubscribers } from './session-types.js'
-import { isTranscriptMessage, pushBounded, stampReceivedAt, shouldBroadcastMessage } from './history-utils.js'
+import { isTranscriptMessage, pushBounded, stampReceivedAt, shouldBroadcastMessage, trimLargeToolResults, truncateMiddle } from './history-utils.js'
 import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
 import { parseAckAgentId } from './subagent-watcher.js'
 
@@ -30,62 +30,9 @@ const MAX_HOOK_OUTPUT_CHARS = 20_000
 
 function trimHookOutput(value: string): string {
   if (value.length <= MAX_HOOK_OUTPUT_CHARS) return value
-  const head = value.slice(0, 10_000)
-  const tail = value.slice(value.length - 8_000)
-  const omitted = value.length - head.length - tail.length
-  return `${head}\n\n[... ${omitted} chars omitted ...]\n\n${tail}`
-}
-
-/** Maximum characters kept in a single `tool_result` content block.
- *  ~50K chars ≈ 12K tokens — comfortably under the SDK's own 25K-token
- *  MCP output cap while leaving room for other context.  The head+tail
- *  strategy preserves the beginning (usually the most useful part) and
- *  the end (often contains summary / error info). */
-const MAX_TOOL_RESULT_CHARS = 50_000
-
-function trimLargeToolResultBlock(block: {
-  type: unknown; content?: unknown
-}): boolean {
-  if (block.type !== 'tool_result') return false
-  const c = (block as { content?: unknown }).content
-  if (typeof c === 'string') {
-    if (c.length <= MAX_TOOL_RESULT_CHARS) return false
-    const head = c.slice(0, 30_000)
-    const tail = c.slice(c.length - 15_000)
-    const omitted = c.length - head.length - tail.length
-    ;(block as { content: string }).content =
-      `${head}\n\n[... ${omitted} chars omitted ...]\n\n${tail}`
-    return true
-  }
-  if (Array.isArray(c)) {
-    let trimmed = false
-    for (const item of c) {
-      if (!item || typeof item !== 'object') continue
-      const it = item as { type?: unknown; text?: unknown }
-      if (it.type === 'text' && typeof it.text === 'string' && it.text.length > MAX_TOOL_RESULT_CHARS) {
-        const head = it.text.slice(0, 30_000)
-        const tail = it.text.slice(it.text.length - 15_000)
-        const omitted = it.text.length - head.length - tail.length
-        it.text = `${head}\n\n[... ${omitted} chars omitted ...]\n\n${tail}`
-        trimmed = true
-      }
-    }
-    return trimmed
-  }
-  return false
-}
-
-/** Mutate `msg` in-place: trim any oversized `tool_result` content blocks
- *  inside user messages.  Called once, before the message enters the history
- *  ring and subscriber broadcast — so every downstream consumer (replay,
- *  WS push, localStorage, render) sees the trimmed version. */
-export function trimLargeToolResults(msg: SDKMessage): void {
-  if (msg.type !== 'user') return
-  const content = (msg as { message?: { content?: unknown } }).message?.content
-  if (!Array.isArray(content)) return
-  for (const block of content) {
-    if (block && typeof block === 'object') trimLargeToolResultBlock(block)
-  }
+  // Same head+tail elision shape as tool_result trimming in history-utils —
+  // one helper keeps the omission-marker wording consistent everywhere.
+  return truncateMiddle(value, 10_000, 8_000)
 }
 
 /** Extract `parent_tool_use_id` from an SDK message defensively.

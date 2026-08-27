@@ -1,3 +1,5 @@
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+
 /**
  * Push an item into a bounded array, evicting the oldest entry when the
  * cap is exceeded. This is the single implementation used by the session
@@ -141,4 +143,186 @@ export function shouldBroadcastMessage(msg: { type?: string; subtype?: string })
  *  represents (user / assistant / result / system frames) is retained. */
 export function isTranscriptMessage(msg: { type?: string }): boolean {
   return msg.type !== 'stream_event'
+}
+
+// ---------------------------------------------------------------------------
+// trimLargeToolResults — cap oversized tool_result content.
+//
+// Lives HERE (not in session-pump.ts) because TWO consumers need it:
+//   1. the live pump, before a message enters the history ring / WS broadcast;
+//   2. history-reader.normalize(), so disk-restored history (resume seed,
+//      lazy-load pages, search) is capped the same way — otherwise a resumed
+//      session replays an untrimmed multi-MB tool_result over WS and blows
+//      WsWriteQueue.MAX_QUEUE_CHARS, the "Stream reconnecting…" loop.
+// ---------------------------------------------------------------------------
+
+/** Maximum characters kept in a single `tool_result` content block.
+ *  ~50K chars ≈ 12K tokens — comfortably under the SDK's own 25K-token
+ *  MCP output cap while leaving room for other context.  The head+tail
+ *  strategy preserves the beginning (usually the most useful part) and
+ *  the end (often contains summary / error info). */
+const MAX_TOOL_RESULT_CHARS = 50_000
+
+/** Maximum base64 chars kept in a single `tool_result` IMAGE block.
+ *  Base64 is ~4/3× binary size, so 2M chars ≈ 1.5MB binary — above a typical
+ *  viewport screenshot while keeping any single image well under the WS
+ *  write-queue overflow ceiling (WsWriteQueue.MAX_QUEUE_CHARS = 8M) that
+ *  caused the "Stream reconnecting…" loop. Oversized images are REPLACED with
+ *  a text marker rather than truncated: a cut base64 string decode-fails and
+ *  renders as a broken <img> in the client (imageBlockToDataUrl), while a
+ *  marker renders as honest text. */
+const MAX_TOOL_RESULT_IMAGE_CHARS = 2_000_000
+
+/** Maximum TOTAL base64 chars of image data kept across all tool_result
+ *  blocks in ONE user message. The per-image cap alone doesn't bound a
+ *  message's serialized size — a gallery result with several images each
+ *  under MAX_TOOL_RESULT_IMAGE_CHARS could still sum past 8M. This budget
+ *  caps the message-wide image contribution (4M ≈ 3MB binary) so a single
+ *  WS frame stays comfortably under the queue ceiling; beyond it, further
+ *  images are replaced with the marker. */
+const MAX_TOOL_RESULT_TOTAL_IMAGE_CHARS = 4_000_000
+
+/** Text marker substituted for an oversized tool_result image block. Kept
+ *  terse and honest. NOTE: deliberately different wording from the client's
+ *  IMAGE_MARKER (`[image omitted — reload to view]` in src/session-store/
+ *  project.ts): that one is a cold-load localStorage placeholder that replay
+ *  RESTORES within seconds, whereas this one means the image was dropped at
+ *  the source (live pump / disk read) and is gone from the ring and wire for
+ *  good — "reload to view" would be a lie here. */
+const TOOL_RESULT_IMAGE_OMITTED_MARKER = '[image omitted — too large to sync]'
+
+/** Base64 data length of an image content block, or 0 when it isn't an image
+ *  with a base64 source (URL-source images carry no inline bytes and are left
+ *  alone). */
+function base64ImageDataLen(it: { type?: unknown; source?: unknown }): number {
+  if (!it || typeof it !== 'object') return 0
+  if (it.type !== 'image') return 0
+  const src = it.source
+  if (!src || typeof src !== 'object') return 0
+  const s = src as { type?: unknown; data?: unknown }
+  return s.type === 'base64' && typeof s.data === 'string' ? s.data.length : 0
+}
+
+/** Head+tail truncation with an elision marker. Keeps the first `headChars`
+ *  and last `tailChars` characters of `value`, splicing
+ *  `[... N chars omitted ...]` between them. Shared by the tool_result text
+ *  trimming below and by session-pump's hook-output trimmer, so the omission
+ *  marker wording and slice shape stay consistent across both surfaces.
+ *  Callers decide the cap (when to truncate) — this helper only shapes an
+ *  already-oversized value. */
+export function truncateMiddle(value: string, headChars: number, tailChars: number): string {
+  const head = value.slice(0, headChars)
+  const tail = value.slice(value.length - tailChars)
+  const omitted = value.length - head.length - tail.length
+  return `${head}\n\n[... ${omitted} chars omitted ...]\n\n${tail}`
+}
+
+/** Trim one `tool_result` CONTENT ITEM in place: head+tail truncate long
+ *  text; replace an oversized base64 image (over the per-image cap, or over
+ *  the message-wide total image budget carried in `retainedSoFar`) with a
+ *  text marker. Shared by the array and bare-single-object branches of
+ *  trimLargeToolResultBlock so both content shapes get identical caps.
+ *
+ *  Returns the content to keep (a marker replacement when the image was
+ *  dropped — the caller writes it back) and the number of base64 image chars
+ *  RETAINED, so callers can enforce the cumulative budget across blocks and
+ *  items. The returned `content` is the SAME reference as `item` unless it was
+ *  replaced, so callers can write back with `if (content !== item)`. */
+function trimToolResultItem(
+  item: unknown,
+  retainedSoFar: number,
+): { content: unknown; retained: number } {
+  if (!item || typeof item !== 'object') return { content: item, retained: 0 }
+  const it = item as { type?: unknown; text?: unknown }
+  if (it.type === 'text' && typeof it.text === 'string') {
+    if (it.text.length > MAX_TOOL_RESULT_CHARS) {
+      it.text = truncateMiddle(it.text, 30_000, 15_000)
+    }
+    return { content: it, retained: 0 }
+  }
+  if (it.type === 'image') {
+    const dataLen = base64ImageDataLen(it)
+    if (dataLen > 0) {
+      if (dataLen > MAX_TOOL_RESULT_IMAGE_CHARS || retainedSoFar + dataLen > MAX_TOOL_RESULT_TOTAL_IMAGE_CHARS) {
+        // Replace the whole block with a text marker. Truncating the
+        // base64 string would decode-fail and render as a broken <img>
+        // client-side; an explicit marker renders as honest text and
+        // keeps the content non-empty (an image-only result still shows
+        // something).
+        return { content: { type: 'text', text: TOOL_RESULT_IMAGE_OMITTED_MARKER }, retained: 0 }
+      }
+      return { content: it, retained: dataLen }
+    }
+  }
+  return { content: it, retained: 0 }
+}
+
+/** Trim one `tool_result` block's oversized content in place: head+tail
+ *  truncate long text; replace oversized base64 images (over the per-image
+ *  cap, or over the message-wide total image budget carried in
+ *  `retainedSoFar`) with a text marker. Returns the number of image base64
+ *  chars RETAINED by this block, so the caller can enforce the cumulative
+ *  budget across multiple tool_result blocks in one user message. Returns 0
+ *  for non-tool_result blocks and for string / text-only content. */
+function trimLargeToolResultBlock(
+  block: { type: unknown; content?: unknown },
+  retainedSoFar: number,
+): number {
+  if (block.type !== 'tool_result') return 0
+  const c = (block as { content?: unknown }).content
+  if (typeof c === 'string') {
+    if (c.length > MAX_TOOL_RESULT_CHARS) {
+      ;(block as { content: string }).content = truncateMiddle(c, 30_000, 15_000)
+    }
+    return 0
+  }
+  // Bare single-block content (the SDK can emit a lone text or image block as
+  // tool_result content, and the client renders it): apply the same caps via
+  // the shared item trimmer, writing back only when it produced a replacement
+  // (a marker object) — an in-place text truncation already propagated.
+  if (c && typeof c === 'object' && !Array.isArray(c)) {
+    const { content, retained } = trimToolResultItem(c, retainedSoFar)
+    if (content !== c) (block as { content: unknown }).content = content
+    return retained
+  }
+  if (Array.isArray(c)) {
+    let retained = 0
+    for (let i = 0; i < c.length; i++) {
+      const { content, retained: r } = trimToolResultItem(c[i], retainedSoFar + retained)
+      if (content !== c[i]) c[i] = content
+      retained += r
+    }
+    return retained
+  }
+  return 0
+}
+
+/** Mutate `msg` in-place: trim any oversized `tool_result` content blocks
+ *  inside user messages (long text is head+tail truncated; oversized base64
+ *  images are replaced with a text marker), and drop the redundant top-level
+ *  `tool_use_result` field the SDK attaches to the same frame.  Called by the
+ *  live pump before ring insertion/broadcast AND by history-reader.normalize()
+ *  on disk reads, so every downstream consumer (replay, WS push, localStorage,
+ *  render) sees the trimmed version regardless of source. */
+export function trimLargeToolResults(msg: SDKMessage): void {
+  if (msg.type !== 'user') return
+  // The SDK ALSO stores the full tool output at the TOP LEVEL of the user
+  // frame (`tool_use_result`) — separate from the `message.content` tool_result
+  // block, which trimLargeToolResultBlock handles above. Nothing in the app
+  // reads `tool_use_result` (it duplicates content), but a large one (e.g. a
+  // multi-MB WebFetch page) would otherwise ride into the history ring and WS
+  // replay in full, blowing past MAX_QUEUE_CHARS on every subscribe and
+  // force-closing the socket (the "Stream reconnecting…" loop). Drop it here
+  // so the ring and the wire stay small. (The CLI's on-disk JSONL spells this
+  // same field `toolUseResult`; history-reader.normalize() already drops that
+  // by omission, so only the live snake_case variant needs handling here.)
+  delete (msg as { tool_use_result?: unknown }).tool_use_result
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (!Array.isArray(content)) return
+  let retainedImageChars = 0
+  for (const block of content) {
+    if (block && typeof block === 'object') {
+      retainedImageChars += trimLargeToolResultBlock(block, retainedImageChars)
+    }
+  }
 }
