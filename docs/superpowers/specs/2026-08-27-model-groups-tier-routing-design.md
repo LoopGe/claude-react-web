@@ -196,12 +196,11 @@ Persistence: `SessionMeta` gains `modelGroupId`; on respawn / resume / fork the 
 | Group deleted while sessions reference it | On respawn, `find` misses → provider collapses; manager **self-heals**: clears `s.modelGroupId`, falls back to `effectiveModel`, `log.warn`. No dangling reference. |
 | Group edited (slots / main changed) | Takes effect on next spawn; live sessions keep the old tiers until respawn (consistent with the live-switch note). |
 | Empty slot | Falls back to the main model; multiple aliases may point at one model — harmless. |
-| Slot value fails to resolve (bare name not in modelList) | That slot falls back to the main model + `log.warn`. |
+| Slot value fails to resolve (bare name not in modelList) | Passed through unchanged (the resolver returns non-matching bare names and provider-prefixed ids as-is); the CLI surfaces any invalid-model error at spawn. |
 | Capability mis-slot (e.g. sonnet placed in the opus slot) | The CLI declares opus-class caps for it; the app's own chips still classify by keyword. Inconsistency is confined to the CLI's internal surface; documented as "slot must be placed correctly". |
 | Switching back to a single model | `setModel` clears `modelGroupId` **and** `fallbackModel` — no residual degradation chain. |
 | Invalid group at create | `POST /sessions` → 400 (explicit operation rejects rather than silently falling back). |
 | Concurrent config edits | Reuse the existing `updateConfigFile` promise queue — already serialized. |
-| `subagentTiers` names an unknown agent | Harmless; the CLI ignores it or applies only to a same-named definition. |
 | `Options.agents` built-in name merge (lever D explicit) | **Degraded (verified 2026-08-27):** probe showed `Options.agents` entries for built-in names (`task`) are not honored by the CLI — the model uses its own agent dispatch parameters. The custom-name case is inconclusive from this probe. The explicit `subagentTiers` layer, which maps built-in agent names to tier slots, does not deliver value. The automatic layer (lever A: split tier env vars → `ANTHROPIC_SMALL_FAST_MODEL`) still delivers background-subagent routing. |
 
 **Live-switch trade-off (approved):** a group switch applies **immediately** for the main model (`handle.setModel`) and the fallback chain (`applyFlagSettings`); the **tier env vars (subagent routing) are spawn-time** and land on the next respawn (restart / resume / clear). There is a short window after a live group switch where subagent tiers still reflect the previous spawn's env. This is an SDK runtime limitation, not a bug; documented.

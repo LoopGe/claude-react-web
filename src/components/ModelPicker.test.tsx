@@ -31,12 +31,11 @@ function makeProps(overrides: Partial<Parameters<typeof ModelPicker>[0]> = {}) {
 }
 
 describe('ModelPicker', () => {
-  it('renders a Model Groups group before Models and calls onSelectGroup', () => {
+  it('renders a Model Groups group before Models', () => {
     render(<ModelPicker {...makeProps()} />)
     expect(screen.getByText('Model Groups')).toBeTruthy()
     fireEvent.click(screen.getByText('Flagship'))
     expect(screen.getByText('Models')).toBeTruthy()
-    expect(makeProps().onSelectGroup).not.toHaveBeenCalled() // fresh fn, see below
   })
 
   it('calls onSelectGroup with the group id', () => {

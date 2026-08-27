@@ -2978,7 +2978,11 @@ export class SessionManager {
     s.model = model
     s.modelGroupId = undefined
     s.lastActivityAt = Date.now()
+    // The model changed — recompute its effort capability (keyword-based,
+    // so a switch between model classes changes what's available), then
+    // carry the new effortLevels.
     s.effortLevels = effortLevelsForModel(s.model)
+    // Thinking capability tracks the model family too — recompute on switch.
     s.thinkingSupported = supportsThinkingForModel(s.model)
     this.persist(s)
     return this.info(s)
@@ -2999,14 +3003,12 @@ export class SessionManager {
       'supportsModelSwitch',
     )(r.main)
     const fallback = fallbackAliasesFor(group.main ?? 'opus')
-    if (fallback.length > 0) {
-      await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-        s,
-        'applyFlagSettings',
-        'fallback model',
-        'supportsModelSwitch',
-      )({ fallbackModel: fallback })
-    }
+    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+      s,
+      'applyFlagSettings',
+      'fallback model',
+      'supportsModelSwitch',
+    )({ fallbackModel: fallback.length > 0 ? fallback : null })
     s.model = r.main
     s.modelGroupId = groupId
     s.lastActivityAt = Date.now()

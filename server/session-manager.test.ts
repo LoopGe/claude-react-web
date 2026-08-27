@@ -396,6 +396,23 @@ describe('SessionManager', () => {
       expect(store.get(info.id)?.modelGroupId).toBe('g_flagship')
     })
 
+    it('setModelGroup clears the prior fallback when switching to a haiku-main group', async () => {
+      const BUDGET = {
+        id: 'g_budget', name: 'Budget',
+        opus: 'anthropic/claude-opus-4-20250514',
+        sonnet: 'anthropic/claude-sonnet-4-20250514',
+        haiku: 'claude-haiku-3-5-20241022',
+        main: 'haiku' as const,
+      }
+      __setConfigForTest({ modelGroups: [GROUP, BUDGET] })
+      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      mockHandles[0].applyFlagSettings.mockClear()
+      const updated = await sm.setModelGroup(info.id, 'g_budget')
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: null })
+      expect(updated.modelGroupId).toBe('g_budget')
+      expect(updated.model).toBe('claude-haiku-3-5-20241022')
+    })
+
     it('setModelGroup rejects an unknown group with 400', async () => {
       __setConfigForTest({ modelGroups: [GROUP] })
       const info = sm.create({ cwd: '/tmp' })
