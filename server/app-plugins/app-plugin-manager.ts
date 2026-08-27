@@ -108,6 +108,7 @@ export class AppPluginManager implements AppPluginBroadcaster {
       isWindows: this.isWindows,
       onCrash: (pluginId, crashes) => this.handleCrash(pluginId, crashes),
       onActivated: (pluginId) => this.markActive(pluginId),
+      onEvent: (pluginId, widgetId, payload) => this.bus.emitPluginEvent(pluginId, widgetId, payload),
     })
   }
 

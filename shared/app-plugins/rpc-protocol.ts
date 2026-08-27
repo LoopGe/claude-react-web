@@ -215,3 +215,11 @@ export const HOST_METHODS = [
   'log',
 ] as const
 export type HostMethod = (typeof HOST_METHODS)[number]
+
+/** Plugin→host notification: a widget push. This is a child-originated
+ *  notification (not a host method), so it is NOT in HOST_METHODS. The host
+ *  validates params via parseStatGridPayload before forwarding. */
+export interface AppEventParams {
+  widgetId: string
+  payload: unknown
+}

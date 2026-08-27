@@ -18,6 +18,7 @@ import type { AppPluginRecord, PluginRuntimeState } from '../../shared/app-plugi
 import type { PluginManifest } from '../../shared/app-plugins/manifest.js'
 import type { PluginCommandContext } from '../../shared/app-plugins/command-context.js'
 import type { PluginCommandResult } from '../../shared/app-plugins/command-result.js'
+import { parseStatGridPayload, type StatGridPayload } from '../../shared/app-plugins/widget.js'
 import type { SessionManager } from '../session-manager.js'
 
 const log = createLogger('app-plugins:proc')
@@ -25,6 +26,31 @@ const log = createLogger('app-plugins:proc')
 const ACTIVATE_TIMEOUT_MS = 10_000
 const COMMAND_TIMEOUT_MS = 30_000
 const DEACTIVATE_TIMEOUT_MS = 5_000
+
+const EVENT_RATE_PER_MIN = 300
+
+/** Validate the `app.event` notification params → the parsed payload, or null. */
+export function parseAppEventNotification(params: unknown): { widgetId: string; payload: StatGridPayload } | null {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return null
+  const widgetId = (params as { widgetId?: unknown }).widgetId
+  if (typeof widgetId !== 'string' || widgetId.length === 0) return null
+  const payload = parseStatGridPayload((params as { payload?: unknown }).payload)
+  if (!payload) return null
+  return { widgetId, payload }
+}
+
+/** Sliding-window rate budget (mirrors the log rate-limiter). */
+export class SlidingWindowRate {
+  private stamps: number[] = []
+  constructor(private readonly max: number, private readonly windowMs: number) {}
+  allow(): boolean {
+    const now = Date.now()
+    this.stamps = this.stamps.filter((t) => now - t < this.windowMs)
+    if (this.stamps.length >= this.max) return false
+    this.stamps.push(now)
+    return true
+  }
+}
 
 export interface PluginProcessOptions {
   record: AppPluginRecord
@@ -36,6 +62,7 @@ export interface PluginProcessOptions {
   onUnexpectedExit: (code: number | null, signal: NodeJS.Signals | null) => void
   /** Captured stderr line (manager rate-limits + stores as a log). */
   onLog: (line: string) => void
+  onEvent?: (pluginId: string, widgetId: string, payload: StatGridPayload) => void
 }
 
 export class PluginProcess {
@@ -46,6 +73,7 @@ export class PluginProcess {
   /** Declared configuration properties (manifest `contributes.configuration`),
    *  resolved once at construction so `config.get` can apply defaults. */
   private readonly configurationProps: PluginConfigurationProperty[]
+  private readonly eventRate = new SlidingWindowRate(EVENT_RATE_PER_MIN, 60_000)
 
   constructor(private readonly opts: PluginProcessOptions) {
     this.pluginId = opts.record.id
@@ -74,6 +102,18 @@ export class PluginProcess {
       sm: opts.sm,
       onStructuredLog: (line) => opts.onLog(line),
       configurationProps: this.configurationProps,
+    })
+    this.peer.registerHandler('app.event', async (params) => {
+      const parsed = parseAppEventNotification(params)
+      if (!parsed) {
+        log.warn(`[${this.pluginId}] dropped invalid app.event`)
+        return
+      }
+      if (!this.eventRate.allow()) {
+        log.warn(`[${this.pluginId}] app.event rate limited`)
+        return
+      }
+      this.opts.onEvent?.(this.pluginId, parsed.widgetId, parsed.payload)
     })
     this.peer.start()
   }

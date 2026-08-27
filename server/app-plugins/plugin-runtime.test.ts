@@ -289,4 +289,56 @@ handlers.executeCommand = async ({ invocationId }) => {
     expect(existsSync(marker)).toBe(false)
     await safe.shutdown()
   })
+
+  it('forwards a plugin app.event notification to the bus', async () => {
+    const dir = buildPlugin(
+      stateDir,
+      'com.example.events',
+      `
+handlers.activate = async () => ({ ok: true })
+handlers.executeCommand = async () => {
+  send({ jsonrpc: '2.0', method: 'app.event', params: {
+    widgetId: 'com.example.events.overview',
+    payload: { values: [{ id: 'cpu', label: 'CPU', value: '1', unit: '%' }] },
+  } })
+  return { type: 'none' }
+}
+`,
+      {
+        permissions: [],
+        activationEvents: ['onStartup'],
+        contributes: {
+          widgets: [{ id: 'com.example.events.overview', location: 'global.bottomLeft', kind: 'stat-grid' }],
+          commands: [{ id: 'com.example.events.run', title: 'Run' }],
+          contextMenus: [],
+          actions: [],
+          configuration: { properties: [] },
+        },
+      },
+    )
+    await manager.install({ type: 'local', path: dir })
+    const sub = manager.subscribeAppPlugins()
+    const received: unknown[] = []
+    const collect = (async () => {
+      for await (const ev of sub.iterable) {
+        received.push(ev)
+      }
+    })()
+    try {
+      await manager.enable('com.example.events')
+      await manager.executeCommand({
+        pluginId: 'com.example.events',
+        commandId: 'com.example.events.run',
+        context: { source: 'global', commandId: 'com.example.events.run', invokedAt: Date.now() } as never,
+      })
+      const deadline = Date.now() + 3000
+      while (!received.some((e) => (e as { kind?: string }).kind === 'plugin-event') && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25))
+      }
+      expect(received.some((e) => (e as { kind?: string }).kind === 'plugin-event')).toBe(true)
+    } finally {
+      sub.unsubscribe()
+      await collect
+    }
+  })
 })

@@ -327,6 +327,9 @@ export function attachWebSocket(
                 contributions: ev.contributions,
               })
             }
+            else if (ev.kind === 'plugin-event') {
+              queue.enqueue({ kind: 'app-plugin-event', pluginId: ev.pluginId, widgetId: ev.widgetId, payload: ev.payload })
+            }
           }
         } catch (err) {
           if (!closed) {

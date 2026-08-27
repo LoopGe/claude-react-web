@@ -14,6 +14,7 @@ import { resolve as resolvePath } from 'node:path'
 import { createLogger } from '../log.js'
 import { PluginProcess } from './plugin-process.js'
 import type { AppPluginRecord } from '../../shared/app-plugins/runtime-state.js'
+import type { StatGridPayload } from '../../shared/app-plugins/widget.js'
 import type { SessionManager } from '../session-manager.js'
 
 const log = createLogger('app-plugins:pm')
@@ -30,6 +31,7 @@ export interface ProcessManagerOptions {
   /** Called once after a successful activate() so the manager can transition
    *  the record inactive → active. */
   onActivated: (pluginId: string) => void
+  onEvent?: (pluginId: string, widgetId: string, payload: StatGridPayload) => void
 }
 
 interface PoolEntry {
@@ -68,6 +70,7 @@ export class PluginProcessManager {
         isWindows: this.opts.isWindows,
         onUnexpectedExit: (_code, _signal) => this.handleCrash(record.id),
         onLog: (line) => this.captureLog(record.id, line),
+        onEvent: this.opts.onEvent,
       })
       // Spawn happens in the PluginProcess constructor; activate is the
       // lifecycle handshake.
