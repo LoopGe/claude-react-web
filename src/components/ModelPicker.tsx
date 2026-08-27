@@ -28,10 +28,15 @@ interface Props {
    *  no explicit model — the first model in the list is treated as the
    *  effective default and marked selected. */
   current: string | undefined
+  /** Currently selected ModelGroup id (session.modelGroupId). Undefined for
+   *  single-model sessions. */
+  currentGroupId?: string
   options: ModelOptions
   disabled?: boolean
   /** Called with the chosen concrete model id. */
   onSelect: (model: string) => void
+  /** Called with the chosen ModelGroup id. */
+  onSelectGroup?: (groupId: string) => void
   onClose: () => void
 }
 
@@ -48,7 +53,7 @@ interface Row {
   select: () => void
 }
 
-export function ModelPicker({ anchor, current, options, disabled, onSelect, onClose }: Props) {
+export function ModelPicker({ anchor, current, currentGroupId, options, disabled, onSelect, onSelectGroup, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -75,6 +80,30 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
 
     const result: Row[] = []
     let firstInGroup = true
+
+    // Model Groups — shown first when any exist. A group row marks the
+    // session's current group as active; selecting it calls onSelectGroup.
+    const groups = options.modelGroups.filter(
+      (g) =>
+        !q ||
+        g.name.toLowerCase().includes(q) ||
+        [g.opus, g.sonnet, g.haiku].some((m) => m?.toLowerCase().includes(q)),
+    )
+    if (groups.length > 0) {
+      firstInGroup = true
+      for (const g of groups) {
+        const slotLabel = [g.opus, g.sonnet, g.haiku].filter(Boolean).join(' · ')
+        result.push({
+          key: `group:${g.id}`,
+          label: g.name,
+          sub: slotLabel,
+          heading: firstInGroup ? 'Model Groups' : undefined,
+          active: currentGroupId === g.id,
+          select: () => onSelectGroup?.(g.id),
+        })
+        firstInGroup = false
+      }
+    }
 
     if (recents.length > 0) {
       firstInGroup = true
@@ -129,7 +158,7 @@ export function ModelPicker({ anchor, current, options, disabled, onSelect, onCl
     }
 
     return result
-  }, [query, options, current, onSelect])
+  }, [query, options, current, currentGroupId, onSelect, onSelectGroup])
 
   // Clamp inline rather than in an effect: when the row set shrinks (e.g.
   // a search narrows the list) the stored index may exceed the new length,

@@ -23,6 +23,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
 import { readRecentModels } from '../utils/recent-models'
+import type { ModelGroupConfig } from '../types/config'
 
 export interface ModelOption {
   id: string
@@ -39,6 +40,8 @@ export interface ModelOptions {
    *  model. Used by the picker to mark the default as selected for a
    *  session whose model is still empty. Undefined until /config resolves. */
   defaultModel?: string
+  /** The user's configured ModelGroups (config.modelGroups), in order. */
+  modelGroups: ModelGroupConfig[]
 }
 
 export function useModelOptions(sessionId: string, enabled: boolean): ModelOptions {
@@ -46,7 +49,12 @@ export function useModelOptions(sessionId: string, enabled: boolean): ModelOptio
    *  resolves. We tag it with the sessionId it was fetched for so a
    *  parent that swaps sessions without remounting won't briefly show
    *  the previous session's list. */
-  const [data, setData] = useState<{ sessionId: string; models: ModelOption[]; defaultModel?: string } | null>(null)
+  const [data, setData] = useState<{
+    sessionId: string
+    models: ModelOption[]
+    defaultModel?: string
+    modelGroups: ModelGroupConfig[]
+  } | null>(null)
   /** Sentinel for "already fetched (or in-flight) for this sessionId".
    *  A ref rather than state so successful fetches don't cascade-render
    *  the component a second time after the data state update. */
@@ -58,9 +66,9 @@ export function useModelOptions(sessionId: string, enabled: boolean): ModelOptio
     fetchedRef.current = sessionId
     const ac = new AbortController()
     ;(async () => {
-      let cfg: { models?: string[] }
+      let cfg: { models?: string[]; modelGroups?: ModelGroupConfig[] }
       try {
-        cfg = await api.get<{ models?: string[] }>('/config', { signal: ac.signal })
+        cfg = await api.get<{ models?: string[]; modelGroups?: ModelGroupConfig[] }>('/config', { signal: ac.signal })
       } catch {
         if (ac.signal.aborted) return
         // Leave fetchedRef cleared so a subsequent open of the picker
@@ -86,7 +94,7 @@ export function useModelOptions(sessionId: string, enabled: boolean): ModelOptio
         }
       }
 
-      setData({ sessionId, models: merged, defaultModel })
+      setData({ sessionId, models: merged, defaultModel, modelGroups: cfg.modelGroups ?? [] })
     })()
     return () => { ac.abort() }
   }, [sessionId, enabled])
@@ -98,11 +106,12 @@ export function useModelOptions(sessionId: string, enabled: boolean): ModelOptio
   const fresh = data && data.sessionId === sessionId ? data : null
   const models = fresh ? fresh.models : []
   const defaultModel = fresh?.defaultModel
+  const modelGroups = fresh ? fresh.modelGroups : []
 
   // Reading localStorage every render is fine — it's synchronous and
   // microsecond-scale, and the picker only re-renders a handful of times
   // per second.
   const recents = readRecentModels()
 
-  return { models, recents, defaultModel }
+  return { models, recents, defaultModel, modelGroups }
 }
