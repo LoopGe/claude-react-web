@@ -7,6 +7,13 @@ import {
   type SDKSessionInfo,
 } from '@anthropic-ai/claude-agent-sdk'
 import { config as defaultConfig } from '../../config.js'
+import type { ModelGroupConfig } from '../../config.js'
+import {
+  capabilitiesForTier,
+  fallbackAliasesFor,
+  resolveConfiguredModelId,
+  resolveGroup,
+} from '../../model-groups.js'
 import { readHistoryEntries, readHistoryPage } from '../../history-reader.js'
 import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
 import type { SessionMeta } from '../../persistence.js'
@@ -34,6 +41,12 @@ function isFirstPartyAnthropicUrl(url: string | undefined): boolean {
   } catch {
     return false
   }
+}
+
+/** Same short-name -> configured-model resolution the manager uses for the
+ *  main model, wired to the provider's view of the configured list. */
+function resolveConfiguredModel(model: string | undefined): string | undefined {
+  return resolveConfiguredModelId(model, defaultConfig.modelList)
 }
 
 export interface ClaudeProviderOptions {
@@ -76,6 +89,8 @@ export class ClaudeProvider implements AgentProvider {
 
   createSession(opts: CreateSessionOptions): ClaudeSessionHandle {
     const sdkOptions = { ...((opts.providerExtras?.sdkOptions as Options | undefined) ?? {}) }
+    const modelGroupId = opts.providerExtras?.modelGroupId as string | undefined
+    const group = modelGroupId ? defaultConfig.modelGroups.find((g) => g.id === modelGroupId) : undefined
     if (opts.resume && !sdkOptions.resume) sdkOptions.resume = opts.resume
     if (opts.forkSession !== undefined) sdkOptions.forkSession = opts.forkSession
     if (opts.resumeSessionAt !== undefined) sdkOptions.resumeSessionAt = opts.resumeSessionAt
@@ -108,7 +123,7 @@ export class ClaudeProvider implements AgentProvider {
     }
 
     const requestedMode = (opts.permissionMode ?? sdkOptions.permissionMode) as PermissionMode | undefined
-    this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins)
+    this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins, group)
     sdkOptions.permissionMode = this.sdkForwardMode(requestedMode)
     if (!sdkOptions.resume || sdkOptions.forkSession) {
       sdkOptions.sessionId = opts.id
@@ -202,6 +217,19 @@ export class ClaudeProvider implements AgentProvider {
       })
     }
 
+    // Fallback degradation chain for group sessions: tier aliases below the
+    // main slot, resolved by the CLI through the tier env vars. Post-spawn
+    // because fallbackModel is a Settings key with no spawn-time Options
+    // equivalent — exactly like fastMode/effortLevel above.
+    if (group) {
+      const fallback = fallbackAliasesFor(group.main ?? 'opus')
+      if (fallback.length > 0) {
+        void q.applyFlagSettings({ fallbackModel: fallback }).catch((err) => {
+          log.warn(`[${opts.id}] applying fallbackModel on spawn failed:`, err)
+        })
+      }
+    }
+
     return handle
   }
 
@@ -248,18 +276,55 @@ export class ClaudeProvider implements AgentProvider {
     return mode === 'plan' ? 'plan' : undefined
   }
 
-  private applyStandardQueryOpts(opts: Options, customEnv?: Record<string, string>, enabledPlugins?: string[]): void {
+  private applyStandardQueryOpts(
+    opts: Options,
+    customEnv?: Record<string, string>,
+    enabledPlugins?: string[],
+    group?: ModelGroupConfig,
+  ): void {
     if (opts.includePartialMessages === undefined) opts.includePartialMessages = true
     if (!opts.pathToClaudeCodeExecutable && this.opts.claudeBinary) {
       opts.pathToClaudeCodeExecutable = this.opts.claudeBinary
     }
     const effectiveModel = opts.model || defaultConfig.defaultModel
-    opts.env = {
-      ...(opts.env ?? this.buildAnthropicEnv()),
-      ANTHROPIC_DEFAULT_OPUS_MODEL: effectiveModel,
-      ANTHROPIC_DEFAULT_SONNET_MODEL: effectiveModel,
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: effectiveModel,
-      ANTHROPIC_SMALL_FAST_MODEL: effectiveModel,
+    if (group) {
+      // Real three-tier routing: each slot maps to its own model so the CLI
+      // resolves tier aliases + background-subagent routing independently.
+      // The four tier env vars stay in the per-session opts.env — NEVER in
+      // buildAnthropicEnv()'s shared cache (cross-session contamination).
+      const r = resolveGroup(group, resolveConfiguredModel)
+      opts.model = r.main
+      opts.env = {
+        ...(opts.env ?? this.buildAnthropicEnv()),
+        ANTHROPIC_DEFAULT_OPUS_MODEL: r.tiers.opus,
+        ANTHROPIC_DEFAULT_SONNET_MODEL: r.tiers.sonnet,
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: r.tiers.haiku,
+        ANTHROPIC_SMALL_FAST_MODEL: r.tiers.haiku,
+      }
+      // Lever B — gateway capability declaration. Only for opaque models on
+      // non-first-party base URLs: recognizable ids let the CLI's built-in
+      // detection decide (more accurate), and first-party hosts need nothing.
+      if (!isFirstPartyAnthropicUrl(defaultConfig.baseUrl)) {
+        for (const tier of ['OPUS', 'SONNET', 'HAIKU'] as const) {
+          const slot = tier.toLowerCase() as 'opus' | 'sonnet' | 'haiku'
+          const caps = capabilitiesForTier(slot, r.tiers[slot])
+          if (caps.length > 0) {
+            opts.env[`ANTHROPIC_DEFAULT_${tier}_MODEL_NAME`] = r.tiers[slot]
+            opts.env[`ANTHROPIC_DEFAULT_${tier}_MODEL_DESCRIPTION`] = r.tiers[slot]
+            opts.env[`ANTHROPIC_DEFAULT_${tier}_MODEL_SUPPORTED_CAPABILITIES`] = caps.join(',')
+          }
+        }
+      }
+    } else {
+      // Today's behavior unchanged: collapse all four aliases to the model.
+      opts.model = effectiveModel
+      opts.env = {
+        ...(opts.env ?? this.buildAnthropicEnv()),
+        ANTHROPIC_DEFAULT_OPUS_MODEL: effectiveModel,
+        ANTHROPIC_DEFAULT_SONNET_MODEL: effectiveModel,
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: effectiveModel,
+        ANTHROPIC_SMALL_FAST_MODEL: effectiveModel,
+      }
     }
     if (customEnv) opts.env = { ...opts.env, ...customEnv }
     // Force-disable the CLI's auto-updater. claude-react-web pins the binary

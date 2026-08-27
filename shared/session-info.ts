@@ -98,6 +98,10 @@ export interface SessionInfoBase<PM = string> {
   messageCount: number
   cwd?: string
   model?: string
+  /** Active model group id. When set, the session was created with a
+   *  modelGroupId that resolves to a ModelGroupConfig, and `model` is the
+   *  group's resolved main slot model. */
+  modelGroupId?: string
   permissionMode?: PM
   title?: string
   /** Anthropic beta flags the session was created with — kept around so

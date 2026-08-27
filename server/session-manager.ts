@@ -36,6 +36,7 @@ import { cancelGitBroadcast } from './git-broadcast.js'
 import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig } from './config.js'
+import { resolveGroup, resolveConfiguredModelId } from './model-groups.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { pump as pumpSession, getParentToolUseId, applyTaskEvent, type PumpDeps } from './session-pump.js'
 import { isTerminalTaskStatus } from '../shared/tasks.js'
@@ -879,6 +880,7 @@ export class SessionManager {
       lastActivityAt: s.lastActivityAt,
       cwd: s.cwd,
       model: s.model,
+      modelGroupId: s.modelGroupId,
       permissionMode: s.permissionMode,
       title: s.title,
       betas: s.betas,
@@ -1974,6 +1976,19 @@ export class SessionManager {
     const createdAt = existingMeta?.createdAt ?? Date.now()
     const metaSnapshot = this.snapshotMeta(fullOpts, providerName)
 
+    // Resolve model group: if the caller passed a modelGroupId, look up the
+    // group in config and resolve its main model. This sets session.model to
+    // the group's main slot so info() returns the resolved model immediately.
+    const modelGroupId = (opts as Record<string, unknown>).modelGroupId as string | undefined
+    let groupMainModel: string | undefined
+    if (modelGroupId) {
+      const group = defaultConfig.modelGroups.find((g) => g.id === modelGroupId)
+      if (group) {
+        const resolved = resolveGroup(group, (m) => resolveConfiguredModelId(m, defaultConfig.modelList))
+        groupMainModel = resolved.main
+      }
+    }
+
     // Split the resume/discard seed by frame origin (see the Session literal
     // below for why). stampReceivedAt is set-only-if-absent, so frames that
     // already carry a timestamp (the normal case) keep it.
@@ -1990,6 +2005,14 @@ export class SessionManager {
       createdAt,
       lastActivityAt: Date.now(),
       ...metaSnapshot,
+      // For group sessions, override the model to the resolved group main
+      // model (snapshotMeta captured the raw opts.model, which may be the
+      // config default — the group's main slot is the real model).
+      // For non-group sessions, metaSnapshot.model is already the
+      // correctly-resolved model (resume heals SHORT→FULL in doResume;
+      // create uses the explicit model or the config default).
+      model: groupMainModel ?? metaSnapshot.model,
+      modelGroupId,
       permissionMode: requestedMode,
       handle: undefined as unknown as ProviderSessionHandle,
       canUseTool: undefined,
@@ -2207,7 +2230,7 @@ export class SessionManager {
       // supportedDialogKinds is non-empty, so the two always travel together.
       onUserDialog: fullOpts.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,
       supportedDialogKinds: (fullOpts as { supportedDialogKinds?: string[] }).supportedDialogKinds,
-      providerExtras: { sdkOptions },
+      providerExtras: { sdkOptions, modelGroupId },
     })
     session.handle = handle
 
@@ -4503,6 +4526,7 @@ export class SessionManager {
       messageCount: s.history.length + s.subagentHistory.length,
       cwd: s.cwd,
       model: s.model,
+      modelGroupId: s.modelGroupId,
       permissionMode: s.permissionMode,
       title: s.title,
       betas: s.betas,

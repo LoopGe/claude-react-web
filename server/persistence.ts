@@ -33,6 +33,10 @@ export interface SessionMeta {
   lastActivityAt: number
   cwd?: string
   model?: string
+  /** Active model group id. Set at create time; the group's resolved main
+   *  model becomes `model`. Persisted so resume/restart/fork keep the group
+   *  identity. */
+  modelGroupId?: string
   permissionMode?: PermissionMode
   title?: string
   /** Anthropic beta flags forwarded verbatim to the SDK on every
