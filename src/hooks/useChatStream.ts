@@ -162,7 +162,11 @@ export function cacheClear() {
   clearAllSessionStorage()
 }
 
-export function useChatStream(sessionId: string, permissions: PermissionHandlers): ChatStream {
+export function useChatStream(
+  sessionId: string,
+  permissions: PermissionHandlers,
+  running?: boolean,
+): ChatStream {
   const hub = useWsHub()
   const hubStatus = useWsHubStatus()
   const store = useMemo(() => getSessionStore(sessionId), [sessionId])
@@ -196,6 +200,10 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
   // lastMessageUuid (incremental replay) instead of null (full replay).
   const hydrateReady = useSessionField(sessionId, 'hydrateReady')
   const permsRef = useRef(permissions)
+  // Previous value of `running`. The effect uses it to detect a false→true
+  // transition (dormant/slept → resumed) so it can force a channel
+  // re-subscribe; see the wasDown logic in the subscribe effect.
+  const prevRunningRef = useRef<boolean | undefined>(undefined)
   // Set true when a `session-cleared` frame lands for this session. Blocks
   // loadOlder() from paging the pre-/clear transcript back in from disk
   // (the on-disk log still holds it; the server only truncated its
@@ -234,6 +242,20 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     // (sinceUuid) replay be used when a cache exists. hydrateReady is always
     // set (cache or not), so this never deadlocks.
     if (!hydrateReady) return
+    // A session that is not running cannot be served a live channel yet: a
+    // premature subscribe answers with `error` + empty `replay-done`, and
+    // the client's hub only re-subscribes on reconnect — the reported white
+    // screen. So a false→true transition of `running` (dormant/slept →
+    // resumed) must actively re-request the channel. The hub subscription is
+    // held by other consumers (useGitStatus, HooksPanel) for the whole time
+    // the panel is mounted, so `hub.subscribe()` alone would NOT emit a frame
+    // here (its 0→1 refcount guard). Force a re-subscribe so the server
+    // serves a fresh replay, and clear any error left by an earlier,
+    // premature subscribe. Harmless when the server already has a live
+    // channel for this connection (a repeated subscribe is a server-side
+    // idempotent no-op).
+    const wasDown = prevRunningRef.current === false
+    prevRunningRef.current = running
 
     let replayMessages: SdkMessage[] = []
     let replayPermissions: PermissionRequest[] = []
@@ -451,11 +473,17 @@ export function useChatStream(sessionId: string, permissions: PermissionHandlers
     })
 
     const release = hub.subscribe(sessionId, getSessionLastMessageUuid(sessionId) ?? undefined)
+    if (wasDown) {
+      // The session just (re)started (resume / re-wake). Re-establish the
+      // channel explicitly — see the `wasDown` comment above.
+      store.dispatch({ type: 'ERROR', message: null })
+      hub.resubscribe(sessionId, getSessionLastMessageUuid(sessionId) ?? undefined)
+    }
     return () => {
       off()
       release()
     }
-  }, [hub, sessionId, store, hydrateReady])
+  }, [hub, sessionId, store, hydrateReady, running])
 
   const displayedError = useMemo(() => {
     if (hubStatus === 'reconnecting') {

@@ -441,7 +441,7 @@ export const Chat = memo(function Chat({
       setInput(text)
       setComposerFocusSignal((n) => n + 1)
     },
-  })
+  }, session.running)
 
   // Clear the optimistic turn bridge once the real turn is confirmed
   // (session.working rose OR the first stream phase arrived). The old fixed 4s

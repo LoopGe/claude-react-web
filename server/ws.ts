@@ -260,6 +260,11 @@ export function attachWebSocket(
   wss.on('connection', (ws) => {
     sockets.add(ws)
     const subs = new Map<string, SessionSub>()
+    /** Sessions whose subscribe-setup is mid-flight (waiting on the
+     *  auto-resume await below). Guard: a second subscribe frame for the
+     *  same session must not race the first through the await — subs.has()
+     *  is only set after it completes. */
+    const starting = new Set<string>()
     let globalCleanup: (() => void) | null = null
     let appPluginCleanup: (() => void) | null = null
     let closed = false
@@ -332,11 +337,13 @@ export function attachWebSocket(
     }
 
     // --- per-session channel (subscribe/unsubscribe) -----------------
-    const startSession = (sessionId: string, sinceUuid?: string) => {
+    const startSession = async (sessionId: string, sinceUuid?: string) => {
       // Idempotent: re-subscribing is a no-op. The client can safely
       // emit duplicate subscribe frames (e.g. after a tab refresh sees a
       // panel already open).
       if (subs.has(sessionId)) return
+      if (starting.has(sessionId)) return
+      starting.add(sessionId)
       let msgSub: { unsubscribe: () => void } | null = null
       let permSub: { unsubscribe: () => void } | null = null
       let elicitSub: { unsubscribe: () => void } | null = null
@@ -364,6 +371,29 @@ export function attachWebSocket(
       let step = ''
       try {
         step = 'subscribe'
+        // Ensure the session is loaded before wiring subscriptions. A WS
+        // subscribe can legitimately land BEFORE a dormant session's resume
+        // spawn completes: opening a dormant session mounts the Chat panel,
+        // which subscribes immediately, while POST /resume is still in
+        // flight. For a session absent from the in-memory map, sm.subscribe()
+        // throws HttpError(404, "session X not found"); relaying that as an
+        // `error` + empty `replay-done` left the client stuck — its hub only
+        // re-subscribes on reconnect, so the resumed session's messages never
+        // loaded (the reported white screen). Resume known-but-dormant
+        // sessions first: sm.resume() is idempotent per session (concurrent
+        // calls coalesce onto one promise) and a fast no-op while the session
+        // is already live, so reconnect re-subscribes stay safe. Truly
+        // unknown sessions (deleted, or never tracked) still throw 404 here
+        // from sm.get() and fall through to the error path unchanged.
+        const known = sm.get(sessionId)
+        // A deliberately-slept session must not be woken behind the
+        // user's back by a reconnecting subscriber — only an explicit
+        // resume should wake it. It falls through to the error path
+        // below, same as any other not-loaded session.
+        if (!known.running && !known.slept) await sm.resume(sessionId)
+        // The socket may have closed while the spawn was in flight; don't
+        // wire subscriptions onto a dead connection.
+        if (closed) return
         const msg = sm.subscribe(sessionId)
         msgSub = msg
         step = 'subscribePermissions'
@@ -671,6 +701,17 @@ export function attachWebSocket(
             }
           } finally {
             stop()
+            // Natural teardown (e.g. the session was unloaded / went
+            // dormant, or the message channel ended from queue overflow):
+            // the subscriber queues ended and this channel is done, but the
+            // `subs` entry set below is still present. Leaving it means the
+            // NEXT subscribe to this session is swallowed by the subs.has()
+            // idempotency guard and never re-wires a fresh channel — so a
+            // resume after dormancy keeps no live stream (and no replay) on
+            // this connection. Delete the entry only if it is still OUR
+            // cleanup (a newer subscribe that re-wired the channel replaced
+            // it — that channel must survive).
+            if (subs.get(sessionId)?.cleanup === stop) subs.delete(sessionId)
           }
         })()
 
@@ -699,6 +740,8 @@ export function attachWebSocket(
         // terminates — without this, replayReady stays false forever and
         // the UI shows "Loading messages..." indefinitely.
         queue.enqueue({ kind: 'replay-done', sessionId, permissions: [] })
+      } finally {
+        starting.delete(sessionId)
       }
     }
 

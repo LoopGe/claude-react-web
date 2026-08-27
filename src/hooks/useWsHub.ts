@@ -49,6 +49,14 @@ interface WsHubApi {
    *  Pass `sinceUuid` for incremental replay (server sends only
    *  messages after that UUID). */
   subscribe: (sessionId: string, sinceUuid?: string) => () => void
+  /** Force a subscribe frame for a session regardless of ref-count.
+   *  `subscribe` only sends a frame when a session's ref-count goes
+   *  0→1; this bypasses that guard, so a session held by other
+   *  consumers (refCount > 0) can still re-request a fresh replay
+   *  after it was resumed from dormant/slept. Server treats a
+   *  repeated subscribe as an idempotent no-op when a channel already
+   *  exists. */
+  resubscribe: (sessionId: string, sinceUuid?: string) => void
   /** Update the last known message UUID for a session. Used for
    *  incremental replay on reconnect — the hub stores this and sends
    *  it with re-subscribe frames after a connection drop. */
@@ -319,6 +327,22 @@ export function WsHubProvider({ children, url }: ProviderProps) {
     lastUuidRef.current.set(sessionId, uuid)
   }, [])
 
+  // Force a fresh subscribe frame for a session even when the hub already
+  // holds a subscription (refCount > 0), which would otherwise swallow
+  // `subscribe`'s 0→1 frame. The server treats a repeated subscribe as an
+  // idempotent no-op when a live channel exists, so this is harmless when
+  // the channel is already served — but it is the only way to (re)establish
+  // a channel after a quiet teardown (a session was dormant/slept and has
+  // just been resumed, and the other consumer subscriptions kept refCount
+  // above zero the whole time).
+  const resubscribe = useCallback(
+    (sessionId: string, sinceUuid?: string) => {
+      if (sinceUuid) lastUuidRef.current.set(sessionId, sinceUuid)
+      safeSend({ kind: 'subscribe', sessionId, ...(sinceUuid ? { sinceUuid } : {}) })
+    },
+    [safeSend],
+  )
+
   // Memoize so the controls part (addListener/subscribe) has stable
   // identity across re-renders. Status is deliberately excluded — it
   // lives in its own WsStatusContext so status flips (connecting →
@@ -326,8 +350,8 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   // This prevents effect teardown/rebuild in consumers like
   // useChatStream that have `[hub]` in their dependency arrays.
   const api = useMemo<WsHubApi>(
-    () => ({ addListener, addSessionListener, subscribe, setLastMessageUuid }),
-    [addListener, addSessionListener, subscribe, setLastMessageUuid],
+    () => ({ addListener, addSessionListener, subscribe, resubscribe, setLastMessageUuid }),
+    [addListener, addSessionListener, subscribe, resubscribe, setLastMessageUuid],
   )
   return createElement(
     WsHubContext.Provider,

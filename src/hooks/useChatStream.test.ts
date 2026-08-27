@@ -8,6 +8,7 @@ type WsHubListener = (frame: Record<string, unknown>) => void
 let currentSessionListeners: Map<string, Set<WsHubListener>>
 let currentGlobalListeners: Set<WsHubListener>
 const mockSubscribe = vi.fn((_sessionId: string, _sinceUuid?: string) => vi.fn())
+const mockResubscribe = vi.fn()
 const mockSetLastMessageUuid = vi.fn()
 
 // Stable hub object — returned on every useWsHub() call so the hook's
@@ -27,6 +28,7 @@ const mockHub = {
     return () => { set!.delete(fn) }
   },
   subscribe: mockSubscribe,
+  resubscribe: mockResubscribe,
   setLastMessageUuid: mockSetLastMessageUuid,
 }
 
@@ -58,6 +60,7 @@ describe('useChatStream', () => {
     currentSessionListeners = new Map()
     currentGlobalListeners = new Set()
     mockSubscribe.mockClear()
+    mockResubscribe.mockClear()
     mockSetLastMessageUuid.mockClear()
     cacheClear()
     vi.clearAllMocks()
@@ -1023,5 +1026,54 @@ describe('useChatStream', () => {
 
     unmount()
     expect(cleanupFn).toHaveBeenCalled()
+  })
+
+  // ── running-transition recovery (dormant / slept white-screen fix) ──
+
+  it('forces a resubscribe when running flips false→true (dormant/slept → resumed)', () => {
+    const { rerender } = renderHook(
+      ({ running }) => useChatStream('s1', noopPerms, running),
+      { initialProps: { running: false } },
+    )
+    // A not-running session still subscribes at mount (it may catch an
+    // auto-resume replay served by the server) — but a single subscribe,
+    // whose frame is controlled by the hub's refCount 0→1 guard, cannot
+    // re-establish a channel when other consumers already hold it.
+    expect(mockSubscribe).toHaveBeenCalledTimes(1)
+    expect(mockResubscribe).not.toHaveBeenCalled()
+
+    // Resume completes → running flips true → the effect re-runs and forces
+    // a fresh subscribe frame so the server serves a replay to this
+    // connection even though hub refCount is already > 0.
+    rerender({ running: true })
+    expect(mockResubscribe).toHaveBeenCalledWith('s1', undefined)
+  })
+
+  it('clears a stale error on the running false→true transition', () => {
+    const { result, rerender } = renderHook(
+      ({ running }) => useChatStream('s1', noopPerms, running),
+      { initialProps: { running: false } },
+    )
+    // A premature subscribe to a not-running session surfaces as an error
+    // frame (the server can't serve a live channel for it).
+    act(() => {
+      dispatchToSession('s1', { kind: 'error', sessionId: 's1', message: 'session not loaded' })
+    })
+    expect(result.current.error).toBe('session not loaded')
+
+    rerender({ running: true })
+    expect(result.current.error).toBeNull()
+  })
+
+  it('does not force a resubscribe on a true→false running transition', () => {
+    const { rerender } = renderHook(
+      ({ running }) => useChatStream('s1', noopPerms, running),
+      { initialProps: { running: true } },
+    )
+    expect(mockResubscribe).not.toHaveBeenCalled()
+    rerender({ running: false })
+    // Going DOWN is not a recovery: nothing to re-request, and the server
+    // is about to tear the channel down anyway.
+    expect(mockResubscribe).not.toHaveBeenCalled()
   })
 })

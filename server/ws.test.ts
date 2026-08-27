@@ -339,6 +339,71 @@ describe('WebSocket multiplexer', () => {
     await client.close()
   })
 
+  it('subscribing to a known-but-dormant session auto-resumes it and serves a replay (no error)', async () => {
+    // The reported bug: opening a dormant session mounts the Chat panel,
+    // which subscribes immediately, while POST /resume is still in flight.
+    // The server used to answer that subscribe with `error` + empty
+    // `replay-done`, and the client never re-subscribed (its hub only
+    // re-subscribes on reconnect) — leaving a white screen. Now the
+    // subscribe should ensure the session is loaded first.
+    const info = sm.create({})
+    await sm.unload(info.id) // → known-but-dormant (persisted, not in memory)
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    // Subscribe WITHOUT any explicit /resume — the server must revive it.
+    client.send({ kind: 'subscribe', sessionId: info.id })
+    // The auto-resume broadcast + the replay terminating, in either order.
+    await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'session-created' && f.session?.id === info.id,
+    )
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+    // No error frame for this session — the hard 404 that dead-ended the UI.
+    expect(client.frames.filter((f) => f.kind === 'error' && f.sessionId === info.id)).toHaveLength(0)
+    // And the session really is live again (respawned, not errored out).
+    expect(sm.get(info.id).running).toBe(true)
+    await client.close()
+  })
+
+  it('re-subscribing on the same connection after the session was unloaded re-wires a fresh channel', async () => {
+    // Regression for the warm-tab leg: a session opens in a panel, goes
+    // dormant (server unloads it → its subscriber queues end → the channel
+    // pump exits), then the user resumes it. The `subs` entry must be
+    // removed on natural teardown — a stale entry would make the next
+    // subscribe a subs.has() no-op and the resumed session would never get
+    // (re)served a replay on this connection.
+    const info = sm.create({})
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    client.send({ kind: 'subscribe', sessionId: info.id })
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+    // Discard the first subscribe's frames so the second replay is unambiguous.
+    client.frames.length = 0
+
+    await sm.unload(info.id)
+    // Give the pump's natural teardown (queue end → loop exit → subs entry
+    // removal) time to complete before re-subscribing.
+    await new Promise((r) => setTimeout(r, 50))
+
+    // Re-subscribe (e.g. the client's resume recovery sends a fresh frame).
+    client.send({ kind: 'subscribe', sessionId: info.id })
+    // Must be served a fresh replay, not swallowed by the subs.has() guard —
+    // arriving at replay-done without an error proves the subscribe ran.
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+    expect(client.frames.filter((f) => f.kind === 'error' && f.sessionId === info.id)).toHaveLength(0)
+
+    // And live frames now flow through the re-wired channel: emit on the
+    // resumed spawn's mock query handle → a `message` frame arrives.
+    const handle = mockHandles.at(-1)!
+    handle.emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'after-resume' }] } })
+    const live = await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'message' && f.sessionId === info.id,
+    )
+    if (live.kind !== 'message') throw new Error('narrowing')
+    await client.close()
+  })
+
   it('malformed JSON frame yields an error without disconnecting', async () => {
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')

@@ -592,13 +592,29 @@ export interface GlobalSubscriber {
 
 /** Read-only subscription surface used by ws.ts.
  *  Narrower than the full SessionManager — depends only on the fan-out
- *  methods, not on any mutation or lifecycle operations. */
+ *  methods plus the two operations needed to *begin streaming* a session:
+ *  `get` (does the session exist, and is it live?) and `resume` (bring a
+ *  known-but-dormant session back so a WS subscribe that raced the
+ *  session's `/resume` can actually be served). No other mutation or
+ *  lifecycle operations. */
 export interface SessionBroadcaster {
   subscribeGlobal(): {
     iterable: AsyncIterable<GlobalSessionEvent>
     snapshot: SessionInfo[]
     unsubscribe: () => void
   }
+  /** Return the session's current info. Throws HttpError(404) for a
+   *  session that is neither live nor in the persisted store — i.e.
+   *  deleted or never tracked. Returns `running: false` for a
+   *  known-but-dormant (persisted, not loaded) session. */
+  get(id: string): SessionInfo
+  /** Ensure a known session is loaded and return its info. Idempotent
+   *  and coalesced by the manager: concurrent resume() calls for the
+   *  same id share one spawn promise, and a live session resolves
+   *  immediately (no-op). Used by the WS subscribe path to serve a
+   *  subscribe that landed before the session's `/resume` completed.
+   *  Throws 404 (unknown) / 410 (ended and unresumable). */
+  resume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo>
   subscribe(sessionId: string): {
     iterable: AsyncIterable<SDKMessage>
     history: SDKMessage[]
