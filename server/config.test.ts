@@ -258,6 +258,19 @@ describe('config', () => {
       expect(config.modelGroups[0].main).toBe('opus')
     })
 
+    it('drops the entire group when a tier slot is not a string', async () => {
+      writeFileSync(
+        join(dir, 'config.json'),
+        JSON.stringify({
+          modelGroups: [
+            { id: 'g', name: 'test', opus: 123, sonnet: 'valid-model' },
+          ],
+        }),
+      )
+      await loadConfig(dir)
+      expect(config.modelGroups).toHaveLength(0)
+    })
+
     it('duplicate group ids keep the last entry', async () => {
       writeFileSync(
         join(dir, 'config.json'),

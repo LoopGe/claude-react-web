@@ -314,13 +314,16 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
         log.warn(`dropping model group ${id}: main must be one of opus|sonnet|haiku`)
         continue
       }
+      let slotOk = true
       for (const slot of ['opus', 'sonnet', 'haiku'] as const) {
         const v = raw[slot]
         if (v !== undefined && typeof v !== 'string') {
           log.warn(`dropping model group ${id}: slot ${slot} must be a string`)
+          slotOk = false
           break
         }
       }
+      if (!slotOk) continue
       const entry: ModelGroupConfig = { id: id.trim(), name: name.trim() }
       for (const slot of ['opus', 'sonnet', 'haiku'] as const) {
         const v = raw[slot]
