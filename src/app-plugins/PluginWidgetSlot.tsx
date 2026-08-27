@@ -5,7 +5,9 @@ import { StatGridWidget } from './StatGridWidget'
 import type { PluginWidgetContribution, PluginWidgetLocation } from '../../shared/app-plugins/contributions.js'
 
 /** Renders every plugin's widgets at a given location, filtered by `when`.
- *  Renders nothing when no plugin contributes — zero-cost when unused. */
+ *  Each widget owns its own container (rendered only once it has a payload),
+ *  so this renders nothing — not an empty bordered box — until there is
+ *  something to show. Zero-cost when unused. */
 export const PluginWidgetSlot = memo(function PluginWidgetSlot({ location }: { location: PluginWidgetLocation }) {
   const all = useAllContributions()
 
@@ -24,12 +26,12 @@ export const PluginWidgetSlot = memo(function PluginWidgetSlot({ location }: { l
   if (widgets.length === 0) return null
 
   return (
-    <div className="plugin-widget-slot">
+    <>
       {widgets.map((w) =>
         w.kind === 'stat-grid' ? (
           <StatGridWidget key={`${w.pluginId}:${w.id}`} pluginId={w.pluginId} widget={w} />
         ) : null,
       )}
-    </div>
+    </>
   )
 })

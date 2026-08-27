@@ -2,13 +2,17 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 
 const listeners = new Set<(frame: unknown) => void>()
+// The real hub memoizes a stable api object; mirror that so the hook's
+// subscribe identity stays stable across renders (an unstable hub would make
+// useSyncExternalStore re-subscribe every render and churn the refcount).
+const hub = {
+  addListener: (fn: (frame: unknown) => void) => {
+    listeners.add(fn)
+    return () => listeners.delete(fn)
+  },
+}
 vi.mock('../hooks/useWsHub', () => ({
-  useWsHub: () => ({
-    addListener: (fn: (frame: unknown) => void) => {
-      listeners.add(fn)
-      return () => listeners.delete(fn)
-    },
-  }),
+  useWsHub: () => hub,
 }))
 
 import { usePluginWidgetStream } from './usePluginWidgetStream'
@@ -49,5 +53,23 @@ describe('usePluginWidgetStream', () => {
       emit({ kind: 'app-plugins-snapshot', plugins: [] })
     })
     expect(result.current).toBeUndefined()
+  })
+
+  it('prunes the cached state when the last subscriber unmounts', () => {
+    const first = renderHook(() => usePluginWidgetStream('p-d', 'w-d'))
+    act(() =>
+      emit({
+        kind: 'app-plugin-event',
+        pluginId: 'p-d',
+        widgetId: 'w-d',
+        payload: { values: [{ id: 'cpu', label: 'CPU', value: '1', unit: '%' }] },
+      }),
+    )
+    expect(first.result.current).toBeDefined()
+    first.unmount()
+    // A fresh subscriber must not see the pruned payload — otherwise the
+    // module-level map holds every widget's last value for the tab's lifetime.
+    const fresh = renderHook(() => usePluginWidgetStream('p-d', 'w-d'))
+    expect(fresh.result.current).toBeUndefined()
   })
 })

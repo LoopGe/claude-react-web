@@ -5,7 +5,8 @@
 
 import readline from 'node:readline'
 import si from 'systeminformation'
-import { collectSnapshot, buildStatGrid } from './collect.js'
+import { collectSnapshot } from './collect.js'
+import { createSampler } from './sampler.js'
 
 const rl = readline.createInterface({ input: process.stdin })
 let nextId = 1
@@ -24,32 +25,17 @@ function callHost(method: string, params?: unknown): Promise<unknown> {
 }
 
 const WIDGET_ID = 'system-stats.claude-react-web.overview'
-let timer: NodeJS.Timeout | null = null
-let config = {
-  'system-stats.claude-react-web.intervalMs': 2000,
+const config = {
   'system-stats.claude-react-web.disks': [] as string[],
 }
 
-function schedule(): void {
-  timer = setTimeout(push, Number(config['system-stats.claude-react-web.intervalMs']) || 2000)
-}
-
-function push(): void {
-  void collectSnapshot({
-    si,
-    disks: config['system-stats.claude-react-web.disks'],
-  })
-    .then((snapshot) => {
-      const payload = buildStatGrid(snapshot)
-      if (payload.values.length > 0) {
-        send({ jsonrpc: '2.0', method: 'app.event', params: { widgetId: WIDGET_ID, payload } })
-      }
-    })
-    .catch(() => {
-      // Never crash the loop — a failure here would trip the crash quarantine.
-    })
-    .finally(() => schedule())
-}
+// Sampling loop — interval clamp + lifecycle live in sampler.ts. The disks
+// list is read live at each sample, so an activate with a new list takes
+// effect on the next push without a separate control path.
+const sampler = createSampler({
+  collect: () => collectSnapshot({ si, disks: config['system-stats.claude-react-web.disks'] }),
+  emitPayload: (payload) => send({ jsonrpc: '2.0', method: 'app.event', params: { widgetId: WIDGET_ID, payload } }),
+})
 
 const handlers: Record<string, (params: unknown) => Promise<unknown>> = {
   activate: async (params) => {
@@ -57,22 +43,16 @@ const handlers: Record<string, (params: unknown) => Promise<unknown>> = {
     if (c && typeof c === 'object') {
       // Per-field validated merge — the subprocess is a trusted Node program,
       // but a buggy/untrusted manifest must not inject arbitrary config.
-      const iv = Number(c['system-stats.claude-react-web.intervalMs'])
-      if (Number.isFinite(iv) && iv > 0) {
-        // Clamp to >= 200ms: a 0/NaN interval would become a tight setTimeout loop.
-        config['system-stats.claude-react-web.intervalMs'] = Math.max(200, iv)
-      }
       const disks = c['system-stats.claude-react-web.disks']
       if (Array.isArray(disks)) {
         config['system-stats.claude-react-web.disks'] = disks.filter((d): d is string => typeof d === 'string')
       }
     }
-    schedule()
+    sampler.activate(c)
     return { ok: true }
   },
   deactivate: async () => {
-    if (timer) clearTimeout(timer)
-    timer = null
+    sampler.deactivate()
     return { ok: true }
   },
   executeCommand: async () => ({ type: 'none' }),

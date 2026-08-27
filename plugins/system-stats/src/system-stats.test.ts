@@ -25,6 +25,12 @@ describe('buildStatGrid', () => {
     expect(grid.values[0]).toMatchObject({ value: '—' })
   })
 
+  it('falls back to a "GPU" label when a controller has no model name', () => {
+    const s: RawSnapshot = { gpus: [{ utilizationGpu: 50 }] }
+    const grid = buildStatGrid(s)
+    expect(grid.values[0]).toMatchObject({ label: 'GPU', value: '50', unit: '%' })
+  })
+
   it('omits missing metrics entirely', () => {
     const grid = buildStatGrid({})
     expect(grid.values).toEqual([])

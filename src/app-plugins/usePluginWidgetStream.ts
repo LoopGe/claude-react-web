@@ -6,7 +6,7 @@
 // whole registry. A module-level map holds the latest payload per widget;
 // useSyncExternalStore turns writes into renders for subscribers.
 
-import { useSyncExternalStore } from 'react'
+import { useCallback, useSyncExternalStore } from 'react'
 import { useWsHub } from '../hooks/useWsHub'
 import type { WsServerFrame } from '../ws-types'
 import type { StatGridPayload } from '../../shared/app-plugins/widget.js'
@@ -20,16 +20,40 @@ const states = new Map<string, WidgetState>()
 // Separator is safe: pluginId/widgetId are dotted prefixed ids (no colons).
 const key = (pluginId: string, widgetId: string) => `${pluginId}:${widgetId}`
 
+// Ref-counted so a widget's cached payload is pruned once nothing subscribes
+// to it any more. Without this the module-level `states` map would hold every
+// widget's last value for the whole tab lifetime (unbounded across installs).
+const refCounts = new Map<string, number>()
+
 export function usePluginWidgetStream(pluginId: string, widgetId: string): WidgetState | undefined {
   const hub = useWsHub()
-  return useSyncExternalStore(
-    (onStoreChange) =>
-      hub.addListener((frame: WsServerFrame) => {
+  const k = key(pluginId, widgetId)
+
+  // useCallback keeps the subscribe identity stable across renders (frames
+  // call onStoreChange → re-render) so useSyncExternalStore does not
+  // unsubscribe/resubscribe — and thus churn the refcount — on every frame.
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => {
+      const unsubscribe = hub.addListener((frame: WsServerFrame) => {
         if (frame.kind === 'app-plugin-event' && frame.pluginId === pluginId && frame.widgetId === widgetId) {
-          states.set(key(pluginId, widgetId), { payload: frame.payload, updatedAt: Date.now() })
+          states.set(k, { payload: frame.payload, updatedAt: Date.now() })
           onStoreChange()
         }
-      }),
-    () => states.get(key(pluginId, widgetId)),
+      })
+      refCounts.set(k, (refCounts.get(k) ?? 0) + 1)
+      return () => {
+        unsubscribe()
+        const remaining = (refCounts.get(k) ?? 1) - 1
+        if (remaining <= 0) {
+          refCounts.delete(k)
+          states.delete(k)
+        } else {
+          refCounts.set(k, remaining)
+        }
+      }
+    },
+    [hub, k, pluginId, widgetId],
   )
+
+  return useSyncExternalStore(subscribe, () => states.get(k))
 }

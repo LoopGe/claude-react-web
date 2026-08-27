@@ -8,7 +8,10 @@ export interface RawSnapshot {
   cpu?: { currentLoad: number }
   mem?: { total: number; used: number }
   disks?: Array<{ fs: string; size: number; used: number; mount: string }>
-  gpus?: Array<{ model: string; utilizationGpu?: number }>
+  // `model` is optional: systeminformation can report a controller with an
+  // empty/missing model (headless VMs, some platforms), and `buildStatGrid`
+  // falls back to a "GPU" label rather than throwing on `.trim()`.
+  gpus?: Array<{ model?: string; utilizationGpu?: number }>
 }
 
 /** The injected subset of the `systeminformation` API, so tests never import it. */
@@ -16,7 +19,7 @@ export interface Si {
   currentLoad(): Promise<{ currentLoad: number }>
   mem(): Promise<{ total: number; used: number }>
   fsSize(): Promise<Array<{ fs: string; size: number; used: number; mount: string }>>
-  graphics(): Promise<{ controllers: Array<{ model: string; utilizationGpu?: number }> }>
+  graphics(): Promise<{ controllers: Array<{ model?: string; utilizationGpu?: number }> }>
 }
 
 export async function collectSnapshot(opts: { si: Si; disks: string[] }): Promise<RawSnapshot> {
@@ -74,7 +77,7 @@ export function buildStatGrid(s: RawSnapshot): StatGridPayload {
     values.push({ id: `disk:${d.mount}`, label: 'Disk', value: (p * 100).toFixed(0), unit: '%', progress: p, tone: toneFor(p) })
   }
   for (const [i, g] of (s.gpus ?? []).entries()) {
-    const label = g.model.trim().slice(0, 14) || 'GPU'
+    const label = (g.model ?? '').trim().slice(0, 14) || 'GPU'
     if (g.utilizationGpu != null) {
       const p = clamp01(g.utilizationGpu / 100)
       values.push({ id: `gpu:${i}`, label, value: g.utilizationGpu.toFixed(0), unit: '%', progress: p, tone: toneFor(p) })

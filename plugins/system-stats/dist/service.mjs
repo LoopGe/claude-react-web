@@ -18362,7 +18362,7 @@ function buildStatGrid(s) {
     values.push({ id: `disk:${d.mount}`, label: "Disk", value: (p * 100).toFixed(0), unit: "%", progress: p, tone: toneFor(p) });
   }
   for (const [i, g] of (s.gpus ?? []).entries()) {
-    const label = g.model.trim().slice(0, 14) || "GPU";
+    const label = (g.model ?? "").trim().slice(0, 14) || "GPU";
     if (g.utilizationGpu != null) {
       const p = clamp01(g.utilizationGpu / 100);
       values.push({ id: `gpu:${i}`, label, value: g.utilizationGpu.toFixed(0), unit: "%", progress: p, tone: toneFor(p) });
@@ -18373,6 +18373,53 @@ function buildStatGrid(s) {
   return { values };
 }
 
+// src/sampler.ts
+var MIN_INTERVAL_MS = 200;
+var MAX_INTERVAL_MS = 36e5;
+var DEFAULT_INTERVAL_MS = 2e3;
+function createSampler(deps) {
+  let timer = null;
+  let active = false;
+  let generation = 0;
+  let intervalMs = DEFAULT_INTERVAL_MS;
+  function schedule() {
+    if (!active) return;
+    timer = setTimeout(push, intervalMs);
+  }
+  function push() {
+    const gen = generation;
+    void deps.collect().then((snapshot) => {
+      const payload = buildStatGrid(snapshot);
+      if (payload.values.length > 0) deps.emitPayload(payload);
+    }).catch(() => {
+    }).finally(() => {
+      if (active && gen === generation) schedule();
+    });
+  }
+  return {
+    activate(configuration) {
+      const c = configuration;
+      if (c && typeof c === "object") {
+        const iv = Number(c["system-stats.claude-react-web.intervalMs"]);
+        if (Number.isFinite(iv) && iv > 0) {
+          intervalMs = Math.min(MAX_INTERVAL_MS, Math.max(MIN_INTERVAL_MS, iv));
+        }
+      }
+      active = true;
+      generation += 1;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      schedule();
+    },
+    deactivate() {
+      active = false;
+      generation += 1;
+      if (timer) clearTimeout(timer);
+      timer = null;
+    }
+  };
+}
+
 // src/service.ts
 var rl = readline.createInterface({ input: process.stdin });
 var pending = /* @__PURE__ */ new Map();
@@ -18380,45 +18427,27 @@ function send(msg) {
   process.stdout.write(JSON.stringify(msg) + "\n");
 }
 var WIDGET_ID = "system-stats.claude-react-web.overview";
-var timer = null;
 var config = {
-  "system-stats.claude-react-web.intervalMs": 2e3,
   "system-stats.claude-react-web.disks": []
 };
-function schedule() {
-  timer = setTimeout(push, Number(config["system-stats.claude-react-web.intervalMs"]) || 2e3);
-}
-function push() {
-  void collectSnapshot({
-    si: import_systeminformation.default,
-    disks: config["system-stats.claude-react-web.disks"]
-  }).then((snapshot) => {
-    const payload = buildStatGrid(snapshot);
-    if (payload.values.length > 0) {
-      send({ jsonrpc: "2.0", method: "app.event", params: { widgetId: WIDGET_ID, payload } });
-    }
-  }).catch(() => {
-  }).finally(() => schedule());
-}
+var sampler = createSampler({
+  collect: () => collectSnapshot({ si: import_systeminformation.default, disks: config["system-stats.claude-react-web.disks"] }),
+  emitPayload: (payload) => send({ jsonrpc: "2.0", method: "app.event", params: { widgetId: WIDGET_ID, payload } })
+});
 var handlers = {
   activate: async (params) => {
     const c = params?.configuration;
     if (c && typeof c === "object") {
-      const iv = Number(c["system-stats.claude-react-web.intervalMs"]);
-      if (Number.isFinite(iv) && iv > 0) {
-        config["system-stats.claude-react-web.intervalMs"] = Math.max(200, iv);
-      }
       const disks = c["system-stats.claude-react-web.disks"];
       if (Array.isArray(disks)) {
         config["system-stats.claude-react-web.disks"] = disks.filter((d) => typeof d === "string");
       }
     }
-    schedule();
+    sampler.activate(c);
     return { ok: true };
   },
   deactivate: async () => {
-    if (timer) clearTimeout(timer);
-    timer = null;
+    sampler.deactivate();
     return { ok: true };
   },
   executeCommand: async () => ({ type: "none" })
