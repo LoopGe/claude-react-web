@@ -1075,6 +1075,30 @@
   background: var(--accent);
   color: var(--on-accent);
 }
+/* Open session with pending responses: fold the pending signal into the slot
+   badge instead of rendering a second, visually identical square. Amber fill
+   + the same opacity-only breathing as the standalone .session-item-perm-badge
+   (which appears for closed sessions, which have no slot number to carry it).
+   Opacity-only so it can't extend past the badge box and get clipped by
+   `.session-item-title`'s overflow:hidden. The slot number stays. */
+.session-item-slot.pending {
+  background: var(--warn);
+  border-color: var(--warn);
+  color: var(--bg);
+  animation: session-await-pulse 1.2s ease-in-out infinite;
+}
+/* Open session with unread activity: hollow-but-emphasized accent (transparent
+   fill, thicker accent border, bolder number). Reads as "attention" while
+   staying distinct from the focused slot's SOLID accent fill and pending's
+   solid amber breathing — so an unread slot no longer mimics a focused one
+   across panels. Pending wins in JS when both are true, so this is never
+   combined with `pending`. */
+.session-item-slot.unread {
+  background: transparent;
+  border-width: 1.5px;
+  color: var(--accent);
+  font-weight: 800;
+}
 /* Numeric badges in the title row are wrapped in a Tooltip `.tt-wrap`
    (inline-flex, default baseline). A badge's 10px digit gives that
    wrapper a low baseline, so baseline alignment pushes the pill below
@@ -1089,17 +1113,9 @@
 .session-item-title > .tt-wrap:has(> .session-item-slot, > .session-item-perm-badge) {
   vertical-align: top;
 }
-/* Unread sessions nudge the title right to make room for the dot. */
-.session-item-unread {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-circle);
-  background: var(--accent);
-  margin-right: 6px;
-  vertical-align: middle;
-  box-shadow: 0 0 0 2px var(--bg);
-}
+/* Unread is folded into `.session-item-slot.unread` (open sessions only) and
+   never rendered for closed sessions, so there is no floating dot anymore.
+   Open-unread cards still brighten their title via this rule. */
 .session-item.unread strong { color: var(--fg); }
 /* Pending-permission count badge — appears next to the title when the
    session has tool permission / AskUserQuestion requests waiting on the
@@ -1110,10 +1126,12 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 16px;
-  height: 16px;
+  min-width: 18px;
+  height: 18px;
   padding: 0 4px;
-  border-radius: var(--radius-md);
+  /* Rounded-square family shared with .session-item-slot (the other numeric
+     title-row badge it aligns with via `.session-item-title > .tt-wrap:has(…)`). */
+  border-radius: var(--radius-xs);
   background: var(--warn);
   color: var(--bg);
   font-family: var(--mono);
@@ -1122,14 +1140,22 @@
   line-height: 1;
   margin-right: 6px;
   vertical-align: middle;
-  animation: session-perm-badge-pulse 1.6s ease-in-out infinite;
+  /* Pulsing = opacity-ONLY breathing (no transform, no outward box-shadow).
+     Both of the alternatives paint beyond the badge's own box — an outward
+     ring and a scale() — and ancestor `.session-item-title`'s overflow:hidden
+     clips whatever overflows, so the top of the badge read as occluded even
+     with the scale-based pulse. Opacity changes no geometry, so the badge
+     stays inside its box and can never be clipped. Same 0.4↔1 opacity language
+     as .session-status-dot.status-working, minus its (clipping) scale. */
+  animation: session-await-pulse 1.2s ease-in-out infinite;
 }
-@keyframes session-perm-badge-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 60%, transparent); }
-  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 0%, transparent); }
+@keyframes session-await-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .session-item-perm-badge { animation: none; }
+  .session-item-perm-badge,
+  .session-item-slot.pending { animation: none; }
 }
 @keyframes session-working-pulse {
   0%, 100% { opacity: 0.4; transform: scale(0.85); }

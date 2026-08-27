@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting } from './normalize'
+import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription } from './normalize'
 import type { SdkMessage } from '../types'
 
 /** Build a top-level `user` message with the given text content (string or
@@ -43,6 +43,19 @@ describe('computeWaiting', () => {
 
   it('is false when nothing is running', () => {
     expect(computeWaiting({ turnActive: false, terminated: false, runningCount: 0, hasTranscriptBackground: false })).toBe(false)
+  })
+})
+
+describe('autoTitleDescription', () => {
+  it('prefers the typed text over the composed message', () => {
+    expect(autoTitleDescription('fix the bug', 'Attached: src/a.ts\n\nfix the bug')).toBe('fix the bug')
+  })
+  it('falls back to the composed message for image-only sends', () => {
+    expect(autoTitleDescription('', 'Draft: ship it')).toBe('Draft: ship it')
+  })
+  it('truncates to 300 chars', () => {
+    const long = 'x'.repeat(400)
+    expect(autoTitleDescription(long, long).length).toBe(300)
   })
 })
 

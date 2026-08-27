@@ -33,6 +33,7 @@ interface MockQueryHandle {
   getContextUsage: ReturnType<typeof vi.fn>
   accountInfo: ReturnType<typeof vi.fn>
   rewindFiles: ReturnType<typeof vi.fn>
+  generateSessionTitle: ReturnType<typeof vi.fn>
 }
 
 const mockHandles: MockQueryHandle[] = []
@@ -145,6 +146,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         getContextUsage: vi.fn(async () => ({})),
         accountInfo: vi.fn(async () => ({})),
         rewindFiles: vi.fn(async () => ({ canRewind: true })),
+        generateSessionTitle: vi.fn(async (_desc: string, _opts?: { persist?: boolean }) => ({ title: 'Mock auto title' })),
       }
       mockHandles.push(handle)
 
@@ -186,6 +188,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         getContextUsage: handle.getContextUsage,
         accountInfo: handle.accountInfo,
         rewindFiles: handle.rewindFiles,
+        generateSessionTitle: handle.generateSessionTitle,
       }
       return q
     },
@@ -1549,6 +1552,29 @@ describe('SessionManager', () => {
     sub!.unsubscribe()
   })
 
+  it('send() invalidates a stale prompt-suggestion snapshot', async () => {
+    const info = sm.create({})
+    // A previous turn produced a predicted next-prompt.
+    mockHandles[0].emit({ type: 'prompt_suggestion', suggestion: 'stale prediction' })
+    await tick()
+
+    // A tab attaching between turns would receive that as its snapshot.
+    const before = sm.subscribePromptSuggestion(info.id)
+    expect(before).not.toBeNull()
+    expect(before!.snapshot).toBe('stale prediction')
+    before?.unsubscribe()
+
+    // Starting a NEW user turn invalidates the old prediction. If the SDK
+    // suppresses a fresh suggestion for this turn (plan mode / error / first
+    // turn), a later resubscribe must NOT resurrect the stale value.
+    sm.send(info.id, 'a brand new turn')
+
+    const after = sm.subscribePromptSuggestion(info.id)
+    expect(after).not.toBeNull()
+    expect(after!.snapshot).toBeUndefined()
+    after?.unsubscribe()
+  })
+
   it('persists metadata on create and on send', async () => {
     const info = sm.create({ title: 'hello', cwd: '/x' })
     await store.flush()
@@ -2160,6 +2186,26 @@ describe('SessionManager', () => {
     await sm.rewindFiles(info.id, sent.uuid!)
     expect(bcast).toHaveBeenCalledWith(info.id)
     bcast.mockRestore()
+  })
+
+  it('autoGenerateTitle persists a generated title on an untitled session, exactly once', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const handle = mockHandles[mockHandles.length - 1]
+    const titled = await sm.autoGenerateTitle(info.id, 'Refactor the checkout flow')
+    expect(titled.title).toBe('Mock auto title')
+    expect(handle.generateSessionTitle).toHaveBeenCalledWith('Refactor the checkout flow', { persist: true })
+    // Second call is a no-op: the title is already set.
+    const again = await sm.autoGenerateTitle(info.id, 'whatever')
+    expect(again.title).toBe('Mock auto title')
+    expect(handle.generateSessionTitle).toHaveBeenCalledTimes(1)
+  })
+
+  it('autoGenerateTitle never overwrites a user-named session', async () => {
+    const info = sm.create({ cwd: '/tmp', title: 'My session' })
+    const handle = mockHandles[mockHandles.length - 1]
+    const titled = await sm.autoGenerateTitle(info.id, 'should be ignored')
+    expect(titled.title).toBe('My session')
+    expect(handle.generateSessionTitle).not.toHaveBeenCalled()
   })
 
   it('setMemorySettings() forwards only present keys and records them on the session', async () => {

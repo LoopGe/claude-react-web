@@ -20,6 +20,22 @@ describe('StreamingFooter', () => {
     expect(bubble?.querySelector('.os-track')).toBeTruthy()
   })
 
+  it('folds newline runs to a single break in the plain-text streaming preview (no blank lines)', () => {
+    // The streaming bubble renders the in-progress turn as plain text under
+    // white-space:pre-wrap. Markdown's structural whitespace (paragraph \n\n,
+    // code-fence delimiters, list gaps) would otherwise render as literal empty
+    // rows. It must be collapsed so the preview matches the settled render.
+    const { container } = render(
+      <StreamingFooter content={'para one\n\n\npara two\n\npara three'} />,
+    )
+    const scroller = container.querySelector('.streaming-plain')
+    expect(scroller?.textContent).toContain('para one')
+    expect(scroller?.textContent).toContain('para three')
+    // A single newline (soft break) survives; no run of ≥2 newlines remains.
+    expect(scroller?.textContent).toContain('para two\npara three')
+    expect(scroller?.textContent).not.toMatch(/\n{2,}/)
+  })
+
   /* Temporarily disabled along with the live code-block rendering in
    * StreamingFooter (see transcript-chrome.tsx) — the streaming bubble now
    * renders the whole turn as plain text. Uncomment together with the source

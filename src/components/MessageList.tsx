@@ -469,8 +469,15 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     }
 
     if (followMode === 'disable-now') {
+      // Genuine user scroll-away: the user drilled up out of the bottom, so
+      // the jump-to-bottom button SHOULD surface immediately. (In contrast,
+      // 'disable-debounced' below must never do this while we're still
+      // following — a transient geometry flutter during a bulk replay isn't a
+      // user leave.)
       clearFollowTimer()
       shouldFollowRef.current = false
+      setCanJumpToBottom(true)
+      setBottomState(false)
       return
     }
 
@@ -481,18 +488,35 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         if (!el) {
           setCanJumpToBottom(false)
           setBottomState(false)
-          shouldFollowRef.current = false
           return
         }
 
         const geometry = getBottomGeometry(el)
-        setCanJumpToBottom(geometry.canJumpToBottom)
-        setBottomState(geometry.atBottom)
+
+        // While still following/pinned, a not-at-bottom geometry read is a
+        // pin-lag (content grew before the follow/pin caught up), never a
+        // genuine leave. Doing anything here — showing the button OR flipping
+        // shouldFollowRef false — is exactly what flashed the jump button
+        // across every bulk-load batch on session switches: the 150ms timer
+        // fired during the transient, armed a "leave", and disarmed the
+        // following gate so subsequent geo reads surfaced the button too. Until
+        // the user has actually scrolled up (which trips 'disable-now'), keep
+        // following and keep the button hidden; the content-growth pin will
+        // snap back.
+        if (shouldFollowRef.current) {
+          return
+        }
+
+        // Already away: reflect the real settled geometry — show the button
+        // when below is unavailable-looking / away, restore follow when back.
         if (geometry.atBottom) {
-          clearUnseen()
+          setCanJumpToBottom(false)
+          setBottomState(true)
           shouldFollowRef.current = true
+          clearUnseen()
         } else {
-          shouldFollowRef.current = false
+          setCanJumpToBottom(geometry.canJumpToBottom)
+          setBottomState(geometry.atBottom)
         }
       }, FOLLOW_DEBOUNCE_MS)
     }
@@ -517,7 +541,21 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
     }
     const geometry = getBottomGeometry(el)
     const delayAway = modeWhenAway === 'confirm-away' && !geometry.atBottom && atBottomRef.current
-    setCanJumpToBottom(delayAway ? false : geometry.canJumpToBottom)
+    // Never surface the jump button while we're still auto-following / pinned
+    // to the bottom (`shouldFollowRef.current`). During a bulk replay/load the
+    // scroller's content (scrollHeight) grows faster than the follow/pin can
+    // move scrollTop, so a raw geometry read transiently reports "not at
+    // bottom" mid-pin and then "at bottom" again once the pin catches up —
+    // flashing the button on/off every growth batch even though the user never
+    // left the bottom. (This is the flicker observed on session switches: the
+    // reveal-pending window hides it only for the first batches; it continues
+    // after reveal.) The button only becomes meaningful once follow has been
+    // disabled — either the user scrolled up ('disable-now' flips
+    // shouldFollowRef false immediately) or the 150ms follow-disable debounce
+    // below confirmed a genuine stay-away. While following, keep it hidden.
+    const following = shouldFollowRef.current
+    const canJump = following ? false : geometry.canJumpToBottom
+    setCanJumpToBottom(delayAway ? false : canJump)
     syncBottomState(
       geometry.atBottom,
       geometry.atBottom ? 'restore' : modeWhenAway === 'confirm-away' ? 'disable-debounced' : modeWhenAway,
@@ -1134,15 +1172,35 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   // unseenCount instead of clearing it. MUST run before the tracked-count
   // effect below so lastCountRef is 0 when that effect computes its delta
   // (otherwise the delta is the full new-session count, not 0, and the
-  // badge miscounts). The atBottom/canJumpToBottom STATE syncs on the next
-  // geometry event (Virtuoso remounts → scrollerRef → syncBottomGeometry);
-  // resetting only refs avoids set-state-in-effect.
+  // badge miscounts).
+  //
+  // Both `atBottom` and `canJumpToBottom` STATE are also reset here (not just
+  // the refs). <MessageList> is not keyed on session — the component instance
+  // persists across a switch while only the inner scroller remounts — so a
+  // stale `canJumpToBottom=true / atBottom=false` from the previous session
+  // would otherwise render the jump button on the new session's very first
+  // frame (the button is a SIBLING of the reveal-hidden list and stays
+  // visible), a one-frame stale flash. reduced-motion users can't rely on the
+  // `.chat-messages-reveal-pending { opacity: 0 }` CSS hiding it either, so
+  // the state reset is the only reliable reset. This effect already sets
+  // state via clearUnseen() → setUnseenCount(0), so set-state-in-effect is
+  // already on the table here; resetting the button state is consistent with
+  // it. Geometry re-syncs on the new scroller after Virtuoso remounts.
   useEffect(() => {
     clearUnseen()
     clearFollowTimer()
     atBottomRef.current = true
     shouldFollowRef.current = true
     lastCountRef.current = 0
+    // Intentional one-shot reset on a rare event (session switch): clear the
+    // previous session's jump-button state unconditionally so the button can't
+    // flash with stale `canJumpToBottom`/`atBottom`. A guarded ref-only reset
+    // (the old approach) would leave the stale STATE in place. The cascading-
+    // render cost the rule guards against is irrelevant here — it's a single
+    // commit after a persisted-component remount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAtBottom(true)
+    setCanJumpToBottom(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcriptRevealKey])
   useEffect(() => {
@@ -1803,7 +1861,15 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
           </div>
         )}
       </div>
-      {canJumpToBottom && !atBottom && (
+      {/* Suppress the jump button until the transcript reveal completes.
+          During a session switch the new transcript renders under
+          `chat-messages-reveal-pending` (replay in progress, list hidden at
+          opacity 0) while renderableItems grows in batches. The inner
+          scroller's scroll/ResizeObserver effects re-sync geometry on every
+          renderableItems.length change, so geometry flaps (not-at-bottom →
+          re-pin → not-at-bottom …) and would otherwise flash this button
+          repeatedly over the still-invisible transcript. */}
+      {!isTranscriptRevealPending && canJumpToBottom && !atBottom && (
         <button
           type="button"
           className="chat-jump-to-bottom"

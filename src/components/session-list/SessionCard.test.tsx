@@ -217,10 +217,25 @@ describe('SessionCard', () => {
     expect(c2.querySelector('.drop-after')).not.toBeNull()
   })
 
-  it('shows unread indicator when hasUnread', () => {
+  it('folds unread into the slot badge when open (accent fill, no floating dot)', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} isOpen hasUnread slotIdx={1} />,
+    )
+    const slot = container.querySelector('.session-item-slot')
+    expect(slot?.classList.contains('unread')).toBe(true)
+    expect(slot?.classList.contains('pending')).toBe(false)
+    // The old floating 8px dot is gone.
+    expect(container.querySelector('.session-item-unread')).toBeNull()
+    // Unread surfaces in the accessible label.
+    expect(slot?.getAttribute('aria-label')).toContain('unread')
+  })
+
+  it('does not render any unread indicator for a closed session', () => {
+    // Closed sessions carry no unread signal at all (no dot, no slot badge to
+    // fold it into — "nobody's watching a closed session").
     const { container } = render(<SessionCard {...baseProps} hasUnread />)
-    const unread = container.querySelector('.session-item-unread')
-    expect(unread).not.toBeNull()
+    expect(container.querySelector('.session-item-slot')).toBeNull()
+    expect(container.querySelector('.session-item-unread')).toBeNull()
   })
 
   it('renders slot number when isOpen', () => {
@@ -229,6 +244,76 @@ describe('SessionCard', () => {
     )
     const slot = container.querySelector('.session-item-slot')
     expect(slot?.textContent).toBe('2') // slotIdx + 1
+  })
+
+  it('folds pending responses into the slot badge when open (no separate count badge)', () => {
+    // An open session with a pending count used to render a slot badge AND a
+    // visually identical perm-count badge side by side. They're merged into one:
+    // the slot badge carries a `pending` modifier (amber + breathing), and the
+    // count moves to its accessible label.
+    const { container } = render(
+      <SessionCard
+        {...baseProps}
+        isOpen
+        slotIdx={1}
+        session={makeSession({ pendingPermissionCount: 3 })}
+      />,
+    )
+    const slot = container.querySelector('.session-item-slot')
+    expect(slot?.textContent).toBe('2') // slotIdx + 1
+    expect(slot?.classList.contains('pending')).toBe(true)
+    // No separate count badge alongside.
+    expect(container.querySelector('.session-item-perm-badge')).toBeNull()
+    // Pending count surfaces in the slot badge's accessible label.
+    expect(slot?.getAttribute('aria-label')).toContain('3 requests awaiting your response')
+  })
+
+  it('keeps the standalone count badge for a closed session with pending responses', () => {
+    // A closed session has no slot badge to carry the pending signal, so the
+    // standalone amber count badge is still rendered.
+    const { container } = render(
+      <SessionCard
+        {...baseProps}
+        isOpen={false}
+        session={makeSession({ pendingPermissionCount: 3 })}
+      />,
+    )
+    const badge = container.querySelector('.session-item-perm-badge')
+    expect(badge?.textContent).toBe('3')
+    expect(container.querySelector('.session-item-slot')).toBeNull()
+  })
+
+  it('lets pending take precedence over unread when an open session has both', () => {
+    // Open + pending + unread: the slot badge shows the pending state (amber),
+    // never unread (accent), and there is still exactly one leading badge.
+    const { container } = render(
+      <SessionCard
+        {...baseProps}
+        isOpen
+        slotIdx={1}
+        session={makeSession({ pendingPermissionCount: 2 })}
+        hasUnread
+      />,
+    )
+    const slot = container.querySelector('.session-item-slot')
+    expect(slot?.classList.contains('pending')).toBe(true)
+    expect(slot?.classList.contains('unread')).toBe(false)
+    expect(container.querySelector('.session-item-perm-badge')).toBeNull()
+  })
+
+  it('keeps the pending amber styling even when the focused slot also has pending', () => {
+    const { container } = render(
+      <SessionCard
+        {...baseProps}
+        isOpen
+        isFocused
+        slotIdx={1}
+        session={makeSession({ pendingPermissionCount: 1 })}
+      />,
+    )
+    const slot = container.querySelector('.session-item-slot')
+    expect(slot?.classList.contains('pending')).toBe(true)
+    expect(slot?.classList.contains('focused')).toBe(true)
   })
 
   it('applies tinted class when accentStyle is provided', () => {

@@ -613,22 +613,17 @@ export const ChatPanel = memo(function ChatPanel({
         }}
       >
         <div className="chat-panel-header-row1">
-        <Tooltip label={`Slot ${slot} · Ctrl/Cmd+${slot} to focus`} placement="bottom">
+        <Tooltip
+          label={`Slot ${slot} · Ctrl/Cmd+${slot} to focus${hasUnread && !focused ? ' · unread' : ''}`}
+          placement="bottom"
+        >
           <span
-            className={`chat-panel-slot ${focused ? 'focused' : ''} ${showSlotHints ? 'key-hint' : ''}`}
-            aria-label={`slot ${slot}`}
+            className={`chat-panel-slot ${focused ? 'focused' : ''} ${hasUnread && !focused ? 'unread' : ''} ${showSlotHints ? 'key-hint' : ''}`}
+            aria-label={`slot ${slot}${hasUnread && !focused ? ', unread' : ''}`}
           >
             {slot}
           </span>
         </Tooltip>
-        {hasUnread && !focused && (
-          <Tooltip label="New turn completed while this panel wasn't focused" placement="bottom">
-            <span
-              className="chat-panel-unread"
-              aria-label="unread"
-            />
-          </Tooltip>
-        )}
         <Tooltip label={session.cwd ?? ''} placement="bottom" disabled={!session.cwd}>
           <span className="chat-panel-title">
             {session.title ?? session.id.slice(0, 8)}

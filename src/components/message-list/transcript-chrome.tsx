@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import { IconZap } from '../icons/ToolIcons'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
@@ -126,6 +126,17 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
   // const segments = useMemo(() => splitStreamSegments(content), [content])
   // const last = segments[segments.length - 1]
 
+  // The live turn is plain text under white-space:pre-wrap (`.streaming-plain`),
+  // so every newline the model emits renders as a line break literally. That
+  // dumps markdown's STRUCTURAL whitespace — the \n\n between paragraphs, list
+  // items, and code-fence delimiters — onto the screen as empty rows. The
+  // settled message (markdown-rendered) collapses these into paragraph spacing;
+  // mirror that here by folding newline runs to a single break so the streaming
+  // preview doesn't flash blank lines it would never show once the turn lands.
+  // This complements the 6a0ccfa plain-text rendering change (it keeps the
+  // cheap plain-text path, just cleans up its display).
+  const displayContent = useMemo(() => content.replace(/\n{2,}/g, '\n'), [content])
+
   return (
     <div className="streaming-footer-wrapper">
       {supported && (
@@ -168,7 +179,7 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
           />
         )}
         <div ref={setBodyRef} className="msg-body assistant-body streaming-plain" aria-live="polite" aria-atomic="false">
-          {content}
+          {displayContent}
           <span className="streaming-cursor" />
           {/* StreamCodeSegment / splitStreamSegments disabled — see above. */}
           {/* {segments.map((seg, i) => (
