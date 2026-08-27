@@ -31,8 +31,11 @@
   ],
   "scripts": {
     "dev:server": "tsx watch server/cli.ts --port 3456 --no-open",
+    "dev:server:once": "tsx server/cli.ts --port 3456 --no-open",
     "dev:client": "vite --port 5174",
+    "dev:client:once": "vite --port 5174",
     "dev": "concurrently -n server,client -c blue,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:once": "concurrently -n server,client -c blue,magenta \"npm:dev:server:once\" \"npm:dev:client:once\"",
     "build:client": "vite build",
     "build:server": "node build.mjs",
     "build": "concurrently \"npm:build:client\" \"npm:build:server\"",
