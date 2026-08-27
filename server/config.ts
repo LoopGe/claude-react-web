@@ -20,9 +20,22 @@ import { HttpError } from './errors.js'
 
 const log = createLogger('config')
 
+/** A named bundle mapping the three CLI model tiers to concrete models.
+ *  Empty slots fall back to the group's main model (see model-groups.ts).
+ *  `main` is the slot used as the session's main model; defaults to 'opus'. */
+export interface ModelGroupConfig {
+  id: string
+  name: string
+  opus?: string
+  sonnet?: string
+  haiku?: string
+  main?: 'opus' | 'sonnet' | 'haiku'
+}
+
 /** Schema for config.json */
 interface ConfigFile {
   modelList?: string[]
+  modelGroups?: ModelGroupConfig[]
   recapModel?: string
   /** Model used by the AI commit-message generator under the GitPanel
    *  "This session" view. Defaults to the same haiku model as recap; pick
@@ -97,6 +110,7 @@ interface ConfigFile {
 
 export interface ServerConfig {
   readonly modelList: readonly string[]
+  readonly modelGroups: readonly ModelGroupConfig[]
   readonly defaultModel: string
   readonly recapModel: string
   readonly commitMessageModel: string
@@ -153,6 +167,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
     'claude-opus-4-20250514',
     'claude-haiku-3-5-20241022',
   ]),
+  modelGroups: Object.freeze([]),
   defaultModel: 'anthropic/claude-sonnet-4-20250514',
   recapModel: 'claude-haiku-4-5-20251001',
   commitMessageModel: 'claude-haiku-4-5-20251001',
@@ -274,6 +289,53 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
       ;(merged as { modelList: readonly string[] }).modelList = Object.freeze(models)
       ;(merged as { defaultModel: string }).defaultModel = models[0]
       log.info(`loaded ${models.length} model(s) from ${file}, default: ${merged.defaultModel}`)
+    }
+  }
+
+  // Model groups: a named bundle of tier-slot → concrete-model mappings.
+  // A malformed entry is dropped with a warning (never blocks config load,
+  // matching the file's tolerance for other fields); duplicate ids keep the
+  // last entry. Groups with zero tier slots are unusable (resolveGroup's
+  // main would fall to '') so they are dropped too.
+  if (Array.isArray(file_.modelGroups)) {
+    const byId = new Map<string, ModelGroupConfig>()
+    for (const g of file_.modelGroups) {
+      if (typeof g !== 'object' || g === null || Array.isArray(g)) {
+        log.warn('dropping malformed model group (not an object)')
+        continue
+      }
+      const raw = g as unknown as Record<string, unknown>
+      const { id, name, main } = raw
+      if (typeof id !== 'string' || !id.trim() || typeof name !== 'string' || !name.trim()) {
+        log.warn('dropping model group with a missing/blank id or name')
+        continue
+      }
+      if (main !== undefined && main !== 'opus' && main !== 'sonnet' && main !== 'haiku') {
+        log.warn(`dropping model group ${id}: main must be one of opus|sonnet|haiku`)
+        continue
+      }
+      for (const slot of ['opus', 'sonnet', 'haiku'] as const) {
+        const v = raw[slot]
+        if (v !== undefined && typeof v !== 'string') {
+          log.warn(`dropping model group ${id}: slot ${slot} must be a string`)
+          break
+        }
+      }
+      const entry: ModelGroupConfig = { id: id.trim(), name: name.trim() }
+      for (const slot of ['opus', 'sonnet', 'haiku'] as const) {
+        const v = raw[slot]
+        if (typeof v === 'string' && v.trim()) entry[slot] = v.trim()
+      }
+      if (main !== undefined) entry.main = main as 'opus' | 'sonnet' | 'haiku'
+      if (!entry.opus && !entry.sonnet && !entry.haiku) {
+        log.warn(`dropping model group ${id}: no tier slots`)
+        continue
+      }
+      byId.set(entry.id, entry)
+    }
+    if (byId.size > 0) {
+      ;(merged as { modelGroups: readonly ModelGroupConfig[] }).modelGroups = Object.freeze([...byId.values()])
+      log.info(`loaded ${byId.size} model group(s) from ${file}`)
     }
   }
 
@@ -418,6 +480,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'authToken',
   'baseUrl',
   'modelList',
+  'modelGroups',
   'recapModel',
   'commitMessageModel',
   'maxUploadBytes',
