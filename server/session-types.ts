@@ -185,6 +185,10 @@ export interface Session {
   lastActivityAt: number
   cwd?: string
   model?: string
+  /** Active model group id (set at create time; the group's resolved main
+   *  model becomes `model`). Stored on the live session; persisted via
+   *  SessionMeta so resume/restart/fork keep the group identity. */
+  modelGroupId?: string
   permissionMode?: PermissionMode
   title?: string
   /** Anthropic beta flags the session was spawned with (e.g.

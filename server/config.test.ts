@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { clearCredentials, config, loadConfig, readConfigFile, updateConfigFile } from './config.js'
+import { clearCredentials, config, loadConfig, readConfigFile, updateConfigFile, WRITABLE_CONFIG_KEYS } from './config.js'
 import { tempDir } from './__test-utils__/index.js'
 
 describe('config', () => {
@@ -231,6 +231,68 @@ describe('config', () => {
       // clearCredentials already reloads config internally
       expect(config.baseUrl).toBe('https://api.anthropic.com')
       expect(config.authToken).toBeUndefined()
+    })
+  })
+
+  describe('modelGroups config', () => {
+    it('WRITABLE_CONFIG_KEYS includes modelGroups', () => {
+      expect(WRITABLE_CONFIG_KEYS).toContain('modelGroups')
+    })
+
+    it('loadConfig parses a valid modelGroups array and drops malformed entries', async () => {
+      writeFileSync(
+        join(dir, 'config.json'),
+        JSON.stringify({
+          modelGroups: [
+            { id: 'g_flagship', name: 'Flagship', opus: 'anthropic/claude-opus-4-20250514', main: 'opus' },
+            // malformed: missing name → dropped; missing all slots → dropped; bad main → dropped
+            { id: 'g_bad1', opus: 'op' },
+            { id: 'g_bad2', name: 'NoSlots' },
+            { id: 'g_bad3', name: 'BadMain', opus: 'op', main: 'claude' },
+          ],
+        }),
+      )
+      await loadConfig(dir)
+      expect(config.modelGroups).toHaveLength(1)
+      expect(config.modelGroups[0].id).toBe('g_flagship')
+      expect(config.modelGroups[0].main).toBe('opus')
+    })
+
+    it('drops the entire group when a tier slot is not a string', async () => {
+      writeFileSync(
+        join(dir, 'config.json'),
+        JSON.stringify({
+          modelGroups: [
+            { id: 'g', name: 'test', opus: 123, sonnet: 'valid-model' },
+          ],
+        }),
+      )
+      await loadConfig(dir)
+      expect(config.modelGroups).toHaveLength(0)
+    })
+
+    it('duplicate group ids keep the last entry', async () => {
+      writeFileSync(
+        join(dir, 'config.json'),
+        JSON.stringify({
+          modelGroups: [
+            { id: 'g1', name: 'First', opus: 'op' },
+            { id: 'g1', name: 'Second', sonnet: 'sn' },
+          ],
+        }),
+      )
+      await loadConfig(dir)
+      expect(config.modelGroups).toHaveLength(1)
+      expect(config.modelGroups[0].name).toBe('Second')
+      expect(config.modelGroups[0].opus).toBeUndefined()
+      expect(config.modelGroups[0].sonnet).toBe('sn')
+    })
+
+    it('GET /api/config response shape includes modelGroups', () => {
+      // Shape-level guard: the /config route reads serverConfig.modelGroups.
+      // The route itself is exercised in Task 5; here we only pin the field's
+      // existence on ServerConfig so a later rename can't silently drop it.
+      expect('modelGroups' in config).toBe(true)
     })
   })
 })

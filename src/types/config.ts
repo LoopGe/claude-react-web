@@ -1,5 +1,15 @@
 import type { SkillLoadMode } from '../../shared/skills'
 
+/** Client-side mirror of the server's ModelGroupConfig (server/config.ts). */
+export interface ModelGroupConfig {
+  id: string
+  name: string
+  opus?: string
+  sonnet?: string
+  haiku?: string
+  main?: 'opus' | 'sonnet' | 'haiku'
+}
+
 export interface Defaults {
   cwd?: string
   model?: string
@@ -10,6 +20,7 @@ export interface ConfigResponse {
   configured?: boolean
   defaults: Defaults
   models?: string[]
+  modelGroups?: ModelGroupConfig[]
   maxOpenPanels?: number
   maxUploadBytes?: number
   /** Global default for the pinned "current question" header. Sessions
@@ -26,6 +37,7 @@ export interface FullServerConfig {
   authTokenMasked?: string
   baseUrl: string
   modelList: string[]
+  modelGroups?: ModelGroupConfig[]
   recapModel: string
   commitMessageModel: string
   maxUploadBytes: number

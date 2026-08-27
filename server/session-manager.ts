@@ -36,6 +36,7 @@ import { cancelGitBroadcast } from './git-broadcast.js'
 import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig } from './config.js'
+import { fallbackAliasesFor, resolveGroup } from './model-groups.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { pump as pumpSession, getParentToolUseId, applyTaskEvent, type PumpDeps } from './session-pump.js'
 import { isTerminalTaskStatus } from '../shared/tasks.js'
@@ -879,6 +880,7 @@ export class SessionManager {
       lastActivityAt: s.lastActivityAt,
       cwd: s.cwd,
       model: s.model,
+      modelGroupId: s.modelGroupId,
       permissionMode: s.permissionMode,
       title: s.title,
       betas: s.betas,
@@ -936,7 +938,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; modelGroupId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -944,6 +946,7 @@ export class SessionManager {
       provider,
       cwd: opts.cwd,
       model: opts.model,
+      modelGroupId: (opts as { modelGroupId?: string }).modelGroupId,
       permissionMode: opts.permissionMode,
       title: opts.title,
       // `betas` carries flags like `context-1m-...` that change the
@@ -982,7 +985,7 @@ export class SessionManager {
    *  For resume, use `resume()` instead — this path always allocates a
    *  fresh UUID and won't wire up SDK `resume`. */
   create(
-    opts: Options & { provider?: string },
+    opts: Options & { provider?: string; modelGroupId?: string },
     customEnv?: Record<string, string>,
     /** Set by the restart flow: the id of the session Y joins. Threaded
      *  through to spawn() so the `created` broadcast carries `joinGroupOf`,
@@ -994,6 +997,18 @@ export class SessionManager {
      *  bypass its maxGroupSize cap when appending Y. */
     evictingSource?: boolean,
   ): SessionInfo {
+    // Explicit op: an unknown group at create is a 400, not a silent
+    // fallback (contrast: a group deleted while sessions reference it
+    // self-heals silently on the next respawn, below).
+    const modelGroupId = (opts as { modelGroupId?: unknown }).modelGroupId
+    if (modelGroupId !== undefined) {
+      if (typeof modelGroupId !== 'string') {
+        throw new HttpError(400, 'modelGroupId must be a string')
+      }
+      if (!defaultConfig.modelGroups.some((g) => g.id === modelGroupId)) {
+        throw new HttpError(400, `model group ${modelGroupId} not found`)
+      }
+    }
     // Pin a concrete default model for brand-new sessions so we don't lean
     // on the CLI subprocess's built-in default. When the client omits a
     // model, use the first entry of the configured model list
@@ -1002,7 +1017,7 @@ export class SessionManager {
     // selected — instead of an undefined that silently resolves to whatever
     // model the `claude` CLI happens to pick. Resume/fork are unaffected:
     // they carry the persisted model forward through their own opts.
-    const withDefault: Options & { provider?: string } = {
+    const withDefault: Options & { provider?: string; modelGroupId?: string } = {
       ...opts,
       provider: opts.provider ?? this.defaultProvider,
       model: opts.model ?? defaultConfig.defaultModel,
@@ -1151,11 +1166,12 @@ export class SessionManager {
     // resume-after-/clear persisted the short id and the NEXT /clear spawned
     // a fresh session the gateway rejected with `400 Unsupported model`.
     const resolvedModel = resolveConfiguredModel(meta.model ?? firstAssistantModel(historySeed))
-    const resumeOpts: Options & { provider?: string; enabledPlugins?: string[]; autoCompactWindow?: number } = {
+    const resumeOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number } = {
       provider,
       resume: id,
       cwd: meta.cwd,
       model: resolvedModel,
+      modelGroupId: meta.modelGroupId,
       // Use the persisted permissionMode if available (sessions we created).
       // For CLI sessions adopted from disk (no permissionMode in meta), fall
       // back to the caller-supplied mode (the user's current panel mode) so
@@ -1226,10 +1242,11 @@ export class SessionManager {
    *  spawn()-doesn't-carry-parentId review. */
   private async respawnFresh(id: string, meta: SessionMeta): Promise<SessionInfo> {
     const provider = meta.provider ?? this.defaultProvider
-    const freshOpts: Options & { provider?: string; enabledPlugins?: string[]; autoCompactWindow?: number } = {
+    const freshOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number } = {
       provider,
       cwd: meta.cwd,
       model: meta.model,
+      modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
       title: meta.title,
       effort: meta.effortLevel,
@@ -1477,12 +1494,13 @@ export class SessionManager {
     // same name, not a renamed fork.
     const title = opts?.inheritIdentity ? meta.title : (meta.title ? `${meta.title} (fork)` : undefined)
     const sourceProvider = meta.provider ?? this.defaultProvider
-    const forkOpts: Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number } = {
+    const forkOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number } = {
       provider: sourceProvider,
       resume: id,
       forkSession: true,
       cwd: meta.cwd,
       model: meta.model,
+      modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
       title,
       // When branching from a specific point (the "Fork from last completed
@@ -1919,7 +1937,7 @@ export class SessionManager {
   /** Shared spawn path for create(), resume(), and fork(). */
   private spawn(
     id: string,
-    opts: Options & { provider?: string },
+    opts: Options & { provider?: string; modelGroupId?: string },
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
@@ -1956,7 +1974,7 @@ export class SessionManager {
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
-    const fullOpts: Options & { provider?: string } = { ...opts, provider: providerName }
+    const fullOpts: Options & { provider?: string; modelGroupId?: string } = { ...opts, provider: providerName }
     const requestedMode = fullOpts.permissionMode
 
     // Forward only `plan` to the SDK (see sdkForwardMode): plan needs
@@ -1974,6 +1992,23 @@ export class SessionManager {
     const createdAt = existingMeta?.createdAt ?? Date.now()
     const metaSnapshot = this.snapshotMeta(fullOpts, providerName)
 
+    // Model-group intent: carried via opts on create/fork/clear (new ids),
+    // or re-read from the persisted meta on same-id respawn (resume /
+    // respawnFresh). A deleted group self-heals: clear the reference and
+    // collapse to the effective model (the provider's own `find` also
+    // misses and collapses — both sides agree).
+    const modelGroupId = (fullOpts as { modelGroupId?: string }).modelGroupId ?? existingMeta?.modelGroupId
+    if (modelGroupId) {
+      const group = defaultConfig.modelGroups.find((g) => g.id === modelGroupId)
+      if (group) {
+        metaSnapshot.model = resolveGroup(group, resolveConfiguredModel).main
+        metaSnapshot.modelGroupId = modelGroupId
+      } else {
+        log.warn(`[session ${id}] model group ${modelGroupId} no longer exists — clearing reference`)
+        metaSnapshot.modelGroupId = undefined
+      }
+    }
+
     // Split the resume/discard seed by frame origin (see the Session literal
     // below for why). stampReceivedAt is set-only-if-absent, so frames that
     // already carry a timestamp (the normal case) keep it.
@@ -1990,6 +2025,12 @@ export class SessionManager {
       createdAt,
       lastActivityAt: Date.now(),
       ...metaSnapshot,
+      // For group sessions, metaSnapshot.model was set to the resolved group
+      // main by the model-group block above (and metaSnapshot.modelGroupId to
+      // the group id, or cleared by self-heal). For non-group sessions the
+      // snapshot already holds the correctly-resolved model.
+      model: metaSnapshot.model,
+      modelGroupId: metaSnapshot.modelGroupId,
       permissionMode: requestedMode,
       handle: undefined as unknown as ProviderSessionHandle,
       canUseTool: undefined,
@@ -2207,7 +2248,7 @@ export class SessionManager {
       // supportedDialogKinds is non-empty, so the two always travel together.
       onUserDialog: fullOpts.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,
       supportedDialogKinds: (fullOpts as { supportedDialogKinds?: string[] }).supportedDialogKinds,
-      providerExtras: { sdkOptions },
+      providerExtras: { sdkOptions, modelGroupId: session.modelGroupId },
     })
     session.handle = handle
 
@@ -2631,6 +2672,7 @@ export class SessionManager {
         provider: s.provider,
         cwd: s.cwd,
         model: s.model,
+        modelGroupId: s.modelGroupId,
         permissionMode: s.permissionMode,
         title: s.title,
         effortLevel: s.effortLevel,
@@ -2653,10 +2695,11 @@ export class SessionManager {
       // spawn() persists Y, broadcasts `created`, and starts its pump. Side
       // Chat sessions re-inject SIDE_DEVELOPER_INSTRUCTIONS so the boundary
       // survives — same logic as the old respawn.
-      const freshOpts: Options & { provider?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number } = {
+      const freshOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number } = {
         provider: settings.provider,
         cwd: settings.cwd,
         model: settings.model,
+        modelGroupId: settings.modelGroupId,
         permissionMode: settings.permissionMode,
         title: settings.title,
         effort: settings.effortLevel,
@@ -2914,19 +2957,62 @@ export class SessionManager {
 
   async setModel(id: string, model?: string): Promise<SessionInfo> {
     const s = this.requireLive(id)
+    const wasGroup = !!s.modelGroupId
     await this.requireHandleMethod<(model?: string) => Promise<void>>(
       s,
       'setModel',
       'model switching',
       'supportsModelSwitch',
     )(model)
+    if (wasGroup) {
+      // Switching to a single model fully reverts today's behavior: clear
+      // the group reference AND the fallback degradation chain so no
+      // residual aliases survive the switch.
+      await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+        s,
+        'applyFlagSettings',
+        'fallback model',
+        'supportsModelSwitch',
+      )({ fallbackModel: null })
+    }
     s.model = model
+    s.modelGroupId = undefined
     s.lastActivityAt = Date.now()
     // The model changed — recompute its effort capability (keyword-based,
-    // synchronous). The persist() below broadcasts the session-update
-    // carrying the new effortLevels.
+    // so a switch between model classes changes what's available), then
+    // carry the new effortLevels.
     s.effortLevels = effortLevelsForModel(s.model)
     // Thinking capability tracks the model family too — recompute on switch.
+    s.thinkingSupported = supportsThinkingForModel(s.model)
+    this.persist(s)
+    return this.info(s)
+  }
+
+  /** Point a session at a ModelGroup. The main model + fallback chain switch
+   *  immediately (live); the tier env vars (subagent routing) land on the
+   *  next respawn — an SDK runtime limitation, not a bug (spec §7). */
+  async setModelGroup(id: string, groupId: string): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    const group = defaultConfig.modelGroups.find((g) => g.id === groupId)
+    if (!group) throw new HttpError(400, `model group ${groupId} not found`)
+    const r = resolveGroup(group, resolveConfiguredModel)
+    await this.requireHandleMethod<(model?: string) => Promise<void>>(
+      s,
+      'setModel',
+      'model switching',
+      'supportsModelSwitch',
+    )(r.main)
+    const fallback = fallbackAliasesFor(group.main ?? 'opus')
+    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+      s,
+      'applyFlagSettings',
+      'fallback model',
+      'supportsModelSwitch',
+    )({ fallbackModel: fallback.length > 0 ? fallback : null })
+    s.model = r.main
+    s.modelGroupId = groupId
+    s.lastActivityAt = Date.now()
+    s.effortLevels = effortLevelsForModel(s.model)
     s.thinkingSupported = supportsThinkingForModel(s.model)
     this.persist(s)
     return this.info(s)
@@ -4508,6 +4594,7 @@ export class SessionManager {
       messageCount: s.history.length + s.subagentHistory.length,
       cwd: s.cwd,
       model: s.model,
+      modelGroupId: s.modelGroupId,
       permissionMode: s.permissionMode,
       title: s.title,
       betas: s.betas,

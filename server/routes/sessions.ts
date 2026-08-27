@@ -90,7 +90,7 @@ const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
  *  to the SDK's documented shapes; unknown fields pass through untouched for
  *  forward compatibility with newer SDK Options. */
 function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
-  const stringFields = ['cwd', 'model', 'title', 'pathToClaudeCodeExecutable']
+  const stringFields = ['cwd', 'model', 'title', 'pathToClaudeCodeExecutable', 'modelGroupId']
   for (const name of stringFields) {
     const v = rest[name]
     if (v !== undefined && typeof v !== 'string') {
@@ -461,6 +461,17 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   app.post('/sessions/:id/model', async (c) => {
     const body = await safeJson<{ model?: string }>(c.req)
     const info = await sm.setModel(c.req.param('id'), body.model)
+    return c.json({ session: info })
+  })
+
+  // Point the session at a ModelGroup. Unknown groups are a 400 (explicit op
+  // rejects rather than silently falling back).
+  app.post('/sessions/:id/model-group', async (c) => {
+    const body = await safeJson<{ groupId?: string }>(c.req)
+    if (!body.groupId || typeof body.groupId !== 'string') {
+      return c.json({ error: 'groupId is required' }, 400)
+    }
+    const info = await sm.setModelGroup(c.req.param('id'), body.groupId)
     return c.json({ session: info })
   })
 

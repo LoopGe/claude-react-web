@@ -242,7 +242,7 @@ const tick = () => new Promise((r) => setImmediate(r))
 import { SessionManager } from './session-manager.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
-import { config as defaultConfig } from './config.js'
+import { __setConfigForTest, config as defaultConfig } from './config.js'
 import { McpConfigStore } from './mcp-config.js'
 import { MpStore } from './mp-store.js'
 import { execCommand as mockExecCommand } from './exec.js'
@@ -322,6 +322,141 @@ describe('SessionManager', () => {
     expect(envA.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('model-a')
     expect(envB.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('model-b')
     expect(envA).not.toBe(envB)
+  })
+
+  describe('model groups (group sessions)', () => {
+    const GROUP = {
+      id: 'g_flagship', name: 'Flagship',
+      opus: 'anthropic/claude-opus-4-20250514',
+      sonnet: 'anthropic/claude-sonnet-4-20250514',
+      haiku: 'claude-haiku-3-5-20241022',
+      main: 'opus' as const,
+    }
+
+    afterEach(() => {
+      __setConfigForTest({ modelGroups: [] })
+    })
+
+    it('maps the four tier env vars to the group slots and sets the main model', () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      const env = mockHandles[0].options.env as Record<string, string>
+      expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-opus-4-20250514')
+      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
+      expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('claude-haiku-3-5-20241022')
+      expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('claude-haiku-3-5-20241022')
+      expect(info.model).toBe('anthropic/claude-opus-4-20250514')
+      expect(info.modelGroupId).toBe('g_flagship')
+      expect(mockHandles[0].options.model).toBe('anthropic/claude-opus-4-20250514')
+    })
+
+    it('applies the fallback degradation chain on spawn for a group session', () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: ['sonnet', 'haiku'] })
+    })
+
+    it('empty slots fall back to the main model', () => {
+      __setConfigForTest({
+        modelGroups: [{ id: 'g_sonnet_only', name: 'Sonnet Only', sonnet: 'anthropic/claude-sonnet-4-20250514', main: 'sonnet' }],
+      })
+      sm.create({ cwd: '/tmp', modelGroupId: 'g_sonnet_only' } as Parameters<SessionManager['create']>[0])
+      const env = mockHandles[0].options.env as Record<string, string>
+      expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
+      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
+      expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
+      expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
+    })
+
+    it('single-model sessions still collapse all four aliases to the model', () => {
+      // Regression guard for the single-model path (the existing tests above
+      // cover it; this one pins it against accidental group leakage).
+      __setConfigForTest({ modelGroups: [GROUP] })
+      sm.create({ cwd: '/tmp', model: 'gw/some-model' })
+      const env = mockHandles[0].options.env as Record<string, string>
+      expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('gw/some-model')
+      expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('gw/some-model')
+      expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('gw/some-model')
+      expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('gw/some-model')
+    })
+
+    it('create rejects an unknown modelGroupId with 400', () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      expect(() => sm.create({ cwd: '/tmp', modelGroupId: 'g_missing' } as Parameters<SessionManager['create']>[0])).toThrow(/model group g_missing not found/)
+    })
+
+    it('setModelGroup resolves main, switches model live, applies fallback, persists', async () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp', model: 'gw/start' })
+      const updated = await sm.setModelGroup(info.id, 'g_flagship')
+      expect(updated.model).toBe('anthropic/claude-opus-4-20250514')
+      expect(updated.modelGroupId).toBe('g_flagship')
+      expect(mockHandles[0].setModel).toHaveBeenCalledWith('anthropic/claude-opus-4-20250514')
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: ['sonnet', 'haiku'] })
+      expect(store.get(info.id)?.modelGroupId).toBe('g_flagship')
+    })
+
+    it('setModelGroup clears the prior fallback when switching to a haiku-main group', async () => {
+      const BUDGET = {
+        id: 'g_budget', name: 'Budget',
+        opus: 'anthropic/claude-opus-4-20250514',
+        sonnet: 'anthropic/claude-sonnet-4-20250514',
+        haiku: 'claude-haiku-3-5-20241022',
+        main: 'haiku' as const,
+      }
+      __setConfigForTest({ modelGroups: [GROUP, BUDGET] })
+      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      mockHandles[0].applyFlagSettings.mockClear()
+      const updated = await sm.setModelGroup(info.id, 'g_budget')
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: null })
+      expect(updated.modelGroupId).toBe('g_budget')
+      expect(updated.model).toBe('claude-haiku-3-5-20241022')
+    })
+
+    it('setModelGroup rejects an unknown group with 400', async () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp' })
+      await expect(sm.setModelGroup(info.id, 'g_missing')).rejects.toThrow(/model group g_missing not found/)
+    })
+
+    it('setModel clears modelGroupId and the fallback chain', async () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      mockHandles[0].applyFlagSettings.mockClear()
+      const updated = await sm.setModel(info.id, 'gw/other')
+      expect(updated.modelGroupId).toBeUndefined()
+      expect(updated.model).toBe('gw/other')
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: null })
+    })
+
+    it('respawn with a deleted group self-heals: clears the reference and collapses', async () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      const id = info.id
+      // Unload the session so it goes dormant — self-heal triggers on respawn
+      await sm.unload(id)
+      __setConfigForTest({ modelGroups: [] }) // delete the group
+      const resumed = await sm.resume(id)
+      expect(resumed.modelGroupId).toBeUndefined()
+      // The persisted resolved main is kept; the provider collapses to it.
+      expect(resumed.model).toBe('anthropic/claude-opus-4-20250514')
+      const last = mockHandles[mockHandles.length - 1].options.env as Record<string, string>
+      expect(last.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-opus-4-20250514')
+      expect(last.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('anthropic/claude-opus-4-20250514')
+      expect(last.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('anthropic/claude-opus-4-20250514')
+    })
+
+    it('respawn re-applies the persisted group', async () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      // Unload so resume goes through spawn() and re-applies the group
+      await sm.unload(info.id)
+      const resumed = await sm.resume(info.id)
+      expect(resumed.modelGroupId).toBe('g_flagship')
+      const last = mockHandles[mockHandles.length - 1].options.env as Record<string, string>
+      expect(last.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-opus-4-20250514')
+      expect(last.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('claude-haiku-3-5-20241022')
+    })
   })
 
   it('global stream emits `created` on spawn and `update` on subsequent changes', async () => {
