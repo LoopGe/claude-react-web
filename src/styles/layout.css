@@ -257,16 +257,17 @@ body.resizing-col .app {
   background: var(--accent);
   color: var(--on-accent);
 }
-/* Non-focused panel with unread activity: hollow-but-emphasized accent
-   (transparent fill, thicker accent border, bolder number), mirroring the
-   sidebar's .session-item-slot.unread so both slot badges behave the same.
-   Staying hollow keeps it distinct from a FOCUSED panel's solid accent fill.
-   Unread only shows when !focused (focus clears it). */
-.chat-panel-slot.unread {
-  background: transparent;
-  border-width: 1.5px;
-  color: var(--accent);
-  font-weight: 800;
+/* Unread dot on a non-focused open panel's header. Sits between the slot
+   badge and the title — matches the sidebar's .session-item-unread treatment
+   so the two indicators feel consistent. */
+.chat-panel-unread {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-circle);
+  background: var(--accent);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px var(--bg);
 }
 /* Key-hint mode (Ctrl/Cmd held): a breathing accent halo around the slot
    number so the mod+<n> focus shortcut is discoverable without permanent
@@ -302,9 +303,6 @@ body.resizing-col .app {
 .chat-panel-status.err { background: var(--danger); }
 .chat-panel-status.terminated,
 .chat-panel-status.dormant { background: var(--fg-muted); opacity: 0.5; }
-
-/* Non-focused panel unread is folded into the slot badge (`.chat-panel-slot
-   .unread`) — the old floating 8px dot is gone, matching the sidebar. */
 
 /* Non-default permission mode no longer tints the panel header — the mode
    is conveyed by the badge label (and its tooltip) only. The mode badge is

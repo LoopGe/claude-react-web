@@ -217,25 +217,25 @@ describe('SessionCard', () => {
     expect(c2.querySelector('.drop-after')).not.toBeNull()
   })
 
-  it('folds unread into the slot badge when open (accent fill, no floating dot)', () => {
+  it('renders the standalone unread dot for an open session', () => {
+    // Unread is always the standalone 8px dot; the slot badge keeps its
+    // normal look (no `unread` modifier).
     const { container } = render(
       <SessionCard {...baseProps} isOpen hasUnread slotIdx={1} />,
     )
     const slot = container.querySelector('.session-item-slot')
-    expect(slot?.classList.contains('unread')).toBe(true)
-    expect(slot?.classList.contains('pending')).toBe(false)
-    // The old floating 8px dot is gone.
-    expect(container.querySelector('.session-item-unread')).toBeNull()
-    // Unread surfaces in the accessible label.
-    expect(slot?.getAttribute('aria-label')).toContain('unread')
+    expect(slot?.textContent).toBe('2') // slotIdx + 1
+    expect(slot?.classList.contains('unread')).toBe(false)
+    const dot = container.querySelector('.session-item-unread')
+    expect(dot).not.toBeNull()
+    expect(dot?.getAttribute('aria-label')).toBe('unread')
   })
 
-  it('does not render any unread indicator for a closed session', () => {
-    // Closed sessions carry no unread signal at all (no dot, no slot badge to
-    // fold it into — "nobody's watching a closed session").
+  it('renders the standalone unread dot for a closed session', () => {
+    // A closed session has no slot badge, but still gets the same unread dot.
     const { container } = render(<SessionCard {...baseProps} hasUnread />)
     expect(container.querySelector('.session-item-slot')).toBeNull()
-    expect(container.querySelector('.session-item-unread')).toBeNull()
+    expect(container.querySelector('.session-item-unread')).not.toBeNull()
   })
 
   it('renders slot number when isOpen', () => {
@@ -283,9 +283,10 @@ describe('SessionCard', () => {
     expect(container.querySelector('.session-item-slot')).toBeNull()
   })
 
-  it('lets pending take precedence over unread when an open session has both', () => {
-    // Open + pending + unread: the slot badge shows the pending state (amber),
-    // never unread (accent), and there is still exactly one leading badge.
+  it('folds pending into the open slot badge while the unread dot stays independent', () => {
+    // Open + pending + unread: the slot badge carries the pending state
+    // (amber), and unread remains its own standalone dot — both signals
+    // coexist, matching the pre-consolidation behaviour.
     const { container } = render(
       <SessionCard
         {...baseProps}
@@ -299,6 +300,7 @@ describe('SessionCard', () => {
     expect(slot?.classList.contains('pending')).toBe(true)
     expect(slot?.classList.contains('unread')).toBe(false)
     expect(container.querySelector('.session-item-perm-badge')).toBeNull()
+    expect(container.querySelector('.session-item-unread')).not.toBeNull()
   })
 
   it('keeps the pending amber styling even when the focused slot also has pending', () => {

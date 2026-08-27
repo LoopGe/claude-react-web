@@ -1087,18 +1087,6 @@
   color: var(--bg);
   animation: session-await-pulse 1.2s ease-in-out infinite;
 }
-/* Open session with unread activity: hollow-but-emphasized accent (transparent
-   fill, thicker accent border, bolder number). Reads as "attention" while
-   staying distinct from the focused slot's SOLID accent fill and pending's
-   solid amber breathing — so an unread slot no longer mimics a focused one
-   across panels. Pending wins in JS when both are true, so this is never
-   combined with `pending`. */
-.session-item-slot.unread {
-  background: transparent;
-  border-width: 1.5px;
-  color: var(--accent);
-  font-weight: 800;
-}
 /* Numeric badges in the title row are wrapped in a Tooltip `.tt-wrap`
    (inline-flex, default baseline). A badge's 10px digit gives that
    wrapper a low baseline, so baseline alignment pushes the pill below
@@ -1113,10 +1101,21 @@
 .session-item-title > .tt-wrap:has(> .session-item-slot, > .session-item-perm-badge) {
   vertical-align: top;
 }
-/* Unread is folded into `.session-item-slot.unread` (open sessions only) and
-   never rendered for closed sessions, so there is no floating dot anymore.
-   Open-unread cards still brighten their title via this rule. */
+/* Unread cards brighten their title via this rule. */
 .session-item.unread strong { color: var(--fg); }
+/* Unread dot — a standalone 8px accent dot to the left of the title, shown
+   for every unread session (open and closed). The `--bg` ring keeps it
+   legible over the card background. */
+.session-item-unread {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-circle);
+  background: var(--accent);
+  margin-right: 6px;
+  vertical-align: middle;
+  box-shadow: 0 0 0 2px var(--bg);
+}
 /* Pending-permission count badge — appears next to the title when the
    session has tool permission / AskUserQuestion requests waiting on the
    user. Pulses gently so dormant tabs don't get missed. Uses --warn

@@ -163,10 +163,10 @@ export const SessionCard = memo(function SessionCard({
         s.terminated ? 'terminated' : '',
         dormant ? 'dormant' : '',
         isResuming ? 'resuming' : '',
-        // Unread only surfaces on OPEN sessions (folded into the slot badge).
-        // Closed sessions carry no unread signal at all — nobody's watching
-        // them. Gate the .unread class so even the title-brighten is skipped.
-        (hasUnread && isOpen) ? 'unread' : '',
+        // Unread is always the standalone 8px dot (rendered below); the
+        // `unread` class brightens the title (.session-item.unread strong)
+        // so the card reads at a glance.
+        hasUnread ? 'unread' : '',
         isDragging ? 'dragging' : '',
         isDeleting ? 'deleting' : '',
         dropPosition === 'before' ? 'drop-before' : '',
@@ -258,17 +258,17 @@ export const SessionCard = memo(function SessionCard({
                   : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`)
                 + (pendingCount > 0
                   ? ` · ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
-                  : hasUnread ? ' · unread' : '')
+                  : '')
               }
               placement="right"
             >
               <span
-                className={`session-item-slot ${isFocused ? 'focused' : ''}${pendingCount > 0 ? ' pending' : hasUnread ? ' unread' : ''}`}
+                className={`session-item-slot ${isFocused ? 'focused' : ''}${pendingCount > 0 ? ' pending' : ''}`}
                 aria-label={
                   (isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`)
                   + (pendingCount > 0
                     ? `, ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
-                    : hasUnread ? ', unread' : '')
+                    : '')
                 }
               >
                 {slotIdx + 1}
@@ -276,8 +276,7 @@ export const SessionCard = memo(function SessionCard({
             </Tooltip>
           ) : (
             // Closed session has no slot badge to carry a pending signal, so
-            // keep the standalone count badge as the attention cue. (Unread is
-            // intentionally NOT shown for closed sessions.)
+            // keep the standalone count badge as the attention cue.
             pendingCount > 0 && (
               <Tooltip
                 label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
@@ -292,6 +291,11 @@ export const SessionCard = memo(function SessionCard({
               </Tooltip>
             )
           )}
+          {/* Unread is always the standalone 8px dot, next to the title —
+              open sessions get it alongside the slot badge, closed sessions
+              alongside the (optional) pending pill. role="img" exposes the
+              aria-label to AT (a bare span's generic role ignores it). */}
+          {hasUnread && <span className="session-item-unread" role="img" aria-label="unread" />}
           <Tooltip label={permissionModeLabel(permissionMode)} placement="right">
             <span
               className={`session-item-mode-badge mode-${permissionMode}`}
