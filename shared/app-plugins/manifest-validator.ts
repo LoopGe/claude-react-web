@@ -17,6 +17,7 @@ import type {
   PluginContextMenuContribution,
   PluginContributions,
   PluginStatusIndicatorContribution,
+  PluginWidgetContribution,
   ResolvedPluginContributions,
 } from './contributions.js'
 import { validatePluginId, satisfiesRange, utf8ByteLength, LIMITS } from './validation.js'
@@ -59,6 +60,8 @@ const CONTEXT_MENU_LOCATIONS = new Set([
   'git.fileContextMenu',
 ])
 const ACTION_LOCATIONS = new Set(['chat.header', 'chat.composer', 'sidebar.footer'])
+const WIDGET_LOCATIONS = new Set(['global.bottomLeft'])
+const WIDGET_KINDS = new Set(['stat-grid'])
 
 /** Validate a parsed manifest object. Never throws — bad shapes produce
  *  diagnostics. `hostVersion` / `hostNodeMajor` are required because the
@@ -175,6 +178,7 @@ function packageContributions(c: ContributionResolution): ResolvedPluginContribu
     actions: c.actions,
     configuration: c.configuration,
     statusIndicators: c.statusIndicators,
+    widgets: c.widgets,
     diagnostics: c.diagnostics,
   }
 }
@@ -187,6 +191,7 @@ interface ContributionResolution {
   actions: PluginActionContribution[]
   configuration: { properties: PluginConfigurationProperty[] }
   statusIndicators: PluginStatusIndicatorContribution[]
+  widgets: PluginWidgetContribution[]
   diagnostics: string[]
 }
 
@@ -196,6 +201,7 @@ export function resolvePluginContributions(pluginId: string, c: PluginContributi
   const contextMenus: PluginContextMenuContribution[] = []
   const actions: PluginActionContribution[] = []
   const statusIndicators: PluginStatusIndicatorContribution[] = []
+  const widgets: PluginWidgetContribution[] = []
 
   const seenIds = new Set<string>()
   const requirePrefix = (id: string, kind: string): boolean => {
@@ -299,5 +305,19 @@ export function resolvePluginContributions(pluginId: string, c: PluginContributi
     statusIndicators.push(ind)
   }
 
-  return { commands, contextMenus, actions, configuration: { properties: configurationProps }, statusIndicators, diagnostics }
+  for (const w of c.widgets ?? []) {
+    if (!requirePrefix(w.id, 'widget')) continue
+    if (!WIDGET_LOCATIONS.has(w.location)) {
+      diagnostics.push(`widget '${w.id}' has unknown location '${w.location}'`)
+      continue
+    }
+    if (!WIDGET_KINDS.has(w.kind)) {
+      diagnostics.push(`widget '${w.id}' has unknown kind '${w.kind}'`)
+      continue
+    }
+    if (!checkWhen(w.when, `widget '${w.id}'`)) continue
+    widgets.push(w)
+  }
+
+  return { commands, contextMenus, actions, configuration: { properties: configurationProps }, statusIndicators, widgets, diagnostics }
 }

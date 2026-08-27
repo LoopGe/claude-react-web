@@ -123,6 +123,27 @@ export interface PluginStatusIndicatorContribution {
   order?: number
 }
 
+// ── Widgets ────────────────────────────────────────────────────────────
+//
+// A data-driven live widget: the plugin pushes JSON payloads (via the
+// `app.event` RPC notification) and the host renders them with a built-in
+// renderer (`kind`). The plugin never ships DOM — this keeps the v1
+// "declarative contributions" contract intact while enabling live data.
+
+export type PluginWidgetLocation = 'global.bottomLeft'
+export type PluginWidgetKind = 'stat-grid'
+
+export interface PluginWidgetContribution {
+  /** `<pluginId>.<name>` — must be prefixed by the plugin id. */
+  id: string
+  location: PluginWidgetLocation
+  /** Host renderer key. v1 ships 'stat-grid'. */
+  kind: PluginWidgetKind
+  title?: string
+  when?: string
+  order?: number
+}
+
 // ── Aggregate ────────────────────────────────────────────────────────
 
 export interface PluginContributions {
@@ -131,6 +152,7 @@ export interface PluginContributions {
   actions?: PluginActionContribution[]
   configuration?: PluginConfigurationContribution
   statusIndicators?: PluginStatusIndicatorContribution[]
+  widgets?: PluginWidgetContribution[]
 }
 
 /** A plugin's contributions after manifest validation, with `when` clauses
@@ -142,6 +164,7 @@ export interface ResolvedPluginContributions {
   actions: PluginActionContribution[]
   configuration: PluginConfigurationContribution
   statusIndicators: PluginStatusIndicatorContribution[]
+  widgets: PluginWidgetContribution[]
   /** Contribution-level diagnostics (unknown location, duplicate id, etc.)
    *  that did not block registration. Surfaced in the management UI. */
   diagnostics: string[]

@@ -774,5 +774,5 @@ function normaliseFromManifest(m: PluginManifest): AppPluginClientInfo['declared
 }
 
 function emptyContributions(): ResolvedPluginContributions {
-  return { commands: [], contextMenus: [], actions: [], configuration: { properties: [] }, statusIndicators: [], diagnostics: [] }
+  return { commands: [], contextMenus: [], actions: [], configuration: { properties: [] }, statusIndicators: [], widgets: [], diagnostics: [] }
 }

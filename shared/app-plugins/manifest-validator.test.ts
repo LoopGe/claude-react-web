@@ -193,3 +193,69 @@ describe('validateManifest — contribution diagnostics (warnings, not errors)',
     expect(r.warnings.join()).toMatch(/malformed 'when'/)
   })
 })
+
+describe('validateManifest — widgets', () => {
+  const base = {
+    manifestVersion: 1,
+    id: 'com.example.w',
+    name: 'W',
+    version: '1.0.0',
+    engines: { claudeReactWeb: '^2.5.0', node: '>=20' },
+    runtime: { service: 'dist/service.mjs' },
+    permissions: [],
+    contributes: { commands: [], contextMenus: [], actions: [], configuration: { properties: [] } },
+  }
+  const opts = { hostVersion: '2.6.0', hostNodeMajor: 20 }
+
+  it('resolves a valid widget contribution', () => {
+    const r = validateManifest(
+      {
+        ...base,
+        contributes: {
+          ...base.contributes,
+          widgets: [{ id: 'com.example.w.overview', location: 'global.bottomLeft', kind: 'stat-grid' }],
+        },
+      },
+      opts,
+    )
+    expect(r.ok).toBe(true)
+    expect(r.contributions?.widgets).toEqual([
+      expect.objectContaining({ id: 'com.example.w.overview', location: 'global.bottomLeft', kind: 'stat-grid' }),
+    ])
+  })
+
+  it('rejects an unprefixed widget id', () => {
+    const r = validateManifest(
+      {
+        ...base,
+        contributes: {
+          ...base.contributes,
+          widgets: [{ id: 'overview', location: 'global.bottomLeft', kind: 'stat-grid' }],
+        },
+      },
+      opts,
+    )
+    expect(r.ok).toBe(true) // diagnostics, not blocking
+    expect(r.warnings.join()).toContain('must be prefixed')
+  })
+
+  it('drops widgets with unknown location or kind', () => {
+    const r = validateManifest(
+      {
+        ...base,
+        contributes: {
+          ...base.contributes,
+          widgets: [
+            { id: 'com.example.w.a', location: 'global.topRight', kind: 'stat-grid' },
+            { id: 'com.example.w.b', location: 'global.bottomLeft', kind: 'chart' },
+          ],
+        },
+      },
+      opts,
+    )
+    expect(r.ok).toBe(true)
+    expect(r.contributions?.widgets).toEqual([])
+    expect(r.warnings.join()).toContain('unknown location')
+    expect(r.warnings.join()).toContain('unknown kind')
+  })
+})
