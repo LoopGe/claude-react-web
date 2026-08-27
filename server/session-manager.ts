@@ -3551,7 +3551,12 @@ export class SessionManager {
       'supportsSessionTitle',
     )
     const raw = await this.timeSdkControl(id, 'generateSessionTitle', () => fn(description))
-    const generated = String((raw as { title?: unknown } | undefined)?.title ?? '').trim()
+    // The SDK's `generateSessionTitle` resolves to the title STRING itself
+    // (it returns `response.title`), not a `{ title }` wrapper object.
+    // Parsing `raw.title` against a plain string always yielded '' — so
+    // auto-title silently produced no title for every session. The whole
+    // resolved value IS the title.
+    const generated = String(raw ?? '').trim()
     if (!generated) {
       log.warn(`[session ${id}] auto-title generated an empty title; leaving untitled`)
       return this.info(s)

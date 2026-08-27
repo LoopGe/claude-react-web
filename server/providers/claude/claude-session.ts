@@ -168,13 +168,14 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
 
   /** Auto-generated session title (SDK `generate_session_title` control
    *  request). `persist: true` writes the title into the CLI transcript so
-   *  it survives `--resume`. */
+   *  it survives `--resume`. The SDK resolves to the title STRING (it
+   *  returns `response.title`), not a `{ title }` wrapper. */
   generateTitle(description: string): Promise<unknown> {
     const q = this.query as typeof this.query & {
       generateSessionTitle(
         description: string,
         options: { persist: boolean },
-      ): Promise<{ title: string }>
+      ): Promise<string>
     }
     return q.generateSessionTitle(description, { persist: true })
   }

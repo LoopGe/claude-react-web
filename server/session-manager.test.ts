@@ -146,7 +146,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         getContextUsage: vi.fn(async () => ({})),
         accountInfo: vi.fn(async () => ({})),
         rewindFiles: vi.fn(async () => ({ canRewind: true })),
-        generateSessionTitle: vi.fn(async (_desc: string, _opts?: { persist?: boolean }) => ({ title: 'Mock auto title' })),
+        generateSessionTitle: vi.fn(async (_desc: string, _opts?: { persist?: boolean }) => 'Mock auto title'),
       }
       mockHandles.push(handle)
 
