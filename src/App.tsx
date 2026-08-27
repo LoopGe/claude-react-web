@@ -26,6 +26,7 @@ import { useToast } from './hooks/useToast'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import { usePluginRegistry } from './app-plugins/PluginRegistryProvider'
 import { usePluginCommands } from './app-plugins/usePluginCommands'
+import { PluginWidgetSlot } from './app-plugins/PluginWidgetSlot'
 import { buildWhenContext, whenHolds } from './app-plugins/when'
 import type { PaletteItem } from './components/CommandPalette'
 import type { WsServerFrame } from './ws-types'
@@ -3604,6 +3605,7 @@ export function App() {
           isMobile={isMobile}
           showGroupHints={heldModifiers.alt}
         />
+        <PluginWidgetSlot location="global.bottomLeft" />
         <div
           className={`sidebar-resizer ${sidebarResize.dragging ? 'dragging' : ''}`}
           role="separator"
