@@ -11,7 +11,7 @@
   "permissions": [],
   "contributes": {
     "widgets": [
-      { "id": "system-stats.overview", "location": "global.bottomLeft", "kind": "stat-grid", "title": "System Stats" }
+      { "id": "system-stats.claude-react-web.overview", "location": "global.bottomLeft", "kind": "stat-grid", "title": "System Stats" }
     ],
     "configuration": {
       "properties": [

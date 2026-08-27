@@ -18379,7 +18379,7 @@ var pending = /* @__PURE__ */ new Map();
 function send(msg) {
   process.stdout.write(JSON.stringify(msg) + "\n");
 }
-var WIDGET_ID = "system-stats.overview";
+var WIDGET_ID = "system-stats.claude-react-web.overview";
 var timer = null;
 var config = {
   "system-stats.claude-react-web.intervalMs": 2e3,

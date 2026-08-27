@@ -90,7 +90,7 @@ describe('system-stats service child loop', () => {
     while (events.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25))
     expect(events.length).toBeGreaterThan(0)
     const first = events[0] as { params: { widgetId: string; payload: { values: unknown[] } } }
-    expect(first.params.widgetId).toBe('system-stats.overview')
+    expect(first.params.widgetId).toBe('system-stats.claude-react-web.overview')
     expect(Array.isArray(first.params.payload.values)).toBe(true)
     await svc.call('deactivate', { reason: 'disable' })
     svc.close()

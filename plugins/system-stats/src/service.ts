@@ -23,7 +23,7 @@ function callHost(method: string, params?: unknown): Promise<unknown> {
   })
 }
 
-const WIDGET_ID = 'system-stats.overview'
+const WIDGET_ID = 'system-stats.claude-react-web.overview'
 let timer: NodeJS.Timeout | null = null
 let config = {
   'system-stats.claude-react-web.intervalMs': 2000,

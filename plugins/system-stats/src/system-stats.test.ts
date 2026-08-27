@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildStatGrid, collectSnapshot } from './collect.js'
+import { buildStatGrid, collectSnapshot, pickDisks } from './collect.js'
 import type { RawSnapshot } from './collect.js'
 
 describe('buildStatGrid', () => {
@@ -62,5 +62,30 @@ describe('collectSnapshot', () => {
     const snap = await collectSnapshot({ si: bad, disks: [] })
     expect(snap.cpu).toBeDefined()
     expect(snap.gpus).toBeUndefined()
+  })
+})
+
+describe('pickDisks', () => {
+  const disks = [
+    { fs: '/dev/sda1', size: 500, used: 100, mount: '/' },
+    { fs: '/dev/sdb1', size: 1000, used: 200, mount: '/data' },
+    { fs: 'tmpfs', size: 100, used: 10, mount: '/tmp' },
+  ]
+
+  it('filters by wanted mount points when provided', () => {
+    const result = pickDisks(disks, ['/data'])
+    expect(result).toHaveLength(1)
+    expect(result![0].mount).toBe('/data')
+  })
+
+  it('returns multiple matches when several mounts are wanted', () => {
+    const result = pickDisks(disks, ['/', '/tmp'])
+    expect(result).toHaveLength(2)
+    expect(result!.map((d) => d.mount).sort()).toEqual(['/', '/tmp'])
+  })
+
+  it('returns empty array when no wanted mount matches', () => {
+    const result = pickDisks(disks, ['/nonexistent'])
+    expect(result).toEqual([])
   })
 })

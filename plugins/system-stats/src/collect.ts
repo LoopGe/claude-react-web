@@ -37,7 +37,7 @@ export async function collectSnapshot(opts: { si: Si; disks: string[] }): Promis
   return result
 }
 
-function pickDisks(
+export function pickDisks(
   disks: RawSnapshot['disks'] extends infer D ? NonNullable<D> : never,
   wanted: string[],
 ): RawSnapshot['disks'] {
