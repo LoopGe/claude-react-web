@@ -9,7 +9,8 @@ import { formatBytes } from '../utils/format'
 import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconFileText, IconSparkles, IconTerminal } from './icons/ToolIcons'
 import { EmptyState } from './EmptyState'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
-import type { FullServerConfig } from '../types/config'
+import type { FullServerConfig, ModelGroupConfig } from '../types/config'
+import { randomId } from '../utils/uuid'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -51,7 +52,7 @@ const ShareTab = lazy(() =>
   import('./ShareTab').then((m) => ({ default: m.ShareTab })),
 )
 
-type Tab = 'api' | 'models' | 'server' | 'skills' | 'mcp' | 'marketplace' | 'app-plugins' | 'share' | 'logs' | 'about'
+type Tab = 'api' | 'models' | 'model-groups' | 'server' | 'skills' | 'mcp' | 'marketplace' | 'app-plugins' | 'share' | 'logs' | 'about'
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
 
@@ -152,6 +153,7 @@ export function GlobalSettingsModal({
 
   // — Models tab state ?
   const [modelList, setModelList] = useState<string[]>([])
+  const [modelGroups, setModelGroups] = useState<ModelGroupConfig[]>([])
   const [recapModel, setRecapModel] = useState('')
   const [commitMessageModel, setCommitMessageModel] = useState('')
   const [newModel, setNewModel] = useState('')
@@ -201,6 +203,7 @@ export function GlobalSettingsModal({
         setBaseUrl(cfg.baseUrl ?? '')
         setAuthTokenMasked(cfg.authTokenMasked)
         setModelList(cfg.modelList ?? [])
+        setModelGroups(cfg.modelGroups ?? [])
         setRecapModel(cfg.recapModel ?? '')
         setCommitMessageModel(cfg.commitMessageModel ?? '')
         setMaxUploadBytes(cfg.maxUploadBytes ?? 0)
@@ -263,6 +266,7 @@ export function GlobalSettingsModal({
       const updates: Record<string, unknown> = {
         baseUrl: baseUrl.trim() || null,
         modelList: modelList.length > 0 ? modelList : null,
+        modelGroups: modelGroups.length > 0 ? modelGroups : null,
         recapModel: recapModel.trim() || null,
         commitMessageModel: commitMessageModel.trim() || null,
         maxUploadBytes: maxUploadBytes > 0 ? maxUploadBytes : null,
@@ -346,6 +350,24 @@ export function GlobalSettingsModal({
     setModelList([...modelList].sort((a, b) => a.localeCompare(b)))
   }
 
+  const addModelGroup = () => {
+    const id = randomId()
+    setModelGroups([...modelGroups, { id, name: `Group ${modelGroups.length + 1}`, main: 'opus' }])
+  }
+  const removeModelGroup = (id: string) => {
+    setModelGroups(modelGroups.filter((g) => g.id !== id))
+  }
+  const moveModelGroup = (index: number, direction: -1 | 1) => {
+    const next = [...modelGroups]
+    const j = index + direction
+    if (j < 0 || j >= next.length) return
+    ;[next[index], next[j]] = [next[j], next[index]]
+    setModelGroups(next)
+  }
+  const updateModelGroup = (id: string, patch: Partial<ModelGroupConfig>) => {
+    setModelGroups(modelGroups.map((g) => (g.id === id ? { ...g, ...patch } : g)))
+  }
+
   const deleteMcpServer = async (name: string) => {
     try {
       await api.delete(`/mcp-config/${encodeURIComponent(name)}`)
@@ -367,6 +389,7 @@ export function GlobalSettingsModal({
   const tabs: { key: Tab; label: string }[] = [
     { key: 'api', label: 'API' },
     { key: 'models', label: 'Models' },
+    { key: 'model-groups', label: 'Model Groups' },
     { key: 'server', label: 'Server' },
     { key: 'skills', label: 'Skills' },
     { key: 'mcp', label: 'MCP Servers' },
@@ -382,6 +405,7 @@ export function GlobalSettingsModal({
     loading,
     err ?? '',
     modelList.length,
+    modelGroups.length,
     mcpServers.length,
     skillLoadMode,
     enabledSkills.join(','),
@@ -475,6 +499,16 @@ export function GlobalSettingsModal({
                   onRemoveModel={removeModel}
                   onMoveModel={moveModel}
                   onSortModels={sortModels}
+                />
+              )}
+              {tab === 'model-groups' && (
+                <ModelGroupsTab
+                  groups={modelGroups}
+                  modelList={modelList}
+                  onAddGroup={addModelGroup}
+                  onRemoveGroup={removeModelGroup}
+                  onMoveGroup={moveModelGroup}
+                  onUpdateGroup={updateModelGroup}
                 />
               )}
               {tab === 'server' && (
@@ -803,6 +837,113 @@ function ModelsTab({
         </div>
       </Field>
     </>
+  )
+}
+
+function ModelGroupsTab({
+  groups, modelList, onAddGroup, onRemoveGroup, onMoveGroup, onUpdateGroup,
+}: {
+  groups: ModelGroupConfig[]
+  modelList: string[]
+  onAddGroup: () => void
+  onRemoveGroup: (id: string) => void
+  onMoveGroup: (index: number, direction: -1 | 1) => void
+  onUpdateGroup: (id: string, patch: Partial<ModelGroupConfig>) => void
+}) {
+  const uid = useId()
+  const slots: { key: 'opus' | 'sonnet' | 'haiku'; label: string }[] = [
+    { key: 'opus', label: 'Opus' },
+    { key: 'sonnet', label: 'Sonnet' },
+    { key: 'haiku', label: 'Haiku' },
+  ]
+  return (
+    <Field
+      label="Model Groups"
+      hint="Groups map Opus/Sonnet/Haiku slots to concrete models. Sessions can select a group or a single model; empty slots inherit the main slot."
+    >
+      <div className="settings-model-list">
+        {groups.length === 0 && (
+          <div className="settings-model-empty">No groups yet. Add one to bundle tier models.</div>
+        )}
+        {groups.map((g, i) => (
+          <div key={g.id} className="settings-model-group">
+            <div className="settings-model-row">
+              <span className="settings-model-rank" title="Group">{i + 1}</span>
+              <input
+                className="input settings-model-input"
+                value={g.name}
+                onChange={(e) => onUpdateGroup(g.id, { name: e.target.value })}
+                aria-label="Group name"
+              />
+              <div className="settings-model-move" role="group" aria-label="Move group priority">
+                <button
+                  className="btn-icon-sm settings-model-action"
+                  onClick={() => onMoveGroup(i, -1)}
+                  disabled={i === 0}
+                  title="Move up"
+                  aria-label="Move up"
+                >
+                  <IconArrowUp size={12} />
+                </button>
+                <button
+                  className="btn-icon-sm settings-model-action"
+                  onClick={() => onMoveGroup(i, 1)}
+                  disabled={i === groups.length - 1}
+                  title="Move down"
+                  aria-label="Move down"
+                >
+                  <IconArrowDown size={12} />
+                </button>
+              </div>
+              <button
+                className="btn-icon-sm settings-model-action danger"
+                onClick={() => onRemoveGroup(g.id)}
+                title="Remove"
+                aria-label="Remove"
+              >
+                <IconX size={12} />
+              </button>
+            </div>
+            <div className="settings-model-group-slots">
+              {slots.map((slot) => (
+                <div key={slot.key} className="settings-model-group-slot">
+                  <label className="settings-model-group-slot-label" htmlFor={`${uid}-${g.id}-${slot.key}`}>
+                    {slot.label}
+                  </label>
+                  <input
+                    className="input settings-model-input"
+                    id={`${uid}-${g.id}-${slot.key}`}
+                    list={`${uid}-model-list`}
+                    value={g[slot.key] ?? ''}
+                    placeholder="(inherit main)"
+                    onChange={(e) => onUpdateGroup(g.id, { [slot.key]: e.target.value || undefined } as Partial<ModelGroupConfig>)}
+                  />
+                </div>
+              ))}
+              <div className="settings-model-group-main">
+                <label className="settings-model-group-slot-label" htmlFor={`${uid}-${g.id}-main`}>Main</label>
+                <select
+                  className="input settings-model-select"
+                  id={`${uid}-${g.id}-main`}
+                  value={g.main ?? 'opus'}
+                  onChange={(e) => onUpdateGroup(g.id, { main: e.target.value as 'opus' | 'sonnet' | 'haiku' })}
+                >
+                  <option value="opus">Opus</option>
+                  <option value="sonnet">Sonnet</option>
+                  <option value="haiku">Haiku</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        ))}
+        <datalist id={`${uid}-model-list`}>
+          {modelList.map((m) => <option key={m} value={m} />)}
+        </datalist>
+        <div className="settings-model-add-row">
+          <button className="btn btn-xs settings-model-add-btn" onClick={onAddGroup}>Add Group</button>
+        </div>
+      </div>
+    </Field>
   )
 }
 
