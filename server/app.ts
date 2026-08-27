@@ -216,6 +216,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
         model: opts.defaults?.model ?? serverConfig.defaultModel,
       },
       models: serverConfig.modelList,
+      modelGroups: serverConfig.modelGroups,
       maxOpenPanels: serverConfig.maxOpenPanels,
       maxUploadBytes: serverConfig.maxUploadBytes,
       showPinnedUserMessage: serverConfig.showPinnedUserMessage,

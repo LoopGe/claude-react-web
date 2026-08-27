@@ -217,6 +217,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       authTokenMasked: token ? '****' + token.slice(-4) : undefined,
       baseUrl: serverConfig.baseUrl,
       modelList: serverConfig.modelList as string[],
+      modelGroups: serverConfig.modelGroups,
       recapModel: serverConfig.recapModel,
       commitMessageModel: serverConfig.commitMessageModel,
       maxUploadBytes: serverConfig.maxUploadBytes,
