@@ -3240,3 +3240,78 @@ describe('reducer: TASKS_SNAPSHOT', () => {
     expect(state.mirror.tasks).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// Replay ordering — a backgrounded synchronous subagent must survive a hard
+// refresh. On replay the ring re-applies, in order: the detach ack tool_result
+// (which the result-merge branch mis-settles to 'done' with the ack text as
+// its result, because the detach ack doesn't match the launch-ack signature),
+// then the task_notification (the authoritative completion, carrying the real
+// result/summary), then a TERMINAL tasks-snapshot. The rescueSettled path in
+// TASKS_SNAPSHOT only fires on a NON-terminal is_backgrounded snapshot, so on
+// replay (where the task already finished) it never re-opens the record. If
+// the completion branch skips the 'done' record, the real output is lost and
+// the card permanently shows the detach ack as its result.
+// ---------------------------------------------------------------------------
+
+describe('reducer: replay ordering — backgrounded subagent survives refresh', () => {
+  const agentToolUse = (id: string): SdkMessage => ({
+    type: 'assistant',
+    uuid: `a-${id}`,
+    receivedAt: 0,
+    message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Agent', input: { description: 'do work' } }] },
+  }) as unknown as SdkMessage
+
+  const detachAck = (toolUseId: string, at: number): SdkMessage => ({
+    type: 'user',
+    uuid: 'u-ack',
+    receivedAt: at,
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'Subagent moved to background', is_error: false }],
+    },
+  }) as unknown as SdkMessage
+
+  const completionNotification = (toolUseId: string, at: number): SdkMessage => ({
+    type: 'system',
+    subtype: 'task_notification',
+    uuid: 'sys-done',
+    task_id: 't-1',
+    tool_use_id: toolUseId,
+    status: 'completed',
+    summary: 'the real output',
+    output_file: '/tmp/x',
+    receivedAt: at,
+  }) as unknown as SdkMessage
+
+  it('re-applies the detach ack then the completion notification and keeps the REAL result', () => {
+    let state = createInitialSessionState('s1')
+
+    // 1. Sync Agent dispatch (no run_in_background → isAsync undefined).
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a') })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('running')
+
+    // 2. Replay: the backgrounding detach ack tool_result. It does NOT match
+    //    the launch-ack signature, so the result-merge branch mis-settles the
+    //    record to 'done' with the ack text as its result.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: detachAck('tu_a', 1_000) })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('done')
+    expect(state.mirror.activeSubagents.get('tu_a')?.result?.content).toBe('Subagent moved to background')
+
+    // 3. Replay: the real completion task_notification (kept in the ring).
+    state = reduceSessionState(state, { type: 'MESSAGE', message: completionNotification('tu_a', 30_000) })
+
+    // 4. Replay tail: terminal tasks-snapshot (no rescue — task is terminal).
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-1', toolUseId: 'tu_a', description: 'work', status: 'completed', isBackgrounded: true, updatedAt: 0 }],
+    })
+
+    const rec = state.mirror.activeSubagents.get('tu_a')
+    expect(rec?.status).toBe('done')
+    expect(rec?.isAsync).toBe(true)
+    expect(rec?.endedAt).toBe(30_000)
+    // The card must show the REAL completion, not the detach ack text.
+    expect(rec?.result?.content).toBe('the real output')
+  })
+})
