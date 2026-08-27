@@ -12,6 +12,12 @@
       "dir": "idle-compact",
       "description": "Automatically compacts a conversation when a session has been idle and its context window is getting full.",
       "version": "1.0.0"
+    },
+    {
+      "name": "system-stats",
+      "dir": "system-stats",
+      "description": "Live CPU/GPU/memory/disk usage in the bottom-left corner.",
+      "version": "0.1.0"
     }
   ]
 }

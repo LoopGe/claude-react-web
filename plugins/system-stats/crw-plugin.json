@@ -1,0 +1,23 @@
+{
+  "manifestVersion": 1,
+  "id": "system-stats.claude-react-web",
+  "name": "System Stats",
+  "description": "Live CPU/GPU/memory/disk usage in the bottom-left corner",
+  "version": "0.1.0",
+  "publisher": "claude-react-web",
+  "engines": { "claudeReactWeb": "^0.6.0", "pluginApi": "^1.0.0", "node": ">=20" },
+  "runtime": { "service": "dist/service.mjs" },
+  "activationEvents": ["onStartup"],
+  "permissions": [],
+  "contributes": {
+    "widgets": [
+      { "id": "system-stats.overview", "location": "global.bottomLeft", "kind": "stat-grid", "title": "System Stats" }
+    ],
+    "configuration": {
+      "properties": [
+        { "key": "system-stats.claude-react-web.intervalMs", "type": "number", "title": "Refresh interval (ms)", "default": 2000 },
+        { "key": "system-stats.claude-react-web.disks", "type": "array", "items": "string", "title": "Disk mount points to watch (empty = auto)", "default": [] }
+      ]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "system-stats-plugin",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "esbuild src/service.ts --bundle --platform=node --format=esm --outfile=dist/service.mjs --banner:js=\"import { createRequire } from 'node:module';const require=createRequire(import.meta.url);\""
+  }
+}
