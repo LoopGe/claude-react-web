@@ -3133,6 +3133,7 @@ export const WorkingBubble = memo(function WorkingBubble({
   tokenRate,
   thinkingTokens,
   activePhase,
+  recapping,
   waiting,
   runningTaskCount,
   onOpenTasks,
@@ -3149,6 +3150,13 @@ export const WorkingBubble = memo(function WorkingBubble({
    *  cleared at turn end. */
   thinkingTokens?: number | null
   activePhase?: import('../hooks/useChatStream').ActivePhase
+  /** True while the CLI is compacting the transcript mid-turn (SDK
+   *  `system/status` `status: 'compacting'`, mirrored from
+   *  `session.compacting`). Overrides the phase label with a "Recap (auto)…"
+   *  cue — the compaction produces no stream events, so without this the
+   *  bubble would sit on a stale phase while the context window is
+   *  compressed. */
+  recapping?: boolean
   /** True when the parent turn has ended but `pending` background subagents
    *  are still in flight. The bubble stays mounted and shows "Waiting..."
    *  with calmed visuals instead of unmounting — surfacing that background
@@ -3198,6 +3206,8 @@ export const WorkingBubble = memo(function WorkingBubble({
         <span className="working-bar-label">
           {waiting
             ? 'Waiting...'
+            : recapping
+            ? 'Recap (auto)...'
             : activePhase === 'thinking'
             ? 'Thinking...'
             : activePhase === 'writing'

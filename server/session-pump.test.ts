@@ -3,6 +3,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   applyTaskEvent,
   backgroundSubagentLaunches,
+  compactingOf,
   fastModeStateOf,
   hookLifecycleMessage,
   isTaskNotificationUserMessage,
@@ -866,6 +867,27 @@ describe('fastModeStateOf', () => {
   })
 })
 
+describe('compactingOf', () => {
+  it('extracts true/false from system/status frames', () => {
+    expect(compactingOf(sysFrame('status', { status: 'compacting' }))).toBe(true)
+    expect(compactingOf(sysFrame('status', { status: null }))).toBe(false)
+    expect(compactingOf(sysFrame('status', { status: 'requesting' }))).toBe(false)
+  })
+
+  it('returns undefined for anything that is not a system/status frame', () => {
+    expect(compactingOf({ type: 'system', subtype: 'init' } as never)).toBeUndefined()
+    expect(compactingOf({ type: 'assistant' } as never)).toBeUndefined()
+    expect(compactingOf({ type: 'result', subtype: 'success' } as never)).toBeUndefined()
+  })
+
+  it('treats a status frame with an absent/unrecognized status as not compacting', () => {
+    // `status` is required on SDK status frames, but defensively an absent or
+    // unknown value means "not compacting" (same as `null` / `requesting`).
+    expect(compactingOf({ type: 'system', subtype: 'status' } as never)).toBe(false)
+    expect(compactingOf(sysFrame('status', { status: 'bogus' }))).toBe(false)
+  })
+})
+
 describe('hookLifecycleMessage', () => {
   it('maps hook responses to completed runtime events', () => {
     const event = hookLifecycleMessage({
@@ -1342,6 +1364,65 @@ function makePumpDeps(overrides: Partial<PumpDeps> = {}): PumpDeps {
     ...overrides,
   }
 }
+
+describe('pump: compacting state tracking', () => {
+  it('sets session.compacting on a status frame and broadcasts a session-update', async () => {
+    const { session } = makePumpSession([
+      sysFrame('status', { status: 'compacting' }),
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const broadcastInfo = vi.fn()
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    // Transition in (compacting) + lifecycle clear on result.
+    expect(broadcastInfo).toHaveBeenCalledTimes(2)
+    expect(broadcastInfo).toHaveBeenCalledWith(session)
+    // The result cleared the flag — compaction is a mid-turn phenomenon.
+    expect(session.compacting).toBeUndefined()
+  })
+
+  it('clears compacting when a later status frame reports not-compacting', async () => {
+    const { session } = makePumpSession([
+      sysFrame('status', { status: 'compacting' }),
+      sysFrame('status', { status: null }),
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const broadcastInfo = vi.fn()
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    // Two transitions: set (compacting) then clear (null) — the result had
+    // nothing left to clear, so no third broadcast.
+    expect(broadcastInfo).toHaveBeenCalledTimes(2)
+    expect(session.compacting).toBe(false)
+  })
+
+  it('treats a duplicate compacting frame as a no-op and does not re-broadcast', async () => {
+    const { session } = makePumpSession([
+      sysFrame('status', { status: 'compacting' }),
+      sysFrame('status', { status: 'compacting' }),
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const broadcastInfo = vi.fn()
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    // One transition from the set; the duplicate frame is a no-op; the
+    // result clears it.
+    expect(broadcastInfo).toHaveBeenCalledTimes(2)
+    expect(session.compacting).toBeUndefined()
+  })
+
+  it('leaves compacting untouched when no status frame is seen', async () => {
+    const { session } = makePumpSession([
+      sysFrame('init'),
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const broadcastInfo = vi.fn()
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    expect(broadcastInfo).not.toHaveBeenCalled()
+    expect(session.compacting).toBeUndefined()
+  })
+})
 
 describe('pump: task lifecycle frames', () => {
   it('early-continues task_started/updated/progress: folds state + snapshot, skips ring + broadcast', async () => {

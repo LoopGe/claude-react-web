@@ -1996,6 +1996,7 @@ export const Chat = memo(function Chat({
           tokenRate={stream.tokenRate}
           thinkingTokens={stream.thinkingTokens}
           activePhase={displayPhase}
+          recapping={session.compacting ?? false}
           waiting={waiting}
           runningTaskCount={taskCount}
           onOpenTasks={openTasksPanel}

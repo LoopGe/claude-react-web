@@ -360,6 +360,17 @@ export function fastModeStateOf(msg: SDKMessage): FastModeState | undefined {
   return fms === 'off' || fms === 'cooldown' || fms === 'on' ? fms : undefined
 }
 
+/** Extract the SDK-reported compaction state from a message, if present.
+ *  The flag rides on `system/status` frames: `status: 'compacting'` marks
+ *  compaction in progress, and a later status frame (`status: null` /
+ *  `'requesting'`) clears it. Returns undefined for non-status frames so
+ *  callers can detect a no-op. Pure — exported for tests. */
+export function compactingOf(msg: SDKMessage): boolean | undefined {
+  const raw = msg as { type?: unknown; subtype?: unknown; status?: unknown }
+  if (raw.type !== 'system' || raw.subtype !== 'status') return undefined
+  return raw.status === 'compacting'
+}
+
 /** Narrow an SDK `system/notification` frame into a CliNotification.
  *  Defensive: `text` and `priority` are required (returns null when either
  *  is missing/wrong-typed — the frame is dropped with a warn in the pump);
@@ -742,6 +753,24 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             deps.broadcastInfo?.(session)
           }
         }
+        // Track the SDK-reported compaction state. It rides on `system/status`
+        // frames (`status: 'compacting'` while the CLI compacts the transcript;
+        // a later status frame clears it). When it changes, broadcast a
+        // session-update so the WorkingBubble can show "Recap (auto)…" instead
+        // of a stale phase. Not persisted — the SDK re-reports it after respawn.
+        {
+          const compacting = compactingOf(msg)
+          if (compacting !== undefined && compacting !== (session.compacting ?? false)) {
+            const prev = session.compacting
+            session.compacting = compacting
+            log.trace('compacting updated', {
+              sessionId: session.id,
+              from: prev,
+              to: compacting,
+            })
+            deps.broadcastInfo?.(session)
+          }
+        }
         // The session has produced something since the last GC kick, so any
         // pending auto-interrupt mark is no longer relevant — clear it so a
         // future silence triggers fresh detection rather than immediately
@@ -935,6 +964,14 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           } else {
             session.pendingTurns = 0
             session.workingSince = undefined
+          }
+          // Compaction is a mid-turn phenomenon — a `result` means the turn
+          // (and any compaction it triggered) is done. The CLI normally clears
+          // `compacting` via a status frame; this is a lifecycle bound so a
+          // missed frame can't stick the "Recap (auto)…" label on forever.
+          if (session.compacting) {
+            session.compacting = undefined
+            deps.broadcastInfo?.(session)
           }
           session.lastTurnAt = Date.now()
           try { deps.persist(session) } catch (err) {

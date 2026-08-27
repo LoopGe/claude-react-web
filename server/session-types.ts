@@ -207,6 +207,13 @@ export interface Session {
    *  omits the field), which the UI uses to hide the toggle. Not persisted —
    *  the SDK re-reports it after respawn. */
   fastModeState?: FastModeState
+  /** SDK-reported runtime compaction state — true while the CLI is compacting
+   *  the transcript (`system/status` frames with `status: 'compacting'`), so
+   *  the WorkingBubble can show "Recap (auto)…" instead of a stale phase.
+   *  Mirrors fastModeState: read-only, transient, not persisted; the SDK
+   *  re-reports it via a later status frame after respawn. Cleared at turn
+   *  end as a lifecycle bound (compaction is a mid-turn phenomenon). */
+  compacting?: boolean
   /** User intent: reasoning effort level ('low'|'medium'|'high'|'xhigh'|
    *  'max'). Controls how many tokens the model spends. Persisted, re-applied
    *  on respawn. Undefined means no explicit level (SDK default 'high'). */

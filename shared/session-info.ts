@@ -115,6 +115,12 @@ export interface SessionInfoBase<PM = string> {
    *  toggle entirely. 'cooldown' means fast mode is rate-limited and
    *  temporarily inactive. Not persisted (the SDK re-reports it). */
   fastModeState?: 'off' | 'cooldown' | 'on'
+  /** SDK-reported runtime compaction state — true while the CLI is compacting
+   *  the transcript (auto-recap / context-window compression). Surfaced so the
+   *  WorkingBubble can show "Recap (auto)…" instead of a stale phase while the
+   *  context window is being compressed mid-turn. Not persisted; the SDK
+   *  re-reports it via `system/status` after respawn. */
+  compacting?: boolean
   /** User intent: reasoning effort level. Undefined means no explicit
    *  level was set (the SDK default is 'high'). Persisted. */
   effortLevel?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'

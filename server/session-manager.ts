@@ -4508,6 +4508,7 @@ export class SessionManager {
       fastMode: s.fastMode,
       memory: s.memory,
       fastModeState: s.fastModeState,
+      compacting: s.compacting,
       effortLevel: s.effortLevel,
       effortLevels: s.effortLevels,
       thinking: s.thinking,
