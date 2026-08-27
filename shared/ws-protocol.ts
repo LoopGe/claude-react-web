@@ -332,6 +332,7 @@ export interface WsHookRunEvent<HookEvent> {
 
 import type { AppPluginClientInfo } from './app-plugins/runtime-state.js'
 import type { ResolvedPluginContributions } from './app-plugins/contributions.js'
+import type { StatGridPayload } from './app-plugins/widget.js'
 import type { ElicitationRequestUi, ElicitationDecision } from './elicitation.js'
 import type { UserDialogRequestUi, UserDialogDecision } from './user-dialog.js'
 
@@ -370,6 +371,15 @@ export interface WsAppPluginContributionsChanged {
   pluginId: string
   contributions: ResolvedPluginContributions
 }
+/** A plugin-pushed widget payload (e.g. stat-grid data from a background
+ *  plugin). Narrow by design — carries only pluginId, widgetId, and a
+ *  typed payload; no generic message bus. */
+export interface WsAppPluginEvent {
+  kind: 'app-plugin-event'
+  pluginId: string
+  widgetId: string
+  payload: StatGridPayload
+}
 
 export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, HookEvent = never> =
   | WsSessionsSnapshot<Session>
@@ -399,6 +409,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsAppPluginsSnapshot
   | WsAppPluginStateChanged
   | WsAppPluginContributionsChanged
+  | WsAppPluginEvent
   | WsPong
   | WsError
 

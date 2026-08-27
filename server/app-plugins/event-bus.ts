@@ -1,20 +1,22 @@
-// Internal event bus for App Plugin state changes.
+// Internal event bus for App Plugin state changes and plugin-pushed events.
 //
 // Mirrors SessionManager's `subscribeGlobal` pattern: the WS layer
 // (server/ws.ts) subscribes once per browser-tab connection and receives an
 // async iterable of plugin-state events; the manager pushes events here when
-// install/enable/disable/uninstall/state-transition mutations land. This is
-// NOT a plugin-originated event tunnel — there is no `app-plugin-event`
-// frame in v1 (plugins push UI updates via command results, not broadcasts).
+// install/enable/disable/uninstall/state-transition mutations land. In
+// addition, `plugin-event` kind carries plugin-pushed widget payloads that
+// server/ws.ts maps to the `app-plugin-event` WS frame.
 
 import { createAsyncSubscription } from '../async-subscription.js'
 import type { AppPluginClientInfo } from '../../shared/app-plugins/runtime-state.js'
 import type { ResolvedPluginContributions } from '../../shared/app-plugins/contributions.js'
+import type { StatGridPayload } from '../../shared/app-plugins/widget.js'
 
 export type AppPluginEvent =
   | { kind: 'snapshot'; plugins: AppPluginClientInfo[] }
   | { kind: 'state-changed'; plugin: AppPluginClientInfo }
   | { kind: 'contributions-changed'; pluginId: string; contributions: ResolvedPluginContributions }
+  | { kind: 'plugin-event'; pluginId: string; widgetId: string; payload: StatGridPayload }
 
 export interface AppPluginBroadcaster {
   /** One subscription per WS connection. Snapshot is emitted as the first
@@ -85,6 +87,12 @@ export class AppPluginEventBus implements AppPluginBroadcaster {
    *  resync — e.g. after a manifest re-validate that didn't change state). */
   emitContributionsChanged(pluginId: string, contributions: ResolvedPluginContributions): void {
     const ev: AppPluginEvent = { kind: 'contributions-changed', pluginId, contributions }
+    for (const sub of this.subscribers.values()) sub.push(ev)
+  }
+
+  /** Broadcast a plugin-pushed widget payload to every live tab. */
+  emitPluginEvent(pluginId: string, widgetId: string, payload: StatGridPayload): void {
+    const ev: AppPluginEvent = { kind: 'plugin-event', pluginId, widgetId, payload }
     for (const sub of this.subscribers.values()) sub.push(ev)
   }
 
