@@ -29,7 +29,7 @@
 import { validateOutboundUrl } from './ssrf.js'
 import { createLogger } from './log.js'
 
-const log = createLogger('config')
+const log = createLogger('config-test')
 
 const SENTINEL_MODEL = '__claude_react_web_connection_test__'
 

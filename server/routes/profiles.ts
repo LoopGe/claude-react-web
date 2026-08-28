@@ -50,12 +50,12 @@ export function buildProfilesRouter(configDir?: string): Hono {
     }>(c.req)
     const name = typeof body.name === 'string' ? body.name.trim() : ''
     if (!name) throw new HttpError(400, 'name is required')
-    const active = serverConfig.profiles[0]
+    const active = serverConfig.profiles.find((p) => p.id === serverConfig.activeProfileId) ?? serverConfig.profiles[0]
     const id = 'p_' + Math.random().toString(36).slice(2, 10)
     const created: Record<string, unknown> = {
       id,
       name,
-      authToken: typeof body.authToken === 'string' ? body.authToken : '',
+      authToken: typeof body.authToken === 'string' ? body.authToken.trim() : '',
       baseUrl: typeof body.baseUrl === 'string' && body.baseUrl.trim()
         ? body.baseUrl.trim().replace(/\/+$/, '') : active?.baseUrl ?? DEFAULT_PROFILE.baseUrl,
       modelList: Array.isArray(body.modelList) && body.modelList.length > 0
@@ -90,7 +90,7 @@ export function buildProfilesRouter(configDir?: string): Hono {
       const next: Record<string, unknown> = { ...prev }
       if (typeof body.name === 'string' && body.name.trim()) next.name = body.name.trim()
       // authToken only written when non-empty (empty/absent = keep existing).
-      if (typeof body.authToken === 'string' && body.authToken.trim()) next.authToken = body.authToken
+      if (typeof body.authToken === 'string' && body.authToken.trim()) next.authToken = body.authToken.trim()
       if (typeof body.baseUrl === 'string' && body.baseUrl.trim()) {
         next.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
       }

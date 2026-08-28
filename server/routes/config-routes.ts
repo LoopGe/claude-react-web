@@ -16,6 +16,7 @@ import {
   enableFileLogging, disableFileLogging, isFileLoggingEnabled, getLogFilePath,
 } from '../log.js'
 import { writeAtomic } from '../json-file-store.js'
+import { maskToken } from '../profiles.js'
 
 export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono {
   const app = new Hono()
@@ -171,7 +172,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       profiles: serverConfig.profiles.map((p) => ({
         id: p.id,
         name: p.name,
-        authTokenMasked: p.authToken ? '****' + p.authToken.slice(-4) : undefined,
+        authTokenMasked: maskToken(p.authToken),
         baseUrl: p.baseUrl,
         modelList: p.modelList,
         modelGroups: p.modelGroups,
