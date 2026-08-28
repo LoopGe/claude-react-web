@@ -36,6 +36,7 @@ import type { NewSessionForm, PermissionMode, SessionInfo, SessionGroup, Sidebar
 import { PERMISSION_MODE_CYCLE } from './types'
 import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
+import { ProfileSwitcher } from './components/ProfileSwitcher'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { IconSettings, IconBellToggle, IconMenu, IconSidebar } from './components/icons/ToolIcons'
 import { UpdateBanner } from './components/UpdateBanner'
@@ -3675,6 +3676,7 @@ export function App() {
               <IconSidebar size={16} />
             </button>
           )}
+          <ProfileSwitcher />
           {/* role="group" rather than "toolbar": ARIA's toolbar pattern
               expects arrow-key roving between items, which we don't
               implement (Tab walks the cluster like ordinary buttons).
