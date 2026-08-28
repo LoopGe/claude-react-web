@@ -6,8 +6,9 @@ import {
   type PermissionMode,
   type SDKSessionInfo,
 } from '@anthropic-ai/claude-agent-sdk'
-import { config as defaultConfig } from '../../config.js'
-import type { ModelGroupConfig } from '../../config.js'
+import { config as defaultConfig, DEFAULT_PROFILE } from '../../config.js'
+import type { ModelGroupConfig, ProviderProfile } from '../../config.js'
+import { profileDefaultModel, resolveActiveProfile } from '../../profiles.js'
 import {
   capabilitiesForTier,
   fallbackAliasesFor,
@@ -43,10 +44,47 @@ function isFirstPartyAnthropicUrl(url: string | undefined): boolean {
   }
 }
 
+/** Build the SDK subprocess env for a profile. Exported pure for tests. */
+export function buildProfileEnv(profile: ProviderProfile, maxOutputTokens: number): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME ?? process.env.USERPROFILE,
+    USERPROFILE: process.env.USERPROFILE,
+    SystemRoot: process.env.SystemRoot,
+    TEMP: process.env.TEMP,
+    TMP: process.env.TMP,
+    LANG: process.env.LANG,
+    LC_ALL: process.env.LC_ALL,
+    TERM: process.env.TERM,
+    SHELL: process.env.SHELL,
+    ComSpec: process.env.ComSpec,
+    NODE_PATH: process.env.NODE_PATH,
+    ANTHROPIC_AUTH_TOKEN: profile.authToken,
+    ANTHROPIC_BASE_URL: profile.baseUrl,
+    ANTHROPIC_API_KEY: undefined,
+  }
+  if (maxOutputTokens > 0) {
+    env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxOutputTokens)
+  }
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith('ANTHROPIC_') && key !== 'ANTHROPIC_API_KEY' && !(key in env)) {
+      env[key] = process.env[key]
+    }
+  }
+  if (!('ENABLE_TOOL_SEARCH' in env) && profile.baseUrl && !isFirstPartyAnthropicUrl(profile.baseUrl)) {
+    env.ENABLE_TOOL_SEARCH = 'false'
+    log.info(`non-first-party ANTHROPIC_BASE_URL=${profile.baseUrl} — forcing ENABLE_TOOL_SEARCH=false`)
+  }
+  return env
+}
+
 /** Same short-name -> configured-model resolution the manager uses for the
  *  main model, wired to the provider's view of the configured list. */
-function resolveConfiguredModel(model: string | undefined): string | undefined {
-  return resolveConfiguredModelId(model, defaultConfig.modelList)
+function resolveConfiguredModel(
+  model: string | undefined,
+  modelList: readonly string[],
+): string | undefined {
+  return resolveConfiguredModelId(model, modelList)
 }
 
 export interface ClaudeProviderOptions {
@@ -90,7 +128,8 @@ export class ClaudeProvider implements AgentProvider {
   createSession(opts: CreateSessionOptions): ClaudeSessionHandle {
     const sdkOptions = { ...((opts.providerExtras?.sdkOptions as Options | undefined) ?? {}) }
     const modelGroupId = opts.providerExtras?.modelGroupId as string | undefined
-    const group = modelGroupId ? defaultConfig.modelGroups.find((g) => g.id === modelGroupId) : undefined
+    const profile = opts.profile ?? resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE)
+    const group = modelGroupId ? profile.modelGroups.find((g) => g.id === modelGroupId) : undefined
     if (opts.resume && !sdkOptions.resume) sdkOptions.resume = opts.resume
     if (opts.forkSession !== undefined) sdkOptions.forkSession = opts.forkSession
     if (opts.resumeSessionAt !== undefined) sdkOptions.resumeSessionAt = opts.resumeSessionAt
@@ -123,7 +162,7 @@ export class ClaudeProvider implements AgentProvider {
     }
 
     const requestedMode = (opts.permissionMode ?? sdkOptions.permissionMode) as PermissionMode | undefined
-    this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins, group)
+    this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins, group, profile)
     sdkOptions.permissionMode = this.sdkForwardMode(requestedMode)
     if (!sdkOptions.resume || sdkOptions.forkSession) {
       sdkOptions.sessionId = opts.id
@@ -281,21 +320,22 @@ export class ClaudeProvider implements AgentProvider {
     customEnv?: Record<string, string>,
     enabledPlugins?: string[],
     group?: ModelGroupConfig,
+    profile: ProviderProfile = resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE),
   ): void {
     if (opts.includePartialMessages === undefined) opts.includePartialMessages = true
     if (!opts.pathToClaudeCodeExecutable && this.opts.claudeBinary) {
       opts.pathToClaudeCodeExecutable = this.opts.claudeBinary
     }
-    const effectiveModel = opts.model || defaultConfig.defaultModel
+    const effectiveModel = opts.model || profileDefaultModel(profile)
     if (group) {
       // Real three-tier routing: each slot maps to its own model so the CLI
       // resolves tier aliases + background-subagent routing independently.
       // The four tier env vars stay in the per-session opts.env — NEVER in
       // buildAnthropicEnv()'s shared cache (cross-session contamination).
-      const r = resolveGroup(group, resolveConfiguredModel)
+      const r = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList))
       opts.model = r.main
       opts.env = {
-        ...(opts.env ?? this.buildAnthropicEnv()),
+        ...(opts.env ?? this.buildAnthropicEnv(profile)),
         ANTHROPIC_DEFAULT_OPUS_MODEL: r.tiers.opus,
         ANTHROPIC_DEFAULT_SONNET_MODEL: r.tiers.sonnet,
         ANTHROPIC_DEFAULT_HAIKU_MODEL: r.tiers.haiku,
@@ -304,7 +344,7 @@ export class ClaudeProvider implements AgentProvider {
       // Lever B — gateway capability declaration. Only for opaque models on
       // non-first-party base URLs: recognizable ids let the CLI's built-in
       // detection decide (more accurate), and first-party hosts need nothing.
-      if (!isFirstPartyAnthropicUrl(defaultConfig.baseUrl)) {
+      if (!isFirstPartyAnthropicUrl(profile.baseUrl)) {
         for (const tier of ['OPUS', 'SONNET', 'HAIKU'] as const) {
           const slot = tier.toLowerCase() as 'opus' | 'sonnet' | 'haiku'
           const caps = capabilitiesForTier(slot, r.tiers[slot])
@@ -319,7 +359,7 @@ export class ClaudeProvider implements AgentProvider {
       // Today's behavior unchanged: collapse all four aliases to the model.
       opts.model = effectiveModel
       opts.env = {
-        ...(opts.env ?? this.buildAnthropicEnv()),
+        ...(opts.env ?? this.buildAnthropicEnv(profile)),
         ANTHROPIC_DEFAULT_OPUS_MODEL: effectiveModel,
         ANTHROPIC_DEFAULT_SONNET_MODEL: effectiveModel,
         ANTHROPIC_DEFAULT_HAIKU_MODEL: effectiveModel,
@@ -355,62 +395,17 @@ export class ClaudeProvider implements AgentProvider {
     }
   }
 
-  private buildAnthropicEnv(): NodeJS.ProcessEnv {
+  private buildAnthropicEnv(profile: ProviderProfile = resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE)): NodeJS.ProcessEnv {
     if (
       this.cachedEnv &&
-      this.cachedAuthToken === defaultConfig.authToken &&
-      this.cachedBaseUrl === defaultConfig.baseUrl
+      this.cachedAuthToken === profile.authToken &&
+      this.cachedBaseUrl === profile.baseUrl
     ) {
       return this.cachedEnv
     }
-    this.cachedAuthToken = defaultConfig.authToken
-    this.cachedBaseUrl = defaultConfig.baseUrl
-    const env: NodeJS.ProcessEnv = {
-      PATH: process.env.PATH,
-      HOME: process.env.HOME ?? process.env.USERPROFILE,
-      USERPROFILE: process.env.USERPROFILE,
-      SystemRoot: process.env.SystemRoot,
-      TEMP: process.env.TEMP,
-      TMP: process.env.TMP,
-      LANG: process.env.LANG,
-      LC_ALL: process.env.LC_ALL,
-      TERM: process.env.TERM,
-      SHELL: process.env.SHELL,
-      ComSpec: process.env.ComSpec,
-      NODE_PATH: process.env.NODE_PATH,
-      ANTHROPIC_AUTH_TOKEN: defaultConfig.authToken,
-      ANTHROPIC_BASE_URL: defaultConfig.baseUrl,
-      ANTHROPIC_API_KEY: undefined,
-    }
-    // Pass through max output tokens config to the CLI subprocess. The CLI
-    // reads CLAUDE_CODE_MAX_OUTPUT_TOKENS to cap single-response output;
-    // 0 / unset = CLI default. Only set when the user configured a non-zero
-    // value (don't override the CLI's own default with 0).
-    if (defaultConfig.maxOutputTokens > 0) {
-      env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(defaultConfig.maxOutputTokens)
-    }
-    for (const key of Object.keys(process.env)) {
-      if (key.startsWith('ANTHROPIC_') && key !== 'ANTHROPIC_API_KEY' && !(key in env)) {
-        env[key] = process.env[key]
-      }
-    }
-    // Tool search (the CLI's default 'tst' mode) defers MCP tools behind
-    // `tool_reference` beta blocks. Non-first-party API proxies reject /
-    // silently drop those blocks, so the model never receives the tool
-    // schemas and can't call MCP tools — even though mcp-status reports
-    // them connected. claude-code has the same gate inside the CLI, but
-    // older CLI binaries predate it; enforcing it here makes MCP work
-    // regardless of CLI version. Respect an explicit ENABLE_TOOL_SEARCH
-    // from the host env if the user set one.
-    if (
-      !('ENABLE_TOOL_SEARCH' in env) &&
-      defaultConfig.baseUrl &&
-      !isFirstPartyAnthropicUrl(defaultConfig.baseUrl)
-    ) {
-      env.ENABLE_TOOL_SEARCH = 'false'
-      log.info(`non-first-party ANTHROPIC_BASE_URL=${defaultConfig.baseUrl} — forcing ENABLE_TOOL_SEARCH=false so MCP tools aren't deferred behind unsupported tool_reference blocks`)
-    }
-    this.cachedEnv = env
-    return env
+    this.cachedAuthToken = profile.authToken
+    this.cachedBaseUrl = profile.baseUrl
+    this.cachedEnv = buildProfileEnv(profile, defaultConfig.maxOutputTokens)
+    return this.cachedEnv
   }
 }
