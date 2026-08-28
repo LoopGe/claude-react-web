@@ -297,6 +297,46 @@ describe('SessionStore', () => {
     for (const m of loaded) expect(m.thinking).toBeUndefined()
   })
 
+  // ── profileId persistence ───────────────────────────────────────
+  it('round-trips a string profileId', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a', { profileId: 'profile-1' }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    const loaded = await store2.load()
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0].profileId).toBe('profile-1')
+    expect(store2.get('a')?.profileId).toBe('profile-1')
+  })
+
+  it('drops a non-string profileId during coerce', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        { id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, profileId: 42 },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0].profileId).toBeUndefined()
+  })
+
+  it('keeps absent profileId as undefined', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        { id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0].profileId).toBeUndefined()
+  })
+
   // ── autoCompactWindow (absolute token window) persistence ────────
   it('round-trips a positive autoCompactWindow', async () => {
     const store = new SessionStore({ stateDir: dir })

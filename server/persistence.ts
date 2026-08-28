@@ -37,6 +37,9 @@ export interface SessionMeta {
    *  model becomes `model`. Persisted so resume/restart/fork keep the group
    *  identity. */
   modelGroupId?: string
+  /** Provider profile id this session is pinned to. Persisted so
+   *  resume/fork/clear keep the pin. */
+  profileId?: string
   permissionMode?: PermissionMode
   title?: string
   /** Anthropic beta flags forwarded verbatim to the SDK on every
@@ -196,6 +199,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     cwd: typeof r.cwd === 'string' ? r.cwd : undefined,
     model: typeof r.model === 'string' ? r.model : undefined,
     modelGroupId: typeof r.modelGroupId === 'string' ? r.modelGroupId : undefined,
+    profileId: typeof r.profileId === 'string' ? r.profileId : undefined,
     permissionMode: typeof r.permissionMode === 'string' ? (r.permissionMode as PermissionMode) : undefined,
     title: typeof r.title === 'string' ? r.title : undefined,
     betas: Array.isArray(r.betas) && r.betas.every((b) => typeof b === 'string')
