@@ -14,6 +14,7 @@ import { buildDialogRouter } from './dialog.js'
 import { buildUploadRouter } from './uploads.js'
 import { buildRecapRouter } from './recap.js'
 import { buildConfigRouter } from './config-routes.js'
+import { buildProfilesRouter } from './profiles.js'
 import { buildHealthRouter } from './health-routes.js'
 import { buildMpRouter } from './mp-marketplace.js'
 import { buildGitWriteRouter } from './git-write.js'
@@ -49,6 +50,7 @@ export function buildApiRouter(
   // to preserve Hono's route-matching priority.
   app.route('/', buildHealthRouter(claudeBinary))
   app.route('/', buildConfigRouter(sm, configDir))
+  app.route('/', buildProfilesRouter(configDir))
   app.route('/', buildSessionRouter(sm, mpStore))
   app.route('/', buildHooksRouter(sm))
   app.route('/', buildSkillsRouter(sm))

@@ -11,6 +11,8 @@ import {
 import {
   updateConfigFile,
   loadConfig,
+  queueConfigWrite,
+  DEFAULT_PROFILE,
   config as serverConfig,
   clearCredentials,
 } from '../config.js'
@@ -23,9 +25,12 @@ import type { UiStateStore } from '../ui-state-store.js'
 
 const log = createLogger('reset')
 
-// app-settings clears these WRITABLE_CONFIG_KEYS (excludes connection + log keys).
+// app-settings clears these WRITABLE_CONFIG_KEYS (excludes connection + log
+// keys). The model fields (modelList / recapModel / commitMessageModel) are
+// NOT here — they are per-profile now, and a separate queueConfigWrite below
+// resets each profile's model fields to DEFAULT_PROFILE (keeping credentials).
 const APP_SETTING_KEYS: readonly string[] = [
-  'modelList', 'recapModel', 'commitMessageModel', 'maxUploadBytes', 'historyCap',
+  'maxUploadBytes', 'historyCap',
   'maxOpenPanels', 'workingStuckMs', 'updateCheckRegistry', 'skillLoadMode',
   'enabledSkills', 'autoClassifierModel', 'autoClassifierTimeout',
   'showPinnedUserMessage', 'autoRecap', 'allowSensitivePathEdits',
@@ -71,6 +76,19 @@ export function buildResetRouter(deps: ResetRouterDeps): Hono {
             const nulls: Record<string, null> = {}
             for (const k of APP_SETTING_KEYS) nulls[k] = null
             await updateConfigFile(deps.configDir, nulls)
+            await queueConfigWrite(deps.configDir, (existing) => {
+              const profiles = Array.isArray(existing.profiles) ? existing.profiles : []
+              existing.profiles = profiles.map((p) => {
+                if (typeof p !== 'object' || p === null) return p
+                return {
+                  ...p,
+                  modelList: [...DEFAULT_PROFILE.modelList],
+                  modelGroups: [...DEFAULT_PROFILE.modelGroups],
+                  recapModel: DEFAULT_PROFILE.recapModel,
+                  commitMessageModel: DEFAULT_PROFILE.commitMessageModel,
+                }
+              })
+            })
             await loadConfig(deps.configDir)
           })
           break

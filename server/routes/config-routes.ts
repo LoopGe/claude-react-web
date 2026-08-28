@@ -16,7 +16,6 @@ import {
   enableFileLogging, disableFileLogging, isFileLoggingEnabled, getLogFilePath,
 } from '../log.js'
 import { writeAtomic } from '../json-file-store.js'
-import { validateOutboundUrl } from '../ssrf.js'
 
 export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono {
   const app = new Hono()
@@ -39,22 +38,50 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
     try {
       existing = JSON.parse(await readFile(configPath, 'utf8'))
     } catch { /* file may not exist */ }
-    if (body.authToken?.trim()) {
-      existing.authToken = body.authToken.trim()
-    } else if (!existing.authToken) {
-      throw new HttpError(400, 'authToken is required')
-    }
-    if (body.baseUrl?.trim()) {
-      existing.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
-    }
-    if (Array.isArray(body.modelList) && body.modelList.length > 0) {
-      existing.modelList = body.modelList.filter((m) => typeof m === 'string' && m.trim())
-    }
-    if (typeof body.recapModel === 'string') {
-      existing.recapModel = body.recapModel.trim() || undefined
-    }
-    if (typeof body.commitMessageModel === 'string') {
-      existing.commitMessageModel = body.commitMessageModel.trim() || undefined
+
+    if (Array.isArray(existing.profiles) && existing.profiles.length > 0) {
+      // Post-migration: write setup fields into profiles[0]. The top-level
+      // authToken/baseUrl/model* keys are derived from the active profile
+      // on load, so writing them top-level would be silently ignored.
+      const profilesArr = existing.profiles as unknown[]
+      const p0 = { ...(profilesArr[0] as Record<string, unknown>) }
+      if (body.authToken?.trim()) {
+        p0.authToken = body.authToken.trim()
+      } else if (!p0.authToken) {
+        throw new HttpError(400, 'authToken is required')
+      }
+      if (body.baseUrl?.trim()) {
+        p0.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
+      }
+      if (Array.isArray(body.modelList) && body.modelList.length > 0) {
+        p0.modelList = body.modelList.filter((m) => typeof m === 'string' && m.trim())
+      }
+      if (typeof body.recapModel === 'string') {
+        p0.recapModel = body.recapModel.trim() || undefined
+      }
+      if (typeof body.commitMessageModel === 'string') {
+        p0.commitMessageModel = body.commitMessageModel.trim() || undefined
+      }
+      profilesArr[0] = p0
+    } else {
+      // Legacy: top-level writes (migration folds them into profiles[0] on load).
+      if (body.authToken?.trim()) {
+        existing.authToken = body.authToken.trim()
+      } else if (!existing.authToken) {
+        throw new HttpError(400, 'authToken is required')
+      }
+      if (body.baseUrl?.trim()) {
+        existing.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
+      }
+      if (Array.isArray(body.modelList) && body.modelList.length > 0) {
+        existing.modelList = body.modelList.filter((m) => typeof m === 'string' && m.trim())
+      }
+      if (typeof body.recapModel === 'string') {
+        existing.recapModel = body.recapModel.trim() || undefined
+      }
+      if (typeof body.commitMessageModel === 'string') {
+        existing.commitMessageModel = body.commitMessageModel.trim() || undefined
+      }
     }
     if (typeof body.updateCheckRegistry === 'string') {
       // Persist verbatim (trimmed) — empty string is a valid value meaning
@@ -75,96 +102,17 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
   // Auth happens before the body's model is validated, and the bogus model is
   // rejected before any inference runs — so this round-trips for free.
   //
-  // Classifying the response is the subtle part. The status code ALONE is not
-  // enough: the official API returns 404 `not_found_error` for an invalid
-  // model, while a mistyped Base URL ALSO returns 404 — but from a gateway, as
-  // HTML, not an Anthropic error envelope. So we key on the BODY shape:
-  //   - network error / timeout            → baseUrl unreachable
-  //   - auth rejection (401/403, or an
-  //     Anthropic authentication/permission
-  //     error type)                        → token is wrong
-  //   - a structured API response (2xx, OR
-  //     a JSON error envelope with an
-  //     error.message — incl. our sentinel
-  //     model bouncing as 400/404)         → we reached the API: token + URL OK
-  //   - 404 with a non-API body (HTML,
-  //     empty, plain text)                 → wrong Base URL / path
-  //   - anything else                      → surface it verbatim (ambiguous)
-  const SENTINEL_MODEL = '__claude_react_web_connection_test__'
+  // Classification (auth vs. wrong-base-url vs. success) lives in the shared
+  // `testConnection` helper (server/config-test-connection.ts) so the new
+  // POST /profiles/:id/test route reuses the exact same probe + outcome.
   app.post('/config/test-connection', async (c) => {
     const body = await safeJson<{ authToken?: string; baseUrl?: string }>(c.req)
     const token = body.authToken?.trim() || serverConfig.authToken
     if (!token) throw new HttpError(400, 'No auth token to test — enter one or save your config first')
     const baseUrl = (body.baseUrl?.trim() || serverConfig.baseUrl).replace(/\/+$/, '')
-
-    // SSRF protection: reject private IPs, metadata endpoints, and
-    // non-standard ports before making the outbound request.
-    const ssrfCheck = await validateOutboundUrl(baseUrl)
-    if (!ssrfCheck.ok) {
-      return c.json({ ok: false, error: ssrfCheck.error }, 400)
-    }
-
-    log.info(`test-connection baseUrl=${baseUrl}`)
-    try {
-      const res = await fetch(`${baseUrl}/v1/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'anthropic-version': '2023-06-01',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          model: SENTINEL_MODEL,
-          max_tokens: 1,
-          messages: [{ role: 'user', content: 'ping' }],
-        }),
-        signal: AbortSignal.timeout(15_000),
-      })
-
-      // Parse the body once. An Anthropic-compatible API (official or proxy)
-      // answers errors as JSON `{ error: { type?, message } }`; a misrouted
-      // request hits a gateway that answers with HTML or plain text.
-      const text = await res.text().catch(() => '')
-      let envelope: { error?: { type?: string; message?: string } } | null = null
-      try {
-        const parsed = JSON.parse(text)
-        if (parsed && typeof parsed === 'object') envelope = parsed
-      } catch { /* non-JSON body (e.g. gateway HTML) */ }
-      const errType = envelope?.error?.type
-      const errMsg = envelope?.error?.message
-
-      // Auth failure: trust the HTTP status (401/403) and the Anthropic error
-      // type. These are decided before the model is looked at.
-      if (res.status === 401 || res.status === 403
-        || errType === 'authentication_error' || errType === 'permission_error') {
-        return c.json({ ok: false, status: res.status, error: 'Invalid auth token', baseUrl })
-      }
-
-      // A 2xx, or any structured Anthropic-style error (has error.message),
-      // means we authenticated and the API processed the request — which is
-      // exactly what "is this token + URL usable" asks. The sentinel model
-      // bouncing (400 on the proxy, 404 not_found on the official API) lands
-      // here.
-      if (res.ok || errMsg) {
-        return c.json({ ok: true, baseUrl })
-      }
-
-      // No API envelope. A 404 here is a mistyped Base URL hitting a gateway.
-      if (res.status === 404) {
-        return c.json({ ok: false, status: 404, error: 'Endpoint not found — check the Base URL', baseUrl })
-      }
-
-      // Anything else (e.g. a 5xx HTML gateway error) is ambiguous — surface
-      // the status so the user can diagnose it.
-      return c.json({ ok: false, status: res.status, error: `Unexpected response (HTTP ${res.status})`, baseUrl })
-    } catch (e) {
-      const err = e as Error
-      const msg = err.name === 'TimeoutError' || err.name === 'AbortError'
-        ? 'Request timed out after 15s'
-        : `Could not reach ${baseUrl} (${err.message || 'network error'})`
-      log.warn(`test-connection failed: ${msg}`)
-      return c.json({ ok: false, error: msg, baseUrl })
-    }
+    const { testConnection } = await import('../config-test-connection.js')
+    const result = await testConnection(token, baseUrl)
+    return c.json(result.body, result.status)
   })
 
   // Read defaults from ~/.claude/settings.json so the setup page can
@@ -220,6 +168,18 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       modelGroups: serverConfig.modelGroups,
       recapModel: serverConfig.recapModel,
       commitMessageModel: serverConfig.commitMessageModel,
+      profiles: serverConfig.profiles.map((p) => ({
+        id: p.id,
+        name: p.name,
+        authTokenMasked: p.authToken ? '****' + p.authToken.slice(-4) : undefined,
+        baseUrl: p.baseUrl,
+        modelList: p.modelList,
+        modelGroups: p.modelGroups,
+        recapModel: p.recapModel,
+        commitMessageModel: p.commitMessageModel,
+        isActive: p.id === serverConfig.activeProfileId,
+      })),
+      activeProfileId: serverConfig.activeProfileId,
       maxUploadBytes: serverConfig.maxUploadBytes,
       historyCap: serverConfig.historyCap,
       maxOpenPanels: serverConfig.maxOpenPanels,

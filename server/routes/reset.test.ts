@@ -1,9 +1,17 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildResetRouter } from './reset'
+import { updateConfigFile, loadConfig, queueConfigWrite } from '../config.js'
 
 vi.mock('../config.js', () => ({
   updateConfigFile: vi.fn(async () => {}),
   loadConfig: vi.fn(async () => {}),
+  queueConfigWrite: vi.fn(async () => {}),
+  DEFAULT_PROFILE: {
+    modelList: ['default-m1'],
+    modelGroups: [],
+    recapModel: 'default-r',
+    commitMessageModel: 'default-c',
+  },
   WRITABLE_CONFIG_KEYS: [],
   get config() {
     return { logToFile: false }
@@ -101,6 +109,29 @@ describe('POST /config/reset', () => {
     expect(body.deletedSessionIds).toEqual(['a', 'c'])
     // The item is marked failed with a count, but the request still 200s.
     expect(body.results.sessions).toEqual({ ok: false, error: '1 session(s) could not be deleted' })
+  })
+
+  it('app-settings clears non-model keys via updateConfigFile and resets profile model fields via queueConfigWrite', async () => {
+    const deps = makeDeps()
+    const app = buildResetRouter(deps as any)
+    const res = await app.request('/config/reset', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ items: ['app-settings'] }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as any
+    expect(body.results['app-settings']).toEqual({ ok: true })
+    // Non-model keys cleared top-level.
+    expect(updateConfigFile).toHaveBeenCalled()
+    const nulls = (updateConfigFile as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][1] as Record<string, null>
+    expect(nulls.modelList).toBeUndefined()
+    expect(nulls.recapModel).toBeUndefined()
+    expect(nulls.commitMessageModel).toBeUndefined()
+    expect(nulls.maxUploadBytes).toBeNull()
+    // Profile model fields reset through the config write queue.
+    expect(queueConfigWrite).toHaveBeenCalled()
+    expect(loadConfig).toHaveBeenCalled()
   })
 
   it('rejects unknown items with 400', async () => {
