@@ -246,13 +246,18 @@ describe('config', () => {
       writeFileSync(
         join(dir, 'config.json'),
         JSON.stringify({
-          modelGroups: [
-            { id: 'g_flagship', name: 'Flagship', opus: 'anthropic/claude-opus-4-20250514', main: 'opus' },
-            // malformed: missing name → dropped; missing all slots → dropped; bad main → dropped
-            { id: 'g_bad1', opus: 'op' },
-            { id: 'g_bad2', name: 'NoSlots' },
-            { id: 'g_bad3', name: 'BadMain', opus: 'op', main: 'claude' },
-          ],
+          profiles: [{
+            id: 'default', name: 'Default', authToken: '', baseUrl: 'https://api.anthropic.com',
+            modelList: ['m1'], recapModel: 'r', commitMessageModel: 'c',
+            modelGroups: [
+              { id: 'g_flagship', name: 'Flagship', opus: 'anthropic/claude-opus-4-20250514', main: 'opus' },
+              // malformed: missing name → dropped; missing all slots → dropped; bad main → dropped
+              { id: 'g_bad1', opus: 'op' },
+              { id: 'g_bad2', name: 'NoSlots' },
+              { id: 'g_bad3', name: 'BadMain', opus: 'op', main: 'claude' },
+            ],
+          }],
+          activeProfileId: 'default',
         }),
       )
       await loadConfig(dir)
@@ -265,9 +270,14 @@ describe('config', () => {
       writeFileSync(
         join(dir, 'config.json'),
         JSON.stringify({
-          modelGroups: [
-            { id: 'g', name: 'test', opus: 123, sonnet: 'valid-model' },
-          ],
+          profiles: [{
+            id: 'default', name: 'Default', authToken: '', baseUrl: 'https://api.anthropic.com',
+            modelList: ['m1'], recapModel: 'r', commitMessageModel: 'c',
+            modelGroups: [
+              { id: 'g', name: 'test', opus: 123, sonnet: 'valid-model' },
+            ],
+          }],
+          activeProfileId: 'default',
         }),
       )
       await loadConfig(dir)
@@ -278,10 +288,15 @@ describe('config', () => {
       writeFileSync(
         join(dir, 'config.json'),
         JSON.stringify({
-          modelGroups: [
-            { id: 'g1', name: 'First', opus: 'op' },
-            { id: 'g1', name: 'Second', sonnet: 'sn' },
-          ],
+          profiles: [{
+            id: 'default', name: 'Default', authToken: '', baseUrl: 'https://api.anthropic.com',
+            modelList: ['m1'], recapModel: 'r', commitMessageModel: 'c',
+            modelGroups: [
+              { id: 'g1', name: 'First', opus: 'op' },
+              { id: 'g1', name: 'Second', sonnet: 'sn' },
+            ],
+          }],
+          activeProfileId: 'default',
         }),
       )
       await loadConfig(dir)
