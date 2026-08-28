@@ -1,5 +1,18 @@
 import type { SkillLoadMode } from '../../shared/skills'
 
+/** Client-side mirror of a provider profile. */
+export interface ProviderProfile {
+  id: string
+  name: string
+  authTokenMasked?: string
+  baseUrl: string
+  modelList: string[]
+  modelGroups: ModelGroupConfig[]
+  recapModel: string
+  commitMessageModel: string
+  isActive: boolean
+}
+
 /** Client-side mirror of the server's ModelGroupConfig (server/config.ts). */
 export interface ModelGroupConfig {
   id: string
@@ -29,6 +42,10 @@ export interface ConfigResponse {
   /** Global default for idle auto-recap. Sessions without an explicit
    *  override inherit this. */
   autoRecap?: boolean
+  /** Currently active profile id (multi-profile mode). */
+  activeProfileId?: string
+  /** Currently active profile name (display only). */
+  activeProfileName?: string
 }
 
 /** Full config returned by GET /api/config/full (settings modal). */
@@ -58,4 +75,8 @@ export interface FullServerConfig {
    *  targeting sensitive config paths (.git/, .claude/, shell configs, …). */
   allowSensitivePathEdits: boolean
   defaults: Defaults
+  /** All provider profiles (multi-profile mode). Undefined when profiles are disabled. */
+  profiles?: ProviderProfile[]
+  /** The currently active profile id. */
+  activeProfileId?: string
 }
