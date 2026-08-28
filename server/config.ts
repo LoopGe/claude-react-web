@@ -17,6 +17,7 @@ import {
 } from './log.js'
 import { setWebAuth } from './auth.js'
 import { HttpError } from './errors.js'
+import { coerceProfiles, profileDefaultModel, profileFromLegacyFields, resolveActiveProfile, type LegacyProfileFields } from './profiles.js'
 
 const log = createLogger('config')
 
@@ -168,6 +169,8 @@ export interface ServerConfig {
   /** Max output tokens per model response (CLAUDE_CODE_MAX_OUTPUT_TOKENS).
    *  0 = CLI default. */
   readonly maxOutputTokens: number
+  readonly profiles: readonly ProviderProfile[]
+  readonly activeProfileId: string
 }
 
 /** Hardcoded defaults. Captured as its own constant so applyParsedConfig
@@ -204,6 +207,8 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   autoRecap: true,
   allowSensitivePathEdits: false,
   maxOutputTokens: 0,
+  profiles: Object.freeze([]),
+  activeProfileId: 'default',
 })
 
 /** Synthetic fallback profile derived from DEFAULTS. Used as the migration
@@ -261,11 +266,17 @@ export async function loadConfig(stateDir: string): Promise<void> {
       await fs.mkdir(stateDir, { recursive: true })
       const scaffold = JSON.stringify(
         {
-          authToken: '',
-          baseUrl: 'https://api.anthropic.com',
-          modelList: config.modelList.slice(),
-          recapModel: config.recapModel,
-          commitMessageModel: config.commitMessageModel,
+          profiles: [{
+            id: 'default',
+            name: 'Default',
+            authToken: '',
+            baseUrl: DEFAULTS.baseUrl,
+            modelList: [...config.modelList],
+            modelGroups: [...config.modelGroups],
+            recapModel: config.recapModel,
+            commitMessageModel: config.commitMessageModel,
+          }],
+          activeProfileId: 'default',
           maxUploadBytes: config.maxUploadBytes,
           historyCap: config.historyCap,
           maxOpenPanels: config.maxOpenPanels,
@@ -294,7 +305,33 @@ export async function loadConfig(stateDir: string): Promise<void> {
     return
   }
 
-  applyParsedConfig(parsed as ConfigFile, stateDir, file)
+  const migrated = await migrateLegacyProfiles(parsed as Record<string, unknown>, file)
+  applyParsedConfig(migrated as unknown as ConfigFile, stateDir, file)
+}
+
+const LEGACY_PROFILE_KEYS = ['authToken', 'baseUrl', 'modelList', 'modelGroups', 'recapModel', 'commitMessageModel'] as const
+
+/** Hard-migrate the six legacy top-level credential/model fields into a
+ *  `profiles[0]` + `activeProfileId` on first load. Runs once: when `profiles`
+ *  is already present it is a no-op. Never throws — a write failure is logged
+ *  and the in-memory migration still proceeds. */
+async function migrateLegacyProfiles(
+  parsed: Record<string, unknown>,
+  file: string,
+): Promise<Record<string, unknown>> {
+  if (Array.isArray(parsed.profiles)) return parsed
+  const hasLegacy = LEGACY_PROFILE_KEYS.some((k) => k in parsed)
+  if (!hasLegacy) return parsed
+  const profile = profileFromLegacyFields(parsed as unknown as LegacyProfileFields, DEFAULT_PROFILE)
+  const migrated: Record<string, unknown> = { ...parsed, profiles: [profile], activeProfileId: 'default' }
+  for (const k of LEGACY_PROFILE_KEYS) delete migrated[k]
+  try {
+    await fs.writeFile(file, JSON.stringify(migrated, null, 2), 'utf8')
+    log.info(`migrated legacy authToken/model fields into profiles[0] (${file})`)
+  } catch (err) {
+    log.warn(`could not write back migrated config:`, (err as Error).message)
+  }
+  return migrated
 }
 
 /** Merge a parsed config.json object into the in-memory config.
@@ -307,75 +344,28 @@ export async function loadConfig(stateDir: string): Promise<void> {
  *  key and the merged result must fall back to the hardcoded default.
  *  Building from `config` would carry the stale loaded value forward,
  *  making cleared keys behave like "no change". */
-function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): void {
+function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): void {
   const merged: ServerConfig = { ...DEFAULTS }
 
-  if (Array.isArray(file_.modelList) && file_.modelList.length > 0) {
-    const models = file_.modelList.filter((m) => typeof m === 'string' && m.trim())
-    if (models.length > 0) {
-      ;(merged as { modelList: readonly string[] }).modelList = Object.freeze(models)
-      ;(merged as { defaultModel: string }).defaultModel = models[0]
-      log.info(`loaded ${models.length} model(s) from ${file}, default: ${merged.defaultModel}`)
-    }
+  // Derive credential/model fields from the active profile.
+  const raw_ = file_ as unknown as Record<string, unknown>
+  const profiles = coerceProfiles(raw_.profiles, DEFAULT_PROFILE)
+  const rawActiveId = typeof raw_.activeProfileId === 'string' ? raw_.activeProfileId.trim() : ''
+  const activeProfileId = rawActiveId || 'default'
+  const active = resolveActiveProfile(profiles, activeProfileId, DEFAULT_PROFILE)
+  ;(merged as { profiles: readonly ProviderProfile[] }).profiles = Object.freeze(profiles)
+  ;(merged as { activeProfileId: string }).activeProfileId = activeProfileId
+  ;(merged as { modelList: readonly string[] }).modelList = Object.freeze([...active.modelList])
+  ;(merged as { modelGroups: readonly ModelGroupConfig[] }).modelGroups = Object.freeze([...active.modelGroups])
+  ;(merged as { defaultModel: string }).defaultModel = profileDefaultModel(active)
+  ;(merged as { recapModel: string }).recapModel = active.recapModel
+  ;(merged as { commitMessageModel: string }).commitMessageModel = active.commitMessageModel
+  ;(merged as { authToken?: string }).authToken = active.authToken.trim() || undefined
+  ;(merged as { baseUrl: string }).baseUrl = active.baseUrl
+  if (profiles.length > 0) {
+    log.info(`loaded ${profiles.length} profile(s); active=${active.id} (${active.name}), modelList[0]=${profileDefaultModel(active) || '(empty)'}`)
   }
-
-  // Model groups: a named bundle of tier-slot → concrete-model mappings.
-  // A malformed entry is dropped with a warning (never blocks config load,
-  // matching the file's tolerance for other fields); duplicate ids keep the
-  // last entry. Groups with zero tier slots are unusable (resolveGroup's
-  // main would fall to '') so they are dropped too.
-  if (Array.isArray(file_.modelGroups)) {
-    const byId = new Map<string, ModelGroupConfig>()
-    for (const g of file_.modelGroups) {
-      if (typeof g !== 'object' || g === null || Array.isArray(g)) {
-        log.warn('dropping malformed model group (not an object)')
-        continue
-      }
-      const raw = g as unknown as Record<string, unknown>
-      const { id, name, main } = raw
-      if (typeof id !== 'string' || !id.trim() || typeof name !== 'string' || !name.trim()) {
-        log.warn('dropping model group with a missing/blank id or name')
-        continue
-      }
-      if (main !== undefined && main !== 'opus' && main !== 'sonnet' && main !== 'haiku') {
-        log.warn(`dropping model group ${id}: main must be one of opus|sonnet|haiku`)
-        continue
-      }
-      let slotOk = true
-      for (const slot of ['opus', 'sonnet', 'haiku'] as const) {
-        const v = raw[slot]
-        if (v !== undefined && typeof v !== 'string') {
-          log.warn(`dropping model group ${id}: slot ${slot} must be a string`)
-          slotOk = false
-          break
-        }
-      }
-      if (!slotOk) continue
-      const entry: ModelGroupConfig = { id: id.trim(), name: name.trim() }
-      for (const slot of ['opus', 'sonnet', 'haiku'] as const) {
-        const v = raw[slot]
-        if (typeof v === 'string' && v.trim()) entry[slot] = v.trim()
-      }
-      if (main !== undefined) entry.main = main as 'opus' | 'sonnet' | 'haiku'
-      if (!entry.opus && !entry.sonnet && !entry.haiku) {
-        log.warn(`dropping model group ${id}: no tier slots`)
-        continue
-      }
-      byId.set(entry.id, entry)
-    }
-    if (byId.size > 0) {
-      ;(merged as { modelGroups: readonly ModelGroupConfig[] }).modelGroups = Object.freeze([...byId.values()])
-      log.info(`loaded ${byId.size} model group(s) from ${file}`)
-    }
-  }
-
-  if (typeof file_.recapModel === 'string' && file_.recapModel.trim()) {
-    ;(merged as { recapModel: string }).recapModel = file_.recapModel.trim()
-  }
-
-  if (typeof file_.commitMessageModel === 'string' && file_.commitMessageModel.trim()) {
-    ;(merged as { commitMessageModel: string }).commitMessageModel = file_.commitMessageModel.trim()
-  }
+  if (active.authToken) log.info('authToken: configured')
 
   if (typeof file_.maxUploadBytes === 'number' && file_.maxUploadBytes > 0) {
     ;(merged as { maxUploadBytes: number }).maxUploadBytes = Math.round(file_.maxUploadBytes)
@@ -405,19 +395,6 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
   if (typeof file_.workingStuckMs === 'number' && file_.workingStuckMs >= 0) {
     ;(merged as { workingStuckMs: number }).workingStuckMs = Math.round(file_.workingStuckMs)
     log.info(`workingStuckMs: ${merged.workingStuckMs}`)
-  }
-
-  if (typeof file_.authToken === 'string' && file_.authToken.trim()) {
-    ;(merged as { authToken?: string }).authToken = file_.authToken.trim()
-    // Never log the token itself — just confirm it's present.
-    log.info('authToken: configured')
-  }
-
-  if (typeof file_.baseUrl === 'string' && file_.baseUrl.trim()) {
-    // Strip trailing slash so callers can always do `${baseUrl}/v1/...`.
-    const trimmed = file_.baseUrl.trim().replace(/\/+$/, '')
-    ;(merged as { baseUrl: string }).baseUrl = trimmed
-    log.info(`baseUrl: ${trimmed}`)
   }
 
   if (typeof file_.accessToken === 'string' && file_.accessToken.trim()) {
@@ -507,12 +484,8 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, file: string): v
 
 /** Mutable fields the client is allowed to update via PUT /api/config. */
 export const WRITABLE_CONFIG_KEYS = [
-  'authToken',
-  'baseUrl',
-  'modelList',
-  'modelGroups',
-  'recapModel',
-  'commitMessageModel',
+  'profiles',
+  'activeProfileId',
   'maxUploadBytes',
   'historyCap',
   'maxOpenPanels',
@@ -637,9 +610,12 @@ async function doRawConfigUpdate(
  *  PUT /config cannot interleave and silently undo the clear or be clobbered. */
 export async function clearCredentials(stateDir: string): Promise<void> {
   await queueConfigWrite(stateDir, (existing) => {
-    delete existing.authToken
-    delete existing.baseUrl
     delete existing.accessToken
+    const profiles = Array.isArray(existing.profiles) ? existing.profiles : []
+    existing.profiles = profiles.map((p) => {
+      if (typeof p !== 'object' || p === null || Array.isArray(p)) return p
+      return { ...p, authToken: '', baseUrl: DEFAULTS.baseUrl }
+    })
   })
   await loadConfig(stateDir)
   setWebAuth('', false)

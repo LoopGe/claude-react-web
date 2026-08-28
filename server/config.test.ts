@@ -207,21 +207,23 @@ describe('config', () => {
     // First write: bad stateDir → fs.writeFile rejects with ENOENT.
     const badDir = join(dir, 'does', 'not', 'exist')
     await expect(
-      updateConfigFile(badDir, { recapModel: 'after-fail' }),
+      updateConfigFile(badDir, { historyCap: 777 }),
     ).rejects.toThrow()
 
     // Second write: real dir. If the queue is poisoned this never runs
     // and the assertion below fails (or the await hangs).
-    await updateConfigFile(dir, { recapModel: 'after-fail' })
+    await updateConfigFile(dir, { historyCap: 777 })
 
     const written = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
-    expect(written.recapModel).toBe('after-fail')
+    expect(written.historyCap).toBe(777)
   })
 
   describe('clearCredentials', () => {
     it('clears authToken, baseUrl, and accessToken from config.json', async () => {
       writeFileSync(join(dir, 'config.json'), JSON.stringify({
-        authToken: 'sk-xxx', baseUrl: 'https://custom.example', accessToken: 'webtok',
+        profiles: [{ id: 'default', name: 'Default', authToken: 'sk-xxx', baseUrl: 'https://custom.example', modelList: ['m1'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' }],
+        activeProfileId: 'default',
+        accessToken: 'webtok',
       }))
       await clearCredentials(dir)
       const raw = await readConfigFile(dir)
@@ -235,8 +237,9 @@ describe('config', () => {
   })
 
   describe('modelGroups config', () => {
-    it('WRITABLE_CONFIG_KEYS includes modelGroups', () => {
-      expect(WRITABLE_CONFIG_KEYS).toContain('modelGroups')
+    it('WRITABLE_CONFIG_KEYS includes profiles and activeProfileId', () => {
+      expect(WRITABLE_CONFIG_KEYS).toContain('profiles')
+      expect(WRITABLE_CONFIG_KEYS).toContain('activeProfileId')
     })
 
     it('loadConfig parses a valid modelGroups array and drops malformed entries', async () => {
@@ -294,5 +297,85 @@ describe('config', () => {
       // existence on ServerConfig so a later rename can't silently drop it.
       expect('modelGroups' in config).toBe(true)
     })
+  })
+})
+
+describe('provider-profile migration + derived fields', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = tempDir('profiles')
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  })
+
+  it('hard-migrates legacy fields into profiles[0] and deletes the top-level keys', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      authToken: 'legacy-token',
+      baseUrl: 'https://gw.example.com/',
+      modelList: ['m1', 'm2'],
+      recapModel: 'r-model',
+      commitMessageModel: 'c-model',
+    }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    const raw = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
+    expect(raw.profiles).toHaveLength(1)
+    expect(raw.profiles[0].authToken).toBe('legacy-token')
+    expect(raw.profiles[0].baseUrl).toBe('https://gw.example.com')
+    expect(raw.activeProfileId).toBe('default')
+    expect(raw.authToken).toBeUndefined()
+    expect(raw.modelList).toBeUndefined()
+    // Derived fields reflect the migrated profile.
+    expect(config.modelList).toEqual(['m1', 'm2'])
+    expect(config.authToken).toBe('legacy-token')
+  })
+
+  it('is idempotent: a second load with profiles present does not re-migrate', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{ id: 'a', name: 'A', authToken: 'tok', baseUrl: 'https://gw', modelList: ['ma'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' }],
+      activeProfileId: 'a',
+    }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    await loadConfig(dir)
+    expect(config.activeProfileId).toBe('a')
+    expect(config.modelList).toEqual(['ma'])
+  })
+
+  it('derives defaultModel from the active profile modelList[0] and WRITABLE_CONFIG_KEYS no longer lists legacy keys', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      profiles: [
+        { id: 'one', name: 'One', authToken: 't1', baseUrl: 'https://gw1', modelList: ['x/one', 'x/two'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
+        { id: 'two', name: 'Two', authToken: 't2', baseUrl: 'https://gw2', modelList: ['y/one'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
+      ],
+      activeProfileId: 'two',
+    }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.defaultModel).toBe('y/one')
+    expect(config.baseUrl).toBe('https://gw2')
+    expect(WRITABLE_CONFIG_KEYS as readonly string[]).not.toContain('authToken')
+    expect(WRITABLE_CONFIG_KEYS as readonly string[]).toContain('profiles')
+    expect(WRITABLE_CONFIG_KEYS as readonly string[]).toContain('activeProfileId')
+  })
+
+  it('clearCredentials blanks every profile token and baseUrl', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      profiles: [
+        { id: 'a', name: 'A', authToken: 't1', baseUrl: 'https://gw1', modelList: ['ma'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
+        { id: 'b', name: 'B', authToken: 't2', baseUrl: 'https://gw2', modelList: ['mb'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
+      ],
+      activeProfileId: 'a',
+    }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    await clearCredentials(dir)
+    expect(config.authToken).toBeFalsy()
+    const raw = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
+    expect(raw.profiles.every((p: { authToken: string; baseUrl: string }) => p.authToken === '')).toBe(true)
+    expect(raw.profiles[0].baseUrl).toBe('https://api.anthropic.com')
   })
 })
