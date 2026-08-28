@@ -61,6 +61,10 @@ describe('coerceProfiles', () => {
     expect(out[0].recapModel).toBe(FALLBACK.recapModel)
     expect(out[0].authToken).toBe('')
   })
+  it('trims a whitespace-padded authToken', () => {
+    const out = coerceProfiles([{ id: 'x', name: 'X', authToken: '  sk-ant-abc  ' }], FALLBACK)
+    expect(out[0].authToken).toBe('sk-ant-abc')
+  })
 })
 
 describe('coerceModelGroups', () => {
@@ -91,6 +95,10 @@ describe('profileFromLegacyFields', () => {
     const p = profileFromLegacyFields({}, FALLBACK)
     expect(p.modelList).toEqual(FALLBACK.modelList)
     expect(p.authToken).toBe('')
+  })
+  it('trims a whitespace-padded authToken', () => {
+    const p = profileFromLegacyFields({ authToken: '  sk-ant-abc  ' }, FALLBACK)
+    expect(p.authToken).toBe('sk-ant-abc')
   })
 })
 

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useProfiles } from '../hooks/useProfiles'
 
-export function ProfileSwitcher() {
+export function ProfileSwitcher({ onManageProfiles }: { onManageProfiles?: () => void }) {
   const { profiles, activeProfileId, activate } = useProfiles()
   const [open, setOpen] = useState(false)
   const active = profiles.find((p) => p.id === activeProfileId) ?? profiles[0]
@@ -35,6 +35,17 @@ export function ProfileSwitcher() {
               {p.id === activeProfileId && <span className="profile-switcher__check" aria-hidden>{'✓'}</span>}
             </button>
           ))}
+          {profiles.length > 0 && (
+            <div className="profile-switcher__separator" />
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            className="profile-switcher__item profile-switcher__manage"
+            onClick={() => { setOpen(false); onManageProfiles?.() }}
+          >
+            <span className="profile-switcher__item-name">Manage profiles…</span>
+          </button>
           {profiles.length === 0 && <div className="profile-switcher__empty">No profiles</div>}
         </div>
       )}

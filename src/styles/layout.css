@@ -189,6 +189,11 @@ body.resizing-col .app {
   flex-shrink: 0;
   margin-left: 8px;
 }
+.profile-switcher__separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
 .profile-switcher__empty {
   padding: 8px 10px;
   color: var(--fg-muted);

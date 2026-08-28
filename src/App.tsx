@@ -3676,7 +3676,7 @@ export function App() {
               <IconSidebar size={16} />
             </button>
           )}
-          <ProfileSwitcher />
+          <ProfileSwitcher onManageProfiles={() => setGlobalSettingsOpen(true)} />
           {/* role="group" rather than "toolbar": ARIA's toolbar pattern
               expects arrow-key roving between items, which we don't
               implement (Tab walks the cluster like ordinary buttons).

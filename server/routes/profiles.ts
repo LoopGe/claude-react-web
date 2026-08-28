@@ -147,9 +147,24 @@ export function buildProfilesRouter(configDir?: string): Hono {
     const id = c.req.param('id')
     const profile = serverConfig.profiles.find((p) => p.id === id)
     if (!profile) throw new HttpError(404, `profile ${id} not found`)
-    if (!profile.authToken) throw new HttpError(400, 'No auth token to test — save one first')
+    // Accept optional overrides so the client can test a dirty/unsaved token.
+    let body: { authToken?: unknown; baseUrl?: unknown } = {}
+    try { body = await c.req.json() } catch { /* empty body is fine */ }
+    if (body.authToken !== undefined && typeof body.authToken !== 'string') {
+      throw new HttpError(400, 'authToken must be a string')
+    }
+    if (body.baseUrl !== undefined && typeof body.baseUrl !== 'string') {
+      throw new HttpError(400, 'baseUrl must be a string')
+    }
+    const authToken = (typeof body.authToken === 'string' && body.authToken.trim())
+      ? body.authToken.trim()
+      : profile.authToken
+    const baseUrl = (typeof body.baseUrl === 'string' && body.baseUrl.trim())
+      ? body.baseUrl.trim().replace(/\/+$/, '')
+      : profile.baseUrl
+    if (!authToken) throw new HttpError(400, 'No auth token to test — save one first')
     const { testConnection } = await import('../config-test-connection.js')
-    const result = await testConnection(profile.authToken, profile.baseUrl)
+    const result = await testConnection(authToken, baseUrl)
     return c.json(result.body, result.status)
   })
 

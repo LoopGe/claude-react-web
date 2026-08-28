@@ -30,7 +30,7 @@ export function SessionProfileSelect({
           onChange={(e) => setValue(e.target.value)}
           disabled={profiles.length === 0}
         >
-          <option value="">Follow global ({activeProfileId})</option>
+          <option value="">Follow global ({profiles.find((p) => p.id === activeProfileId)?.name ?? activeProfileId})</option>
           {profiles.map((p) => (
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}

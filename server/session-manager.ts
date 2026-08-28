@@ -3103,6 +3103,7 @@ export class SessionManager {
     } else {
       await this.setModel(id, profileDefaultModel(profile))
     }
+    this.persist(s)
     if (apply === 'now') {
       await this.restart(id)
     }

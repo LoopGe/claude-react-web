@@ -122,7 +122,7 @@ export function coerceProfiles(raw: unknown, fallback: ProviderProfile): Provide
       ? e.recapModel.trim() : fallback.recapModel
     const commitMessageModel = typeof e.commitMessageModel === 'string' && e.commitMessageModel.trim()
       ? e.commitMessageModel.trim() : fallback.commitMessageModel
-    const authToken = typeof e.authToken === 'string' ? e.authToken : ''
+    const authToken = typeof e.authToken === 'string' ? e.authToken.trim() : ''
     byId.set(id, {
       id, name, authToken, baseUrl, modelList,
       modelGroups: coerceModelGroups(e.modelGroups),
@@ -141,7 +141,7 @@ export function profileFromLegacyFields(
   return {
     id: 'default',
     name: 'Default',
-    authToken: typeof f.authToken === 'string' ? f.authToken : '',
+    authToken: typeof f.authToken === 'string' ? f.authToken.trim() : '',
     baseUrl: typeof f.baseUrl === 'string' && f.baseUrl.trim()
       ? f.baseUrl.trim().replace(/\/+$/, '') : fallback.baseUrl,
     modelList: Array.isArray(f.modelList) && f.modelList.length > 0

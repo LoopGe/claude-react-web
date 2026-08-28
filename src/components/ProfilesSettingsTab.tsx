@@ -120,9 +120,12 @@ function ProfileCard({
     setTesting(true)
     setTestResult(null)
     try {
+      const body: Record<string, string> = {}
+      if (authTokenDirty && authToken.trim()) body.authToken = authToken.trim()
+      if (baseUrl.trim()) body.baseUrl = baseUrl.trim()
       const r = await api.post<ProfileTestResult>(
         `/profiles/${encodeURIComponent(profile.id)}/test`,
-        {},
+        body,
         { timeoutMs: 20_000 },
       )
       setTestResult(r)
