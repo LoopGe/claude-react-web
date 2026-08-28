@@ -23,6 +23,7 @@ import { AnimatePresence } from 'motion/react'
 import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { shortenPath } from '../utils/paths'
+import { gitChipText } from '../utils/git-chip'
 import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingSetting } from '../types'
@@ -32,21 +33,6 @@ import { PERMISSION_MODES, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../types'
 import type { GitStatus } from '../../shared/git-types'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
-
-/** Chip text generator: "main" when clean, "main ahead 1 dirty 1 ?1" when dirty.
- *  Each suffix is suppressed at zero so the chip stays compact when the
- *  repo is in the common steady state. */
-function gitChipText(s: GitStatus): string {
-  if (s.detached) return 'detached'
-  const branch = s.branch ?? '?'
-  const dirty = s.staged.length + s.unstaged.length
-  const segments: string[] = [branch]
-  if (s.ahead > 0) segments.push(`ahead ${s.ahead}`)
-  if (s.behind > 0) segments.push(`behind ${s.behind}`)
-  if (dirty > 0) segments.push(`dirty ${dirty}`)
-  if (s.untracked.length > 0) segments.push(`?${s.untracked.length}`)
-  return segments.join(' ')
-}
 
 /** Chip tooltip — verbose form for users who hover before clicking.
  *  Returns a ReactNode (one <div> per line) rather than a `\n`-joined
