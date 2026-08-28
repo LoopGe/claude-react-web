@@ -32,6 +32,20 @@ export interface ModelGroupConfig {
   main?: 'opus' | 'sonnet' | 'haiku'
 }
 
+/** A named subscription bundle. `modelList[0]` is the profile's default
+ *  model. authToken is the Anthropic/gateway API key (NOT the web access
+ *  token). */
+export interface ProviderProfile {
+  id: string
+  name: string
+  authToken: string
+  baseUrl: string
+  modelList: readonly string[]
+  modelGroups: readonly ModelGroupConfig[]
+  recapModel: string
+  commitMessageModel: string
+}
+
 /** Schema for config.json */
 interface ConfigFile {
   modelList?: string[]
@@ -190,6 +204,19 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   autoRecap: true,
   allowSensitivePathEdits: false,
   maxOutputTokens: 0,
+})
+
+/** Synthetic fallback profile derived from DEFAULTS. Used as the migration
+ *  source, the coerce fallback, and resolveActiveProfile's last resort. */
+export const DEFAULT_PROFILE: ProviderProfile = Object.freeze({
+  id: 'default',
+  name: 'Default',
+  authToken: '',
+  baseUrl: DEFAULTS.baseUrl,
+  modelList: Object.freeze([...DEFAULTS.modelList]),
+  modelGroups: Object.freeze([...DEFAULTS.modelGroups]),
+  recapModel: DEFAULTS.recapModel,
+  commitMessageModel: DEFAULTS.commitMessageModel,
 })
 
 /** Current server config. Frozen after loadConfig() — reads are safe,
