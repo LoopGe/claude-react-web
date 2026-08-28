@@ -69,10 +69,11 @@ export function useModelOptions(sessionId: string, enabled: boolean, profileId?:
     fetchedRef.current = fetchKey
     const ac = new AbortController()
     ;(async () => {
-      let cfg: { models?: string[]; modelGroups?: ModelGroupConfig[] }
+      let cfg: { models?: string[]; modelGroups?: ModelGroupConfig[] } | null = null
 
       // When the session is pinned to a profile, resolve models from
-      // that profile instead of the global /config.
+      // that profile.  Fall through to /config when the profile is not
+      // found or the /profiles call fails.
       if (profileId) {
         try {
           const data = await api.get<{ profiles: { id: string; modelList: string[]; modelGroups: ModelGroupConfig[] }[] }>('/profiles', { signal: ac.signal })
@@ -80,17 +81,16 @@ export function useModelOptions(sessionId: string, enabled: boolean, profileId?:
           const profile = data.profiles?.find((p) => p.id === profileId)
           if (profile) {
             cfg = { models: profile.modelList, modelGroups: profile.modelGroups }
-          } else {
-            // Profile not found — fall through to /config.
-            fetchedRef.current = null
-            return
           }
         } catch {
           if (ac.signal.aborted) return
-          fetchedRef.current = null
-          return
+          // Fall through to /config below.
         }
-      } else {
+      }
+
+      // Fallback: active profile via /config (no profileId, or profile
+      // not found / fetch failed above).
+      if (!cfg) {
         try {
           cfg = await api.get<{ models?: string[]; modelGroups?: ModelGroupConfig[] }>('/config', { signal: ac.signal })
         } catch {

@@ -56,4 +56,19 @@ describe('useModelOptions', () => {
     expect(result.current.models.map((m) => m.id)).toEqual(['c1'])
     expect(api.get).toHaveBeenCalledWith('/config', expect.objectContaining({ signal: expect.any(AbortSignal) }))
   })
+
+  it('falls back to /config when profileId does not match any profile', async () => {
+    vi.mocked(api.get).mockImplementation(async (url: string) => {
+      if (url === '/profiles') {
+        return { profiles: [{ id: 'other', modelList: ['ox1'], modelGroups: [] }] }
+      }
+      return { models: ['c1', 'c2'], modelGroups: [{ id: 'g1', name: 'Default', opus: 'c1', main: 'opus' }] }
+    })
+    const { result } = renderHook(() => useModelOptions('s1', true, 'missing-profile'))
+    await waitFor(() => expect(result.current.models.length).toBe(2))
+    expect(result.current.models.map((m) => m.id)).toEqual(['c1', 'c2'])
+    expect(result.current.defaultModel).toBe('c1')
+    expect(api.get).toHaveBeenCalledWith('/profiles', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(api.get).toHaveBeenCalledWith('/config', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+  })
 })
