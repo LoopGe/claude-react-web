@@ -22,6 +22,7 @@ import { useExitPresence } from '../hooks/useExitPresence'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { HooksPanel } from './HooksPanel'
 import { UsagePanel } from './UsagePanel'
+import { SessionProfileSelect } from './SessionProfileSelect'
 import { Overlay } from './Overlay'
 
 // MarketplaceTab and McpInstaller are heavy modal-within-modal
@@ -752,6 +753,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             }}
           />
         </div>
+        <SessionProfileSelect session={session} onSessionUpdate={onSessionUpdate} />
         <div className="settings-field">
           <label htmlFor={panelUid + '-model'}>Model</label>
           <select

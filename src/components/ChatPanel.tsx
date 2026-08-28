@@ -357,7 +357,7 @@ export const ChatPanel = memo(function ChatPanel({
   // every panel that happens to be open. The hook keeps recents from
   // localStorage as a fallback so the list isn't empty during the brief
   // fetch window.
-  const modelOptions = useModelOptions(session.id, !!modelMenu && !!session.running)
+  const modelOptions = useModelOptions(session.id, !!modelMenu && !!session.running, session.profileId)
   const chipsDisabled = !session.running || session.terminated
   // Git status powers BOTH the header chip (always-visible summary) and
   // the GitPanel overlay (mounted inside <Chat>). Hoisting the hook here

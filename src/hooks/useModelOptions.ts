@@ -44,7 +44,7 @@ export interface ModelOptions {
   modelGroups: ModelGroupConfig[]
 }
 
-export function useModelOptions(sessionId: string, enabled: boolean): ModelOptions {
+export function useModelOptions(sessionId: string, enabled: boolean, profileId?: string): ModelOptions {
   /** Server-derived list (SDK ∪ config). Empty until the first fetch
    *  resolves. We tag it with the sessionId it was fetched for so a
    *  parent that swaps sessions without remounting won't briefly show
@@ -62,21 +62,46 @@ export function useModelOptions(sessionId: string, enabled: boolean): ModelOptio
 
   useEffect(() => {
     if (!enabled) return
-    if (fetchedRef.current === sessionId) return
-    fetchedRef.current = sessionId
+    // Include profileId in the cache key so a profile switch on the same
+    // session triggers a fresh fetch.
+    const fetchKey = profileId ? `${sessionId}:${profileId}` : sessionId
+    if (fetchedRef.current === fetchKey) return
+    fetchedRef.current = fetchKey
     const ac = new AbortController()
     ;(async () => {
       let cfg: { models?: string[]; modelGroups?: ModelGroupConfig[] }
-      try {
-        cfg = await api.get<{ models?: string[]; modelGroups?: ModelGroupConfig[] }>('/config', { signal: ac.signal })
-      } catch {
+
+      // When the session is pinned to a profile, resolve models from
+      // that profile instead of the global /config.
+      if (profileId) {
+        try {
+          const data = await api.get<{ profiles: { id: string; modelList: string[]; modelGroups: ModelGroupConfig[] }[] }>('/profiles', { signal: ac.signal })
+          if (ac.signal.aborted) return
+          const profile = data.profiles?.find((p) => p.id === profileId)
+          if (profile) {
+            cfg = { models: profile.modelList, modelGroups: profile.modelGroups }
+          } else {
+            // Profile not found — fall through to /config.
+            fetchedRef.current = null
+            return
+          }
+        } catch {
+          if (ac.signal.aborted) return
+          fetchedRef.current = null
+          return
+        }
+      } else {
+        try {
+          cfg = await api.get<{ models?: string[]; modelGroups?: ModelGroupConfig[] }>('/config', { signal: ac.signal })
+        } catch {
+          if (ac.signal.aborted) return
+          // Leave fetchedRef cleared so a subsequent open of the picker
+          // retries rather than showing only recents forever.
+          fetchedRef.current = null
+          return
+        }
         if (ac.signal.aborted) return
-        // Leave fetchedRef cleared so a subsequent open of the picker
-        // retries rather than showing only recents forever.
-        fetchedRef.current = null
-        return
       }
-      if (ac.signal.aborted) return
 
       const cfgIds = cfg.models ?? []
       // The server's default is the first configured model — the same value
@@ -97,7 +122,7 @@ export function useModelOptions(sessionId: string, enabled: boolean): ModelOptio
       setData({ sessionId, models: merged, defaultModel, modelGroups: cfg.modelGroups ?? [] })
     })()
     return () => { ac.abort() }
-  }, [sessionId, enabled])
+  }, [sessionId, enabled, profileId])
 
   // Only use server-derived models when they belong to the current
   // session — guards against showing stale data if the parent reuses
