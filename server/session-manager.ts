@@ -2674,7 +2674,15 @@ export class SessionManager {
         model: s.model,
         modelGroupId: s.modelGroupId,
         permissionMode: s.permissionMode,
-        title: s.title,
+        // Plain /clear starts a FRESH conversation, so Y is untitled — the
+        // sidebar falls back to the id prefix and the first post-clear message
+        // auto-titles it. Carrying X's title over would stick a stale label on
+        // the new conversation forever (autoGenerateTitle short-circuits once a
+        // title exists). Compact (seedText) is a CONTINUATION of the same
+        // conversation, so it keeps X's title: the client's isFirstUserTurn is
+        // suppressed by the seeded summary, so a compacted Y would otherwise
+        // stay untitled forever.
+        title: opts?.seedText ? s.title : undefined,
         effortLevel: s.effortLevel,
         thinking: s.thinking,
         autoCompactWindow: s.autoCompactWindow,

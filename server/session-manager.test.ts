@@ -1243,6 +1243,21 @@ describe('SessionManager', () => {
     }
   })
 
+  it("clear() does not carry X's title onto the fresh session Y", async () => {
+    const info = sm.create({ title: 'My Title' })
+    expect(info.title).toBe('My Title')
+
+    const next = await sm.clear(info.id)
+
+    // Y is a fresh conversation — it must NOT inherit X's title. The client
+    // falls back to the id-prefix display and auto-titles from the first
+    // post-clear message.
+    expect(next.id).not.toBe(info.id)
+    expect(next.title).toBeUndefined()
+    // And Y's persisted meta carries no title either.
+    expect(store.get(next.id)?.title).toBeUndefined()
+  })
+
   it('clear() removes X from the store but keeps it resumable via the on-disk transcript; Y is empty', async () => {
     const info = sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
@@ -1511,6 +1526,21 @@ describe('SessionManager', () => {
     const meta = store.get(next.id)
     expect(meta).toBeDefined()
     expect(JSON.stringify(meta)).not.toContain('HAND-OFF SUMMARY')
+  })
+
+  it("compact() keeps X's title on the continuation session Y (plain /clear drops it)", async () => {
+    const info = sm.create({ title: 'My Title' })
+    expect(info.title).toBe('My Title')
+
+    const next = await sm.compact(info.id)
+
+    // Compact is a CONTINUATION of the same conversation, so Y keeps X's
+    // title: the seeded summary suppresses the client's isFirstUserTurn
+    // auto-title, so a compacted Y must stay labelled. (The plain /clear
+    // path — no seedText — drops the title; covered by the test above.)
+    expect(next.id).not.toBe(info.id)
+    expect(next.title).toBe('My Title')
+    expect(store.get(next.id)?.title).toBe('My Title')
   })
 
   it('compact() refuses unknown / working / terminated sessions', async () => {
