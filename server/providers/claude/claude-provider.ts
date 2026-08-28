@@ -43,6 +43,85 @@ function isFirstPartyAnthropicUrl(url: string | undefined): boolean {
   }
 }
 
+/** Env keys that would leak secrets if logged verbatim — redact by key. */
+const SENSITIVE_ENV_KEY = /token|secret|password|auth|key/i
+/** Env keys that meaningfully shape the spawned subprocess. Filters out the
+ *  standard OS noise (PATH, HOME, TEMP, …) so the spawn log stays focused on
+ *  the behavior-affecting variables this app injects. */
+const RELEVANT_ENV_KEY = /^(ANTHROPIC_|CLAUDE_CODE_|DISABLE_AUTOUPDATER$|ENABLE_TOOL_SEARCH$)/i
+
+/** Truncate a long string for log output, marking the cut. */
+function truncateForLog(s: unknown, max = 300): unknown {
+  if (typeof s !== 'string' || s.length <= max) return s
+  return `${s.slice(0, max)}…(+${s.length - max} chars)`
+}
+
+/** `Options.systemPrompt` is either a plain string or a `{ type: 'preset',
+ *  preset }` object — truncate the long form either way. */
+function summarizeSystemPrompt(sp: unknown): unknown {
+  if (typeof sp === 'string') return truncateForLog(sp)
+  if (sp && typeof sp === 'object') {
+    const o = sp as Record<string, unknown>
+    return { ...o, preset: truncateForLog(o.preset) }
+  }
+  return sp
+}
+
+/** Summarize the FINAL spawn payload handed to query() into a flat,
+ *  JSON-serializable object for permanent diagnostic logging. Captures every
+ *  option the CLI subprocess receives at spawn (model, cwd, betas, resume/
+ *  fork, permission mode, thinking, mcp/plugins, sanitized env, …) plus the
+ *  post-spawn applyFlagSettings intents (fastMode/effortLevel/autoCompactWindow/
+ *  memory) that have no spawn-time Options equivalent — so one spawn log line
+ *  tells the whole story for debugging session-shape drift (e.g. the
+ *  200K-vs-1M context-window question). Env values whose key looks sensitive
+ *  are redacted: ANTHROPIC_AUTH_TOKEN / *_API_KEY / … must never reach logs. */
+function summarizeSpawn(opts: CreateSessionOptions, sdkOptions: Options): Record<string, unknown> {
+  const env: Record<string, string> = {}
+  if (sdkOptions.env) {
+    for (const [k, v] of Object.entries(sdkOptions.env)) {
+      if (v === undefined || v === null) continue
+      if (!RELEVANT_ENV_KEY.test(k)) continue
+      env[k] = SENSITIVE_ENV_KEY.test(k) ? '[redacted]' : String(v)
+    }
+  }
+  return {
+    id: opts.id,
+    provider: opts.provider,
+    modelGroupId: opts.providerExtras?.modelGroupId,
+    sessionId: sdkOptions.sessionId,
+    resume: sdkOptions.resume,
+    forkSession: sdkOptions.forkSession,
+    resumeSessionAt: sdkOptions.resumeSessionAt,
+    model: sdkOptions.model,
+    cwd: sdkOptions.cwd,
+    permissionMode: sdkOptions.permissionMode,
+    title: truncateForLog(sdkOptions.title),
+    systemPrompt: summarizeSystemPrompt(sdkOptions.systemPrompt),
+    betas: sdkOptions.betas,
+    effort: sdkOptions.effort,
+    thinking: sdkOptions.thinking,
+    includePartialMessages: sdkOptions.includePartialMessages,
+    includeHookEvents: sdkOptions.includeHookEvents,
+    forwardSubagentText: sdkOptions.forwardSubagentText,
+    promptSuggestions: sdkOptions.promptSuggestions,
+    agentProgressSummaries: sdkOptions.agentProgressSummaries,
+    enableFileCheckpointing: sdkOptions.enableFileCheckpointing,
+    additionalDirectories: sdkOptions.additionalDirectories,
+    mcpServers: sdkOptions.mcpServers ? Object.keys(sdkOptions.mcpServers) : undefined,
+    plugins: sdkOptions.plugins,
+    pathToClaudeCodeExecutable: sdkOptions.pathToClaudeCodeExecutable,
+    env,
+    postSpawn: {
+      fastMode: opts.fastMode,
+      effortLevel: opts.effortLevel,
+      autoCompactWindow: opts.autoCompactWindow,
+      memory: opts.memory,
+      enabledPlugins: opts.enabledPlugins,
+    },
+  }
+}
+
 /** Same short-name -> configured-model resolution the manager uses for the
  *  main model, wired to the provider's view of the configured list. */
 function resolveConfiguredModel(model: string | undefined): string | undefined {
@@ -165,7 +244,15 @@ export class ClaudeProvider implements AgentProvider {
     // by SessionManager.clear() to gate respawn on the old child dying).
     const reg = this.processMonitor.register(opts.id)
     sdkOptions.spawnClaudeCodeProcess = (o) => this.processMonitor.spawnFor(reg, o)
-    log.debug(`[provider] createSession id=${opts.id}`)
+    // Permanent spawn diagnostics: every parameter the subprocess receives,
+    // in one structured line. Info level so it's always on — spawns are rare
+    // (one per open / resume / fork / clear), and this is the first place to
+    // look when a session's shape (model, betas, context window, permission
+    // mode) differs from what was asked for. Gated via enabled() so the env
+    // summary is only built when the level is actually active.
+    if (log.enabled('info')) {
+      log.info('createSession', summarizeSpawn(opts, sdkOptions))
+    }
 
     const q = query({ prompt: input.iterable, options: sdkOptions })
     const handle = new ClaudeSessionHandle(
