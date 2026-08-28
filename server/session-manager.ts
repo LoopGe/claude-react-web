@@ -35,7 +35,8 @@ import { tryCaptureGitHead, invalidateStatusCache } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
-import { config as defaultConfig } from './config.js'
+import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
+import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
 import { fallbackAliasesFor, resolveGroup } from './model-groups.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { pump as pumpSession, getParentToolUseId, applyTaskEvent, type PumpDeps } from './session-pump.js'
@@ -167,16 +168,39 @@ function firstAssistantModel(seed: SDKMessage[] | undefined): string | undefined
  *  resume/clear carry a valid API model. Values that already carry a provider
  *  prefix, or that have no unambiguous configured match, are returned
  *  unchanged. */
-function resolveConfiguredModel(model: string | undefined): string | undefined {
+function resolveConfiguredModel(
+  model: string | undefined,
+  modelList: readonly string[] = defaultConfig.modelList,
+): string | undefined {
   if (!model) return undefined
   // A provider-prefixed id is a full model the user picked explicitly; never
   // rewrite it (rewriting could redirect e.g. myprovider/gpt-5.6-sol to a
   // differently-prefixed same-named model in the list).
   if (model.includes('/')) return model
-  const list = defaultConfig.modelList
+  const list = modelList
   if (list.includes(model)) return model
   const matches = list.filter((m) => m.slice(m.lastIndexOf('/') + 1) === model)
   return matches.length === 1 ? matches[0] : model
+}
+export { resolveConfiguredModel }
+
+/** The profile a session should use: its pinned profile when present, else the
+ *  active profile. A dangling pin self-heals to the active profile. */
+export function effectiveProfileFor(profileId: string | undefined): ProviderProfile {
+  if (profileId) {
+    const found = findProfile(defaultConfig.profiles, profileId)
+    if (found) return found
+    log.warn(`[profile] ${profileId} no longer exists — falling back to active profile`)
+  }
+  const active = resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE)
+  // In legacy mode (no profiles configured) the top-level modelGroups carries
+  // the active profile's groups (set by applyParsedConfig / __setConfigForTest).
+  // Inherit them so callers that look at profile.modelGroups always see the
+  // right set regardless of whether profiles are populated.
+  if (active.modelGroups.length === 0 && defaultConfig.modelGroups.length > 0) {
+    return { ...active, modelGroups: defaultConfig.modelGroups }
+  }
+  return active
 }
 
 /** Merge result frames from the sidecar back into a disk-read history seed.
@@ -938,7 +962,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; modelGroupId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -947,6 +971,7 @@ export class SessionManager {
       cwd: opts.cwd,
       model: opts.model,
       modelGroupId: (opts as { modelGroupId?: string }).modelGroupId,
+      profileId: (opts as { profileId?: string }).profileId,
       permissionMode: opts.permissionMode,
       title: opts.title,
       // `betas` carries flags like `context-1m-...` that change the
@@ -1009,6 +1034,15 @@ export class SessionManager {
         throw new HttpError(400, `model group ${modelGroupId} not found`)
       }
     }
+    const profileId = (opts as { profileId?: unknown }).profileId
+    if (profileId !== undefined) {
+      if (typeof profileId !== 'string') {
+        throw new HttpError(400, 'profileId must be a string')
+      }
+      if (!findProfile(defaultConfig.profiles, profileId)) {
+        throw new HttpError(400, `profile ${profileId} not found`)
+      }
+    }
     // Pin a concrete default model for brand-new sessions so we don't lean
     // on the CLI subprocess's built-in default. When the client omits a
     // model, use the first entry of the configured model list
@@ -1020,7 +1054,7 @@ export class SessionManager {
     const withDefault: Options & { provider?: string; modelGroupId?: string } = {
       ...opts,
       provider: opts.provider ?? this.defaultProvider,
-      model: opts.model ?? defaultConfig.defaultModel,
+      model: opts.model ?? profileDefaultModel(effectiveProfileFor(profileId as string | undefined)),
     }
     return this.spawn(randomUUID(), withDefault, customEnv, undefined, undefined, undefined, joinGroupOf, evictingSource)
   }
@@ -1992,6 +2026,20 @@ export class SessionManager {
     const createdAt = existingMeta?.createdAt ?? Date.now()
     const metaSnapshot = this.snapshotMeta(fullOpts, providerName)
 
+    // Profile resolution: prefer opts.profileId (create/fork), fall back to
+    // persisted meta (resume/respawn). A dangling pin self-heals to the
+    // active profile (mirrors model-group self-heal right below).
+    const requestedProfileId =
+      (fullOpts as { profileId?: string }).profileId ?? existingMeta?.profileId
+    let profile = effectiveProfileFor(requestedProfileId)
+    let profileId = requestedProfileId
+    if (profileId && !findProfile(defaultConfig.profiles, profileId)) {
+      log.warn(`[session ${id}] profile ${profileId} no longer exists — clearing reference`)
+      profileId = undefined
+      profile = effectiveProfileFor(undefined)
+    }
+    metaSnapshot.profileId = profileId
+
     // Model-group intent: carried via opts on create/fork/clear (new ids),
     // or re-read from the persisted meta on same-id respawn (resume /
     // respawnFresh). A deleted group self-heals: clear the reference and
@@ -1999,9 +2047,9 @@ export class SessionManager {
     // misses and collapses — both sides agree).
     const modelGroupId = (fullOpts as { modelGroupId?: string }).modelGroupId ?? existingMeta?.modelGroupId
     if (modelGroupId) {
-      const group = defaultConfig.modelGroups.find((g) => g.id === modelGroupId)
+      const group = profile.modelGroups.find((g) => g.id === modelGroupId)
       if (group) {
-        metaSnapshot.model = resolveGroup(group, resolveConfiguredModel).main
+        metaSnapshot.model = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList)).main
         metaSnapshot.modelGroupId = modelGroupId
       } else {
         log.warn(`[session ${id}] model group ${modelGroupId} no longer exists — clearing reference`)
@@ -2219,6 +2267,7 @@ export class SessionManager {
     const handle = provider.createSession({
       id,
       provider: providerName,
+      profile,
       cwd: fullOpts.cwd,
       model: fullOpts.model,
       permissionMode: requestedMode,
@@ -3001,9 +3050,10 @@ export class SessionManager {
    *  next respawn — an SDK runtime limitation, not a bug (spec §7). */
   async setModelGroup(id: string, groupId: string): Promise<SessionInfo> {
     const s = this.requireLive(id)
-    const group = defaultConfig.modelGroups.find((g) => g.id === groupId)
+    const profile = effectiveProfileFor(s.profileId)
+    const group = profile.modelGroups.find((g) => g.id === groupId)
     if (!group) throw new HttpError(400, `model group ${groupId} not found`)
-    const r = resolveGroup(group, resolveConfiguredModel)
+    const r = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList))
     await this.requireHandleMethod<(model?: string) => Promise<void>>(
       s,
       'setModel',
@@ -3023,6 +3073,50 @@ export class SessionManager {
     s.effortLevels = effortLevelsForModel(s.model)
     s.thinkingSupported = supportsThinkingForModel(s.model)
     this.persist(s)
+    return this.info(s)
+  }
+
+  /** Pin a session to a provider profile. Live-applies the profile's default
+   *  model/group, persists the pin, and (when apply==='now' and the session is
+   *  idle) restarts the Query so the new credentials take effect immediately.
+   *  `deferred` only persists — credentials apply on the next respawn. */
+  async setProfile(id: string, profileId: string, apply: 'now' | 'deferred' = 'now'): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    if (s.profileId === profileId) return this.info(s)
+    const profile = findProfile(defaultConfig.profiles, profileId)
+    if (!profile) throw new HttpError(400, `profile ${profileId} not found`)
+    s.profileId = profileId
+    s.lastActivityAt = Date.now()
+    // Live-apply the profile's default model/group. A group pin only survives
+    // if the new profile still has that group id; otherwise collapse to the
+    // profile's default model (the old group's slots may not exist here).
+    if (s.modelGroupId) {
+      const group = profile.modelGroups.find((g) => g.id === s.modelGroupId)
+      if (group) {
+        await this.setModelGroup(id, s.modelGroupId)
+      } else {
+        await this.setModel(id, profileDefaultModel(profile))
+      }
+    } else {
+      await this.setModel(id, profileDefaultModel(profile))
+    }
+    this.persist(s)
+    if (apply === 'now') {
+      await this.restart(id)
+    }
+    return this.info(s)
+  }
+
+  /** Restart a live session's Query in-place, preserving the transcript
+   *  (same id, `resume: id`). No-op (deferred) while a turn is in flight or a
+   *  clear is already driving its own respawn. */
+  async restart(id: string): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    if (s.pendingTurns > 0 || s.handle.queueDepth > 0 || s.clearing) {
+      return this.info(s)
+    }
+    const resumeOpts = await this.buildResumeOpts(s)
+    this.respawnInPlace(s, resumeOpts, 'restart')
     return this.info(s)
   }
 
@@ -4591,6 +4685,10 @@ export class SessionManager {
     return fn.bind(s.handle) as T
   }
 
+  private profileNameFor(profileId: string | undefined): string | undefined {
+    return effectiveProfileFor(profileId).name
+  }
+
   private info(s: Session): SessionInfo {
     const isWorking = s.running && s.pendingTurns > 0
     return {
@@ -4603,6 +4701,8 @@ export class SessionManager {
       cwd: s.cwd,
       model: s.model,
       modelGroupId: s.modelGroupId,
+      profileId: s.profileId,
+      profileName: this.profileNameFor(s.profileId),
       permissionMode: s.permissionMode,
       title: s.title,
       betas: s.betas,
@@ -4676,6 +4776,9 @@ export class SessionManager {
       messageCount: meta.messageCount,
       cwd: meta.cwd,
       model: meta.model,
+      modelGroupId: meta.modelGroupId,
+      profileId: meta.profileId,
+      profileName: this.profileNameFor(meta.profileId),
       permissionMode: meta.permissionMode,
       title: meta.title,
       fastMode: meta.fastMode,
@@ -4971,6 +5074,7 @@ export class SessionManager {
     session.handle = provider.createSession({
       id: session.id,
       provider: session.provider,
+      profile: effectiveProfileFor(session.profileId),
       cwd: session.cwd,
       model: session.model,
       permissionMode: session.permissionMode,

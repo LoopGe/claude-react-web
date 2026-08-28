@@ -239,7 +239,7 @@ vi.mock('./compact-summary.js', () => ({
 const tick = () => new Promise((r) => setImmediate(r))
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
-import { SessionManager } from './session-manager.js'
+import { SessionManager, resolveConfiguredModel } from './session-manager.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
 import { __setConfigForTest, config as defaultConfig } from './config.js'
@@ -4099,5 +4099,21 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // in the plan, not this unit test.)
       expect(anchors[0].preview).toBe('(reply not found on disk)')
     })
+  })
+})
+
+describe('resolveConfiguredModel with a profile modelList', () => {
+  const list = ['anthropic/claude-sonnet-4-20250514', 'deepseek/deepseek-v4-pro']
+  it('resolves a bare short name against the given list', () => {
+    expect(resolveConfiguredModel('deepseek-v4-pro', list)).toBe('deepseek/deepseek-v4-pro')
+  })
+  it('leaves a provider-prefixed id unchanged', () => {
+    expect(resolveConfiguredModel('myprovider/gpt-5.6', list)).toBe('myprovider/gpt-5.6')
+  })
+  it('falls back to the default (active-profile) list when omitted', () => {
+    // Default list: 'anthropic/claude-sonnet-4-20250514' is the first entry.
+    // 'claude-opus-4-20250514' is a bare name in the default list that
+    // resolves to itself (exact match).
+    expect(resolveConfiguredModel('claude-opus-4-20250514')).toBe('claude-opus-4-20250514')
   })
 })

@@ -3,6 +3,7 @@ import type { HistoryEntry, HistoryPage } from '../history-reader.js'
 import type { SessionMeta } from '../persistence.js'
 import type { ResumableSession } from '../session-types.js'
 import type { SessionMemorySettings, ThinkingSetting } from '../../shared/session-info.js'
+import type { ProviderProfile } from '../config.js'
 
 export interface CreateSessionOptions {
   id: string
@@ -68,6 +69,10 @@ export interface CreateSessionOptions {
    *  (~every 30s per subagent, served from the prompt cache — cheap). */
   agentProgressSummaries?: boolean
   providerExtras?: Record<string, unknown>
+  /** The resolved provider profile for this session. Threaded from the
+   *  session-manager so the provider can use profile-scoped credentials
+   *  and model lists without re-resolving. */
+  profile?: ProviderProfile
 }
 
 export interface ProviderSessionHandle {
