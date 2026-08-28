@@ -6,11 +6,11 @@ import { api } from '../hooks/useApi'
 import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { formatBytes } from '../utils/format'
-import { IconX, IconCheck, IconArrowUp, IconArrowDown, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconFileText, IconSparkles, IconTerminal } from './icons/ToolIcons'
+import { IconX, IconCheck, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconFileText, IconSparkles, IconTerminal } from './icons/ToolIcons'
 import { EmptyState } from './EmptyState'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
-import type { FullServerConfig, ModelGroupConfig } from '../types/config'
-import { randomId } from '../utils/uuid'
+import type { FullServerConfig } from '../types/config'
+import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -52,7 +52,7 @@ const ShareTab = lazy(() =>
   import('./ShareTab').then((m) => ({ default: m.ShareTab })),
 )
 
-type Tab = 'api' | 'models' | 'model-groups' | 'server' | 'skills' | 'mcp' | 'marketplace' | 'app-plugins' | 'share' | 'logs' | 'about'
+type Tab = 'profiles' | 'server' | 'skills' | 'mcp' | 'marketplace' | 'app-plugins' | 'share' | 'logs' | 'about'
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
 
@@ -72,17 +72,6 @@ interface DragDirectoryEntry extends FileSystemEntry {
 interface DroppedSkillFile {
   file: File
   path: string
-}
-
-/** Result of POST /config/test-connection. `ok` true means the token and
- *  baseUrl are valid (we got past authentication); otherwise `status` (when
- *  it was an HTTP error) and `error` describe the failure. `baseUrl` echoes
- *  what was actually probed. */
-interface ConnectionTestResult {
-  ok: boolean
-  status?: number
-  error?: string
-  baseUrl?: string
 }
 
 interface LogConfig {
@@ -132,7 +121,7 @@ export function GlobalSettingsModal({
   versionsError,
   onFetchVersions,
 }: Props) {
-  const [tab, setTab] = useState<Tab>('api')
+  const [tab, setTab] = useState<Tab>('profiles')
   const settingsBodyRef = useRef<HTMLDivElement | null>(null)
   const setSettingsBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
   const settingsBodyRefMerged = useMergedRef(settingsBodyRef, setSettingsBodyOs)
@@ -140,23 +129,6 @@ export function GlobalSettingsModal({
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-
-  // — API tab state ?
-  const [authToken, setAuthToken] = useState('')
-  const [authTokenMasked, setAuthTokenMasked] = useState<string | undefined>()
-  const [authTokenDirty, setAuthTokenDirty] = useState(false)
-  const [baseUrl, setBaseUrl] = useState('')
-
-  // — Connection-test state (API tab) ?
-  const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(null)
-
-  // — Models tab state ?
-  const [modelList, setModelList] = useState<string[]>([])
-  const [modelGroups, setModelGroups] = useState<ModelGroupConfig[]>([])
-  const [recapModel, setRecapModel] = useState('')
-  const [commitMessageModel, setCommitMessageModel] = useState('')
-  const [newModel, setNewModel] = useState('')
 
   // — Server tab state ?
   const [maxUploadBytes, setMaxUploadBytes] = useState(0)
@@ -200,12 +172,6 @@ export function GlobalSettingsModal({
     ;(async () => {
       try {
         const cfg = await api.get<FullServerConfig>('/config/full', { signal: ac.signal })
-        setBaseUrl(cfg.baseUrl ?? '')
-        setAuthTokenMasked(cfg.authTokenMasked)
-        setModelList(cfg.modelList ?? [])
-        setModelGroups(cfg.modelGroups ?? [])
-        setRecapModel(cfg.recapModel ?? '')
-        setCommitMessageModel(cfg.commitMessageModel ?? '')
         setMaxUploadBytes(cfg.maxUploadBytes ?? 0)
         setHistoryCap(cfg.historyCap ?? 500)
         setMaxOpenPanels(cfg.maxOpenPanels ?? 3)
@@ -264,11 +230,6 @@ export function GlobalSettingsModal({
     setErr(null)
     try {
       const updates: Record<string, unknown> = {
-        baseUrl: baseUrl.trim() || null,
-        modelList: modelList.length > 0 ? modelList : null,
-        modelGroups: modelGroups.length > 0 ? modelGroups : null,
-        recapModel: recapModel.trim() || null,
-        commitMessageModel: commitMessageModel.trim() || null,
         maxUploadBytes: maxUploadBytes > 0 ? maxUploadBytes : null,
         historyCap: historyCap > 0 ? historyCap : null,
         maxOpenPanels,
@@ -286,12 +247,7 @@ export function GlobalSettingsModal({
         autoRecap,
         allowSensitivePathEdits,
       }
-      if (authTokenDirty && authToken.trim()) {
-        updates.authToken = authToken.trim()
-      }
       await api.put('/config', updates)
-      setAuthTokenDirty(false)
-      setAuthToken('')
       onSaved?.()
       onClose()
     } catch (e) {
@@ -299,73 +255,6 @@ export function GlobalSettingsModal({
     } finally {
       setSaving(false)
     }
-  }
-
-  const handleTestConnection = async () => {
-    setTesting(true)
-    setTestResult(null)
-    try {
-      // Send the token only when the user edited it (otherwise the server
-      // falls back to the saved token — the client never holds the plaintext
-      // of an already-saved token). Always send baseUrl so an unsaved URL
-      // edit is what gets validated.
-      const r = await api.post<ConnectionTestResult>(
-        '/config/test-connection',
-        {
-          authToken: authTokenDirty && authToken.trim() ? authToken.trim() : undefined,
-          baseUrl: baseUrl.trim() || undefined,
-        },
-        { timeoutMs: 20_000 },
-      )
-      setTestResult(r)
-    } catch (e) {
-      setTestResult({ ok: false, error: (e as Error).message })
-    } finally {
-      setTesting(false)
-    }
-  }
-
-  const addModel = () => {
-    const m = newModel.trim()
-    if (!m || modelList.includes(m)) return
-    setModelList([...modelList, m])
-    setNewModel('')
-  }
-
-  const removeModel = (model: string) => {
-    setModelList(modelList.filter((m) => m !== model))
-    if (recapModel === model) setRecapModel('')
-    if (commitMessageModel === model) setCommitMessageModel('')
-  }
-
-  const moveModel = (index: number, direction: -1 | 1) => {
-    const target = index + direction
-    if (target < 0 || target >= modelList.length) return
-    const next = [...modelList]
-    ;[next[index], next[target]] = [next[target], next[index]]
-    setModelList(next)
-  }
-
-  const sortModels = () => {
-    setModelList([...modelList].sort((a, b) => a.localeCompare(b)))
-  }
-
-  const addModelGroup = () => {
-    const id = randomId()
-    setModelGroups([...modelGroups, { id, name: `Group ${modelGroups.length + 1}`, main: 'opus' }])
-  }
-  const removeModelGroup = (id: string) => {
-    setModelGroups(modelGroups.filter((g) => g.id !== id))
-  }
-  const moveModelGroup = (index: number, direction: -1 | 1) => {
-    const next = [...modelGroups]
-    const j = index + direction
-    if (j < 0 || j >= next.length) return
-    ;[next[index], next[j]] = [next[j], next[index]]
-    setModelGroups(next)
-  }
-  const updateModelGroup = (id: string, patch: Partial<ModelGroupConfig>) => {
-    setModelGroups(modelGroups.map((g) => (g.id === id ? { ...g, ...patch } : g)))
   }
 
   const deleteMcpServer = async (name: string) => {
@@ -387,9 +276,7 @@ export function GlobalSettingsModal({
   }
 
   const tabs: { key: Tab; label: string }[] = [
-    { key: 'api', label: 'API' },
-    { key: 'models', label: 'Models' },
-    { key: 'model-groups', label: 'Model Groups' },
+    { key: 'profiles', label: 'Profiles' },
     { key: 'server', label: 'Server' },
     { key: 'skills', label: 'Skills' },
     { key: 'mcp', label: 'MCP Servers' },
@@ -404,13 +291,9 @@ export function GlobalSettingsModal({
     tab,
     loading,
     err ?? '',
-    modelList.length,
-    modelGroups.length,
     mcpServers.length,
     skillLoadMode,
     enabledSkills.join(','),
-    testing,
-    testResult ? 'tested' : 'untested',
     updateInfo?.latest ?? '',
     updateError ?? '',
   ].join('|')
@@ -473,43 +356,8 @@ export function GlobalSettingsModal({
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading...</div>
           ) : (
             <>
-              {tab === 'api' && (
-                <ApiTab
-                  authToken={authToken}
-                  authTokenMasked={authTokenMasked}
-                  authTokenDirty={authTokenDirty}
-                  baseUrl={baseUrl}
-                  onAuthTokenChange={(v) => { setAuthToken(v); setAuthTokenDirty(true); setTestResult(null) }}
-                  onBaseUrlChange={(v) => { setBaseUrl(v); setTestResult(null) }}
-                  testing={testing}
-                  testResult={testResult}
-                  onTest={handleTestConnection}
-                />
-              )}
-              {tab === 'models' && (
-                <ModelsTab
-                  modelList={modelList}
-                  recapModel={recapModel}
-                  commitMessageModel={commitMessageModel}
-                  newModel={newModel}
-                  onRecapModelChange={setRecapModel}
-                  onCommitMessageModelChange={setCommitMessageModel}
-                  onNewModelChange={setNewModel}
-                  onAddModel={addModel}
-                  onRemoveModel={removeModel}
-                  onMoveModel={moveModel}
-                  onSortModels={sortModels}
-                />
-              )}
-              {tab === 'model-groups' && (
-                <ModelGroupsTab
-                  groups={modelGroups}
-                  modelList={modelList}
-                  onAddGroup={addModelGroup}
-                  onRemoveGroup={removeModelGroup}
-                  onMoveGroup={moveModelGroup}
-                  onUpdateGroup={updateModelGroup}
-                />
+              {tab === 'profiles' && (
+                <ProfilesSettingsTab />
               )}
               {tab === 'server' && (
                 <ServerTab
@@ -651,301 +499,6 @@ export function GlobalSettingsModal({
 }
 
 // — Tab contents ?????????????
-
-function ApiTab({
-  authToken, authTokenMasked, authTokenDirty, baseUrl,
-  onAuthTokenChange, onBaseUrlChange,
-  testing, testResult, onTest,
-}: {
-  authToken: string
-  authTokenMasked?: string
-  authTokenDirty: boolean
-  baseUrl: string
-  onAuthTokenChange: (v: string) => void
-  onBaseUrlChange: (v: string) => void
-  testing: boolean
-  testResult: ConnectionTestResult | null
-  onTest: () => void
-}) {
-  // Can only test if there's a token to test ?either a freshly-type one or
-  // a previously-saved one (signalled by the masked value being present).
-  const canTest = (authTokenDirty && !!authToken.trim()) || !!authTokenMasked
-  return (
-    <>
-      <Field label="Auth Token" hint={authTokenMasked && !authTokenDirty ? `Current: ${authTokenMasked}` : undefined}>
-        <input
-          className="input"
-          type="password"
-          value={authToken}
-          onChange={(e) => onAuthTokenChange(e.target.value)}
-          placeholder={authTokenMasked ? 'Enter new token to replace' : 'sk-ant-...'}
-        />
-      </Field>
-      <Field label="Base URL" hint="API endpoint (default: https://api.anthropic.com)">
-        <input
-          className="input"
-          value={baseUrl}
-          onChange={(e) => onBaseUrlChange(e.target.value)}
-          placeholder="https://api.anthropic.com"
-        />
-      </Field>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 4 }}>
-        <button
-          className="btn"
-          onClick={onTest}
-          disabled={testing || !canTest}
-          title={!canTest ? 'Enter a token first' : 'Send a minimal request to verify the token and URL'}
-        >
-          {testing ? 'Testing...' : 'Test connection'}
-        </button>
-        {testResult && (
-          testResult.ok ? (
-            <span style={{ fontSize: 12, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <IconCheck size={12} /> Token &amp; URL valid
-            </span>
-          ) : (
-            <span style={{ fontSize: 12, color: 'var(--danger)' }}>
-              ? {testResult.status ? `${testResult.status}: ` : ''}{testResult.error ?? 'Failed'}
-            </span>
-          )
-        )}
-      </div>
-      <span className="hint" style={{ display: 'block', marginTop: 6 }}>
-        Tests the token above (or your saved token if unchanged) without saving.
-      </span>
-    </>
-  )
-}
-
-function ModelsTab({
-  modelList, recapModel, commitMessageModel, newModel,
-  onRecapModelChange, onCommitMessageModelChange, onNewModelChange, onAddModel, onRemoveModel,
-  onMoveModel, onSortModels,
-}: {
-  modelList: string[]
-  recapModel: string
-  commitMessageModel: string
-  newModel: string
-  onRecapModelChange: (v: string) => void
-  onCommitMessageModelChange: (v: string) => void
-  onNewModelChange: (v: string) => void
-  onAddModel: () => void
-  onRemoveModel: (m: string) => void
-  onMoveModel: (index: number, direction: -1 | 1) => void
-  onSortModels: () => void
-}) {
-  // Per-instance prefix for the wrapped-select label↔control ids below.
-  const uid = useId()
-  return (
-    <>
-      <Field label="Available Models" hint="First model is the default. Add model IDs one at a time.">
-        <div className="settings-model-list">
-          {modelList.length > 1 && (
-            <div className="settings-model-list-toolbar">
-              <button
-                className="btn btn-xs settings-model-sort-btn"
-                onClick={onSortModels}
-                title="Sort alphabetically (A→Z)"
-              >
-                A→Z
-              </button>
-            </div>
-          )}
-          {modelList.map((m, i) => (
-            <div key={m} className={`settings-model-row${i === 0 ? ' default' : ''}`}>
-              <span className="settings-model-rank" title={i === 0 ? 'Default model' : undefined}>
-                {i === 0 ? 'Default' : i + 1}
-              </span>
-              <code className="settings-model-id" title={m}>
-                {m}
-              </code>
-              <div className="settings-model-move" role="group" aria-label="Move model priority">
-                <button
-                  className="btn-icon-sm settings-model-action"
-                  onClick={() => onMoveModel(i, -1)}
-                  disabled={i === 0}
-                  title="Move up"
-                  aria-label="Move up"
-                >
-                  <IconArrowUp size={12} />
-                </button>
-                <button
-                  className="btn-icon-sm settings-model-action"
-                  onClick={() => onMoveModel(i, 1)}
-                  disabled={i === modelList.length - 1}
-                  title="Move down"
-                  aria-label="Move down"
-                >
-                  <IconArrowDown size={12} />
-                </button>
-              </div>
-              <button
-                className="btn-icon-sm settings-model-action danger"
-                onClick={() => onRemoveModel(m)}
-                title="Remove"
-                aria-label="Remove"
-              >
-                <IconX size={12} />
-              </button>
-            </div>
-          ))}
-          <div className="settings-model-add-row">
-            <input
-              className="input settings-model-input"
-              value={newModel}
-              onChange={(e) => onNewModelChange(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') onAddModel() }}
-              aria-label="New model ID"
-              placeholder="model-id (e.g. claude-sonnet-4-20250514)"
-            />
-            <button className="btn btn-xs settings-model-add-btn" onClick={onAddModel}>
-              Add
-            </button>
-          </div>
-        </div>
-      </Field>
-      <Field label="Recap Model" controlId={uid + '-recap-model'} hint="Model used for AI session summaries (lighter model recommended)">
-        <div className="settings-model-select-wrap">
-          <select
-            className="input settings-model-select"
-            id={uid + '-recap-model'}
-            value={recapModel}
-            onChange={(e) => onRecapModelChange(e.target.value)}
-          >
-            <option value="">(default)</option>
-            {modelList.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-          <IconChevronDown className="settings-model-select-icon" size={14} aria-hidden />
-        </div>
-      </Field>
-      <Field label="Commit Message Model" controlId={uid + '-commit-message-model'} hint="Model used for AI-generated commit messages in Git panel">
-        <div className="settings-model-select-wrap">
-          <select
-            className="input settings-model-select"
-            id={uid + '-commit-message-model'}
-            value={commitMessageModel}
-            onChange={(e) => onCommitMessageModelChange(e.target.value)}
-          >
-            <option value="">(default)</option>
-            {modelList.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-          <IconChevronDown className="settings-model-select-icon" size={14} aria-hidden />
-        </div>
-      </Field>
-    </>
-  )
-}
-
-function ModelGroupsTab({
-  groups, modelList, onAddGroup, onRemoveGroup, onMoveGroup, onUpdateGroup,
-}: {
-  groups: ModelGroupConfig[]
-  modelList: string[]
-  onAddGroup: () => void
-  onRemoveGroup: (id: string) => void
-  onMoveGroup: (index: number, direction: -1 | 1) => void
-  onUpdateGroup: (id: string, patch: Partial<ModelGroupConfig>) => void
-}) {
-  const uid = useId()
-  const slots: { key: 'opus' | 'sonnet' | 'haiku'; label: string }[] = [
-    { key: 'opus', label: 'Opus' },
-    { key: 'sonnet', label: 'Sonnet' },
-    { key: 'haiku', label: 'Haiku' },
-  ]
-  return (
-    <Field
-      label="Model Groups"
-      hint="Groups map Opus/Sonnet/Haiku slots to concrete models. Sessions can select a group or a single model; empty slots inherit the main slot."
-    >
-      <div className="settings-model-list">
-        {groups.length === 0 && (
-          <div className="settings-model-empty">No groups yet. Add one to bundle tier models.</div>
-        )}
-        {groups.map((g, i) => (
-          <div key={g.id} className="settings-model-group">
-            <div className="settings-model-row">
-              <span className="settings-model-rank" title="Group">{i + 1}</span>
-              <input
-                className="input settings-model-input"
-                value={g.name}
-                onChange={(e) => onUpdateGroup(g.id, { name: e.target.value })}
-                aria-label="Group name"
-              />
-              <div className="settings-model-move" role="group" aria-label="Move group priority">
-                <button
-                  className="btn-icon-sm settings-model-action"
-                  onClick={() => onMoveGroup(i, -1)}
-                  disabled={i === 0}
-                  title="Move up"
-                  aria-label="Move up"
-                >
-                  <IconArrowUp size={12} />
-                </button>
-                <button
-                  className="btn-icon-sm settings-model-action"
-                  onClick={() => onMoveGroup(i, 1)}
-                  disabled={i === groups.length - 1}
-                  title="Move down"
-                  aria-label="Move down"
-                >
-                  <IconArrowDown size={12} />
-                </button>
-              </div>
-              <button
-                className="btn-icon-sm settings-model-action danger"
-                onClick={() => onRemoveGroup(g.id)}
-                title="Remove"
-                aria-label="Remove"
-              >
-                <IconX size={12} />
-              </button>
-            </div>
-            <div className="settings-model-group-slots">
-              {slots.map((slot) => (
-                <div key={slot.key} className="settings-model-group-slot">
-                  <label className="settings-model-group-slot-label" htmlFor={`${uid}-${g.id}-${slot.key}`}>
-                    {slot.label}
-                  </label>
-                  <input
-                    className="input settings-model-input"
-                    id={`${uid}-${g.id}-${slot.key}`}
-                    list={`${uid}-model-list`}
-                    value={g[slot.key] ?? ''}
-                    placeholder="(inherit main)"
-                    onChange={(e) => onUpdateGroup(g.id, { [slot.key]: e.target.value || undefined } as Partial<ModelGroupConfig>)}
-                  />
-                </div>
-              ))}
-              <div className="settings-model-group-main">
-                <label className="settings-model-group-slot-label" htmlFor={`${uid}-${g.id}-main`}>Main</label>
-                <select
-                  className="input settings-model-select"
-                  id={`${uid}-${g.id}-main`}
-                  value={g.main ?? 'opus'}
-                  onChange={(e) => onUpdateGroup(g.id, { main: e.target.value as 'opus' | 'sonnet' | 'haiku' })}
-                >
-                  <option value="opus">Opus</option>
-                  <option value="sonnet">Sonnet</option>
-                  <option value="haiku">Haiku</option>
-                </select>
-              </div>
-            </div>
-          </div>
-        ))}
-        <datalist id={`${uid}-model-list`}>
-          {modelList.map((m) => <option key={m} value={m} />)}
-        </datalist>
-        <div className="settings-model-add-row">
-          <button className="btn btn-xs settings-model-add-btn" onClick={onAddGroup}>Add Group</button>
-        </div>
-      </div>
-    </Field>
-  )
-}
 
 function ServerTab({
   maxUploadBytes, historyCap, maxOpenPanels, workingStuckMs,
