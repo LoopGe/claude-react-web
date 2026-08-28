@@ -91,6 +91,14 @@ async function waitForState(manager: AppPluginManager, id: string, state: string
   expect(manager.get(id)!.runtimeState).toBe(state)
 }
 
+async function waitFor(fn: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!fn() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 25))
+  }
+  expect(fn()).toBe(true)
+}
+
 describe('AppPluginManager — runtime (B2)', () => {
   let stateDir: string
   let store: AppPluginStore
@@ -288,6 +296,108 @@ handlers.executeCommand = async ({ invocationId }) => {
     expect(safe.get('com.example.boot')!.runtimeState).toBe('inactive')
     expect(existsSync(marker)).toBe(false)
     await safe.shutdown()
+  })
+
+  it('reloads a running plugin after a configuration change so the new value applies immediately', async () => {
+    const marker = join(stateDir, 'config-reload-marker.txt')
+    const dir = buildPlugin(stateDir, 'com.example.cfg', `
+import { writeFileSync } from 'node:fs'
+handlers.activate = async (params) => {
+  writeFileSync(${JSON.stringify(marker)}, JSON.stringify(params.configuration))
+  return { ok: true }
+}
+`, {
+      activationEvents: ['onStartup'],
+      contributes: {
+        commands: [],
+        contextMenus: [],
+        actions: [],
+        configuration: {
+          properties: [{ key: 'com.example.cfg.mode', type: 'string', title: 'Mode', default: 'a' }],
+        },
+      },
+    })
+    await manager.install({ type: 'local', path: dir })
+    await manager.enable('com.example.cfg')
+    await waitForState(manager, 'com.example.cfg', 'active')
+    await waitFor(() => existsSync(marker))
+    // First activation carries the declared default.
+    expect(JSON.parse(readFileSync(marker, 'utf8'))['com.example.cfg.mode']).toBe('a')
+
+    // A config PUT reloads the subprocess; the fresh activate passes the new value.
+    await manager.putConfiguration('com.example.cfg', { 'com.example.cfg.mode': 'b' })
+    await waitFor(() => {
+      try { return JSON.parse(readFileSync(marker, 'utf8'))['com.example.cfg.mode'] === 'b' } catch { return false }
+    })
+    // The plugin is still active after the reload (no manual re-enable needed).
+    expect(manager.get('com.example.cfg')!.runtimeState).toBe('active')
+  })
+
+  it('applies a configuration change saved mid-activation instead of dropping it', async () => {
+    const marker = join(stateDir, 'config-mid-activate-marker.txt')
+    const dir = buildPlugin(stateDir, 'com.example.cfgmid', `
+import { writeFileSync } from 'node:fs'
+handlers.activate = async (params) => {
+  // Slow activation so a config save can land while ensureActive is in flight.
+  await new Promise((r) => setTimeout(r, 250))
+  writeFileSync(${JSON.stringify(marker)}, JSON.stringify(params.configuration))
+  return { ok: true }
+}
+`, {
+      activationEvents: ['onStartup'],
+      contributes: {
+        commands: [],
+        contextMenus: [],
+        actions: [],
+        configuration: {
+          properties: [{ key: 'com.example.cfgmid.mode', type: 'string', title: 'Mode', default: 'a' }],
+        },
+      },
+    })
+    await manager.install({ type: 'local', path: dir })
+    // enable() fire-and-forgets onStartup activation; putConfiguration below
+    // lands while ensureActive is still spawning, so `get()` is undefined and
+    // the manager must waitForActive to avoid silently dropping the new value.
+    await manager.enable('com.example.cfgmid')
+    await manager.putConfiguration('com.example.cfgmid', { 'com.example.cfgmid.mode': 'b' })
+    await waitFor(() => {
+      try { return JSON.parse(readFileSync(marker, 'utf8'))['com.example.cfgmid.mode'] === 'b' } catch { return false }
+    })
+    expect(manager.get('com.example.cfgmid')!.runtimeState).toBe('active')
+  })
+
+  it('does not reload the subprocess when a configuration PUT is a no-op', async () => {
+    const marker = join(stateDir, 'config-noop-marker.txt')
+    const dir = buildPlugin(stateDir, 'com.example.cfgnop', `
+import { appendFileSync } from 'node:fs'
+handlers.activate = async () => {
+  appendFileSync(${JSON.stringify(marker)}, 'activate\\n')
+  return { ok: true }
+}
+`, {
+      activationEvents: ['onStartup'],
+      contributes: {
+        commands: [],
+        contextMenus: [],
+        actions: [],
+        configuration: {
+          properties: [{ key: 'com.example.cfgnop.mode', type: 'string', title: 'Mode', default: 'a' }],
+        },
+      },
+    })
+    await manager.install({ type: 'local', path: dir })
+    await manager.enable('com.example.cfgnop')
+    await waitForState(manager, 'com.example.cfgnop', 'active')
+    await waitFor(() => existsSync(marker))
+    const activations = () => readFileSync(marker, 'utf8').split('\n').filter(Boolean).length
+    expect(activations()).toBe(1)
+
+    // Same value as the default → no persisted change → no deactivate/reactivate
+    // cycle. A (wrong) reload would respawn the child and append a second line.
+    await manager.putConfiguration('com.example.cfgnop', { 'com.example.cfgnop.mode': 'a' })
+    await new Promise((r) => setTimeout(r, 200))
+    expect(activations()).toBe(1)
+    expect(manager.get('com.example.cfgnop')!.runtimeState).toBe('active')
   })
 
   it('forwards a plugin app.event notification to the bus', async () => {

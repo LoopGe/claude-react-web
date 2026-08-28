@@ -631,11 +631,40 @@ export class AppPluginManager implements AppPluginBroadcaster {
     this.guardEnabled()
     const record = this.requireRecord(id)
     const props = this.resolveContributions(record)?.configuration.properties ?? []
-    const errors = await this.configStoreFor(id).set(props, values)
+    const { errors, changed } = await this.configStoreFor(id).set(props, values)
     if (errors.length > 0) throw new HttpError(400, `invalid configuration: ${errors.join('; ')}`)
-    // If the plugin is active, push the new config so it can react. v1
-    // doesn't have a live config-changed RPC; the plugin sees it on next
-    // activate. (A reload notification could be added later.)
+    // A no-op PUT (the incoming values leave the stored config identical) must
+    // not tear down and respawn the subprocess — there is nothing new for it to
+    // pick up. The stored config is the source of truth for the next activation,
+    // so the running service already has these values.
+    if (!changed) return
+    // Apply the new config to a running service immediately: reload (deactivate
+    // → fresh activate) so it sees the new values without a manual disable/
+    // enable. v1 has no live config-changed RPC, so a restart is the simple
+    // equivalent — `deactivate` accepts a `reload` reason. Only reload when the
+    // subprocess is live. `waitForActive` covers a save landing while `enable()`
+    // is still spawning (get() returns undefined mid-activation) so the new
+    // value isn't silently dropped. The record is re-read AFTER the deactivate
+    // and only re-activated if still enabled, so a concurrent disable that
+    // lands in the gap can't be resurrected by our reload (the ensureActive
+    // teardown-race check covers a disable landing during the re-spawn). Reload
+    // failures are logged, never surfaced: the value is persisted and will be
+    // picked up on the next enable/startup either way.
+    const running = this.pm.get(id) ?? (await this.pm.waitForActive(id))
+    if (running) {
+      // Cancel in-flight commands with a typed code so a reload that tears the
+      // subprocess down doesn't surface as a misleading `plugin-crashed`.
+      this.cancelPluginCommands(id, 'command-cancelled')
+      await this.pm.deactivate(id, 'reload')
+      const live = this.store.get(id)
+      if (live?.enabled) {
+        try {
+          await this.pm.ensureActive(live)
+        } catch (err) {
+          log.warn(`[${id}] reload after configuration change failed: ${(err as Error).message}`)
+        }
+      }
+    }
   }
 
   getPermissions(id: string): { declared: AppPluginClientInfo['declaredPermissions']; granted: AppPluginClientInfo['grantedPermissions'] } {

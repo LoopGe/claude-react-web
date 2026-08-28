@@ -104,6 +104,24 @@ export class PluginProcessManager {
     return this.pool.get(pluginId)?.proc
   }
 
+  /** Resolve the live subprocess for `pluginId`, waiting out an in-flight
+   *  activation if one is underway (during activation `get()` returns
+   *  undefined). Returns undefined when the plugin has no pool entry at all —
+   *  not active, never activated, or mid-teardown. */
+  async waitForActive(pluginId: string): Promise<PluginProcess | undefined> {
+    const entry = this.pool.get(pluginId)
+    if (!entry) return undefined
+    if (entry.activating) {
+      try {
+        await entry.activating
+      } catch {
+        return undefined
+      }
+    }
+    // Re-fetch: activation may have deleted the entry (teardown race).
+    return this.pool.get(pluginId)?.proc
+  }
+
   isQuarantined(pluginId: string): boolean {
     const ts = this.crashes.get(pluginId) ?? []
     return ts.length >= CRASH_QUARANTINE_THRESHOLD

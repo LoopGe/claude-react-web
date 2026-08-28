@@ -3566,7 +3566,7 @@ var require_osinfo = __commonJS({
     var util = require_util();
     var exec = __require("child_process").exec;
     var execSync = __require("child_process").execSync;
-    var execFile = __require("child_process").execFile;
+    var execFile2 = __require("child_process").execFile;
     var _platform = process.platform;
     var _linux = _platform === "linux" || _platform === "android";
     var _darwin = _platform === "darwin";
@@ -4289,7 +4289,7 @@ var require_osinfo = __commonJS({
                     const safePath = /^[a-zA-Z0-9/_.-]+$/;
                     const postgresqlBin = stdout.toString().split("\n").filter((p) => safePath.test(p.trim())).sort();
                     if (postgresqlBin.length) {
-                      execFile(postgresqlBin[postgresqlBin.length - 1], ["-V"], (error2, stdout2) => {
+                      execFile2(postgresqlBin[postgresqlBin.length - 1], ["-V"], (error2, stdout2) => {
                         if (!error2) {
                           const postgresql = stdout2.toString().split("\n")[0].split(" ") || [];
                           appsObj.versions.postgresql = postgresql.length ? postgresql[postgresql.length - 1] : "";
@@ -18314,22 +18314,73 @@ import readline from "node:readline";
 
 // src/collect.ts
 var THRESHOLDS = { warn: 75, danger: 90 };
+var PROBE_MAX_MS = 5e3;
+function withTimeout(p, ms, fallback, onTimeout) {
+  return new Promise((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (!done) {
+        done = true;
+        onTimeout?.();
+        resolve(fallback);
+      }
+    }, ms);
+    p.then(
+      (value) => {
+        if (!done) {
+          done = true;
+          clearTimeout(timer);
+          resolve(value);
+        }
+      },
+      () => {
+        if (!done) {
+          done = true;
+          clearTimeout(timer);
+          resolve(fallback);
+        }
+      }
+    );
+  });
+}
 async function collectSnapshot(opts) {
-  const { si: si2, disks } = opts;
-  const [cpu, mem, fs, graphics] = await Promise.all([
+  const { si: si2, disks, gpuUtil, cpuTempProbe: cpuTempProbe2, cpuBrandProbe: cpuBrandProbe2 } = opts;
+  const [cpu, mem, fs, graphics, cpuTemp, cpuBrand] = await Promise.all([
     si2.currentLoad().catch(() => void 0),
     si2.mem().catch(() => void 0),
     si2.fsSize().catch(() => void 0),
-    si2.graphics().catch(() => void 0)
+    si2.graphics().catch(() => void 0),
+    cpuTempProbe2 ? withTimeout(cpuTempProbe2().catch(() => void 0), PROBE_MAX_MS, void 0) : si2.cpuTemperature().then((t) => t && typeof t.main === "number" && Number.isFinite(t.main) ? t.main : void 0, () => void 0),
+    cpuBrandProbe2 ? withTimeout(cpuBrandProbe2().catch(() => void 0), PROBE_MAX_MS, void 0) : Promise.resolve(void 0)
   ]);
   const result = {};
-  if (cpu) result.cpu = cpu;
+  if (cpu) result.cpu = { currentLoad: cpu.currentLoad, brand: cpuBrand };
+  if (cpuTemp != null) result.cpuTemp = cpuTemp;
   if (mem) result.mem = { total: mem.total, used: mem.used };
   if (fs) result.disks = pickDisks(fs, disks);
   if (graphics) {
-    result.gpus = graphics.controllers.map((c) => ({ model: c.model, utilizationGpu: c.utilizationGpu }));
+    let controllers = graphics.controllers.map((c) => ({
+      model: c.model,
+      utilizationGpu: c.utilizationGpu,
+      temperatureGpu: c.temperatureGpu
+    }));
+    const missing = controllers.filter((c) => c.utilizationGpu == null);
+    if (gpuUtil && missing.length === 1) {
+      const empty = [];
+      const gpuController = new AbortController();
+      const pdh2 = await withTimeout(gpuUtil(gpuController.signal).catch(() => []), PROBE_MAX_MS, empty, () => gpuController.abort());
+      const values = pdh2.map((g) => g.utilizationGpu).filter((n) => n != null);
+      if (values.length > 0) {
+        const busiest = clampPct(Math.max(...values));
+        controllers = controllers.map((c) => c.utilizationGpu == null ? { ...c, utilizationGpu: busiest } : c);
+      }
+    }
+    result.gpus = controllers;
   }
   return result;
+}
+function clampPct(n) {
+  return Math.min(100, Math.max(0, n));
 }
 function pickDisks(disks, wanted) {
   if (!disks) return disks;
@@ -18346,30 +18397,68 @@ function toneFor(progress) {
   if (progress >= THRESHOLDS.warn / 100) return "warn";
   return "ok";
 }
-function buildStatGrid(s) {
-  const values = [];
+var DEFAULT_GROUPS = ["cpu", "mem", "disk", "gpu"];
+function resolveGroupOrder(rows) {
+  if (!rows || rows.length === 0) return [...DEFAULT_GROUPS];
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const r of rows) {
+    const g = r.trim();
+    if (g !== "cpu" && g !== "mem" && g !== "disk" && g !== "gpu") continue;
+    if (seen.has(g)) continue;
+    seen.add(g);
+    out.push(g);
+  }
+  return out.length > 0 ? out : [...DEFAULT_GROUPS];
+}
+function diskLabel(mount, fs) {
+  const raw = (mount && mount.trim() ? mount : fs ?? "").trim();
+  if (!raw) return "Disk";
+  return raw.replace(/\\+$/, "").slice(0, 14) || "Disk";
+}
+function gpuRows(gpus) {
+  const rows = [];
+  for (const [i, g] of gpus.entries()) {
+    const label = (g.model ?? "").trim().slice(0, 14) || "GPU";
+    const hasUtil = g.utilizationGpu != null;
+    const hasTemp = g.temperatureGpu != null;
+    if (hasUtil) {
+      const p = clamp01(g.utilizationGpu / 100);
+      rows.push({ id: `gpu:${i}`, label, value: g.utilizationGpu.toFixed(0), unit: "%", progress: p, tone: toneFor(p) });
+      const tempTone = hasTemp ? toneFor(clamp01(g.temperatureGpu / 100)) : "ok";
+      rows.push({ id: `gpuTemp:${i}`, label, value: hasTemp ? g.temperatureGpu.toFixed(0) : "\u2014", unit: hasTemp ? "\xB0C" : void 0, tone: tempTone });
+    } else if (hasTemp) {
+      rows.push({ id: `gpu:${i}`, label, value: "\u2014", tone: "ok" });
+      rows.push({ id: `gpuTemp:${i}`, label, value: g.temperatureGpu.toFixed(0), unit: "\xB0C", tone: "ok" });
+    } else {
+      rows.push({ id: `gpu:${i}`, label, value: "\u2014", tone: "ok" });
+    }
+  }
+  return rows;
+}
+function buildStatGrid(s, opts) {
+  const order = resolveGroupOrder(opts?.rows);
+  const groups = { cpu: [], mem: [], disk: [], gpu: [] };
   if (s.cpu) {
+    if (s.cpu.brand) groups.cpu.push({ id: "cpuName", label: "CPU", value: s.cpu.brand, tone: "ok" });
     const p = clamp01(s.cpu.currentLoad / 100);
-    values.push({ id: "cpu", label: "CPU", value: s.cpu.currentLoad.toFixed(1), unit: "%", progress: p, tone: toneFor(p) });
+    groups.cpu.push({ id: "cpu", label: "CPU", value: s.cpu.currentLoad.toFixed(1), unit: "%", progress: p, tone: toneFor(p) });
+    const hasTemp = s.cpuTemp != null;
+    const tempTone = hasTemp ? toneFor(clamp01(s.cpuTemp / 100)) : "ok";
+    groups.cpu.push({ id: "cpuTemp", label: "CPU", value: hasTemp ? s.cpuTemp.toFixed(0) : "\u2014", unit: hasTemp ? "\xB0C" : void 0, tone: tempTone });
   }
   if (s.mem && s.mem.total > 0) {
     const p = clamp01(s.mem.used / s.mem.total);
     const gb = (n) => (n / 1024 ** 3).toFixed(1);
-    values.push({ id: "mem", label: "Mem", value: `${gb(s.mem.used)}/${gb(s.mem.total)}`, unit: "GB", progress: p, tone: toneFor(p) });
+    groups.mem.push({ id: "mem", label: "Mem", value: `${gb(s.mem.used)}/${gb(s.mem.total)}`, unit: "GB", progress: p, tone: toneFor(p) });
   }
   for (const d of s.disks ?? []) {
     const p = clamp01(d.size > 0 ? d.used / d.size : 0);
-    values.push({ id: `disk:${d.mount}`, label: "Disk", value: (p * 100).toFixed(0), unit: "%", progress: p, tone: toneFor(p) });
+    groups.disk.push({ id: `disk:${d.mount}`, label: diskLabel(d.mount, d.fs), value: (p * 100).toFixed(0), unit: "%", progress: p, tone: toneFor(p) });
   }
-  for (const [i, g] of (s.gpus ?? []).entries()) {
-    const label = (g.model ?? "").trim().slice(0, 14) || "GPU";
-    if (g.utilizationGpu != null) {
-      const p = clamp01(g.utilizationGpu / 100);
-      values.push({ id: `gpu:${i}`, label, value: g.utilizationGpu.toFixed(0), unit: "%", progress: p, tone: toneFor(p) });
-    } else {
-      values.push({ id: `gpu:${i}`, label, value: "\u2014", tone: "ok" });
-    }
-  }
+  groups.gpu = gpuRows(s.gpus ?? []);
+  const values = [];
+  for (const g of order) values.push(...groups[g]);
   return { values };
 }
 
@@ -18382,6 +18471,7 @@ function createSampler(deps) {
   let active = false;
   let generation = 0;
   let intervalMs = DEFAULT_INTERVAL_MS;
+  let rows;
   function schedule() {
     if (!active) return;
     timer = setTimeout(push, intervalMs);
@@ -18389,7 +18479,7 @@ function createSampler(deps) {
   function push() {
     const gen = generation;
     void deps.collect().then((snapshot) => {
-      const payload = buildStatGrid(snapshot);
+      const payload = buildStatGrid(snapshot, { rows });
       if (payload.values.length > 0) deps.emitPayload(payload);
     }).catch(() => {
     }).finally(() => {
@@ -18404,6 +18494,8 @@ function createSampler(deps) {
         if (Number.isFinite(iv) && iv > 0) {
           intervalMs = Math.min(MAX_INTERVAL_MS, Math.max(MIN_INTERVAL_MS, iv));
         }
+        const r = c["system-stats.claude-react-web.rows"];
+        rows = Array.isArray(r) ? r.filter((x) => typeof x === "string") : void 0;
       }
       active = true;
       generation += 1;
@@ -18420,6 +18512,98 @@ function createSampler(deps) {
   };
 }
 
+// src/pdh.ts
+import { execFile } from "node:child_process";
+
+// src/abort.ts
+function abortError() {
+  return new DOMException("The operation was aborted", "AbortError");
+}
+function isAbortError(err) {
+  return err instanceof DOMException && err.name === "AbortError";
+}
+
+// src/pdh.ts
+var POWERSHELL_SCRIPT = `
+$e = Get-CimInstance -Query "SELECT Name, UtilizationPercentage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine" -ErrorAction Stop | Where-Object { $null -ne $_.UtilizationPercentage }
+$e | Group-Object { if ($_.Name -match '_luid_([^_]+_[^_]+)_phys_') { $matches[1] } else { 'unknown' } } | ForEach-Object { [pscustomobject]@{ luid = $_.Name; utilization = [math]::Round((($_.Group | Measure-Object UtilizationPercentage -Sum).Sum), 1) } } | ConvertTo-Json -Compress
+`;
+function queryViaPowershell(script, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    const child = execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { windowsHide: true, timeout: 1e4, maxBuffer: 1024 * 1024 },
+      (err, stdout) => {
+        if (signal?.aborted) {
+          reject(abortError());
+          return;
+        }
+        resolve(err ? "" : stdout.trim());
+      }
+    );
+    signal?.addEventListener("abort", () => child.kill(), { once: true });
+  });
+}
+function parseUtilizationJson(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    const items = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+    return items.map((g) => {
+      const u = typeof g === "object" && g !== null ? g.utilization : void 0;
+      const n = typeof u === "number" && Number.isFinite(u) ? u : void 0;
+      return { utilizationGpu: n != null ? Math.min(100, Math.max(0, n)) : void 0 };
+    });
+  } catch {
+    return [];
+  }
+}
+function createPdhGpuUtilProbe(query = queryViaPowershell) {
+  return {
+    probe: async (signal) => {
+      try {
+        return parseUtilizationJson(await query(POWERSHELL_SCRIPT, signal));
+      } catch (err) {
+        if (isAbortError(err)) throw err;
+        return [];
+      }
+    }
+  };
+}
+
+// src/sensor-cache.ts
+function withSensorCache(probe, ttlMs) {
+  let lastRun = 0;
+  let cached;
+  let hasCached = false;
+  let inflight = null;
+  return (signal) => {
+    const now = Date.now();
+    if (hasCached && now - lastRun < ttlMs) return Promise.resolve(cached);
+    if (inflight) return inflight;
+    lastRun = now;
+    inflight = probe(signal).then(
+      (v) => {
+        inflight = null;
+        cached = v;
+        hasCached = true;
+        return v;
+      },
+      (e) => {
+        inflight = null;
+        hasCached = false;
+        throw e;
+      }
+    );
+    return inflight;
+  };
+}
+
 // src/service.ts
 var rl = readline.createInterface({ input: process.stdin });
 var pending = /* @__PURE__ */ new Map();
@@ -18430,8 +18614,23 @@ var WIDGET_ID = "system-stats.claude-react-web.overview";
 var config = {
   "system-stats.claude-react-web.disks": []
 };
+var pdh = process.platform === "win32" ? createPdhGpuUtilProbe() : null;
+var cpuTempProbe = withSensorCache(
+  () => import_systeminformation.default.cpuTemperature().then((t) => t && typeof t.main === "number" && Number.isFinite(t.main) ? t.main : void 0, () => void 0),
+  1e4
+);
+var cpuBrandProbe = withSensorCache(
+  () => import_systeminformation.default.cpu().then((c) => c && typeof c.brand === "string" && c.brand.trim() ? c.brand.trim() : void 0, () => void 0),
+  36e5
+);
 var sampler = createSampler({
-  collect: () => collectSnapshot({ si: import_systeminformation.default, disks: config["system-stats.claude-react-web.disks"] }),
+  collect: () => collectSnapshot({
+    si: import_systeminformation.default,
+    disks: config["system-stats.claude-react-web.disks"],
+    gpuUtil: pdh ? (signal) => pdh.probe(signal) : void 0,
+    cpuTempProbe,
+    cpuBrandProbe
+  }),
   emitPayload: (payload) => send({ jsonrpc: "2.0", method: "app.event", params: { widgetId: WIDGET_ID, payload } })
 });
 var handlers = {

@@ -16,7 +16,8 @@
     "configuration": {
       "properties": [
         { "key": "system-stats.claude-react-web.intervalMs", "type": "number", "title": "Refresh interval (ms)", "default": 2000 },
-        { "key": "system-stats.claude-react-web.disks", "type": "array", "items": "string", "title": "Disk mount points to watch (empty = auto)", "default": [] }
+        { "key": "system-stats.claude-react-web.disks", "type": "array", "items": "string", "title": "Disk mount points to watch (empty = auto)", "default": [] },
+        { "key": "system-stats.claude-react-web.rows", "type": "array", "items": "string", "title": "Visible metrics (order matters)", "description": "Comma-separated subset of cpu, mem, disk, gpu — e.g. \"cpu, mem\" shows CPU then memory only. Empty = show all.", "default": [] }
       ]
     }
   }

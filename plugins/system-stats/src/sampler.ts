@@ -29,6 +29,11 @@ export function createSampler(deps: SamplerDeps): Sampler {
   // lifecycle transition cannot reschedule a timer for the NEW cycle.
   let generation = 0
   let intervalMs = DEFAULT_INTERVAL_MS
+  // `rows` display config: metric groups to show, in order. undefined = all
+  // (the default). Read at activate like intervalMs; the host re-activates the
+  // service on a config change (reload), so there is no separate live-update
+  // path here.
+  let rows: string[] | undefined
 
   function schedule(): void {
     if (!active) return
@@ -40,7 +45,7 @@ export function createSampler(deps: SamplerDeps): Sampler {
     void deps
       .collect()
       .then((snapshot) => {
-        const payload = buildStatGrid(snapshot)
+        const payload = buildStatGrid(snapshot, { rows })
         if (payload.values.length > 0) deps.emitPayload(payload)
       })
       .catch(() => {
@@ -62,6 +67,8 @@ export function createSampler(deps: SamplerDeps): Sampler {
           // value > 2^31-1 makes setTimeout fire after ~1ms.
           intervalMs = Math.min(MAX_INTERVAL_MS, Math.max(MIN_INTERVAL_MS, iv))
         }
+        const r = c['system-stats.claude-react-web.rows']
+        rows = Array.isArray(r) ? r.filter((x): x is string => typeof x === 'string') : undefined
       }
       active = true
       generation += 1

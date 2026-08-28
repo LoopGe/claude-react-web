@@ -7,6 +7,8 @@ import readline from 'node:readline'
 import si from 'systeminformation'
 import { collectSnapshot } from './collect.js'
 import { createSampler } from './sampler.js'
+import { createPdhGpuUtilProbe } from './pdh.js'
+import { withSensorCache } from './sensor-cache.js'
 
 const rl = readline.createInterface({ input: process.stdin })
 let nextId = 1
@@ -32,8 +34,44 @@ const config = {
 // Sampling loop — interval clamp + lifecycle live in sampler.ts. The disks
 // list is read live at each sample, so an activate with a new list takes
 // effect on the next push without a separate control path.
+//
+// GPU utilization fallback: systeminformation only fills `utilizationGpu` for
+// NVIDIA GPUs on Windows. For Intel/AMD the PDH probe supplies it. The probe is
+// created on Windows only and `collectSnapshot` invokes it lazily (only when
+// exactly one controller reports no utilization — the mergeable case), so
+// NVIDIA machines and multi-missing configurations never spawn it.
+const pdh = process.platform === 'win32' ? createPdhGpuUtilProbe() : null
+
+// CPU temperature: `si.cpuTemperature()` needs admin on Windows (WMI MSAcpi
+// permission) — non-elevated it returns null after ~0.6–1.9s of wasted WMI
+// work, elevated (or on Linux/macOS) it returns a real reading. The result is
+// TTL-cached (~10s), so a non-elevated Windows session pays that latency once
+// per window instead of on every sample; temperature changes slowly enough
+// that 10s freshness is fine.
+const cpuTempProbe = withSensorCache(
+  () => si.cpuTemperature().then((t) => (t && typeof t.main === 'number' && Number.isFinite(t.main) ? t.main : undefined), () => undefined),
+  10_000,
+)
+
+// CPU model name: `si.cpu().brand` is static but costs ~1.8s of WMI/PowerShell
+// on Windows, so it is read once and cached for an hour (a transient failure is
+// re-queried on the next sample; a successful read is a stable constant).
+// `collectSnapshot` runs it inside the sample's Promise.all, so the first read
+// overlaps the other probes instead of delaying the first sample.
+const cpuBrandProbe = withSensorCache(
+  () => si.cpu().then((c) => (c && typeof c.brand === 'string' && c.brand.trim() ? c.brand.trim() : undefined), () => undefined),
+  3600_000,
+)
+
 const sampler = createSampler({
-  collect: () => collectSnapshot({ si, disks: config['system-stats.claude-react-web.disks'] }),
+  collect: () =>
+    collectSnapshot({
+      si,
+      disks: config['system-stats.claude-react-web.disks'],
+      gpuUtil: pdh ? (signal) => pdh.probe(signal) : undefined,
+      cpuTempProbe,
+      cpuBrandProbe,
+    }),
   emitPayload: (payload) => send({ jsonrpc: '2.0', method: 'app.event', params: { widgetId: WIDGET_ID, payload } }),
 })
 

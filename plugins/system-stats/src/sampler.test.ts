@@ -52,6 +52,23 @@ describe('createSampler', () => {
     sampler.deactivate()
   })
 
+  it('applies the rows config to the emitted grid (filters groups)', async () => {
+    vi.useFakeTimers()
+    const collect = vi.fn(async (): Promise<RawSnapshot> => ({ cpu: { currentLoad: 10 }, mem: { total: 1000, used: 400 } }))
+    const emitPayload = vi.fn()
+    const sampler = createSampler({ collect, emitPayload })
+
+    sampler.activate({
+      'system-stats.claude-react-web.intervalMs': 200,
+      'system-stats.claude-react-web.rows': ['mem'],
+    })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(emitPayload).toHaveBeenCalledTimes(1)
+    const payload = emitPayload.mock.calls[0][0] as { values: Array<{ id: string }> }
+    expect(payload.values.map((v) => v.id)).toEqual(['mem'])
+    sampler.deactivate()
+  })
+
   it('does not reschedule after deactivate, even when a collect is in flight', async () => {
     vi.useFakeTimers()
     let release!: (s: RawSnapshot) => void

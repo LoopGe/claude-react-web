@@ -29,23 +29,41 @@ describe('ConfigurationStore', () => {
   })
 
   it('persists + reads back a set value', async () => {
-    await store.set(props, { 'p.count': 42, 'p.name': 'hi' })
+    const { errors, changed } = await store.set(props, { 'p.count': 42, 'p.name': 'hi' })
+    expect(errors).toEqual([])
+    expect(changed).toBe(true)
     const cfg = await store.get(props)
     expect(cfg['p.count']).toBe(42)
     expect(cfg['p.name']).toBe('hi')
+  })
+
+  it('reports changed=false for a no-op PUT (values already stored)', async () => {
+    const first = await store.set(props, { 'p.count': 42 })
+    expect(first.changed).toBe(true)
+    // Same value again → no change, no persistence work.
+    const second = await store.set(props, { 'p.count': 42 })
+    expect(second.changed).toBe(false)
+  })
+
+  it('reports changed=false when clearing a key that was never stored', async () => {
+    const { changed } = await store.set(props, { 'p.name': null })
+    expect(changed).toBe(false)
+    expect((await store.get(props))['p.name']).toBe('unset')
   })
 
   it('clearing a field with null reverts it to the declared default on next read', async () => {
     await store.set(props, { 'p.count': 42 })
     expect((await store.get(props))['p.count']).toBe(42)
     // null → server deletes the stored key → read applies the default (5).
-    await store.set(props, { 'p.count': null })
+    const { changed } = await store.set(props, { 'p.count': null })
+    expect(changed).toBe(true)
     expect((await store.get(props))['p.count']).toBe(5)
   })
 
   it('rejects invalid values and returns errors without persisting', async () => {
-    const errors = await store.set(props, { 'p.count': 'not-a-number' as never })
+    const { errors, changed } = await store.set(props, { 'p.count': 'not-a-number' as never })
     expect(errors.length).toBeGreaterThan(0)
+    expect(changed).toBe(false)
     // Unchanged — still the default.
     expect((await store.get(props))['p.count']).toBe(5)
   })
