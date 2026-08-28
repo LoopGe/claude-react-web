@@ -1022,6 +1022,18 @@ export class SessionManager {
      *  bypass its maxGroupSize cap when appending Y. */
     evictingSource?: boolean,
   ): SessionInfo {
+    // Validate profileId first so we can use the effective profile for
+    // downstream checks (modelGroupId, default model).
+    const profileId = (opts as { profileId?: unknown }).profileId
+    if (profileId !== undefined) {
+      if (typeof profileId !== 'string') {
+        throw new HttpError(400, 'profileId must be a string')
+      }
+      if (!findProfile(defaultConfig.profiles, profileId)) {
+        throw new HttpError(400, `profile ${profileId} not found`)
+      }
+    }
+    const profile = effectiveProfileFor(profileId as string | undefined)
     // Explicit op: an unknown group at create is a 400, not a silent
     // fallback (contrast: a group deleted while sessions reference it
     // self-heals silently on the next respawn, below).
@@ -1030,17 +1042,8 @@ export class SessionManager {
       if (typeof modelGroupId !== 'string') {
         throw new HttpError(400, 'modelGroupId must be a string')
       }
-      if (!defaultConfig.modelGroups.some((g) => g.id === modelGroupId)) {
+      if (!profile.modelGroups.some((g) => g.id === modelGroupId)) {
         throw new HttpError(400, `model group ${modelGroupId} not found`)
-      }
-    }
-    const profileId = (opts as { profileId?: unknown }).profileId
-    if (profileId !== undefined) {
-      if (typeof profileId !== 'string') {
-        throw new HttpError(400, 'profileId must be a string')
-      }
-      if (!findProfile(defaultConfig.profiles, profileId)) {
-        throw new HttpError(400, `profile ${profileId} not found`)
       }
     }
     // Pin a concrete default model for brand-new sessions so we don't lean
@@ -1054,7 +1057,7 @@ export class SessionManager {
     const withDefault: Options & { provider?: string; modelGroupId?: string } = {
       ...opts,
       provider: opts.provider ?? this.defaultProvider,
-      model: opts.model ?? profileDefaultModel(effectiveProfileFor(profileId as string | undefined)),
+      model: opts.model ?? profileDefaultModel(profile),
     }
     return this.spawn(randomUUID(), withDefault, customEnv, undefined, undefined, undefined, joinGroupOf, evictingSource)
   }
@@ -3100,7 +3103,6 @@ export class SessionManager {
     } else {
       await this.setModel(id, profileDefaultModel(profile))
     }
-    this.persist(s)
     if (apply === 'now') {
       await this.restart(id)
     }

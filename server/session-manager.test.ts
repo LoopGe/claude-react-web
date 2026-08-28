@@ -4117,3 +4117,69 @@ describe('resolveConfiguredModel with a profile modelList', () => {
     expect(resolveConfiguredModel('claude-opus-4-20250514')).toBe('claude-opus-4-20250514')
   })
 })
+
+describe('create() validates modelGroupId against the effective profile', () => {
+  let dir: string
+  let smLocal: SessionManager
+
+  const GROUP_B = {
+    id: 'g_budget', name: 'Budget',
+    sonnet: 'anthropic/claude-sonnet-4-20250514',
+    haiku: 'claude-haiku-3-5-20241022',
+    main: 'sonnet' as const,
+  }
+  const profileA: import('./config.js').ProviderProfile = {
+    id: 'A', name: 'Profile A', authToken: 'tok-a',
+    baseUrl: 'https://api.anthropic.com',
+    modelList: ['anthropic/claude-sonnet-4-20250514'],
+    modelGroups: [], recapModel: '', commitMessageModel: '',
+  }
+  const profileB: import('./config.js').ProviderProfile = {
+    id: 'B', name: 'Profile B', authToken: 'tok-b',
+    baseUrl: 'https://api.anthropic.com',
+    modelList: ['anthropic/claude-sonnet-4-20250514'],
+    modelGroups: [GROUP_B], recapModel: '', commitMessageModel: '',
+  }
+
+  beforeEach(async () => {
+    dir = makeTmpDir()
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    smLocal = new SessionManager({ store })
+  })
+
+  afterEach(async () => {
+    await smLocal.shutdown()
+    rmRf(dir)
+    __setConfigForTest({ profiles: [], activeProfileId: 'default', modelGroups: [] })
+  })
+
+  it('succeeds when profile B has the group but the active profile does not', () => {
+    __setConfigForTest({
+      profiles: [profileA, profileB],
+      activeProfileId: 'A',
+      modelGroups: [],
+    })
+    const info = smLocal.create({
+      cwd: '/tmp',
+      profileId: 'B',
+      modelGroupId: 'g_budget',
+    } as Parameters<SessionManager['create']>[0])
+    expect(info.modelGroupId).toBe('g_budget')
+    expect(info.model).toBe('anthropic/claude-sonnet-4-20250514')
+    expect(info.profileId).toBe('B')
+  })
+
+  it('rejects a group that belongs to neither profile', () => {
+    __setConfigForTest({
+      profiles: [profileA, profileB],
+      activeProfileId: 'A',
+      modelGroups: [],
+    })
+    expect(() => smLocal.create({
+      cwd: '/tmp',
+      profileId: 'B',
+      modelGroupId: 'nonexistent',
+    } as Parameters<SessionManager['create']>[0])).toThrow('model group nonexistent not found')
+  })
+})
