@@ -37,15 +37,18 @@ chmodSync(path, 0o755)
 // Ship the official App Plugin marketplace with the package so the built-in
 // marketplace works offline without a runtime git clone. Test files excluded,
 // and build-time / cache noise (node_modules, .vite, src/) is dropped — the
-// plugins run from their pre-built dist/ + crw-plugin.json only. The previous
-// copy is removed first so stale files (e.g. an older plugin's src/ tree)
-// never survive into the published tarball.
+// plugins run from their pre-built dist/ + crw-plugin.json only. A plugin-local
+// package.json is build-tooling metadata, not runtime, so it's excluded too
+// (but a future plugins/ root package.json, depth < 3, is kept). The previous
+// copy is removed first so stale files never survive into the tarball.
 rmSync('dist/plugins', { recursive: true, force: true })
 cpSync('plugins', 'dist/plugins', {
   recursive: true,
   filter: (src) => {
     if (/\.test\.(ts|js|tsx|jsx)$/.test(src)) return false
-    return !src.split(/[\\/]/).some((part) => part === 'node_modules' || part === '.vite' || part === 'src')
+    const parts = src.split(/[\\/]/)
+    if (parts.length >= 3 && parts[parts.length - 1] === 'package.json') return false
+    return !parts.some((part) => part === 'node_modules' || part === '.vite' || part === 'src')
   },
 })
 
