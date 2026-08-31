@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
+import { writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { buildGitRouter } from './git-routes.js'
@@ -177,6 +177,24 @@ describe('git-routes', () => {
       const res = await app.request(`/api/git/status?cwd=${encodeURIComponent(dir)}`)
       const body = await json<{ state: string }>(res)
       expect(body.state).toBe('dirty')
+    })
+
+    it.skipIf(!gitOk)('reports repoRoot even when queried from a subdirectory', async () => {
+      gitInit(dir)
+      mkdirSync(join(dir, 'sub'), { recursive: true })
+      writeFileSync(join(dir, 'sub', 'a.txt'), 'a\n')
+      gitCommitAll(dir, 'init')
+      writeFileSync(join(dir, 'sub', 'a.txt'), 'a-changed\n')
+      // Query status from the repo's subdirectory. Porcelain paths stay
+      // relative to the work-tree root, and repoRoot must be that root —
+      // callers building an absolute path (FileViewer readFile) anchor on it.
+      const app = buildApp()
+      const res = await app.request(`/api/git/status?cwd=${encodeURIComponent(join(dir, 'sub'))}`)
+      const body = await json<{ repoRoot: string; unstaged: Array<{ path: string }> }>(res)
+      // git resolves symlinked path components (macOS /var → /private/var),
+      // so compare against the real path.
+      expect(body.repoRoot).toBe(realpathSync(dir))
+      expect(body.unstaged.map((f) => f.path)).toEqual(['sub/a.txt'])
     })
 
     it.skipIf(!gitOk)('handles paths with spaces and unicode via -z parsing', async () => {

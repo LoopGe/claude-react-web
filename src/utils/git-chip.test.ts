@@ -5,6 +5,7 @@ import type { GitFileEntry, GitStatus } from '../../shared/git-types'
 function makeStatus(overrides: Partial<GitStatus> = {}): GitStatus {
   return {
     isRepo: true,
+    repoRoot: '/repo',
     branch: 'main',
     detached: false,
     ahead: 0,

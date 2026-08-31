@@ -19,13 +19,14 @@
 // All destructive operations (discard, drop, abort, amend, force
 // checkout) are gated by <ConfirmDialog>.
 
-import { memo, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useState } from 'react'
 import { useGitDiff, useGitLog, useGitBranches, useGitStashes } from '../hooks/useGitStatus'
 import { useGitWrite } from '../hooks/useGitWrite'
 import { ConfirmDialog } from './ConfirmDialog'
+import { FileViewer } from './FileViewer'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { Tooltip } from './Tooltip'
-import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw } from './icons/ToolIcons'
+import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw, IconFileText } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -92,6 +93,22 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [commitMessage, setCommitMessage] = useState('')
+  // File currently open in the read-only content viewer ({absPath, name}).
+  const [viewing, setViewing] = useState<{ absPath: string; name: string } | null>(null)
+
+  // Stable so memoized FileRow/UntrackedRow don't re-render when it's passed
+  // down. Git status paths are relative to the WORK TREE ROOT (repoRoot),
+  // not to the session cwd — anchoring against cwd would resolve the wrong
+  // file whenever the session cwd is a subdirectory of the repo. readFile
+  // wants an absolute path; the SDK resolves it against the session cwd.
+  const handleOpenFile = useCallback(
+    (path: string) => {
+      const base = status && 'repoRoot' in status ? status.repoRoot : cwd
+      const absPath = base ? `${base.replace(/\/+$/, '')}/${path}` : path
+      setViewing({ absPath, name: path })
+    },
+    [cwd, status],
+  )
 
   // Helper used inside event handlers: run a write op and translate
   // any rejection into a toast. Returns void so callers can `void run(...)`.
@@ -376,6 +393,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
               writeOps={writeOps}
               onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
+              onOpenFile={handleOpenFile}
             />
           ))
         )}
@@ -406,6 +424,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
               writeOps={writeOps}
               onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
+              onOpenFile={handleOpenFile}
             />
           ))
         )}
@@ -433,6 +452,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
               writeOps={writeOps}
               onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
+              onOpenFile={handleOpenFile}
             />
           ))
         )}
@@ -484,6 +504,16 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
           />
         )}
       </AnimatePresence>
+
+      {viewing && (
+        <FileViewer
+          open
+          sessionId={sessionId}
+          path={viewing.absPath}
+          name={viewing.name}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </aside>
   )
 })
@@ -553,9 +583,11 @@ interface FileRowProps {
   writeOps: ReturnType<typeof useGitWrite>
   onError: (label: string, err: string) => void
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
+  /** Open the file's current content in the read-only viewer. */
+  onOpenFile: (path: string) => void
 }
 
-const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, askConfirm }: FileRowProps) {
+const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, askConfirm, onOpenFile }: FileRowProps) {
   const [open, setOpen] = useState(false)
   const [renderDiff, setRenderDiff] = useState(false)
   // Pending-open: the user clicked to open but the diff fetch is still in
@@ -655,6 +687,14 @@ const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, as
           <span className="git-file-arrow">{(open || pendingOpen) ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}</span>
         </button>
         <div className="git-file-actions">
+          <Tooltip label="View file content" placement="left">
+            <button
+              type="button"
+              className="git-action-btn"
+              aria-label="View file content"
+              onClick={(e) => { e.stopPropagation(); onOpenFile(file.path) }}
+            ><IconFileText size={13} /></button>
+          </Tooltip>
           {staged ? (
             <Tooltip label="Unstage" placement="left">
               <button
@@ -743,9 +783,11 @@ interface UntrackedRowProps {
   writeOps: ReturnType<typeof useGitWrite>
   onError: (label: string, err: string) => void
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
+  /** Open the file's current content in the read-only viewer. */
+  onOpenFile: (path: string) => void
 }
 
-function UntrackedRow({ file, writeOps, onError, askConfirm }: UntrackedRowProps) {
+function UntrackedRow({ file, writeOps, onError, askConfirm, onOpenFile }: UntrackedRowProps) {
   const stageBusy = writeOps.busyOps.has(`stage:${file.path}`)
   const discardBusy = writeOps.busyOps.has(`discard:${file.path}`)
   const anyBusy = stageBusy || discardBusy
@@ -759,6 +801,14 @@ function UntrackedRow({ file, writeOps, onError, askConfirm }: UntrackedRowProps
           </span>
         </span>
         <div className="git-file-actions">
+          <Tooltip label="View file content" placement="left">
+            <button
+              type="button"
+              className="git-action-btn"
+              aria-label="View file content"
+              onClick={(e) => { e.stopPropagation(); onOpenFile(file.path) }}
+            ><IconFileText size={13} /></button>
+          </Tooltip>
           <Tooltip label="Stage" placement="left">
             <button
               type="button"

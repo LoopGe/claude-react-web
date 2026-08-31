@@ -154,6 +154,10 @@ export interface ProviderSessionHandle {
    *  text the CLI uses to synthesize a title. `persist: true` is passed to
    *  the SDK so the title also survives resume via the CLI transcript. */
   generateTitle?(description: string): Promise<unknown>
+  /** Read a file's content (SDK Query.readFile) — gated by the session's
+   *  Read-permission rules inside the SDK. `path` is relative to cwd or
+   *  absolute; resolves to `{ contents }` or null (denied / missing). */
+  readFile?(path: string, options?: { maxBytes?: number; encoding?: 'utf-8' | 'base64' }): Promise<unknown>
 }
 
 export interface ProviderCapabilities {
@@ -176,6 +180,7 @@ export interface ProviderCapabilities {
   supportsSessionTitle: boolean
   supportsTaskControl: boolean
   supportsStructuredOutput: boolean
+  supportsReadFile: boolean
 }
 
 export interface ListResumableOptions {

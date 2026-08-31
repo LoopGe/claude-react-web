@@ -373,6 +373,20 @@ export function invalidateStatusCache(cwd?: string): void {
  *  spawn per write request — measurable when a panel issues bursts of
  *  stage/unstage clicks. */
 export async function getStatusInRepo(cwd: string): Promise<GitStatus> {
+  // Work-tree top level. Status paths below are relative to THIS, not to
+  // `cwd`, so clients that resolve an absolute path (the FileViewer's
+  // readFile) need it. getStatusInRepo implies inside a work tree, so the
+  // call should always succeed; the cwd fallback is pure defensiveness —
+  // worst case the client anchors against cwd, the pre-existing behaviour.
+  let repoRoot = cwd
+  try {
+    const r = await runGit(cwd, ['rev-parse', '--show-toplevel'])
+    const trimmed = r.stdout.trim()
+    if (trimmed) repoRoot = trimmed
+  } catch {
+    // keep cwd fallback
+  }
+
   const { stdout } = await runGit(cwd, [
     '-c', 'core.quotepath=false',
     'status', '--porcelain=v1', '--branch', '-z',
@@ -468,6 +482,7 @@ export async function getStatusInRepo(cwd: string): Promise<GitStatus> {
 
   return {
     isRepo: true,
+    repoRoot,
     branch,
     detached,
     ahead,

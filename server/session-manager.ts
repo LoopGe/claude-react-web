@@ -67,6 +67,7 @@ import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting
 import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
 import { coerceRewindResult, type RewindFilesResult } from '../shared/rewind.js'
 import { coerceStructuredOutput, type StructuredRunRequest, type StructuredRunResult } from '../shared/structured.js'
+import { coerceReadFileOutput, type FileReadResult } from '../shared/read-file.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
@@ -3836,6 +3837,24 @@ export class SessionManager {
     // A real rewind rewrote the worktree — nudge git consumers to refetch.
     if (result.canRewind && !opts?.dryRun) this.broadcastGitStatusChanged(id)
     return result
+  }
+
+  /** Read a file's content (SDK Query.readFile) via a live session — gated by
+   *  that session's Read-permission rules inside the SDK. Read-only and
+   *  non-destructive, so unlike rewindFiles it has no phase guard: `requireLive`
+   *  already rejects terminated; a working turn reads fine (a control request
+   *  the SDK multiplexes with the running query). The raw SDK result (null =
+   *  denied/missing) is narrowed to the clean wire shape. */
+  async readFile(id: string, path: string, opts?: { maxBytes?: number; encoding?: 'utf-8' | 'base64' }): Promise<FileReadResult> {
+    const s = this.requireLive(id)
+    const fn = this.requireHandleMethod<(p: string, o?: { maxBytes?: number; encoding?: 'utf-8' | 'base64' }) => Promise<unknown>>(
+      s,
+      'readFile',
+      'read file',
+      'supportsReadFile',
+    )
+    const raw = await this.timeSdkControl(id, 'readFile', () => fn(path, opts))
+    return coerceReadFileOutput(raw)
   }
 
   /** List pending tool-permission requests for a session. */

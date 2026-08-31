@@ -166,6 +166,13 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.rewindFiles(userMessageId, options)
   }
 
+  /** Read a file's content (SDK Query.readFile), gated by the session's
+   *  Read-permission rules inside the SDK. Resolves `{ contents }` or null
+   *  (denied / missing); the manager narrows via coerceReadFileOutput. */
+  readFile(path: string, options?: { maxBytes?: number; encoding?: 'utf-8' | 'base64' }): Promise<unknown> {
+    return this.query.readFile(path, options)
+  }
+
   /** Auto-generated session title (SDK `generate_session_title` control
    *  request). `persist: true` writes the title into the CLI transcript so
    *  it survives `--resume`. The SDK resolves to the title STRING (it

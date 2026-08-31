@@ -673,6 +673,33 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ rewind })
   })
 
+  // Read a file's current content via the session (SDK readFile): gated by
+  // the session's Read-permission rules inside the SDK. `path` is absolute
+  // (resolved against cwd by the SDK); absent/non-absolute → 400. Response is
+  // the shared FileReadResult ({ available:false } when denied/missing).
+  app.get('/sessions/:id/read-file', async (c) => {
+    const id = c.req.param('id')
+    const path = c.req.query('path') ?? ''
+    if (!path || !path.startsWith('/')) {
+      return c.json({ error: 'path is required and must be absolute' }, 400)
+    }
+    const opts: { maxBytes?: number; encoding?: 'utf-8' | 'base64' } = {}
+    const maxBytes = Number(c.req.query('maxBytes') ?? '')
+    if (c.req.query('maxBytes') !== undefined) {
+      if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
+        return c.json({ error: 'maxBytes must be a positive number' }, 400)
+      }
+      opts.maxBytes = maxBytes
+    }
+    const encoding = c.req.query('encoding')
+    if (encoding !== undefined && encoding !== 'utf-8' && encoding !== 'base64') {
+      return c.json({ error: "encoding must be 'utf-8' or 'base64'" }, 400)
+    }
+    if (encoding === 'base64') opts.encoding = 'base64'
+    const result = await sm.readFile(id, path, opts)
+    return c.json(result)
+  })
+
   // Supported models — the manager translates the SDK's camelCase ModelInfo
   // to the snake_case wire `ModelInfo` (shared/model-info.ts) and filters
   // entries with no identifier, so the route is a passthrough.

@@ -8,7 +8,8 @@
 // as text rather than risk XSS.
 
 import { memo, useMemo, useState, useRef } from 'react'
-import type { ComponentPropsWithoutRef } from 'react'
+import type { ComponentPropsWithoutRef, Ref } from 'react'
+import { useMergedRef } from '../utils/mergedRef'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
@@ -254,14 +255,19 @@ export const CodeBlock = memo(function CodeBlock({
   lang,
   children,
   showCopy = true,
+  preRef,
   ...props
-}: { lang?: string; showCopy?: boolean } & ComponentPropsWithoutRef<'pre'>) {
+}: { lang?: string; showCopy?: boolean; preRef?: Ref<HTMLPreElement> } & ComponentPropsWithoutRef<'pre'>) {
   const [copied, setCopied] = useState(false)
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const preRef = useRef<HTMLPreElement>(null)
+  const innerRef = useRef<HTMLPreElement>(null)
+  // External consumers (e.g. FileViewer's useOverlayScrollbar) need the
+  // scrollable <pre> element. useMergedRef keeps the copy path's ref intact
+  // while also handing the node out to the caller.
+  const preRefMerged = useMergedRef(innerRef, preRef)
 
   const handleCopy = () => {
-    const text = preRef.current?.textContent ?? ''
+    const text = innerRef.current?.textContent ?? ''
     navigator.clipboard?.writeText(text).then(
       () => {
         setCopied(true)
@@ -282,7 +288,7 @@ export const CodeBlock = memo(function CodeBlock({
           </button>
         )}
       </div>
-      <pre ref={preRef} {...props}>{children}</pre>
+      <pre ref={preRefMerged} {...props}>{children}</pre>
     </div>
   )
 })

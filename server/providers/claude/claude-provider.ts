@@ -199,6 +199,7 @@ export class ClaudeProvider implements AgentProvider {
     supportsSessionTitle: true,
     supportsTaskControl: true,
     supportsStructuredOutput: true,
+    supportsReadFile: true,
   }
 
   private readonly processMonitor: ProcessMonitor

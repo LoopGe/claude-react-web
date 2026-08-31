@@ -45,6 +45,12 @@ export type GitRepoState =
 
 export interface GitStatus {
   isRepo: true
+  /** Absolute path of the work-tree top level (`git rev-parse
+   *  --show-toplevel`). Git status paths are relative to THIS, not to the
+   *  cwd the status was queried from — callers that need an absolute path
+   *  (e.g. the read-only FileViewer) must anchor against repoRoot, not cwd,
+   *  or they break when the session cwd is a subdirectory of the repo. */
+  repoRoot: string
   /** Branch name, or null when HEAD is detached. */
   branch: string | null
   detached: boolean

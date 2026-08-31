@@ -1,0 +1,59 @@
+/* Per-session read-only file viewer (FileViewer). Scoped under
+   .file-viewer; theme-vars only (light/dark from shared tokens). */
+
+.file-viewer {
+  width: min(720px, 92vw);
+  display: flex;
+  flex-direction: column;
+  max-height: min(86vh, 720px);
+}
+
+.file-viewer-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.file-viewer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The CodeBlock bar + pre live inside the scrollable body. */
+.file-viewer-body .code-block {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+
+.file-viewer-body .code-block-bar {
+  flex: 0 0 auto;
+}
+
+.file-viewer-code {
+  flex: 1 1 auto;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--code-block-border);
+  border-top: none;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.file-viewer-truncated {
+  flex: 0 0 auto;
+  margin-top: 6px;
+}
