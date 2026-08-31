@@ -16,7 +16,7 @@ import { commandResults, type ActiveResult } from './result-store'
 import { invocationAnchors } from './invocation-anchor-store'
 import { usePluginCommands } from './usePluginCommands'
 import { Markdown } from '../components/Markdown'
-import { EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
+import { ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition, usePopoverMotion } from '../utils/transitions'
 import type { PluginCommandResult, PluginResultContent } from '../../shared/app-plugins/command-result.js'
 
 export function PluginCommandResultHost() {
@@ -43,7 +43,7 @@ function PluginPopover({ entry, execute }: { entry: ActiveResult; execute: (opts
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
   const [degraded, setDegraded] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  const exitT = useMotionTransition(EXIT_TRANSITION)
+  const { popover } = usePopoverMotion()
 
   // Resolve the anchor on mount AND re-resolve on scroll/resize so the
   // popover tracks the message element as it moves (the anchor store
@@ -89,9 +89,9 @@ function PluginPopover({ entry, execute }: { entry: ActiveResult; execute: (opts
       style={pos ? { left: pos.x, top: pos.y } : { left: '50%', top: '40%', transform: 'translateX(-50%)' }}
       data-degraded={degraded ? 'true' : undefined}
       data-loading={isLoading ? 'true' : undefined}
-      initial={{ opacity: 0, scale: 0.98, transition: exitT }}
-      animate={{ opacity: 1, scale: 1, transition: exitT }}
-      exit={{ opacity: 0, scale: 0.98, transition: exitT }}
+      initial={popover.initial}
+      animate={popover.animate}
+      exit={popover.exit}
       role="dialog"
       aria-label={result.title ?? 'Plugin result'}
     >
@@ -126,6 +126,7 @@ function PluginPopover({ entry, execute }: { entry: ActiveResult; execute: (opts
 
 function PluginDialog({ entry, execute: _execute }: { entry: ActiveResult; execute: (opts: never) => void }) {
   const result = entry.result as Extract<PluginCommandResult, { type: 'dialog' }>
+  const enterT = useMotionTransition(ENTER_TRANSITION)
   const exitT = useMotionTransition(EXIT_TRANSITION)
   const dismiss = () => commandResults.dismiss(entry.id)
   useEffect(() => {
@@ -142,8 +143,8 @@ function PluginDialog({ entry, execute: _execute }: { entry: ActiveResult; execu
         role="dialog"
         aria-modal="true"
         aria-label={result.title ?? 'Plugin dialog'}
-        initial={{ opacity: 0, scale: 0.98, transition: exitT }}
-        animate={{ opacity: 1, scale: 1, transition: exitT }}
+        initial={{ opacity: 0, scale: 0.98, transition: enterT }}
+        animate={{ opacity: 1, scale: 1, transition: enterT }}
         exit={{ opacity: 0, scale: 0.98, transition: exitT }}
       >
         {result.title && <div className="plugin-dialog-title">{result.title}</div>}

@@ -15,7 +15,7 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import { ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
+import { useTopBannerMotion } from '../utils/transitions'
 import { IconChevronDown, IconUser } from './icons/ToolIcons'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
@@ -48,8 +48,7 @@ interface Props {
 export const PinnedUserMessage = memo(function PinnedUserMessage({ text, clearing, userMessages, activeId, onJumpTo, onClick }: Props) {
   // Under reduced motion, snap (duration:0) instead of fading — see
   // useMotionTransition.
-  const enterT = useMotionTransition(ENTER_TRANSITION)
-  const exitT = useMotionTransition(EXIT_TRANSITION)
+  const { banner } = useTopBannerMotion()
 
   const [expanded, setExpanded] = useState(false)
   // Keep the wrapper mounted through the collapse tween: useExitPresence delays
@@ -203,15 +202,15 @@ export const PinnedUserMessage = memo(function PinnedUserMessage({ text, clearin
     <motion.div
       ref={rootRef}
       className={`pinned-user-message${clearing ? ' pinned-user-message-clearing' : ''}`}
-      initial={{ opacity: 0, y: -6, transition: enterT }}
-      animate={{ opacity: 1, y: 0, transition: enterT }}
+      initial={banner.initial}
+      animate={banner.animate}
       // Normal close slides up + fades (mirrors the old
       // pinned-user-message-out). pointerEvents:'none' disables the header
       // while it fades out — replaces the deleted
       // [data-state="closing"]{pointer-events:none} CSS rule so the exiting
       // ghost can't fire onClick (a spurious scroll-nav) mid-fade. The /clear
       // dissolve stays CSS-driven (pinned-user-message-clearing class).
-      exit={{ opacity: 0, y: -6, pointerEvents: 'none', transition: exitT }}
+      exit={banner.exit}
     >
       <div className="pinned-user-message-header-row">
         <button

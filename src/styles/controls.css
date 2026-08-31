@@ -219,7 +219,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--card-shadow);
-  z-index: 1000;
+  z-index: var(--z-overlay);
   /* Pop in from the anchor button (chip header), matching the other
      dropdowns. Reuses ctx-menu-in keyframes from session-list.css. */
   transform-origin: top right;
@@ -310,4 +310,4 @@ select:hover {
 .input:focus, .textarea:focus, .select:focus, select:focus {
   border-color: var(--accent);
 }
-.textarea { resize: vertical; min-height: 60px; font-family: var(--mono); font-size: 12.5px; }
+.textarea { resize: vertical; min-height: 60px; font-family: var(--mono); font-size: var(--fs-sm); }

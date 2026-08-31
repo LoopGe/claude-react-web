@@ -12,7 +12,7 @@ import { memo, useLayoutEffect, useRef } from 'react'
 import { motion } from 'motion/react'
 import type { SessionRecap } from '../../shared/session-info'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
-import { ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
+import { useTopBannerMotion } from '../utils/transitions'
 import { Markdown } from './Markdown'
 import { IconSparkles, IconAlertTriangle, IconX } from './icons/ToolIcons'
 
@@ -37,8 +37,7 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
   const prevHeightRef = useRef<number | null>(null)
   // Under reduced motion, snap (duration:0) instead of fading — see
   // useMotionTransition.
-  const enterT = useMotionTransition(ENTER_TRANSITION)
-  const exitT = useMotionTransition(EXIT_TRANSITION)
+  const { banner } = useTopBannerMotion()
 
   // Animate the window height when the recap content changes (pending →
   // ready, a new ready summary arriving, ready → error). CSS can't transition
@@ -94,15 +93,15 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
       className={`recap-window${clearing ? ' recap-window-clearing' : ''}`}
       role="dialog"
       aria-label="Session recap"
-      initial={{ opacity: 0, y: -8, transition: enterT }}
-      animate={{ opacity: 1, y: 0, transition: enterT }}
+      initial={banner.initial}
+      animate={banner.animate}
       // Normal close slides up + fades (mirrors the old recap-window-out).
       // pointerEvents:'none' disables the close button / body scrollbar while
       // the element fades out — replaces the deleted
       // [data-state="closing"]{pointer-events:none} CSS rule so the exiting
       // ghost can't be re-clicked. The /clear dissolve stays CSS-driven
       // (recap-window-clearing class); motion only owns normal open/close.
-      exit={{ opacity: 0, y: -8, pointerEvents: 'none', transition: exitT }}
+      exit={banner.exit}
     >
       <div className="recap-window-header">
         <span className="recap-window-title">

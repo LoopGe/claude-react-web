@@ -69,3 +69,39 @@ export function useOverlayMotion() {
     },
   }
 }
+
+/**
+ * Anchored popover/menu/picker motion (ContextMenu / EffortSlider /
+ * ModelPicker / PluginPopover): scale 0.98 + a 4px upward nudge on enter,
+ * 2px on exit — mirrors the old ctx-menu-in/out keyframes. Enter uses
+ * MENU_ENTER (120ms), exit uses EXIT (120ms). `pointerEvents:'none'` on exit
+ * so the fading surface can't be clicked.
+ */
+export function usePopoverMotion() {
+  const enter = useMotionTransition(MENU_ENTER_TRANSITION)
+  const exit = useMotionTransition(EXIT_TRANSITION)
+  return {
+    popover: {
+      initial: { opacity: 0, scale: 0.98, y: -4, transition: enter },
+      animate: { opacity: 1, scale: 1, y: 0, transition: enter },
+      exit: { opacity: 0, scale: 0.98, y: -2, pointerEvents: 'none' as const, transition: exit },
+    },
+  }
+}
+
+/**
+ * Top slide-down banner motion (PinnedUserMessage / RecapWindow): drops 6px
+ * from the top of the chat panel, no scale. Enter is ENTER (180ms), exit is
+ * EXIT (120ms).
+ */
+export function useTopBannerMotion() {
+  const enter = useMotionTransition(ENTER_TRANSITION)
+  const exit = useMotionTransition(EXIT_TRANSITION)
+  return {
+    banner: {
+      initial: { opacity: 0, y: -6, transition: enter },
+      animate: { opacity: 1, y: 0, transition: enter },
+      exit: { opacity: 0, y: -6, pointerEvents: 'none' as const, transition: exit },
+    },
+  }
+}

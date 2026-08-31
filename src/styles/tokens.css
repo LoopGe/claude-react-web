@@ -57,7 +57,10 @@
           'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
   /* Type scale tokens — the canonical font-size steps for new components.
      Existing one-off px values are migrated incrementally; new code should
-     reference these instead of hardcoding px. */
+     reference these instead of hardcoding px. Off-scale fractional sizes
+     (10.5/11.5/12.5/13.5px) snap down to the nearest integer step — the
+     half-pixel difference is imperceptible and integer px avoids blurry
+     subpixel text on non-retina displays. */
   --fs-2xs: 10px;
   --fs-xs: 11px;
   --fs-sm: 12px;
@@ -100,6 +103,24 @@
   --radius-3xl: 18px;
   --radius-pill: 999px;
   --radius-circle: 50%;
+  /* Spacing tokens — canonical gap/padding/margin steps for new components.
+     Tailwind-style 4px base with half-steps. Existing one-off px literals are
+     migrated incrementally; new code should reference these instead of
+     hardcoding px. Hairline sub-scale values (1px / 3px) stay inline where
+     they intentionally break the grid (e.g. badge vertical padding, stat-bar
+     gaps). */
+  --space-0: 0;
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-2-5: 10px;
+  --space-3: 12px;
+  --space-3-5: 14px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
   --app-header-height: 43px;
   --msg-tool-bg: #101820;
   --msg-tool-border: #1c2a36;
@@ -162,13 +183,33 @@
      to before this refactor. The light theme overrides the alphas. */
   --card-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);      /* small floating popovers/menus */
   --modal-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);    /* large centred modals */
-  /* Stacking: in-panel overlays (Settings/Subagent/Workflow + the
-     PanelOverlay primitive, which ResumeSessionDialog's panel variant and
-     InputHistoryPanel use) sit at z-index 6. .git-overlay is z-index 5
-     (deliberately a step below, so a settings-style overlay can cover it).
-     DOM order in Chat.tsx decides which wins when more than one z-index-6
-     overlay is open. Global app modals sit at 1000. */
+  /* Stacking scale (low → high): in-panel overlays < drawer < popover <
+     overlay < modal < toast < top.
+       --z-panel-overlay (6): in-panel overlays — Settings/Subagent/Workflow
+         + the PanelOverlay primitive (ResumeSessionDialog panel variant,
+         InputHistoryPanel). .git-overlay stays a raw z-index 5, deliberately
+         one step below so a settings-style overlay can cover it. DOM order
+         in Chat.tsx decides which wins between two z-index-6 overlays.
+       --z-drawer-backdrop (40) / --z-drawer (50): mobile sidebar + scrim.
+       --z-popover (100): tooltips, dropdowns (profile switcher, context
+         menus).
+       --z-overlay (1000): fixed floating surfaces — command palette,
+         settings/git/tasks panels, header pickers, session popovers.
+       --z-modal (2000): centered modal dialogs (directory picker,
+         marketplace, plugin dialog).
+       --z-toast (9000): toast/notification host.
+       --z-top (10000): full-screen takeover (setup page) + a11y skip-link.
+     In-flow local stacking (0–7, e.g. message blocks, chat internals) stays
+     inline — it is scoped to a single component and never competes across
+     the app. */
   --z-panel-overlay: 6;
+  --z-drawer-backdrop: 40;
+  --z-drawer: 50;
+  --z-popover: 100;
+  --z-overlay: 1000;
+  --z-modal: 2000;
+  --z-toast: 9000;
+  --z-top: 10000;
   --drawer-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);  /* side drawers */
   --toast-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
   --tooltip-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);

@@ -12,7 +12,7 @@
   overflow-y: auto;
   background: var(--bg);
   font-family: inherit;
-  z-index: 9999;
+  z-index: var(--z-top);
 }
 
 .setup-card {

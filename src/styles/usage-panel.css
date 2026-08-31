@@ -220,7 +220,7 @@
 .usage-error p {
   margin: 0;
   color: var(--danger);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   word-break: break-word;
 }
 

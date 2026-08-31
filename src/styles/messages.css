@@ -146,7 +146,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-2xs);
   background: var(--bg-elev-2);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .memory-recall-entry-head {
   display: flex;
@@ -211,7 +211,7 @@
   align-items: baseline;
   gap: 8px;
   padding: 2px 10px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   word-wrap: break-word;
 }
@@ -269,7 +269,7 @@
   align-items: baseline;
   gap: 8px;
   padding: 2px 10px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   word-wrap: break-word;
 }
@@ -303,7 +303,7 @@
   padding: 10px 12px;
   overflow-x: auto;
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   margin: 8px 0;
 }
 .md pre code {
@@ -372,7 +372,7 @@
   padding: 8px 12px;
   border-radius: var(--radius-sm);
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -793,7 +793,7 @@
   /* No overflow:hidden — it would clip the forget button's expanded hit
      area (see .recent-chip-forget::after). The children round their own
      outer corners instead, so hover backgrounds stay within the chip. */
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
 }
 .recent-chip-use {
   background: transparent;
@@ -843,7 +843,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: var(--z-modal);
   /* (#2) Backdrop fades, the modal lifts in — same motion language as the
      per-panel overlays, reusing overlay-backdrop-in. */
 }
@@ -1122,7 +1122,7 @@
   line-height: 1.4;
 }
 .perm-sub {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.45;
 }
@@ -1160,7 +1160,7 @@
 }
 .perm-row-value {
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   word-break: break-all;
   flex: 1;
 }
@@ -1579,7 +1579,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .inline-todo-item {
   display: flex;
@@ -1703,7 +1703,7 @@
   display: inline-flex;
   align-items: center;
   padding: 1px 7px;
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   font-family: var(--mono);
   color: var(--fg-muted);
   background: var(--bg-elev-2);
@@ -1755,7 +1755,7 @@ button.tool-chip.tool-chip-copyable.copied {
   gap: 8px;
   flex-wrap: wrap;
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
 }
 .bash-tool-prompt {
@@ -1839,7 +1839,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
    styling already covers what we need. The range subline lives below. */
 .read-tool-range {
   padding: 4px 10px;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   font-family: var(--mono);
   color: var(--fg-muted);
   background: var(--bg);
@@ -1858,7 +1858,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .grep-tool-icon {
   font-size: 13px;
@@ -1871,7 +1871,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   padding: 2px 8px;
   border-radius: var(--radius-xs);
   border: 1px solid var(--border);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   word-break: break-word;
 }
 
@@ -1890,7 +1890,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   min-width: 0;
 }
 .web-tool-icon {
@@ -1906,7 +1906,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .web-tool-url:hover {
   text-decoration: underline;
@@ -1936,7 +1936,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 }
 .notebook-edit-deleted {
   padding: 10px 12px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-style: italic;
   background: color-mix(in srgb, var(--danger) 6%, var(--bg));
@@ -1990,7 +1990,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 .task-mutation-status {
   padding: 1px 7px;
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   border-radius: var(--radius-pill);
   border: 1px solid var(--border);
   background: var(--bg-elev-2);
@@ -2019,13 +2019,13 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   color: var(--fg);
 }
 .task-mutation-subject {
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   font-weight: 500;
   color: var(--fg);
   line-height: 1.4;
 }
 .task-mutation-desc {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.45;
 }
@@ -2033,7 +2033,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   display: flex;
   gap: 14px;
   flex-wrap: wrap;
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
 }
 .task-mutation-deps code {
@@ -2110,7 +2110,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 }
 .plan-card-body {
   padding: 4px 14px;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
   /* The Markdown component's first/last children carry their own margins;
      trim them so the body sits flush inside the card. */
 }
@@ -2120,7 +2120,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   padding: 8px 0;
   color: var(--fg-muted);
   font-style: italic;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .plan-card-allowed {
   padding: 8px 14px 10px;
@@ -2290,10 +2290,10 @@ details.plan-card-collapsible > summary > .plan-card-header {
 }
 .question-option-label {
   font-weight: 500;
-  font-size: 13.5px;
+  font-size: var(--fs-base);
 }
 .question-option-desc {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.45;
 }
@@ -2357,7 +2357,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
    url link box, form fields, and inline errors. */
 .elicit-description {
   margin-bottom: 6px;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .elicit-url-box {
@@ -2412,7 +2412,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   gap: 4px;
 }
 .elicit-field-label {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--fg);
 }
@@ -2449,7 +2449,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
 }
 .elicit-error {
   color: var(--danger);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 
 /* --- Inline AskUserQuestion card -------------------------------------
@@ -2578,7 +2578,7 @@ details.plan-card-minimized {
 .question-inline-empty {
   color: var(--fg-muted);
   font-style: italic;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .question-inline-item {
   display: flex;
@@ -2625,7 +2625,7 @@ details.plan-card-minimized {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
 }
 .question-inline-option.selected {
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
@@ -2654,12 +2654,12 @@ details.plan-card-minimized {
   color: var(--fg);
 }
 .question-inline-option-desc {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   line-height: 1.45;
 }
 .question-inline-option-custom-tag {
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   color: var(--fg-muted);
   font-weight: 400;
   margin-left: 4px;
@@ -2781,7 +2781,7 @@ details.plan-card-minimized {
   border-color: color-mix(in srgb, var(--fg-muted) 30%, transparent);
 }
 .finding-category {
-  font-size: 10.5px;
+  font-size: var(--fs-2xs);
   font-family: var(--mono);
   color: var(--fg-muted);
   background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
@@ -2799,7 +2799,7 @@ details.plan-card-minimized {
   max-width: 60%;
 }
 .finding-summary {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--fg);
   line-height: 1.45;
 }

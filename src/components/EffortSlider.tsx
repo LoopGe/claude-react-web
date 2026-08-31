@@ -12,7 +12,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
-import { MENU_ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
+import { usePopoverMotion } from '../utils/transitions'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import type { EffortLevel } from '../types'
 
@@ -34,8 +34,7 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
   const [pos, setPos] = useState<{ x: number; y: number }>(anchor)
   // Under reduced motion, snap (duration:0) instead of fading — see
   // useMotionTransition.
-  const enterT = useMotionTransition(MENU_ENTER_TRANSITION)
-  const exitT = useMotionTransition(EXIT_TRANSITION)
+  const { popover } = usePopoverMotion()
 
   const maxIndex = Math.max(0, levels.length - 1)
   const index = Math.max(0, levels.indexOf(current))
@@ -142,9 +141,9 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
       // the old [data-state="closing"]{pointer-events:none} rule. Animate
       // Presence (in ChatPanel) tracks this React child even though it
       // renders into document.body via the portal.
-      initial={{ opacity: 0, scale: 0.98, y: -4, transition: enterT }}
-      animate={{ opacity: 1, scale: 1, y: 0, transition: enterT }}
-      exit={{ opacity: 0, scale: 0.98, y: -2, pointerEvents: 'none', transition: exitT }}
+      initial={popover.initial}
+      animate={popover.animate}
+      exit={popover.exit}
       onMouseDown={(e) => e.stopPropagation()}
       // Rendered in a portal on document.body so the popover lives OUTSIDE
       // the ChatPanel header's `draggable` subtree. Otherwise dragging the

@@ -616,7 +616,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--card-shadow);
-  z-index: 1000;
+  z-index: var(--z-overlay);
   font-size: 13px;
   user-select: none;
   /* (#2) Pop in from the anchor — scale + fade, top-origin so it reads as
@@ -680,7 +680,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--card-shadow);
-  z-index: 1000;
+  z-index: var(--z-overlay);
   overflow: hidden;
   transform-origin: top left;
 }
@@ -700,7 +700,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--card-shadow);
-  z-index: 1000;
+  z-index: var(--z-overlay);
   transform-origin: top left;
   animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
 }
@@ -916,7 +916,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--card-shadow);
-  z-index: 1000;
+  z-index: var(--z-overlay);
   font-size: 13px;
   user-select: none;
   transform-origin: bottom left;

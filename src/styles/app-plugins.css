@@ -8,7 +8,7 @@
 .app-plugins-tab {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-3-5);
 }
 .app-plugins-intro {
   margin: 0;
@@ -18,7 +18,7 @@
 }
 .app-plugins-install {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .app-plugins-install .input {
   flex: 1;
@@ -29,29 +29,29 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .app-plugins-empty {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
-  padding: 12px 0;
+  padding: var(--space-3) 0;
 }
 .app-plugins-row {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 10px 12px;
+  padding: var(--space-2-5) var(--space-3);
   background: var(--bg-elev);
 }
 .app-plugins-row-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .app-plugins-row-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   background: none;
   border: none;
   padding: 0;
@@ -75,13 +75,13 @@
 .app-plugins-state.state-warn { color: var(--warn); border-color: var(--warn); }
 .app-plugins-row-actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .app-plugins-meta {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   flex-wrap: wrap;
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
   color: var(--fg-muted);
   font-size: var(--fs-xs);
 }
@@ -89,31 +89,31 @@
   color: var(--danger);
 }
 .app-plugins-details {
-  margin-top: 10px;
-  padding-top: 10px;
+  margin-top: var(--space-2-5);
+  padding-top: var(--space-2-5);
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .app-plugins-details h4 {
-  margin: 0 0 6px;
+  margin: 0 0 var(--space-1-5);
   font-size: var(--fs-sm);
 }
 .app-plugins-perms ul,
 .app-plugins-contribs ul {
   list-style: none;
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: var(--fs-sm);
 }
 .app-plugins-perms label {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .app-plugins-hosts,
 .app-plugins-trust,
@@ -122,35 +122,35 @@
   font-size: var(--fs-xs);
 }
 .app-plugins-trust {
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
   line-height: 1.4;
 }
 .app-plugins-diag {
   color: var(--warn);
   font-size: var(--fs-xs);
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
-.app-plugins-diag > div { margin-top: 2px; }
+.app-plugins-diag > div { margin-top: var(--space-0-5); }
 
 /* ── Configuration editor ───────────────────────────────────────── */
 
 .app-plugins-config ul {
   list-style: none;
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .app-plugins-config li {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .app-plugins-config label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: var(--fs-sm);
 }
 .app-plugins-config-label {
@@ -172,15 +172,15 @@
 .app-plugins-marketplace {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 10px 12px;
+  padding: var(--space-2-5) var(--space-3);
   background: var(--bg-elev);
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
   /* Vertical rhythm inside the card: heading, intro, add-URL row, and the
      marketplace list are flex items now, so each gets a real gap instead of
      abutting (the input row used to sit flush against the list below). */
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .app-plugins-marketplace h4 {
   margin: 0;
@@ -193,24 +193,24 @@
   margin: 0;
 }
 .app-plugins-installed-heading {
-  margin: 8px 0 4px;
+  margin: var(--space-2) 0 var(--space-1);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .app-plugins-mp-plugins {
   list-style: none;
-  margin: 8px 0 0;
+  margin: var(--space-2) 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .app-plugins-mp-plugin {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg);
@@ -223,17 +223,17 @@
 
 .plugin-popover {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-overlay);
   width: 320px;
   max-width: calc(100vw - 16px);
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-  padding: 10px 12px;
+  box-shadow: var(--card-shadow);
+  padding: var(--space-2-5) var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .plugin-popover[data-degraded] {
   /* degraded (no anchor) — center via the inline transform */
@@ -253,19 +253,19 @@
 .plugin-popover-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .plugin-popover-close,
 .plugin-popover-retry {
   font-size: var(--fs-xs);
-  padding: 2px 10px;
+  padding: var(--space-0-5) var(--space-2-5);
 }
 /* Loading spinner for the "Translating…" popover. Only applies when the
    popover has data-loading="true" (set by the host for loading entries). */
 .plugin-popover[data-loading] .plugin-content-text {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .plugin-popover[data-loading] .plugin-content-text::after {
   content: '';
@@ -286,12 +286,12 @@
 .plugin-dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1100;
+  z-index: var(--z-modal);
   background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: var(--space-6);
 }
 .plugin-dialog {
   width: 100%;
@@ -299,11 +299,11 @@
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
-  padding: 16px;
+  box-shadow: var(--modal-shadow);
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .plugin-dialog-title {
   font-weight: 600;
@@ -319,7 +319,7 @@
 .plugin-dialog-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 /* ── Result content ─────────────────────────────────────────────── */
@@ -331,7 +331,7 @@
 .plugin-content-kv {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 4px 12px;
+  gap: var(--space-1) var(--space-3);
   margin: 0;
 }
 .plugin-content-kv dt {
@@ -347,7 +347,7 @@
 
 .plugin-slot-action {
   font-size: var(--fs-xs);
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
 }
 
 /* ── Status indicator override ───────────────────────────────────── */
@@ -366,10 +366,10 @@
   flex-shrink: 0;
   border-top: 1px solid var(--border);
   background: var(--bg-elev);
-  padding: 6px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: var(--fs-xs);
 }
 .stat-grid {
@@ -385,8 +385,8 @@
     'label value'
     'bar   bar';
   align-items: baseline;
-  column-gap: 8px;
-  row-gap: 2px;
+  column-gap: var(--space-2);
+  row-gap: var(--space-0-5);
   min-width: 0;
 }
 .stat-label { grid-area: label; color: var(--fg-muted); }
@@ -402,9 +402,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.stat-unit { margin-left: 2px; color: var(--fg-muted); font-family: var(--sans); }
-.stat-bar { grid-area: bar; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
-.stat-bar-fill { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
+.stat-unit { margin-left: var(--space-0-5); color: var(--fg-muted); font-family: var(--sans); }
+.stat-bar { grid-area: bar; height: 3px; border-radius: var(--radius-2xs); background: var(--border); overflow: hidden; }
+.stat-bar-fill { display: block; height: 100%; border-radius: var(--radius-2xs); background: var(--accent); }
 .stat-row[data-tone='ok'] .stat-bar-fill { background: var(--ok); }
 .stat-row[data-tone='warn'] .stat-bar-fill { background: var(--warn); }
 .stat-row[data-tone='danger'] .stat-bar-fill { background: var(--danger); }

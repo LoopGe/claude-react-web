@@ -17,7 +17,7 @@
 }
 .snippets-manager-empty {
   color: var(--fg-muted);
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   padding: 12px 0;
   text-align: center;
 }
@@ -66,7 +66,7 @@
   white-space: nowrap;
 }
 .snippet-preview {
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   font-family: var(--mono);
   overflow: hidden;
@@ -103,7 +103,7 @@
   align-items: center;
   justify-content: center;
   background: var(--backdrop-color);
-  z-index: 2000;
+  z-index: var(--z-modal);
 }
 .marketplace-card {
   background: var(--bg-elev);
@@ -211,7 +211,7 @@
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev));
   flex-shrink: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--fg);
 }
 .marketplace-confirm-remove > span { flex: 1; min-width: 0; }
@@ -317,7 +317,7 @@
 /* In-band "Discard unsaved changes?" footer that replaces the Close
    button when the user tries to close the manager with dirty edits. */
 .snippets-discard-warning {
-  font-size: 12.5px;
+  font-size: var(--fs-sm);
   color: var(--danger);
   font-weight: 600;
 }
@@ -336,7 +336,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   white-space: pre-wrap;
   max-height: 160px;
   overflow-y: auto;

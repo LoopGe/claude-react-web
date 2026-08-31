@@ -18,7 +18,7 @@ import type { ModelOptions } from '../hooks/useModelOptions'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useMergedRef } from '../utils/mergedRef'
-import { MENU_ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
+import { usePopoverMotion } from '../utils/transitions'
 import { IconCheck, IconSearch } from './icons/ToolIcons'
 
 interface Props {
@@ -64,8 +64,7 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
   const [pos, setPos] = useState<{ x: number; y: number }>(anchor)
   // Under reduced motion, snap (duration:0) instead of fading — see
   // useMotionTransition.
-  const enterT = useMotionTransition(MENU_ENTER_TRANSITION)
-  const exitT = useMotionTransition(EXIT_TRANSITION)
+  const { popover } = usePopoverMotion()
 
   // Build the flat, grouped, filtered row list.
   const rows: Row[] = useMemo(() => {
@@ -235,9 +234,9 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
       // Pop in/out from the anchor — mirrors ctx-menu-in/ctx-menu-out
       // (scale 0.98 + small y nudge). pointerEvents:'none' on exit replaces
       // the old [data-state="closing"]{pointer-events:none} rule.
-      initial={{ opacity: 0, scale: 0.98, y: -4, transition: enterT }}
-      animate={{ opacity: 1, scale: 1, y: 0, transition: enterT }}
-      exit={{ opacity: 0, scale: 0.98, y: -2, pointerEvents: 'none', transition: exitT }}
+      initial={popover.initial}
+      animate={popover.animate}
+      exit={popover.exit}
       onMouseDown={(e) => e.stopPropagation()}
       onKeyDown={handleKeyDown}
     >

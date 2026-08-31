@@ -8,7 +8,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { motion } from 'motion/react'
-import { MENU_ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition } from '../utils/transitions'
+import { usePopoverMotion } from '../utils/transitions'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 
 export interface ContextMenuItem {
@@ -41,8 +41,7 @@ export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: P
   const [pos, setPos] = useState<{ x: number; y: number }>({ x, y })
   // Under reduced motion, snap (duration:0) instead of fading — see
   // useMotionTransition.
-  const enterT = useMotionTransition(MENU_ENTER_TRANSITION)
-  const exitT = useMotionTransition(EXIT_TRANSITION)
+  const { popover } = usePopoverMotion()
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -92,9 +91,9 @@ export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: P
       // [data-state="closing"]{pointer-events:none} rule so the fading menu
       // can't be clicked. Exit only fires under AnimatePresence (ChatPanel);
       // other callers mount/unmount instantly with just the entrance.
-      initial={{ opacity: 0, scale: 0.98, y: -4, transition: enterT }}
-      animate={{ opacity: 1, scale: 1, y: 0, transition: enterT }}
-      exit={{ opacity: 0, scale: 0.98, y: -2, pointerEvents: 'none', transition: exitT }}
+      initial={popover.initial}
+      animate={popover.animate}
+      exit={popover.exit}
       // Stop mousedown so the outside-click listener above (which is on
       // window) doesn't fire when the user clicks the menu itself.
       onMouseDown={(e) => e.stopPropagation()}
