@@ -13,7 +13,7 @@ import { api } from '../hooks/useApi'
 import { useProfiles } from '../hooks/useProfiles'
 import type { ModelGroupConfig, ProviderProfile } from '../types/config'
 import { randomId } from '../utils/uuid'
-import { IconArrowUp, IconArrowDown, IconChevronDown, IconCheck, IconX } from './icons/ToolIcons'
+import { IconArrowUp, IconArrowDown, IconChevronDown, IconChevronRight, IconCheck, IconX } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
 
 /** Inline result of POST /profiles/:id/test. `ok` true means the token and
@@ -50,7 +50,7 @@ export function ProfilesSettingsTab() {
         </button>
       </div>
       {profiles.length === 0 && (
-        <div className="hint" style={{ display: 'block', marginTop: 8 }}>
+        <div className="settings-profile-empty">
           No profiles yet. Add one to get started.
         </div>
       )}
@@ -203,6 +203,9 @@ function ProfileCard({
     <div className="settings-card settings-profile-card">
       <div className="settings-card-head settings-mcp-card-head">
         <button className="settings-card-toggle" onClick={onToggleExpand} aria-expanded={expanded}>
+          <span className="settings-card-chevron" aria-hidden>
+            {expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+          </span>
           <span className="settings-card-name">{profile.name}</span>
           {profile.isActive && <span className="settings-card-badge global">Active</span>}
         </button>
@@ -229,7 +232,7 @@ function ProfileCard({
               disabled={deleteDisabled}
               title={deleteDisabled ? (profile.isActive ? 'Cannot delete the active profile' : 'Cannot delete the last profile') : 'Delete this profile'}
             >
-              Del
+              Delete
             </button>
           ) : (
             <div className="settings-mcp-confirm">
@@ -248,11 +251,11 @@ function ProfileCard({
       </div>
 
       {saveError && (
-        <div className="modal-error" style={{ marginTop: 8 }}>{saveError}</div>
+        <div className="settings-card-error">{saveError}</div>
       )}
 
       {testResult && (
-        <div className="settings-mcp-result" style={testResult.ok ? { color: 'var(--ok)' } : { color: 'var(--danger)' }}>
+        <div className={`settings-mcp-result ${testResult.ok ? 'status-connected' : 'status-failed'}`}>
           {testResult.ok ? (
             <span><IconCheck size={12} /> Token &amp; URL valid</span>
           ) : (
@@ -264,185 +267,78 @@ function ProfileCard({
       )}
 
       <AnimatedCollapse open={expanded}>
-        <div className="settings-card-body">
-        <div className="settings-field" style={{ marginBottom: 12 }}>
-          <label htmlFor={`${uid}-name`}>Name</label>
-          <input
-            className="input"
-            id={`${uid}-name`}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
-
-        <div className="settings-field" style={{ marginBottom: 12 }}>
-          <label htmlFor={`${uid}-authtoken`}>
-            Auth Token
-          </label>
-          <input
-            className="input"
-            id={`${uid}-authtoken`}
-            type="password"
-            value={authToken}
-            onChange={(e) => { setAuthToken(e.target.value); setAuthTokenDirty(true); setTestResult(null) }}
-            placeholder={profile.authTokenMasked ? `Current: ${profile.authTokenMasked} — enter new to replace` : 'sk-ant-...'}
-          />
-          <span className="hint">
-            {profile.authTokenMasked
-              ? 'Leave empty to keep the existing token. Enter a new value to replace it.'
-              : 'Required for this profile to authenticate.'}
-          </span>
-        </div>
-
-        <div className="settings-field" style={{ marginBottom: 12 }}>
-          <label htmlFor={`${uid}-baseurl`}>Base URL</label>
-          <input
-            className="input"
-            id={`${uid}-baseurl`}
-            value={baseUrl}
-            onChange={(e) => { setBaseUrl(e.target.value); setTestResult(null) }}
-            placeholder="https://api.anthropic.com"
-          />
-          <span className="hint">API endpoint (default: https://api.anthropic.com)</span>
-        </div>
-
-        {/* Available Models — ordered list editor (adapted from ModelsTab) */}
-        <div className="settings-field" style={{ marginBottom: 12 }}>
-          <label>Available Models</label>
-          <span className="hint">First model is the default. Add model IDs one at a time.</span>
-          <div className="settings-model-list">
-            {modelList.length > 1 && (
-              <div className="settings-model-list-toolbar">
-                <button
-                  className="btn btn-xs settings-model-sort-btn"
-                  onClick={sortModels}
-                  title="Sort alphabetically (A→Z)"
-                >
-                  A→Z
-                </button>
-              </div>
-            )}
-            {modelList.map((m, i) => (
-              <div key={m} className={`settings-model-row${i === 0 ? ' default' : ''}`}>
-                <span className="settings-model-rank" title={i === 0 ? 'Default model' : undefined}>
-                  {i === 0 ? 'Default' : i + 1}
-                </span>
-                <code className="settings-model-id" title={m}>{m}</code>
-                <div className="settings-model-move" role="group" aria-label="Move model priority">
-                  <button
-                    className="btn-icon-sm settings-model-action"
-                    onClick={() => moveModel(i, -1)}
-                    disabled={i === 0}
-                    title="Move up"
-                    aria-label="Move up"
-                  >
-                    <IconArrowUp size={12} />
-                  </button>
-                  <button
-                    className="btn-icon-sm settings-model-action"
-                    onClick={() => moveModel(i, 1)}
-                    disabled={i === modelList.length - 1}
-                    title="Move down"
-                    aria-label="Move down"
-                  >
-                    <IconArrowDown size={12} />
-                  </button>
-                </div>
-                <button
-                  className="btn-icon-sm settings-model-action danger"
-                  onClick={() => removeModel(m)}
-                  title="Remove"
-                  aria-label="Remove"
-                >
-                  <IconX size={12} />
-                </button>
-              </div>
-            ))}
-            <div className="settings-model-add-row">
+        <div className="settings-card-body settings-profile-body">
+          <section className="settings-profile-section">
+            <h4 className="settings-profile-section-label">Connection</h4>
+            <div className="settings-field">
+              <label htmlFor={`${uid}-name`}>Name</label>
               <input
-                className="input settings-model-input"
-                value={newModel}
-                onChange={(e) => setNewModel(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') addModel() }}
-                aria-label="New model ID"
-                placeholder="model-id (e.g. claude-sonnet-4-20250514)"
+                className="input"
+                id={`${uid}-name`}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
               />
-              <button className="btn btn-xs settings-model-add-btn" onClick={addModel}>Add</button>
             </div>
-          </div>
-        </div>
 
-        {/* Recap Model dropdown (over this profile's own modelList) */}
-        <div className="settings-field" style={{ marginBottom: 12 }}>
-          <label htmlFor={`${uid}-recap-model`}>Recap Model</label>
-          <span className="hint">Model used for AI session summaries (lighter model recommended)</span>
-          <div className="settings-model-select-wrap">
-            <select
-              className="input settings-model-select"
-              id={`${uid}-recap-model`}
-              value={recapModel}
-              onChange={(e) => setRecapModel(e.target.value)}
-            >
-              <option value="">(default)</option>
-              {modelList.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-            <IconChevronDown className="settings-model-select-icon" size={14} aria-hidden />
-          </div>
-        </div>
+            <div className="settings-field">
+              <label htmlFor={`${uid}-authtoken`}>Auth Token</label>
+              <input
+                className="input"
+                id={`${uid}-authtoken`}
+                type="password"
+                value={authToken}
+                onChange={(e) => { setAuthToken(e.target.value); setAuthTokenDirty(true); setTestResult(null) }}
+                placeholder={profile.authTokenMasked ? `Current: ${profile.authTokenMasked} — enter new to replace` : 'sk-ant-...'}
+              />
+              <span className="hint">
+                {profile.authTokenMasked
+                  ? 'Leave empty to keep the existing token. Enter a new value to replace it.'
+                  : 'Required for this profile to authenticate.'}
+              </span>
+            </div>
 
-        {/* Commit Message Model dropdown (over this profile's own modelList) */}
-        <div className="settings-field" style={{ marginBottom: 12 }}>
-          <label htmlFor={`${uid}-commit-message-model`}>Commit Message Model</label>
-          <span className="hint">Model used for AI-generated commit messages in Git panel</span>
-          <div className="settings-model-select-wrap">
-            <select
-              className="input settings-model-select"
-              id={`${uid}-commit-message-model`}
-              value={commitMessageModel}
-              onChange={(e) => setCommitMessageModel(e.target.value)}
-            >
-              <option value="">(default)</option>
-              {modelList.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-            <IconChevronDown className="settings-model-select-icon" size={14} aria-hidden />
-          </div>
-        </div>
+            <div className="settings-field">
+              <label htmlFor={`${uid}-baseurl`}>Base URL</label>
+              <input
+                className="input"
+                id={`${uid}-baseurl`}
+                value={baseUrl}
+                onChange={(e) => { setBaseUrl(e.target.value); setTestResult(null) }}
+                placeholder="https://api.anthropic.com"
+              />
+              <span className="hint">API endpoint (default: https://api.anthropic.com)</span>
+            </div>
+          </section>
 
-        {/* Model Groups — adapted from ModelGroupsTab */}
-        <div className="settings-field" style={{ marginBottom: 12 }}>
-          <label>Model Groups</label>
-          <span className="hint">
-            Groups map Opus/Sonnet/Haiku slots to concrete models. Sessions can select a group or a
-            single model; empty slots inherit the main slot.
-          </span>
-          <div className="settings-model-list">
-            {modelGroups.length === 0 && (
-              <div className="settings-model-empty">No groups yet. Add one to bundle tier models.</div>
-            )}
-            {modelGroups.map((g, i) => {
-              const slots: { key: 'opus' | 'sonnet' | 'haiku'; label: string }[] = [
-                { key: 'opus', label: 'Opus' },
-                { key: 'sonnet', label: 'Sonnet' },
-                { key: 'haiku', label: 'Haiku' },
-              ]
-              return (
-                <div key={g.id} className="settings-model-group">
-                  <div className="settings-model-row">
-                    <span className="settings-model-rank" title="Group">{i + 1}</span>
-                    <input
-                      className="input settings-model-input"
-                      value={g.name}
-                      onChange={(e) => updateModelGroup(g.id, { name: e.target.value })}
-                      aria-label="Group name"
-                    />
-                    <div className="settings-model-move" role="group" aria-label="Move group priority">
+          <section className="settings-profile-section">
+            <h4 className="settings-profile-section-label">Models</h4>
+
+            {/* Available Models — ordered list editor (adapted from ModelsTab) */}
+            <div className="settings-field">
+              <label>Available Models</label>
+              <span className="hint">First model is the default. Add model IDs one at a time.</span>
+              <div className="settings-model-list">
+                {modelList.length > 1 && (
+                  <div className="settings-model-list-toolbar">
+                    <button
+                      className="btn btn-xs settings-model-sort-btn"
+                      onClick={sortModels}
+                      title="Sort alphabetically (A→Z)"
+                    >
+                      A→Z
+                    </button>
+                  </div>
+                )}
+                {modelList.map((m, i) => (
+                  <div key={m} className={`settings-model-row${i === 0 ? ' default' : ''}`}>
+                    <span className="settings-model-rank" title={i === 0 ? 'Default model' : undefined}>
+                      {i === 0 ? 'Default' : i + 1}
+                    </span>
+                    <code className="settings-model-id" title={m}>{m}</code>
+                    <div className="settings-model-move" role="group" aria-label="Move model priority">
                       <button
                         className="btn-icon-sm settings-model-action"
-                        onClick={() => moveModelGroup(i, -1)}
+                        onClick={() => moveModel(i, -1)}
                         disabled={i === 0}
                         title="Move up"
                         aria-label="Move up"
@@ -451,8 +347,8 @@ function ProfileCard({
                       </button>
                       <button
                         className="btn-icon-sm settings-model-action"
-                        onClick={() => moveModelGroup(i, 1)}
-                        disabled={i === modelGroups.length - 1}
+                        onClick={() => moveModel(i, 1)}
+                        disabled={i === modelList.length - 1}
                         title="Move down"
                         aria-label="Move down"
                       >
@@ -461,54 +357,169 @@ function ProfileCard({
                     </div>
                     <button
                       className="btn-icon-sm settings-model-action danger"
-                      onClick={() => removeModelGroup(g.id)}
+                      onClick={() => removeModel(m)}
                       title="Remove"
                       aria-label="Remove"
                     >
                       <IconX size={12} />
                     </button>
                   </div>
-                  <div className="settings-model-group-slots">
-                    {slots.map((slot) => (
-                      <div key={slot.key} className="settings-model-group-slot">
-                        <label className="settings-model-group-slot-label" htmlFor={`${uid}-${g.id}-${slot.key}`}>
-                          {slot.label}
-                        </label>
+                ))}
+                <div className="settings-model-add-row">
+                  <input
+                    className="input settings-model-input"
+                    value={newModel}
+                    onChange={(e) => setNewModel(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') addModel() }}
+                    aria-label="New model ID"
+                    placeholder="model-id (e.g. claude-sonnet-4-20250514)"
+                  />
+                  <button className="btn btn-xs settings-model-add-btn" onClick={addModel}>Add</button>
+                </div>
+              </div>
+            </div>
+
+            {/* Recap Model dropdown (over this profile's own modelList) */}
+            <div className="settings-field">
+              <label htmlFor={`${uid}-recap-model`}>Recap Model</label>
+              <span className="hint">Model used for AI session summaries (lighter model recommended)</span>
+              <div className="settings-model-select-wrap">
+                <select
+                  className="input settings-model-select"
+                  id={`${uid}-recap-model`}
+                  value={recapModel}
+                  onChange={(e) => setRecapModel(e.target.value)}
+                >
+                  <option value="">(default)</option>
+                  {modelList.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <IconChevronDown className="settings-model-select-icon" size={14} aria-hidden />
+              </div>
+            </div>
+
+            {/* Commit Message Model dropdown (over this profile's own modelList) */}
+            <div className="settings-field">
+              <label htmlFor={`${uid}-commit-message-model`}>Commit Message Model</label>
+              <span className="hint">Model used for AI-generated commit messages in Git panel</span>
+              <div className="settings-model-select-wrap">
+                <select
+                  className="input settings-model-select"
+                  id={`${uid}-commit-message-model`}
+                  value={commitMessageModel}
+                  onChange={(e) => setCommitMessageModel(e.target.value)}
+                >
+                  <option value="">(default)</option>
+                  {modelList.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <IconChevronDown className="settings-model-select-icon" size={14} aria-hidden />
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-profile-section">
+            <h4 className="settings-profile-section-label">Model Groups</h4>
+
+            {/* Model Groups — adapted from ModelGroupsTab */}
+            <div className="settings-field">
+              <span className="hint">
+                Groups map Opus/Sonnet/Haiku slots to concrete models. Sessions can select a group or a
+                single model; empty slots inherit the main slot.
+              </span>
+              <div className="settings-model-list">
+                {modelGroups.length === 0 && (
+                  <div className="settings-model-empty">No groups yet. Add one to bundle tier models.</div>
+                )}
+                {modelGroups.map((g, i) => {
+                  const slots: { key: 'opus' | 'sonnet' | 'haiku'; label: string }[] = [
+                    { key: 'opus', label: 'Opus' },
+                    { key: 'sonnet', label: 'Sonnet' },
+                    { key: 'haiku', label: 'Haiku' },
+                  ]
+                  return (
+                    <div key={g.id} className="settings-model-group">
+                      <div className="settings-model-row">
+                        <span className="settings-model-rank" title="Group">{i + 1}</span>
                         <input
                           className="input settings-model-input"
-                          id={`${uid}-${g.id}-${slot.key}`}
-                          list={`${uid}-model-list`}
-                          value={g[slot.key] ?? ''}
-                          placeholder="(inherit main)"
-                          onChange={(e) => updateModelGroup(g.id, { [slot.key]: e.target.value || undefined } as Partial<ModelGroupConfig>)}
+                          value={g.name}
+                          onChange={(e) => updateModelGroup(g.id, { name: e.target.value })}
+                          aria-label="Group name"
                         />
+                        <div className="settings-model-move" role="group" aria-label="Move group priority">
+                          <button
+                            className="btn-icon-sm settings-model-action"
+                            onClick={() => moveModelGroup(i, -1)}
+                            disabled={i === 0}
+                            title="Move up"
+                            aria-label="Move up"
+                          >
+                            <IconArrowUp size={12} />
+                          </button>
+                          <button
+                            className="btn-icon-sm settings-model-action"
+                            onClick={() => moveModelGroup(i, 1)}
+                            disabled={i === modelGroups.length - 1}
+                            title="Move down"
+                            aria-label="Move down"
+                          >
+                            <IconArrowDown size={12} />
+                          </button>
+                        </div>
+                        <button
+                          className="btn-icon-sm settings-model-action danger"
+                          onClick={() => removeModelGroup(g.id)}
+                          title="Remove"
+                          aria-label="Remove"
+                        >
+                          <IconX size={12} />
+                        </button>
                       </div>
-                    ))}
-                    <div className="settings-model-group-main">
-                      <label className="settings-model-group-slot-label" htmlFor={`${uid}-${g.id}-main`}>Main</label>
-                      <select
-                        className="input settings-model-select"
-                        id={`${uid}-${g.id}-main`}
-                        value={g.main ?? 'opus'}
-                        onChange={(e) => updateModelGroup(g.id, { main: e.target.value as 'opus' | 'sonnet' | 'haiku' })}
-                      >
-                        <option value="opus">Opus</option>
-                        <option value="sonnet">Sonnet</option>
-                        <option value="haiku">Haiku</option>
-                      </select>
+                      <div className="settings-model-group-slots">
+                        {slots.map((slot) => (
+                          <div key={slot.key} className="settings-model-group-slot">
+                            <label className="settings-model-group-slot-label" htmlFor={`${uid}-${g.id}-${slot.key}`}>
+                              {slot.label}
+                            </label>
+                            <input
+                              className="input settings-model-input"
+                              id={`${uid}-${g.id}-${slot.key}`}
+                              list={`${uid}-model-list`}
+                              value={g[slot.key] ?? ''}
+                              placeholder="(inherit main)"
+                              onChange={(e) => updateModelGroup(g.id, { [slot.key]: e.target.value || undefined } as Partial<ModelGroupConfig>)}
+                            />
+                          </div>
+                        ))}
+                        <div className="settings-model-group-main">
+                          <label className="settings-model-group-slot-label" htmlFor={`${uid}-${g.id}-main`}>Main</label>
+                          <select
+                            className="input settings-model-select"
+                            id={`${uid}-${g.id}-main`}
+                            value={g.main ?? 'opus'}
+                            onChange={(e) => updateModelGroup(g.id, { main: e.target.value as 'opus' | 'sonnet' | 'haiku' })}
+                          >
+                            <option value="opus">Opus</option>
+                            <option value="sonnet">Sonnet</option>
+                            <option value="haiku">Haiku</option>
+                          </select>
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )
+                })}
+                <datalist id={`${uid}-model-list`}>
+                  {modelList.map((m) => <option key={m} value={m} />)}
+                </datalist>
+                <div className="settings-model-add-row">
+                  <button className="btn btn-xs settings-model-add-btn" onClick={addModelGroup}>Add Group</button>
                 </div>
-              )
-            })}
-            <datalist id={`${uid}-model-list`}>
-              {modelList.map((m) => <option key={m} value={m} />)}
-            </datalist>
-            <div className="settings-model-add-row">
-              <button className="btn btn-xs settings-model-add-btn" onClick={addModelGroup}>Add Group</button>
+              </div>
             </div>
-          </div>
-        </div>
+          </section>
         </div>
       </AnimatedCollapse>
     </div>

@@ -1655,6 +1655,57 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
+
+/* ── Provider-profiles editor ───────────────────────────────────────
+   Sections inside the expanded profile card give the previously flat field
+   stack a clear hierarchy (Connection / Models / Model Groups). The section
+   label mirrors the micro-label style used by model-group slots so the
+   editor reads as one family. */
+.settings-profile-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.settings-profile-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.settings-profile-section + .settings-profile-section {
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-4);
+}
+.settings-profile-section-label {
+  margin: 0;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+.settings-profile-empty {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+.settings-profile-card .settings-card-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+  transition: color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.settings-profile-card .settings-card-toggle:hover .settings-card-chevron {
+  color: var(--fg);
+}
+/* Pending profile-change actions in the per-session settings panel
+   (SessionProfileSelect): shown only while the picker differs from the
+   session's current profile. */
+.session-profile-select__actions {
+  display: flex;
+  gap: var(--space-1-5);
+  margin-top: var(--space-1);
+}
 .settings-readonly-value {
   background: var(--bg);
   border: 1px solid var(--border);
