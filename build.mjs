@@ -4,7 +4,7 @@
 // claude CLI process at runtime — bundling it would break its internal
 // filesystem-relative lookups. All other deps (hono, open) are bundled.
 import { build } from 'esbuild'
-import { mkdirSync, writeFileSync, readFileSync, chmodSync, cpSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, chmodSync, cpSync, rmSync } from 'node:fs'
 
 mkdirSync('dist', { recursive: true })
 
@@ -35,10 +35,18 @@ if (!bundled.startsWith('#!')) {
 chmodSync(path, 0o755)
 
 // Ship the official App Plugin marketplace with the package so the built-in
-// marketplace works offline without a runtime git clone. Test files excluded.
+// marketplace works offline without a runtime git clone. Test files excluded,
+// and build-time / cache noise (node_modules, .vite, src/) is dropped — the
+// plugins run from their pre-built dist/ + crw-plugin.json only. The previous
+// copy is removed first so stale files (e.g. an older plugin's src/ tree)
+// never survive into the published tarball.
+rmSync('dist/plugins', { recursive: true, force: true })
 cpSync('plugins', 'dist/plugins', {
   recursive: true,
-  filter: (src) => !/\.test\.(ts|js|tsx|jsx)$/.test(src),
+  filter: (src) => {
+    if (/\.test\.(ts|js|tsx|jsx)$/.test(src)) return false
+    return !src.split(/[\\/]/).some((part) => part === 'node_modules' || part === '.vite' || part === 'src')
+  },
 })
 
 console.log('✔ Built dist/cli.mjs')
