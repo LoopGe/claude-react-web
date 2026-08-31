@@ -24,6 +24,7 @@ import { createLogger } from './log.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { SnippetStore } from './snippet-store.js'
+import type { UploadStore } from './upload-store.js'
 import type { UiStateStore } from './ui-state-store.js'
 import type { MpStore } from './mp-store.js'
 import type { AppPluginManager } from './app-plugins/app-plugin-manager.js'
@@ -70,6 +71,12 @@ export interface AppOptions {
   /** Composer snippet store. Mounted as /api/snippets. Persists the
    *  user's reusable text macros to disk (previously localStorage-only). */
   snippetStore?: SnippetStore
+  /** Uploaded-file registry store. Powered by buildUploadRouter: records
+   *  POST /sessions/:id/uploads traffic and mounts GET /uploads +
+   *  DELETE /uploads/:id for the Uploads Manager dialog. Optional —
+   *  standalone builds (tests, tooling) without it keep plain upload
+   *  working, unrecorded, and the manager routes return 404. */
+  uploadStore?: UploadStore
   /** UI layout state store. Mounted as /api/ui-state. Persists session
    *  groups, sidebar order, and collapsed groups to disk (previously
    *  localStorage-only). */
@@ -204,7 +211,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     }
   })
 
-  const apiRouter = buildApiRouter(sessionManager, opts.configDir, opts.mpStore, opts.defaults?.claudeBinary)
+  const apiRouter = buildApiRouter(sessionManager, opts.configDir, opts.mpStore, opts.defaults?.claudeBinary, opts.uploadStore)
   // Expose server defaults to the UI (used to prefill the "new session" form).
   // The fallback model string is sent through to the SDK unchanged when the
   // user doesn't override it; CLI `--model` and UI field both win over this.

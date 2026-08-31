@@ -7,6 +7,7 @@ import { Hono } from 'hono'
 import { SessionManager } from '../session-manager.js'
 import { HttpError, createErrorHandler } from '../errors.js'
 import type { MpStore } from '../mp-store.js'
+import type { UploadStore } from '../upload-store.js'
 import { buildSessionRouter } from './sessions.js'
 import { buildPermissionRouter } from './permissions.js'
 import { buildElicitationRouter } from './elicitation.js'
@@ -38,6 +39,7 @@ export function buildApiRouter(
   configDir?: string,
   mpStore?: MpStore,
   claudeBinary?: string,
+  uploadStore?: UploadStore,
 ): Hono {
   const app = new Hono()
 
@@ -54,7 +56,7 @@ export function buildApiRouter(
   app.route('/', buildSessionRouter(sm, mpStore))
   app.route('/', buildHooksRouter(sm))
   app.route('/', buildSkillsRouter(sm))
-  app.route('/', buildUploadRouter(sm))
+  app.route('/', buildUploadRouter(sm, uploadStore))
   app.route('/', buildPermissionRouter(sm))
   app.route('/', buildElicitationRouter(sm))
   app.route('/', buildDialogRouter(sm))
