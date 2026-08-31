@@ -7,7 +7,7 @@
   "version": "1.0.0",
   "publisher": "claude-react-web",
   "license": "MIT",
-  "engines": { "claudeReactWeb": "^0.6.0", "pluginApi": "^1.0.0", "node": ">=20" },
+  "engines": { "claudeReactWeb": "^0.7.0", "pluginApi": "^1.0.0", "node": ">=20" },
   "runtime": { "service": "dist/service.mjs" },
   "activationEvents": ["onStartup"],
   "permissions": ["sessions.read", "sessions.compact"],

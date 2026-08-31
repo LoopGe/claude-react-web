@@ -98,7 +98,7 @@ describe('idle-compact — shouldCompact', () => {
 describe('idle-compact — manifest', () => {
   it('loads and validates against the host', async () => {
     const dir = resolvePath(__dirname, '..', 'idle-compact')
-    const { manifest, validation } = await loadManifest(dir, { hostVersion: '0.6.0', hostNodeMajor: 22 })
+    const { manifest, validation } = await loadManifest(dir, { hostVersion: '0.7.0', hostNodeMajor: 22 })
     expect(manifest.id).toBe('idle-compact.claude-react-web')
     expect(manifest.activationEvents).toContain('onStartup')
     expect(manifest.permissions).toContain('sessions.read')

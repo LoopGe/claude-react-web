@@ -17,7 +17,7 @@ describe('translator plugin — install + manifest against the framework', () =>
   beforeEach(() => {
     stateDir = mkdtempSync(join(tmpdir(), 'translator-'))
     const store = new AppPluginStore({ stateDir })
-    manager = new AppPluginManager({ store, stateDir, hostVersion: '0.6.0', hostNodeMajor: 20, sm: smStub })
+    manager = new AppPluginManager({ store, stateDir, hostVersion: '0.7.0', hostNodeMajor: 20, sm: smStub })
   })
 
   afterEach(async () => {

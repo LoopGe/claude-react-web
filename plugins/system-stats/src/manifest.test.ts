@@ -10,7 +10,7 @@ describe('system-stats manifest', () => {
   const manifest = JSON.parse(readFileSync(join(here, '..', 'crw-plugin.json'), 'utf8'))
 
   it('validates with the widget contribution intact', () => {
-    const r = validateManifest(manifest, { hostVersion: '0.6.0', hostNodeMajor: 20 })
+    const r = validateManifest(manifest, { hostVersion: '0.7.0', hostNodeMajor: 20 })
     expect(r.ok).toBe(true)
     expect(r.errors).toEqual([])
     expect(r.contributions?.widgets).toHaveLength(1)
