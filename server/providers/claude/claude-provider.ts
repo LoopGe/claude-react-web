@@ -4,8 +4,12 @@ import {
   query,
   type Options,
   type PermissionMode,
+  type SDKMessage,
+  type SDKResultError,
+  type SDKResultSuccess,
   type SDKSessionInfo,
 } from '@anthropic-ai/claude-agent-sdk'
+import { randomUUID } from 'node:crypto'
 import { config as defaultConfig, DEFAULT_PROFILE } from '../../config.js'
 import type { ModelGroupConfig, ProviderProfile } from '../../config.js'
 import { profileDefaultModel, resolveActiveProfile } from '../../profiles.js'
@@ -24,6 +28,7 @@ import { ProcessMonitor, type ProcessExitInfo } from '../../process-monitor.js'
 import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities } from '../types.js'
 import { ClaudeSessionHandle } from './claude-session.js'
 import type { AgentUserMessage } from '../../agent-message.js'
+import type { StructuredRunRequest, StructuredRunResult } from '../../../shared/structured.js'
 import type { ResumableSession } from '../../session-types.js'
 import { createLogger } from '../../log.js'
 
@@ -193,6 +198,7 @@ export class ClaudeProvider implements AgentProvider {
     supportsRewindFiles: true,
     supportsSessionTitle: true,
     supportsTaskControl: true,
+    supportsStructuredOutput: true,
   }
 
   private readonly processMonitor: ProcessMonitor
@@ -357,6 +363,121 @@ export class ClaudeProvider implements AgentProvider {
     }
 
     return handle
+  }
+
+  /** One-shot headless structured-output run (SDK Options.outputFormat).
+   *  Spawns a fresh, non-persisted query with a single user message and runs
+   *  it to a terminal `result` frame, then narrows the outcome. Unlike
+   *  createSession there is no session lifecycle to manage — no SessionMeta,
+   *  no residents, no processMonitor: the query is short-lived and torn down
+   *  via abort in the finally. The SDK forwards the schema to the CLI subprocess
+   *  as `--json-schema` automatically, so no flag is built here. */
+  async runStructured(req: StructuredRunRequest, signal?: AbortSignal): Promise<StructuredRunResult> {
+    const { prompt, schema, cwd, model, maxTurns, maxBudgetUsd } = req
+    const permissionMode = req.permissionMode as PermissionMode | undefined
+    const abortController = new AbortController()
+    // External abort (client cancel / server timeout) tears down the
+    // subprocess exactly as a local abort would. The abort-listener guard
+    // also covers a signal that was already aborted before we subscribed.
+    const onAbort = () => abortController.abort()
+    if (signal) {
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
+
+    const sdkOptions: Options = {
+      outputFormat: { type: 'json_schema', schema },
+      env: this.buildAnthropicEnv(),
+      abortController,
+      // We only need the terminal result frame — skip partial/turn-suggestion
+      // noise on the wire.
+      includePartialMessages: false,
+      promptSuggestions: false,
+      agentProgressSummaries: false,
+    }
+    if (this.opts.claudeBinary) sdkOptions.pathToClaudeCodeExecutable = this.opts.claudeBinary
+    if (model) sdkOptions.model = model
+    if (cwd) sdkOptions.cwd = cwd
+    if (maxTurns !== undefined) sdkOptions.maxTurns = maxTurns
+    if (maxBudgetUsd !== undefined) sdkOptions.maxBudgetUsd = maxBudgetUsd
+    // Forward the permission mode verbatim (same enum as sessions). A one-shot
+    // run has no app-level mode translation layer, but the value space is the
+    // same SDK PermissionMode. Default = SDK default when absent.
+    if (permissionMode) sdkOptions.permissionMode = permissionMode
+    if (permissionMode === 'bypassPermissions') {
+      // bypass requires the SDK's explicit guard — the enum alone is not
+      // enough or the spawn fails.
+      sdkOptions.allowDangerouslySkipPermissions = true
+    } else {
+      // Headless one-shot has no web UI to answer tool permission prompts, so
+      // a permissioned call would sit unanswered until the 120s timeout. Auto-
+      // deny every permission-requiring call (safe reads flow through approval
+      // rules and never reach canUseTool), keeping the run read-only by default
+      // and guaranteeing it terminates. Deny with interrupt:false so the model
+      // re-plans instead of aborting the turn.
+      sdkOptions.canUseTool = async () =>
+        ({ behavior: 'deny', message: 'denied by structured run', interrupt: false }) as const
+    }
+
+    // Close the input after the single user turn so the run is clearly
+    // bounded (a still-open iterable leaves the CLI waiting for more input).
+    const input = createPushable<AgentUserMessage>('structured', 1)
+    const userMsg: AgentUserMessage = {
+      type: 'user',
+      message: { role: 'user', content: prompt },
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      session_id: randomUUID(),
+    }
+    input.push(userMsg)
+    input.end()
+
+    // The whole body is under try/finally so ANY synchronous throw (including
+    // from query() itself) still tears down the subprocess via abort.
+    try {
+      const q = query({ prompt: input.iterable, options: sdkOptions })
+      for await (const msg of q) {
+        if (msg.type === 'result') return this.toStructuredResult(msg)
+      }
+      return {
+        ok: false,
+        errorSubtype: 'error_during_execution',
+        errors: ['agent finished without a result message'],
+      }
+    } catch (err) {
+      // External abort (client cancel / timeout) surfaces as AbortError here.
+      // The route owns the 408/abort response; this provider just must not
+      // leave an unhandled rejection — return a benign aborted result.
+      if (err && (err as Error).name === 'AbortError') {
+        return { ok: false, errorSubtype: 'error_during_execution', errors: ['run aborted'] }
+      }
+      throw err
+    } finally {
+      try {
+        abortController.abort()
+      } catch {
+        // abort never throws, but keep teardown defensive
+      }
+    }
+  }
+
+  /** Narrow an SDK result frame into the browser-safe StructuredRunResult.
+   *  Success (subtype 'success') carries structured_output + run metadata;
+   *  any other subtype is an error carrying its SDK-defined reason. Callers
+   *  pass only `type:'result'` frames. */
+  private toStructuredResult(msg: SDKMessage): StructuredRunResult {
+    const s = msg as SDKResultSuccess
+    if (s.subtype === 'success') {
+      return {
+        ok: true,
+        structuredOutput: s.structured_output,
+        rawText: s.result,
+        numTurns: s.num_turns,
+        totalCostUsd: s.total_cost_usd,
+      }
+    }
+    const e = msg as SDKResultError
+    return { ok: false, errorSubtype: e.subtype, errors: e.errors }
   }
 
   async getSessionInfo(id: string, opts?: { dir?: string }): Promise<ResumableSession | undefined> {

@@ -1,0 +1,108 @@
+/* App-level structured-output dialog (StructuredPanel). Theme-vars only —
+   light/dark come from the shared tokens, never hardcoded hex. All selectors
+   are scoped under `.structured-panel` so the generic names (.field-label,
+   .field-error) can never collide with future dialogs. */
+
+.structured-panel {
+  width: min(720px, 92vw);
+  display: flex;
+  flex-direction: column;
+  max-height: min(86vh, 720px);
+}
+
+.structured-panel .structured-body {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* A field caption above a control. Mirrors `.field-label` used across other
+   dialogs (which has no standalone rule — layout here is self-contained). */
+.structured-panel .field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--fg-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+
+.structured-panel .structured-schema {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  tab-size: 2;
+}
+
+.structured-panel .field-error {
+  color: var(--danger);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+/* A label + trailing action laid out on one row (e.g. "Result" + Copy). */
+.structured-panel .structured-subrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.structured-panel .structured-subrow .field-label {
+  margin-top: 0;
+}
+
+/* Collapsible advanced options. */
+.structured-panel .structured-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+.structured-panel .structured-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 560px) {
+  .structured-panel .structured-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.structured-panel .structured-advanced .field-label .input,
+.structured-panel .structured-advanced .field-label .select {
+  width: 100%;
+}
+
+/* Result block. */
+.structured-panel .structured-result {
+  border-top: 1px solid var(--border);
+}
+
+.structured-panel .structured-json {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre;
+  font-family: var(--mono);
+  font-size: 12px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background-color: var(--bg);
+  color: var(--fg);
+}
+
+.structured-panel .structured-meta {
+  margin-top: 6px;
+}

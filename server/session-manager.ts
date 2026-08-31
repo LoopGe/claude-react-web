@@ -66,6 +66,7 @@ import type { ModelInfo } from '../shared/model-info.js'
 import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
 import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
 import { coerceRewindResult, type RewindFilesResult } from '../shared/rewind.js'
+import { coerceStructuredOutput, type StructuredRunRequest, type StructuredRunResult } from '../shared/structured.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
@@ -3700,6 +3701,21 @@ export class SessionManager {
       'plugin reload',
       'supportsPlugins',
     )()
+  }
+
+  /** One-shot structured-output run (SDK Options.outputFormat). App-level —
+   *  no session involved: delegates to the default provider, which spawns a
+   *  fresh, non-persisted headless query. 501 when the provider doesn't
+   *  implement it. The raw result is narrowed to the clean wire shape before
+   *  returning so the client never renders an unset-grained provider/SDK
+   *  response. */
+  async runStructured(req: StructuredRunRequest, opts?: { signal?: AbortSignal }): Promise<StructuredRunResult> {
+    const provider = this.providers.get(this.defaultProvider)
+    if (!provider.runStructured) {
+      throw new HttpError(501, `provider ${provider.name} does not support structured output`)
+    }
+    const raw = await provider.runStructured(req, opts?.signal)
+    return coerceStructuredOutput(raw)
   }
 
   async contextUsage(id: string) {

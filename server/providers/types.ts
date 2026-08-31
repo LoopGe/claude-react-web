@@ -4,6 +4,7 @@ import type { SessionMeta } from '../persistence.js'
 import type { ResumableSession } from '../session-types.js'
 import type { SessionMemorySettings, ThinkingSetting } from '../../shared/session-info.js'
 import type { ProviderProfile } from '../config.js'
+import type { StructuredRunRequest, StructuredRunResult } from '../../shared/structured.js'
 
 export interface CreateSessionOptions {
   id: string
@@ -174,6 +175,7 @@ export interface ProviderCapabilities {
   supportsRewindFiles: boolean
   supportsSessionTitle: boolean
   supportsTaskControl: boolean
+  supportsStructuredOutput: boolean
 }
 
 export interface ListResumableOptions {
@@ -184,6 +186,13 @@ export interface AgentProvider {
   readonly name: string
   readonly capabilities: ProviderCapabilities
   createSession(opts: CreateSessionOptions): ProviderSessionHandle
+  /** One-shot headless structured-output run (SDK Options.outputFormat /
+   *  JSON-schema): spawn a fresh non-persisted query with a single user
+   *  message, run to a terminal `result` frame, and return the parsed output
+   *  or a narrowed error. Providers that lack the target binary / contract
+   *  simply omit it — the manager answers 501. The optional signal aborts the
+   *  subprocess (client cancel / server timeout). */
+  runStructured?(req: StructuredRunRequest, signal?: AbortSignal): Promise<StructuredRunResult>
   getSessionInfo?(id: string, opts?: { dir?: string }): Promise<ResumableSession | undefined>
   listResumable?(opts?: ListResumableOptions): Promise<ResumableSession[]>
   readHistoryPage?(id: string, opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string }): Promise<HistoryPage>

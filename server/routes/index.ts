@@ -23,6 +23,7 @@ import { buildUpdateRouter } from './update-routes.js'
 import { buildSearchRouter } from './search.js'
 import { buildSkillsRouter } from './skills.js'
 import { buildHooksRouter } from './hooks.js'
+import { buildStructuredRouter } from './structured.js'
 
 /** Parse JSON body, returning 400 on malformed input instead of silently
  *  falling back to an empty object. */
@@ -62,6 +63,7 @@ export function buildApiRouter(
   app.route('/', buildDialogRouter(sm))
   app.route('/', buildRecapRouter(sm))
   app.route('/', buildSearchRouter(sm))
+  app.route('/', buildStructuredRouter(sm))
   // Homegrown git-repo marketplace lives under /mp/*. Only mounted when an
   // MpStore was provided — other buildApp callers (tests, standalone
   // tooling) skip it cleanly.

@@ -69,6 +69,7 @@ const SetupPage = lazy(() => import('./components/SetupPage').then((m) => ({ def
 const SnippetsManagerDialog = lazy(() => import('./components/SnippetsManagerDialog').then((m) => ({ default: m.SnippetsManagerDialog })))
 const PromptDialog = lazy(() => import('./components/PromptDialog').then((m) => ({ default: m.PromptDialog })))
 const UploadsManagerDialog = lazy(() => import('./components/UploadsManagerDialog').then((m) => ({ default: m.UploadsManagerDialog })))
+const StructuredPanel = lazy(() => import('./components/StructuredPanel').then((m) => ({ default: m.StructuredPanel })))
 
 import {
   SIDEBAR_COLLAPSED_KEY,
@@ -224,6 +225,7 @@ export function App() {
   } = useAppOverlays()
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false)
   const [resumeDialogOpen, setResumeDialogOpen] = useState(false)
+  const [structuredOpen, setStructuredOpen] = useState(false)
   // The last interrupt fired for a session, keyed by session id. Esc is
   // context-sensitive by turn state (working → interrupt, idle → resume
   // picker), so an impatient double-press while a turn runs would otherwise
@@ -2441,6 +2443,11 @@ export function App() {
           description: 'New session',
         },
         {
+          combo: 'mod+shift+x',
+          handler: () => setStructuredOpen(true),
+          description: 'Structured output',
+        },
+        {
           // NOT mod+shift+r: that's the browser hard-reload combo on
           // Windows/Linux, and the dispatcher preventDefault()s every
           // bound combo — which would silently kill hard-reload. mod+shift+o
@@ -4022,12 +4029,18 @@ export function App() {
         </Suspense>
       )}
 
-      {uploadsDialogPresence.shouldRender && (
+{uploadsDialogPresence.shouldRender && (
         <Suspense fallback={null}>
           <UploadsManagerDialog
             open={uploadsDialogOpen}
             onClose={() => setUploadsDialogOpen(false)}
           />
+        </Suspense>
+      )}
+
+      {structuredOpen && (
+        <Suspense fallback={null}>
+          <StructuredPanel open onClose={() => setStructuredOpen(false)} />
         </Suspense>
       )}
 
