@@ -349,7 +349,18 @@ export function App() {
 
   const { sidebarWidth: effectiveSidebarWidth, sidebarResize, setSidebarWidth } = useSidebarResize({ minPx: sidebarMinPx, maxPx: sidebarMaxPx })
 
-  const { gridTemplate, onDividerMouseDown, draggingDivider, bodyRef, setPanelRatios, effectiveRatios } = usePanelColumnResize({ openIds, panelMinRatio })
+  // Resolved open ids — `openIds` filtered to ids that actually resolve to a
+  // SessionInfo. The grid template + divider handlers must be built from THIS
+  // set (what's actually rendered), not the raw `openIds`: an unknown id could
+  // otherwise sit in `openIds` without a matching session and de-sync the grid
+  // tracks from the rendered children (the single empty-state child would land
+  // in the first of several columns, shifting it left).
+  const resolvedOpenIds = useMemo(
+    () => openIds.filter((id) => sessions.some((s) => s.id === id)),
+    [openIds, sessions],
+  )
+
+  const { gridTemplate, onDividerMouseDown, draggingDivider, bodyRef, setPanelRatios, effectiveRatios } = usePanelColumnResize({ openIds: resolvedOpenIds, panelMinRatio })
 
   // Keyboard resize for the sidebar separator. ArrowLeft shrinks, ArrowRight
   // grows, by a 24px step clamped to [sidebarMinPx, sidebarMaxPx]. Mirrors the
@@ -378,8 +389,8 @@ export function App() {
       else if (e.key === 'ArrowRight') delta = 0.05
       else return
       e.preventDefault()
-      const leftId = openIds[index]
-      const rightId = openIds[index + 1]
+      const leftId = resolvedOpenIds[index]
+      const rightId = resolvedOpenIds[index + 1]
       if (!leftId || !rightId) return
       const leftR = effectiveRatios[leftId] ?? 1
       const rightR = effectiveRatios[rightId] ?? 1
@@ -398,7 +409,7 @@ export function App() {
       }
       setPanelRatios(next)
     },
-    [openIds, effectiveRatios, setPanelRatios, panelMinRatio],
+    [resolvedOpenIds, effectiveRatios, setPanelRatios, panelMinRatio],
   )
 
   // Update checker — gated on isConfigured so we don't probe before
@@ -1925,7 +1936,11 @@ export function App() {
       const auto = opts?.auto === true
       const s = sessionsRef.current.find((x) => x.id === id)
       if (!s) {
-        openSession(id, undefined)
+        // Unknown id (stale deep link, deleted session, …). Don't add it to
+        // openIds: the invariant is openIds ⊆ sessions (see the openSessions
+        // memo) — an unresolvable id would leave a ghost entry that widens the
+        // grid while rendering no panel (empty-state shifted into the first
+        // column) and persists the stale id in the URL hash via writeHash.
         return
       }
 
@@ -2014,7 +2029,7 @@ export function App() {
       if (resumingRef.current.has(id)) return
       await resumeSession(id, () => {})
     },
-    [resumeSession, openSession, groups, setLastSeenTurn],
+    [resumeSession, groups, setLastSeenTurn],
   )
   // Keep a stable ref so notification onClick handlers can call the
   // full handleSelect logic (group switch, dormant resume, unread clear)
@@ -2107,8 +2122,8 @@ export function App() {
    *  session is removed from `openIds` by its `session-removed` frame and so
    *  disappears here. */
   const openSessions = useMemo(
-    () => openIds.map((id) => sessions.find((s) => s.id === id)).filter((s): s is SessionInfo => !!s),
-    [openIds, sessions],
+    () => resolvedOpenIds.map((id) => sessions.find((s) => s.id === id)).filter((s): s is SessionInfo => !!s),
+    [resolvedOpenIds, sessions],
   )
 
   const updateSession = useCallback((s: SessionInfo) => {
@@ -3888,7 +3903,7 @@ export function App() {
                   aria-label="Resize panel"
                   onMouseDown={onDividerMouseDown(i)}
                   onKeyDown={onPanelDividerKeyDown(i)}
-                  onDoubleClick={() => setPanelRatios(Object.fromEntries(openIds.map((id) => [id, 1])))}
+                  onDoubleClick={() => setPanelRatios(Object.fromEntries(resolvedOpenIds.map((id) => [id, 1])))}
                   title="Drag to resize · double-click to reset"
                   tabIndex={0}
                 />,
