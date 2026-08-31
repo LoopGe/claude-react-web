@@ -15,6 +15,7 @@ import { basename, resolve as resolvePath } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import { createLogger } from './log.js'
+export type { UploadEntry } from '../shared/uploads.js'
 import type { UploadEntry } from '../shared/uploads.js'
 
 const log = createLogger('upload-registry')
