@@ -1740,13 +1740,28 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     // arrives when the subagent actually settled, so overriding is correct in
     // both cases. A synchronous subagent never receives a task-notification,
     // so accepting 'running'/'interrupted' can't mis-flip a sync record.
-    // 'dismissed' stays excluded: an explicit user dismiss is a deliberate
-    // terminal state a late notification must not revive.
-    if (existing && (existing.status === 'background' || existing.status === 'running' || existing.status === 'pending' || existing.status === 'interrupted')) {
+    // AND 'done' (the replay-ordering hole: on replay the detach ack
+    // tool_result — which doesn't match the launch-ack signature — mis-settles
+    // the record 'done' with the ack text as its result, and the terminal
+    // tasks-snapshot arrives AFTER this frame so rescueSettled can't re-open
+    // it; the notification is the only frame carrying the real result, so it
+    // must overwrite the bogus ack). A 'done' record reached here can only be
+    // that mis-settle — a genuine sync completion never emits a
+    // task-notification. 'dismissed' stays excluded: an explicit user dismiss
+    // is a deliberate terminal state a late notification must not revive.
+    if (existing && (existing.status === 'background' || existing.status === 'running' || existing.status === 'pending' || existing.status === 'interrupted' || existing.status === 'done')) {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
       const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
       const isError = taskNotification.status !== 'completed'
       const resultContent = taskNotification.result ?? taskNotification.summary ?? ''
+      // A 'done' record reached here is the replay-ordering hole: on replay
+      // the detach ack mis-settles the record 'done' with the ack text as its
+      // result, and the terminal tasks-snapshot (which arrives after this
+      // frame) can't rescue it — rescueSettled needs a NON-terminal
+      // is_backgrounded snapshot. The existing result is therefore the bogus
+      // ack text: overwrite it. Every other status keeps the
+      // child-text-preserving guard below.
+      const overwriteResult = existing.status === 'done' || !existing.result
       activeSubagents.set(taskNotification.toolUseId, {
         ...existing,
         status: isError ? 'interrupted' : 'done',
@@ -1760,7 +1775,7 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         // synthesized `stopped` from the watcher backstop, whose summary is
         // '') — otherwise the empty result would block a later REAL
         // completion from populating the subagent's actual output.
-        ...(existing.result || resultContent === '' ? {} : { result: { content: resultContent, isError } }),
+        ...(overwriteResult && resultContent !== '' ? { result: { content: resultContent, isError } } : {}),
       })
       changed = true
     }
