@@ -19,8 +19,8 @@ export class HttpError extends Error {
 export function createErrorHandler(prefix: string): ErrorHandler {
   return (err, c) => {
     if (err instanceof HttpError) {
-      if (err.body !== undefined) return c.json(err.body, err.status as 400 | 404 | 409 | 410 | 500)
-      return c.json({ error: err.message }, err.status as 400 | 404 | 409 | 410 | 500)
+      if (err.body !== undefined) return c.json(err.body, err.status as 400 | 404 | 409 | 410 | 502 | 500)
+      return c.json({ error: err.message }, err.status as 400 | 404 | 409 | 410 | 502 | 500)
     }
     console.error(`${prefix} unhandled error:`, err)
     return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)

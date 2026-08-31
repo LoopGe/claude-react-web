@@ -248,6 +248,7 @@ import { MpStore } from './mp-store.js'
 import { execCommand as mockExecCommand } from './exec.js'
 import { summarizeForCompact } from './compact-summary.js'
 import { buildSessionRouter } from './routes/sessions.js'
+import { HttpError } from './errors.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
@@ -3484,6 +3485,62 @@ describe('plugin subset selection', () => {
       enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
     } as any)
     expect(mockHandles[0].options.enabledPlugins).toBeUndefined()
+  })
+})
+
+describe('provider control-op error wrapping', () => {
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+
+  beforeEach(async () => {
+    mockHandles.length = 0
+    mockGetSessionInfo.mockReset()
+    mockGetSessionInfo.mockImplementation(async (id) => ({ sessionId: id }))
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    sm = new SessionManager({ store })
+  })
+
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+  })
+
+  async function rejectOf(p: Promise<unknown>): Promise<unknown> {
+    return p.then(
+      () => {
+        throw new Error('expected the promise to reject')
+      },
+      (e) => e,
+    )
+  }
+
+  it('wraps a plain SDK error from a handle method as HttpError 502 naming the action', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    mockHandles[0].setMcpServers.mockRejectedValueOnce(new Error('Connection closed'))
+    const err = await rejectOf(sm.setMcpServers(info.id, { x: { type: 'stdio', command: 'node' } }))
+    expect(err).toBeInstanceOf(HttpError)
+    expect((err as HttpError).status).toBe(502)
+    expect((err as HttpError).message).toBe('dynamic MCP servers failed: Connection closed')
+  })
+
+  it('passes an existing HttpError through unchanged', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const original = new HttpError(409, 'phase guard')
+    mockHandles[0].getContextUsage.mockRejectedValueOnce(original)
+    const err = await rejectOf(sm.contextUsage(info.id))
+    expect(err).toBe(original)
+  })
+
+  it('wraps a plain SDK error on the timeSdkControl path too', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('Connection closed'))
+    const err = await rejectOf(sm.contextUsage(info.id))
+    expect(err).toBeInstanceOf(HttpError)
+    expect((err as HttpError).status).toBe(502)
+    expect((err as HttpError).message).toBe('context usage failed: Connection closed')
   })
 })
 

@@ -3436,7 +3436,11 @@ export class SessionManager {
       return result
     } catch (err) {
       log.error(`[session ${id}] SDK ${label} rejected after ${Date.now() - startedAt}ms:`, err)
-      throw err
+      // Same semantic wrap as requireHandleMethod: a plain SDK failure becomes
+      // a 502 naming the action; HttpErrors pass through untouched (so the
+      // wrap in requireHandleMethod is never doubled).
+      if (err instanceof HttpError) throw err
+      throw new HttpError(502, `${label} failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -4685,7 +4689,22 @@ export class SessionManager {
     if (typeof fn !== 'function') {
       throw new HttpError(501, `provider ${s.provider} does not support ${action}`)
     }
-    return fn.bind(s.handle) as T
+    const bound = fn.bind(s.handle) as (...args: never[]) => unknown
+    // Wrap so every SDK control failure surfaces as a semantic 502 naming the
+    // action, instead of a bare 500 with an opaque SDK error string (e.g. an
+    // MCP reconnect surfacing "Connection closed"). Facts only — the action
+    // label plus the upstream error text; HttpErrors (phase guards, 501s)
+    // pass through untouched and are never re-wrapped.
+    const wrapped = async (...args: never[]) => {
+      try {
+        return await bound(...args)
+      } catch (err) {
+        if (err instanceof HttpError) throw err
+        log.warn(`[session ${s.id}] ${action} failed:`, err)
+        throw new HttpError(502, `${action} failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    return wrapped as T
   }
 
   private profileNameFor(profileId: string | undefined): string | undefined {

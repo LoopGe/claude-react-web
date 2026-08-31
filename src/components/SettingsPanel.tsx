@@ -397,7 +397,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       await api.post(`/sessions/${session.id}/mcp/${encodeURIComponent(name)}/reconnect`)
       await refreshMcp()
     } catch (e) {
-      toast.error(`Couldn't reconnect MCP: ${(e as Error).message}`)
+      // Server errors are already self-describing (e.g. "MCP reconnect
+      // failed: Connection closed") — no client-side prefix needed.
+      toast.error((e as Error).message)
     }
   }
 
@@ -429,7 +431,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         clearMcpOverride(name)
       }
     } catch (e) {
-      toast.error(`Couldn't toggle MCP: ${(e as Error).message}`)
+      toast.error((e as Error).message)
       // Revert to the real status — drop the optimistic override and re-sync.
       clearMcpOverride(name)
       void refreshMcp()
