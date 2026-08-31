@@ -101,6 +101,7 @@ body.resizing-col .app {
   display: flex;
   align-items: center;
   justify-content: flex-start;
+  gap: 8px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
@@ -117,20 +118,29 @@ body.resizing-col .app {
   position: relative;
 }
 .profile-switcher__trigger {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
+  height: 30px;
+  padding: 0 8px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-elev);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
   color: var(--fg);
   font-size: var(--fs-sm);
+  line-height: 1;
   cursor: pointer;
-  transition: background var(--motion-duration-fast) var(--motion-ease-standard);
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-instant) var(--motion-ease-standard);
 }
 .profile-switcher__trigger:hover {
   background: var(--btn-hover-bg);
+  border-color: var(--btn-hover-border);
+}
+.profile-switcher__trigger:active {
+  transform: scale(var(--motion-scale-press));
 }
 .profile-switcher__dot {
   width: 8px;
@@ -146,9 +156,9 @@ body.resizing-col .app {
   white-space: nowrap;
 }
 .profile-switcher__chevron {
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
   color: var(--fg-muted);
-  line-height: 1;
 }
 .profile-switcher__menu {
   position: absolute;

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useProfiles } from '../hooks/useProfiles'
+import { IconChevronDown, IconChevronUp } from './icons/ToolIcons'
 
 export function ProfileSwitcher({ onManageProfiles }: { onManageProfiles?: () => void }) {
   const { profiles, activeProfileId, activate } = useProfiles()
@@ -18,7 +19,9 @@ export function ProfileSwitcher({ onManageProfiles }: { onManageProfiles?: () =>
       >
         <span className="profile-switcher__dot" aria-hidden />
         <span className="profile-switcher__name">{active?.name ?? 'Default'}</span>
-        <span className="profile-switcher__chevron" aria-hidden>{open ? '▴' : '▾'}</span>
+        <span className="profile-switcher__chevron" aria-hidden>
+          {open ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />}
+        </span>
       </button>
       {open && (
         <div className="profile-switcher__menu" role="menu">
