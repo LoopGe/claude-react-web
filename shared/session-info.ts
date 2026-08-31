@@ -102,6 +102,12 @@ export interface SessionInfoBase<PM = string> {
    *  modelGroupId that resolves to a ModelGroupConfig, and `model` is the
    *  group's resolved main slot model. */
   modelGroupId?: string
+  /** Provider profile id this session is pinned to. Undefined = follow the
+   *  active (global) profile. Persisted so resume/fork/clear keep the pin. */
+  profileId?: string
+  /** Display name of the session's effective profile. Server-derived, not
+   *  persisted — recomputed from profileId / the active profile at info time. */
+  profileName?: string
   permissionMode?: PM
   title?: string
   /** Anthropic beta flags the session was created with — kept around so

@@ -112,6 +112,94 @@ body.resizing-col .app {
   margin-left: auto;
 }
 
+/* Profile quick-switcher in the top bar. */
+.profile-switcher {
+  position: relative;
+}
+.profile-switcher__trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.profile-switcher__trigger:hover {
+  background: var(--btn-hover-bg);
+}
+.profile-switcher__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-circle);
+  background: var(--accent);
+  flex-shrink: 0;
+}
+.profile-switcher__name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-switcher__chevron {
+  font-size: 10px;
+  color: var(--fg-muted);
+  line-height: 1;
+}
+.profile-switcher__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 160px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--card-shadow);
+  padding: 4px 0;
+  z-index: 100;
+}
+.profile-switcher__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-align: left;
+}
+.profile-switcher__item:hover {
+  background: var(--btn-hover-bg);
+}
+.profile-switcher__item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-switcher__check {
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+.profile-switcher__separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+.profile-switcher__empty {
+  padding: 8px 10px;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
 /* main-body holds up to MAX_OPEN chat panels. The grid-template-columns
    is set inline (App.tsx) so dividers are real grid tracks rather than
    gaps, giving us a hoverable/draggable bar between panels. */

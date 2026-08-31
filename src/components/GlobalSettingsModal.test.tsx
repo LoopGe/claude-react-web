@@ -15,9 +15,9 @@ function mockGet(config: Record<string, unknown>) {
   })
 }
 
-describe('GlobalSettingsModal Model Groups tab', () => {
-  it('lists a Model Groups tab', async () => {
-    mockGet({ modelList: ['m1'], modelGroups: [] })
+describe('GlobalSettingsModal Profiles tab', () => {
+  it('renders a Profiles tab', async () => {
+    mockGet({})
     render(
       <GlobalSettingsModal
         open
@@ -25,25 +25,6 @@ describe('GlobalSettingsModal Model Groups tab', () => {
         onSaved={() => {}}
       />,
     )
-    await waitFor(() => expect(screen.getByText('Model Groups')).toBeTruthy())
-  })
-
-  it('PUTs modelGroups on save', async () => {
-    mockGet({
-      modelList: ['m1'],
-      modelGroups: [{ id: 'g1', name: 'G1', opus: 'm1', main: 'opus' }],
-    })
-    vi.mocked(api.put).mockResolvedValue({ ok: true })
-    render(<GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />)
-    await waitFor(() => expect(screen.getAllByText('Model Groups').length).toBeGreaterThan(0))
-    // Save button — the modal footer's primary action.
-    const save = screen.getByRole('button', { name: /save/i })
-    save.click()
-    await waitFor(() =>
-      expect(api.put).toHaveBeenCalledWith(
-        '/config',
-        expect.objectContaining({ modelGroups: [{ id: 'g1', name: 'G1', opus: 'm1', main: 'opus' }] }),
-      ),
-    )
+    await waitFor(() => expect(screen.getByText('Profiles')).toBeTruthy())
   })
 })

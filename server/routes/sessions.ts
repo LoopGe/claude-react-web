@@ -90,7 +90,7 @@ const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
  *  to the SDK's documented shapes; unknown fields pass through untouched for
  *  forward compatibility with newer SDK Options. */
 function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
-  const stringFields = ['cwd', 'model', 'title', 'pathToClaudeCodeExecutable', 'modelGroupId']
+  const stringFields = ['cwd', 'model', 'title', 'pathToClaudeCodeExecutable', 'modelGroupId', 'profileId']
   for (const name of stringFields) {
     const v = rest[name]
     if (v !== undefined && typeof v !== 'string') {
@@ -472,6 +472,20 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
       return c.json({ error: 'groupId is required' }, 400)
     }
     const info = await sm.setModelGroup(c.req.param('id'), body.groupId)
+    return c.json({ session: info })
+  })
+
+  // Pin a session to a provider profile. `apply: 'now'` restarts the Query so
+  // new credentials apply immediately; `deferred` applies on the next respawn.
+  app.post('/sessions/:id/profile', async (c) => {
+    const body = await safeJson<{ profileId?: unknown; apply?: unknown }>(c.req)
+    if (typeof body.profileId !== 'string' || !body.profileId) {
+      return c.json({ error: 'profileId is required' }, 400)
+    }
+    if (body.apply !== undefined && body.apply !== 'now' && body.apply !== 'deferred') {
+      return c.json({ error: "apply must be 'now' or 'deferred'" }, 400)
+    }
+    const info = await sm.setProfile(c.req.param('id'), body.profileId, body.apply ?? 'now')
     return c.json({ session: info })
   })
 

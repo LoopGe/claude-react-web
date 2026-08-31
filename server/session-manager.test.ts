@@ -239,7 +239,7 @@ vi.mock('./compact-summary.js', () => ({
 const tick = () => new Promise((r) => setImmediate(r))
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
-import { SessionManager } from './session-manager.js'
+import { SessionManager, resolveConfiguredModel } from './session-manager.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
 import { __setConfigForTest, config as defaultConfig } from './config.js'
@@ -4099,5 +4099,87 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // in the plan, not this unit test.)
       expect(anchors[0].preview).toBe('(reply not found on disk)')
     })
+  })
+})
+
+describe('resolveConfiguredModel with a profile modelList', () => {
+  const list = ['anthropic/claude-sonnet-4-20250514', 'deepseek/deepseek-v4-pro']
+  it('resolves a bare short name against the given list', () => {
+    expect(resolveConfiguredModel('deepseek-v4-pro', list)).toBe('deepseek/deepseek-v4-pro')
+  })
+  it('leaves a provider-prefixed id unchanged', () => {
+    expect(resolveConfiguredModel('myprovider/gpt-5.6', list)).toBe('myprovider/gpt-5.6')
+  })
+  it('falls back to the default (active-profile) list when omitted', () => {
+    // Default list: 'anthropic/claude-sonnet-4-20250514' is the first entry.
+    // 'claude-opus-4-20250514' is a bare name in the default list that
+    // resolves to itself (exact match).
+    expect(resolveConfiguredModel('claude-opus-4-20250514')).toBe('claude-opus-4-20250514')
+  })
+})
+
+describe('create() validates modelGroupId against the effective profile', () => {
+  let dir: string
+  let smLocal: SessionManager
+
+  const GROUP_B = {
+    id: 'g_budget', name: 'Budget',
+    sonnet: 'anthropic/claude-sonnet-4-20250514',
+    haiku: 'claude-haiku-3-5-20241022',
+    main: 'sonnet' as const,
+  }
+  const profileA: import('./config.js').ProviderProfile = {
+    id: 'A', name: 'Profile A', authToken: 'tok-a',
+    baseUrl: 'https://api.anthropic.com',
+    modelList: ['anthropic/claude-sonnet-4-20250514'],
+    modelGroups: [], recapModel: '', commitMessageModel: '',
+  }
+  const profileB: import('./config.js').ProviderProfile = {
+    id: 'B', name: 'Profile B', authToken: 'tok-b',
+    baseUrl: 'https://api.anthropic.com',
+    modelList: ['anthropic/claude-sonnet-4-20250514'],
+    modelGroups: [GROUP_B], recapModel: '', commitMessageModel: '',
+  }
+
+  beforeEach(async () => {
+    dir = makeTmpDir()
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    smLocal = new SessionManager({ store })
+  })
+
+  afterEach(async () => {
+    await smLocal.shutdown()
+    rmRf(dir)
+    __setConfigForTest({ profiles: [], activeProfileId: 'default', modelGroups: [] })
+  })
+
+  it('succeeds when profile B has the group but the active profile does not', () => {
+    __setConfigForTest({
+      profiles: [profileA, profileB],
+      activeProfileId: 'A',
+      modelGroups: [],
+    })
+    const info = smLocal.create({
+      cwd: '/tmp',
+      profileId: 'B',
+      modelGroupId: 'g_budget',
+    } as Parameters<SessionManager['create']>[0])
+    expect(info.modelGroupId).toBe('g_budget')
+    expect(info.model).toBe('anthropic/claude-sonnet-4-20250514')
+    expect(info.profileId).toBe('B')
+  })
+
+  it('rejects a group that belongs to neither profile', () => {
+    __setConfigForTest({
+      profiles: [profileA, profileB],
+      activeProfileId: 'A',
+      modelGroups: [],
+    })
+    expect(() => smLocal.create({
+      cwd: '/tmp',
+      profileId: 'B',
+      modelGroupId: 'nonexistent',
+    } as Parameters<SessionManager['create']>[0])).toThrow('model group nonexistent not found')
   })
 })

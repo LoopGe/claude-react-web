@@ -1,9 +1,33 @@
 import { describe, it, expect, vi } from 'vitest'
 import { buildResetRouter } from './reset'
+import { updateConfigFile, loadConfig, queueConfigWrite } from '../config.js'
 
 vi.mock('../config.js', () => ({
   updateConfigFile: vi.fn(async () => {}),
   loadConfig: vi.fn(async () => {}),
+  // Invoke the mutate callback against a fixture so the app-settings test can
+  // verify the per-profile model reset actually ran (preserves credentials,
+  // resets model fields to DEFAULT_PROFILE).
+  queueConfigWrite: vi.fn(async (_dir: string, mutate: (existing: Record<string, unknown>) => void) => {
+    mutate({
+      profiles: [{
+        id: 'default',
+        name: 'Default',
+        authToken: 'keep-me',
+        baseUrl: 'https://gw',
+        modelList: ['stale-m1'],
+        modelGroups: [{ id: 'stale', name: 'stale' }],
+        recapModel: 'stale-r',
+        commitMessageModel: 'stale-c',
+      }],
+    })
+  }),
+  DEFAULT_PROFILE: {
+    modelList: ['default-m1'],
+    modelGroups: [],
+    recapModel: 'default-r',
+    commitMessageModel: 'default-c',
+  },
   WRITABLE_CONFIG_KEYS: [],
   get config() {
     return { logToFile: false }
@@ -101,6 +125,53 @@ describe('POST /config/reset', () => {
     expect(body.deletedSessionIds).toEqual(['a', 'c'])
     // The item is marked failed with a count, but the request still 200s.
     expect(body.results.sessions).toEqual({ ok: false, error: '1 session(s) could not be deleted' })
+  })
+
+  it('app-settings clears non-model keys via updateConfigFile and resets profile model fields via queueConfigWrite', async () => {
+    const deps = makeDeps()
+    const app = buildResetRouter(deps as any)
+    const res = await app.request('/config/reset', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ items: ['app-settings'] }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as any
+    expect(body.results['app-settings']).toEqual({ ok: true })
+    // Non-model keys cleared top-level (model keys are NOT here).
+    expect(updateConfigFile).toHaveBeenCalled()
+    const nulls = (updateConfigFile as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][1] as Record<string, null>
+    expect(nulls.modelList).toBeUndefined()
+    expect(nulls.recapModel).toBeUndefined()
+    expect(nulls.commitMessageModel).toBeUndefined()
+    expect(nulls.maxUploadBytes).toBeNull()
+    // Profile model fields reset through the config write queue. The mock
+    // invokes the mutate callback against a fixture, so inspect the callback
+    // arg captured by the spy to verify credentials are preserved and model
+    // fields reset to DEFAULT_PROFILE.
+    expect(queueConfigWrite).toHaveBeenCalled()
+    const mutateArg = (queueConfigWrite as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][1] as (existing: Record<string, unknown>) => void
+    expect(typeof mutateArg).toBe('function')
+    const fixture = {
+      profiles: [{
+        id: 'default', name: 'Default', authToken: 'keep-me', baseUrl: 'https://gw',
+        modelList: ['stale-m1'], modelGroups: [{ id: 'stale', name: 'stale' }],
+        recapModel: 'stale-r', commitMessageModel: 'stale-c',
+      }],
+    }
+    mutateArg(fixture)
+    const p = (fixture.profiles as Array<Record<string, unknown>>)[0]
+    // Credentials + identity preserved.
+    expect(p.id).toBe('default')
+    expect(p.name).toBe('Default')
+    expect(p.authToken).toBe('keep-me')
+    expect(p.baseUrl).toBe('https://gw')
+    // Model fields reset to DEFAULT_PROFILE.
+    expect(p.modelList).toEqual(['default-m1'])
+    expect(p.modelGroups).toEqual([])
+    expect(p.recapModel).toBe('default-r')
+    expect(p.commitMessageModel).toBe('default-c')
+    expect(loadConfig).toHaveBeenCalled()
   })
 
   it('rejects unknown items with 400', async () => {

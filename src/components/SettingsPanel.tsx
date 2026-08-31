@@ -10,7 +10,8 @@ import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
 import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
 import { useSessionUsage } from '../hooks/useSessionUsage'
-import type { AgentInfo, McpServerConfigMeta, McpServerStatus, ModelInfo, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillLoadMode, SlashCommand } from '../types'
+import { useModelOptions } from '../hooks/useModelOptions'
+import type { AgentInfo, McpServerConfigMeta, McpServerStatus, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillLoadMode, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
 import type { SkillRecord } from '../../shared/skills'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
@@ -22,6 +23,7 @@ import { useExitPresence } from '../hooks/useExitPresence'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { HooksPanel } from './HooksPanel'
 import { UsagePanel } from './UsagePanel'
+import { SessionProfileSelect } from './SessionProfileSelect'
 import { Overlay } from './Overlay'
 
 // MarketplaceTab and McpInstaller are heavy modal-within-modal
@@ -64,7 +66,7 @@ interface Props {
 }
 
 export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs, onClose, onSessionUpdate, commands = [], agents = [], contextUsage, tabRequest, onPluginsReloaded, onSkillsReloaded }: Props) {
-  const [models, setModels] = useState<ModelInfo[]>([])
+  const modelOptions = useModelOptions(session.id, true, session.profileId)
   // Stable per-instance prefix for label/control id linkage. SettingsPanel
   // mounts once per Chat panel (up to 3), so ids must not collide across
   // instances — useId guarantees document-unique values.
@@ -166,10 +168,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // forward SDK control requests to the subprocess — if the session isn't
   // running the server returns 410; skip them rather than surface noise.
   //
-  // Models come ONLY from /api/config (the user's configured modelList).
-  // We deliberately do NOT query the SDK's supportedModels: the gateway
-  // advertises extra models (e.g. *-omni) the user didn't configure, and
-  // we don't want those leaking into the picker.
+  // Models come from useModelOptions (profile-aware; falls back to
+  // /api/config for the active profile). The SDK's supportedModels
+  // (/api/sessions/:id/models) are deliberately NOT queried: the
+  // gateway advertises extra models (e.g. *-omni) the user didn't
+  // configure, so the picker would show entries beyond the list.
   useEffect(() => {
     if (!session.running) return
     const ac = new AbortController()
@@ -180,30 +183,23 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     // instead (zero round-trip); the full breakdown is lazy-loaded only
     // when a detail section is expanded — see loadDetailedUsage().
 
-    // models + global MCP config are plain server-side reads — fetch once.
+    // models comes from useModelOptions (profile-aware). Only MCP global
+    // config is fetched here.
     ;(async () => {
-      const [cfgResult, gcResult] = await Promise.allSettled([
-        api.get<{ models?: string[] }>('/config', { signal: ac.signal }),
-        api.get<{ servers: McpServerConfigMeta[] }>(
+      try {
+        const gcResult = await api.get<{ servers: McpServerConfigMeta[] }>(
           '/mcp-config',
           { signal: ac.signal },
-        ),
-      ])
-
-      if (ac.signal.aborted) return
-
-      // Models: only the user's configured modelList.
-      const serverModelIds =
-        cfgResult.status === 'fulfilled' ? (cfgResult.value.models ?? []) : []
-      setModels(serverModelIds.map((id): ModelInfo => ({ id })))
-
-      if (gcResult.status === 'fulfilled') {
+        )
+        if (ac.signal.aborted) return
         // Only include enabled servers — disabled ones can never be
         // connected (toSdkConfig filters them), so showing them as
         // "Available" with an Add button is always misleading.
         setGlobalMcpNames(new Set(
-          gcResult.value.servers.filter((s) => s.enabled !== false).map((s) => s.name),
+          gcResult.servers.filter((s) => s.enabled !== false).map((s) => s.name),
         ))
+      } catch {
+        // Non-fatal: the global MCP names list stays empty.
       }
     })()
 
@@ -651,7 +647,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     busy,
     loadingMeta,
     loadingUsage,
-    models.length,
+    modelOptions.models.length,
     mcp.length,
     commands.length,
     agents.length,
@@ -752,6 +748,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             }}
           />
         </div>
+        <SessionProfileSelect session={session} onSessionUpdate={onSessionUpdate} />
         <div className="settings-field">
           <label htmlFor={panelUid + '-model'}>Model</label>
           <select
@@ -762,13 +759,13 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             disabled={busy || session.terminated}
           >
             <option value="">(default)</option>
-            {models.map((m) => (
+            {modelOptions.models.map((m) => (
               <option key={m.id} value={m.id}>
                 {/* `||` not `??` — SDK has been observed to return
                  *  display_name as an empty string for some proxy
                  *  providers, which would render a blank label even
                  *  though the id is well-formed. */}
-                {m.display_name || m.id}
+                {m.displayName || m.id}
               </option>
             ))}
           </select>
