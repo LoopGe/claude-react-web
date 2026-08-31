@@ -22,6 +22,7 @@ import { McpConfigStore } from './mcp-config.js'
 import { SessionManager } from './session-manager.js'
 import { SnippetStore } from './snippet-store.js'
 import { UiStateStore } from './ui-state-store.js'
+import { UploadStore } from './upload-store.js'
 import { MpStore } from './mp-store.js'
 import { AppPluginStore } from './app-plugins/app-plugin-store.js'
 import { AppPluginMarketplaceStore } from './app-plugins/marketplace-store.js'
@@ -324,6 +325,12 @@ async function main() {
   const uiStateStore = new UiStateStore({ stateDir })
   await uiStateStore.load()
 
+  const uploadStore = new UploadStore({ stateDir })
+  const uploadEntries = await uploadStore.load()
+  if (uploadEntries.length) {
+    log.info(`loaded ${uploadEntries.length} uploaded-file registry ${uploadEntries.length === 1 ? 'entry' : 'entries'} from ${stateDir}`)
+  }
+
   const claudeBinary = resolveClaudeBinary(args.claudeBinary)
   if (claudeBinary) {
     log.info(`using claude binary: ${claudeBinary}`)
@@ -345,6 +352,14 @@ async function main() {
     autoResume: true,
     crashRecovery: true,
   })
+
+  // Seed the uploads registry from sessions' on-disk claude-web-uploads/
+  // folders. Idempotent (path-keyed) — safe on every boot; deleted entries
+  // never resurrect because every delete also unlinks the file.
+  const backfilled = await uploadStore.backfillFromSessions(sessionManager.list())
+  if (backfilled > 0) {
+    log.info(`backfilled ${backfilled} upload ${backfilled === 1 ? 'entry' : 'entries'} from session cwds`)
+  }
 
   // App Plugins subsystem. Under --disable-app-plugins we still construct
   // the manager (so shutdown() is uniform) but pass `undefined` to buildApp
@@ -392,6 +407,7 @@ async function main() {
     sessionStore: store,
     mcpConfigStore: mcpStore,
     snippetStore,
+    uploadStore,
     uiStateStore,
     mpStore,
     appPluginManager: args.disableAppPlugins ? undefined : appPluginManager,

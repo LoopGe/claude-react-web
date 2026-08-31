@@ -38,7 +38,7 @@ import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
 import { ProfileSwitcher } from './components/ProfileSwitcher'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { IconSettings, IconBellToggle, IconMenu, IconSidebar } from './components/icons/ToolIcons'
+import { IconSettings, IconBellToggle, IconMenu, IconSidebar, IconFolderSearch } from './components/icons/ToolIcons'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { useUiState } from './hooks/useUiState'
@@ -68,6 +68,7 @@ const GlobalSettingsModal = lazy(() => import('./components/GlobalSettingsModal'
 const SetupPage = lazy(() => import('./components/SetupPage').then((m) => ({ default: m.SetupPage })))
 const SnippetsManagerDialog = lazy(() => import('./components/SnippetsManagerDialog').then((m) => ({ default: m.SnippetsManagerDialog })))
 const PromptDialog = lazy(() => import('./components/PromptDialog').then((m) => ({ default: m.PromptDialog })))
+const UploadsManagerDialog = lazy(() => import('./components/UploadsManagerDialog').then((m) => ({ default: m.UploadsManagerDialog })))
 
 import {
   SIDEBAR_COLLAPSED_KEY,
@@ -241,6 +242,7 @@ export function App() {
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false)
   const [messageJumpTarget, setMessageJumpTarget] = useState<MessageJumpTarget | null>(null)
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
+  const [uploadsDialogOpen, setUploadsDialogOpen] = useState(false)
   // Operational errors and one-shot notifications go through the global
   // toast hub (mounted in main.tsx). Use `toast.error(...)` for anything
   // a user can dismiss/scan; persistent connection state (Reconnecting...)
@@ -294,6 +296,7 @@ export function App() {
   // so the global modal's presence is gated off here.
   const resumeDialogPresence = useExitPresence(resumeDialogOpen && resumeTargetPanelId === null)
   const globalSettingsPresence = useExitPresence(globalSettingsOpen)
+  const uploadsDialogPresence = useExitPresence(uploadsDialogOpen)
   const snippetsManagerPresence = useExitPresence(showSnippetsManager)
   const helpPresence = useExitPresence(helpOpen)
   const snippetsRefresh = snippets.refresh
@@ -3707,6 +3710,14 @@ export function App() {
             />
             <button
               className="btn btn-icon"
+              onClick={() => setUploadsDialogOpen(true)}
+              title="Uploaded files"
+              aria-label="Uploaded files"
+            >
+              <IconFolderSearch size={16} />
+            </button>
+            <button
+              className="btn btn-icon"
               onClick={() => setGlobalSettingsOpen(true)}
               title="Global Settings"
               aria-label="Global Settings"
@@ -3992,6 +4003,15 @@ export function App() {
             versionsLoading={updateInfo.versionsLoading}
             versionsError={updateInfo.versionsError}
             onFetchVersions={updateInfo.fetchVersions}
+          />
+        </Suspense>
+      )}
+
+      {uploadsDialogPresence.shouldRender && (
+        <Suspense fallback={null}>
+          <UploadsManagerDialog
+            open={uploadsDialogOpen}
+            onClose={() => setUploadsDialogOpen(false)}
           />
         </Suspense>
       )}

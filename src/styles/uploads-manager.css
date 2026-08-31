@@ -1,0 +1,118 @@
+/* Uploads Manager dialog (UploadsManagerDialog). Shell chrome comes from
+   the shared .perm-card / .modal-header / .modal-section / .input / .btn
+   classes — only the list layout is scoped here. */
+
+.uploads-manager-card {
+  width: min(720px, 92vw);
+  max-height: min(640px, 85vh);
+  display: flex;
+  flex-direction: column;
+}
+
+.uploads-manager-card .modal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.uploads-manager-card .modal-header h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  margin-right: auto;
+}
+
+.uploads-stats {
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.uploads-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-muted);
+  padding: 24px 16px;
+  justify-content: center;
+}
+
+.uploads-empty {
+  text-align: center;
+}
+
+.uploads-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 16px;
+}
+
+.uploads-toolbar .input {
+  flex: 1;
+}
+
+.uploads-list {
+  overflow-y: auto;
+  padding: 0 8px 12px;
+  min-height: 0;
+}
+
+.uploads-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.uploads-row:hover {
+  background: var(--btn-hover-bg);
+}
+
+.uploads-row-missing .uploads-name {
+  color: var(--fg-muted);
+  text-decoration: line-through;
+}
+
+.uploads-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.uploads-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploads-missing-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 14px;
+}
+
+.uploads-meta {
+  color: var(--fg-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploads-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
