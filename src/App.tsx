@@ -4008,10 +4008,12 @@ export function App() {
       )}
 
       {uploadsDialogPresence.shouldRender && (
-        <UploadsManagerDialog
-          open={uploadsDialogOpen}
-          onClose={() => setUploadsDialogOpen(false)}
-        />
+        <Suspense fallback={null}>
+          <UploadsManagerDialog
+            open={uploadsDialogOpen}
+            onClose={() => setUploadsDialogOpen(false)}
+          />
+        </Suspense>
       )}
 
       {/* Composer snippet dialogs — rendered ONCE at app level (a single
