@@ -1503,7 +1503,14 @@ export const Chat = memo(function Chat({
   // (the guard is inert once disposed) — it can't schedule an orphaned hold
   // timer.
   const [backgroundDedupGuard] = useState(() => createDedupGuard(BACKGROUND_DEDUP_HOLD_MS))
-  useEffect(() => () => backgroundDedupGuard.dispose(), [backgroundDedupGuard])
+  // React StrictMode (dev) runs an effect's cleanup right after its first
+  // mount, then re-runs the effect. dispose() is the cleanup — without a
+  // reset() in the effect body the guard would stay inert from the spurious
+  // simulated unmount and every "background" click would silently no-op.
+  useEffect(() => {
+    backgroundDedupGuard.reset()
+    return () => backgroundDedupGuard.dispose()
+  }, [backgroundDedupGuard])
   const backgroundTasks = useCallback(async (toolUseId?: string) => {
     const key = toolUseId ?? '*'
     if (!backgroundDedupGuard.tryAcquire(key)) return

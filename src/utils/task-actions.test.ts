@@ -50,6 +50,21 @@ describe('createDedupGuard', () => {
     expect(g.tryAcquire('a')).toBe(false)
     expect(() => g.dispose()).not.toThrow()
   })
+
+  it('reset() re-arms after dispose() — StrictMode simulated unmount must not kill the guard', () => {
+    // React StrictMode (dev) runs an effect's cleanup right after its first
+    // mount, then re-runs the effect. Chat disposes the dedup guard in that
+    // cleanup; without a re-arm the guard stays inert and every "background"
+    // click silently no-ops. reset() is called in the effect body to undo the
+    // spurious dispose.
+    const g = createDedupGuard(2000)
+    expect(g.tryAcquire('a')).toBe(true)
+    g.releaseNow('a')
+    g.dispose()
+    expect(g.tryAcquire('a')).toBe(false) // inert once disposed
+    g.reset()
+    expect(g.tryAcquire('a')).toBe(true) // re-armed for the real mount
+  })
 })
 
 describe('shouldOfferBackgroundAction', () => {

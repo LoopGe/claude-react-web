@@ -16,6 +16,11 @@ export interface DedupGuard {
   releaseNow(key: string): void
   /** Cancel all pending holds and clear state (component unmount). */
   dispose(): void
+  /** Re-arm after a dispose. React StrictMode (dev) runs an effect's cleanup
+   *  (which calls dispose) right after its first mount, then re-runs the
+   *  effect — reset() is called from the effect body so the spurious
+   *  simulated-unmount doesn't leave the guard permanently inert. */
+  reset(): void
 }
 
 export function createDedupGuard(holdMs: number): DedupGuard {
@@ -54,6 +59,16 @@ export function createDedupGuard(holdMs: number): DedupGuard {
     dispose() {
       if (disposed) return
       disposed = true
+      for (const t of timers.values()) clearTimeout(t)
+      timers.clear()
+      pending.clear()
+    },
+    reset() {
+      // Idempotent re-arm: clear any lingering holds/timers and reopen for
+      // acquires. Called on every mount; dispose has already cleared state, so
+      // the clears here are a no-op in the normal path and a safety net if
+      // reset is ever invoked while a hold is still pending.
+      disposed = false
       for (const t of timers.values()) clearTimeout(t)
       timers.clear()
       pending.clear()
