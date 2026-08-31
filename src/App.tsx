@@ -3330,9 +3330,10 @@ export function App() {
    *  picker. The cleared panel blurs (view-only, via `clearingIds`) during the
    *  POST; Y mounts fresh and plays `.entering`. */
 
-  const handleClear = useCallback(
-    async (id: string) => {
-      // Guard: the server broadcasts session-removed(X) during clear(); the
+  const resetSession = useCallback(
+    async (id: string, kind: 'clear' | 'compact') => {
+      // Guard: the server broadcasts session-removed(X) during the reset (a
+      // clear, or a compact — which is clear-with-summary-seed); the
       // guarded handler skips ALL teardown (incl. setSessions) so X stays
       // fully alive until swapSession replaces it — no sidebar churn, no
       // panel compaction across the WS-vs-POST race.
@@ -3341,7 +3342,7 @@ export function App() {
       clearingInFlightRef.current.set(id, (clearingInFlightRef.current.get(id) ?? 0) + 1)
       try {
         // POST only — no 180 ms veil gate. Data swaps the instant Y is known.
-        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/clear`, {})
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/${kind}`, {})
         const newId = res.session.id
         if (newId !== id) {
           // X hosted a Side Chat? Tear it down (the guarded session-removed
@@ -3382,7 +3383,7 @@ export function App() {
             return changed ? next : prev
           })
         }
-        toast.error(`Couldn't clear session: ${(e as Error).message}`)
+        toast.error(`Couldn't ${kind} session: ${(e as Error).message}`)
       } finally {
         // Release the guard + blur only when this is the last in-flight clear
         // for id. A short-circuited second call (same-tab double-/clear) leaves
@@ -3406,6 +3407,9 @@ export function App() {
     },
     [toast, cleanupSideChat, swapSession, teardownRemovedSession, pruneSession],
   )
+
+  const handleClear = useCallback((id: string) => resetSession(id, 'clear'), [resetSession])
+  const handleCompact = useCallback((id: string) => resetSession(id, 'compact'), [resetSession])
 
   /** Discard every message after a given assistant message (right-click
    *  "discard from here"). The server forks from the anchor (inclusive) and
@@ -3870,6 +3874,7 @@ export function App() {
                       historyOpen={historyPanelOpen && focusedId === s.id}
                       onCloseHistory={handleCloseHistory}
                       onClearSession={handleClear}
+                      onCompactSession={handleCompact}
                       onDiscard={handleDiscard}
                       onOpenSettingsTab={openSettingsTab}
                       onShowHelp={showHelpWithCommands}

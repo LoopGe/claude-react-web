@@ -149,6 +149,11 @@ interface Props {
    *  detaches the pre-clear conversation and returns a fresh session under a
    *  new id). Invoked by the `/clear` local command. */
   onClearSession: (panelSessionId: string) => void
+  /** `/compact` this panel. App owns the POST + panel id-swap: the server
+   *  summarizes and returns a fresh seeded continuation session under a new
+   *  id. Invoked by the `/compact` local command. Required (like /clear) so a
+   *  missing pass-through fails loudly rather than swallowing `/compact`. */
+  onCompactSession: (panelSessionId: string) => void
   /** Nonce-stamped request to switch the settings tab ?forwarded to
    *  SettingsPanel, which applies it when the nonce changes. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
@@ -317,7 +322,7 @@ export const Chat = memo(function Chat({
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onCompactSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -1277,6 +1282,13 @@ export const Chat = memo(function Chat({
     onClearSession(sessionId)
   }, [clearError, onClearSession])
 
+  const requestCompactSession = useCallback((sessionId: string) => {
+    // Same owned-by-App contract as /clear: the server returns a fresh
+    // continuation session Y (seeded with the summary); App swaps this panel
+    // from X to Y. No local error/clearing state — failures toast in App.
+    onCompactSession(sessionId)
+  }, [onCompactSession])
+
   /** Run a `!`/`!!` bash command: optimistic placeholder → POST /exec →
    *  ack/rollback. `share:true` (`!!`) injects the result into the SDK
    *  transcript so the model sees it (triggers a model turn); the default
@@ -1353,6 +1365,7 @@ export const Chat = memo(function Chat({
         openSettingsTab: onOpenSettingsTab,
         showHelp: onShowHelp,
         clearSession: requestClearSession,
+        compactSession: requestCompactSession,
       })
       return
     }
@@ -1458,7 +1471,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, runBashCommand])
+  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, requestCompactSession, runBashCommand])
 
   // Overlay scrollbars on the settings + git overlay backdrops (these scroll
   // when the panel card exceeds the viewport). Passed to the <Overlay>

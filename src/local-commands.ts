@@ -35,7 +35,9 @@ export interface LocalCommandContext {
   showHelp: (commands: SlashCommand[]) => void
   /** Clear this session's conversation context via the server control path. */
   clearSession: (sessionId: string) => void
-  // Future: clearInput, fork, etc.
+  /** Compact `/compact` this session — summarize + continue in a fresh seeded
+   *  continuation session (CLI /compact semantics). */
+  compactSession: (sessionId: string) => void
 }
 
 export interface LocalCommand {
@@ -67,6 +69,12 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
     description: 'Clear conversation history and context',
     aliases: ['reset', 'new'],
     run: (ctx) => ctx.clearSession(ctx.sessionId),
+  },
+  {
+    name: 'compact',
+    description: 'Summarize the conversation and continue in a fresh session',
+    aliases: ['summarize'],
+    run: (ctx) => ctx.compactSession(ctx.sessionId),
   },
 ]
 

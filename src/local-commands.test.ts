@@ -7,11 +7,16 @@ describe('matchLocalCommand', () => {
     expect(matchLocalCommand('/mcp')?.name).toBe('mcp')
     expect(matchLocalCommand('/help')?.name).toBe('help')
     expect(matchLocalCommand('/clear')?.name).toBe('clear')
+    expect(matchLocalCommand('/compact')?.name).toBe('compact')
   })
 
   it('matches clear aliases', () => {
     expect(matchLocalCommand('/reset')?.name).toBe('clear')
     expect(matchLocalCommand('/new')?.name).toBe('clear')
+  })
+
+  it('matches the compact summarize alias', () => {
+    expect(matchLocalCommand('/summarize')?.name).toBe('compact')
   })
 
   it('/mcp run() opens the mcp settings tab for its panel', () => {
@@ -24,6 +29,7 @@ describe('matchLocalCommand', () => {
       openSettingsTab: (id, tab) => { opened = { id, tab } },
       showHelp: () => {},
       clearSession: () => {},
+      compactSession: () => {},
     })
     expect(opened).toEqual({ id: 'sess-1', tab: 'mcp' })
   })
@@ -39,6 +45,7 @@ describe('matchLocalCommand', () => {
       openSettingsTab: () => {},
       showHelp: (cmds) => { shown = cmds },
       clearSession: () => {},
+      compactSession: () => {},
     })
     expect(shown).toBe(panelCommands)
   })
@@ -53,8 +60,24 @@ describe('matchLocalCommand', () => {
       openSettingsTab: () => {},
       showHelp: () => {},
       clearSession: (id) => { cleared = id },
+      compactSession: () => {},
     })
     expect(cleared).toBe('sess-1')
+  })
+
+  it('/compact run() calls the compact control hook for its panel', () => {
+    const cmd = matchLocalCommand('/compact')!
+    let compacted: string | null = null
+    cmd.run({
+      sessionId: 'sess-1',
+      commands: [],
+      requestResumeForPanel: () => {},
+      openSettingsTab: () => {},
+      showHelp: () => {},
+      clearSession: () => {},
+      compactSession: (id) => { compacted = id },
+    })
+    expect(compacted).toBe('sess-1')
   })
 
   it('matches with surrounding whitespace', () => {
