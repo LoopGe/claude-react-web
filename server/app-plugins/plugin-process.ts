@@ -156,9 +156,15 @@ export class PluginProcess {
     try {
       await this.peer.call('deactivate', { reason }, { timeoutMs: DEACTIVATE_TIMEOUT_MS })
     } catch (err) {
-      // Deactivate timeout/error is non-fatal — we kill anyway. A wedged
-      // plugin shouldn't block teardown.
-      log.warn(`[${this.pluginId}] deactivate did not complete cleanly: ${(err as Error).message}`)
+      // Deactivate timeout/error is non-fatal — we kill anyway. At host
+      // shutdown an already-dead child (the console signal killed it before
+      // deactivate ran — see PluginProcessManager.shuttingDown) is expected
+      // and quiet; a still-alive child that failed to answer (wedged or
+      // throwing handler) is the one diagnostic naming a slow-shutdown
+      // culprit, so it logs even at shutdown.
+      if (reason !== 'shutdown' || !this.peer.childExited) {
+        log.warn(`[${this.pluginId}] deactivate did not complete cleanly: ${(err as Error).message}`)
+      }
     }
     await this.peer.close()
   }

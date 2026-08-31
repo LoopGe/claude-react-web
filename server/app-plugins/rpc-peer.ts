@@ -72,6 +72,12 @@ export class RpcPeer {
     this.handlers.set(method, fn)
   }
 
+  /** Whether the child process has exited (crash, signal, or close). Lets
+   *  callers distinguish "child is gone" from "child is alive but wedged". */
+  get childExited(): boolean {
+    return this.exited
+  }
+
   /** Spawn the child. Resolves once the process is created (NOT once
    *  activate completes — that's a separate `call('activate', ...)`). */
   start(): void {
@@ -115,6 +121,12 @@ export class RpcPeer {
    *  process exit. */
   call(method: string, params?: unknown, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<unknown> {
     if (!this.proc || this.closed) return Promise.reject(new Error('rpc peer not started or closed'))
+    // Child already dead: nothing will ever answer. failAll only covers calls
+    // that were pending AT exit time, so without this guard a call made after
+    // the exit event stalls out its full timeout (e.g. deactivate against a
+    // child killed by the host's shutdown signal stalled
+    // DEACTIVATE_TIMEOUT_MS per plugin, silently, every shutdown).
+    if (this.exited) return Promise.reject(new Error('plugin process exited'))
     const id = this.nextId++
     const req: JsonRpcRequest = { jsonrpc: '2.0', id, method, params }
     return new Promise((resolve, reject) => {

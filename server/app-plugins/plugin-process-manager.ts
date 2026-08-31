@@ -48,6 +48,16 @@ export class PluginProcessManager {
   private readonly crashes = new Map<string, number[]>()
   /** Per-plugin log line counters for rate limiting (1k/min). */
   private readonly logCounters = new Map<string, { count: number; windowStart: number }>()
+  /** Set once the host begins shutting down: plugin child exits are then
+   *  expected teardown, not crashes. This is the single authority for that
+   *  classification (PluginProcess.onExit's only unexpected-exit consumer is
+   *  handleCrash below). Rationale (Windows): the console signal that starts
+   *  host teardown also kills the plugin children — they have no SIGINT
+   *  handler — so a child can exit(1) at the same moment teardown starts;
+   *  recording that as a crash persists a bogus 'crashed' state (shown in
+   *  the management UI, and before initialize()'s boot clamp it kept
+   *  onStartup plugins down until a manual disable/enable). */
+  private shuttingDown = false
 
   constructor(private readonly opts: ProcessManagerOptions) {}
 
@@ -172,9 +182,18 @@ export class PluginProcessManager {
     await Promise.all(ids.map((id) => this.deactivate(id, 'shutdown')))
   }
 
+  /** Mark host shutdown in progress. MUST be called synchronously before the
+   *  first await of the shutdown signal handler — the plugin children die on
+   *  the same console signal as the host, and this flag decides how their
+   *  exit event is classified. See `shuttingDown`. */
+  markShuttingDown(): void {
+    this.shuttingDown = true
+  }
+
   // ── Internals ──────────────────────────────────────────────────────
 
   private handleCrash(pluginId: string): void {
+    if (this.shuttingDown) return // teardown exit — the child caught the host's shutdown signal
     const now = Date.now()
     const ts = (this.crashes.get(pluginId) ?? []).filter((t) => now - t < CRASH_WINDOW_MS)
     ts.push(now)

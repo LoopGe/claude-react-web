@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -171,6 +171,109 @@ handlers.executeCommand = async () => { process.exit(1) }
       .rejects.toThrow(/quarantined/)
   })
 
+  it('a subprocess exit during host shutdown is not recorded as a crash', async () => {
+    // Simulates the Windows shutdown artifact: the console signal that starts
+    // host teardown also kills the plugin child (it has no SIGINT handler), so
+    // the child can exit(1) while the host is tearing down. The host must
+    // classify that exit as expected teardown, not a crash — a recorded crash
+    // persists to the store and bricks onStartup plugins until the next
+    // manual disable/enable.
+    const trigger = join(stateDir, 'shutdown-exit-trigger.txt')
+    const preExit = join(stateDir, 'shutdown-pre-exit.txt')
+    const dir = buildPlugin(stateDir, 'com.example.shutdown', `
+import { existsSync, writeFileSync } from 'node:fs'
+handlers.activate = async () => ({ ok: true })
+// Self-exit(1) once the trigger file appears — the test writes it AFTER
+// prepareForShutdown(), so the exit is guaranteed to land during teardown.
+// The pre-exit marker lets the test wait on the exit itself instead of a
+// fixed sleep.
+const iv = setInterval(() => {
+  if (existsSync(${JSON.stringify(trigger)})) {
+    writeFileSync(${JSON.stringify(preExit)}, '1')
+    process.exit(1)
+  }
+}, 25)
+`, { activationEvents: ['onStartup'], permissions: [] })
+    await manager.install({ type: 'local', path: dir })
+    await manager.enable('com.example.shutdown')
+    await waitForState(manager, 'com.example.shutdown', 'active')
+
+    // cli.ts calls this synchronously before any await of the signal handler.
+    manager.prepareForShutdown()
+
+    // Trigger the child's exit, wait until the child has actually exited
+    // (pre-exit marker), then a short tail so the host's exit event has been
+    // delivered and processed.
+    writeFileSync(trigger, 'exit')
+    await waitFor(() => existsSync(preExit))
+    await new Promise((r) => setTimeout(r, 150))
+    const info = manager.get('com.example.shutdown')!
+    expect(info.runtimeState).toBe('active')
+    expect(info.lastError).toBeUndefined()
+  })
+
+  it('deactivating a plugin whose child already exited completes immediately', async () => {
+    // Windows shutdown artifact, part 2: the console signal kills the child
+    // while the host tears down, and the subsequent deactivate('shutdown')
+    // must not stall DEACTIVATE_TIMEOUT_MS per plugin waiting on a child
+    // that will never answer — an exit-aware peer rejects immediately.
+    const trigger = join(stateDir, 'dead-child-trigger.txt')
+    const preExit = join(stateDir, 'dead-child-pre-exit.txt')
+    const dir = buildPlugin(stateDir, 'com.example.deadchild', `
+import { existsSync, writeFileSync } from 'node:fs'
+handlers.activate = async () => ({ ok: true })
+const iv = setInterval(() => {
+  if (existsSync(${JSON.stringify(trigger)})) {
+    writeFileSync(${JSON.stringify(preExit)}, '1')
+    process.exit(1)
+  }
+}, 25)
+`, { activationEvents: ['onStartup'], permissions: [] })
+    await manager.install({ type: 'local', path: dir })
+    await manager.enable('com.example.deadchild')
+    await waitForState(manager, 'com.example.deadchild', 'active')
+    manager.prepareForShutdown()
+    writeFileSync(trigger, 'exit')
+    await waitFor(() => existsSync(preExit))
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const t0 = Date.now()
+    try {
+      await manager.shutdown()
+    } finally {
+      warnSpy.mockRestore()
+    }
+    // A 5s deactivate timeout means the call waited on a dead child.
+    expect(Date.now() - t0).toBeLessThan(2000)
+  }, 15_000)
+
+  it('a wedged deactivate at shutdown is still logged — only an already-dead child is silent', async () => {
+    // The shutdown-path warn suppression exists so the Windows artifact (child
+    // killed by the console signal before deactivate runs) doesn't spam warns
+    // on every shutdown. It must NOT swallow the diagnostic for a child that
+    // is still alive but failed to answer — that's the one signal naming a
+    // wedged plugin during a slow shutdown.
+    const dir = buildPlugin(stateDir, 'com.example.wedged', `
+handlers.activate = async () => ({ ok: true })
+handlers.deactivate = async () => { throw new Error('deactivate blew up') }
+`, { activationEvents: ['onStartup'], permissions: [] })
+    await manager.install({ type: 'local', path: dir })
+    await manager.enable('com.example.wedged')
+    await waitForState(manager, 'com.example.wedged', 'active')
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      manager.prepareForShutdown()
+      await manager.shutdown()
+      const deactWarns = warnSpy.mock.calls.filter((c) =>
+        c.some((a) => typeof a === 'string' && a.includes('deactivate did not complete cleanly')))
+      expect(deactWarns.length).toBeGreaterThan(0)
+      expect(deactWarns[0].some((a) => typeof a === 'string' && a.includes('deactivate blew up'))).toBe(true)
+    } finally {
+      warnSpy.mockRestore()
+    }
+  }, 15_000)
+
   it('disable tears down the subprocess', async () => {
     const dir = buildPlugin(stateDir, 'com.example.teardown', `
 handlers.executeCommand = async ({ invocationId }) => ({ type: 'none', invocationId })
@@ -267,6 +370,31 @@ handlers.executeCommand = async ({ invocationId }) => {
     await waitForState(manager, 'com.example.boot', 'active')
     expect(existsSync(marker)).toBe(true)
     expect(readFileSync(marker, 'utf8')).toBe('activated')
+  })
+
+  it('boot heals a persisted crashed state so an onStartup plugin re-activates', async () => {
+    const marker = join(stateDir, 'crashed-boot-marker.txt')
+    const dir = buildPlugin(stateDir, 'com.example.heal', startupMarkerBody(marker), {
+      activationEvents: ['onStartup'],
+    })
+    await manager.install({ type: 'local', path: dir })
+    // What a previous run persisted: the plugin crashed (e.g. the shutdown
+    // artifact where the console signal kills the child mid-teardown) and the
+    // host died before it could recover. The crash counter lives in the
+    // process manager's in-memory 5-min window — fresh on every boot — so a
+    // lone crash record must not survive the restart and brick the plugin.
+    const rec = store.get('com.example.heal')!
+    store.upsert({ ...rec, enabled: true, runtimeState: 'crashed', lastError: 'subprocess exited (1 crashes)' })
+    await store.flush()
+
+    manager = new AppPluginManager({ store, stateDir, hostVersion: '0.6.0', hostNodeMajor: 20, sm: smStub })
+    await manager.initialize()
+
+    // The stale crashed record is clamped to inactive at boot (lastError
+    // cleared), then activateStartupPlugins() brings the subprocess back up.
+    await waitForState(manager, 'com.example.heal', 'active')
+    expect(manager.get('com.example.heal')!.lastError).toBeUndefined()
+    expect(existsSync(marker)).toBe(true)
   })
 
   it('safe mode does not auto-activate onStartup plugins at boot', async () => {

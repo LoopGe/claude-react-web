@@ -510,6 +510,10 @@ async function main() {
   const shutdown = async (signal: string) => {
     console.log(`\n[cli] received ${signal}, shutting down...`)
     elProbe.stop()
+    // BEFORE any await: the same console signal that reaches us also kills
+    // plugin children (no SIGINT handler) — mark their exits as expected
+    // teardown, not crashes (see PluginProcessManager.shuttingDown).
+    appPluginManager.prepareForShutdown()
     try {
       await wsShutdown()
     } catch (err) {

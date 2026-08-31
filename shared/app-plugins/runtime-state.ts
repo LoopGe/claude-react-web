@@ -58,6 +58,23 @@ export function canTransition(from: PluginRuntimeState, to: PluginRuntimeState):
   return allowed[from].includes(to)
 }
 
+/** Persisted states that cannot survive a host restart — AppPluginManager
+ *  clamps these back to `inactive` on boot (initialize):
+ *  - `activating` / `active` / `deactivating` describe live subprocess
+ *    activity, and no subprocess survives the process.
+ *  - `crashed` records a hit in the in-memory 5-min crash window, which is
+ *    fresh every boot, so a lone crash (e.g. the Windows shutdown artifact
+ *    where the console signal kills the plugin child mid-teardown) must not
+ *    brick an onStartup plugin across a restart.
+ *  `quarantined` is deliberately NOT here: 3 crashes in 5 min is a live
+ *  crash loop, kept down until the user re-enables. */
+export const EPHEMERAL_RUNTIME_STATES: ReadonlySet<PluginRuntimeState> = new Set([
+  'activating',
+  'active',
+  'deactivating',
+  'crashed',
+])
+
 // ── Server-side persisted record ─────────────────────────────────────
 //
 // Stored by AppPluginStore (extends JsonFileStore). Big data / cache live

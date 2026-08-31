@@ -26,7 +26,7 @@ import { PluginProcessManager } from './plugin-process-manager.js'
 import { ConfigurationStore } from './configuration-store.js'
 import { newInvocationId } from './rpc-peer.js'
 import { diffPermissions, normalisePermissions, type PermissionSpec } from '../../shared/app-plugins/permissions.js'
-import { canTransition, type AppPluginClientInfo, type AppPluginRecord, type PluginRuntimeState, type PluginSourceBase } from '../../shared/app-plugins/runtime-state.js'
+import { canTransition, EPHEMERAL_RUNTIME_STATES, type AppPluginClientInfo, type AppPluginRecord, type PluginRuntimeState, type PluginSourceBase } from '../../shared/app-plugins/runtime-state.js'
 import { isPathInside } from '../../shared/app-plugins/path-security.js'
 import type { PluginManifest } from '../../shared/app-plugins/manifest.js'
 import type { ResolvedPluginContributions } from '../../shared/app-plugins/contributions.js'
@@ -137,10 +137,12 @@ export class AppPluginManager implements AppPluginBroadcaster {
     const records = await this.store.load()
     let dirty = false
     for (const record of records) {
-      // No subprocess survives a restart: clamp any active-ish persisted
-      // state back to `inactive` (B2 will re-activate lazily on command).
+      // No subprocess survives a restart: clamp ephemeral persisted states
+      // (live-process states + crashed) back to `inactive`; the full
+      // rationale — and why `quarantined` is excluded — lives on
+      // EPHEMERAL_RUNTIME_STATES in runtime-state.ts.
       let r = record
-      if (r.enabled && (r.runtimeState === 'active' || r.runtimeState === 'activating' || r.runtimeState === 'deactivating')) {
+      if (r.enabled && EPHEMERAL_RUNTIME_STATES.has(r.runtimeState)) {
         r = this.transition({ ...r }, 'inactive', undefined)
       }
       r = await this.revalidateRecord(r)
@@ -163,9 +165,10 @@ export class AppPluginManager implements AppPluginBroadcaster {
    *  activationEvents, so background watchers start without a command being
    *  invoked. Called once at boot (end of initialize()) and from enable() for
    *  newly-enabled onStartup plugins. Gated on `runtimeState === 'inactive'`:
-   *  crashed/quarantined, permission-required, incompatible, or corrupted
-   *  records are skipped (quarantine survives a restart, so a crashed plugin
-   *  stays down until the user intervenes). Failures are logged, never fatal
+   *  quarantined, permission-required, incompatible, or corrupted records are
+   *  skipped — a quarantined plugin (3 crashes in 5 min) stays down until the
+   *  user intervenes. (A stale persisted `crashed` was already clamped to
+   *  `inactive` earlier in initialize().) Failures are logged, never fatal
    *  — one bad plugin must not block boot or enable. */
   private async activateStartupPlugins(): Promise<void> {
     if (this.safeMode) return
@@ -698,6 +701,14 @@ export class AppPluginManager implements AppPluginBroadcaster {
     void this.pm.refreshGrants(id, permissions).catch(() => {})
     this.refreshSnapshot()
     this.broadcastChanged(next)
+  }
+
+  /** Mark host shutdown in progress so plugin child exits are classified as
+   *  expected teardown, not crashes. MUST be called synchronously before ANY
+   *  await of the shutdown signal handler — see
+   *  PluginProcessManager.shuttingDown for the Windows-signal rationale. */
+  prepareForShutdown(): void {
+    this.pm.markShuttingDown()
   }
 
   async shutdown(): Promise<void> {
