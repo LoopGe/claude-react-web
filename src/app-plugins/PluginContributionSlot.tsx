@@ -8,7 +8,7 @@
 // contributes — so unused slots are zero-cost.
 
 import { memo, useMemo } from 'react'
-import { useAllContributions } from './PluginRegistryProvider'
+import { useAllContributions } from './usePluginRegistry'
 import { usePluginCommands } from './usePluginCommands'
 import { buildWhenContext, filterContributions } from './when'
 import type { PluginActionContribution } from '../../shared/app-plugins/contributions.js'

@@ -10,7 +10,7 @@
 // Notifications don't reach here (they fire toasts directly in
 // usePluginCommands).
 
-import { memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { commandResults, type ActiveResult } from './result-store'
 import { invocationAnchors } from './invocation-anchor-store'
@@ -53,9 +53,8 @@ function PluginPopover({ entry, execute }: { entry: ActiveResult; execute: (opts
     const reposition = () => {
       const anchor = invocationAnchors.resolve(entry.id)
       if (!anchor) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- measured-layout: degrade when anchor missing
+        // measured-layout: degrade when anchor missing
         setDegraded(true)
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- measured-layout
         setPos(null)
         return
       }
@@ -65,7 +64,7 @@ function PluginPopover({ entry, execute }: { entry: ActiveResult; execute: (opts
       const h = el?.offsetHeight ?? 160
       const x = Math.max(8, Math.min(anchor.rect.left, window.innerWidth - w - 8))
       const y = Math.max(8, Math.min(anchor.rect.bottom + 6, window.innerHeight - h - 8))
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- measured-layout: follow anchor on scroll/resize
+      // measured-layout: follow anchor on scroll/resize
       setPos({ x, y })
     }
     reposition()
@@ -128,7 +127,7 @@ function PluginDialog({ entry, execute: _execute }: { entry: ActiveResult; execu
   const result = entry.result as Extract<PluginCommandResult, { type: 'dialog' }>
   const enterT = useMotionTransition(ENTER_TRANSITION)
   const exitT = useMotionTransition(EXIT_TRANSITION)
-  const dismiss = () => commandResults.dismiss(entry.id)
+  const dismiss = useCallback(() => commandResults.dismiss(entry.id), [entry.id])
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.stopPropagation(); dismiss() }

@@ -193,7 +193,9 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
 
   // Visible list is the render result minus locally-hidden tasks. The count
   // chip reflects only what's shown; the undo row explains the difference.
-  const todos = renderResult ? renderResult.todos : []
+  // Memoised so the `[]` fallback (panel hidden) keeps a stable identity and
+  // the useMemo/useEffect below don't re-run on every render while hidden.
+  const todos = useMemo(() => (renderResult ? renderResult.todos : []), [renderResult])
   const visibleTodos = todos.filter((t) => !hiddenSet.has(t.key))
   const doneCount = visibleTodos.filter((t) => t.status === 'completed').length
   const hiddenVisibleCount = todos.filter((t) => hiddenSet.has(t.key)).length

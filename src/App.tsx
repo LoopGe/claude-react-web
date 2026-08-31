@@ -24,7 +24,7 @@ import { registerSW } from './sw-register'
 import { useTheme } from './hooks/useTheme'
 import { useToast } from './hooks/useToast'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
-import { usePluginRegistry } from './app-plugins/PluginRegistryProvider'
+import { usePluginRegistry } from './app-plugins/usePluginRegistry'
 import { usePluginCommands } from './app-plugins/usePluginCommands'
 import { PluginWidgetSlot } from './app-plugins/PluginWidgetSlot'
 import { buildWhenContext, whenHolds } from './app-plugins/when'
@@ -2606,9 +2606,15 @@ export function App() {
           description: 'Close overlay / Interrupt (or resume picker when idle)',
         },
       ],
+      // handleMoveGroup (Alt+Shift+Arrow) and requestResumeForPanel (Esc-idle)
+      // are intentionally omitted from the deps array: both are declared AFTER
+      // this useMemo (line order), so referencing them in the array would throw
+      // a TDZ ReferenceError on every render. Both are stable useCallbacks
+      // (handleMoveGroup → [setGroups]; requestResumeForPanel →
+      // [handleCloseSettings, handleCloseGitPanel]), so the omission only
+      // affects eslint's static analysis, not runtime behaviour.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, setSidebarCollapsed],
-      // requestResumeForPanel is intentionally omitted — it's declared after
-      // this useMemo (line order) and is stable (useCallback with stable deps).
     )
   useKeyboardShortcuts(shortcuts)
 

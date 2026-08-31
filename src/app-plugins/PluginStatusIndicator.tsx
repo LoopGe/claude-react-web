@@ -9,7 +9,7 @@
 // This is a substitutive (vs additive) contribution — the first of its kind.
 
 import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { useAllContributions } from './PluginRegistryProvider'
+import { useAllContributions } from './usePluginRegistry'
 import { buildWhenContext, filterContributions } from './when'
 import type { PluginStatusIndicatorContribution } from '../../shared/app-plugins/contributions.js'
 

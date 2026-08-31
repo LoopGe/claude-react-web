@@ -40,7 +40,7 @@ export interface InvocationAnchor {
 /** Distributive Omit — `Omit<Union, K>` doesn't distribute, so it would drop
  *  the per-member fields (sessionId, messageId, …) that discriminate the
  *  union. This applies Omit to each member. */
-type DistributiveOmit<T, K extends keyof any> = T extends any ? Omit<T, K> : never
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 
 export interface ExecuteOptions {
   pluginId: string

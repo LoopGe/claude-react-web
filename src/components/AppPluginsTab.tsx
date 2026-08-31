@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api, apiRequest } from '../hooks/useApi'
-import { usePluginRegistry } from '../app-plugins/PluginRegistryProvider'
+import { usePluginRegistry } from '../app-plugins/usePluginRegistry'
 import { AppPluginMarketplaceSection } from './AppPluginMarketplaceSection'
 import { DirectoryPicker } from './DirectoryPicker'
 import { IconFolder } from './icons/ToolIcons'

@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react'
-import { useAllContributions } from './PluginRegistryProvider'
+import { useAllContributions } from './usePluginRegistry'
 import { buildWhenContext, filterContributions } from './when'
 import { StatGridWidget } from './StatGridWidget'
 import type { PluginWidgetContribution, PluginWidgetLocation } from '../../shared/app-plugins/contributions.js'

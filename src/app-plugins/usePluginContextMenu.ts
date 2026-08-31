@@ -8,7 +8,7 @@
 // command with the supplied context + invocation anchor.
 
 import { useCallback, useMemo } from 'react'
-import { useAllContributions } from './PluginRegistryProvider'
+import { useAllContributions } from './usePluginRegistry'
 import { usePluginCommands, type InvocationAnchor } from './usePluginCommands'
 import { buildWhenContext, filterContributions } from './when'
 import type { ContextMenuItem } from '../components/ContextMenu'
@@ -16,7 +16,7 @@ import type { PluginContextMenuContribution } from '../../shared/app-plugins/con
 import type { PluginCommandContext } from '../../shared/app-plugins/command-context.js'
 import type { WhenContextInput } from './when'
 
-type DistributiveOmit<T, K extends keyof any> = T extends any ? Omit<T, K> : never
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 
 export interface MenuContext {
   /** The PluginCommandContext to send (already built, e.g. via

@@ -9,23 +9,13 @@
 // and what do they contribute" on the client. Slots, the context menu, and
 // the Command Palette all read from usePluginRegistry().
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { api } from '../hooks/useApi'
 import { useWsHub } from '../hooks/useWsHub'
 import type { WsServerFrame } from '../ws-types'
 import type { AppPluginClientInfo } from '../../shared/app-plugins/runtime-state.js'
-import type { ResolvedPluginContributions } from '../../shared/app-plugins/contributions.js'
-
-interface PluginRegistryApi {
-  plugins: AppPluginClientInfo[]
-  /** Refresh the whole list from REST (e.g. after an install). */
-  refresh: () => Promise<void>
-  /** Look up a single plugin by id. */
-  get: (id: string) => AppPluginClientInfo | undefined
-}
-
-const PluginRegistryContext = createContext<PluginRegistryApi | null>(null)
+import { PluginRegistryContext, type PluginRegistryApi } from './plugin-registry-context'
 
 export function PluginRegistryProvider({ children }: { children: ReactNode }) {
   const [plugins, setPlugins] = useState<AppPluginClientInfo[]>([])
@@ -102,31 +92,4 @@ export function PluginRegistryProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<PluginRegistryApi>(() => ({ plugins, refresh, get }), [plugins, refresh, get])
   return <PluginRegistryContext.Provider value={value}>{children}</PluginRegistryContext.Provider>
-}
-
-const EMPTY_REGISTRY: PluginRegistryApi = {
-  plugins: [],
-  refresh: () => Promise.resolve(),
-  get: () => undefined,
-}
-
-export function usePluginRegistry(): PluginRegistryApi {
-  const ctx = useContext(PluginRegistryContext)
-  // Gracefully degrade when no provider is mounted (e.g. in tests, or any
-  // surface that doesn't opt into plugins) — the subsystem is optional, so a
-  // missing provider means "no plugins" rather than a crash. Production mounts
-  // the provider in main.tsx, so real usage gets the live registry.
-  return ctx ?? EMPTY_REGISTRY
-}
-
-/** Convenience: every enabled plugin's contributions flattened + tagged. */
-export function useAllContributions(): Array<ResolvedPluginContributions & { pluginId: string }> {
-  const { plugins } = usePluginRegistry()
-  return useMemo(
-    () =>
-      plugins
-        .filter((p) => p.enabled && p.compatible)
-        .map((p) => ({ ...p.contributions, pluginId: p.id })),
-    [plugins],
-  )
 }

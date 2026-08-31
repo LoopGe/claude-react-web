@@ -66,7 +66,7 @@ import { createDedupGuard, shouldOfferBackgroundAction } from '../utils/task-act
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
-import { useAllContributions } from '../app-plugins/PluginRegistryProvider'
+import { useAllContributions } from '../app-plugins/usePluginRegistry'
 import { usePluginCommands } from '../app-plugins/usePluginCommands'
 import { buildWhenContext, filterContributions } from '../app-plugins/when'
 import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe, IconScissors, IconRotateCcw } from './icons/ToolIcons'

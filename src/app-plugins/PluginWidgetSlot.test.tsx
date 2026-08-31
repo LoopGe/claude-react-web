@@ -4,13 +4,13 @@ import { render, screen } from '@testing-library/react'
 vi.mock('./usePluginWidgetStream', () => ({
   usePluginWidgetStream: vi.fn(),
 }))
-vi.mock('./PluginRegistryProvider', () => ({
+vi.mock('./usePluginRegistry', () => ({
   useAllContributions: vi.fn(),
 }))
 
 import { PluginWidgetSlot } from './PluginWidgetSlot'
 import { usePluginWidgetStream } from './usePluginWidgetStream'
-import { useAllContributions } from './PluginRegistryProvider'
+import { useAllContributions } from './usePluginRegistry'
 import type { WidgetState } from './usePluginWidgetStream'
 import type { ResolvedPluginContributions } from '../../shared/app-plugins/contributions.js'
 
