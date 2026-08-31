@@ -1165,6 +1165,20 @@
   font-size: 13px;
   flex: 1;
 }
+.settings-card-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
 .settings-card-badge {
   font-size: 10px;
   color: var(--fg-muted);

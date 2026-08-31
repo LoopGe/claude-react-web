@@ -14,6 +14,7 @@ import { useProfiles } from '../hooks/useProfiles'
 import type { ModelGroupConfig, ProviderProfile } from '../types/config'
 import { randomId } from '../utils/uuid'
 import { IconArrowUp, IconArrowDown, IconChevronDown, IconCheck, IconX } from './icons/ToolIcons'
+import { AnimatedCollapse } from './AnimatedCollapse'
 
 /** Inline result of POST /profiles/:id/test. `ok` true means the token and
  *  baseUrl are valid; otherwise `error` describes the failure. */
@@ -25,7 +26,17 @@ interface ProfileTestResult {
 }
 
 export function ProfilesSettingsTab() {
-  const { profiles, create, update, remove, activate } = useProfiles()
+  const { profiles, activeProfileId, create, update, remove, activate } = useProfiles()
+
+  // Accordion: one profile expanded at a time. `undefined` means the user
+  // hasn't toggled anything yet — default to the active profile (or the
+  // first); `null` collapses everything; a string pins a specific profile.
+  const [expandedId, setExpandedId] = useState<string | null | undefined>(undefined)
+  const activeId = profiles.some((p) => p.id === activeProfileId) ? activeProfileId : undefined
+  const effectiveExpanded = expandedId === undefined ? (activeId ?? profiles[0]?.id ?? null) : expandedId
+  const toggleExpand = (id: string) => {
+    setExpandedId(effectiveExpanded === id ? null : id)
+  }
 
   return (
     <div className="settings-profiles-tab">
@@ -48,6 +59,8 @@ export function ProfilesSettingsTab() {
           key={p.id}
           profile={p}
           canDelete={profiles.length > 1}
+          expanded={effectiveExpanded === p.id}
+          onToggleExpand={() => toggleExpand(p.id)}
           onSave={(updates) => update(p.id, updates)}
           onDelete={() => remove(p.id)}
           onActivate={() => activate(p.id)}
@@ -60,12 +73,16 @@ export function ProfilesSettingsTab() {
 function ProfileCard({
   profile,
   canDelete,
+  expanded,
+  onToggleExpand,
   onSave,
   onDelete,
   onActivate,
 }: {
   profile: ProviderProfile
   canDelete: boolean
+  expanded: boolean
+  onToggleExpand: () => void
   onSave: (updates: Record<string, unknown>) => Promise<void>
   onDelete: () => Promise<void>
   onActivate: () => Promise<void>
@@ -185,8 +202,10 @@ function ProfileCard({
   return (
     <div className="settings-card settings-profile-card">
       <div className="settings-card-head settings-mcp-card-head">
-        <span className="settings-card-name">{profile.name}</span>
-        {profile.isActive && <span className="settings-card-badge global">Active</span>}
+        <button className="settings-card-toggle" onClick={onToggleExpand} aria-expanded={expanded}>
+          <span className="settings-card-name">{profile.name}</span>
+          {profile.isActive && <span className="settings-card-badge global">Active</span>}
+        </button>
         <div className="settings-mcp-actions">
           <button className="btn" onClick={() => void handleTest()} disabled={testing || saving || !canTest}
             title={!canTest ? 'Enter a token first' : 'Send a minimal request to verify the token and URL'}>
@@ -244,7 +263,8 @@ function ProfileCard({
         </div>
       )}
 
-      <div className="settings-card-body">
+      <AnimatedCollapse open={expanded}>
+        <div className="settings-card-body">
         <div className="settings-field" style={{ marginBottom: 12 }}>
           <label htmlFor={`${uid}-name`}>Name</label>
           <input
@@ -489,7 +509,8 @@ function ProfileCard({
             </div>
           </div>
         </div>
-      </div>
+        </div>
+      </AnimatedCollapse>
     </div>
   )
 }
