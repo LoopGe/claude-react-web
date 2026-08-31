@@ -25,6 +25,12 @@ import {
   IconX,
 } from './icons/ToolIcons'
 
+/** Tail of the cwd for display: last two segments. */
+function cwdTail(cwd: string): string {
+  const parts = cwd.split(/[\\/]/).filter(Boolean)
+  return parts.length <= 2 ? cwd : `…/${parts.slice(-2).join('/')}`
+}
+
 interface Props {
   open?: boolean
   onClose: () => void
@@ -95,12 +101,6 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
     } finally {
       setBusy(false)
     }
-  }
-
-  /** Tail of the cwd for display: last two segments. */
-  const cwdTail = (cwd: string) => {
-    const parts = cwd.split(/[\\/]/).filter(Boolean)
-    return parts.length <= 2 ? cwd : `…/${parts.slice(-2).join('/')}`
   }
 
   return (

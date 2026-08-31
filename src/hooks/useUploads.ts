@@ -33,7 +33,10 @@ export function useUploads(open: boolean): UseUploads {
   }, [])
 
   useEffect(() => {
-    if (open) void refresh()
+    if (!open) return
+    void (async () => {
+      await refresh()
+    })()
   }, [open, refresh])
 
   const remove = useCallback(
