@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderHook, waitFor } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { useModelOptions } from './useModelOptions'
 import { api } from './useApi'
 
@@ -44,6 +44,68 @@ describe('useModelOptions', () => {
     // Should NOT have called /config
     expect(api.get).toHaveBeenCalledTimes(1)
     expect(api.get).toHaveBeenCalledWith('/profiles', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+  })
+
+  it('refetches on reopen so profile edits made mid-session appear', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      profiles: [{ id: 'p1', modelList: ['old'], modelGroups: [] }],
+    })
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useModelOptions('s1', enabled, 'p1'),
+      { initialProps: { enabled: true } },
+    )
+    await waitFor(() => expect(result.current.models.map((m) => m.id)).toEqual(['old']))
+
+    // The user edits the profile in Settings while the picker is closed,
+    // then reopens the picker. The list must reflect the edit without a
+    // page reload.
+    vi.mocked(api.get).mockResolvedValue({
+      profiles: [{ id: 'p1', modelList: ['old', 'new'], modelGroups: [] }],
+    })
+    rerender({ enabled: false })
+    rerender({ enabled: true })
+    await waitFor(() => expect(result.current.models.map((m) => m.id)).toEqual(['old', 'new']))
+  })
+
+  it('refetches when the profiles-changed event fires while enabled', async () => {
+    // SettingsPanel path: enabled stays true, so there is no open/close
+    // gesture — the event is the only invalidation signal.
+    vi.mocked(api.get).mockResolvedValue({
+      profiles: [{ id: 'p1', modelList: ['old'], modelGroups: [] }],
+    })
+    const { result } = renderHook(() => useModelOptions('s1', true, 'p1'))
+    await waitFor(() => expect(result.current.models.map((m) => m.id)).toEqual(['old']))
+
+    vi.mocked(api.get).mockResolvedValue({
+      profiles: [{ id: 'p1', modelList: ['old', 'added'], modelGroups: [] }],
+    })
+    await act(async () => {
+      window.dispatchEvent(new Event('crw-profiles-changed'))
+    })
+    await waitFor(() => expect(result.current.models.map((m) => m.id)).toEqual(['old', 'added']))
+  })
+
+  it('does not show the previous profile\'s models while refetching after a profile switch', async () => {
+    // One controllable resolver, reassigned on every fetch call, so each
+    // phase of the test can resolve exactly the in-flight fetch.
+    let resolveFetch: (v: unknown) => void = () => {}
+    vi.mocked(api.get).mockImplementation(
+      () => new Promise((resolve) => { resolveFetch = resolve }),
+    )
+    const { result, rerender } = renderHook(
+      ({ profileId }: { profileId?: string }) => useModelOptions('s1', true, profileId),
+      { initialProps: { profileId: 'p1' as string | undefined } },
+    )
+    resolveFetch({ profiles: [{ id: 'p1', modelList: ['p1-model'], modelGroups: [] }] })
+    await waitFor(() => expect(result.current.models.map((m) => m.id)).toEqual(['p1-model']))
+
+    // Switch profile: the refetch for p2 is still pending, so the old
+    // profile's list must NOT be shown as if it were p2's.
+    rerender({ profileId: 'p2' })
+    expect(result.current.models).toEqual([])
+
+    resolveFetch({ profiles: [{ id: 'p2', modelList: ['p2-model'], modelGroups: [] }] })
+    await waitFor(() => expect(result.current.models.map((m) => m.id)).toEqual(['p2-model']))
   })
 
   it('falls back to /config when profileId is not provided', async () => {

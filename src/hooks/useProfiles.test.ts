@@ -37,4 +37,27 @@ describe('useProfiles', () => {
     await act(() => result.current.activate('b'))
     expect(api.post).toHaveBeenCalledWith('/profiles/activate', { profileId: 'b' })
   })
+
+  it.each(['update', 'create', 'remove', 'activate'] as const)('dispatches crw-profiles-changed on %s', async (method) => {
+    vi.mocked(api.get).mockResolvedValue(PROFILES)
+    if (method === 'update') vi.mocked(api.put).mockResolvedValue({ ok: true })
+    if (method === 'create') vi.mocked(api.post).mockResolvedValue({ profile: {} })
+    if (method === 'remove') vi.mocked(api.delete).mockResolvedValue({ ok: true })
+    if (method === 'activate') vi.mocked(api.post).mockResolvedValue({ ok: true })
+    const events: Event[] = []
+    const onEvent = (e: Event) => events.push(e)
+    window.addEventListener('crw-profiles-changed', onEvent)
+    try {
+      const { result } = renderHook(() => useProfiles())
+      await waitFor(() => expect(result.current.profiles.length).toBeGreaterThan(0))
+      await act(() => (
+        method === 'create' ? result.current.create({ name: 'N' })
+          : method === 'update' ? result.current.update('b', {})
+            : result.current[method]('b')
+      ))
+      expect(events.length).toBe(1)
+    } finally {
+      window.removeEventListener('crw-profiles-changed', onEvent)
+    }
+  })
 })

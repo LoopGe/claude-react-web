@@ -16,13 +16,22 @@
 //
 // Fetching is gated on `enabled`. ChatPanel only enables this when the
 // picker is open, so we don't fire a request per open panel on every page
-// load. After the first successful fetch the result is kept in state for
-// the lifetime of the hook instance. The /config call is so cheap (small
-// JSON, same-origin) that one hit per opened panel isn't worth a cache.
+// load — and every open (enabled false → true) refetches, so edits made in
+// Settings → Profile while the picker was closed show up on the next open
+// without a page reload. The /config call is cheap (small JSON, same-origin).
+// During a refetch the previous result stays in state, so the list doesn't
+// flash empty.
+//
+// For always-enabled consumers (SettingsPanel passes a constant `true`)
+// there is no open/close gesture to refetch on — those are covered by the
+// `crw-profiles-changed` window event that useProfiles emits after every
+// successful mutation: it bumps `profilesTick`, which re-runs the effect
+// and refetches.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from './useApi'
 import { readRecentModels } from '../utils/recent-models'
+import { onProfilesChanged } from '../utils/profiles-events'
 import type { ModelGroupConfig } from '../types/config'
 
 export interface ModelOption {
@@ -45,28 +54,27 @@ export interface ModelOptions {
 }
 
 export function useModelOptions(sessionId: string, enabled: boolean, profileId?: string): ModelOptions {
-  /** Server-derived list (SDK ∪ config). Empty until the first fetch
-   *  resolves. We tag it with the sessionId it was fetched for so a
-   *  parent that swaps sessions without remounting won't briefly show
-   *  the previous session's list. */
+  /** Server-derived list. Empty until the first fetch resolves. We tag it
+   *  with the full fetch identity (sessionId AND profileId) so a parent
+   *  that swaps either without remounting won't briefly show the previous
+   *  session's / profile's list while the new fetch is in flight. */
   const [data, setData] = useState<{
     sessionId: string
+    profileId?: string
     models: ModelOption[]
     defaultModel?: string
     modelGroups: ModelGroupConfig[]
   } | null>(null)
-  /** Sentinel for "already fetched (or in-flight) for this sessionId".
-   *  A ref rather than state so successful fetches don't cascade-render
-   *  the component a second time after the data state update. */
-  const fetchedRef = useRef<string | null>(null)
+  /** Bumped when another part of the app mutates profiles (Settings →
+   *  Profile edits) — the invalidation signal for always-enabled
+   *  consumers like SettingsPanel, which have no open/close gesture to
+   *  piggyback a refetch on. */
+  const [profilesTick, setProfilesTick] = useState(0)
+
+  useEffect(() => onProfilesChanged(() => setProfilesTick((t) => t + 1)), [])
 
   useEffect(() => {
     if (!enabled) return
-    // Include profileId in the cache key so a profile switch on the same
-    // session triggers a fresh fetch.
-    const fetchKey = profileId ? `${sessionId}:${profileId}` : sessionId
-    if (fetchedRef.current === fetchKey) return
-    fetchedRef.current = fetchKey
     const ac = new AbortController()
     ;(async () => {
       let cfg: { models?: string[]; modelGroups?: ModelGroupConfig[] } | null = null
@@ -95,9 +103,8 @@ export function useModelOptions(sessionId: string, enabled: boolean, profileId?:
           cfg = await api.get<{ models?: string[]; modelGroups?: ModelGroupConfig[] }>('/config', { signal: ac.signal })
         } catch {
           if (ac.signal.aborted) return
-          // Leave fetchedRef cleared so a subsequent open of the picker
-          // retries rather than showing only recents forever.
-          fetchedRef.current = null
+          // Failed — the picker shows only recents; reopening (enabled
+          // false → true) retries the fetch naturally.
           return
         }
         if (ac.signal.aborted) return
@@ -119,16 +126,18 @@ export function useModelOptions(sessionId: string, enabled: boolean, profileId?:
         }
       }
 
-      setData({ sessionId, models: merged, defaultModel, modelGroups: cfg.modelGroups ?? [] })
+      setData({ sessionId, profileId, models: merged, defaultModel, modelGroups: cfg.modelGroups ?? [] })
     })()
     return () => { ac.abort() }
-  }, [sessionId, enabled, profileId])
+  }, [sessionId, enabled, profileId, profilesTick])
 
-  // Only use server-derived models when they belong to the current
-  // session — guards against showing stale data if the parent reuses
-  // this hook instance across sessionId changes (ChatPanel doesn't, but
-  // other call sites might).
-  const fresh = data && data.sessionId === sessionId ? data : null
+  // Only use server-derived models when they match the full fetch identity
+  // — both the session and the profile it's pinned to. Guards against
+  // showing stale data if the parent reuses this hook instance across a
+  // sessionId or profileId change (ChatPanel doesn't, but other call sites
+  // might): while the refetch for the new identity is in flight (or if it
+  // fails), the old identity's list must not render as if it were current.
+  const fresh = data && data.sessionId === sessionId && data.profileId === profileId ? data : null
   const models = fresh ? fresh.models : []
   const defaultModel = fresh?.defaultModel
   const modelGroups = fresh ? fresh.modelGroups : []

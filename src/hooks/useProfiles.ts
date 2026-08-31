@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
+import { emitProfilesChanged } from '../utils/profiles-events'
 import type { ProviderProfile } from '../types/config'
 
 export interface ProfilesData {
@@ -32,24 +33,32 @@ export function useProfiles(): ProfilesData {
 
   useEffect(() => { void refresh() }, [refresh])
 
+  // Every successful mutation refreshes this instance AND emits the
+  // invalidation event so sibling consumers (e.g. useModelOptions in a
+  // mounted SettingsPanel — a hook instance we can't reach from here)
+  // drop their cached profile-derived data and refetch.
   const create = useCallback(async (input: Record<string, unknown>) => {
     await api.post('/profiles', input)
     await refresh()
+    emitProfilesChanged()
   }, [refresh])
 
   const update = useCallback(async (id: string, input: Record<string, unknown>) => {
     await api.put(`/profiles/${id}`, input)
     await refresh()
+    emitProfilesChanged()
   }, [refresh])
 
   const remove = useCallback(async (id: string) => {
     await api.delete(`/profiles/${id}`)
     await refresh()
+    emitProfilesChanged()
   }, [refresh])
 
   const activate = useCallback(async (id: string) => {
     await api.post('/profiles/activate', { profileId: id })
     await refresh()
+    emitProfilesChanged()
   }, [refresh])
 
   return { profiles, activeProfileId, refresh, create, update, remove, activate }
