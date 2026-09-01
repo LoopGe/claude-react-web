@@ -47,7 +47,7 @@ interface Props {
   /** Global UI-pref defaults (server-backed). Used to compute the effective
    *  value shown by each pref checkbox (`session.<field> ?? global`) and to
    *  label the "Inheriting global (ON/OFF)" hint when no override is set. */
-  globalPrefs: { showPinnedUserMessage: boolean; autoRecap: boolean }
+  globalPrefs: { showPinnedUserMessage: boolean; autoRecap: boolean; appToolsGit: boolean }
   onClose: () => void
   onSessionUpdate: (s: SessionInfo) => void
   commands?: SlashCommand[]
@@ -125,6 +125,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // Effective UI prefs: a per-session override wins, else the global default.
   const effShowPinned = session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage
   const effAutoRecap = session.autoRecap ?? globalPrefs.autoRecap
+  const effAppTools = session.appToolsGit ?? globalPrefs.appToolsGit
   /** POST a per-session pref override. A boolean pins it; `null` clears the
    *  override so the session re-inherits the global default. No success toast
    *  — checkbox toggles are too frequent to toast on every change; only
@@ -139,6 +140,19 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       onSessionUpdate(r.session)
     } catch (e) {
       toast.error(`Couldn't update preference: ${(e as Error).message}`)
+    }
+  }
+
+  /** Per-session apptools override (first-party git MCP server). `null`
+   *  clears the override to re-inherit the global default. Takes effect at
+   *  the next session start — the injection happens at spawn / live
+   *  setMcpServers, so a running session keeps its current server set. */
+  const changeAppTools = async (enabled: boolean | null) => {
+    try {
+      const r = await api.post<{ session: SessionInfo }>(`/sessions/${session.id}/app-tools`, { enabled })
+      onSessionUpdate(r.session)
+    } catch (e) {
+      toast.error(`Couldn't update app tools: ${(e as Error).message}`)
     }
   }
 
@@ -543,13 +557,18 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // Global MCP servers not yet connected to this session.
   // Prefer the snapshot-derived mcpServerNames (reliable, arrives via WS)
   // over the mcp-status result (flaky SDK control request that may fail).
+  // The first-party `apptools` in-process server is managed by its own
+  // toggle below, not the MCP server management list — hide it from the
+  // SDK-reported status so it never renders a reconnect/toggle card.
+  const mcpSdkList = useMemo(() => mcp.filter((s) => s.name !== 'apptools'), [mcp])
+
   // Fallback to mcp for sessions created before mcpServerNames was added.
   const availableMcpNames = useMemo(() => {
     const currentNames = new Set(
-      session.mcpServerNames ?? mcp.map((s) => s.name),
+      session.mcpServerNames ?? mcpSdkList.map((s) => s.name),
     )
     return [...globalMcpNames].filter((n) => !currentNames.has(n)).sort()
-  }, [session.mcpServerNames, mcp, globalMcpNames])
+  }, [session.mcpServerNames, mcpSdkList, globalMcpNames])
 
   // Merge the SDK-reported mcp list with session.mcpServerNames so that
   // servers known to be connected (from the snapshot) always show up —
@@ -559,18 +578,18 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // status and shows a Reconnect button).
   const effectiveMcp = useMemo(() => {
     const names = session.mcpServerNames
-    if (!names || names.length === 0) return mcp
-    const byName = new Map(mcp.map((s) => [s.name, s]))
+    if (!names || names.length === 0) return mcpSdkList
+    const byName = new Map(mcpSdkList.map((s) => [s.name, s]))
     const result: McpServerStatus[] = []
     for (const name of names) {
       result.push(byName.get(name) ?? { name, status: 'pending' })
     }
     // Append SDK-reported servers NOT in mcpServerNames (inline / session-only).
-    for (const s of mcp) {
+    for (const s of mcpSdkList) {
       if (!names.includes(s.name)) result.push(s)
     }
     return result
-  }, [session.mcpServerNames, mcp])
+  }, [session.mcpServerNames, mcpSdkList])
   // Apply optimistic overrides (toggle in-flight) on top of the resolved list.
   const effectiveMcpWithOverride = useMemo(() => {
     if (!mcpOverride || Object.keys(mcpOverride).length === 0) return effectiveMcp
@@ -588,7 +607,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       // (non-global) servers already in the session are forwarded via the
       // `servers` map so they aren't dropped by the replace.
       const baseline = new Set(
-        session.mcpServerNames ?? mcp.map((s) => s.name),
+        session.mcpServerNames ?? mcpSdkList.map((s) => s.name),
       )
       baseline.add(name)
       // enabledMcpServers: only names that exist in the global config.
@@ -1337,6 +1356,34 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               Manage
             </button>
           </div>
+        </div>
+        <div className="settings-field">
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={effAppTools}
+              disabled={busy || session.terminated}
+              onChange={() => void changeAppTools(!effAppTools)}
+            />
+            <span>Let Claude use git tools</span>
+          </label>
+          <span className="hint">
+            Injects first-party git tools (status, stage, commit, …) into this
+            session. Changes apply at the next session start.{' '}
+            {session.appToolsGit === undefined
+              ? `Inheriting global (${globalPrefs.appToolsGit ? 'ON' : 'OFF'}).`
+              : 'Session override.'}
+            {session.appToolsGit !== undefined && (
+              <button
+                type="button"
+                className="settings-reset-link"
+                disabled={busy || session.terminated}
+                onClick={() => void changeAppTools(null)}
+              >
+                Reset (inherit global)
+              </button>
+            )}
+          </span>
         </div>
         {loadingMeta && effectiveMcpWithOverride.length === 0 && <Skeleton rows={2} />}
         {!loadingMeta && effectiveMcpWithOverride.length === 0 && <EmptyState icon={<IconTerminal size={16} />} title="No MCP servers" />}

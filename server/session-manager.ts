@@ -69,6 +69,7 @@ import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.
 import { coerceRewindResult, type RewindFilesResult } from '../shared/rewind.js'
 import { coerceStructuredOutput, type StructuredRunRequest, type StructuredRunResult } from '../shared/structured.js'
 import { coerceReadFileOutput, type FileReadResult } from '../shared/read-file.js'
+import { APP_TOOLS_SERVER_NAME, buildAppToolsServer } from './sdk-tools/app-tools.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
@@ -931,6 +932,7 @@ export class SessionManager {
       enabledPlugins: s.enabledPlugins,
       showPinnedUserMessage: s.showPinnedUserMessage,
       autoRecap: s.autoRecap,
+      appToolsGit: s.appToolsGit,
       slept: s.slept,
     })
   }
@@ -1602,7 +1604,7 @@ export class SessionManager {
       // pinned header / auto-recap override survives forking. No-op when
       // the source inherits global (both undefined) — the fork then
       // inherits global too.
-      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap },
+      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, appToolsGit: meta.appToolsGit },
       // joinGroupOf: the source id — Y joins X's group (append semantics;
       // X stays, since fork doesn't remove the source). The crash-recovery
       // "Fork from last completed turn" button sets `replacesSource` so the
@@ -1993,7 +1995,7 @@ export class SessionManager {
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
-    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean },
+    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; appToolsGit?: boolean },
     /** When this spawn is a fresh Y that should land in an existing session
      *  X's sidebar group, pass X's id here so the `created` broadcast carries
      *  `joinGroupOf: X`. Set by `/clear`, restart, and fork. Append
@@ -2171,6 +2173,7 @@ export class SessionManager {
       // `??` (not `||`) so an explicit `false` override survives.
       showPinnedUserMessage: prefs?.showPinnedUserMessage ?? existingMeta?.showPinnedUserMessage,
       autoRecap: prefs?.autoRecap ?? existingMeta?.autoRecap,
+      appToolsGit: prefs?.appToolsGit ?? existingMeta?.appToolsGit,
       hooks: existingMeta?.hooks ?? metaSnapshot.hooks,
       // Carry lastTurnAt forward from the persisted meta on resume. The
       // pump only stamps `lastTurnAt` when a real `result` lands
@@ -2291,6 +2294,12 @@ export class SessionManager {
     // failIfUnavailable=true and hard-fail a session missing sandbox deps).
     // Strip so the CLI arg builder never sees an `Options.sandbox`.
     delete (sdkOptions as { sandbox?: unknown }).sandbox
+    // Inject the first-party `apptools` in-process MCP server into the
+    // spawn-time mcpServers map (session-cwd-bound git tools). Done AFTER
+    // snapshotMeta so the persisted `mcpServerNames` stays the user-configured
+    // set — apptools is a hidden first-party server surfaced by its own
+    // SettingsPanel toggle, not an MCP server the user manages.
+    fullOpts.mcpServers = this.injectAppTools(fullOpts.mcpServers as Record<string, unknown> | undefined, session) as Options['mcpServers'] | undefined
     const handle = provider.createSession({
       id,
       provider: providerName,
@@ -3374,6 +3383,19 @@ export class SessionManager {
     return this.info(s)
   }
 
+  /** Per-session override for the first-party `apptools` git MCP server.
+   *  `enabled: null` clears the override so the session re-inherits the
+   *  global default (config.appToolsGit). Pure UI pref — no SDK call: the
+   *  value is read at the next spawn / live setMcpServers, so a running
+   *  session keeps its current server set until one of those happens. */
+  async setAppTools(id: string, enabled: boolean | null): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    s.appToolsGit = enabled ?? undefined
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return this.info(s)
+  }
+
   /** Set the reasoning effort level. Forwards to the SDK via
    *  applyFlagSettings({ effortLevel }) and records it locally so it survives
    *  resume/restart (re-applied on respawn). Unsupported levels for the
@@ -3571,20 +3593,46 @@ export class SessionManager {
   /** Add/remove MCP servers on a live session via the SDK's setMcpServers API. */
   async setMcpServers(id: string, servers: Record<string, unknown>) {
     const s = this.requireLive(id)
+    // Inject the first-party apptools server so a live setMcpServers (replace
+    // semantics) doesn't drop what spawn installed — same single code path as
+    // the spawn injection, so on/off is consistent between spawn and live.
+    const injected = this.injectAppTools(servers, s)
     const result = await this.requireHandleMethod<(servers: Record<string, unknown>) => Promise<unknown>>(
       s,
       'setMcpServers',
       'dynamic MCP servers',
       'supportsMcp',
-    )(servers)
+    )(injected ?? servers)
 
     // Update the tracked MCP server names so the client's "available"
     // computation stays in sync without relying on the flaky mcp-status.
+    // Keep the user-configured names (pre-injection) — apptools is a hidden
+    // first-party server, not one the client manages in the MCP list.
     s.mcpServerNames = Object.keys(servers)
     this.writeStore(s)
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
 
     return result
+  }
+
+  /** Effective apptools on/off: per-session override, else the global default
+   *  (both default true). */
+  private appToolsEnabled(s: Session): boolean {
+    return s.appToolsGit ?? defaultConfig.appToolsGit
+  }
+
+  /** Append the first-party `apptools` in-process MCP server (git tools bound
+   *  to the session cwd) to an mcpServers map. Returns the input unchanged
+   *  when apptools is disabled or the session has no cwd. Overwrites any
+   *  user server of the same name — the first-party server takes precedence. */
+  private injectAppTools(
+    servers: Record<string, unknown> | undefined,
+    s: Session,
+  ): Record<string, unknown> | undefined {
+    if (!this.appToolsEnabled(s) || !s.cwd) return servers
+    const copy: Record<string, unknown> = servers ? { ...servers } : {}
+    copy[APP_TOOLS_SERVER_NAME] = buildAppToolsServer(s.cwd)
+    return copy
   }
 
   /** Merge global MCP configs with session-specific overrides.
@@ -4849,6 +4897,7 @@ export class SessionManager {
       skillOverride: s.skillOverride,
       showPinnedUserMessage: s.showPinnedUserMessage,
       autoRecap: s.autoRecap,
+      appToolsGit: s.appToolsGit,
       slept: s.slept,
     }
   }
@@ -4923,6 +4972,7 @@ export class SessionManager {
       enabledPlugins: meta.enabledPlugins,
       showPinnedUserMessage: meta.showPinnedUserMessage,
       autoRecap: meta.autoRecap,
+      appToolsGit: meta.appToolsGit,
       slept: meta.slept,
     }
   }

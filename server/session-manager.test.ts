@@ -61,6 +61,17 @@ const { mockGetSessionInfo, mockListSessions } = vi.hoisted(() => {
   }
 })
 
+// The apptools in-process server is injected into every session's mcpServers
+// map at spawn / live setMcpServers. Mock the builder so no real in-process
+// McpServer is constructed and tests can assert on the injected entry.
+const { mockBuildAppToolsServer } = vi.hoisted(() => ({
+  mockBuildAppToolsServer: vi.fn((cwd: string) => ({ type: 'sdk', name: 'apptools', instance: { cwd } })),
+}))
+vi.mock('./sdk-tools/app-tools.js', () => ({
+  APP_TOOLS_SERVER_NAME: 'apptools',
+  buildAppToolsServer: mockBuildAppToolsServer,
+}))
+
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   return {
     getSessionInfo: (id: string, opts?: { dir?: string }) => mockGetSessionInfo(id, opts),
@@ -3577,12 +3588,40 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     rmRf(mcpDir)
   })
 
-  it('forwards the given servers straight to query.setMcpServers', async () => {
+  it('forwards the given servers straight to query.setMcpServers (plus apptools)', async () => {
     const info = sm.create({ cwd: '/tmp' })
     const servers = { x: { type: 'stdio', command: 'node' } }
     const result = await sm.setMcpServers(info.id, servers)
-    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith(servers)
-    expect(result).toEqual({ added: ['x'], removed: [], errors: {} })
+    // The first-party apptools server is appended to the map (spawn + live
+    // share the injectAppTools path); the user servers pass through verbatim.
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({
+      ...servers,
+      apptools: expect.anything(),
+    })
+    expect(result).toEqual({ added: ['x', 'apptools'], removed: [], errors: {} })
+  })
+
+  it('injects the apptools server into spawn mcpServers when the session has a cwd', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown>
+    expect(mcpServers.apptools).toBeDefined()
+    expect(mockBuildAppToolsServer).toHaveBeenCalledWith('/tmp')
+    expect(info.mcpServerNames ?? []).not.toContain('apptools')
+  })
+
+  it('omits apptools when the session has no cwd', async () => {
+    sm.create({})
+    const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown> | undefined
+    expect(mcpServers?.apptools).toBeUndefined()
+  })
+
+  it('omits apptools from live setMcpServers when the session override disables it', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    // Simulate a per-session override turning apptools off (setAppTools path).
+    const session = (sm as unknown as { sessions: Map<string, { appToolsGit?: boolean }> }).sessions.get(info.id)!
+    session.appToolsGit = false
+    await sm.setMcpServers(info.id, { x: { type: 'stdio', command: 'node' } })
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({ x: { type: 'stdio', command: 'node' } })
   })
 
   it('throws for an unknown / non-live session', async () => {
@@ -3611,6 +3650,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(res.status).toBe(200)
     expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({
       'global-a': { type: 'stdio', command: 'node', args: ['a.js'] },
+      apptools: expect.anything(),
     })
   })
 
@@ -3623,6 +3663,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({
       'global-a': { type: 'stdio', command: 'node', args: ['a.js'] },
       inline: { type: 'http', url: 'http://x' },
+      apptools: expect.anything(),
     })
   })
 
@@ -3630,7 +3671,8 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     const info = sm.create({ cwd: '/tmp' })
     const res = await post(`/sessions/${info.id}/mcp/servers`, { servers: {} })
     expect(res.status).toBe(200)
-    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({})
+    // Empty user set → only the injected first-party apptools remains.
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({ apptools: expect.anything() })
   })
 
   it('400s when neither servers nor enabledMcpServers is provided', async () => {

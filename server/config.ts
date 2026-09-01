@@ -111,6 +111,11 @@ interface ConfigFile {
    *  overrides (SessionMeta.autoRecap) take priority; sessions without an
    *  override inherit this value. Manual recap (Alt+R) is never gated. */
   autoRecap: boolean
+  /** Global default for injecting the first-party `apptools` in-process MCP
+   *  server (git tools) into sessions. Per-session overrides
+   *  (SessionMeta.appToolsGit) take priority; sessions without an override
+   *  inherit this value. */
+  appToolsGit: boolean
   /** When true, acceptEdits and bypassPermissions modes also auto-approve
    *  edits/commands targeting "sensitive" config paths (.git/, .claude/,
    *  .vscode/, .idea/, shell & git config files) that otherwise still prompt
@@ -163,6 +168,9 @@ export interface ServerConfig {
   /** Global default for idle auto-recap. Sessions without an explicit
    *  override inherit this. */
   readonly autoRecap: boolean
+  /** Global default for the per-session `apptools` git MCP server. Sessions
+   *  without an explicit override inherit this. */
+  readonly appToolsGit: boolean
   /** When true, acceptEdits/bypassPermissions also bypass the sensitive-path
    *  safety checks. See ConfigFile.allowSensitivePathEdits. */
   readonly allowSensitivePathEdits: boolean
@@ -205,6 +213,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   autoClassifierTimeout: 5000,
   showPinnedUserMessage: true,
   autoRecap: true,
+  appToolsGit: true,
   allowSensitivePathEdits: false,
   maxOutputTokens: 0,
   profiles: Object.freeze([]),
@@ -445,6 +454,10 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { autoRecap: boolean }).autoRecap = file_.autoRecap
   }
 
+  if (typeof file_.appToolsGit === 'boolean') {
+    ;(merged as { appToolsGit: boolean }).appToolsGit = file_.appToolsGit
+  }
+
   if (typeof file_.allowSensitivePathEdits === 'boolean') {
     ;(merged as { allowSensitivePathEdits: boolean }).allowSensitivePathEdits = file_.allowSensitivePathEdits
   }
@@ -500,6 +513,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'autoClassifierTimeout',
   'showPinnedUserMessage',
   'autoRecap',
+  'appToolsGit',
   'allowSensitivePathEdits',
   'maxOutputTokens',
 ] as const

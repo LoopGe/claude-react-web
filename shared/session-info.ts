@@ -246,6 +246,11 @@ export interface SessionInfoBase<PM = string> {
    *  that value. Manual recap (Alt+R) is never gated by this. Persisted
    *  so it survives resume / fork / reload. */
   autoRecap?: boolean
+  /** Per-session override for the first-party `apptools` git MCP server.
+   *  Undefined = inherit the global default (config.appToolsGit); a boolean
+   *  pins this session to that value. Persisted so it survives resume /
+   *  fork / reload. */
+  appToolsGit?: boolean
   /** True when the user explicitly put this session to sleep (dormant) via
    *  the "Sleep" action — distinct from a passive dormant state caused by a
    *  server restart or crash. The client uses this to skip auto/background

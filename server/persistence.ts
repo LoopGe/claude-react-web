@@ -117,6 +117,10 @@ export interface SessionMeta {
   /** Per-session override for idle auto-recap. Undefined = inherit the
    *  global config default. Persisted so the override survives reload. */
   autoRecap?: boolean
+  /** Per-session override for the first-party `apptools` git MCP server.
+   *  Undefined = inherit the global config default. Persisted so the
+   *  override survives reload. */
+  appToolsGit?: boolean
   /** True when the user explicitly slept this session (dormant) via the
    *  "Sleep" action. Distinguishes deliberate dormancy from a passive
    *  restart/crash dormant state so the client can skip auto-resume paths.
@@ -241,6 +245,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       : undefined,
     showPinnedUserMessage: typeof r.showPinnedUserMessage === 'boolean' ? r.showPinnedUserMessage : undefined,
     autoRecap: typeof r.autoRecap === 'boolean' ? r.autoRecap : undefined,
+    appToolsGit: typeof r.appToolsGit === 'boolean' ? r.appToolsGit : undefined,
     slept: typeof r.slept === 'boolean' ? r.slept : undefined,
   }
 }

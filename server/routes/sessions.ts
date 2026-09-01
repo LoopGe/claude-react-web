@@ -610,6 +610,19 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ session: info })
   })
 
+  // Per-session override for the first-party `apptools` git MCP server.
+  // `enabled: null` clears the override so the session re-inherits the
+  // global default. Pure UI pref — no SDK round-trip; read at next spawn.
+  app.post('/sessions/:id/app-tools', async (c) => {
+    const body = await safeJson<{ enabled?: unknown }>(c.req)
+    const v = body && Object.prototype.hasOwnProperty.call(body, 'enabled') ? body.enabled : null
+    if (v !== null && typeof v !== 'boolean') {
+      return c.json({ error: 'enabled must be a boolean or null' }, 400)
+    }
+    const info = await sm.setAppTools(c.req.param('id'), v as boolean | null)
+    return c.json({ session: info })
+  })
+
   // Context usage
   app.get('/sessions/:id/context-usage', async (c) => {
     const usage = await sm.contextUsage(c.req.param('id'))

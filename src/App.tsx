@@ -202,8 +202,8 @@ export function App() {
    *  the global settings modal saves (handleGlobalSettingsSaved →
    *  refreshConfigResponse). Defaults to ON so the features are visible
    *  before the first /config fetch lands. */
-  const [globalPrefs, setGlobalPrefs] = useState<{ showPinnedUserMessage: boolean; autoRecap: boolean }>(
-    { showPinnedUserMessage: true, autoRecap: true },
+  const [globalPrefs, setGlobalPrefs] = useState<{ showPinnedUserMessage: boolean; autoRecap: boolean; appToolsGit: boolean }>(
+    { showPinnedUserMessage: true, autoRecap: true, appToolsGit: true },
   )
   const {
     settingsOpenFor,
@@ -434,6 +434,7 @@ export function App() {
         setGlobalPrefs({
           showPinnedUserMessage: r.showPinnedUserMessage ?? true,
           autoRecap: r.autoRecap ?? true,
+          appToolsGit: r.appToolsGit ?? true,
         })
       })
       .catch(() => setIsConfigured(true))
@@ -3484,6 +3485,7 @@ export function App() {
     setGlobalPrefs({
       showPinnedUserMessage: r.showPinnedUserMessage ?? true,
       autoRecap: r.autoRecap ?? true,
+      appToolsGit: r.appToolsGit ?? true,
     })
   }, [])
 

@@ -78,6 +78,19 @@ describe('config', () => {
     expect(config.recapModel).toBe('fast-model')
   })
 
+  it('defaults appToolsGit to true', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.appToolsGit).toBe(true)
+  })
+
+  it('honors a false appToolsGit override', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ appToolsGit: false }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.appToolsGit).toBe(false)
+  })
+
   it('loadConfig filters empty strings from modelList', async () => {
     writeFileSync(
       join(dir, 'config.json'),

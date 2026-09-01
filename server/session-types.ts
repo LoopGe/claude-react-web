@@ -481,6 +481,11 @@ export interface Session {
    *  global config default; a boolean pins it. Persisted via SessionMeta
    *  and mirrored into SessionInfo. Pure UI pref — no SDK call. */
   autoRecap?: boolean
+  /** Per-session override for the first-party `apptools` git MCP server.
+   *  Undefined = inherit the global config default; a boolean pins it.
+   *  Persisted via SessionMeta and mirrored into SessionInfo. Read at
+   *  spawn / live setMcpServers; not itself an SDK call. */
+  appToolsGit?: boolean
   /** True when the user explicitly slept this session via the "Sleep"
    *  action. Distinguishes deliberate dormancy from passive restart/crash
    *  dormancy so the client can skip auto-resume paths for slept sessions.

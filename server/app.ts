@@ -228,6 +228,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       maxUploadBytes: serverConfig.maxUploadBytes,
       showPinnedUserMessage: serverConfig.showPinnedUserMessage,
       autoRecap: serverConfig.autoRecap,
+      appToolsGit: serverConfig.appToolsGit,
       activeProfileId: serverConfig.activeProfileId,
       activeProfileName: serverConfig.profiles.find((p) => p.id === serverConfig.activeProfileId)?.name ?? 'Default',
     }),
