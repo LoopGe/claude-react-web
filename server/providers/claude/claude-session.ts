@@ -81,7 +81,11 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
   }
 
   interrupt(): Promise<void> {
-    return this.query.interrupt()
+    // SDK ≥0.3.24x: interrupt() resolves with an interrupt receipt
+    // (SDKControlInterruptResponse — uuids of queued messages that survive the
+    // interrupt). The provider contract stays `Promise<void>`; queued-input
+    // bookkeeping lives host-side (see abort()/detachWaiter above).
+    return this.query.interrupt().then(() => undefined)
   }
 
   backgroundTasks(toolUseId?: string): Promise<boolean> {
