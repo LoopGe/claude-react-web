@@ -474,7 +474,8 @@ function MarketplaceCard({
             fontSize: 11, color: 'var(--fg-muted)', fontFamily: 'var(--mono)',
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
-            {item.source.url}{item.source.ref ? ` @ ${item.source.ref}` : ''}
+            {item.source.url}
+            {item.source.branch || item.source.ref ? ` @ ${item.source.branch || item.source.ref}` : ''}
           </div>
         </div>
         <span

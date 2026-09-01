@@ -180,6 +180,19 @@ export async function gitPull(cwd: string): Promise<{ updated: boolean; newSha: 
   return { updated: before !== after, newSha: after }
 }
 
+/** Read the current branch name of the clone at `cwd`. Returns '' when the
+ *  HEAD is detached (not on any branch) or the dir isn't a usable repo (e.g.
+ *  the marketplace cache was wiped). Never throws — callers use the empty
+ *  string to mean "no discernible branch". */
+export async function gitBranchName(cwd: string): Promise<string> {
+  try {
+    const out = await runGitOutside(['branch', '--show-current'], cwd)
+    return out.trim()
+  } catch {
+    return ''
+  }
+}
+
 /** Read the cwd's HEAD commit SHA. Throws if the cwd isn't a repo, has
  *  no commits, or the SHA can't be parsed. We don't allow the unborn-HEAD
  *  case the way `tryCaptureGitHead` does — a freshly-cloned marketplace

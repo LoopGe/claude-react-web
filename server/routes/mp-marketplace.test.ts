@@ -111,6 +111,7 @@ vi.mock('../git-clone.js', async () => {
       'utf8',
     )
     }),
+    gitBranchName: vi.fn(async () => 'main'),
     gitCloneAtSha: vi.fn(async (url: string, dest: string, opts: { sha: string }) => {
       cloneAtShaCalls.push({ url, sha: opts.sha })
       if (cloneAtShaShouldFail) throw new errors.HttpError(500, 'clone failed')
@@ -198,9 +199,13 @@ describe('mp-marketplace routes', () => {
 
     // List
     const listRes = await app.request('/mp/marketplaces')
-    const listed = await jsonOf<{ marketplaces: Array<{ id: string; enabledCount: number }> }>(listRes)
+    const listed = await jsonOf<{
+      marketplaces: Array<{ id: string; enabledCount: number; source: { ref?: string; branch?: string } }>
+    }>(listRes)
     expect(listed.marketplaces.map((m) => m.id)).toContain(id)
     expect(listed.marketplaces.find((m) => m.id === id)?.enabledCount).toBe(0)
+    // The list item surfaces the resolved branch even though no ref was given.
+    expect(listed.marketplaces.find((m) => m.id === id)?.source.branch).toBe('main')
 
     // Plugins — the git-subdir plugin ("ext") now LISTS (previously dropped).
     const plugRes = await app.request(`/mp/marketplaces/${id}/plugins`)

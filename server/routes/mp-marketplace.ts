@@ -17,7 +17,15 @@ import { HttpError } from '../errors.js'
 import { safeJson } from './index.js'
 import type { SessionManager } from '../session-manager.js'
 import { MpStore, type MpEntry } from '../mp-store.js'
-import { gitClone, gitCloneAtSha, gitPull, gitGetHeadSha, gitLsRemoteHead, assertHttpsUrl } from '../git-clone.js'
+import {
+  assertHttpsUrl,
+  gitBranchName,
+  gitClone,
+  gitCloneAtSha,
+  gitGetHeadSha,
+  gitLsRemoteHead,
+  gitPull,
+} from '../git-clone.js'
 import { parseRepoManifest, type ParsedPlugin, type ParsedPluginSource } from '../marketplace-parser.js'
 import { createLogger } from '../log.js'
 
@@ -40,7 +48,7 @@ function assertSafeName(name: string, label: string): void {
 interface MpListItem {
   id: string
   displayName: string
-  source: MpEntry['source']
+  source: MpEntry['source'] & { branch?: string }
   addedAt: number
   lastRefreshedAt: number
   lastSha: string
@@ -53,16 +61,23 @@ interface MpListItem {
   ownerName?: string
 }
 
-function toListItem(e: MpEntry, store: MpStore): MpListItem {
+async function toListItem(e: MpEntry, store: MpStore): Promise<MpListItem> {
   const enabledMap = store.enabledMapFor(e.id)
   const enabledCount = e.manifest.plugins.reduce(
     (n, p) => (enabledMap[p.name] === true ? n + 1 : n),
     0,
   )
+  // Surface the branch the clone is actually checked out on, so the UI can
+  // show it even when the marketplace was added without an explicit ref (a
+  // default-branch clone). Fall back to the user-specified ref on a failed
+  // resolve (wiped cache, detached HEAD) so we never hide what the user asked
+  // for. NOTE: `branch` is informational for display only — `e.source.ref`
+  // remains the source of truth for update checks (gitLsRemoteHead).
+  const branch = (await gitBranchName(e.cloneDir)) || e.source.ref || undefined
   return {
     id: e.id,
     displayName: e.displayName,
-    source: e.source,
+    source: { ...e.source, branch },
     addedAt: e.addedAt,
     lastRefreshedAt: e.lastRefreshedAt,
     lastSha: e.lastSha,
@@ -114,8 +129,8 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
 
   // ─── Marketplace listing ─────────────────────────────────────────
 
-  app.get('/mp/marketplaces', (c) => {
-    const items = store.list().map((e) => toListItem(e, store))
+  app.get('/mp/marketplaces', async (c) => {
+    const items = (await Promise.all(store.list().map((e) => toListItem(e, store))))
     items.sort((a, b) => a.displayName.localeCompare(b.displayName))
     return c.json({ marketplaces: items })
   })
@@ -206,7 +221,7 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
 
     return c.json({
       ok: true,
-      entry: toListItem(entry, store),
+      entry: await toListItem(entry, store),
       warnings: parseResult.warnings,
     })
   })
@@ -248,7 +263,7 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
     await store.pruneExternalClones()
     return c.json({
       ok: true,
-      entry: toListItem(next, store),
+      entry: await toListItem(next, store),
       updated,
       warnings: parseResult.warnings,
     })

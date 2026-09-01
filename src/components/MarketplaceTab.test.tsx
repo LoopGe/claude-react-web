@@ -115,3 +115,27 @@ describe('MarketplaceTab Update all', () => {
     )
   })
 })
+
+describe('MarketplaceTab branch display', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('renders the resolved branch when no explicit ref was given', async () => {
+    const item = {
+      ...mkItem('mp1', 'MP One'),
+      // Default-branch clone: no ref, but the server resolves `branch: 'main'`.
+      source: { type: 'https' as const, url: 'https://github.com/obra/superpowers.git', branch: 'main' },
+    }
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/marketplaces') return Promise.resolve({ marketplaces: [item] })
+      return Promise.resolve({})
+    })
+    ;(api.post as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, updates: [] })
+
+    const { container } = render(<MarketplaceTab />)
+    await waitFor(() =>
+      expect(container.textContent).toContain('https://github.com/obra/superpowers.git @ main'),
+    )
+  })
+})
