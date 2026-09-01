@@ -745,6 +745,23 @@
 .settings-reset-link:hover { opacity: 0.8; }
 .settings-reset-link:disabled { opacity: 0.5; cursor: default; text-decoration: none; }
 
+/* Sandbox advanced (network / filesystem) overrides — a bordered, muted
+   collapsible so the extra fields don't crowd the three primary toggles. */
+.settings-advanced {
+  margin-top: 8px;
+  padding: 8px 10px 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev);
+}
+.settings-advanced summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted);
+  user-select: none;
+}
+.settings-advanced summary:hover { color: var(--fg); }
+
 /* Flag settings editor tabs */
 .fse-tabs {
   display: flex;

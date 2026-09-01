@@ -123,6 +123,7 @@ function summarizeSpawn(opts: CreateSessionOptions, sdkOptions: Options): Record
       effortLevel: opts.effortLevel,
       autoCompactWindow: opts.autoCompactWindow,
       memory: opts.memory,
+      sandbox: opts.sandbox,
       enabledPlugins: opts.enabledPlugins,
     },
   }
@@ -347,6 +348,18 @@ export class ClaudeProvider implements AgentProvider {
       if (opts.memory.autoDreamEnabled !== undefined) memoryFlags.autoDreamEnabled = opts.memory.autoDreamEnabled
       void q.applyFlagSettings(memoryFlags).catch((err) => {
         log.warn(`[${opts.id}] re-applying memory settings on spawn failed:`, err)
+      })
+    }
+    // Sandbox intent (SDK Settings.sandbox, no spawn-time Options equivalent)
+    // — re-applied post-spawn exactly like memory/autoCompactWindow above,
+    // via the flag-settings layer. NOT Options.sandbox: passing `enabled` via
+    // Options defaults failIfUnavailable=true, which makes a whole session
+    // error out when sandbox dependencies are missing (e.g. bubblewrap on
+    // Linux); the settings layer degrades gracefully instead. A present object
+    // sets the flag (null-clearing happens via the live setSandbox route).
+    if (opts.sandbox) {
+      void q.applyFlagSettings({ sandbox: opts.sandbox }).catch((err) => {
+        log.warn(`[${opts.id}] applying sandbox on spawn failed:`, err)
       })
     }
 

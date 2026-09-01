@@ -20,6 +20,8 @@ import type { JsonFileStoreOptions } from './json-file-store.js'
 import { createLogger } from './log.js'
 import { validateSessionHooksConfig, type SessionHooksConfig } from '../shared/hooks.js'
 import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
+import type { SandboxSetting } from '../shared/sandbox.js'
+import { validateSandboxSetting } from '../shared/sandbox.js'
 
 const log = createLogger('persistence')
 
@@ -54,6 +56,10 @@ export interface SessionMeta {
    *  Re-applied to the SDK via applyFlagSettings on every re-spawn. The
    *  whole object is undefined when no memory key has been pinned. */
   memory?: SessionMemorySettings
+  /** User intent: sandbox config (SDK Settings.sandbox). A present object =
+   *  sandbox ON; undefined = off. Re-applied to the SDK via applyFlagSettings
+   *  on every re-spawn (resume / restart / fork). */
+  sandbox?: SandboxSetting
   /** User intent: reasoning effort level. Re-applied to the SDK on
    *  re-spawn (resume / restart / fork). */
   effortLevel?: EffortLevel
@@ -207,6 +213,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       : undefined,
     fastMode: typeof r.fastMode === 'boolean' ? r.fastMode : undefined,
     memory: coerceMemory(r.memory),
+    sandbox: coerceSandbox(r.sandbox),
     effortLevel:
       r.effortLevel === 'low' || r.effortLevel === 'medium' || r.effortLevel === 'high' ||
       r.effortLevel === 'xhigh' || r.effortLevel === 'max'
@@ -242,6 +249,18 @@ function coerceHooks(raw: unknown): SessionHooksConfig | undefined {
   if (raw == null) return undefined
   const result = validateSessionHooksConfig(raw)
   return result.ok ? result.value : undefined
+}
+
+/** Narrow untrusted JSON into a SandboxSetting. Absent/unusable → undefined.
+ *  An app-level sandbox object is only meaningful as "ON" — present means the
+ *  sandbox is enabled — so a parsed object with `enabled !== true` (raw
+ *  `{enabled:false}` or a malformed value) collapses to undefined (off); "off"
+ *  is expressed by absence (and `null` clears it via setSandbox). */
+function coerceSandbox(raw: unknown): SandboxSetting | undefined {
+  if (raw == null) return undefined
+  const v = validateSandboxSetting(raw)
+  if (!v.ok || v.value.enabled !== true) return undefined
+  return v.value
 }
 
 /** Narrow untrusted JSON into SessionMemorySettings. Returns undefined

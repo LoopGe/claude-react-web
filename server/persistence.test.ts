@@ -156,6 +156,43 @@ describe('SessionStore', () => {
     expect(reloaded?.enabledPlugins).toEqual(['plugA@mp1', 'plugB@mp1'])
   })
 
+  it('round-trips sandbox across upsert + reload', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    const sandbox = { enabled: true, autoAllowBashIfSandboxed: false, network: { allowedDomains: ['github.com'] } }
+    store.upsert(makeMeta('a', { sandbox }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    expect(store2.get('a')?.sandbox).toEqual(sandbox)
+  })
+
+  it('drops a sandbox object whose enabled is not true (present = ON contract)', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    // A raw `{...sandbox}` read where `enabled` is false or missing is not a
+    // legit "ON" intent — coerceMeta must collapse it to undefined (off).
+    store.upsert(makeMeta('a', { sandbox: { enabled: false } as SessionMeta['sandbox'] }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    const reloaded = store2.get('a')
+    expect(reloaded?.sandbox).toBeUndefined()
+  })
+
+  it('leaves sandbox absent as undefined', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a'))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    expect(store2.get('a')?.sandbox).toBeUndefined()
+  })
+
   it('round-trips enabledPlugins absent as undefined', async () => {
     const store = new SessionStore({ stateDir: dir })
     await store.load()

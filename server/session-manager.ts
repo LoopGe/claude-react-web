@@ -64,6 +64,7 @@ import { HttpError } from './errors.js'
 import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
 import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
+import type { SandboxSetting } from '../shared/sandbox.js'
 import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
 import { coerceRewindResult, type RewindFilesResult } from '../shared/rewind.js'
 import { coerceStructuredOutput, type StructuredRunRequest, type StructuredRunResult } from '../shared/structured.js'
@@ -912,6 +913,7 @@ export class SessionManager {
       betas: s.betas,
       fastMode: s.fastMode,
       memory: s.memory,
+      sandbox: s.sandbox,
       effortLevel: s.effortLevel,
       thinking: s.thinking,
       autoCompactWindow: s.autoCompactWindow,
@@ -964,7 +966,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[] } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -1004,6 +1006,14 @@ export class SessionManager {
       // "available" without the flaky mcp-status SDK control request.
       mcpServerNames: opts.mcpServers ? Object.keys(opts.mcpServers as Record<string, unknown>) : undefined,
       enabledPlugins: (opts as { enabledPlugins?: string[] }).enabledPlugins,
+      // Sandbox intent passed at create (app-level `sandbox` body field) is
+      // the session's initial intent. Normalised: a present sandbox object is
+      // meaningful only as "ON", so it's kept only when `enabled === true`;
+      // `null` and `{enabled:false}` both collapse to undefined (off).
+      sandbox: (() => {
+        const sb = (opts as { sandbox?: SandboxSetting }).sandbox
+        return sb && sb.enabled === true ? sb : undefined
+      })(),
     }
   }
 
@@ -1533,7 +1543,7 @@ export class SessionManager {
     // same name, not a renamed fork.
     const title = opts?.inheritIdentity ? meta.title : (meta.title ? `${meta.title} (fork)` : undefined)
     const sourceProvider = meta.provider ?? this.defaultProvider
-    const forkOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number } = {
+    const forkOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting } = {
       provider: sourceProvider,
       resume: id,
       forkSession: true,
@@ -1564,6 +1574,9 @@ export class SessionManager {
       // existingMeta — snapshotMeta captures it from here). meta already
       // prefers the live session over the persisted store entry.
       memory: coerceMemory(meta.memory),
+      // Carry the sandbox intent onto the new id (fork has no existingMeta —
+      // snapshotMeta captures it from here).
+      sandbox: meta.sandbox,
     }
     // Re-apply globally configured MCP servers (same as resume).
     const allGlobalMcpNames = Object.keys(this.mcpStore?.toSdkConfig() ?? {})
@@ -2146,6 +2159,10 @@ export class SessionManager {
       // persisted meta; create/fork/clear pass the intent on opts where
       // snapshotMeta captured it. `??` so an explicit intent survives.
       memory: existingMeta?.memory ?? metaSnapshot.memory,
+      // Sandbox intent. Resume paths (same id) restore from the persisted
+      // meta; create/fork/clear pass it on opts where snapshotMeta captured
+      // it. A present object = sandbox ON; undefined = off.
+      sandbox: existingMeta?.sandbox ?? metaSnapshot.sandbox,
       // Pure-UI pref overrides. An explicit `prefs` arg (fork / clear
       // carrying the source's overrides onto a new id) wins; otherwise
       // restore from the persisted meta so a resumed session keeps its
@@ -2269,6 +2286,11 @@ export class SessionManager {
     // Same for autoCompactWindow: no SDK Options key (re-applied post-spawn
     // via applyFlagSettings) — strip so the CLI arg builder never sees it.
     delete (sdkOptions as { autoCompactWindow?: unknown }).autoCompactWindow
+    // Same for sandbox: applied post-spawn via applyFlagSettings (the flag-
+    // settings layer), NOT Options.sandbox (whose `enabled` would default
+    // failIfUnavailable=true and hard-fail a session missing sandbox deps).
+    // Strip so the CLI arg builder never sees an `Options.sandbox`.
+    delete (sdkOptions as { sandbox?: unknown }).sandbox
     const handle = provider.createSession({
       id,
       provider: providerName,
@@ -2283,6 +2305,7 @@ export class SessionManager {
       fastMode: session.fastMode,
       autoCompactWindow: session.autoCompactWindow,
       memory: session.memory,
+      sandbox: session.sandbox,
       env: customEnv,
       mcpServers: fullOpts.mcpServers as Record<string, unknown> | undefined,
       enabledPlugins: (fullOpts as { enabledPlugins?: string[] }).enabledPlugins ?? existingMeta?.enabledPlugins,
@@ -2746,6 +2769,7 @@ export class SessionManager {
         enabledPlugins: s.enabledPlugins,
         parentId: s.parentId,
         memory: s.memory,
+        sandbox: s.sandbox,
         // Carry X's session-level skill override onto Y so a pinned restrictive
         // policy survives /clear. fork() forwards this via its 5th spawn() arg;
         // clear() must do the same or Y silently falls back to the global
@@ -2757,7 +2781,7 @@ export class SessionManager {
       // spawn() persists Y, broadcasts `created`, and starts its pump. Side
       // Chat sessions re-inject SIDE_DEVELOPER_INSTRUCTIONS so the boundary
       // survives — same logic as the old respawn.
-      const freshOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number } = {
+      const freshOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting } = {
         provider: settings.provider,
         cwd: settings.cwd,
         model: settings.model,
@@ -2773,6 +2797,8 @@ export class SessionManager {
         // Carry the auto-memory intent onto the fresh session (new id —
         // snapshotMeta captures it from here, same as fork).
         memory: settings.memory,
+        // Carry the sandbox intent likewise.
+        sandbox: settings.sandbox,
       }
       if (settings.parentId) {
         freshOpts.systemPrompt = {
@@ -3295,6 +3321,33 @@ export class SessionManager {
       else next[k] = value as boolean
     }
     s.memory = Object.keys(next).length > 0 ? next : undefined
+    s.lastActivityAt = Date.now()
+    this.persist(s)
+    return this.info(s)
+  }
+
+  /** Set the per-session sandbox config. `setting` is a validated
+   *  `SandboxSetting` (sandbox ON + behavior knobs) forwarded to the SDK via
+   *  applyFlagSettings (the flag-settings layer — NOT Options.sandbox, whose
+   *  `enabled` would default failIfUnavailable=true and hard-fail a session
+   *  missing sandbox deps). `null` clears it back to off
+   *  (applyFlagSettings({ sandbox: null }) → project/SDK default). Recorded
+   *  locally so it survives resume/restart (re-applied on respawn). No
+   *  capability gate — the applyFlagSettings handle method is the only
+   *  prerequisite, same as setMemorySettings. */
+  async setSandbox(id: string, setting: SandboxSetting | null): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    // A present sandbox object is meaningful only as "ON" — normalise so both
+    // `null` and a raw `{enabled:false}` clear the setting (apply null; store
+    // undefined), never leaving a truthy-but-off config in the session record.
+    const on = setting != null && setting.enabled === true
+    const flags = on ? { sandbox: setting } : { sandbox: null }
+    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+      s,
+      'applyFlagSettings',
+      'sandbox',
+    )(flags)
+    s.sandbox = on ? setting : undefined
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
@@ -4765,6 +4818,7 @@ export class SessionManager {
       betas: s.betas,
       fastMode: s.fastMode,
       memory: s.memory,
+      sandbox: s.sandbox,
       fastModeState: s.fastModeState,
       compacting: s.compacting,
       effortLevel: s.effortLevel,

@@ -8,6 +8,7 @@ import type { MpStore } from '../mp-store.js'
 import { isUserSelectablePermissionMode, permissionModeList } from '../permission-modes.js'
 import { formatHooksValidationErrors, toSdkHooksSettings, validateSessionHooksConfig } from '../../shared/hooks.js'
 import { coerceThinkingSetting } from '../../shared/session-info.js'
+import { validateSandboxSetting } from '../../shared/sandbox.js'
 import { createLogger } from '../log.js'
 
 const log = createLogger('http')
@@ -155,6 +156,16 @@ function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Rec
     if (m.autoMemoryDirectory !== undefined && (typeof m.autoMemoryDirectory !== 'string' || !m.autoMemoryDirectory.trim())) {
       return { ok: false, error: 'memory.autoMemoryDirectory must be a non-empty string' }
     }
+  }
+  // App-level `sandbox` field (per-session sandbox intent — an SDK
+  // Settings.sandbox key applied post-spawn via applyFlagSettings, NOT an
+  // Options key). Strict validation reusing the shared validator so a typo'd
+  // body (or one reaching for SDK fields we don't expose, e.g. denyRead) is a
+  // 400 before it ever reaches the subprocess.
+  if (rest.sandbox !== undefined && rest.sandbox !== null) {
+    const v = validateSandboxSetting(rest.sandbox)
+    if (!v.ok) return { ok: false, error: v.error }
+    rest.sandbox = v.value
   }
   return { ok: true, value: rest }
 }
@@ -640,6 +651,21 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     }
     const info = await sm.setMemorySettings(c.req.param('id'), partial)
     return c.json({ session: info })
+  })
+
+  // Set the per-session sandbox config (SDK Settings.sandbox, applied via
+  // applyFlagSettings). Body is a full validated SandboxSetting (sandbox ON)
+  // or `null` to clear it back to off (project/SDK default). Persisted so it
+  // survives resume / fork / clear / restart.
+  app.post('/sessions/:id/sandbox', async (c) => {
+    const id = c.req.param('id')
+    const body = await safeJson<unknown>(c.req)
+    if (body === null) {
+      return c.json({ session: await sm.setSandbox(id, null) })
+    }
+    const v = validateSandboxSetting(body)
+    if (!v.ok) return c.json({ error: v.error }, 400)
+    return c.json({ session: await sm.setSandbox(id, v.value) })
   })
 
   // Session usage — cost/token totals + claude.ai plan rate-limit windows

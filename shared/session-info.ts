@@ -8,6 +8,7 @@
 // point: prevents the two `SessionInfo` declarations from drifting.
 
 import type { SessionSkillOverride } from './skills.js'
+import type { SandboxSetting } from './sandbox.js'
 
 /** Coarse-grained session lifecycle. The server is the single source of
  *  truth for this — derived from `(running, working, queueDepth,
@@ -120,6 +121,10 @@ export interface SessionInfoBase<PM = string> {
   fastMode?: boolean
   /** Per-session auto-memory settings; see SessionMemorySettings. */
   memory?: SessionMemorySettings
+  /** Per-session sandbox intent (SDK Settings.sandbox). A present object =
+   *  sandbox ON; undefined = off (project/SDK default). Persisted; survives
+   *  resume/restart/fork; runtime-switchable. */
+  sandbox?: SandboxSetting
   /** SDK-reported runtime fast-mode state. undefined means the current
    *  model doesn't support fast mode — the UI uses this to hide the
    *  toggle entirely. 'cooldown' means fast mode is rate-limited and

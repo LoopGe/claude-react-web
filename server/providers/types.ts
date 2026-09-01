@@ -5,6 +5,7 @@ import type { ResumableSession } from '../session-types.js'
 import type { SessionMemorySettings, ThinkingSetting } from '../../shared/session-info.js'
 import type { ProviderProfile } from '../config.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../shared/structured.js'
+import type { SandboxSetting } from '../../shared/sandbox.js'
 
 export interface CreateSessionOptions {
   id: string
@@ -28,6 +29,11 @@ export interface CreateSessionOptions {
   /** Per-session auto-memory intent (SDK Settings keys applied post-spawn
    *  via applyFlagSettings — the SDK has no spawn-time Options.memory). */
   memory?: SessionMemorySettings
+  /** Per-session sandbox intent (SDK Settings.sandbox, applied post-spawn via
+   *  applyFlagSettings — deliberately NOT Options.sandbox, whose `enabled`
+   *  would default failIfUnavailable=true and hard-fail the whole session when
+   *  sandbox deps are missing; see shared/sandbox.ts). */
+  sandbox?: SandboxSetting
   env?: Record<string, string>
   mcpServers?: Record<string, unknown>
   enabledMcpServers?: string[]

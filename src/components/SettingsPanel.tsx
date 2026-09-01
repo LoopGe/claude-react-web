@@ -14,6 +14,7 @@ import { useModelOptions } from '../hooks/useModelOptions'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillLoadMode, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
 import type { SkillRecord } from '../../shared/skills'
+import type { SandboxSetting } from '../../shared/sandbox'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
 import { IconChevronUp, IconChevronDown, IconLoader, IconSparkles, IconTerminal } from './icons/ToolIcons'
@@ -383,6 +384,71 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     await runAndRefresh(() =>
       api.post<{ session: SessionInfo }>(`/sessions/${session.id}/memory`, { autoMemoryDirectory: dir || null }),
     )
+  }
+
+  // ── Sandbox (per-session command-execution isolation) ──────────────
+  // SDK Settings.sandbox, applied post-spawn via applyFlagSettings and
+  // re-applied on every re-spawn, so it survives resume / fork / clear. Also
+  // runtime-switchable. Same dormant gating as auto-memory above: a dormant
+  // session has no live Query (setSandbox 404s until resumed).
+  const sandboxDisabled = memoryDisabled
+
+  // `null` clears sandbox back to off (project/SDK default).
+  const setSandbox = (next: SandboxSetting | null) =>
+    runAndRefresh(() => api.post<{ session: SessionInfo }>(`/sessions/${session.id}/sandbox`, next))
+
+  // Merge a patch onto the current config, guaranteeing `enabled: true` so a
+  // sub-toggle can never emit a settings object that silently disables it.
+  const setSandboxField = (patch: Partial<SandboxSetting>) =>
+    setSandbox({ ...(session.sandbox ?? { enabled: true }), ...patch })
+
+  const toggleSandbox = (master: boolean) =>
+    master ? setSandbox({ enabled: true }) : setSandbox(null)
+
+  const toggleSandboxBool = (key: 'autoAllowBashIfSandboxed' | 'allowUnsandboxedCommands' | 'failIfUnavailable') =>
+    setSandboxField({ [key]: !(session.sandbox?.[key] ?? false) })
+
+  // Network domain allowlist — comma-separated plain text, committed on
+  // blur/Enter (same draft pattern as the memory directory above).
+  const [sandboxDomainsDraft, setSandboxDomainsDraft] = useState(
+    (session.sandbox?.network?.allowedDomains ?? []).join(', '),
+  )
+  const sandboxDomainsInputRef = useRef<HTMLInputElement>(null)
+  const sandboxDomainsSkipCommitRef = useRef(false)
+  useEffect(() => {
+    if (sandboxDomainsInputRef.current && document.activeElement === sandboxDomainsInputRef.current) return
+    setSandboxDomainsDraft((session.sandbox?.network?.allowedDomains ?? []).join(', '))
+  }, [session.sandbox?.network?.allowedDomains])
+  const commitSandboxDomains = async () => {
+    if (sandboxDomainsSkipCommitRef.current) {
+      sandboxDomainsSkipCommitRef.current = false
+      setSandboxDomainsDraft((session.sandbox?.network?.allowedDomains ?? []).join(', '))
+      return
+    }
+    const domains = sandboxDomainsDraft.split(',').map((d) => d.trim()).filter(Boolean)
+    if (domains.join(', ') === (session.sandbox?.network?.allowedDomains ?? []).join(', ')) return
+    await setSandboxField({ network: { ...(session.sandbox?.network ?? {}), allowedDomains: domains } })
+  }
+
+  // Allow-write paths — comma-separated plain text, same draft pattern.
+  const [sandboxWriteDraft, setSandboxWriteDraft] = useState(
+    (session.sandbox?.filesystem?.allowWrite ?? []).join(', '),
+  )
+  const sandboxWriteInputRef = useRef<HTMLInputElement>(null)
+  const sandboxWriteSkipCommitRef = useRef(false)
+  useEffect(() => {
+    if (sandboxWriteInputRef.current && document.activeElement === sandboxWriteInputRef.current) return
+    setSandboxWriteDraft((session.sandbox?.filesystem?.allowWrite ?? []).join(', '))
+  }, [session.sandbox?.filesystem?.allowWrite])
+  const commitSandboxWrite = async () => {
+    if (sandboxWriteSkipCommitRef.current) {
+      sandboxWriteSkipCommitRef.current = false
+      setSandboxWriteDraft((session.sandbox?.filesystem?.allowWrite ?? []).join(', '))
+      return
+    }
+    const paths = sandboxWriteDraft.split(',').map((p) => p.trim()).filter(Boolean)
+    if (paths.join(', ') === (session.sandbox?.filesystem?.allowWrite ?? []).join(', ')) return
+    await setSandboxField({ filesystem: { ...(session.sandbox?.filesystem ?? {}), allowWrite: paths } })
   }
 
   const refreshMcp = async () => {
@@ -914,6 +980,138 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             )}
           </span>
         </div>
+      </div>
+
+      <div className="settings-section">
+        <h4>Sandbox</h4>
+        {!session.running && !session.terminated && (
+          <span className="hint">Resume the session to change sandbox settings.</span>
+        )}
+        <div className="settings-field">
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={session.sandbox != null}
+              disabled={sandboxDisabled}
+              onChange={() => void toggleSandbox(session.sandbox == null)}
+            />
+            <span>Run commands in a sandbox</span>
+          </label>
+          <span className="hint">
+            Isolates Bash file/network access behind permission rules. macOS needs nothing; Linux
+            /WSL2 require <code>bubblewrap</code> + <code>socat</code>. When off, commands run with
+            the project/SDK default.
+          </span>
+        </div>
+
+        {session.sandbox != null && (
+          <>
+            <div className="settings-field">
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={session.sandbox.autoAllowBashIfSandboxed === true}
+                  disabled={sandboxDisabled}
+                  onChange={() => void toggleSandboxBool('autoAllowBashIfSandboxed')}
+                />
+                <span>Auto-allow sandboxed commands</span>
+              </label>
+              <span className="hint">
+                Runs sandboxed Bash without prompting (the SDK's default when unset). Toggle off
+                to require a prompt even for sandboxed commands.
+              </span>
+            </div>
+
+            <div className="settings-field">
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={session.sandbox.allowUnsandboxedCommands === true}
+                  disabled={sandboxDisabled}
+                  onChange={() => void toggleSandboxBool('allowUnsandboxedCommands')}
+                />
+                <span>Allow unsandboxed fallback</span>
+              </label>
+              <span className="hint">
+                When on, commands that can't run in the sandbox may retry unsandboxed via
+                dangerouslyDisableSandbox. Off forces every command to stay sandboxed.
+              </span>
+            </div>
+
+            <div className="settings-field">
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={session.sandbox.failIfUnavailable === true}
+                  disabled={sandboxDisabled}
+                  onChange={() => void toggleSandboxBool('failIfUnavailable')}
+                />
+                <span>Fail hard if unavailable</span>
+              </label>
+              <span className="hint">
+                Exit an error if the sandbox can't start. Off (default) degrades gracefully to
+                running unsandboxed.
+              </span>
+            </div>
+
+            <details className="settings-advanced">
+              <summary>Advanced (network / filesystem overrides)</summary>
+              <div className="settings-field">
+                <label htmlFor={panelUid + '-sandbox-domains'}>Allowed network domains</label>
+                <input
+                  id={panelUid + '-sandbox-domains'}
+                  ref={sandboxDomainsInputRef}
+                  type="text"
+                  className="input"
+                  value={sandboxDomainsDraft}
+                  placeholder="e.g. api.github.com, *.npmjs.org (comma-separated)"
+                  disabled={sandboxDisabled}
+                  onChange={(e) => setSandboxDomainsDraft(e.target.value)}
+                  onBlur={() => void commitSandboxDomains()}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      sandboxDomainsInputRef.current?.blur()
+                    } else if (e.key === 'Escape') {
+                      sandboxDomainsSkipCommitRef.current = true
+                      sandboxDomainsInputRef.current?.blur()
+                    }
+                  }}
+                />
+                <span className="hint">
+                  Pre-approved hosts sandboxed commands may reach. The SDK prompts for anything
+                  not listed. Empty means "prompt / deny by default".
+                </span>
+              </div>
+              <div className="settings-field">
+                <label htmlFor={panelUid + '-sandbox-write'}>Extra writable paths</label>
+                <input
+                  id={panelUid + '-sandbox-write'}
+                  ref={sandboxWriteInputRef}
+                  type="text"
+                  className="input"
+                  value={sandboxWriteDraft}
+                  placeholder="e.g. /tmp/build (comma-separated)"
+                  disabled={sandboxDisabled}
+                  onChange={(e) => setSandboxWriteDraft(e.target.value)}
+                  onBlur={() => void commitSandboxWrite()}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      sandboxWriteInputRef.current?.blur()
+                    } else if (e.key === 'Escape') {
+                      sandboxWriteSkipCommitRef.current = true
+                      sandboxWriteInputRef.current?.blur()
+                    }
+                  }}
+                />
+                <span className="hint">
+                  Paths sandboxed commands may write beyond the working dir / session temp dir.
+                </span>
+              </div>
+            </details>
+          </>
+        )}
       </div>
 
       <div className="settings-section">

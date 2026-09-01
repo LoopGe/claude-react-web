@@ -19,6 +19,7 @@ import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { MpStore } from './mp-store.js'
 import type { SessionInfoBase, SessionMemorySettings, ThinkingSetting } from '../shared/session-info.js'
+import type { SandboxSetting } from '../shared/sandbox.js'
 import type { ProviderRegistry } from './providers/registry.js'
 import type { ProviderSessionHandle } from './providers/types.js'
 import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../shared/hooks.js'
@@ -207,6 +208,11 @@ export interface Session {
    *  memory keys), persisted so it survives resume/restart, and re-applied
    *  on respawn. Undefined when no memory key has been pinned. */
   memory?: SessionMemorySettings
+  /** Per-session sandbox intent (SDK Settings.sandbox). Set via setSandbox
+   *  (forwarded to the SDK as applyFlagSettings({ sandbox })), persisted so it
+   *  survives resume/restart, and re-applied on respawn. A present object =
+   *  sandbox ON; undefined = off (project/SDK default). */
+  sandbox?: SandboxSetting
   /** SDK-reported runtime fast-mode state ('off' | 'cooldown' | 'on'),
    *  parsed from system/init and result messages. Read-only — reflects what
    *  the backend is actually doing (e.g. 'cooldown' after a rate limit).
