@@ -2180,25 +2180,43 @@ describe('SessionManager', () => {
 
   // --- thinking config (Options.thinking at spawn + setMaxThinkingTokens live) ---
 
-  it("setThinking() maps adaptive → null and forwards setMaxThinkingTokens(null)", async () => {
+  it("setThinking() maps adaptive → null and forwards setMaxThinkingTokens(null, null)", async () => {
     const info = sm.create({})
     const updated = await sm.setThinking(info.id, { type: 'adaptive' })
-    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null)
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null, null)
     expect(updated.thinking).toEqual({ type: 'adaptive' })
     expect(sm.get(info.id).thinking).toEqual({ type: 'adaptive' })
   })
 
-  it("setThinking() maps disabled → 0", async () => {
+  it("setThinking() maps disabled → (0, undefined)", async () => {
     const info = sm.create({})
     await sm.setThinking(info.id, { type: 'disabled' })
-    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(0)
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(0, undefined)
   })
 
-  it("setThinking() maps enabled N → N", async () => {
+  it("setThinking() maps enabled N → (N, null)", async () => {
     const info = sm.create({})
     const updated = await sm.setThinking(info.id, { type: 'enabled', budgetTokens: 16384 })
-    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(16384)
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(16384, null)
     expect(updated.thinking).toEqual({ type: 'enabled', budgetTokens: 16384 })
+  })
+
+  it("setThinking() forwards display as the 2nd param", async () => {
+    const info = sm.create({})
+    const updated = await sm.setThinking(info.id, { type: 'adaptive', display: 'omitted' })
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null, 'omitted')
+    expect(updated.thinking).toEqual({ type: 'adaptive', display: 'omitted' })
+
+    await sm.setThinking(info.id, { type: 'enabled', budgetTokens: 8192, display: 'summarized' })
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(8192, 'summarized')
+    expect(sm.get(info.id).thinking).toEqual({ type: 'enabled', budgetTokens: 8192, display: 'summarized' })
+  })
+
+  it('setThinking() persists display so it survives resume', async () => {
+    const info = sm.create({})
+    await sm.setThinking(info.id, { type: 'adaptive', display: 'omitted' })
+    await store.flush()
+    expect(store.get(info.id)?.thinking).toEqual({ type: 'adaptive', display: 'omitted' })
   })
 
   it("setThinking() 400s on enabled-without-budget (not expressible via setMaxThinkingTokens)", async () => {

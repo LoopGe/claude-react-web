@@ -62,29 +62,44 @@ export interface SessionMemorySettings {
   autoDreamEnabled?: boolean
 }
 
+/** Runtime display mode for extended thinking (SDK ThinkingConfig.display /
+ *  setMaxThinkingTokens `thinkingDisplay`). `undefined` = default: omit the
+ *  field so the SDK/model default applies. */
+export type ThinkingDisplay = 'summarized' | 'omitted'
+
 /** Per-session extended-thinking setting (mirrors the SDK's ThinkingConfig
- *  shape, JSON-serializable). `undefined` on a session means "no explicit
- *  choice — use the SDK/model default". Persisted via SessionMeta so it
- *  survives resume / fork / clear. */
+ *  shape, JSON-serializable). `display` is only meaningful while thinking is
+ *  on, so the `disabled` variant omits it (SDK ThinkingDisabled has none).
+ *  `undefined` on a session means "no explicit choice — use the SDK/model
+ *  default". Persisted via SessionMeta so it survives resume / fork / clear. */
 export type ThinkingSetting =
-  | { type: 'adaptive' }
+  | { type: 'adaptive'; display?: ThinkingDisplay }
   | { type: 'disabled' }
-  | { type: 'enabled'; budgetTokens?: number }
+  | { type: 'enabled'; budgetTokens?: number; display?: ThinkingDisplay }
 
 /** Defensive runtime validation + narrowing of an unknown value into a
  *  ThinkingSetting. Returns undefined for anything malformed. */
 export function coerceThinkingSetting(v: unknown): ThinkingSetting | undefined {
   if (typeof v !== 'object' || v === null) return undefined
-  const t = v as { type?: unknown; budgetTokens?: unknown }
-  if (t.type === 'adaptive') return { type: 'adaptive' }
+  const t = v as { type?: unknown; budgetTokens?: unknown; display?: unknown }
+  // `display` absent → fine; 'summarized' | 'omitted' → fine; anything else
+  // (numbers, booleans, null, unknown strings) → the whole value is dropped.
+  let display: ThinkingDisplay | undefined
+  if (t.display !== undefined) {
+    if (t.display !== 'summarized' && t.display !== 'omitted') return undefined
+    display = t.display
+  }
+  if (t.type === 'adaptive') return { type: 'adaptive', ...(display ? { display } : {}) }
   if (t.type === 'disabled') return { type: 'disabled' }
   if (t.type === 'enabled') {
     // Absent budget = bare enabled (valid). A PRESENT but non-positive /
     // non-numeric budget is malformed — returning bare enabled would silently
     // change the user's meaning, so the whole value is dropped instead.
-    if (t.budgetTokens === undefined) return { type: 'enabled' }
+    if (t.budgetTokens === undefined) {
+      return { type: 'enabled', ...(display ? { display } : {}) }
+    }
     return typeof t.budgetTokens === 'number' && t.budgetTokens > 0
-      ? { type: 'enabled', budgetTokens: Math.round(t.budgetTokens) }
+      ? { type: 'enabled', budgetTokens: Math.round(t.budgetTokens), ...(display ? { display } : {}) }
       : undefined
   }
   return undefined

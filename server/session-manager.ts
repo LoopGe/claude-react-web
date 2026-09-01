@@ -3430,7 +3430,13 @@ export class SessionManager {
    *      rejected with a 400 so the client only offers the Auto/Off/budget
    *      triple. The SDK-side effect survives respawn via Options.thinking
    *      (session.thinking is re-applied at spawn), so the deprecated path is
-   *      only needed for the LIVE switch. */
+   *      only needed for the LIVE switch.
+   *  `display` (the SDK's thinkingDisplay param) is forwarded alongside the
+   *  tokens: 'summarized' | 'omitted' replaces the display mode, null clears
+   *  back to the API default. `disabled` carries no display (SDK
+   *  ThinkingDisabled omits the field), and an ABSENT display maps to null —
+   *  the client always sends the full intended state, so "absent" is an
+   *  explicit "use default", never "preserve current". */
   async setThinking(id: string, setting: ThinkingSetting): Promise<SessionInfo> {
     const s = this.requireLive(id)
     if (setting.type === 'enabled' && (setting.budgetTokens == null || setting.budgetTokens <= 0)) {
@@ -3439,12 +3445,13 @@ export class SessionManager {
     const tokens = setting.type === 'adaptive' ? null
       : setting.type === 'disabled' ? 0
       : (setting.budgetTokens as number)
-    await this.requireHandleMethod<(tokens: number | null) => Promise<void>>(
+    const display = setting.type === 'disabled' ? undefined : (setting.display ?? null)
+    await this.requireHandleMethod<(tokens: number | null, display?: 'summarized' | 'omitted' | null) => Promise<void>>(
       s,
       'setMaxThinkingTokens',
       'thinking config',
       'supportsThinkingControl',
-    )(tokens)
+    )(tokens, display)
     s.thinking = setting
     s.lastActivityAt = Date.now()
     this.persist(s)

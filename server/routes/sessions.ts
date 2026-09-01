@@ -576,7 +576,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     const body = await safeJson<{ thinking?: unknown }>(c.req)
     const setting = coerceThinkingSetting(body.thinking)
     if (!setting) {
-      return c.json({ error: "thinking must be {type:'adaptive'} | {type:'disabled'} | {type:'enabled', budgetTokens?: number}" }, 400)
+      return c.json({ error: "thinking must be {type:'adaptive'} | {type:'disabled'} | {type:'enabled', budgetTokens?: number, display?: 'summarized'|'omitted'}" }, 400)
     }
     const info = await sm.setThinking(c.req.param('id'), setting)
     return c.json({ session: info })

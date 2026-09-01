@@ -191,9 +191,13 @@ describe('git-routes', () => {
       const app = buildApp()
       const res = await app.request(`/api/git/status?cwd=${encodeURIComponent(join(dir, 'sub'))}`)
       const body = await json<{ repoRoot: string; unstaged: Array<{ path: string }> }>(res)
-      // git resolves symlinked path components (macOS /var → /private/var),
-      // so compare against the real path.
-      expect(body.repoRoot).toBe(realpathSync(dir))
+      // Canonicalize BOTH sides with the native realpath: it resolves
+      // symlinked components (macOS /var → /private/var) AND, on Windows,
+      // expands 8.3 short names (C:\Users\GEZELI~1\… → C:\Users\Ge Zelin\…).
+      // The JS realpathSync keeps short names as-is on Windows, so `dir`
+      // (short, from os.tmpdir) and git's --show-toplevel (long) would
+      // otherwise compare unequal despite being the same directory.
+      expect(realpathSync.native(body.repoRoot)).toBe(realpathSync.native(dir))
       expect(body.unstaged.map((f) => f.path)).toEqual(['sub/a.txt'])
     })
 
