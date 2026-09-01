@@ -161,7 +161,7 @@ const TaskRow = memo(function TaskRow({
         </span>
         {(task.subagentType || task.workflowName || task.taskType) && (
           <span className="tasks-row-meta">
-            {[task.subagentType ?? task.workflowName ?? task.taskType, task.isBackgrounded ? 'background' : null, task.skipTranscript ? 'ambient' : null]
+            {[task.subagentType ?? task.workflowName ?? task.taskType, task.isBackgrounded ? 'background' : null, task.skipTranscript || task.ambient ? 'ambient' : null]
               .filter(Boolean)
               .join(' · ')}
           </span>

@@ -181,6 +181,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
     task_type?: unknown
     workflow_name?: unknown
     skip_transcript?: unknown
+    ambient?: unknown
     patch?: unknown
     summary?: unknown
     last_tool_name?: unknown
@@ -215,6 +216,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
       workflowName: str(raw.workflow_name) ?? existing?.workflowName,
       status: 'running',
       skipTranscript: raw.skip_transcript === true ? true : existing?.skipTranscript,
+      ambient: raw.ambient === true ? true : existing?.ambient,
       startedAt: frameTime ?? existing?.startedAt,
       endedAt: undefined,
       updatedAt: now,

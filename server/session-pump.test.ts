@@ -1269,6 +1269,7 @@ describe('applyTaskEvent', () => {
       task_type: 'shell',
       workflow_name: 'wf',
       skip_transcript: true,
+      ambient: true,
       receivedAt: 111,
     }))
     expect(session.tasks.get('t1')).toMatchObject({
@@ -1280,9 +1281,20 @@ describe('applyTaskEvent', () => {
       workflowName: 'wf',
       status: 'running',
       skipTranscript: true,
+      ambient: true,
       startedAt: 111,
       endedAt: undefined,
     })
+  })
+
+  it('task_started keeps ambient undefined when the frame omits it (older CLIs)', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', {
+      task_id: 't2', description: 'plain task', receivedAt: 5,
+    }))
+    const rec = session.tasks.get('t2')!
+    expect(rec.ambient).toBeUndefined()
+    expect(rec.skipTranscript).toBeUndefined()
   })
 
   it('ignores non-system frames, non-task subtypes, and frames without a task_id', () => {

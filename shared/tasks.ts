@@ -56,6 +56,11 @@ export interface TaskRecordUi {
   /** Ambient/housekeeping tasks the SDK flags as not belonging in the inline
    *  transcript — rendered ONLY in the TasksPanel. */
   skipTranscript?: boolean
+  /** SDK 0.3.247 housekeeping flag — a SUPERSET of skipTranscript: every
+   *  skip_transcript task plus auto-started live-update watchers the CLI runs
+   *  internally. Must be excluded from activity indicators (the WorkingBubble
+   *  Waiting count) but still listed in the TasksPanel. */
+  ambient?: boolean
   /** Present-tense progress summary (task_progress.summary — the output of
    *  the SDK's agentProgressSummaries option). Refreshed ~every 30s. */
   progressSummary?: string
