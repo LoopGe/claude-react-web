@@ -24,7 +24,7 @@ import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { shortenPath } from '../utils/paths'
 import { gitChipText } from '../utils/git-chip'
-import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers } from './icons/ToolIcons'
+import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingSetting } from '../types'
 import type { Skin } from '../utils/theme'
@@ -929,7 +929,7 @@ export const ChatPanel = memo(function ChatPanel({
                     onOpenGitPanel(session.id)
                   }}
                 >
-                  <span className="chat-panel-git-badge-icon" aria-hidden>Git</span>
+                  <IconGitBranch size={12} className="chat-panel-git-badge-icon" aria-hidden />
                   <span className="chat-panel-git-badge-value">{gitChipText(gitStatus.data)}</span>
                 </button>
               </Tooltip>

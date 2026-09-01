@@ -19,14 +19,14 @@
 // All destructive operations (discard, drop, abort, amend, force
 // checkout) are gated by <ConfirmDialog>.
 
-import { memo, useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useGitDiff, useGitLog, useGitBranches, useGitStashes } from '../hooks/useGitStatus'
 import { useGitWrite } from '../hooks/useGitWrite'
 import { ConfirmDialog } from './ConfirmDialog'
 import { FileViewer } from './FileViewer'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { Tooltip } from './Tooltip'
-import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw, IconFileText } from './icons/ToolIcons'
+import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw, IconFileText, IconSearch } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -35,6 +35,8 @@ import type {
   GitFileEntry,
   GitStatusResponse,
 } from '../../shared/git-types'
+import { parseUnifiedDiff } from '../utils/diff-parse'
+import { gitStatusTitle } from '../utils/git-status'
 
 interface Props {
   /** Session id powering the per-session POST routes (writes) and WS
@@ -95,6 +97,10 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   const [commitMessage, setCommitMessage] = useState('')
   // File currently open in the read-only content viewer ({absPath, name}).
   const [viewing, setViewing] = useState<{ absPath: string; name: string } | null>(null)
+  // File-filter query and keyboard-selection index across the visible rows.
+  const [filter, setFilter] = useState('')
+  const [selectedIdx, setSelectedIdx] = useState(0)
+  const panelRef = useRef<HTMLElement | null>(null)
 
   // Stable so memoized FileRow/UntrackedRow don't re-render when it's passed
   // down. Git status paths are relative to the WORK TREE ROOT (repoRoot),
@@ -207,6 +213,69 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   // sees if they expand each section. Untracked files have no diff counts.
   const totals = sumChanges([...status.staged, ...status.unstaged])
 
+  // ── Filter + keyboard selection ───────────────────────────────────
+  const totalFiles = status.staged.length + status.unstaged.length + status.untracked.length
+  const filterQ = filter.trim().toLowerCase()
+  const matchesFilter = (path: string) => !filterQ || path.toLowerCase().includes(filterQ)
+
+  const unstagedVisible = status.unstaged.filter((f) => matchesFilter(f.path))
+  const stagedVisible = status.staged.filter((f) => matchesFilter(f.path))
+  const untrackedVisible = status.untracked.filter((f) => matchesFilter(f.path))
+
+  type Selectable = { kind: 'unstaged' | 'staged' | 'untracked'; file: GitFileEntry }
+  const selectable: Selectable[] = [
+    ...unstagedVisible.map((file) => ({ kind: 'unstaged' as const, file })),
+    ...stagedVisible.map((file) => ({ kind: 'staged' as const, file })),
+    ...untrackedVisible.map((file) => ({ kind: 'untracked' as const, file })),
+  ]
+  const selIdx = Math.min(selectedIdx, Math.max(selectable.length - 1, 0))
+  const selected = selectable[selIdx]
+
+  // ↑↓ moves the selection highlight; s/u/x stage/unstage/discard the
+  // selected row (x is confirm-gated); Enter toggles the row's diff via
+  // the existing toggle button. Guarded so typing in the filter input or
+  // commit textarea never triggers these.
+  function handleKeyDown(e: React.KeyboardEvent<HTMLElement>) {
+    const target = e.target as HTMLElement
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+    // Don't run git shortcuts while the read-only file viewer modal is open.
+    if (viewing) return
+    if (selectable.length === 0) return
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedIdx((i) => Math.min(i + 1, selectable.length - 1)); return }
+    if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedIdx((i) => Math.max(i - 1, 0)); return }
+    if (!selected) return
+    if (e.key === 's') {
+      e.preventDefault()
+      if (selected.kind !== 'staged') void runOp('Stage', () => writeOps.stage([selected.file.path]))
+    } else if (e.key === 'u') {
+      e.preventDefault()
+      if (selected.kind === 'staged') void runOp('Unstage', () => writeOps.unstage([selected.file.path]))
+    } else if (e.key === 'x') {
+      e.preventDefault()
+      const untracked = selected.kind === 'untracked'
+      askThenRun(
+        {
+          title: untracked ? 'Delete untracked file?' : 'Discard changes?',
+          message: untracked
+            ? (
+              <>
+                <p>Permanently remove <code>{selected.file.path}</code> from disk.</p>
+                <p><strong>This file is not tracked by git — there is no way to recover it.</strong></p>
+              </>
+            )
+            : <>Revert <code>{selected.file.path}</code> to its committed state. This cannot be undone.</>,
+          confirmLabel: untracked ? 'Delete file' : 'Discard',
+          destructive: true,
+        },
+        () => writeOps.discard([selected.file.path], untracked),
+        untracked ? 'Delete' : 'Discard',
+      )
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      panelRef.current?.querySelector<HTMLButtonElement>('.git-file-row.selected .git-file-row-toggle')?.click()
+    }
+  }
+
   // Section action helpers — each builds a Promise then routes errors to
   // the toast or, for destructive ones, to a ConfirmDialog.
   function stageAll(files: GitFileEntry[]) {
@@ -237,58 +306,63 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   }
 
   return (
-    <aside className="git-panel" role="region" aria-label="Git" ref={setPanelOs}>
+    <aside className="git-panel" role="region" aria-label="Git" ref={panelRef} onKeyDown={handleKeyDown}>
       <header className="git-panel-header">
         <Tooltip label={status.upstream ? `tracking ${status.upstream}` : 'no upstream'} placement="bottom">
           <span className="git-panel-branch">
             <IconGitBranch size={13} /> {status.detached ? 'detached' : (status.branch ?? 'unknown')}
           </span>
         </Tooltip>
-        {(status.ahead > 0 || status.behind > 0) && (
-          <Tooltip label={`${status.ahead} ahead · ${status.behind} behind`} placement="bottom">
-            <span className="git-panel-syncs">
-              {status.ahead > 0 && <><IconArrowUp size={11} />{status.ahead}</>}
-              {status.behind > 0 && <> <IconArrowDown size={11} />{status.behind}</>}
-            </span>
-          </Tooltip>
-        )}
-        {status.upstream && (
-          <span className="git-panel-sync-actions">
-            {status.behind > 0 && (
-              <Tooltip label="Pull (fast-forward only)" placement="bottom">
-                <button
-                  className="git-panel-icon-btn"
-                  disabled={writeOps.busyOps.has('pull') || writeOps.busyOps.has('push')}
-                  onClick={(e) => {
-                    e.preventDefault()
-                    void runOp('Pull', async () => {
-                      const result = await writeOps.pull()
-                      if (!result.updated) toast.success('Already up to date')
-                    })
-                  }}
-                  aria-label="Pull from remote"
-                >
-                  <IconArrowDown size={13} />
-                </button>
+        {(status.upstream || status.ahead > 0 || status.behind > 0) && (
+          <span className="git-panel-sync-group">
+            {(status.ahead > 0 || status.behind > 0) && (
+              <Tooltip label={`${status.ahead} ahead · ${status.behind} behind`} placement="bottom">
+                <span className="git-panel-syncs">
+                  {status.ahead > 0 && <span className="git-panel-sync-up"><IconArrowUp size={11} />{status.ahead}</span>}
+                  {status.behind > 0 && <span className="git-panel-sync-down"><IconArrowDown size={11} />{status.behind}</span>}
+                </span>
               </Tooltip>
             )}
-            {status.ahead > 0 && (
-              <Tooltip label="Push to remote" placement="bottom">
-                <button
-                  className="git-panel-icon-btn"
-                  disabled={writeOps.busyOps.has('pull') || writeOps.busyOps.has('push')}
-                  onClick={(e) => {
-                    e.preventDefault()
-                    void runOp('Push', () => writeOps.push())
-                  }}
-                  aria-label="Push to remote"
-                >
-                  <IconArrowUp size={13} />
-                </button>
-              </Tooltip>
+            {status.upstream && (
+              <span className="git-panel-sync-actions">
+                {status.behind > 0 && (
+                  <Tooltip label="Pull (fast-forward only)" placement="bottom">
+                    <button
+                      className="git-panel-icon-btn"
+                      disabled={writeOps.busyOps.has('pull') || writeOps.busyOps.has('push')}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        void runOp('Pull', async () => {
+                          const result = await writeOps.pull()
+                          if (!result.updated) toast.success('Already up to date')
+                        })
+                      }}
+                      aria-label="Pull from remote"
+                    >
+                      <IconArrowDown size={13} />
+                    </button>
+                  </Tooltip>
+                )}
+                {status.ahead > 0 && (
+                  <Tooltip label="Push to remote" placement="bottom">
+                    <button
+                      className="git-panel-icon-btn"
+                      disabled={writeOps.busyOps.has('pull') || writeOps.busyOps.has('push')}
+                      onClick={(e) => {
+                        e.preventDefault()
+                        void runOp('Push', () => writeOps.push())
+                      }}
+                      aria-label="Push to remote"
+                    >
+                      <IconArrowUp size={13} />
+                    </button>
+                  </Tooltip>
+                )}
+              </span>
             )}
           </span>
         )}
+        <span className="git-panel-spacer" />
         {(totals.insertions > 0 || totals.deletions > 0) && (
           <Tooltip
             label={`${totals.insertions} insertion${totals.insertions === 1 ? '' : 's'}, ${totals.deletions} deletion${totals.deletions === 1 ? '' : 's'} across all changes`}
@@ -300,7 +374,6 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
             </span>
           </Tooltip>
         )}
-        <span className="git-panel-spacer" />
         <Tooltip label={loading ? 'Refreshing…' : 'Refresh'} placement="bottom">
           <button
             className="git-panel-icon-btn"
@@ -315,6 +388,23 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
           <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
         </Tooltip>
       </header>
+
+      {totalFiles > 0 && (
+        <div className="git-panel-filter-bar">
+          <IconSearch size={13} />
+          <input
+            type="text"
+            className="git-panel-filter-input"
+            aria-label="Filter files"
+            placeholder="Filter files…"
+            value={filter}
+            onChange={(e) => { setFilter(e.target.value); setSelectedIdx(0) }}
+          />
+          {filter && (
+            <button className="git-panel-icon-btn" onClick={() => setFilter('')} aria-label="Clear filter"><IconX size={12} /></button>
+          )}
+        </div>
+      )}
 
       {inProgress && (
         <div className="git-panel-banner" role="alert">
@@ -357,6 +447,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         </div>
       )}
 
+      <div className="git-panel-scroll" ref={setPanelOs}>
       {/* Section order: Changes (unstaged) is what the user is iterating
           on, so it sits at the top. Staged sits next — the holding pen
           on the way to commit. Untracked is collapsed by default;
@@ -383,13 +474,16 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       >
         {status.unstaged.length === 0 ? (
           <EmptyHint>No unstaged changes</EmptyHint>
+        ) : unstagedVisible.length === 0 ? (
+          <EmptyHint>No matching files</EmptyHint>
         ) : (
-          status.unstaged.map((f) => (
+          unstagedVisible.map((f) => (
             <FileRow
               key={'u:' + f.path}
               file={f}
               cwd={cwd}
               staged={false}
+              selected={selected?.kind === 'unstaged' && selected.file.path === f.path}
               writeOps={writeOps}
               onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
@@ -414,13 +508,16 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       >
         {status.staged.length === 0 ? (
           <EmptyHint>No staged changes</EmptyHint>
+        ) : stagedVisible.length === 0 ? (
+          <EmptyHint>No matching files</EmptyHint>
         ) : (
-          status.staged.map((f) => (
+          stagedVisible.map((f) => (
             <FileRow
               key={'s:' + f.path}
               file={f}
               cwd={cwd}
               staged
+              selected={selected?.kind === 'staged' && selected.file.path === f.path}
               writeOps={writeOps}
               onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
@@ -444,11 +541,14 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       >
         {status.untracked.length === 0 ? (
           <EmptyHint>No untracked files</EmptyHint>
+        ) : untrackedVisible.length === 0 ? (
+          <EmptyHint>No matching files</EmptyHint>
         ) : (
-          status.untracked.map((f) => (
+          untrackedVisible.map((f) => (
             <UntrackedRow
               key={'?:' + f.path}
               file={f}
+              selected={selected?.kind === 'untracked' && selected.file.path === f.path}
               writeOps={writeOps}
               onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
@@ -457,19 +557,6 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
           ))
         )}
       </Section>
-
-      <CommitSection
-        canAmend={true}
-        hasStaged={status.staged.length > 0}
-        commit={writeOps.commit}
-        generateCommitMessage={writeOps.generateCommitMessage}
-        busy={writeOps.busyOps.has('commit') || writeOps.busyOps.has('commit:amend')}
-        generateBusy={writeOps.busyOps.has('commit-message')}
-        message={commitMessage}
-        setMessage={setCommitMessage}
-        onError={(err) => toast.error(`Commit: ${err}`)}
-        askConfirm={askThenRun}
-      />
 
       <BranchesSection
         sessionId={sessionId}
@@ -489,6 +576,20 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       <Section title="Recent commits" count={null} defaultOpen={false}>
         <CommitList cwd={cwd} />
       </Section>
+      </div>
+
+      <CommitBar
+        canAmend={true}
+        hasStaged={status.staged.length > 0}
+        commit={writeOps.commit}
+        generateCommitMessage={writeOps.generateCommitMessage}
+        busy={writeOps.busyOps.has('commit') || writeOps.busyOps.has('commit:amend')}
+        generateBusy={writeOps.busyOps.has('commit-message')}
+        message={commitMessage}
+        setMessage={setCommitMessage}
+        onError={(err) => toast.error(`Commit: ${err}`)}
+        askConfirm={askThenRun}
+      />
 
       <AnimatePresence>
         {confirm && (
@@ -535,6 +636,7 @@ interface SectionProps {
 function Section({ title, count, defaultOpen, children, actions, changeTotals }: SectionProps) {
   const summary = (
     <>
+      <IconChevronRight size={12} className="git-panel-chevron" aria-hidden />
       <span className="git-panel-section-title">{title}</span>
       {changeTotals && (changeTotals.insertions > 0 || changeTotals.deletions > 0) && (
         <span className="git-section-change-totals">
@@ -580,6 +682,8 @@ interface FileRowProps {
   file: GitFileEntry
   cwd: string | undefined
   staged: boolean
+  /** Whether this row is the current keyboard-selection target. */
+  selected: boolean
   writeOps: ReturnType<typeof useGitWrite>
   onError: (label: string, err: string) => void
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
@@ -587,7 +691,7 @@ interface FileRowProps {
   onOpenFile: (path: string) => void
 }
 
-const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, askConfirm, onOpenFile }: FileRowProps) {
+const FileRow = memo(function FileRow({ file, cwd, staged, selected, writeOps, onError, askConfirm, onOpenFile }: FileRowProps) {
   const [open, setOpen] = useState(false)
   const [renderDiff, setRenderDiff] = useState(false)
   // Pending-open: the user clicked to open but the diff fetch is still in
@@ -657,7 +761,7 @@ const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, as
   }
 
   return (
-    <div className={`git-file-row ${open ? 'open' : ''}`}>
+    <div className={`git-file-row ${open ? 'open' : ''} ${selected ? 'selected' : ''}`}>
       <div className="git-file-row-line">
         <button
           type="button"
@@ -667,7 +771,7 @@ const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, as
           onClick={handleToggle}
           title={file.renamedFrom ? `${file.renamedFrom} → ${file.path}` : file.path}
         >
-          <span className={`git-file-status status-${file.status}`}>{file.status}</span>
+          <span className={`git-file-status status-${file.status}`} title={gitStatusTitle(file.status)}>{file.status}</span>
           <span className="git-file-path">
             {file.renamedFrom && (
               <span className="git-file-renamed-from">{file.renamedFrom} → </span>
@@ -771,7 +875,7 @@ const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, as
 }, (prev, next) => {
   // Custom comparator: skip re-render when only writeOps reference changed
   // but the file's busy state is the same.
-  if (prev.file !== next.file || prev.cwd !== next.cwd || prev.staged !== next.staged) return false
+  if (prev.file !== next.file || prev.cwd !== next.cwd || prev.staged !== next.staged || prev.selected !== next.selected) return false
   const path = prev.file.path
   const prevBusy = prev.writeOps.busyOps.has(`stage:${path}`) || prev.writeOps.busyOps.has(`unstage:${path}`) || prev.writeOps.busyOps.has(`discard:${path}`)
   const nextBusy = next.writeOps.busyOps.has(`stage:${path}`) || next.writeOps.busyOps.has(`unstage:${path}`) || next.writeOps.busyOps.has(`discard:${path}`)
@@ -780,6 +884,8 @@ const FileRow = memo(function FileRow({ file, cwd, staged, writeOps, onError, as
 
 interface UntrackedRowProps {
   file: GitFileEntry
+  /** Whether this row is the current keyboard-selection target. */
+  selected: boolean
   writeOps: ReturnType<typeof useGitWrite>
   onError: (label: string, err: string) => void
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
@@ -787,15 +893,15 @@ interface UntrackedRowProps {
   onOpenFile: (path: string) => void
 }
 
-function UntrackedRow({ file, writeOps, onError, askConfirm, onOpenFile }: UntrackedRowProps) {
+function UntrackedRow({ file, selected, writeOps, onError, askConfirm, onOpenFile }: UntrackedRowProps) {
   const stageBusy = writeOps.busyOps.has(`stage:${file.path}`)
   const discardBusy = writeOps.busyOps.has(`discard:${file.path}`)
   const anyBusy = stageBusy || discardBusy
   return (
-    <div className="git-file-row untracked">
+    <div className={`git-file-row untracked ${selected ? 'selected' : ''}`}>
       <div className="git-file-row-line">
         <span className="git-file-row-toggle untracked-static" title={file.path}>
-          <span className="git-file-status status-?">?</span>
+          <span className="git-file-status status-?" title={gitStatusTitle('?')}>?</span>
           <span className="git-file-path">
             {file.path}
           </span>
@@ -860,39 +966,34 @@ interface DiffViewProps {
 }
 
 // memo: GitPanel re-renders on every commit-textarea keystroke. Without
-// memo, every open DiffView re-runs split() and re-renders ~500 spans
+// memo, every open DiffView re-parses the diff and re-renders ~500 rows
 // even though its props are unchanged.
 const DiffView = memo(function DiffView({ text, truncated, totalLines }: DiffViewProps) {
-  const lines = text.split('\n')
+  const rows = useMemo(() => parseUnifiedDiff(text), [text])
   const setDiffOs = useOverlayScrollbar({ orientation: 'both', autoHide: 'leave' })
   return (
-    <pre className="git-file-diff" ref={setDiffOs}>
-      {lines.map((line, i) => {
-        const cls =
-          line.startsWith('+++') || line.startsWith('---') ? 'meta'
-          : line.startsWith('@@') ? 'hunk'
-          : line.startsWith('+') ? 'add'
-          : line.startsWith('-') ? 'del'
-          : ''
-        return (
-          <span key={i} className={`git-diff-line ${cls}`}>
-            {line}
-            {'\n'}
-          </span>
-        )
-      })}
+    <div className="git-file-diff" ref={setDiffOs}>
+      {rows.map((row, i) => (
+        <div key={i} className={`git-diff-row ${row.type}`}>
+          <span className="git-diff-gutter">{row.newLine ?? row.oldLine ?? ''}</span>
+          <span className="git-diff-sign">{row.type === 'add' ? '+' : row.type === 'del' ? '−' : ''}</span>
+          <span className="git-diff-body">{row.content || ' '}</span>
+        </div>
+      ))}
       {truncated && (
-        <span className="git-diff-line truncated">
-          {`\n— diff truncated; ${totalLines} lines total —\n`}
-        </span>
+        <div className="git-diff-row truncated">
+          <span className="git-diff-gutter" />
+          <span className="git-diff-sign" />
+          <span className="git-diff-body">— diff truncated; {totalLines} lines total —</span>
+        </div>
       )}
-    </pre>
+    </div>
   )
 })
 
-// ── Commit form ───────────────────────────────────────────────────────
+// ── Commit bar (sticky footer) ────────────────────────────────────────
 
-interface CommitSectionProps {
+interface CommitBarProps {
   canAmend: boolean
   /** Whether anything is currently staged. Drives the Generate button's
    *  disabled state — the AI message is only meaningful when there's
@@ -909,7 +1010,7 @@ interface CommitSectionProps {
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
 }
 
-function CommitSection({
+function CommitBar({
   canAmend,
   hasStaged,
   commit,
@@ -920,7 +1021,7 @@ function CommitSection({
   setMessage,
   onError,
   askConfirm,
-}: CommitSectionProps) {
+}: CommitBarProps) {
   async function doCommit(amend: boolean) {
     if (!amend && !message.trim()) {
       onError('Commit message required')
@@ -949,87 +1050,71 @@ function CommitSection({
   }
 
   return (
-    <AnimatedDetails
-      key={hasStaged ? 'staged' : 'empty'}
-      className="git-panel-section"
-      defaultOpen={hasStaged}
-      summary={(
-        <>
-        <span className="git-panel-section-title">Commit</span>
-        <span
-          className="git-panel-section-actions"
-          onClick={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
+    <footer className="git-commit-footer">
+      <textarea
+        className="git-commit-textarea"
+        aria-label="Commit message"
+        placeholder="Commit message… (⌘/Ctrl+Enter)"
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        rows={2}
+        disabled={busy}
+        onKeyDown={(e) => {
+          // Cmd/Ctrl+Enter submits, mirroring the composer pattern.
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !busy) {
+            e.preventDefault()
+            void doCommit(false)
+          }
+        }}
+      />
+      <div className="git-commit-actions">
+        <button
+          type="button"
+          className="btn"
+          disabled={generateBusy || busy || !hasStaged}
+          onClick={(e) => { e.preventDefault(); void doGenerate() }}
+          title={
+            hasStaged
+              ? 'Generate a Conventional Commit message from the staged diff'
+              : 'Stage some changes first to generate a commit message'
+          }
         >
-          <button
-            className="git-section-action"
-            type="button"
-            disabled={generateBusy || busy || !hasStaged}
-            onClick={(e) => { e.preventDefault(); void doGenerate() }}
-            title={
-              hasStaged
-                ? 'Generate a Conventional Commit message from the staged diff'
-                : 'Stage some changes first to generate a commit message'
-            }
-          >
-            {generateBusy ? '…' : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconSparkles size={12} /> Generate</span>}
-          </button>
-        </span>
-        </>
-      )}
-    >
-      <div className="git-panel-section-body git-commit-form">
-        <textarea
-          className="git-commit-textarea"
-          aria-label="Commit message"
-          placeholder="Commit message…"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          rows={3}
-          disabled={busy}
-          onKeyDown={(e) => {
-            // Cmd/Ctrl+Enter submits, mirroring the composer pattern.
-            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !busy) {
-              e.preventDefault()
-              void doCommit(false)
-            }
-          }}
-        />
-        <div className="git-commit-actions">
+          {generateBusy ? '…' : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconSparkles size={12} /> Generate</span>}
+        </button>
+        {canAmend && (
           <button
             type="button"
-            className="btn btn-primary"
-            disabled={busy || !message.trim()}
-            onClick={() => doCommit(false)}
-          >Commit</button>
-          {canAmend && (
-            <button
-              type="button"
-              className="btn"
-              disabled={busy}
-              onClick={() =>
-                askConfirm(
-                  {
-                    title: 'Amend last commit?',
-                    message: (
-                      <>
-                        <p>Replaces the previous commit with the staged changes (if any) and
-                        {message.trim() ? ' the new message.' : ' keeps its existing message.'}</p>
-                        <p>Don't amend a commit that has already been pushed to a shared branch.</p>
-                      </>
-                    ),
-                    confirmLabel: 'Amend',
-                    destructive: false,
-                  },
-                  () => doCommit(true),
-                  'Amend',
-                )
-              }
-            >Amend last</button>
-          )}
-        </div>
+            className="btn"
+            disabled={busy}
+            onClick={() =>
+              askConfirm(
+                {
+                  title: 'Amend last commit?',
+                  message: (
+                    <>
+                      <p>Replaces the previous commit with the staged changes (if any) and
+                      {message.trim() ? ' the new message.' : ' keeps its existing message.'}</p>
+                      <p>Don't amend a commit that has already been pushed to a shared branch.</p>
+                    </>
+                  ),
+                  confirmLabel: 'Amend',
+                  destructive: false,
+                },
+                () => doCommit(true),
+                'Amend',
+              )
+            }
+          >Amend last</button>
+        )}
+        <span className="git-commit-hint" aria-hidden>↑↓ select · s stage · u unstage · x discard · Enter expand</span>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || !message.trim()}
+          onClick={() => doCommit(false)}
+        >Commit</button>
       </div>
-    </AnimatedDetails>
+    </footer>
   )
 }
 
