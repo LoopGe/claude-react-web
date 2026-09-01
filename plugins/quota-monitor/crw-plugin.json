@@ -1,0 +1,171 @@
+{
+  "manifestVersion": 1,
+  "id": "quota-monitor.claude-react-web",
+  "name": "Quota Monitor",
+  "description": "Queries API subscription quota / balance for Volcengine Ark, Zhipu, Kimi, MiniMax, ZenMux, OpenCode Go and generic relays, shown in the bottom-left widget.",
+  "version": "0.1.0",
+  "publisher": "claude-react-web",
+  "engines": { "claudeReactWeb": "^0.7.0", "pluginApi": "^1.0.0", "node": ">=20" },
+  "runtime": { "service": "dist/service.mjs" },
+  "activationEvents": ["onStartup"],
+  "permissions": [
+    {
+      "permission": "network.fetch",
+      "params": {
+        "hosts": [
+          "open.volcengineapi.com",
+          "open.bigmodel.cn",
+          "api.z.ai",
+          "api.kimi.com",
+          "api.minimaxi.com",
+          "api.minimax.io",
+          "opencode.ai"
+        ],
+        "purpose": "Query platform control-plane usage APIs (Volcengine OpenAPI, Zhipu quota, Kimi usages, MiniMax remains, OpenCode Go usage)."
+      }
+    }
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "quota-monitor.claude-react-web.check",
+        "title": "Quota Monitor: check quota now",
+        "description": "Refresh and show a quota summary dialog for every configured platform.",
+        "category": "global",
+        "showInPalette": true
+      }
+    ],
+    "widgets": [
+      {
+        "id": "quota-monitor.claude-react-web.overview",
+        "location": "global.bottomLeft",
+        "kind": "stat-grid",
+        "title": "Quota Monitor"
+      }
+    ],
+    "configuration": {
+      "properties": [
+        {
+          "key": "quota-monitor.claude-react-web.refreshMinutes",
+          "type": "number",
+          "title": "Refresh interval (minutes)",
+          "description": "How often to re-query quota. 0 disables auto-refresh (manual refresh via the command only).",
+          "default": 5
+        },
+        {
+          "key": "quota-monitor.claude-react-web.volcBaseUrl",
+          "type": "string",
+          "title": "Volcengine Ark inference base URL",
+          "description": "Used only to derive the OpenAPI region (e.g. https://ark.cn-beijing.volces.com -> cn-beijing). The quota API itself always hits open.volcengineapi.com.",
+          "default": "https://ark.cn-beijing.volces.com"
+        },
+        {
+          "key": "quota-monitor.claude-react-web.volcAccessKeyId",
+          "type": "string",
+          "title": "Volcengine Access Key ID",
+          "description": "ACCOUNT-LEVEL key (console top-right account menu -> API access keys). NOT the inference bearer key — the OpenAPI gateway rejects the inference key. Stored plaintext in the plugin data dir.",
+          "default": ""
+        },
+        {
+          "key": "quota-monitor.claude-react-web.volcSecretAccessKey",
+          "type": "string",
+          "title": "Volcengine Secret Access Key",
+          "description": "ACCOUNT-LEVEL secret paired with the Access Key ID above. Stored plaintext in the plugin data dir.",
+          "default": ""
+        },
+        {
+          "key": "quota-monitor.claude-react-web.showWindows",
+          "type": "array",
+          "items": "string",
+          "title": "Windows shown in the widget",
+          "description": "Subset of fiveHour, weekly, monthly, daily. Empty = the standard three (5h / weekly / monthly; daily is hidden in the official console).",
+          "default": []
+        },
+        {
+          "key": "quota-monitor.claude-react-web.zhipuBaseUrl",
+          "type": "string",
+          "title": "Zhipu base URL",
+          "description": "Used to pick the quota host: open.bigmodel.cn (CN) or api.z.ai (EN).",
+          "default": "https://open.bigmodel.cn"
+        },
+        {
+          "key": "quota-monitor.claude-react-web.zhipuApiKey",
+          "type": "string",
+          "title": "Zhipu API key",
+          "description": "Sent as the raw Authorization header (Zhipu does not use a Bearer prefix). Stored plaintext in the plugin data dir.",
+          "default": ""
+        },
+        {
+          "key": "quota-monitor.claude-react-web.kimiApiKey",
+          "type": "string",
+          "title": "Kimi API key",
+          "description": "Queries https://api.kimi.com/coding/v1/usages with a Bearer token.",
+          "default": ""
+        },
+        {
+          "key": "quota-monitor.claude-react-web.minimaxApiKey",
+          "type": "string",
+          "title": "MiniMax API key",
+          "description": "Queries the MiniMax coding-plan remains endpoint with a Bearer token.",
+          "default": ""
+        },
+        {
+          "key": "quota-monitor.claude-react-web.minimaxRegion",
+          "type": "enum",
+          "title": "MiniMax region",
+          "enum": ["cn", "intl"],
+          "default": "cn"
+        },
+        {
+          "key": "quota-monitor.claude-react-web.zenmuxUrl",
+          "type": "string",
+          "title": "ZenMux base URL",
+          "description": "The Zen relay coding endpoint (quota is queried on the same host). Fetched DIRECTLY from the plugin so any gateway host works.",
+          "default": ""
+        },
+        {
+          "key": "quota-monitor.claude-react-web.zenmuxApiKey",
+          "type": "string",
+          "title": "ZenMux API key",
+          "description": "Sent as 'Authorization: Bearer <token>'.",
+          "default": ""
+        },
+        {
+          "key": "quota-monitor.claude-react-web.opencodeGoApiKey",
+          "type": "string",
+          "title": "OpenCode Go API key",
+          "description": "Queries https://opencode.ai/zen/go/v1/usage with a Bearer token.",
+          "default": ""
+        },
+        {
+          "key": "quota-monitor.claude-react-web.genericName",
+          "type": "string",
+          "title": "Generic relay display name",
+          "description": "Short tag shown in the widget / command output.",
+          "default": "Relay"
+        },
+        {
+          "key": "quota-monitor.claude-react-web.genericUrl",
+          "type": "string",
+          "title": "Generic relay usage/balance URL",
+          "description": "Full HTTPS URL of a relay endpoint returning balance (OpenAI-style total_balance/balance) or usage windows (five_hour/weekly/monthly with percent or used/quota). Fetched DIRECTLY from the plugin (not the host broker) so any host works.",
+          "default": ""
+        },
+        {
+          "key": "quota-monitor.claude-react-web.genericMethod",
+          "type": "enum",
+          "title": "Generic relay request method",
+          "enum": ["GET", "POST"],
+          "default": "GET"
+        },
+        {
+          "key": "quota-monitor.claude-react-web.genericBearerToken",
+          "type": "string",
+          "title": "Generic relay bearer token",
+          "description": "Sent as 'Authorization: Bearer <token>'. Leave empty for unauthenticated endpoints.",
+          "default": ""
+        }
+      ]
+    }
+  }
+}

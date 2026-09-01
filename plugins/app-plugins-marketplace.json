@@ -18,6 +18,12 @@
       "dir": "system-stats",
       "description": "Live CPU/GPU/memory/disk usage in the bottom-left corner.",
       "version": "0.1.0"
+    },
+    {
+      "name": "quota-monitor",
+      "dir": "quota-monitor",
+      "description": "Queries API subscription quota for Volcengine Ark, Zhipu, Kimi, MiniMax, ZenMux, OpenCode Go and generic relays, shown in the bottom-left widget.",
+      "version": "0.1.0"
     }
   ]
 }
