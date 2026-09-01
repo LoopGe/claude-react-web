@@ -188,7 +188,11 @@ export async function gitBranchName(cwd: string): Promise<string> {
   try {
     const out = await runGitOutside(['branch', '--show-current'], cwd)
     return out.trim()
-  } catch {
+  } catch (err) {
+    // runGitOutside already logged the git failure itself; this adds the
+    // caller-facing context (which clone dir failed to resolve) so a missing
+    // branch chip is diagnosable, not silently swallowed.
+    log.warn(`branch resolve failed for ${cwd}: ${(err as Error).message}`)
     return ''
   }
 }
