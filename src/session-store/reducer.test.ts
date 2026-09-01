@@ -3355,3 +3355,93 @@ describe('live turn segmented accumulator', () => {
     expect(state.mirror.liveTurn?.flushedText).toEqual([])
   })
 })
+
+describe('live turn finalized-text pruning', () => {
+  function blockStartMsg(uuid: string, blockType: 'text' | 'thinking'): SdkMessage {
+    return {
+      type: 'stream_event',
+      uuid,
+      event: { type: 'content_block_start', content_block: { type: blockType } },
+    } as unknown as SdkMessage
+  }
+  function toolUseOnlyMsg(uuid: string, toolUseId: string): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: 'Read', input: {} }] },
+      parent_tool_use_id: null,
+    } as unknown as SdkMessage
+  }
+  /** main 'hello ' → side 'child ' → main 'world',一次 flush 落进 flushedText */
+  function streamMixedTurn(state: ReturnType<typeof createInitialSessionState>): ReturnType<typeof createInitialSessionState> {
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se-1', 'hello ') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: sidechainStreamEventMsg('se-2', 'child ') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se-3', 'world') })
+    return reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
+  }
+
+  it('drops finalized main-thread segments (flushed AND unflushed) but keeps sidechain ones', () => {
+    let state = createInitialSessionState('s')
+    state = streamMixedTurn(state)
+    // ≤80ms flush 窗口内的未定稿尾巴:主线程 delta,尚未 flush
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se-4', ' tail') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hello world tail') })
+    expect(state.mirror.liveTurn?.flushedText).toEqual([{ text: 'child ', sidechain: true }])
+    expect(state.mirror.liveTurn?.textChunks).toEqual([])
+  })
+
+  it('keeps liveTurn itself alive (phase/tokenRate source) — only text segments are pruned', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: blockStartMsg('se-0', 'text') })
+    state = streamMixedTurn(state)
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hello world') })
+    expect(state.mirror.liveTurn).not.toBeNull()
+    expect(state.mirror.liveTurn?.phase).toBe('writing')
+    expect(state.mirror.liveTurn?.flushedText).toEqual([{ text: 'child ', sidechain: true }])
+  })
+
+  it('a flush after pruning cannot resurrect the pruned text', () => {
+    let state = createInitialSessionState('s')
+    state = streamMixedTurn(state)
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hello world') })
+    state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
+    expect(state.mirror.liveTurn?.flushedText).toEqual([{ text: 'child ', sidechain: true }])
+  })
+
+  it('a tool-use-only main-thread assistant (no text of its own) still prunes — serial-response invariant covers all prior text', () => {
+    let state = createInitialSessionState('s')
+    state = streamMixedTurn(state)
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUseOnlyMsg('a1', 'tu_1') })
+    expect(state.mirror.liveTurn?.flushedText).toEqual([{ text: 'child ', sidechain: true }])
+  })
+
+  it('a sidechain assistant finalize does NOT prune', () => {
+    let state = createInitialSessionState('s')
+    state = streamMixedTurn(state)
+    const sideAsst = { ...asstMsg('a-side', 'sub output'), parent_tool_use_id: 'toolu_sub_1' } as unknown as SdkMessage
+    state = reduceSessionState(state, { type: 'MESSAGE', message: sideAsst })
+    expect(state.mirror.liveTurn?.flushedText).toEqual([
+      { text: 'hello ', sidechain: false },
+      { text: 'child ', sidechain: true },
+      { text: 'world', sidechain: false },
+    ])
+  })
+
+  it('result still nulls the whole liveTurn after pruning', () => {
+    let state = createInitialSessionState('s')
+    state = streamMixedTurn(state)
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hello world') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: sidechainStreamEventMsg('se-9', 'child still streaming') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: resultMsg('r1') })
+    expect(state.mirror.liveTurn).toBeNull()
+  })
+
+  it('prunes via the replay path too: a newer-slice finalized assistant drops its streamed text', () => {
+    // REPLAY_REPLACE 的 newer 分片逐帧走 applyMessage(reducer.ts:335-337),
+    // 重连回放里出现的定稿 assistant 同样触发裁剪 —— 行为与实时路径一致。
+    const state = seedWithLiveTurn([userMsg('u1', 'hi')], 'hello world')
+    const after = replay(state, [userMsg('u1-disk', 'hi'), asstMsg('a1', 'hello world')])
+    expect(after.mirror.liveTurn).not.toBeNull()
+    expect(after.mirror.liveTurn?.flushedText).toEqual([])
+  })
+})
