@@ -94,3 +94,17 @@ export function toneForUtilization(u: number): 'ok' | 'warn' | 'danger' {
   if (u >= 70) return 'warn'
   return 'ok'
 }
+
+/** The earliest FUTURE quota-window reset across the given tiers, or null
+ *  when no window reports a usable reset in the future. Pure — `now`
+ *  injected so stale (already-passed) resets are ignored. */
+export function nextResetAt(tiers: Array<{ resets_at: string | null }>, now: number): number | null {
+  let earliest: number | null = null
+  for (const t of tiers) {
+    if (!t.resets_at) continue
+    const ms = Date.parse(t.resets_at)
+    if (Number.isNaN(ms) || ms <= now) continue
+    if (earliest === null || ms < earliest) earliest = ms
+  }
+  return earliest
+}

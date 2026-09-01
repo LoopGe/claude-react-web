@@ -864,6 +864,16 @@ function toneForUtilization(u) {
   if (u >= 70) return "warn";
   return "ok";
 }
+function nextResetAt(tiers, now) {
+  let earliest = null;
+  for (const t of tiers) {
+    if (!t.resets_at) continue;
+    const ms = Date.parse(t.resets_at);
+    if (Number.isNaN(ms) || ms <= now) continue;
+    if (earliest === null || ms < earliest) earliest = ms;
+  }
+  return earliest;
+}
 
 // src/service.ts
 var PLUGIN_ID = "quota-monitor.claude-react-web";
@@ -990,6 +1000,7 @@ var lastGood = {};
 var polling = false;
 var timer = null;
 var disposed = false;
+var refreshMs = 0;
 var WINDOW_ORDER = [
   { name: "five_hour", cfgKey: "fiveHour", label: "5h" },
   { name: "weekly", cfgKey: "weekly", label: "Week" },
@@ -1045,6 +1056,18 @@ function snapshotToWidget(snaps) {
   }
   if (rows.length === 0) {
     rows.push({ id: "status", label: "Quota", value: "No data", tone: "warn" });
+  }
+  const resetTiers = [];
+  for (const { snap } of snaps) {
+    if (snap.success) resetTiers.push(...snap.tiers);
+  }
+  const resetAt = nextResetAt(resetTiers, Date.now());
+  if (resetAt !== null) {
+    rows.push({
+      id: "reset",
+      label: "Reset",
+      value: new Date(resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    });
   }
   return { values: rows };
 }
@@ -1135,10 +1158,11 @@ async function pollOnce() {
 function startPoller() {
   if (timer) clearInterval(timer);
   const minutes = config.refreshMinutes > 0 ? config.refreshMinutes : 0;
-  if (minutes > 0) {
+  refreshMs = minutes * 6e4;
+  if (refreshMs > 0) {
     timer = setInterval(() => {
       void pollOnce();
-    }, minutes * 60 * 1e3);
+    }, refreshMs);
   }
 }
 function tierTable(tiers) {
@@ -1177,12 +1201,15 @@ async function runCheckCommand() {
       }
     };
   }
-  const sections = configured.map(({ adapter }) => latest[adapter.id]).filter((s) => Boolean(s)).map(formatSnapshotSection);
+  const snaps = configured.map(({ adapter }) => latest[adapter.id]).filter((s) => Boolean(s));
+  const sections = snaps.map(formatSnapshotSection);
+  const resetAt = nextResetAt(snaps.flatMap((s) => s.tiers), Date.now());
+  const footer = `_Last checked ${(/* @__PURE__ */ new Date()).toLocaleString()}_` + (resetAt !== null ? ` \xB7 _Next reset ${new Date(resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}_` : "");
   const markdown = sections.length > 0 ? `# Quota Monitor
 
 ${sections.join("\n\n")}
 
-_Last checked ${(/* @__PURE__ */ new Date()).toLocaleString()}_` : "No quota data yet. Check again in a moment or verify your platform credentials.";
+${footer}` : "No quota data yet. Check again in a moment or verify your platform credentials.";
   return {
     type: "dialog",
     invocationId: "",
