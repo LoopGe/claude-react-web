@@ -250,11 +250,26 @@ export type ActivePhase =
   | { type: 'tool_use'; name: string }
   | null
 
+/** One coalesced run of streamed text in the live turn, tagged by origin.
+ *  `sidechain: true` marks subagent stream text (parent_tool_use_id set) —
+ *  it never lands in the main transcript (MessageList filters on
+ *  parent_tool_use_id), so finalize-time pruning must never remove it. */
+export interface LiveTurnSegment {
+  text: string
+  sidechain: boolean
+}
+
 export interface LiveTurnState {
   turnId: string
   phase: ActivePhase
-  textChunks: string[]
-  flushedText: string
+  /** Unflushed stream-event text deltas, in arrival order, origin-tagged
+   *  (see LiveTurnSegment). Drained into `flushedText` by LIVE_TURN_FLUSH. */
+  textChunks: LiveTurnSegment[]
+  /** Flushed streamed text, coalesced into origin-tagged segments and joined
+   *  by the store into `streamingContent` (the StreamingFooter). Main-thread
+   *  segments are pruned when their finalized assistant message lands — see
+   *  pruneFinalizedLiveTurnText — so this stays bounded to in-flight text. */
+  flushedText: LiveTurnSegment[]
   outputTokens?: number
   /** Output token rate in tok/s. A sliding-window rate over the most recent
    *  RATE_WINDOW_MS of samples (real output_tokens or char-estimated total),

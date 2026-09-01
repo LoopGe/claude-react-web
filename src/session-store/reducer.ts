@@ -222,14 +222,29 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     case 'LIVE_TURN_FLUSH': {
       const liveTurn = state.mirror.liveTurn
       if (!liveTurn || !liveTurn.dirty) return state
+      // Prune may have emptied the tail (finalized assistant landed inside the
+      // 80ms flush window): clear the dirty flag without rebuilding flushed.
+      if (liveTurn.textChunks.length === 0) {
+        return withMirror(state, {
+          ...state.mirror,
+          liveTurn: { ...liveTurn, dirty: false },
+        })
+      }
+      // Merge unflushed chunks into the tail of the flushed segment list,
+      // coalescing adjacent same-origin segments so the segment count tracks
+      // main↔sidechain alternations, not flush ticks or delta counts.
+      const flushed = liveTurn.flushedText.slice()
+      for (const chunk of liveTurn.textChunks) {
+        const tail = flushed[flushed.length - 1]
+        if (tail && tail.sidechain === chunk.sidechain) {
+          flushed[flushed.length - 1] = { text: tail.text + chunk.text, sidechain: tail.sidechain }
+        } else {
+          flushed.push(chunk)
+        }
+      }
       return withMirror(state, {
         ...state.mirror,
-        liveTurn: {
-          ...liveTurn,
-          flushedText: liveTurn.flushedText + liveTurn.textChunks.join(''),
-          textChunks: [],
-          dirty: false,
-        },
+        liveTurn: { ...liveTurn, flushedText: flushed, textChunks: [], dirty: false },
       })
     }
     case 'DISMISS_SUBAGENT': {
@@ -2018,7 +2033,7 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
       turnId: typeof message.uuid === 'string' ? message.uuid : `turn:${mirror.eventCount + 1}`,
       phase: null,
       textChunks: [],
-      flushedText: '',
+      flushedText: [],
       tokenRate: null,
       startedAt: Date.now(),
       lastDeltaAt: Date.now(),
@@ -2108,7 +2123,7 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
       liveTurn = {
         ...liveTurn,
         ...next,
-        textChunks: [...liveTurn.textChunks, text],
+        textChunks: [...liveTurn.textChunks, { text, sidechain: message.parent_tool_use_id != null }],
         lastDeltaAt: now,
         dirty: true,
       }

@@ -726,3 +726,25 @@ describe('SessionStore dismissed-subagent persistence', () => {
     expect(parsed.dismissedSubagents).toContain('tu_i')
   })
 })
+
+describe('SessionStore streamingContent projection', () => {
+  it('joins the segmented live-turn text into one string', async () => {
+    const store = new SessionStore('session-stream-join-test')
+    await store.hydrateDone
+    const delta = (uuid: string, text: string): SdkMessage =>
+      ({
+        type: 'stream_event',
+        uuid,
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
+      }) as unknown as SdkMessage
+    store.dispatch({ type: 'MESSAGE', message: delta('se-1', 'hello ') })
+    store.dispatch({ type: 'MESSAGE', message: delta('se-2', 'world') })
+    store.dispatch({ type: 'LIVE_TURN_FLUSH' })
+    expect(store.getSnapshot().streamingContent).toBe('hello world')
+    // 未 flush 的尾部不计入(与今天的 flush 语义一致)
+    store.dispatch({ type: 'MESSAGE', message: delta('se-3', ' tail') })
+    expect(store.getSnapshot().streamingContent).toBe('hello world')
+    store.dispatch({ type: 'LIVE_TURN_FLUSH' })
+    expect(store.getSnapshot().streamingContent).toBe('hello world tail')
+  })
+})

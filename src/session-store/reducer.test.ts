@@ -2292,6 +2292,15 @@ function streamEventMsg(uuid: string, text = 'delta'): SdkMessage {
   } as unknown as SdkMessage
 }
 
+function sidechainStreamEventMsg(uuid: string, text = 'delta'): SdkMessage {
+  return {
+    type: 'stream_event',
+    uuid,
+    parent_tool_use_id: 'toolu_sub_1',
+    event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
+  } as unknown as SdkMessage
+}
+
 function thinkingTokensMsg(uuid: string, estimatedTokens: number): SdkMessage {
   return {
     type: 'system',
@@ -2443,7 +2452,7 @@ describe('reducer: REPLAY_REPLACE on top of a cache', () => {
     // has no `result` cannot mean the turn ended — keep the accumulated text.
     const state = seedWithLiveTurn([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
     const after = replay(state, [userMsg('u1-disk', 'hi'), asstMsg('a1', 'hello')])
-    expect(after.mirror.liveTurn?.flushedText).toBe('partial')
+    expect(after.mirror.liveTurn?.flushedText).toEqual([{ text: 'partial', sidechain: false }])
   })
 
   it('still clears liveTurn when the replay newer slice carries a result (turn ended)', () => {
@@ -2467,7 +2476,7 @@ describe('reducer: REPLAY_REPLACE on top of a cache', () => {
       asstMsg('a2', 'two'),
       asstMsg('a3', 'three'),
     ])
-    expect(after.mirror.liveTurn?.flushedText).toBe('partial')
+    expect(after.mirror.liveTurn?.flushedText).toEqual([{ text: 'partial', sidechain: false }])
   })
 })
 
@@ -3313,5 +3322,36 @@ describe('reducer: replay ordering — backgrounded subagent survives refresh', 
     expect(rec?.endedAt).toBe(30_000)
     // The card must show the REAL completion, not the detach ack text.
     expect(rec?.result?.content).toBe('the real output')
+  })
+})
+
+describe('live turn segmented accumulator', () => {
+  it('tags text deltas with their sidechain origin and flush coalesces adjacent same-origin segments', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se-1', 'hello ') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: sidechainStreamEventMsg('se-2', 'child ') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se-3', 'world') })
+    state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
+    // 段保序:显示顺序与 delta 到达顺序一致
+    expect(state.mirror.liveTurn?.flushedText).toEqual([
+      { text: 'hello ', sidechain: false },
+      { text: 'child ', sidechain: true },
+      { text: 'world', sidechain: false },
+    ])
+    // 相邻同源段合并:段数跟随主/子代理交替次数,不随 flush 次数或 delta 数增长
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se-4', ' more') })
+    state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
+    expect(state.mirror.liveTurn?.flushedText).toEqual([
+      { text: 'hello ', sidechain: false },
+      { text: 'child ', sidechain: true },
+      { text: 'world more', sidechain: false },
+    ])
+  })
+
+  it('unflushed chunks keep their origin tag until the flush moves them', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: sidechainStreamEventMsg('se-1', 'child') })
+    expect(state.mirror.liveTurn?.textChunks).toEqual([{ text: 'child', sidechain: true }])
+    expect(state.mirror.liveTurn?.flushedText).toEqual([])
   })
 })
