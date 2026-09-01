@@ -1,6 +1,7 @@
 // Session routes: CRUD, messaging, control, MCP/plugin per-session, queries.
 
 import { Hono } from 'hono'
+import { isAbsolute } from 'node:path'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
 import { SessionManager } from '../session-manager.js'
 import { safeJson } from './index.js'
@@ -708,7 +709,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   app.get('/sessions/:id/read-file', async (c) => {
     const id = c.req.param('id')
     const path = c.req.query('path') ?? ''
-    if (!path || !path.startsWith('/')) {
+    if (!path || !isAbsolute(path)) {
       return c.json({ error: 'path is required and must be absolute' }, 400)
     }
     const opts: { maxBytes?: number; encoding?: 'utf-8' | 'base64' } = {}
