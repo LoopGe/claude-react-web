@@ -72,7 +72,7 @@ async function parkDialog(
       },
       ...rest,
     } as Parameters<typeof onUserDialog>[0],
-    { signal: ac.signal },
+    { signal: ac.signal, requestId: 'req-1' },
   )
   // The promise parks synchronously (Promise executor runs immediately), so
   // the pending entry exists by the time this returns.
@@ -113,7 +113,7 @@ describe('DialogBroker', () => {
       const ac = new AbortController()
       const result = await onUserDialog(
         { dialogKind: 'some_future_kind', payload: { x: 1 } } as Parameters<typeof onUserDialog>[0],
-        { signal: ac.signal },
+        { signal: ac.signal, requestId: 'req-1' },
       )
       expect(result).toEqual({ behavior: 'cancelled' })
       expect(session.dialogPending.size).toBe(0)

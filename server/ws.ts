@@ -32,6 +32,8 @@ import { createLogger } from './log.js'
 import {
   WS_PATH,
   type WsClientFrame,
+  type WsMessageConsumed,
+  type WsMessagesWithdrawn,
   type WsServerFrame,
 } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
@@ -664,9 +666,18 @@ export function attachWebSocket(
                   queue.enqueue({ kind: 'git-status-changed', sessionId })
                   break
                 case 'msgstat': {
-                  const v = winner.result.value as { uuid?: string; consumedAt?: number }
-                  if (typeof v.uuid === 'string' && typeof v.consumedAt === 'number')
+                  // Input-queue message status: either a consumed stamp
+                  // (queued → consumed flip) or a withdrawal batch (queued
+                  // messages removed by an interrupt with cancelQueued).
+                  // The channel is typed at the source (see
+                  // SessionManager.subscribeMessageStatus), so this is a
+                  // plain discriminated-union switch, not a defensive parse.
+                  const v = winner.result.value as WsMessageConsumed | WsMessagesWithdrawn
+                  if (v.kind === 'messages-withdrawn') {
+                    queue.enqueue({ kind: 'messages-withdrawn', sessionId, uuids: v.uuids })
+                  } else {
                     queue.enqueue({ kind: 'message-consumed', sessionId, uuid: v.uuid, consumedAt: v.consumedAt })
+                  }
                   break
                 }
                 case 'recap': {

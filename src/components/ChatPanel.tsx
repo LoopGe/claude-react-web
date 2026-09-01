@@ -24,7 +24,7 @@ import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { shortenPath } from '../utils/paths'
 import { gitChipText } from '../utils/git-chip'
-import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch } from './icons/ToolIcons'
+import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch, IconEyeOff } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingSetting } from '../types'
 import type { Skin } from '../utils/theme'
@@ -465,10 +465,36 @@ export const ChatPanel = memo(function ChatPanel({
     )
   }
   const effortLevel = session.effortLevel ?? DEFAULT_EFFORT_LEVEL
-  const commitThinking = (setting: ThinkingSetting) => {
+  /** Current thinking display mode, or undefined when unset / thinking off. */
+  const displayOf = (t: ThinkingSetting | undefined): 'summarized' | 'omitted' | undefined =>
+    t && t.type !== 'disabled' ? t.display : undefined
+  const currentDisplay = displayOf(session.thinking)
+
+  /** Attach a display mode (no-op when thinking is off — the disabled variant
+   *  carries no display, matching SDK ThinkingDisabled). */
+  const withDisplay = (t: ThinkingSetting, display: 'summarized' | 'omitted'): ThinkingSetting =>
+    t.type === 'disabled' ? t
+      : t.type === 'adaptive' ? { type: 'adaptive', display }
+      : { type: 'enabled', budgetTokens: t.budgetTokens, display }
+
+  /** Strip the display mode — the "use default" choice. */
+  const withoutDisplay = (t: ThinkingSetting): ThinkingSetting =>
+    t.type === 'disabled' ? t
+      : t.type === 'adaptive' ? { type: 'adaptive' }
+      : { type: 'enabled', budgetTokens: t.budgetTokens }
+
+  /** Carry the current display onto a budget/type change so switching budget
+   *  never silently resets the user's display choice. */
+  const preserveDisplay = (next: ThinkingSetting): ThinkingSetting =>
+    next.type !== 'disabled' && next.display === undefined && currentDisplay
+      ? { ...next, display: currentDisplay }
+      : next
+
+  const commitThinking = (setting: ThinkingSetting, opts?: { clearDisplay?: boolean }) => {
     const prev = session.thinking
     if (
       prev != null &&
+      displayOf(setting) === displayOf(prev) &&
       ((setting.type === 'adaptive' && prev.type === 'adaptive') ||
         (setting.type === 'disabled' && prev.type === 'disabled') ||
         (setting.type === 'enabled' && prev.type === 'enabled' && prev.budgetTokens === setting.budgetTokens))
@@ -477,13 +503,20 @@ export const ChatPanel = memo(function ChatPanel({
     commitWithRollback(
       session,
       `/sessions/${session.id}/thinking`,
-      { thinking: setting },
+      { thinking: setting, clearDisplay: opts?.clearDisplay === true },
       { thinking: session.thinking },
       `Couldn't change thinking config`,
       onSessionUpdate,
       toast.error,
     )
   }
+  // A LIVE display switch is only expressible with a concrete token budget
+  // (setMaxThinkingTokens(tokens, display)); a bare {type:'enabled'} — no
+  // budget, accepted at create — has none, so the reasoning items would 400
+  // on such a session. Hide the section there instead of shipping dead
+  // buttons. (Everything else — unset, adaptive, budgeted enabled — passes.)
+  const reasoningSwitchable =
+    session.thinking?.type !== 'enabled' || session.thinking.budgetTokens != null
   // Thinking chip gating (three-state like effort): undefined capability →
   // show the chip (fail-open); false → hide it. The chip label shows the
   // effective setting — Auto (model decides) unless the user pinned Off or a
@@ -751,7 +784,7 @@ export const ChatPanel = memo(function ChatPanel({
             The chip label shows the effective setting. */}
         {thinkingVisible && (
           <Tooltip
-            label={`Thinking: ${thinkingLabel} · extended reasoning budget · click to change`}
+            label={`Thinking: ${thinkingLabel}${currentDisplay === 'omitted' ? ' · reasoning hidden' : ''} · extended reasoning budget · click to change`}
             placement="bottom"
           >
             <button
@@ -761,7 +794,7 @@ export const ChatPanel = memo(function ChatPanel({
               disabled={chipsDisabled}
               aria-haspopup="menu"
               aria-expanded={!!thinkingMenu}
-              aria-label={`Thinking: ${thinkingLabel} · click to change`}
+              aria-label={`Thinking: ${thinkingLabel}${currentDisplay === 'omitted' ? ' · reasoning hidden' : ''} · click to change`}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation()
@@ -771,6 +804,7 @@ export const ChatPanel = memo(function ChatPanel({
             >
               <IconBrain size={13} aria-hidden />
               <span className="chat-panel-thinking-label"><span>{thinkingLabel}</span></span>
+              {currentDisplay === 'omitted' && <IconEyeOff size={12} aria-hidden />}
             </button>
           </Tooltip>
         )}
@@ -841,7 +875,7 @@ export const ChatPanel = memo(function ChatPanel({
                 {
                   label: 'auto',
                   icon: session.thinking == null || session.thinking.type === 'adaptive' ? <IconCheck size={14} /> : ' ',
-                  onClick: () => { setThinkingMenu(null); commitThinking({ type: 'adaptive' }) },
+                  onClick: () => { setThinkingMenu(null); commitThinking(preserveDisplay({ type: 'adaptive' })) },
                 },
                 {
                   label: 'off',
@@ -853,8 +887,31 @@ export const ChatPanel = memo(function ChatPanel({
                   icon: session.thinking?.type === 'enabled' && session.thinking.budgetTokens === n
                     ? <IconCheck size={14} />
                     : ' ',
-                  onClick: () => { setThinkingMenu(null); commitThinking({ type: 'enabled', budgetTokens: n }) },
+                  onClick: () => { setThinkingMenu(null); commitThinking(preserveDisplay({ type: 'enabled', budgetTokens: n })) },
                 })),
+                // Reasoning-display section — only while thinking is actually on
+                // (disabled carries no display; SDK ThinkingDisabled omits it)
+                // and only when a live display switch is expressible (see
+                // reasoningSwitchable — a bare enabled setting has no budget
+                // to pair the display change with).
+                ...(session.thinking?.type !== 'disabled' && reasoningSwitchable ? [
+                  {},
+                  {
+                    label: 'reasoning: default',
+                    icon: currentDisplay === undefined ? <IconCheck size={14} /> : ' ',
+                    onClick: () => { setThinkingMenu(null); if (currentDisplay !== undefined) commitThinking(withoutDisplay(session.thinking ?? { type: 'adaptive' }), { clearDisplay: true }) },
+                  },
+                  {
+                    label: 'reasoning: summarized',
+                    icon: currentDisplay === 'summarized' ? <IconCheck size={14} /> : ' ',
+                    onClick: () => { setThinkingMenu(null); commitThinking(withDisplay(session.thinking ?? { type: 'adaptive' }, 'summarized')) },
+                  },
+                  {
+                    label: 'reasoning: hidden',
+                    icon: currentDisplay === 'omitted' ? <IconCheck size={14} /> : ' ',
+                    onClick: () => { setThinkingMenu(null); commitThinking(withDisplay(session.thinking ?? { type: 'adaptive' }, 'omitted')) },
+                  },
+                ] : []),
               ]}
             />
           )}

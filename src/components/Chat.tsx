@@ -61,7 +61,7 @@ import { useSessionRecap } from '../hooks/useSessionRecap'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { useSessionTaskCounts } from '../session-store/selectors'
-import { computeWaiting, autoTitleDescription, topLevelUserPromptSignature } from '../session-store/normalize'
+import { computeWaiting, autoTitleDescription, topLevelUserPromptSignature, countQueuedUserTurns } from '../session-store/normalize'
 import { createDedupGuard, shouldOfferBackgroundAction } from '../utils/task-actions'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -456,6 +456,12 @@ export const Chat = memo(function Chat({
   messagesRef.current = stream.messages
   const sessionTitleRef = useRef(session.title)
   sessionTitleRef.current = session.title
+  // Top-level user turns queued behind the in-flight turn (server-acked, not
+  // yet consumed) — drives the Composer's interrupt-button tooltip. The scan
+  // is cheap: `stream.messages` is reference-stable during token streaming
+  // (deltas fold into the live-turn mirror, not the durable list), so this
+  // recomputes only when a durable message lands.
+  const queuedCount = useMemo(() => countQueuedUserTurns(stream.messages), [stream.messages])
 
   // Clear the optimistic turn bridge once the real turn is confirmed
   // (session.working rose OR the first stream phase arrived). The old fixed 4s
@@ -655,9 +661,11 @@ export const Chat = memo(function Chat({
   //   `taskCount` — ALL non-terminal tasks (the WorkingBubble count pill;
   //     ambient/housekeeping tasks count toward the pill so the TasksPanel
   //     entry stays available).
-  //   `waitingTaskCount` — non-terminal AND not skipTranscript. skipTranscript
-  //     tasks are SDK-flagged as not belonging in the inline transcript, so
-  //     they must not keep the WorkingBubble in a phantom "Waiting..." state.
+  //   `waitingTaskCount` — non-terminal AND not (skipTranscript || ambient).
+  //     skipTranscript tasks are SDK-flagged as not belonging in the inline
+  //     transcript; `ambient` (SDK 0.3.247) is the superset that also covers
+  //     auto-started live-update watchers. Neither may keep the WorkingBubble
+  //     in a phantom "Waiting..." state.
   const { all: taskCount, waiting: waitingTaskCount } = useSessionTaskCounts(session.id)
   /** A background (async) subagent still in flight after the parent turn
    *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
@@ -1491,12 +1499,23 @@ export const Chat = memo(function Chat({
     // funnel — the Composer button and App's Esc path both route through
     // here, so one stamp covers every path.
     onInterruptFired?.(session.id)
+    // "Stop means stop everything" — ALWAYS ask the server to withdraw queued
+    // user turns (host input-queue drain + SDK interrupt_cancel_queued_v1),
+    // not just when this tab's local count is non-zero: a message whose POST
+    // is still in flight isn't counted yet, and only the server knows its own
+    // queue truth. With nothing queued the withdrawal is a no-op.
     try {
-      await api.post(`/sessions/${session.id}/interrupt`)
+      const res = await api.post<{ ok: boolean; cancelled?: number }>(
+        `/sessions/${session.id}/interrupt`,
+        { cancelQueued: true },
+      )
+      if (res.cancelled && res.cancelled > 0) {
+        toast.success(`Interrupted — ${res.cancelled} queued message${res.cancelled === 1 ? '' : 's'} removed`)
+      }
     } catch (e) {
       setLocalError((e as Error).message)
     }
-  }, [session.id, onInterruptFired])
+  }, [session.id, onInterruptFired, toast])
 
   /** Background in-flight foreground tasks (Ctrl+B semantics) — the turn
    *  continues while the running command/subagent detaches to the background
@@ -1965,7 +1984,14 @@ export const Chat = memo(function Chat({
                   { messageId: rewindConfirm.messageId },
                 )
                 if (res.rewind.canRewind) {
-                  toast.success('Files rewound')
+                  // skippedLinks (SDK 0.3.216) is only populated on a real
+                  // run: tracked files left untouched because a symlink /
+                  // hard link sat at the tracked path. Never set on the
+                  // dry-run preview, so it can only appear here.
+                  const skipped = res.rewind.skippedLinks ?? 0
+                  toast.success(skipped > 0
+                    ? `Files rewound — ${skipped} link${skipped === 1 ? '' : 's'} skipped for safety`
+                    : 'Files rewound')
                   setRewindConfirm(null)
                 } else {
                   // canRewind:false came back on the REAL run — surface the
@@ -2067,6 +2093,7 @@ export const Chat = memo(function Chat({
       onSend={handleSend}
       onInterrupt={handleInterrupt}
       canInterrupt={session.working}
+      queuedCount={queuedCount}
       focusSignal={effectiveComposerFocusSignal}
       onRecap={recap.refresh}
       canRecap={!!session.lastTurnAt}

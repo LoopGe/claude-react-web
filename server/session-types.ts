@@ -26,7 +26,7 @@ import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../sha
 import type { SessionSkillOverride } from '../shared/skills.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
-import type { CliNotification } from '../shared/ws-protocol.js'
+import type { CliNotification, WsMessageConsumed, WsMessagesWithdrawn } from '../shared/ws-protocol.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 
 /** Subscriber — each connected client gets one of these. */
@@ -407,12 +407,21 @@ export interface Session {
    *  session-pump on mutating tool_results and by git-write routes on
    *  user-initiated mutations. */
   gitStatusSubscribers: Set<Pushable<unknown>>
-  /** Per-subscriber pushables for `message-consumed` signal frames.
-   *  Carries { uuid, consumedAt } each time the SDK reads a user turn off
-   *  the input queue. Mirrors gitStatusSubscribers (signal-shaped, small
-   *  payload). Each WS subscriber gets its own pushable so a slow tab
+  /** Per-subscriber pushables for input-queue message-status signal frames.
+   *  Carries either a full `message-consumed` frame each time the SDK reads
+   *  a user turn off the input queue, or a full `messages-withdrawn` frame
+   *  when an interrupt with cancelQueued removed queued turns (see
+   *  SessionManager.interrupt). Mirrors gitStatusSubscribers (signal-shaped,
+   *  small payload). Each WS subscriber gets its own pushable so a slow tab
    *  can't block another tab's updates. */
-  messageStatusSubscribers: Set<Pushable<unknown>>
+  messageStatusSubscribers: Set<Pushable<WsMessageConsumed | WsMessagesWithdrawn>>
+  /** Server-minted uuids of user turns withdrawn by cancelQueued interrupts
+   *  (most recent last, capped). Replayed to each NEW message-status
+   *  subscriber as a synthetic `messages-withdrawn` frame so a tab that was
+   *  disconnected during the stop still evicts its bubbles: incremental
+   *  sinceUuid replay can never heal this, because the withdrawn messages
+   *  are gone from the ring and so are never re-sent to compare against. */
+  withdrawnUuids: string[]
   commandSubscribers: Set<Pushable<unknown>>
   /** Recent hook lifecycle events, kept outside chat history so the UI can
    *  inspect hook activity without rendering it as conversation content. */
@@ -664,10 +673,14 @@ export interface SessionBroadcaster {
   subscribePromptSuggestion(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null
   subscribeTasks(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null
   subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
-  /** Per-session subscription for `message-consumed` signal frames.
-   *  Returns null when the session is unknown (callers short-circuit).
-   *  Mirrors subscribeGitStatus. */
-  subscribeMessageStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
+  /** Per-session subscription for `message-consumed` / `messages-withdrawn`
+   *  signal frames (typed union — the channel carries full frames, not bare
+   *  payloads). Returns null when the session is unknown (callers
+   *  short-circuit). Mirrors subscribeGitStatus. */
+  subscribeMessageStatus(sessionId: string): {
+    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn>
+    unsubscribe: () => void
+  } | null
   subscribeCommandChanges(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
   subscribeHookRuns(sessionId: string): {
     iterable: AsyncIterable<HookRuntimeEvent>

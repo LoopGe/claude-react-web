@@ -169,6 +169,16 @@ function deriveDeliveryStatus(msg: SdkMessage): 'queued' | 'consumed' | undefine
   return undefined
 }
 
+/** Number of top-level user turns currently sitting in the input queue —
+ *  server-acknowledged but not yet consumed by the SDK. Drives the Composer's
+ *  interrupt affordance: when this is > 0, "Stop" also withdraws the queued
+ *  messages (interrupt with cancelQueued), so the tooltip can say so. */
+export function countQueuedUserTurns(messages: readonly SdkMessage[]): number {
+  let n = 0
+  for (const m of messages) if (deriveDeliveryStatus(m) === 'queued') n++
+  return n
+}
+
 /** Content signature of a TOP-LEVEL user prompt, used to dedup the same
  *  logical prompt across the uuid boundary between the in-memory ring and
  *  the on-disk transcript.

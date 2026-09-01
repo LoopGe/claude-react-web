@@ -21,4 +21,7 @@ describe('buildProfileEnv', () => {
   it('propagates maxOutputTokens when non-zero', () => {
     expect(buildProfileEnv(PROFILE, 4096).CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('4096')
   })
+  it('re-enables todo/task tools (SDK 0.3.233 removed them from the default surface)', () => {
+    expect(buildProfileEnv(PROFILE, 0).CLAUDE_CODE_ENABLE_TODO_TOOLS).toBe('1')
+  })
 })

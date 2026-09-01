@@ -36,6 +36,20 @@ import { ClassifierLimiter } from './auto-classifier-limiter.js'
 import { getMessagesForClassifier } from './session-utils.js'
 import { AutoDenialTracker } from './auto-denial-tracker.js'
 
+/** The SDK's `CanUseTool` with the return narrowed to non-nullable. SDK
+ *  ≥0.3.25x allows a callback to return null under the out-of-band protocol
+ *  (the host has already echoed `options.requestId` via its own transport, so
+ *  the SDK must skip writing the control_response). This broker never does
+ *  that — it always resolves in-band through the SDK's awaited promise
+ *  (createPendingRequest → PermissionResult) — so its results are never null.
+ *  Returning `Promise<PermissionResult>` is still assignable to `CanUseTool`
+ *  at the `query({ canUseTool })` call site. */
+export type BrokerCanUseTool = (
+  toolName: string,
+  input: Record<string, unknown>,
+  options: Parameters<CanUseTool>[2],
+) => Promise<PermissionResult>
+
 const log = createLogger('broker')
 
 /** Read-only built-in tools that `dontAsk` mode auto-approves. Conservative
@@ -170,7 +184,7 @@ export class PermissionBroker {
     session: Session,
     onPermissionRequest: (session: Session, snapshot: PermissionRequestSnapshot) => void,
     onPendingChanged: (session: Session) => void = () => { /* no-op default */ },
-  ): CanUseTool {
+  ): BrokerCanUseTool {
     // Capture broadcast callbacks for use inside the closure.
     const broadcastReq = (s: Session, p: PendingPermission) => {
       const snapshot = toSnapshot(p)
@@ -181,7 +195,7 @@ export class PermissionBroker {
       this.broadcastPermissionResolved(s, pid, d)
     }
 
-    const canUseTool: CanUseTool = async (toolName, toolInput, ctx) => {
+    const canUseTool: BrokerCanUseTool = async (toolName, toolInput, ctx) => {
       // Per-call trace ?gated through the scope logger. To enable just
       // this scope without flooding the rest:
       //   LOG_LEVEL=debug LOG_SCOPES=broker

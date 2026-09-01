@@ -59,7 +59,7 @@ async function parkElicitation(
   const ac = new AbortController()
   const promise = onElicitation(
     { serverName: 'github', message: 'Sign in', ...request } as Parameters<typeof onElicitation>[0],
-    { signal: ac.signal },
+    { signal: ac.signal, requestId: 'req-1' },
   )
   // The promise parks synchronously (Promise executor runs immediately), so
   // the pending entry exists by the time this returns.
@@ -101,7 +101,7 @@ describe('ElicitationBroker', () => {
       const ac = new AbortController()
       void onElicitation(
         { serverName: 's', message: 'm', elicitationId: 'elicit-42' } as Parameters<typeof onElicitation>[0],
-        { signal: ac.signal },
+        { signal: ac.signal, requestId: 'req-1' },
       )
       expect(session.elicitationPending.has('elicit-42')).toBe(true)
     })

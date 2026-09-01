@@ -911,6 +911,14 @@
 .tt-left > .tt-bubble {
   right: calc(100% + 6px);
   top: 50%;
+  /* Sizing: with only `right` set, `width: auto` resolves via shrink-to-fit.
+     The available width is (containing block − right offset), and `right` is
+     100% + 6px — i.e. negative — so the browser collapses the bubble to its
+     min-content width (the longest word). That wraps short multi-word labels
+     ("View file content") into a tall column that overflows the trigger row
+     and gets clipped/covered by neighbors. `max-content` sizes it to the full
+     label instead; `max-width` still wraps genuinely long labels. */
+  width: max-content;
   transform: translate(var(--motion-distance-xs), -50%);
 }
 .tt-left:hover > .tt-bubble,
@@ -921,6 +929,9 @@
 .tt-right > .tt-bubble {
   left: calc(100% + 6px);
   top: 50%;
+  /* Same shrink-to-fit collapse as `.tt-left`: anchor on `left` with `width:
+     auto` leaves negative available width, so size to content explicitly. */
+  width: max-content;
   transform: translate(calc(-1 * var(--motion-distance-xs)), -50%);
 }
 .tt-right:hover > .tt-bubble,

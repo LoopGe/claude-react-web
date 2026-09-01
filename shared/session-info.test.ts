@@ -31,10 +31,29 @@ describe('coerceThinkingSetting', () => {
     expect(coerceThinkingSetting({ type: 'enabled', budgetTokens: 'lots' })).toBeUndefined()
   })
 
-  it('strips unknown extra keys (e.g. SDK display field)', () => {
+  it('narrows the display field on adaptive/enabled variants', () => {
     expect(coerceThinkingSetting({ type: 'adaptive', display: 'summarized' }))
-      .toEqual({ type: 'adaptive' })
+      .toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(coerceThinkingSetting({ type: 'adaptive', display: 'omitted' }))
+      .toEqual({ type: 'adaptive', display: 'omitted' })
     expect(coerceThinkingSetting({ type: 'enabled', budgetTokens: 1024, display: 'omitted' }))
+      .toEqual({ type: 'enabled', budgetTokens: 1024, display: 'omitted' })
+    // Bare enabled can carry a display too.
+    expect(coerceThinkingSetting({ type: 'enabled', display: 'summarized' }))
+      .toEqual({ type: 'enabled', display: 'summarized' })
+  })
+
+  it('drops display on disabled (SDK ThinkingDisabled omits the field)', () => {
+    expect(coerceThinkingSetting({ type: 'disabled', display: 'omitted' }))
+      .toEqual({ type: 'disabled' })
+  })
+
+  it('strips an invalid display value (setting kept — persistence must not lose the intent)', () => {
+    expect(coerceThinkingSetting({ type: 'adaptive', display: 'redacted' }))
+      .toEqual({ type: 'adaptive' })
+    expect(coerceThinkingSetting({ type: 'adaptive', display: 1 }))
+      .toEqual({ type: 'adaptive' })
+    expect(coerceThinkingSetting({ type: 'enabled', budgetTokens: 1024, display: null }))
       .toEqual({ type: 'enabled', budgetTokens: 1024 })
   })
 })

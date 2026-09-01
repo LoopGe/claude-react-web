@@ -72,6 +72,10 @@ interface Props {
    *  When no turn is in flight, Interrupt is a no-op, and leaving the
    *  button active just confuses users. */
   canInterrupt: boolean
+  /** Top-level user turns queued behind the in-flight turn. When > 0, the
+   *  interrupt the parent fires also withdraws them (cancelQueued) — the
+   *  tooltip says so instead of leaving the queued messages' fate ambiguous. */
+  queuedCount?: number
   /** Bump this number whenever the parent wants the textarea refocused
    *  (e.g. after a successful send, where the click on the Send button
    *  would otherwise leave focus on the button). */
@@ -127,6 +131,7 @@ export const Composer = memo(function Composer({
   onSend,
   onInterrupt,
   canInterrupt,
+  queuedCount,
   focusSignal,
   onRecap,
   canRecap,
@@ -137,6 +142,12 @@ export const Composer = memo(function Composer({
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  /** Interrupt-button suffix naming the queued turns the Stop click will
+   *  withdraw — interpolated into both the tooltip and the aria-label so the
+   *  pluralization can't drift between them. Empty when nothing is queued. */
+  const queueNote = queuedCount
+    ? ` and remove ${queuedCount} queued message${queuedCount === 1 ? '' : 's'}`
+    : ''
 
   // ── Right-click context menu state ─────────────────────────────
   //
@@ -850,14 +861,24 @@ export const Composer = memo(function Composer({
             the streaming phase made the control flicker between
             Interrupt/Background on every phase transition. Backgrounding
             stays reachable via the Alt+B shortcut, advertised in the
-            Interrupt tooltip. */}
+            Interrupt tooltip. The queued-removal note is computed once so the
+            title and the aria-label (which screen readers announce) can't
+            drift apart on the pluralization again. */}
         <button
           className={'btn btn-icon ' + (canInterrupt ? 'btn-danger' : 'btn-primary')}
           type="button"
           onClick={canInterrupt ? onInterrupt : onSend}
           disabled={!canInterrupt && !canSend}
-          title={canInterrupt ? 'Interrupt the current turn (Alt+B backgrounds it)' : 'Send message (Enter)'}
-          aria-label={canInterrupt ? 'Interrupt the current turn' : 'Send message'}
+          title={
+            canInterrupt
+              ? `Interrupt the current turn${queueNote} (Alt+B backgrounds it)`
+              : 'Send message (Enter)'
+          }
+          aria-label={
+            canInterrupt
+              ? `Interrupt the current turn${queueNote}`
+              : 'Send message'
+          }
         >
           {sending && !canInterrupt ? (
             <IconLoader size={18} className="composer-send-spinner" />

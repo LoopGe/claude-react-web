@@ -1,7 +1,7 @@
 import type { Query } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { Pushable } from '../../pushable.js'
-import type { ProviderSessionHandle } from '../types.js'
+import type { ProviderInterruptReceipt, ProviderSessionHandle } from '../types.js'
 import type { ProcessExitInfo } from '../../process-monitor.js'
 
 export class ClaudeSessionHandle implements ProviderSessionHandle {
@@ -80,8 +80,27 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     this.cleanupMonitor()
   }
 
-  interrupt(): Promise<void> {
-    return this.query.interrupt()
+  async interrupt(opts?: { cancelQueued?: boolean }): Promise<ProviderInterruptReceipt | void> {
+    // SDK ≥0.3.24x: interrupt() resolves with an interrupt receipt
+    // (SDKControlInterruptResponse). With cancelQueued the CLI cancels every
+    // queued (and pending-dispatch) main-thread message and lists them on the
+    // receipt's `cancelled` field (interrupt_cancel_queued_v1); without it the
+    // `still_queued` survivors are meant to run, so there is nothing to
+    // report. The SDK's public TS signature has no parameters yet (type lag),
+    // but the runtime forwards the options object into the control request —
+    // verified in sdk.mjs:
+    //   interrupt(e){...request({subtype:"interrupt",...e?.cancelQueued===!0&&{cancel_queued:!0}})}
+    // so forwarding undefined is identical to zero args (the field is built
+    // conditionally) and one typed call site covers both paths. CLIs older
+    // than the field ignore the unknown field and behave as a plain
+    // interrupt, so forwarding is always safe. The receipt's uuids are the
+    // ones stamped on the SDKUserMessage objects this host pushed, so they
+    // match the server-minted uuids clients know.
+    const q = this.query as Query & {
+      interrupt(o?: { cancelQueued?: boolean }): Promise<{ cancelled?: string[] } | undefined>
+    }
+    const receipt = await q.interrupt(opts?.cancelQueued ? { cancelQueued: true } : undefined)
+    if (receipt?.cancelled?.length) return { cancelledQueued: receipt.cancelled }
   }
 
   backgroundTasks(toolUseId?: string): Promise<boolean> {
@@ -92,12 +111,13 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.stopTask(taskId)
   }
 
-  /** Runtime extended-thinking change. The token mapping lives in the
-   *  session-manager (ThinkingSetting → number|null); this just forwards.
-   *  `thinkingDisplay` is left unset so the session-start display mode
-   *  (Options.thinking.display) is preserved. */
-  setMaxThinkingTokens(tokens: number | null): Promise<void> {
-    return this.query.setMaxThinkingTokens(tokens)
+  /** Runtime extended-thinking change. The token + display mapping lives in
+   *  the session-manager (ThinkingSetting → number|null + display|null); this
+   *  just forwards. `display` follows the SDK's runtime param semantics:
+   *  'summarized' | 'omitted' replaces the session display mode, null clears
+   *  back to the API default, and undefined keeps the session-start mode. */
+  setMaxThinkingTokens(tokens: number | null, display?: 'summarized' | 'omitted' | null): Promise<void> {
+    return this.query.setMaxThinkingTokens(tokens, display)
   }
 
   setModel(model?: string): Promise<void> {

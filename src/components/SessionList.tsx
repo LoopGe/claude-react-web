@@ -533,7 +533,7 @@ export const SessionList = memo(function SessionList({
       return (
         <div
           key={s.id}
-          className={`session-item-shell${isDeleting ? ' deleting' : ''}${isFirst ? ' list-first' : ''}${isLast ? ' list-last' : ''}`}
+          className={`session-item-shell${isDeleting ? ' deleting' : ''}${isFirst ? ' list-first' : ''}${isLast ? ' list-last' : ''}${s.id === focusedId ? ' focused' : ''}`}
           data-session-card-id={s.id}
         >
           <SessionCard
@@ -836,7 +836,9 @@ export const SessionList = memo(function SessionList({
               return (
                 <div key={sec.group.id} data-group-section-id={sec.group.id} className={`session-section ${active ? 'group-active' : ''}`}>
                   <div
-                    className={`session-group-header ${groupDropHint === sec.group.id ? 'drop-target' : ''} ${
+                    className={`session-group-header list-first${collapsed || sec.sessions.length === 0 ? ' list-last' : ''} ${
+                      groupDropHint === sec.group.id ? 'drop-target' : ''
+                    } ${
                       draggingGroupId === sec.group.id ? 'dragging' : ''
                     } ${
                       groupReorderHint && groupReorderHint.id === sec.group.id
@@ -973,7 +975,7 @@ export const SessionList = memo(function SessionList({
                       </span>
                     )}
                   </div>
-                  <AnimatedCollapse open={!collapsed}>
+                  <AnimatedCollapse open={!collapsed} className="session-group-collapse">
                     {sec.sessions.length > 0 ? (
                       <div
                         id={groupBodyId}
@@ -1017,37 +1019,10 @@ export const SessionList = memo(function SessionList({
                         }}
                       >
                         {sec.sessions.map((s, i) =>
-                          renderCard(s, sec.group.id, i === 0, i === sec.sessions.length - 1),
+                          renderCard(s, sec.group.id, false, i === sec.sessions.length - 1),
                         )}
                       </div>
-                    ) : (
-                      <div
-                        id={groupBodyId}
-                        className={`group-empty ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
-                        onDragOver={(e) => {
-                          if (!onDropIntoGroup || !isInAppDrag(e)) return
-                          // Group-card drag — see the group body above.
-                          if (draggingGroupId != null) return
-                          e.preventDefault()
-                          if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
-                        }}
-                        onDragLeave={(e) => {
-                          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-                          if (groupDropHint === sec.group.id) setGroupDropHint(null)
-                        }}
-                        onDrop={(e) => {
-                          if (!onDropIntoGroup) return
-                          const payload = readDragPayload(e)
-                          setGroupDropHint(null)
-                          setDraggingId(null)
-                          if (!payload || payload.kind !== 'sidebar-card') return
-                          e.preventDefault()
-                          animatedAddToGroup(payload.id, sec.group.id)
-                        }}
-                      >
-                        No sessions in this group.
-                      </div>
-                    )}
+                    ) : null}
                   </AnimatedCollapse>
                 </div>
               )

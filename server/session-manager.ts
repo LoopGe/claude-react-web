@@ -31,6 +31,7 @@ import { McpConfigStore } from './mcp-config.js'
 import { RecapManager } from './recap.js'
 import { summarizeForCompact } from './compact-summary.js'
 import type { SessionActivity, SessionPhase, SessionRecap } from './session-types.js'
+import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
 import { tryCaptureGitHead, invalidateStatusCache } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { execCommand, escapeXml } from './exec.js'
@@ -74,7 +75,7 @@ import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
-import { pushBounded, stampReceivedAt, stampConsumedAt } from './history-utils.js'
+import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory } from './history-utils.js'
 import { watchBackgroundSubagent, type SubagentCompletion } from './subagent-watcher.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -82,7 +83,7 @@ import { deleteTranscriptFile } from './history-reader.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createPushable, type Pushable } from './pushable.js'
 import { createDefaultProviders } from './providers/default-providers.js'
-import type { ProviderCapabilities, ProviderSessionHandle } from './providers/types.js'
+import type { ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle } from './providers/types.js'
 import { countMatches, findRanges } from '../shared/search/match.js'
 import { extractMessagePlainText } from '../shared/search/extract.js'
 import type { MessageSearchHit } from '../shared/search-results.js'
@@ -385,6 +386,12 @@ function describeUserMessage(msg: SDKUserMessage): string {
 }
 
 const log = createLogger('session')
+
+/** Cap on the per-session `withdrawnUuids` memory (replayed to late msgstat
+ *  subscribers). Withdrawal eviction is idempotent client-side, so dropping
+ *  the oldest entries only means very old ghosts could survive on a tab that
+ *  was offline across more than 200 withdrawn turns — an acceptable bound. */
+const WITHDRAWN_UUIDS_CAP = 200
 
 /** A user message after `stampReceivedAt` has stamped `receivedAt` on it.
  *  The SDK's `SDKUserMessage` type doesn't include `receivedAt` (it's a
@@ -2139,6 +2146,7 @@ export class SessionManager {
       taskSubscribers: new Set(),
       gitStatusSubscribers: new Set(),
       messageStatusSubscribers: new Set(),
+      withdrawnUuids: [],
       commandSubscribers: new Set(),
       hookRuns: [],
       hookRunSubscribers: new Set(),
@@ -2539,29 +2547,157 @@ export class SessionManager {
     if (this.sessions.has(s.id) && s.running) this.persist(s)
   }
 
-  /** Interrupt the current assistant turn. */
-  async interrupt(id: string): Promise<void> {
+  /** Interrupt the current assistant turn.
+   *
+   *  With `opts.cancelQueued` the interrupt becomes "stop means stop
+   *  everything" (the SDK's own phrasing for a remote UI's Stop button):
+   *  besides aborting the in-flight turn, every queued user message is
+   *  withdrawn instead of starting the next turn. Two queues hold them, so
+   *  two legs are needed:
+   *    1. The host-side input Pushable — messages never written to the CLI,
+   *       invisible to the CLI's own cancel. Drained FIRST (before the
+   *       interrupt resolves) because the SDK's input drain loop starts the
+   *       next queued turn immediately after the abort; draining first means
+   *       those messages can't slip into a post-interrupt turn.
+   *    2. The CLI's internal queue — messages already dequeued for the
+   *       imminent turn. The interrupt carries `cancel_queued` (SDK
+   *       interrupt_cancel_queued_v1; older CLIs ignore the field) and its
+   *       receipt lists the uuids it cancelled.
+   *  The union is removed from the replay ring and broadcast as
+   *  `messages-withdrawn` so live tabs evict the bubbles they already
+   *  painted. Returns the number of user-visible messages withdrawn (0 for a
+   *  plain interrupt). */
+  async interrupt(id: string, opts?: { cancelQueued?: boolean }): Promise<number> {
     const s = this.requireLive(id)
     const startedAt = Date.now()
     log.info(
       `[session ${id}] interrupt requested — pendingTurns=${s.pendingTurns}, ` +
       `pending perms=${s.pending.size}, ` +
-      `workingFor=${s.workingSince ? Date.now() - s.workingSince : 0}ms`,
+      `workingFor=${s.workingSince ? Date.now() - s.workingSince : 0}ms` +
+      `${opts?.cancelQueued ? ', cancelQueued=1' : ''}`,
     )
+    // User turns are exactly the still-unpaired promptUuids entries (recorded
+    // in recordPromptUuid at dispatch, paired by onPromptEcho when the SDK
+    // echoes the prompt back). Restricting withdrawal to that set keeps (a)
+    // control messages that ride the same input queue — the compact hand-off
+    // seed goes through sendControlMessage and never gets a promptUuids
+    // entry — and (b) CLI-internal uuids, and (c) prompts whose echo already
+    // landed (they were dispatched into a turn and are durably on disk; the
+    // receipt only ever lists queued/pending-dispatch messages, but a
+    // conservative filter keeps the live ring and the transcript consistent
+    // even if that ever changes) out of the removal set.
+    const queuedUserUuids = new Set((s.promptUuids ?? []).filter((e) => e.v == null).map((e) => e.u))
+    // Withdraw leg 1 (host queue) before the interrupt lands — see above for
+    // the ordering rationale.
+    const { msgs: withdrawnMsgs, uuids: drainedUuids } = opts?.cancelQueued
+      ? this.withdrawHostQueue(s, queuedUserUuids)
+      : { msgs: [] as SDKUserMessage[], uuids: [] as string[] }
     try {
-      await this.requireHandleMethod<() => Promise<void>>(
-        s,
-        'interrupt',
-        'interrupt',
-        'supportsInterrupt',
-      )()
-      log.info(`[session ${id}] interrupt() resolved in ${Date.now() - startedAt}ms`)
+      const fn = this.requireHandleMethod<
+        (opts?: { cancelQueued?: boolean }) => Promise<ProviderInterruptReceipt | void>
+      >(s, 'interrupt', 'interrupt', 'supportsInterrupt')
+      const receipt = await fn(opts)
+      // Withdraw leg 2 (CLI queue) — the receipt's uuids, filtered through
+      // the still-unpaired check (the await above let the pump pair entries
+      // concurrently; everything from here on is synchronous).
+      const stillUnpaired = (u: string): boolean =>
+        (s.promptUuids ?? []).some((e) => e.u === u && e.v == null)
+      const uuids = new Set<string>()
+      for (const u of drainedUuids) {
+        if (stillUnpaired(u)) uuids.add(u)
+      }
+      for (const u of receipt?.cancelledQueued ?? []) {
+        if (stillUnpaired(u)) uuids.add(u)
+      }
+      let removed = 0
+      if (uuids.size > 0) {
+        removed = removeFromHistory(s.history, uuids)
+        // Drop the matching unpaired promptUuids entries — a withdrawn prompt
+        // is never echoed, so its entry would stay v-less forever and the
+        // next FIFO echo (onPromptEcho pairs the oldest unpaired) would pair
+        // a live prompt with a withdrawn uuid, shifting every later
+        // rewindFiles mapping. Unpaired entries are memory-only (the sidecar
+        // persists at echo time), so no save is needed here.
+        s.promptUuids = (s.promptUuids ?? []).filter((e) => !(e.v == null && uuids.has(e.u)))
+        // Remember the withdrawal (capped) so a tab that reconnects after the
+        // stop still evicts its bubbles — incremental sinceUuid replay can
+        // never heal this, because the withdrawn messages are gone from the
+        // ring and so are never re-sent to compare against.
+        s.withdrawnUuids.push(...uuids)
+        if (s.withdrawnUuids.length > WITHDRAWN_UUIDS_CAP) {
+          s.withdrawnUuids.splice(0, s.withdrawnUuids.length - WITHDRAWN_UUIDS_CAP)
+        }
+        this.pushMessageStatus(id, { kind: 'messages-withdrawn', sessionId: id, uuids: [...uuids] })
+      }
+      const receiptNote = receipt?.cancelledQueued == null
+        ? 'absent (older CLI, or nothing was CLI-queued)'
+        : String(receipt.cancelledQueued.length)
+      log.info(
+        `[session ${id}] interrupt() resolved in ${Date.now() - startedAt}ms, ` +
+        `withdrawn=${removed} (receipt=${receiptNote})`,
+      )
+      s.lastActivityAt = Date.now()
+      this.persist(s)
+      return removed
     } catch (err) {
+      // The interrupt failed — restore what we withdrew so the queued turns
+      // aren't silently lost. (Control messages were already put back by
+      // withdrawHostQueue, so only the withdrawn user turns need restoring;
+      // they may land after a restored control seed, which is harmless —
+      // seeds carry shouldQuery:false and never start a turn.)
+      if (withdrawnMsgs.length > 0) {
+        log.warn(`[session ${id}] interrupt failed; re-enqueueing ${withdrawnMsgs.length} withdrawn message(s)`)
+        for (const m of withdrawnMsgs) s.handle.enqueueUserMessage(m)
+      }
       log.error(`[session ${id}] interrupt() threw after ${Date.now() - startedAt}ms:`, err)
       throw err
     }
-    s.lastActivityAt = Date.now()
-    this.persist(s)
+  }
+
+  /** Drain the host-side input queue and return the server-minted uuids of
+   *  the drained user turns (leg 1 of cancelQueued — see interrupt()).
+   *  Drained entries that are not queued user turns (provider control
+   *  messages riding the same queue, e.g. the compact hand-off seed) are put
+   *  back so a withdrawal can never silently destroy them; the caller's
+   *  unpaired-promptUuids filter already excludes them from the removal set.
+   *  Providers without a drainable queue contribute nothing (drainQueuedInput
+   *  is optional on the handle contract) — the CLI leg still runs. The queue
+   *  is deliberately NOT cleared as a fallback: clearing without uuids would
+   *  strand the already-painted 'queued' bubbles with no withdrawal frame and
+   *  nothing to restore on a failed interrupt. */
+  private withdrawHostQueue(s: Session, userTurnUuids: ReadonlySet<string>): { msgs: SDKUserMessage[]; uuids: string[] } {
+    const drained = s.handle.drainQueuedInput?.() ?? []
+    const msgs: SDKUserMessage[] = []
+    const uuids: string[] = []
+    let kept = 0
+    for (const m of drained) {
+      const u = m.uuid
+      if (typeof u === 'string' && userTurnUuids.has(u)) {
+        msgs.push(m)
+        uuids.push(u)
+      } else {
+        s.handle.enqueueUserMessage(m)
+        kept++
+      }
+    }
+    if (kept > 0) {
+      log.debug(`[session ${s.id}] cancelQueued kept ${kept} non-user-turn message(s) in the input queue`)
+    }
+    return { msgs, uuids }
+  }
+
+  /** Push a message-status frame (`message-consumed` / `messages-withdrawn`)
+   *  to every subscriber of the session. No-op when the session is unknown or
+   *  has no subscribers. The durable state lives outside these frames — the
+   *  message's `consumedAt` (replayed on reconnect) for consumed flips, the
+   *  ring removal + `withdrawnUuids` subscribe replay for withdrawals — so a
+   *  dropped live frame self-heals. */
+  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessagesWithdrawn): void {
+    const s = this.sessions.get(id)
+    if (!s || s.messageStatusSubscribers.size === 0) return
+    for (const sub of s.messageStatusSubscribers) {
+      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
+    }
   }
 
   /** Background in-flight foreground tasks (Bash commands + subagents) —
@@ -3452,8 +3588,17 @@ export class SessionManager {
    *      rejected with a 400 so the client only offers the Auto/Off/budget
    *      triple. The SDK-side effect survives respawn via Options.thinking
    *      (session.thinking is re-applied at spawn), so the deprecated path is
-   *      only needed for the LIVE switch. */
-  async setThinking(id: string, setting: ThinkingSetting): Promise<SessionInfo> {
+   *      only needed for the LIVE switch.
+   *  `display` (the SDK's thinkingDisplay param) is forwarded alongside the
+   *  tokens: 'summarized' | 'omitted' replaces the display mode, null clears
+   *  back to the API default, and an ABSENT display maps to undefined — the
+   *  SDK's "keep the session-start mode" — so a type/budget change (or an
+   *  off→on re-enable, where the disabled variant has already dropped the
+   *  display) never silently resets the spawn-time display choice. Clearing
+   *  is therefore EXPLICIT: `opts.clearDisplay` (sent by the client's
+   *  "reasoning: default" item). `disabled` carries no display either way
+   *  (SDK ThinkingDisabled omits the field). */
+  async setThinking(id: string, setting: ThinkingSetting, opts?: { clearDisplay?: boolean }): Promise<SessionInfo> {
     const s = this.requireLive(id)
     if (setting.type === 'enabled' && (setting.budgetTokens == null || setting.budgetTokens <= 0)) {
       throw new HttpError(400, "thinking 'enabled' requires a positive budgetTokens for a live switch")
@@ -3461,12 +3606,15 @@ export class SessionManager {
     const tokens = setting.type === 'adaptive' ? null
       : setting.type === 'disabled' ? 0
       : (setting.budgetTokens as number)
-    await this.requireHandleMethod<(tokens: number | null) => Promise<void>>(
+    const display = setting.type === 'disabled'
+      ? undefined
+      : opts?.clearDisplay ? null : setting.display
+    await this.requireHandleMethod<(tokens: number | null, display?: 'summarized' | 'omitted' | null) => Promise<void>>(
       s,
       'setMaxThinkingTokens',
       'thinking config',
       'supportsThinkingControl',
-    )(tokens)
+    )(tokens, display)
     s.thinking = setting
     s.lastActivityAt = Date.now()
     this.persist(s)
@@ -4121,17 +4269,28 @@ export class SessionManager {
     return this.subscribePushableSet(s, s.gitStatusSubscribers, 'git', 20)
   }
 
-  /** AsyncIterable of `message-consumed` signal frames for one session.
-   *  Mirrors subscribeGitStatus. Each frame carries the uuid + consumedAt
-   *  of a user message the SDK has just read off the input queue, so the
-   *  client can flip its bubble from "queued" to "consumed". A small
-   *  maxDepth is fine: the durable truth lives on the message object's
+  /** AsyncIterable of `message-consumed` / `messages-withdrawn` signal
+   *  frames for one session. Mirrors subscribeGitStatus. A `message-consumed`
+   *  frame carries the uuid + consumedAt of a user message the SDK has just
+   *  read off the input queue, so the client can flip its bubble from
+   *  "queued" to "consumed"; a `messages-withdrawn` frame lists the queued
+   *  turns an interrupt with cancelQueued removed. A small maxDepth is fine
+   *  for consumed frames: the durable truth lives on the message object's
    *  `consumedAt` (replayed on reconnect), so a dropped live frame self-
-   *  heals on the next replay. */
-  subscribeMessageStatus(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
+   *  heals on the next replay. Withdrawals have no such replay mirror — the
+   *  messages are GONE from the ring — so every new subscriber is seeded
+   *  with the recorded withdrawal window instead. */
+  subscribeMessageStatus(id: string): {
+    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn>
+    unsubscribe: () => void
+  } | null {
     const s = this.sessions.get(id)
     if (!s) return null
-    return this.subscribePushableSet(s, s.messageStatusSubscribers, 'msgstat', 50)
+    return this.subscribePushableSet(s, s.messageStatusSubscribers, 'msgstat', 50, () =>
+      s.withdrawnUuids.length > 0
+        ? [{ kind: 'messages-withdrawn' as const, sessionId: id, uuids: [...s.withdrawnUuids] }]
+        : [],
+    )
   }
 
   /** AsyncIterable of recap-update events for one session. Returns the
@@ -4227,8 +4386,16 @@ export class SessionManager {
     set: Set<Pushable<T>>,
     label: string,
     maxSize: number,
+    /** Optional catch-up seed: frames pushed into the fresh pushable before
+     *  the subscriber has a chance to iterate, so state that exists only
+     *  server-side (no replay mirror) still reaches a freshly-attached
+     *  client. Empty = nothing. */
+    seed?: () => Iterable<T>,
   ): { iterable: AsyncIterable<T>; unsubscribe: () => void } {
     const pushable = createPushable<T>(`${label}-${s.id.slice(0, 8)}`, maxSize)
+    if (seed) {
+      for (const frame of seed()) pushable.push(frame)
+    }
     set.add(pushable)
     return {
       iterable: pushable.iterable,
@@ -4278,21 +4445,7 @@ export class SessionManager {
     const consumedAt = stampConsumedAt(msg)
     const uuid = (msg as { uuid?: string }).uuid
     if (typeof uuid !== 'string') return
-    this.broadcastMessageConsumed(id, uuid, consumedAt)
-  }
-
-  /** Push a `message-consumed` signal to every subscriber of the session.
-   *  No-op when the session is unknown or has no subscribers. The durable
-   *  state lives on the message's `consumedAt` (replayed on reconnect);
-   *  this frame only drives the live flip. */
-  private broadcastMessageConsumed(id: string, uuid: string, consumedAt: number): void {
-    const s = this.sessions.get(id)
-    if (!s) return
-    if (s.messageStatusSubscribers.size === 0) return
-    const frame = { kind: 'message-consumed' as const, sessionId: id, uuid, consumedAt }
-    for (const sub of s.messageStatusSubscribers) {
-      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
-    }
+    this.pushMessageStatus(id, { kind: 'message-consumed', sessionId: id, uuid, consumedAt })
   }
 
   /** Broadcast a recap-update payload to per-session subscribers AND

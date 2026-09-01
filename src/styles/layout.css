@@ -970,6 +970,32 @@ body.resizing-col .app {
 .chat-panel-header-row2 > .tt-wrap:has(> .chat-panel-git-badge) {
   margin-left: auto;
 }
+/* The shared .chat-panel-git-badge rule (11px font × 1.35 line-height +
+   2px vertical padding = 18.8px tall) is sized to match row 1's model
+   badge. Row 2's cwd path is only 14px tall, so a full-size badge makes
+   the header jump ~4.8px taller the moment git status resolves. Compact
+   it here so row 2 stays at its cwd height (22px) and the header doesn't
+   resize when the badge appears. */
+.chat-panel-header-row2 .chat-panel-git-badge {
+  padding-top: 1px;
+  padding-bottom: 1px;
+  line-height: 1;
+}
+/* Entrance animation for the git chip — reuses the global `chip-enter`
+   keyframe (defined in chat.css, fade + scale + slight rise) that the
+   attachment/preview chips already use, so the badge appears instead of
+   popping in when git status resolves. `backwards` (not `both`) on
+   purpose: the shared rule gives the badge a `:active` press transform,
+   and `forwards`/`both` would retain the animation's end keyframe and
+   lock that transform to the base value, killing the press effect. */
+.chat-panel-git-badge {
+  animation: chip-enter var(--motion-duration-base) var(--motion-ease-enter) backwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-panel-git-badge {
+    animation: none;
+  }
+}
 
 /* Side Chat collapsed tab — vertical strip on the right edge of the
    panel, vertically centred. Click to re-expand the drawer. */

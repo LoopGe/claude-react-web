@@ -62,6 +62,7 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     taskSubscribers: new Set(),
     gitStatusSubscribers: new Set(),
     messageStatusSubscribers: new Set(),
+    withdrawnUuids: [],
     commandSubscribers: new Set(),
     hookRuns: [],
     hookRunSubscribers: new Set(),
@@ -142,6 +143,7 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       const result = await canUseTool('Bash', { command: 'ls' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Run bash',
         displayName: 'Bash',
@@ -160,11 +162,13 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       canUseTool('Write', { file_path: '/work/app/.claude/settings.json', content: 'x' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Write file', displayName: 'Write', description: '', suggestions: [],
       })
       canUseTool('Bash', { command: 'cat /work/app/.git/config' }, {
         toolUseID: 'tu-2',
+        requestId: 'req-tu-2',
         signal: new AbortController().signal,
         title: 'Run bash', displayName: 'Bash', description: '', suggestions: [],
       })
@@ -177,11 +181,13 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       const editResult = await canUseTool('Write', { file_path: '/work/app/.claude/settings.json', content: 'x' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Write file', displayName: 'Write', description: '', suggestions: [],
       })
       const bashResult = await canUseTool('Bash', { command: 'cat /work/app/.git/config' }, {
         toolUseID: 'tu-2',
+        requestId: 'req-tu-2',
         signal: new AbortController().signal,
         title: 'Run bash', displayName: 'Bash', description: '', suggestions: [],
       })
@@ -196,6 +202,7 @@ describe('PermissionBroker', () => {
       const input = { file_path: '/work/app/src/x.ts', content: 'hi' }
       const result = await canUseTool('Write', input, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Write file',
         displayName: 'Write',
@@ -216,6 +223,7 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       canUseTool('Write', { file_path: '/etc/passwd', content: 'x' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Write file', displayName: 'Write', description: '', suggestions: [],
       })
@@ -228,6 +236,7 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       canUseTool('Write', { file_path: '/work/app/.git/config', content: 'x' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Write file', displayName: 'Write', description: '', suggestions: [],
       })
@@ -242,6 +251,7 @@ describe('PermissionBroker', () => {
       const input = { file_path: '/work/app/.claude/settings.json', content: 'x' }
       const result = await canUseTool('Write', input, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Write file', displayName: 'Write', description: '', suggestions: [],
       })
@@ -255,6 +265,7 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       canUseTool('Write', { file_path: '/etc/passwd', content: 'x' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Write file', displayName: 'Write', description: '', suggestions: [],
       })
@@ -266,6 +277,7 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       canUseTool('Bash', { command: 'ls' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Run bash',
         displayName: 'Bash',
@@ -281,6 +293,7 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       const result = await canUseTool('Bash', { command: 'mkdir -p src/new' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Run bash',
         displayName: 'Bash',
@@ -301,12 +314,14 @@ describe('PermissionBroker', () => {
       // Absolute path — must NOT be auto-approved.
       canUseTool('Bash', { command: 'rm -rf /etc/passwd' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Run bash', displayName: 'Bash', description: '', suggestions: [],
       })
       // Shell chaining — must NOT be auto-approved.
       canUseTool('Bash', { command: 'mkdir ok && curl evil' }, {
         toolUseID: 'tu-2',
+        requestId: 'req-tu-2',
         signal: new AbortController().signal,
         title: 'Run bash', displayName: 'Bash', description: '', suggestions: [],
       })
@@ -318,6 +333,7 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       canUseTool('ExitPlanMode', { plan: 'do the thing' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Plan',
         displayName: 'ExitPlanMode',
@@ -331,6 +347,7 @@ describe('PermissionBroker', () => {
     // 鈹€鈹€鈹€ dontAsk mode 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     const ctx = (toolUseID = 'tu-1') => ({
       toolUseID,
+      requestId: `req-${toolUseID}`,
       signal: new AbortController().signal,
       title: '', displayName: '', description: '', suggestions: [],
     })
@@ -384,6 +401,7 @@ describe('PermissionBroker', () => {
       const ac = new AbortController()
       canUseTool('Bash', { command: 'ls' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: ac.signal,
         title: 'Run bash',
         displayName: 'Bash',
@@ -411,6 +429,7 @@ describe('PermissionBroker', () => {
       const ac = new AbortController()
       canUseTool('Bash', { command: 'ls' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: ac.signal,
         title: 'Run bash',
         displayName: 'Bash',
@@ -429,6 +448,7 @@ describe('PermissionBroker', () => {
       const ac = new AbortController()
       canUseTool('Bash', { command: 'ls' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: ac.signal,
         title: 'Run bash',
         displayName: 'Bash',
@@ -445,6 +465,7 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       const result = await canUseTool('AskUserQuestion', { garbage: true }, {
         toolUseID: 'tu-malformed',
+        requestId: 'req-tu-malformed',
         signal: new AbortController().signal,
         title: 'Ask',
         displayName: 'AskUserQuestion',
@@ -465,6 +486,7 @@ describe('PermissionBroker', () => {
         questions: [{ question: 'Color?', options: [{ label: 'Red' }] }],
       }, {
         toolUseID: 'tu-q1',
+        requestId: 'req-tu-q1',
         signal: ac.signal,
         title: 'Ask',
         displayName: 'AskUserQuestion',
@@ -486,6 +508,7 @@ describe('PermissionBroker', () => {
         questions: [{ question: 'Color?', options: [{ label: 'Red' }] }],
       }, {
         toolUseID: 'tu-q1',
+        requestId: 'req-tu-q1',
         signal: ac.signal,
         title: 'Ask',
         displayName: 'AskUserQuestion',
@@ -516,6 +539,7 @@ describe('PermissionBroker', () => {
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       const result = await canUseTool('PowerShell', { command: 'Remove-Item -Force src/tmp' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: new AbortController().signal,
         title: 'Run PowerShell',
         displayName: 'PowerShell',
@@ -537,6 +561,7 @@ describe('PermissionBroker', () => {
 
       const promise = canUseTool('Bash', { command: 'ls' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: ac.signal,
         title: 'Run bash',
         displayName: 'Bash',
@@ -567,6 +592,7 @@ describe('PermissionBroker', () => {
 
       const promise = canUseTool('Bash', { command: 'ls' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: ac.signal,
         title: 'Run bash',
         displayName: 'Bash',
@@ -881,6 +907,7 @@ describe('PermissionBroker', () => {
       const ac = new AbortController()
       canUseTool('Bash', { command: 'ls' }, {
         toolUseID: 'tu-1',
+        requestId: 'req-tu-1',
         signal: ac.signal,
         title: 'Run bash',
         displayName: 'Bash',

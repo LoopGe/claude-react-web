@@ -870,10 +870,6 @@
   border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
 }
 
-/* Sidebar hover comes alive with a faint glow (complements .focused). */
-[data-skin="glow"] .session-item:hover {
-  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 10%, transparent);
-}
 [data-skin="glow"] .group-pill:hover {
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent);
 }

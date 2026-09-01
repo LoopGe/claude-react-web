@@ -41,9 +41,10 @@ export function useSessionField<K extends keyof SessionSnapshot>(
  *  leaves the counts untouched.
  *
  *  `all` = every non-terminal task (the WorkingBubble pill / TasksPanel entry).
- *  `waiting` = non-terminal AND not skipTranscript — ambient/housekeeping
- *  tasks are SDK-flagged as not belonging in the inline transcript, so they
- *  must not keep the WorkingBubble in a phantom Waiting state. */
+ *  `waiting` = non-terminal AND not (skipTranscript || ambient) — housekeeping
+ *  tasks are SDK-flagged as not belonging in the inline transcript, and
+ *  `ambient` (0.3.247) additionally covers auto-started live-update watchers;
+ *  neither may keep the WorkingBubble in a phantom Waiting state. */
 export function useSessionTaskCounts(sessionId: string): { all: number; waiting: number } {
   const store = sessionStoreRegistry.getOrCreate(sessionId)
   const prevRef = useRef<{ all: number; waiting: number } | null>(null)
@@ -60,7 +61,7 @@ export function useSessionTaskCounts(sessionId: string): { all: number; waiting:
         t.status === 'killed' || t.status === 'stopped'
       ) continue
       all++
-      if (!t.skipTranscript) waiting++
+      if (!t.skipTranscript && !t.ambient) waiting++
     }
     if (prevRef.current && prevRef.current.all === all && prevRef.current.waiting === waiting) {
       return prevRef.current

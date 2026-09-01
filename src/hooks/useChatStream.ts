@@ -418,6 +418,17 @@ export function useChatStream(
           store.dispatch({ type: 'MESSAGE_CONSUMED', uuid: frame.uuid, consumedAt: frame.consumedAt })
           break
         }
+        case 'messages-withdrawn': {
+          // Queued user turns withdrawn by an interrupt with cancelQueued —
+          // the server already removed them from its replay ring, so evict
+          // the bubbles here too (same machinery as the refusal-fallback
+          // eviction). The frame may list CLI-internal uuids this tab never
+          // sent; the reducer's lookup simply finds nothing for those.
+          if (frame.uuids.length > 0) {
+            store.dispatch({ type: 'EVICT_MESSAGES', uuids: frame.uuids })
+          }
+          break
+        }
         case 'error': {
           // If the replay never completed (e.g. subscribe failed because
           // the session was already torn down), replayReady is still false

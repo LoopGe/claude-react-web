@@ -1,6 +1,7 @@
 // Session routes: CRUD, messaging, control, MCP/plugin per-session, queries.
 
 import { Hono } from 'hono'
+import { isAbsolute } from 'node:path'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
 import { SessionManager } from '../session-manager.js'
 import { safeJson } from './index.js'
@@ -395,10 +396,19 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json(page)
   })
 
-  // Interrupt
+  // Interrupt. Optional body { cancelQueued: true } — "stop means stop
+  // everything": abort the in-flight turn AND withdraw every queued user
+  // message (host input queue drain + SDK interrupt_cancel_queued_v1),
+  // removing them from the transcript. Absent body = plain interrupt;
+  // queued messages survive and start the next turn. The body is parsed
+  // tolerantly (any parse failure → absent) because a BODYLESS POST is a
+  // first-class wire shape here: App's Esc fallback, curl one-liners, and
+  // stale client bundles all post without a body and must keep interrupting.
   app.post('/sessions/:id/interrupt', async (c) => {
-    await sm.interrupt(c.req.param('id'))
-    return c.json({ ok: true })
+    const body = await c.req.json<{ cancelQueued?: unknown }>().catch(() => ({} as { cancelQueued?: unknown }))
+    const cancelQueued = body?.cancelQueued === true
+    const cancelled = await sm.interrupt(c.req.param('id'), { cancelQueued })
+    return c.json({ ok: true, cancelled })
   })
 
   // Background in-flight foreground tasks (the CLI's Ctrl+B semantics).
@@ -571,14 +581,16 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // {type:'enabled', budgetTokens}). Forwarded to the SDK via the
   // setMaxThinkingTokens control request (thinking has no Settings key);
   // persisted so it survives resume / fork / clear / restart via
-  // Options.thinking.
+  // Options.thinking. `clearDisplay: true` is the explicit "reset the
+  // reasoning display mode to the API default" switch — an absent display
+  // means "keep the current mode" instead.
   app.post('/sessions/:id/thinking', async (c) => {
-    const body = await safeJson<{ thinking?: unknown }>(c.req)
+    const body = await safeJson<{ thinking?: unknown; clearDisplay?: unknown }>(c.req)
     const setting = coerceThinkingSetting(body.thinking)
     if (!setting) {
-      return c.json({ error: "thinking must be {type:'adaptive'} | {type:'disabled'} | {type:'enabled', budgetTokens?: number}" }, 400)
+      return c.json({ error: "thinking must be {type:'adaptive'} | {type:'disabled'} | {type:'enabled', budgetTokens?: number, display?: 'summarized'|'omitted'}" }, 400)
     }
-    const info = await sm.setThinking(c.req.param('id'), setting)
+    const info = await sm.setThinking(c.req.param('id'), setting, { clearDisplay: body.clearDisplay === true })
     return c.json({ session: info })
   })
 
@@ -719,7 +731,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   app.get('/sessions/:id/read-file', async (c) => {
     const id = c.req.param('id')
     const path = c.req.query('path') ?? ''
-    if (!path || !path.startsWith('/')) {
+    if (!path || !isAbsolute(path)) {
       return c.json({ error: 'path is required and must be absolute' }, 400)
     }
     const opts: { maxBytes?: number; encoding?: 'utf-8' | 'base64' } = {}
