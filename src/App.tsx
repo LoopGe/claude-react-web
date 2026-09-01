@@ -2593,8 +2593,10 @@ export function App() {
                 void fn()
               } else {
                 // Fallback: Chat hasn't registered yet (e.g. still
-                // mounting). Direct POST still interrupts the turn.
-                void api.post(`/sessions/${fid}/interrupt`)
+                // mounting). Direct POST still interrupts the turn — with
+                // cancelQueued, same "stop means stop everything" semantics
+                // as the Chat funnel (queued turns are withdrawn too).
+                void api.post(`/sessions/${fid}/interrupt`, { cancelQueued: true })
               }
               lastInterruptRef.current = { sessionId: fid, at: now }
               return

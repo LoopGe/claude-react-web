@@ -284,6 +284,31 @@ export interface WsMessageConsumed {
   consumedAt: number
 }
 
+/** Queued user messages were withdrawn from the input queue — the client
+ *  interrupted with `cancelQueued` ("stop means stop everything"), so the
+ *  server dropped its host-side input queue and asked the CLI (SDK
+ *  interrupt_cancel_queued_v1) to cancel what it had already taken. The
+ *  named messages are removed server-side from the replay ring; live tabs
+ *  evict the matching bubbles immediately. May include CLI-internal uuids
+ *  the tab never sent (cron triggers, auto-resume continuations) — the
+ *  client's eviction lookup simply finds nothing for those.
+ *
+ *  Unlike `message-consumed` this frame has NO replay mirror — the durable
+ *  truth is the ring removal, and replay can never re-send what isn't in it,
+ *  so an absent frame could never be healed by comparing against replay. The
+ *  server instead remembers the session's withdrawal window (capped) and
+ *  seeds every NEW message-status subscriber with one synthetic frame
+ *  carrying it, so a tab that was disconnected during the stop evicts its
+ *  bubbles on reconnect. Rides the same per-session input-queue-status
+ *  channel as `message-consumed`. */
+export interface WsMessagesWithdrawn {
+  kind: 'messages-withdrawn'
+  sessionId: string
+  /** Server-minted uuids of the withdrawn user messages (plus any
+   *  CLI-internal uuids reported cancelled by the interrupt receipt). */
+  uuids: string[]
+}
+
 /** Per-session recap state mutation (pending / ready / error / cleared).
  *  Carries the full SessionRecap shape (or undefined to mean "cleared by
  *  invalidate"). The same shape rides on SessionInfo for full session
@@ -402,6 +427,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsTasksSnapshot
   | WsGitStatusChanged
   | WsMessageConsumed
+  | WsMessagesWithdrawn
   | WsSessionRecapUpdate<Recap>
   | WsSessionCleared
   | WsCommandsChanged<Command>

@@ -396,10 +396,19 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json(page)
   })
 
-  // Interrupt
+  // Interrupt. Optional body { cancelQueued: true } — "stop means stop
+  // everything": abort the in-flight turn AND withdraw every queued user
+  // message (host input queue drain + SDK interrupt_cancel_queued_v1),
+  // removing them from the transcript. Absent body = plain interrupt;
+  // queued messages survive and start the next turn. The body is parsed
+  // tolerantly (any parse failure → absent) because a BODYLESS POST is a
+  // first-class wire shape here: App's Esc fallback, curl one-liners, and
+  // stale client bundles all post without a body and must keep interrupting.
   app.post('/sessions/:id/interrupt', async (c) => {
-    await sm.interrupt(c.req.param('id'))
-    return c.json({ ok: true })
+    const body = await c.req.json<{ cancelQueued?: unknown }>().catch(() => ({} as { cancelQueued?: unknown }))
+    const cancelQueued = body?.cancelQueued === true
+    const cancelled = await sm.interrupt(c.req.param('id'), { cancelQueued })
+    return c.json({ ok: true, cancelled })
   })
 
   // Background in-flight foreground tasks (the CLI's Ctrl+B semantics).

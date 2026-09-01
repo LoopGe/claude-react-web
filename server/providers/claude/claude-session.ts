@@ -1,7 +1,7 @@
 import type { Query } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { Pushable } from '../../pushable.js'
-import type { ProviderSessionHandle } from '../types.js'
+import type { ProviderInterruptReceipt, ProviderSessionHandle } from '../types.js'
 import type { ProcessExitInfo } from '../../process-monitor.js'
 
 export class ClaudeSessionHandle implements ProviderSessionHandle {
@@ -80,12 +80,27 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     this.cleanupMonitor()
   }
 
-  interrupt(): Promise<void> {
+  async interrupt(opts?: { cancelQueued?: boolean }): Promise<ProviderInterruptReceipt | void> {
     // SDK ≥0.3.24x: interrupt() resolves with an interrupt receipt
-    // (SDKControlInterruptResponse — uuids of queued messages that survive the
-    // interrupt). The provider contract stays `Promise<void>`; queued-input
-    // bookkeeping lives host-side (see abort()/detachWaiter above).
-    return this.query.interrupt().then(() => undefined)
+    // (SDKControlInterruptResponse). With cancelQueued the CLI cancels every
+    // queued (and pending-dispatch) main-thread message and lists them on the
+    // receipt's `cancelled` field (interrupt_cancel_queued_v1); without it the
+    // `still_queued` survivors are meant to run, so there is nothing to
+    // report. The SDK's public TS signature has no parameters yet (type lag),
+    // but the runtime forwards the options object into the control request —
+    // verified in sdk.mjs:
+    //   interrupt(e){...request({subtype:"interrupt",...e?.cancelQueued===!0&&{cancel_queued:!0}})}
+    // so forwarding undefined is identical to zero args (the field is built
+    // conditionally) and one typed call site covers both paths. CLIs older
+    // than the field ignore the unknown field and behave as a plain
+    // interrupt, so forwarding is always safe. The receipt's uuids are the
+    // ones stamped on the SDKUserMessage objects this host pushed, so they
+    // match the server-minted uuids clients know.
+    const q = this.query as Query & {
+      interrupt(o?: { cancelQueued?: boolean }): Promise<{ cancelled?: string[] } | undefined>
+    }
+    const receipt = await q.interrupt(opts?.cancelQueued ? { cancelQueued: true } : undefined)
+    if (receipt?.cancelled?.length) return { cancelledQueued: receipt.cancelled }
   }
 
   backgroundTasks(toolUseId?: string): Promise<boolean> {

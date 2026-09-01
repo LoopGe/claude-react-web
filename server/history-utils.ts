@@ -75,6 +75,35 @@ export function stampConsumedAt(msg: unknown): number {
   return (m as { consumedAt?: number }).consumedAt ?? Date.now()
 }
 
+/** Remove messages from the history ring by server-minted uuid — the
+ *  withdrawal half of an interrupt with cancelQueued: the drained /
+ *  CLI-cancelled user turns must not reappear on the next replay. Unknown
+ *  uuids (the interrupt receipt may list internally-enqueued commands the
+ *  host never sent) simply match nothing. Mutates the array in place — the
+ *  ring is a plain bounded array (see pushBounded) and only shrinks here —
+ *  and returns the number of entries actually removed, which is the honest
+ *  user-facing "messages withdrawn" count: uuids that matched nothing (CLI
+ *  internals) contribute nothing to it. */
+export function removeFromHistory(history: unknown[], uuids: ReadonlySet<string>): number {
+  if (uuids.size === 0) return 0
+  // Single compaction pass (write index) rather than per-match splice(): a
+  // splice shifts every tail element, so k withdrawals cost up to n·k moves;
+  // the compaction pass is O(n) regardless of k. Order of the kept entries —
+  // arrival order, which mergedHistory() and replay depend on — is preserved.
+  let removed = 0
+  let write = 0
+  for (let read = 0; read < history.length; read++) {
+    const u = (history[read] as { uuid?: string } | undefined)?.uuid
+    if (typeof u === 'string' && uuids.has(u)) {
+      removed++
+      continue
+    }
+    history[write++] = history[read]
+  }
+  history.length = write
+  return removed
+}
+
 /** System subtypes that should be broadcast to clients and persisted in
  *  history. Other system frames (init, status, …) are kept in history for
  *  fastModeState extraction and /clear signaling, but skipped in broadcasts

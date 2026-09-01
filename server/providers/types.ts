@@ -82,6 +82,20 @@ export interface CreateSessionOptions {
   profile?: ProviderProfile
 }
 
+/** Receipt of a successful interrupt, for providers that can report which
+ *  CLI-side queued messages the interrupt withdrew. Providers whose
+ *  underlying control call carries no such information simply resolve
+ *  without a value (the host independently accounts for the messages it
+ *  drained from its own input queue). */
+export interface ProviderInterruptReceipt {
+  /** Server-minted uuids of user turns the CLI dropped from its own input
+   *  queue because the interrupt carried `cancelQueued`. May include
+   *  internally-enqueued uuids the host never sent (cron triggers,
+   *  auto-resume continuations) — the host ignores unknown uuids rather
+   *  than treating them as an error. */
+  cancelledQueued?: string[]
+}
+
 export interface ProviderSessionHandle {
   readonly provider?: string
   readonly messages: AsyncIterable<AgentMessage>
@@ -115,7 +129,15 @@ export interface ProviderSessionHandle {
   readonly processExited: Promise<unknown>
   abort(): void
   destroy(reason?: string): Promise<void> | void
-  interrupt?(): Promise<void>
+  /** Interrupt the in-flight turn. With `cancelQueued`, ALSO ask the CLI to
+   *  drop every queued (and pending-dispatch) main-thread message instead of
+   *  letting it start the next turn — SDK 0.3.219
+   *  `interrupt_cancel_queued_v1` ("stop means stop everything" for a remote
+   *  UI's Stop button). CLIs older than the field ignore it and behave as a
+   *  plain interrupt, so no capability gate is required: the host drains its
+   *  own input queue either way. Resolves with a receipt when the provider
+   *  can report CLI-side cancellations. */
+  interrupt?(opts?: { cancelQueued?: boolean }): Promise<ProviderInterruptReceipt | void>
   /** Background in-flight foreground tasks (Bash commands and subagents) —
    *  the CLI's Ctrl+B semantics. With `toolUseId`, only that task; without,
    *  every foreground task. The model immediately receives a "running in

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription } from './normalize'
+import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription, countQueuedUserTurns } from './normalize'
 import type { SdkMessage } from '../types'
 
 /** Build a top-level `user` message with the given text content (string or
@@ -205,5 +205,29 @@ describe('isHumanUserMessage', () => {
       parent_tool_use_id: null,
     } as unknown as SdkMessage
     expect(isHumanUserMessage(msg)).toBe(false)
+  })
+})
+
+describe('countQueuedUserTurns', () => {
+  const userWith = (fields: Record<string, unknown>, uuid = 'u1'): SdkMessage =>
+    ({ type: 'user', uuid, message: { role: 'user', content: 'hi' }, parent_tool_use_id: null, ...fields }) as unknown as SdkMessage
+
+  it('counts only server-acked but not-yet-consumed top-level user turns', () => {
+    expect(countQueuedUserTurns([
+      // optimistic placeholder: not even server-acked yet
+      userWith({}),
+      // sitting in the input queue behind an in-flight turn
+      userWith({ receivedAt: 100 }, 'u2'),
+      // consumed by the SDK
+      userWith({ receivedAt: 100, consumedAt: 150 }, 'u3'),
+      // assistant traffic never queues
+      { type: 'assistant', uuid: 'a1' } as unknown as SdkMessage,
+      // tool_result-bearing user frames are never top-level turns
+      { type: 'user', uuid: 't1', parent_tool_use_id: 'tool-1', message: { role: 'user', content: [] } } as unknown as SdkMessage,
+    ])).toBe(1)
+  })
+
+  it('returns 0 for an empty transcript', () => {
+    expect(countQueuedUserTurns([])).toBe(0)
   })
 })

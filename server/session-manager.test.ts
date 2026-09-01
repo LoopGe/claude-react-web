@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { randomUUID } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -2180,10 +2181,10 @@ describe('SessionManager', () => {
 
   // --- thinking config (Options.thinking at spawn + setMaxThinkingTokens live) ---
 
-  it("setThinking() maps adaptive → null and forwards setMaxThinkingTokens(null, null)", async () => {
+  it("setThinking() maps adaptive → null and forwards setMaxThinkingTokens(null, undefined) — absent display keeps the current mode", async () => {
     const info = sm.create({})
     const updated = await sm.setThinking(info.id, { type: 'adaptive' })
-    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null, null)
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null, undefined)
     expect(updated.thinking).toEqual({ type: 'adaptive' })
     expect(sm.get(info.id).thinking).toEqual({ type: 'adaptive' })
   })
@@ -2194,11 +2195,17 @@ describe('SessionManager', () => {
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(0, undefined)
   })
 
-  it("setThinking() maps enabled N → (N, null)", async () => {
+  it("setThinking() maps enabled N → (N, undefined)", async () => {
     const info = sm.create({})
     const updated = await sm.setThinking(info.id, { type: 'enabled', budgetTokens: 16384 })
-    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(16384, null)
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(16384, undefined)
     expect(updated.thinking).toEqual({ type: 'enabled', budgetTokens: 16384 })
+  })
+
+  it("setThinking() clears the display back to the API default only via the explicit clearDisplay opt", async () => {
+    const info = sm.create({})
+    await sm.setThinking(info.id, { type: 'adaptive' }, { clearDisplay: true })
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenLastCalledWith(null, null)
   })
 
   it("setThinking() forwards display as the 2nd param", async () => {
@@ -4040,6 +4047,171 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(sm.get(info.id).terminated).toBe(true)
       expect(sm.get(info.id).terminatedReason).toBe('process_exited')
       expect(mockHandles).toHaveLength(1) // no respawn on give-up
+    })
+  })
+
+  describe('interrupt with cancelQueued', () => {
+    const waitFor = async (cond: () => boolean | Promise<boolean>, ticks = 60) => {
+      for (let i = 0; i < ticks; i++) {
+        if (await cond()) return true
+        await new Promise((r) => setImmediate(r))
+      }
+      return false
+    }
+
+    /** Read the live replay ring directly — getHistoryPage serves the DISK
+     *  transcript, which these mock sessions never write, so the ring (what
+     *  a fresh subscriber replays) is the observable for removal. */
+    const ringOf = (sid: string): Array<{ uuid?: string }> => {
+      const smAny = sm as unknown as { sessions: Map<string, { history: Array<{ uuid?: string }> }> }
+      return smAny.sessions.get(sid)!.history
+    }
+
+    /** Session with one in-flight turn (no result emitted) and `n` user
+     *  messages queued behind it in the host input Pushable. Returns the
+     *  queued messages' server-minted uuids. */
+    const setupQueued = (n: number) => {
+      const info = sm.create({ cwd: dir })
+      const h = mockHandles.at(-1)!
+      sm.send(info.id, 'in-flight turn seed')
+      const queuedUuids: string[] = []
+      for (let i = 0; i < n; i++) {
+        const sent = sm.send(info.id, `queued-${i}`)
+        queuedUuids.push((sent as { uuid: string }).uuid)
+      }
+      return { info, h, queuedUuids }
+    }
+
+    it('drains the host queue, forwards cancelQueued, and reports the withdrawn count', async () => {
+      const { info, h, queuedUuids } = setupQueued(2)
+      const withdrawnFrames: Array<{ kind?: string; uuids?: string[] }> = []
+      const sub = sm.subscribeMessageStatus(info.id)
+      void (async () => {
+        for await (const v of sub!.iterable) withdrawnFrames.push(v as { kind?: string; uuids?: string[] })
+      })()
+
+      const removed = await sm.interrupt(info.id, { cancelQueued: true })
+
+      // The provider handle received the cancelQueued option (the claude
+      // provider forwards it as the SDK control request's cancel_queued).
+      expect(h.interrupt).toHaveBeenCalledWith({ cancelQueued: true })
+      // Both queued turns were withdrawn: ring entries removed + count.
+      expect(removed).toBe(2)
+      // Live subscribers got the withdrawal frame with the server uuids.
+      await waitFor(() => withdrawnFrames.length > 0)
+      const frame = withdrawnFrames[0] as { kind?: string; uuids?: string[] }
+      expect(frame.kind).toBe('messages-withdrawn')
+      expect(frame.uuids).toEqual(expect.arrayContaining(queuedUuids))
+      // The replay ring no longer carries the withdrawn turns.
+      const ringUuids = ringOf(info.id).map((m) => m.uuid)
+      for (const u of queuedUuids) expect(ringUuids).not.toContain(u)
+      sub!.unsubscribe()
+    })
+
+    it('a plain interrupt leaves the queue intact (queued turns start the next turn)', async () => {
+      const { info, h, queuedUuids } = setupQueued(1)
+      const removed = await sm.interrupt(info.id)
+      expect(removed).toBe(0)
+      // The manager forwards opts through; the provider normalizes absent →
+      // undefined (the SDK builds the cancel_queued field conditionally).
+      expect(h.interrupt).toHaveBeenCalledWith(undefined)
+      const ringUuids = ringOf(info.id).map((m) => m.uuid)
+      expect(ringUuids).toContain(queuedUuids[0])
+    })
+
+    it('folds the interrupt receipt cancellations into the withdrawal set (unknown uuids + overlap dedupe)', async () => {
+      const { info, h, queuedUuids } = setupQueued(1)
+      // The receipt here replays the SDK contract: 'cli-internal-1' is a
+      // CLI-internal uuid we never sent (docs: "ignore unknown uuids rather
+      // than treating them as an error" — the ring lookup misses it), and
+      // queuedUuids[0] overlaps the host-drained set (a message can sit in
+      // both accounts across the drain/interrupt race) — the union must
+      // dedupe it so the withdrawn count stays 1, not 2.
+      h.interrupt.mockResolvedValueOnce({ cancelled: ['cli-internal-1', queuedUuids[0]] })
+      const removed = await sm.interrupt(info.id, { cancelQueued: true })
+      expect(h.interrupt).toHaveBeenCalledWith({ cancelQueued: true })
+      expect(removed).toBe(1)
+      const ringUuids = ringOf(info.id).map((m) => m.uuid)
+      expect(ringUuids).not.toContain(queuedUuids[0])
+    })
+
+    it('restores drained messages when the interrupt fails', async () => {
+      const { info, h, queuedUuids } = setupQueued(1)
+      h.interrupt.mockRejectedValueOnce(new Error('cli died'))
+      await expect(sm.interrupt(info.id, { cancelQueued: true })).rejects.toThrow('cli died')
+      // The drained message was re-enqueued, not lost.
+      const ringUuids = ringOf(info.id).map((m) => m.uuid)
+      expect(ringUuids).toContain(queuedUuids[0])
+    })
+
+    /** Read the in-memory promptUuids sidecar via the manager's internals. */
+    const promptUuidsOf = (sid: string): Array<{ u: string; v?: string }> => {
+      const smAny = sm as unknown as { sessions: Map<string, { promptUuids?: Array<{ u: string; v?: string }> }> }
+      return smAny.sessions.get(sid)!.promptUuids ?? []
+    }
+
+    it('drops the withdrawn turns from the promptUuids sidecar (unpaired entries would mispair the next FIFO echo)', async () => {
+      const { info, queuedUuids } = setupQueued(2)
+      // Both queued turns recorded an unpaired {u} entry at dispatch (the
+      // same entries onPromptEcho pairs FIFO-style with the SDK echo).
+      for (const u of queuedUuids) {
+        expect(promptUuidsOf(info.id).some((e) => e.u === u && e.v == null)).toBe(true)
+      }
+      await sm.interrupt(info.id, { cancelQueued: true })
+      // A withdrawn prompt never dispatches, so it never echoes — its entry
+      // must be gone or the next live send would pair with it (and every
+      // later rewindFiles mapping would shift). The in-flight turn's own
+      // unpaired entry stays.
+      for (const u of queuedUuids) {
+        expect(promptUuidsOf(info.id).some((e) => e.u === u)).toBe(false)
+      }
+      expect(promptUuidsOf(info.id).some((e) => e.v == null)).toBe(true)
+    })
+
+    it('puts non-user-turn queue entries (the compact hand-off seed) back instead of withdrawing them', async () => {
+      const { info, queuedUuids } = setupQueued(1)
+      // A control seed rides the same input Pushable (sendControlMessage —
+      // shouldQuery:false, its own uuid, but NO promptUuids entry: it never
+      // went through dispatchUserMessage). Destroying it would silently
+      // lose the compact hand-off.
+      const handleOf = (sid: string) => {
+        const smAny = sm as unknown as {
+          sessions: Map<string, { handle: { sendControlMessage: (m: unknown) => void; queueDepth: number } }>
+        }
+        return smAny.sessions.get(sid)!.handle
+      }
+      handleOf(info.id).sendControlMessage({
+        type: 'user',
+        message: { role: 'user', content: 'compact hand-off summary' },
+        parent_tool_use_id: null,
+        isSynthetic: true,
+        shouldQuery: false,
+        uuid: randomUUID(),
+        session_id: info.id,
+      })
+      const removed = await sm.interrupt(info.id, { cancelQueued: true })
+      // Only the queued user turn counts as withdrawn…
+      expect(removed).toBe(1)
+      // …and the seed is back on the queue (queueDepth 1) instead of gone.
+      expect(handleOf(info.id).queueDepth).toBe(1)
+      expect(ringOf(info.id).map((m) => m.uuid)).not.toContain(queuedUuids[0])
+    })
+
+    it('seeds a late message-status subscriber with the withdrawal window (a tab that missed the live frame still evicts)', async () => {
+      const { info, queuedUuids } = setupQueued(1)
+      await sm.interrupt(info.id, { cancelQueued: true })
+      // Subscribe AFTER the stop — a tab reconnecting post-stop missed the
+      // live frame, and incremental sinceUuid replay can never heal it (the
+      // withdrawn messages are gone from the ring, so nothing re-sends them).
+      const lateFrames: Array<{ kind?: string; uuids?: string[] }> = []
+      const late = sm.subscribeMessageStatus(info.id)
+      void (async () => {
+        for await (const v of late!.iterable) lateFrames.push(v as { kind?: string; uuids?: string[] })
+      })()
+      await waitFor(() => lateFrames.length > 0)
+      expect(lateFrames[0].kind).toBe('messages-withdrawn')
+      expect(lateFrames[0].uuids).toContain(queuedUuids[0])
+      late!.unsubscribe()
     })
   })
 
