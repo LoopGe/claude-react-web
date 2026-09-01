@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactElement } from 'react'
+import { useState } from 'react'
 import { render as rtlRender, fireEvent } from '@testing-library/react'
 import { Composer } from './Composer'
 import { ToastProvider } from './ToastProvider'
@@ -161,6 +162,40 @@ describe('Composer', () => {
     } finally {
       window.removeEventListener('keydown', windowKeydown)
     }
+  })
+
+  it('Enter confirms the command that is actually highlighted, not the source-array one', () => {
+    // CommandPicker regroups plugin commands to the top of the list. Source
+    // order [built-in, plugin, built-in] renders as [plugin, built-in,
+    // built-in], so keyboard index 1 must resolve to the FIRST built-in —
+    // not source index 1 (the plugin command). Regression: Enter/Tab used to
+    // insert the source-array item, completing a different command than the
+    // one the highlight showed.
+    Element.prototype.scrollIntoView = vi.fn()
+    const commands: SlashCommand[] = [
+      { name: 'clear', description: 'Clear chat', argumentHint: '' },
+      { name: 'research', description: '(skills) Deep research', argumentHint: '' },
+      { name: 'usage', description: 'Show usage', argumentHint: '' },
+    ]
+    function Harness() {
+      const [input, setInput] = useState('')
+      return <Composer {...defaultProps} input={input} setInput={setInput} commands={commands} />
+    }
+    const { container } = render(<Harness />)
+    const ta = container.querySelector('textarea')!
+
+    fireEvent.change(ta, { target: { value: '/', selectionStart: 1, selectionEnd: 1 } })
+    expect(container.querySelector('[role="listbox"]')).not.toBeNull()
+
+    // Pick the second rendered item. Rendered order is [research, clear,
+    // usage] (plugin group first), so index 1 = "clear".
+    fireEvent.keyDown(ta, { key: 'ArrowDown' })
+    const active = container.querySelector<HTMLButtonElement>('.cmd-picker-item.active')
+    expect(active?.textContent).toContain('clear')
+
+    fireEvent.keyDown(ta, { key: 'Enter' })
+    // The inserted command is the highlighted one, not source-array index 1.
+    expect(ta.value).toBe('/clear ')
   })
 
   it('shows session ended instead of textarea when terminated', () => {

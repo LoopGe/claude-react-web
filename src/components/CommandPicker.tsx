@@ -53,6 +53,16 @@ function groupCommands(commands: SlashCommand[]): CommandGroup[] {
   return groups
 }
 
+/** The flat render order of the picker (named plugin groups first, then
+ *  built-in commands). groupCommands REGROUPES — the flat sequence differs
+ *  from the source array whenever a plugin command follows a built-in one —
+ *  so the keyboard-selected index must be resolved against THIS order, not
+ *  the source array, or Enter/Tab inserts the wrong command. */
+// eslint-disable-next-line react-refresh/only-export-components -- the picker's render order is defined by groupCommands in THIS file; splitting it into a util would divorce the mapping from the order it must mirror
+export function pickerFlatCommands(commands: SlashCommand[]): SlashCommand[] {
+  return groupCommands(commands).flatMap((g) => g.commands)
+}
+
 export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSelect, onClose }: Props) {
   const filtered = commands.filter((c) => matches(c, query))
   const groups = useMemo(() => groupCommands(filtered), [filtered])

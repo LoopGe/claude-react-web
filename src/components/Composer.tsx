@@ -13,7 +13,7 @@ import type { InputHistoryApi } from '../hooks/useInputHistory'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useToast } from '../hooks/useToast'
 import type { PastedImage, SlashCommand } from '../types'
-import { CommandPicker } from './CommandPicker'
+import { CommandPicker, pickerFlatCommands } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -184,9 +184,16 @@ export const Composer = memo(function Composer({
     )
   }, [commands, pickerQuery])
 
+  /** The picker's rendered flat order — CommandPicker regroups plugin
+   *  commands to the top, so the flat sequence differs from filteredCommands
+   *  when a plugin command follows a built-in one. The confirmed index must
+   *  resolve against THIS, or Enter/Tab inserts the command at the source
+   *  array index instead of the highlighted one. */
+  const pickerCommands = useMemo(() => pickerFlatCommands(filteredCommands), [filteredCommands])
+
   /** Replace the current "/xxx" token with the confirmed command name. */
   const confirmPicker = useCallback(() => {
-    const cmd = filteredCommands[pickerIndex]
+    const cmd = pickerCommands[pickerIndex]
     if (!cmd) return
     const caret = textareaRef.current?.selectionStart ?? input.length
     const before = input.slice(0, caret)
@@ -202,7 +209,7 @@ export const Composer = memo(function Composer({
       el.focus()
       el.setSelectionRange(newPos, newPos)
     })
-  }, [input, setInput, pickerIndex, filteredCommands])
+  }, [input, setInput, pickerIndex, pickerCommands])
 
   // After a history step the textarea's caret is still where it was,
   // which on a multi-line recall puts you in the middle of the prompt.
@@ -677,7 +684,7 @@ export const Composer = memo(function Composer({
               }
               if (e.key === 'ArrowDown') {
                 e.preventDefault()
-                setPickerIndex((i) => Math.min(i + 1, filteredCommands.length - 1))
+                setPickerIndex((i) => Math.min(i + 1, pickerCommands.length - 1))
                 return
               }
               if (e.key === 'Enter' || e.key === 'Tab') {
