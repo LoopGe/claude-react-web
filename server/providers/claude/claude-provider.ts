@@ -151,6 +151,11 @@ export function buildProfileEnv(profile: ProviderProfile, maxOutputTokens: numbe
   if (maxOutputTokens > 0) {
     env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxOutputTokens)
   }
+  // SDK 0.3.233 dropped todo/task tools (TodoWrite, TaskCreate/Get/Update/List) from the DEFAULT tool surface on Opus 4.8 / Sonnet 5 / Fable 5+
+  // — this UI renders todo checklists (src/components/TodoChecklist.tsx), so
+  // opt back in explicitly rather than letting the model tier silently
+  // downgrade the feature.
+  env.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1'
   for (const key of Object.keys(process.env)) {
     if (key.startsWith('ANTHROPIC_') && key !== 'ANTHROPIC_API_KEY' && !(key in env)) {
       env[key] = process.env[key]
