@@ -41,6 +41,12 @@
 }
 .git-overlay[data-state="open"] > .git-panel { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
 .git-overlay[data-state="closing"] > .git-panel { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
+/* The panel is programmatically focused on open (tabIndex=-1) so the ↑↓
+   selection keydown originates inside it. It's never Tab-focusable, so
+   suppressing the outline only affects that programmatic focus. */
+.git-overlay > .git-panel:focus {
+  outline: none;
+}
 
 .git-panel-header {
   display: flex;
@@ -516,9 +522,12 @@
   display: flex;
   align-items: center;
 }
-/* Keyboard-selection highlight (↑↓ moves this ring between file rows). */
+/* Keyboard-selection highlight (↑↓/click moves this between file rows).
+   A soft accent tint + faint ring reads as a gentle highlight instead of a
+   hard full-strength accent outline. */
 .git-file-row.selected .git-file-row-line {
-  box-shadow: inset 0 0 0 1.5px var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .git-file-row-line > .git-file-row-toggle {
   flex: 1;

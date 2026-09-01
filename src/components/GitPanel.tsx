@@ -102,6 +102,19 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   const [selectedIdx, setSelectedIdx] = useState(0)
   const panelRef = useRef<HTMLElement | null>(null)
 
+  // Focus the panel on open so ↑↓/s/u/x/Enter keyboard selection works
+  // immediately. The Overlay focus trap leaves focus on the backdrop div (the
+  // panel's PARENT), so keydown events bubble up from the backdrop and never
+  // reach this <aside>. Focusing the aside puts the keydown origin inside the
+  // panel — and inside the trap, which then leaves it alone.
+  useEffect(() => {
+    panelRef.current?.focus()
+  }, [])
+
+  // Stable so memoized rows keep a fixed prop reference. Clicking a row moves
+  // the keyboard-selection highlight to that row's flattened index.
+  const selectRow = useCallback((index: number) => setSelectedIdx(index), [])
+
   // Stable so memoized FileRow/UntrackedRow don't re-render when it's passed
   // down. Git status paths are relative to the WORK TREE ROOT (repoRoot),
   // not to the session cwd — anchoring against cwd would resolve the wrong
@@ -306,7 +319,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   }
 
   return (
-    <aside className="git-panel" role="region" aria-label="Git" ref={panelRef} onKeyDown={handleKeyDown}>
+    <aside className="git-panel" role="region" aria-label="Git" ref={panelRef} tabIndex={-1} onKeyDown={handleKeyDown}>
       <header className="git-panel-header">
         <Tooltip label={status.upstream ? `tracking ${status.upstream}` : 'no upstream'} placement="bottom">
           <span className="git-panel-branch">
@@ -477,13 +490,15 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         ) : unstagedVisible.length === 0 ? (
           <EmptyHint>No matching files</EmptyHint>
         ) : (
-          unstagedVisible.map((f) => (
+          unstagedVisible.map((f, idx) => (
             <FileRow
               key={'u:' + f.path}
               file={f}
               cwd={cwd}
               staged={false}
               selected={selected?.kind === 'unstaged' && selected.file.path === f.path}
+              selectIndex={idx}
+              onSelect={selectRow}
               writeOps={writeOps}
               onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
@@ -511,13 +526,15 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         ) : stagedVisible.length === 0 ? (
           <EmptyHint>No matching files</EmptyHint>
         ) : (
-          stagedVisible.map((f) => (
+          stagedVisible.map((f, idx) => (
             <FileRow
               key={'s:' + f.path}
               file={f}
               cwd={cwd}
               staged
               selected={selected?.kind === 'staged' && selected.file.path === f.path}
+              selectIndex={unstagedVisible.length + idx}
+              onSelect={selectRow}
               writeOps={writeOps}
               onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
@@ -544,11 +561,13 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         ) : untrackedVisible.length === 0 ? (
           <EmptyHint>No matching files</EmptyHint>
         ) : (
-          untrackedVisible.map((f) => (
+          untrackedVisible.map((f, idx) => (
             <UntrackedRow
               key={'?:' + f.path}
               file={f}
               selected={selected?.kind === 'untracked' && selected.file.path === f.path}
+              selectIndex={unstagedVisible.length + stagedVisible.length + idx}
+              onSelect={selectRow}
               writeOps={writeOps}
               onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
@@ -684,6 +703,10 @@ interface FileRowProps {
   staged: boolean
   /** Whether this row is the current keyboard-selection target. */
   selected: boolean
+  /** Flattened index of this row in the keyboard-selection list. */
+  selectIndex: number
+  /** Move the keyboard selection to a flattened row index. */
+  onSelect: (index: number) => void
   writeOps: ReturnType<typeof useGitWrite>
   onError: (label: string, err: string) => void
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
@@ -691,7 +714,7 @@ interface FileRowProps {
   onOpenFile: (path: string) => void
 }
 
-const FileRow = memo(function FileRow({ file, cwd, staged, selected, writeOps, onError, askConfirm, onOpenFile }: FileRowProps) {
+const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex, onSelect, writeOps, onError, askConfirm, onOpenFile }: FileRowProps) {
   const [open, setOpen] = useState(false)
   const [renderDiff, setRenderDiff] = useState(false)
   // Pending-open: the user clicked to open but the diff fetch is still in
@@ -762,7 +785,7 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, writeOps, o
 
   return (
     <div className={`git-file-row ${open ? 'open' : ''} ${selected ? 'selected' : ''}`}>
-      <div className="git-file-row-line">
+      <div className="git-file-row-line" onClick={() => onSelect(selectIndex)}>
         <button
           type="button"
           className="git-file-row-toggle"
@@ -875,7 +898,7 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, writeOps, o
 }, (prev, next) => {
   // Custom comparator: skip re-render when only writeOps reference changed
   // but the file's busy state is the same.
-  if (prev.file !== next.file || prev.cwd !== next.cwd || prev.staged !== next.staged || prev.selected !== next.selected) return false
+  if (prev.file !== next.file || prev.cwd !== next.cwd || prev.staged !== next.staged || prev.selected !== next.selected || prev.selectIndex !== next.selectIndex || prev.onSelect !== next.onSelect) return false
   const path = prev.file.path
   const prevBusy = prev.writeOps.busyOps.has(`stage:${path}`) || prev.writeOps.busyOps.has(`unstage:${path}`) || prev.writeOps.busyOps.has(`discard:${path}`)
   const nextBusy = next.writeOps.busyOps.has(`stage:${path}`) || next.writeOps.busyOps.has(`unstage:${path}`) || next.writeOps.busyOps.has(`discard:${path}`)
@@ -886,6 +909,10 @@ interface UntrackedRowProps {
   file: GitFileEntry
   /** Whether this row is the current keyboard-selection target. */
   selected: boolean
+  /** Flattened index of this row in the keyboard-selection list. */
+  selectIndex: number
+  /** Move the keyboard selection to a flattened row index. */
+  onSelect: (index: number) => void
   writeOps: ReturnType<typeof useGitWrite>
   onError: (label: string, err: string) => void
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
@@ -893,13 +920,13 @@ interface UntrackedRowProps {
   onOpenFile: (path: string) => void
 }
 
-function UntrackedRow({ file, selected, writeOps, onError, askConfirm, onOpenFile }: UntrackedRowProps) {
+function UntrackedRow({ file, selected, selectIndex, onSelect, writeOps, onError, askConfirm, onOpenFile }: UntrackedRowProps) {
   const stageBusy = writeOps.busyOps.has(`stage:${file.path}`)
   const discardBusy = writeOps.busyOps.has(`discard:${file.path}`)
   const anyBusy = stageBusy || discardBusy
   return (
     <div className={`git-file-row untracked ${selected ? 'selected' : ''}`}>
-      <div className="git-file-row-line">
+      <div className="git-file-row-line" onClick={() => onSelect(selectIndex)}>
         <span className="git-file-row-toggle untracked-static" title={file.path}>
           <span className="git-file-status status-?" title={gitStatusTitle('?')}>?</span>
           <span className="git-file-path">
@@ -1258,7 +1285,7 @@ function BranchesSection({ sessionId, currentBranch, writeOps, onError, askConfi
             <Tooltip
               key={b.name}
               label={b.upstream ? `tracks ${b.upstream}` : 'no upstream'}
-              placement="left"
+              placement="top"
             >
               <button
                 type="button"
