@@ -5,7 +5,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 .session-list-top {
   padding: 12px;
@@ -212,23 +212,69 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--fg);
-  border-left: 3px solid transparent;
+  /* Joins the card run below it as the run's first row: same faint
+     accent-wash surface + hairline as .session-item, square by default,
+     with rounding applied via .list-first/.list-last (below). */
+  border-radius: 0;
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-elev-1));
+  --row-hairline:
+    inset 1px 0 0 0 var(--border),
+    inset -1px 0 0 0 var(--border);
+  box-shadow: var(--row-hairline);
   transition:
     background var(--motion-duration-fast) var(--motion-ease-standard),
-    border-color var(--motion-duration-fast) var(--motion-ease-standard);
+    border-radius var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.session-group-header:hover {
-  background: var(--bg-elev-2);
+/* Rounding + run outline at the ends of the group's run. The header is
+   always the run's first row (list-first); when collapsed or empty it is
+   also the last (list-first.list-last) and gets full rounding. Mirrors the
+   .session-item-shell.list-* rules so header + cards read as one block. */
+.session-group-header.list-first {
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  --row-hairline:
+    inset 1px 0 0 0 var(--border),
+    inset -1px 0 0 0 var(--border),
+    inset 0 1px 0 0 var(--border);
+}
+.session-group-header.list-last {
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  --row-hairline:
+    inset 1px 0 0 0 var(--border),
+    inset -1px 0 0 0 var(--border),
+    inset 0 -1px 0 0 var(--border);
+}
+.session-group-header.list-first.list-last {
+  border-radius: var(--radius-md);
+  --row-hairline:
+    inset 1px 0 0 0 var(--border),
+    inset -1px 0 0 0 var(--border),
+    inset 0 1px 0 0 var(--border),
+    inset 0 -1px 0 0 var(--border);
 }
 .session-group-header:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   background: var(--bg-elev-2);
 }
-/* Active group highlight — when this group's sessions occupy the main panels. */
+/* Active group highlight — when this group's sessions occupy the main panels.
+   Matches the open-card treatment (.session-item.open): a 1px accent-left
+   hairline + --bg-elev-2, so the sidebar's "selected" language is one system
+   (open stripe / focused halo). The header is always list-first, so the top
+   line is always present; the .list-last variant adds the bottom line for
+   collapsed/empty groups. */
 .session-section.group-active .session-group-header {
-  border-left-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: var(--bg-elev-2);
+  --row-hairline:
+    inset 1px 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent),
+    inset -1px 0 0 0 var(--border),
+    inset 0 1px 0 0 var(--border);
+}
+.session-section.group-active .session-group-header.list-last {
+  --row-hairline:
+    inset 1px 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent),
+    inset -1px 0 0 0 var(--border),
+    inset 0 1px 0 0 var(--border),
+    inset 0 -1px 0 0 var(--border);
 }
 
 /* Group header drag & drop — vertical insertion line (before/after). */
@@ -267,10 +313,6 @@
   color: var(--fg-muted);
   flex-shrink: 0;
   cursor: pointer;
-  transition: color var(--motion-duration-fast) var(--motion-ease-standard);
-}
-.group-collapse-arrow:hover {
-  color: var(--accent);
 }
 .group-header-name {
   flex: 1;
@@ -316,20 +358,14 @@
   display: flex;
   flex-direction: column;
 }
-.group-empty {
-  font-size: 12px;
-  color: var(--fg-muted);
-  padding: 4px 12px 8px 32px;
-  font-style: italic;
-  /* Make the whole "empty" area a comfortable drop target — otherwise
-     an empty group becomes impossible to drop into (the label line is
-     so narrow that hitting it during a drag is finicky). */
-  min-height: 28px;
-  border-radius: var(--radius-sm);
-  transition:
-    background var(--motion-duration-fast) var(--motion-ease-standard),
-    border-color var(--motion-duration-fast) var(--motion-ease-standard);
-  border: 1px dashed transparent;
+/* AnimatedCollapse clips its body on the Y axis (overflow-y: clip) so the
+   collapse animation can shrink to 0. That clip also cuts off the focused
+   card's *outer* box-shadow halo (the 1px ring + glow) at the group body's
+   bottom edge — the last card's halo read as "no bottom". Lift the clip only
+   when the group is expanded and the open/close animation is idle, so the
+   halo can paint past the body while collapse still clips during the tween. */
+.session-group-collapse[aria-hidden='false']:not(.animating) {
+  overflow-y: visible;
 }
 /* Drop target highlights while a session card is being dragged over a
    group. The header/body share the same visual language as the
@@ -345,12 +381,6 @@
   outline: 2px dashed color-mix(in srgb, var(--accent) 60%, transparent);
   outline-offset: -2px;
   border-radius: var(--radius-sm);
-}
-.group-empty.drop-target {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  border-color: var(--accent);
-  color: var(--accent);
-  font-style: normal;
 }
 
 /* Ungrouped section — slightly muted header to distinguish from groups. */
@@ -442,7 +472,6 @@
 .session-item-shell.deleting > .session-item {
   overflow: hidden;
 }
-.session-item:hover { background: color-mix(in srgb, var(--accent) 5%, var(--bg-elev-2)); }
 .session-item.deleting { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   .session-item,
@@ -464,9 +493,6 @@
    the slot pill (which resolves --accent to this session's colour). */
 .session-item.tinted {
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-1));
-}
-.session-item.tinted:hover {
-  background: color-mix(in srgb, var(--accent) 13%, var(--bg-elev-2));
 }
 .session-item.terminated { opacity: 0.6; }
 /* Dormant keeps reduced opacity + the hollow status dot as its identity
@@ -1029,7 +1055,7 @@
 .session-item.open {
   background: var(--bg-elev-2);
   --row-hairline:
-    inset 2px 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent),
+    inset 1px 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent),
     inset -1px 0 0 0 var(--border),
     inset 0 -1px 0 0 var(--border);
 }
@@ -1037,7 +1063,7 @@
    as well as the accent-left marker. */
 .session-item-shell.list-first > .session-item.open {
   --row-hairline:
-    inset 2px 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent),
+    inset 1px 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent),
     inset -1px 0 0 0 var(--border),
     inset 0 1px 0 0 var(--border),
     inset 0 -1px 0 0 var(--border);
@@ -1050,6 +1076,14 @@
   box-shadow: var(--row-hairline),
               0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
               0 2px 14px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+/* The focused halo is an *outer* box-shadow; the next card (a later sibling
+   with an opaque background) paints over the halo's bottom edge, so a focused
+   card in the middle of a run reads as "no bottom". Lift the focused shell
+   above its siblings so the halo paints over the neighbor instead of under. */
+.session-item-shell.focused {
+  position: relative;
+  z-index: 1;
 }
 
 /* Slot pill: small square badge to the left of the title that shows
@@ -1264,33 +1298,23 @@
   .session-status-dot { transition: none; }
 }
 .session-item-delete {
-  opacity: 0;
+  opacity: 1;
   background: transparent;
   border: none;
   color: var(--fg-muted);
   padding: 0 4px;
 }
-.session-item:hover .session-item-delete { opacity: 1; }
-/* Hover-only reveal is invisible to keyboard users — also reveal when a child
-   control (delete/sleep) receives focus, so Tab can surface the actions. */
-.session-item:focus-within .session-item-delete { opacity: 1; }
-.session-item-delete:hover { color: var(--danger); }
-/* Hover-revealed action cluster (sleep + delete) on the meta row. */
+/* Always-visible action cluster (sleep + delete) on the meta row. */
 .session-item-actions {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
 }
 .session-item-sleep {
-  opacity: 0;
+  opacity: 1;
   background: transparent;
   border: none;
   color: var(--fg-muted);
   padding: 0 4px;
 }
-.session-item:hover .session-item-sleep { opacity: 1; }
-.session-item:focus-within .session-item-sleep { opacity: 1; }
-.session-item-sleep:hover { color: var(--accent, var(--fg)); }
-.session-item-sleep:disabled { cursor: not-allowed; opacity: 0; }
-.session-item:hover .session-item-sleep:disabled { opacity: 0.5; }
-.session-item:focus-within .session-item-sleep:disabled { opacity: 0.5; }
+.session-item-sleep:disabled { cursor: not-allowed; opacity: 0.4; }
