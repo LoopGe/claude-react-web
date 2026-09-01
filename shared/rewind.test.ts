@@ -47,6 +47,18 @@ describe('coerceRewindResult', () => {
       .toEqual({ canRewind: true })
   })
 
+  it('keeps only finite numeric skippedLinks (real-run link-safety refusals)', () => {
+    expect(coerceRewindResult({ canRewind: true, skippedLinks: 2 }))
+      .toEqual({ canRewind: true, skippedLinks: 2 })
+    expect(coerceRewindResult({ canRewind: true, skippedLinks: 0 }))
+      .toEqual({ canRewind: true, skippedLinks: 0 })
+    // dryRun previews never set it; a NaN from an older CLI is dropped.
+    expect(coerceRewindResult({ canRewind: true }))
+      .toEqual({ canRewind: true })
+    expect(coerceRewindResult({ canRewind: true, skippedLinks: NaN }))
+      .toEqual({ canRewind: true })
+  })
+
   it('collapses entirely malformed input to a safe error result', () => {
     const expected = { canRewind: false, error: 'malformed rewind response' }
     expect(coerceRewindResult(null)).toEqual(expected)

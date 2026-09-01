@@ -13,6 +13,12 @@ export interface RewindFilesResult {
   filesChanged?: string[]
   insertions?: number
   deletions?: number
+  /** Count of tracked files NOT restored because a symlink/hard-link or other
+   *  non-regular file sat at the tracked path (or its parent no longer
+   *  resolves where it did at checkpoint time). SDK 0.3.216. Only populated
+   *  by a REAL (non-dryRun) rewind — a dryRun preview never sets it. 0 or
+   *  absent on a real run means no link-safety refusals occurred. */
+  skippedLinks?: number
 }
 
 /** Defensive narrowing of an unknown SDK response into RewindFilesResult.
@@ -33,5 +39,6 @@ export function coerceRewindResult(v: unknown): RewindFilesResult {
   }
   if (typeof r.insertions === 'number' && Number.isFinite(r.insertions)) out.insertions = r.insertions
   if (typeof r.deletions === 'number' && Number.isFinite(r.deletions)) out.deletions = r.deletions
+  if (typeof r.skippedLinks === 'number' && Number.isFinite(r.skippedLinks)) out.skippedLinks = r.skippedLinks
   return out
 }
