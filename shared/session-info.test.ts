@@ -48,9 +48,12 @@ describe('coerceThinkingSetting', () => {
       .toEqual({ type: 'disabled' })
   })
 
-  it('rejects an invalid display value (whole value dropped)', () => {
-    expect(coerceThinkingSetting({ type: 'adaptive', display: 'redacted' })).toBeUndefined()
-    expect(coerceThinkingSetting({ type: 'adaptive', display: 1 })).toBeUndefined()
-    expect(coerceThinkingSetting({ type: 'enabled', budgetTokens: 1024, display: null })).toBeUndefined()
+  it('strips an invalid display value (setting kept — persistence must not lose the intent)', () => {
+    expect(coerceThinkingSetting({ type: 'adaptive', display: 'redacted' }))
+      .toEqual({ type: 'adaptive' })
+    expect(coerceThinkingSetting({ type: 'adaptive', display: 1 }))
+      .toEqual({ type: 'adaptive' })
+    expect(coerceThinkingSetting({ type: 'enabled', budgetTokens: 1024, display: null }))
+      .toEqual({ type: 'enabled', budgetTokens: 1024 })
   })
 })

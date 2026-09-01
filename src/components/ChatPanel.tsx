@@ -490,7 +490,7 @@ export const ChatPanel = memo(function ChatPanel({
       ? { ...next, display: currentDisplay }
       : next
 
-  const commitThinking = (setting: ThinkingSetting) => {
+  const commitThinking = (setting: ThinkingSetting, opts?: { clearDisplay?: boolean }) => {
     const prev = session.thinking
     if (
       prev != null &&
@@ -503,13 +503,20 @@ export const ChatPanel = memo(function ChatPanel({
     commitWithRollback(
       session,
       `/sessions/${session.id}/thinking`,
-      { thinking: setting },
+      { thinking: setting, clearDisplay: opts?.clearDisplay === true },
       { thinking: session.thinking },
       `Couldn't change thinking config`,
       onSessionUpdate,
       toast.error,
     )
   }
+  // A LIVE display switch is only expressible with a concrete token budget
+  // (setMaxThinkingTokens(tokens, display)); a bare {type:'enabled'} — no
+  // budget, accepted at create — has none, so the reasoning items would 400
+  // on such a session. Hide the section there instead of shipping dead
+  // buttons. (Everything else — unset, adaptive, budgeted enabled — passes.)
+  const reasoningSwitchable =
+    session.thinking?.type !== 'enabled' || session.thinking.budgetTokens != null
   // Thinking chip gating (three-state like effort): undefined capability →
   // show the chip (fail-open); false → hide it. The chip label shows the
   // effective setting — Auto (model decides) unless the user pinned Off or a
@@ -883,13 +890,16 @@ export const ChatPanel = memo(function ChatPanel({
                   onClick: () => { setThinkingMenu(null); commitThinking(preserveDisplay({ type: 'enabled', budgetTokens: n })) },
                 })),
                 // Reasoning-display section — only while thinking is actually on
-                // (disabled carries no display; SDK ThinkingDisabled omits it).
-                ...(session.thinking?.type !== 'disabled' ? [
+                // (disabled carries no display; SDK ThinkingDisabled omits it)
+                // and only when a live display switch is expressible (see
+                // reasoningSwitchable — a bare enabled setting has no budget
+                // to pair the display change with).
+                ...(session.thinking?.type !== 'disabled' && reasoningSwitchable ? [
                   {},
                   {
                     label: 'reasoning: default',
                     icon: currentDisplay === undefined ? <IconCheck size={14} /> : ' ',
-                    onClick: () => { setThinkingMenu(null); if (currentDisplay !== undefined) commitThinking(withoutDisplay(session.thinking ?? { type: 'adaptive' })) },
+                    onClick: () => { setThinkingMenu(null); if (currentDisplay !== undefined) commitThinking(withoutDisplay(session.thinking ?? { type: 'adaptive' }), { clearDisplay: true }) },
                   },
                   {
                     label: 'reasoning: summarized',

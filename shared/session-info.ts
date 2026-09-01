@@ -78,28 +78,29 @@ export type ThinkingSetting =
   | { type: 'enabled'; budgetTokens?: number; display?: ThinkingDisplay }
 
 /** Defensive runtime validation + narrowing of an unknown value into a
- *  ThinkingSetting. Returns undefined for anything malformed. */
+ *  ThinkingSetting. Returns undefined for anything malformed. An invalid
+ *  `display` is STRIPPED rather than rejected — this runs on the persistence
+ *  load path too, where dropping the whole value would silently respawn the
+ *  session with model-default thinking instead of the stored intent. */
 export function coerceThinkingSetting(v: unknown): ThinkingSetting | undefined {
   if (typeof v !== 'object' || v === null) return undefined
   const t = v as { type?: unknown; budgetTokens?: unknown; display?: unknown }
   // `display` absent → fine; 'summarized' | 'omitted' → fine; anything else
-  // (numbers, booleans, null, unknown strings) → the whole value is dropped.
-  let display: ThinkingDisplay | undefined
-  if (t.display !== undefined) {
-    if (t.display !== 'summarized' && t.display !== 'omitted') return undefined
-    display = t.display
-  }
-  if (t.type === 'adaptive') return { type: 'adaptive', ...(display ? { display } : {}) }
+  // (numbers, booleans, null, unknown strings) → strip the key, keep the
+  // setting. Hoisted once so every variant shares the "omit when absent" rule.
+  const extra: { display?: ThinkingDisplay } =
+    t.display === 'summarized' || t.display === 'omitted' ? { display: t.display } : {}
+  if (t.type === 'adaptive') return { type: 'adaptive', ...extra }
   if (t.type === 'disabled') return { type: 'disabled' }
   if (t.type === 'enabled') {
     // Absent budget = bare enabled (valid). A PRESENT but non-positive /
     // non-numeric budget is malformed — returning bare enabled would silently
     // change the user's meaning, so the whole value is dropped instead.
     if (t.budgetTokens === undefined) {
-      return { type: 'enabled', ...(display ? { display } : {}) }
+      return { type: 'enabled', ...extra }
     }
     return typeof t.budgetTokens === 'number' && t.budgetTokens > 0
-      ? { type: 'enabled', budgetTokens: Math.round(t.budgetTokens), ...(display ? { display } : {}) }
+      ? { type: 'enabled', budgetTokens: Math.round(t.budgetTokens), ...extra }
       : undefined
   }
   return undefined

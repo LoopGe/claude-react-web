@@ -571,14 +571,16 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
   // {type:'enabled', budgetTokens}). Forwarded to the SDK via the
   // setMaxThinkingTokens control request (thinking has no Settings key);
   // persisted so it survives resume / fork / clear / restart via
-  // Options.thinking.
+  // Options.thinking. `clearDisplay: true` is the explicit "reset the
+  // reasoning display mode to the API default" switch — an absent display
+  // means "keep the current mode" instead.
   app.post('/sessions/:id/thinking', async (c) => {
-    const body = await safeJson<{ thinking?: unknown }>(c.req)
+    const body = await safeJson<{ thinking?: unknown; clearDisplay?: unknown }>(c.req)
     const setting = coerceThinkingSetting(body.thinking)
     if (!setting) {
       return c.json({ error: "thinking must be {type:'adaptive'} | {type:'disabled'} | {type:'enabled', budgetTokens?: number, display?: 'summarized'|'omitted'}" }, 400)
     }
-    const info = await sm.setThinking(c.req.param('id'), setting)
+    const info = await sm.setThinking(c.req.param('id'), setting, { clearDisplay: body.clearDisplay === true })
     return c.json({ session: info })
   })
 

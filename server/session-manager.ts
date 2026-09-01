@@ -3433,11 +3433,14 @@ export class SessionManager {
    *      only needed for the LIVE switch.
    *  `display` (the SDK's thinkingDisplay param) is forwarded alongside the
    *  tokens: 'summarized' | 'omitted' replaces the display mode, null clears
-   *  back to the API default. `disabled` carries no display (SDK
-   *  ThinkingDisabled omits the field), and an ABSENT display maps to null —
-   *  the client always sends the full intended state, so "absent" is an
-   *  explicit "use default", never "preserve current". */
-  async setThinking(id: string, setting: ThinkingSetting): Promise<SessionInfo> {
+   *  back to the API default, and an ABSENT display maps to undefined — the
+   *  SDK's "keep the session-start mode" — so a type/budget change (or an
+   *  off→on re-enable, where the disabled variant has already dropped the
+   *  display) never silently resets the spawn-time display choice. Clearing
+   *  is therefore EXPLICIT: `opts.clearDisplay` (sent by the client's
+   *  "reasoning: default" item). `disabled` carries no display either way
+   *  (SDK ThinkingDisabled omits the field). */
+  async setThinking(id: string, setting: ThinkingSetting, opts?: { clearDisplay?: boolean }): Promise<SessionInfo> {
     const s = this.requireLive(id)
     if (setting.type === 'enabled' && (setting.budgetTokens == null || setting.budgetTokens <= 0)) {
       throw new HttpError(400, "thinking 'enabled' requires a positive budgetTokens for a live switch")
@@ -3445,7 +3448,9 @@ export class SessionManager {
     const tokens = setting.type === 'adaptive' ? null
       : setting.type === 'disabled' ? 0
       : (setting.budgetTokens as number)
-    const display = setting.type === 'disabled' ? undefined : (setting.display ?? null)
+    const display = setting.type === 'disabled'
+      ? undefined
+      : opts?.clearDisplay ? null : setting.display
     await this.requireHandleMethod<(tokens: number | null, display?: 'summarized' | 'omitted' | null) => Promise<void>>(
       s,
       'setMaxThinkingTokens',
