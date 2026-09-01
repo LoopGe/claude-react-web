@@ -28,3 +28,47 @@ describe('AppPluginEventBus.emitPluginEvent', () => {
     b.unsubscribe()
   })
 })
+
+describe('AppPluginEventBus widget payload replay', () => {
+  it('replays cached widget payloads in the snapshot of a late subscriber', async () => {
+    const bus = new AppPluginEventBus()
+    const payload = { values: [{ id: 'quota', label: 'Ark', value: '42', unit: '%' }] }
+    // Emit BEFORE any tab connects — the normal boot-time ordering.
+    bus.emitPluginEvent('p1', 'w1', payload)
+
+    const sub = bus.subscribeAppPlugins()
+    const first = await sub.iterable[Symbol.asyncIterator]().next()
+    expect(first.value).toMatchObject({ kind: 'snapshot' })
+    expect((first.value as { widgetPayloads?: unknown[] }).widgetPayloads).toEqual([
+      { pluginId: 'p1', widgetId: 'w1', payload },
+    ])
+    sub.unsubscribe()
+  })
+
+  it('overwrites a cached payload when the same widget re-emits', async () => {
+    const bus = new AppPluginEventBus()
+    bus.emitPluginEvent('p1', 'w1', { values: [{ id: 'a', label: 'A', value: '1' }] })
+    bus.emitPluginEvent('p1', 'w1', { values: [{ id: 'a', label: 'A', value: '2' }] })
+
+    const sub = bus.subscribeAppPlugins()
+    const first = await sub.iterable[Symbol.asyncIterator]().next()
+    expect((first.value as { widgetPayloads?: unknown[] }).widgetPayloads).toEqual([
+      { pluginId: 'p1', widgetId: 'w1', payload: { values: [{ id: 'a', label: 'A', value: '2' }] } },
+    ])
+    sub.unsubscribe()
+  })
+
+  it('clearPluginEvents evicts a plugin’s cached payloads', async () => {
+    const bus = new AppPluginEventBus()
+    bus.emitPluginEvent('p1', 'w1', { values: [{ id: 'a', label: 'A', value: '1' }] })
+    bus.emitPluginEvent('p2', 'w2', { values: [{ id: 'b', label: 'B', value: '2' }] })
+    bus.clearPluginEvents('p1')
+
+    const sub = bus.subscribeAppPlugins()
+    const first = await sub.iterable[Symbol.asyncIterator]().next()
+    expect((first.value as { widgetPayloads?: unknown[] }).widgetPayloads).toEqual([
+      { pluginId: 'p2', widgetId: 'w2', payload: { values: [{ id: 'b', label: 'B', value: '2' }] } },
+    ])
+    sub.unsubscribe()
+  })
+})

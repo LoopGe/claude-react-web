@@ -11,9 +11,10 @@ import { createAsyncSubscription } from '../async-subscription.js'
 import type { AppPluginClientInfo } from '../../shared/app-plugins/runtime-state.js'
 import type { ResolvedPluginContributions } from '../../shared/app-plugins/contributions.js'
 import type { StatGridPayload } from '../../shared/app-plugins/widget.js'
+import type { WsWidgetPayload } from '../../shared/ws-protocol.js'
 
 export type AppPluginEvent =
-  | { kind: 'snapshot'; plugins: AppPluginClientInfo[] }
+  | { kind: 'snapshot'; plugins: AppPluginClientInfo[]; widgetPayloads: WsWidgetPayload[] }
   | { kind: 'state-changed'; plugin: AppPluginClientInfo }
   | { kind: 'contributions-changed'; pluginId: string; contributions: ResolvedPluginContributions }
   | { kind: 'plugin-event'; pluginId: string; widgetId: string; payload: StatGridPayload }
@@ -32,6 +33,9 @@ export interface AppPluginBroadcaster {
 export class AppPluginEventBus implements AppPluginBroadcaster {
   private subscribers = new Map<string, { push: (ev: AppPluginEvent) => void; end: () => void }>()
   private snapshotCache: AppPluginClientInfo[] = []
+  /** Latest payload per widget (key `${pluginId}:${widgetId}`), replayed in
+   *  the snapshot so a tab connecting after a push still renders the widget. */
+  private latestPayloads = new Map<string, WsWidgetPayload>()
 
   /** Update the cached snapshot (called by the manager after any mutation
    *  that changes the list). The next new subscriber gets this as its
@@ -57,7 +61,7 @@ export class AppPluginEventBus implements AppPluginBroadcaster {
     // Emit the snapshot as the first event so the consumer hydrates
     // immediately. Done via push so it flows through the same queue as live
     // updates (no special-casing in the WS driver).
-    sub.push({ kind: 'snapshot', plugins: this.snapshotCache })
+    sub.push({ kind: 'snapshot', plugins: this.snapshotCache, widgetPayloads: this.widgetPayloadSnapshot() })
     return {
       iterable: sub.iterable,
       snapshot: this.snapshotCache,
@@ -79,7 +83,7 @@ export class AppPluginEventBus implements AppPluginBroadcaster {
    *  where a `state-changed` for a now-absent plugin would leave a ghost
    *  entry on existing tabs (there's no `app-plugin-removed` frame in v1). */
   emitSnapshot(): void {
-    const ev: AppPluginEvent = { kind: 'snapshot', plugins: this.snapshotCache }
+    const ev: AppPluginEvent = { kind: 'snapshot', plugins: this.snapshotCache, widgetPayloads: this.widgetPayloadSnapshot() }
     for (const sub of this.subscribers.values()) sub.push(ev)
   }
 
@@ -90,10 +94,24 @@ export class AppPluginEventBus implements AppPluginBroadcaster {
     for (const sub of this.subscribers.values()) sub.push(ev)
   }
 
-  /** Broadcast a plugin-pushed widget payload to every live tab. */
+  /** Broadcast a plugin-pushed widget payload to every live tab AND cache it
+   *  so a tab connecting later still receives it in its snapshot. */
   emitPluginEvent(pluginId: string, widgetId: string, payload: StatGridPayload): void {
+    this.latestPayloads.set(`${pluginId}:${widgetId}`, { pluginId, widgetId, payload })
     const ev: AppPluginEvent = { kind: 'plugin-event', pluginId, widgetId, payload }
     for (const sub of this.subscribers.values()) sub.push(ev)
+  }
+
+  /** Evict every cached payload for a plugin. Called on disable/uninstall so
+   *  a later snapshot doesn't replay stale widget data for a dead plugin. */
+  clearPluginEvents(pluginId: string): void {
+    for (const [k, v] of this.latestPayloads) {
+      if (v.pluginId === pluginId) this.latestPayloads.delete(k)
+    }
+  }
+
+  private widgetPayloadSnapshot(): WsWidgetPayload[] {
+    return Array.from(this.latestPayloads.values())
   }
 
   /** End every subscriber. Called from manager.shutdown() so the WS driver

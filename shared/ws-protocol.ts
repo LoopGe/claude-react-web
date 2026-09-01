@@ -377,6 +377,15 @@ export interface WsError {
   sessionId?: string
 }
 
+/** A cached widget payload replayed inside the app-plugin snapshot so a
+ *  freshly-connected tab can render widgets that were pushed before it
+ *  connected (the `app-plugin-event` frame itself is a one-shot broadcast). */
+export interface WsWidgetPayload {
+  pluginId: string
+  widgetId: string
+  payload: StatGridPayload
+}
+
 /** Initial App Plugin list snapshot + subsequent updates. Emitted on WS
  *  connect (so a fresh tab hydrates without a separate REST round-trip) and
  *  whenever the full plugin set changes wholesale. Clients replace their
@@ -386,6 +395,8 @@ export interface WsError {
 export interface WsAppPluginsSnapshot {
   kind: 'app-plugins-snapshot'
   plugins: AppPluginClientInfo[]
+  /** Latest payload per widget, replayed so widgets render on first mount. */
+  widgetPayloads: WsWidgetPayload[]
 }
 export interface WsAppPluginStateChanged {
   kind: 'app-plugin-state-changed'
