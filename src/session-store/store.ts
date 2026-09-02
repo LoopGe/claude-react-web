@@ -1,4 +1,4 @@
-import { createInitialSessionState, type ServerMirror, type SessionAction, type SessionSnapshot, type SessionState, type TranscriptItem } from './types'
+import { createInitialSessionState, type ServerMirror, type SessionAction, type SessionSnapshot, type SessionState, type TranscriptItem, type LiveTurnSegment } from './types'
 import { rebuildIndexesFromMessages, reduceSessionState, reapplyDismissed, MEMORY_ITEM_CAP } from './reducer'
 import { toTranscriptItem } from './normalize'
 import type { SdkMessage } from '../types'
@@ -325,6 +325,19 @@ const SAVE_MAX_DEFER_MS = 10_000
  *  ~80ms (~12fps) reads as smooth for streaming prose while cutting the
  *  render volume to roughly a third of a per-frame (33ms / 30fps) flush. */
 const LIVE_TURN_FLUSH_MS = 80
+
+/** Joined `flushedText` memo. buildSnapshot runs on every dispatch, but the
+ *  segment array's identity only changes on LIVE_TURN_FLUSH / pruning, so a
+ *  WeakMap keyed by the array keeps the common case O(1) while the join
+ *  itself stays bounded by in-flight (un-pruned) text. */
+const streamedTextMemo = new WeakMap<LiveTurnSegment[], string>()
+function joinLiveTurnSegments(segments: LiveTurnSegment[]): string {
+  const memoed = streamedTextMemo.get(segments)
+  if (memoed !== undefined) return memoed
+  const joined = segments.map((s) => s.text).join('')
+  streamedTextMemo.set(segments, joined)
+  return joined
+}
 
 export class SessionStore {
   private state: SessionState
@@ -1041,7 +1054,7 @@ export class SessionStore {
       hydrateReady: this.hydrateReady,
       items,
       messages,
-      streamingContent: mirror.liveTurn?.flushedText ?? null,
+      streamingContent: mirror.liveTurn ? joinLiveTurnSegments(mirror.liveTurn.flushedText) : null,
       activePhase: mirror.liveTurn?.phase ?? null,
       tokenRate: mirror.liveTurn?.tokenRate ?? null,
       contextUsage: mirror.contextUsage,
@@ -1517,7 +1530,7 @@ if (typeof window !== 'undefined') {
           tokenRate: liveTurn?.tokenRate ?? null,
           outputTokens: liveTurn?.outputTokens ?? undefined,
           phase: liveTurn?.phase ?? null,
-          hasTextChunks: liveTurn?.textChunks?.length ?? 0,
+          hasTextSegments: liveTurn?.textChunks?.length ?? 0,
           totalChars: liveTurn?.totalChars ?? 0,
           elapsed: `${elapsed}s`,
           writingElapsed: `${writingElapsed}s`,

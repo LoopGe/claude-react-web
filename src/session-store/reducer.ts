@@ -222,14 +222,29 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     case 'LIVE_TURN_FLUSH': {
       const liveTurn = state.mirror.liveTurn
       if (!liveTurn || !liveTurn.dirty) return state
+      // Prune may have emptied the tail (finalized assistant landed inside the
+      // 80ms flush window): clear the dirty flag without rebuilding flushed.
+      if (liveTurn.textChunks.length === 0) {
+        return withMirror(state, {
+          ...state.mirror,
+          liveTurn: { ...liveTurn, dirty: false },
+        })
+      }
+      // Merge unflushed chunks into the tail of the flushed segment list,
+      // coalescing adjacent same-origin segments so the segment count tracks
+      // main↔sidechain alternations, not flush ticks or delta counts.
+      const flushed = liveTurn.flushedText.slice()
+      for (const chunk of liveTurn.textChunks) {
+        const tail = flushed[flushed.length - 1]
+        if (tail && tail.sidechain === chunk.sidechain) {
+          flushed[flushed.length - 1] = { text: tail.text + chunk.text, sidechain: tail.sidechain }
+        } else {
+          flushed.push(chunk)
+        }
+      }
       return withMirror(state, {
         ...state.mirror,
-        liveTurn: {
-          ...liveTurn,
-          flushedText: liveTurn.flushedText + liveTurn.textChunks.join(''),
-          textChunks: [],
-          dirty: false,
-        },
+        liveTurn: { ...liveTurn, flushedText: flushed, textChunks: [], dirty: false },
       })
     }
     case 'DISMISS_SUBAGENT': {
@@ -1217,6 +1232,10 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   working = withMirror(working, updateLiveTurnMirror(working.mirror, incomingMessage))
   working = withMirror(working, updateTranscriptMirror(working.mirror, incomingMessage))
   working = withMirror(working, updateIndexesMirror(working.mirror, incomingMessage))
+  // A finalized main-thread assistant message means its text now lives in the
+  // transcript above — drop the duplicate from the live accumulator (see
+  // pruneFinalizedLiveTurnText for the serial-response invariant this leans on).
+  working = withMirror(working, pruneFinalizedLiveTurnText(working.mirror, incomingMessage))
 
   if (messageUuid && working.mirror.pendingConsumedMessages.has(messageUuid)) {
     const pendingConsumedMessages = new Map(working.mirror.pendingConsumedMessages)
@@ -2007,6 +2026,46 @@ function pushRateSample(liveTurn: LiveTurnState, now: number, tokens: number): P
     : { samples: capped }
 }
 
+/** Prune finalized main-thread text from the live turn's accumulator.
+ *
+ *  Invariant: main-thread API responses are strictly serial — the agent loop
+ *  waits for the current response (and its tool runs) before starting the
+ *  next. So when a finalized main-thread `assistant` message arrives, EVERY
+ *  main-thread segment streamed so far this turn belongs to an already-
+ *  finalized response — including the ≤80ms unflushed tail, which is
+ *  contained in the finalized text. Dropping all main-thread segments is
+ *  therefore an exact operation, not a text-match heuristic, and it bounds
+ *  the StreamingFooter to in-flight text only.
+ *
+ *  Sidechain segments (subagent streams, parent_tool_use_id set) never land
+ *  in the main transcript (MessageList filters on parent_tool_use_id) — the
+ *  footer is their only in-progress surface, so they are kept. liveTurn
+ *  itself stays: phase / tokenRate / samples still drive the WorkingBubble
+ *  and the tok/s readout, and an all-sidechain (or empty) result projects to
+ *  '' — the same pre-text path a tool-use-only response takes today
+ *  (MessageList treats "" as null, running the existing exit-fade).
+ *
+ *  applyMessage is also the path for REPLAY_REPLACE's newer slice, so a
+ *  reconnect replay that carries finalized assistants prunes identically.
+ *  The full-overlap drop path (older=newer=[]) never reaches here — same as
+ *  today, no pruning, no regression. */
+function pruneFinalizedLiveTurnText(mirror: ServerMirror, message: SdkMessage): ServerMirror {
+  if (message.type !== 'assistant' || message.parent_tool_use_id != null) return mirror
+  const liveTurn = mirror.liveTurn
+  if (!liveTurn) return mirror
+  const hasMainThread =
+    liveTurn.flushedText.some((s) => !s.sidechain) || liveTurn.textChunks.some((s) => !s.sidechain)
+  if (!hasMainThread) return mirror
+  return {
+    ...mirror,
+    liveTurn: {
+      ...liveTurn,
+      flushedText: liveTurn.flushedText.filter((s) => s.sidechain),
+      textChunks: liveTurn.textChunks.filter((s) => s.sidechain),
+    },
+  }
+}
+
 function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
   if (message.type !== 'stream_event') return mirror
   const event = message.event as Record<string, unknown> | undefined
@@ -2018,7 +2077,7 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
       turnId: typeof message.uuid === 'string' ? message.uuid : `turn:${mirror.eventCount + 1}`,
       phase: null,
       textChunks: [],
-      flushedText: '',
+      flushedText: [],
       tokenRate: null,
       startedAt: Date.now(),
       lastDeltaAt: Date.now(),
@@ -2108,7 +2167,7 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
       liveTurn = {
         ...liveTurn,
         ...next,
-        textChunks: [...liveTurn.textChunks, text],
+        textChunks: [...liveTurn.textChunks, { text, sidechain: message.parent_tool_use_id != null }],
         lastDeltaAt: now,
         dirty: true,
       }
