@@ -15,7 +15,7 @@ vi.mock('../hooks/useWsHub', () => ({
   useWsHub: () => hub,
 }))
 
-import { usePluginWidgetStream } from './usePluginWidgetStream'
+import { usePluginWidgetStream, hydrateWidgetStates } from './usePluginWidgetStream'
 
 function emit(frame: unknown) {
   for (const fn of listeners) fn(frame)
@@ -52,6 +52,22 @@ describe('usePluginWidgetStream', () => {
       emit({ kind: 'app-plugin-event', pluginId: 'p-c', widgetId: 'other', payload: { values: [] } })
       emit({ kind: 'app-plugins-snapshot', plugins: [] })
     })
+    expect(result.current).toBeUndefined()
+  })
+
+  it('renders a hydrated snapshot payload immediately on mount', () => {
+    hydrateWidgetStates([
+      { pluginId: 'p-e', widgetId: 'w-e', payload: { values: [{ id: 'q', label: 'Quota', value: '9', unit: '%' }] } },
+    ])
+    const { result } = renderHook(() => usePluginWidgetStream('p-e', 'w-e'))
+    expect(result.current?.payload.values[0].value).toBe('9')
+  })
+
+  it('ignores hydrated payloads for other widgets', () => {
+    hydrateWidgetStates([
+      { pluginId: 'p-f', widgetId: 'other', payload: { values: [{ id: 'q', label: 'Quota', value: '1' }] } },
+    ])
+    const { result } = renderHook(() => usePluginWidgetStream('p-f', 'w-f'))
     expect(result.current).toBeUndefined()
   })
 

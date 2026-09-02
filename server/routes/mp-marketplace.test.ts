@@ -56,6 +56,9 @@ let cloneAtShaShouldFail = false
 // (marketplace.json + plugin subdirs), a single-plugin repo (plugin.json
 // only), or an empty .claude-plugin/ dir (no manifest → parse failure).
 let cloneFixture: 'marketplace' | 'plugin' | 'empty' = 'marketplace'
+// Counts gitBranchName invocations so tests can assert the branch is resolved
+// once (at add/refresh) and NOT re-derived per list request.
+let gitBranchNameCalls = 0
 
 vi.mock('../git-clone.js', async () => {
   // Pull in the real HttpError so url validation produces the same 400
@@ -111,6 +114,10 @@ vi.mock('../git-clone.js', async () => {
       'utf8',
     )
     }),
+    gitBranchName: vi.fn(async () => {
+      gitBranchNameCalls++
+      return 'main'
+    }),
     gitCloneAtSha: vi.fn(async (url: string, dest: string, opts: { sha: string }) => {
       cloneAtShaCalls.push({ url, sha: opts.sha })
       if (cloneAtShaShouldFail) throw new errors.HttpError(500, 'clone failed')
@@ -157,6 +164,7 @@ describe('mp-marketplace routes', () => {
     cloneAtShaCalls = []
     cloneAtShaShouldFail = false
     cloneFixture = 'marketplace'
+    gitBranchNameCalls = 0
     stateDir = tempDir('mp-route')
     store = new MpStore({ stateDir })
     await store.load()
@@ -198,9 +206,13 @@ describe('mp-marketplace routes', () => {
 
     // List
     const listRes = await app.request('/mp/marketplaces')
-    const listed = await jsonOf<{ marketplaces: Array<{ id: string; enabledCount: number }> }>(listRes)
+    const listed = await jsonOf<{
+      marketplaces: Array<{ id: string; enabledCount: number; source: { ref?: string; branch?: string } }>
+    }>(listRes)
     expect(listed.marketplaces.map((m) => m.id)).toContain(id)
     expect(listed.marketplaces.find((m) => m.id === id)?.enabledCount).toBe(0)
+    // The list item surfaces the resolved branch even though no ref was given.
+    expect(listed.marketplaces.find((m) => m.id === id)?.source.branch).toBe('main')
 
     // Plugins — the git-subdir plugin ("ext") now LISTS (previously dropped).
     const plugRes = await app.request(`/mp/marketplaces/${id}/plugins`)
@@ -388,6 +400,52 @@ describe('mp-marketplace routes', () => {
     const body = await jsonOf<{ entry: { lastSha: string }; updated: boolean }>(ref)
     expect(body.updated).toBe(true)
     expect(body.entry.lastSha).toBe(FAKE_SHA_2)
+  })
+
+  it('persists the resolved branch at add time and does not re-derive it on list', async () => {
+    const add = await jsonOf<{ entry: { id: string; source: { branch?: string } } }>(
+      await app.request('/mp/marketplaces', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com/owner/test.git' }),
+      }),
+    )
+    const id = add.entry.id
+    expect(add.entry.source.branch).toBe('main')
+    // Branch was resolved exactly once, at add time.
+    expect(gitBranchNameCalls).toBe(1)
+    // And the resolved branch is persisted on the entry itself.
+    expect(store.get(id)?.branch).toBe('main')
+
+    // Listing surfaces the branch WITHOUT spawning another git process.
+    const list = await jsonOf<{ marketplaces: Array<{ id: string; source: { branch?: string } }> }>(
+      await app.request('/mp/marketplaces'),
+    )
+    expect(list.marketplaces.find((m) => m.id === id)?.source.branch).toBe('main')
+    expect(gitBranchNameCalls).toBe(1)
+  })
+
+  it('persists the branch across a store reload and re-resolves on refresh', async () => {
+    const add = await jsonOf<{ entry: { id: string } }>(
+      await app.request('/mp/marketplaces', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com/owner/test.git' }),
+      }),
+    )
+    const id = add.entry.id
+
+    // Survives a store reload (branch read back from disk via coerceMpEntry).
+    const reloaded = new MpStore({ stateDir })
+    await reloaded.load()
+    expect(reloaded.get(id)?.branch).toBe('main')
+
+    // Refresh re-resolves (and persists) the branch alongside the new SHA.
+    pullSha = FAKE_SHA_2
+    const ref = await app.request(`/mp/marketplaces/${id}/refresh`, { method: 'POST' })
+    expect(ref.status).toBe(200)
+    expect(gitBranchNameCalls).toBe(2) // add + refresh
+    expect(store.get(id)?.branch).toBe('main')
   })
 
   it('remove requires confirm=true and clears related enabled flags', async () => {

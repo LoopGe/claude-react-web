@@ -62,6 +62,29 @@ const { mockGetSessionInfo, mockListSessions } = vi.hoisted(() => {
   }
 })
 
+// First-party in-process servers are injected into every session's
+// mcpServers map at spawn / live setMcpServers. Mock the registry so no real
+// in-process McpServer is constructed; mockInjectAll mirrors the real logic
+// (inject the `apptools` server when the resolver enables it and a cwd is
+// present), letting tests assert on the injected entry.
+const { mockInjectAll } = vi.hoisted(() => ({ mockInjectAll: vi.fn() }))
+mockInjectAll.mockImplementation((cwd: string | null, enabled: (name: string) => boolean) => {
+  if (enabled('apptools') && cwd) return { apptools: { type: 'sdk', name: 'apptools' } }
+  return undefined
+})
+vi.mock('./sdk-tools/registry.js', () => ({
+  firstPartyRegistry: {
+    injectAll: mockInjectAll,
+    readOnlyToolFqns: () => new Set(['mcp__apptools__git_status', 'mcp__apptools__git_branches']),
+    mutatingToolFqns: () => new Set(['mcp__apptools__git_stage']),
+    list: () => [{ name: 'apptools', description: '', defaultEnabled: true, requiresCwd: true, buildTools: () => [] }],
+  },
+}))
+vi.mock('./sdk-tools/app-tools.js', () => ({
+  APP_TOOLS_SERVER_NAME: 'apptools',
+  buildAppToolsServer: vi.fn((cwd: string) => ({ type: 'sdk', name: 'apptools', instance: { cwd } })),
+}))
+
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   return {
     getSessionInfo: (id: string, opts?: { dir?: string }) => mockGetSessionInfo(id, opts),
@@ -3602,12 +3625,82 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     rmRf(mcpDir)
   })
 
-  it('forwards the given servers straight to query.setMcpServers', async () => {
+  it('forwards the given servers straight to query.setMcpServers (plus apptools)', async () => {
     const info = sm.create({ cwd: '/tmp' })
     const servers = { x: { type: 'stdio', command: 'node' } }
     const result = await sm.setMcpServers(info.id, servers)
-    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith(servers)
-    expect(result).toEqual({ added: ['x'], removed: [], errors: {} })
+    // The first-party apptools server is appended to the map (spawn + live
+    // share the injectAppTools path); the user servers pass through verbatim.
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({
+      ...servers,
+      apptools: expect.anything(),
+    })
+    expect(result).toEqual({ added: ['x', 'apptools'], removed: [], errors: {} })
+  })
+
+  it('injects the apptools server into spawn mcpServers when the session has a cwd', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown>
+    expect(mcpServers.apptools).toBeDefined()
+    expect(mockInjectAll).toHaveBeenCalledWith('/tmp', expect.any(Function), expect.any(Function))
+    expect(info.mcpServerNames ?? []).not.toContain('apptools')
+  })
+
+  it('omits apptools when the session has no cwd', async () => {
+    sm.create({})
+    const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown> | undefined
+    expect(mcpServers?.apptools).toBeUndefined()
+  })
+
+  it('omits apptools from live setMcpServers when the session override disables it', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    // Simulate a per-session override turning apptools off (setAppTools path).
+    const session = (sm as unknown as { sessions: Map<string, { appToolsGit?: boolean }> }).sessions.get(info.id)!
+    session.appToolsGit = false
+    await sm.setMcpServers(info.id, { x: { type: 'stdio', command: 'node' } })
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({ x: { type: 'stdio', command: 'node' } })
+  })
+
+  it('setFirstPartyTool persists the override and re-injects immediately on a live session', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const next = await sm.setFirstPartyTool(info.id, 'apptools', false)
+    expect(next.firstPartyTools?.apptools).toBe(false)
+    expect(next.appToolsGit).toBe(false)
+    // Live → re-runs the injection path (setMcpServers with the stored user
+    // map); apptools is now disabled so the handle sees only the empty user set.
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({})
+    // A later re-enable injects apptools again.
+    await sm.setFirstPartyTool(info.id, 'apptools', true)
+    expect(mockHandles[0].setMcpServers).toHaveBeenLastCalledWith({ apptools: expect.anything() })
+  })
+
+  it('setFirstPartyTool reverts the override when the live re-injection fails', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    mockHandles[0].setMcpServers.mockRejectedValueOnce(new Error('sdk down'))
+    await expect(sm.setFirstPartyTool(info.id, 'apptools', false)).rejects.toThrow('sdk down')
+    const session = (sm as unknown as { sessions: Map<string, { firstPartyTools?: Record<string, boolean | null> }> }).sessions.get(info.id)!
+    expect(session.firstPartyTools?.['apptools']).toBeUndefined()
+  })
+
+  it('setFirstPartyTool on a non-running session only persists (no SDK call)', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const session = (sm as unknown as { sessions: Map<string, { running: boolean }> }).sessions.get(info.id)!
+    session.running = false
+    mockHandles[0].setMcpServers.mockClear()
+    const next = await sm.setFirstPartyTool(info.id, 'apptools', true)
+    expect(next.firstPartyTools?.apptools).toBe(true)
+    expect(mockHandles[0].setMcpServers).not.toHaveBeenCalled()
+  })
+
+  it('toolServerStatus reports enabled/injected/hasCwd per registered server', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const status = sm.toolServerStatus(info.id)
+    const apptools = status.find((s) => s.name === 'apptools')!
+    expect(apptools.enabled).toBe(true)
+    expect(apptools.injected).toBe(true)
+    expect(apptools.requiresCwd).toBe(true)
+    expect(apptools.hasCwd).toBe(true)
+    expect(apptools.error).toBeUndefined()
   })
 
   it('throws for an unknown / non-live session', async () => {
@@ -3636,6 +3729,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(res.status).toBe(200)
     expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({
       'global-a': { type: 'stdio', command: 'node', args: ['a.js'] },
+      apptools: expect.anything(),
     })
   })
 
@@ -3648,6 +3742,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({
       'global-a': { type: 'stdio', command: 'node', args: ['a.js'] },
       inline: { type: 'http', url: 'http://x' },
+      apptools: expect.anything(),
     })
   })
 
@@ -3655,7 +3750,8 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     const info = sm.create({ cwd: '/tmp' })
     const res = await post(`/sessions/${info.id}/mcp/servers`, { servers: {} })
     expect(res.status).toBe(200)
-    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({})
+    // Empty user set → only the injected first-party apptools remains.
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({ apptools: expect.anything() })
   })
 
   it('400s when neither servers nor enabledMcpServers is provided', async () => {

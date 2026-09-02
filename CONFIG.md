@@ -296,6 +296,25 @@ This only relaxes the sensitive-path safety check — it does **not** affect:
 
 ---
 
+### `appToolsGit`
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+
+Global default for injecting the first-party `apptools` in-process MCP server (git tools: status, log, stage, commit, branch, stash, …) into sessions. The agent can then call `mcp__apptools__*` tools directly; writes go through the session's normal permission flow. Per-session overrides (`POST /sessions/:id/app-tools`, or the "Let Claude use git tools" toggle in the MCP settings tab) take priority — sessions without an override inherit this value.
+
+Set to `false` to stop injecting git tools by default:
+
+```json
+{
+  "appToolsGit": false
+}
+```
+
+---
+
 ## Priority order
 
 Configuration values are resolved in this order (highest priority first):

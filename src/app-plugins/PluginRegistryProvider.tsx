@@ -16,6 +16,7 @@ import { useWsHub } from '../hooks/useWsHub'
 import type { WsServerFrame } from '../ws-types'
 import type { AppPluginClientInfo } from '../../shared/app-plugins/runtime-state.js'
 import { PluginRegistryContext, type PluginRegistryApi } from './plugin-registry-context'
+import { hydrateWidgetStates } from './usePluginWidgetStream'
 
 export function PluginRegistryProvider({ children }: { children: ReactNode }) {
   const [plugins, setPlugins] = useState<AppPluginClientInfo[]>([])
@@ -61,6 +62,7 @@ export function PluginRegistryProvider({ children }: { children: ReactNode }) {
     const off = hub.addListener((frame: WsServerFrame) => {
       if (frame.kind === 'app-plugins-snapshot') {
         wsHydratedRef.current = true
+        hydrateWidgetStates(frame.widgetPayloads)
         setPlugins(frame.plugins)
         return
       }

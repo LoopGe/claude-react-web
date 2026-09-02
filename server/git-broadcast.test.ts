@@ -20,6 +20,18 @@ describe('mutatingToolUseId', () => {
     expect(mutatingToolUseId({ type: 'tool_use', name: 'Bash', id: 'tu_4' })).toBe('tu_4')
   })
 
+  it('detects first-party mutating tools by FQN (git-broadcast seam)', () => {
+    // In-process MCP tool names arrive with the mcp__{server}__ prefix; the
+    // registry's mutating FQNs are unioned into the detection set.
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__apptools__git_stage', id: 'tu_g1' })).toBe('tu_g1')
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__apptools__git_commit', id: 'tu_g2' })).toBe('tu_g2')
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__apptools__git_discard', id: 'tu_g3' })).toBe('tu_g3')
+  })
+
+  it('does NOT treat read-only first-party tools as mutating', () => {
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__apptools__git_status', id: 'tu_gr' })).toBeNull()
+  })
+
   it('returns null for non-mutating tools', () => {
     expect(mutatingToolUseId({ type: 'tool_use', name: 'Read', id: 'tu_5' })).toBeNull()
     expect(mutatingToolUseId({ type: 'tool_use', name: 'Glob', id: 'tu_6' })).toBeNull()

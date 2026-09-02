@@ -70,6 +70,8 @@ import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.
 import { coerceRewindResult, type RewindFilesResult } from '../shared/rewind.js'
 import { coerceStructuredOutput, type StructuredRunRequest, type StructuredRunResult } from '../shared/structured.js'
 import { coerceReadFileOutput, type FileReadResult } from '../shared/read-file.js'
+import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
+import { firstPartyRegistry } from './sdk-tools/registry.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
@@ -938,6 +940,8 @@ export class SessionManager {
       enabledPlugins: s.enabledPlugins,
       showPinnedUserMessage: s.showPinnedUserMessage,
       autoRecap: s.autoRecap,
+      appToolsGit: s.appToolsGit,
+      firstPartyTools: s.firstPartyTools,
       slept: s.slept,
     })
   }
@@ -1609,7 +1613,7 @@ export class SessionManager {
       // pinned header / auto-recap override survives forking. No-op when
       // the source inherits global (both undefined) — the fork then
       // inherits global too.
-      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap },
+      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, appToolsGit: meta.appToolsGit, firstPartyTools: meta.firstPartyTools },
       // joinGroupOf: the source id — Y joins X's group (append semantics;
       // X stays, since fork doesn't remove the source). The crash-recovery
       // "Fork from last completed turn" button sets `replacesSource` so the
@@ -2000,7 +2004,7 @@ export class SessionManager {
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
-    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean },
+    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> },
     /** When this spawn is a fresh Y that should land in an existing session
      *  X's sidebar group, pass X's id here so the `created` broadcast carries
      *  `joinGroupOf: X`. Set by `/clear`, restart, and fork. Append
@@ -2179,6 +2183,8 @@ export class SessionManager {
       // `??` (not `||`) so an explicit `false` override survives.
       showPinnedUserMessage: prefs?.showPinnedUserMessage ?? existingMeta?.showPinnedUserMessage,
       autoRecap: prefs?.autoRecap ?? existingMeta?.autoRecap,
+      appToolsGit: prefs?.appToolsGit ?? existingMeta?.appToolsGit,
+      firstPartyTools: prefs?.firstPartyTools ?? existingMeta?.firstPartyTools,
       hooks: existingMeta?.hooks ?? metaSnapshot.hooks,
       // Carry lastTurnAt forward from the persisted meta on resume. The
       // pump only stamps `lastTurnAt` when a real `result` lands
@@ -2299,6 +2305,14 @@ export class SessionManager {
     // failIfUnavailable=true and hard-fail a session missing sandbox deps).
     // Strip so the CLI arg builder never sees an `Options.sandbox`.
     delete (sdkOptions as { sandbox?: unknown }).sandbox
+    // Inject the first-party in-process MCP servers (session-cwd-bound tools)
+    // into the spawn-time mcpServers map. Done AFTER snapshotMeta so the
+    // persisted `mcpServerNames` stays the user-configured set. Record the
+    // pre-injection user map so an immediate first-party toggle can re-run
+    // injection without dropping the user's servers.
+    session.dynamicMcpServers = fullOpts.mcpServers as Record<string, unknown> | undefined
+    session.firstPartyErrors = undefined
+    fullOpts.mcpServers = this.injectAll(fullOpts.mcpServers as Record<string, unknown> | undefined, session) as Options['mcpServers'] | undefined
     const handle = provider.createSession({
       id,
       provider: providerName,
@@ -3510,6 +3524,14 @@ export class SessionManager {
     return this.info(s)
   }
 
+  /** Per-session override for the first-party `apptools` git MCP server
+   *  (legacy route — forwards to the generalized setFirstPartyTool, which is
+   *  immediate on live sessions). `enabled: null` clears the override so the
+   *  session re-inherits the global default. */
+  async setAppTools(id: string, enabled: boolean | null): Promise<SessionInfo> {
+    return this.setFirstPartyTool(id, APP_TOOLS_SERVER_NAME, enabled)
+  }
+
   /** Set the reasoning effort level. Forwards to the SDK via
    *  applyFlagSettings({ effortLevel }) and records it locally so it survives
    *  resume/restart (re-applied on respawn). Unsupported levels for the
@@ -3719,20 +3741,122 @@ export class SessionManager {
   /** Add/remove MCP servers on a live session via the SDK's setMcpServers API. */
   async setMcpServers(id: string, servers: Record<string, unknown>) {
     const s = this.requireLive(id)
+    // Inject first-party servers so a live setMcpServers (replace semantics)
+    // doesn't drop what spawn installed — same single code path as the spawn
+    // injection, so on/off is consistent between spawn and live.
+    const injected = this.injectAll(servers, s)
     const result = await this.requireHandleMethod<(servers: Record<string, unknown>) => Promise<unknown>>(
       s,
       'setMcpServers',
       'dynamic MCP servers',
       'supportsMcp',
-    )(servers)
+    )(injected ?? servers)
 
-    // Update the tracked MCP server names so the client's "available"
-    // computation stays in sync without relying on the flaky mcp-status.
+    // Update the tracked MCP server names + the runtime dynamic map so the
+    // client's "available" computation stays in sync and an immediate
+    // first-party toggle can re-run injection. Both keep the user-configured
+    // set (pre-injection) — first-party servers are surfaced separately.
     s.mcpServerNames = Object.keys(servers)
+    s.dynamicMcpServers = servers
     this.writeStore(s)
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
 
     return result
+  }
+
+  /** Effective first-party server enabled state: per-session override (null =
+   *  inherit), legacy session `appToolsGit`, global structured config, legacy
+   *  global `appToolsGit`, then the server's own default. */
+  private firstPartyEnabled(s: Session, name: string): boolean {
+    const so = s.firstPartyTools?.[name]
+    if (so !== undefined && so !== null) return so
+    if (name === APP_TOOLS_SERVER_NAME && s.appToolsGit !== undefined) return s.appToolsGit
+    const go = defaultConfig.firstPartyTools?.[name]?.enabled
+    if (go !== undefined) return go
+    if (name === APP_TOOLS_SERVER_NAME && defaultConfig.appToolsGit !== undefined) return defaultConfig.appToolsGit
+    return firstPartyRegistry.get(name)?.defaultEnabled ?? false
+  }
+
+  /** Append the enabled first-party in-process MCP servers to an mcpServers
+   *  map (per-session cwd-bound). Returns the input unchanged when nothing is
+   *  injected; first-party servers override same-named user servers. Per-server
+   *  build failures are recorded on the session for toolServerStatus. */
+  private injectAll(
+    servers: Record<string, unknown> | undefined,
+    s: Session,
+  ): Record<string, unknown> | undefined {
+    const injected = firstPartyRegistry.injectAll(
+      s.cwd ?? null,
+      (name) => this.firstPartyEnabled(s, name),
+      (name, message) => {
+        s.firstPartyErrors = { ...(s.firstPartyErrors ?? {}), [name]: message }
+        log.error(`[session ${s.id}] first-party server ${name} build failed: ${message}`)
+      },
+    )
+    if (!injected) return servers
+    return { ...(servers ?? {}), ...injected }
+  }
+
+  /** Status of each registered first-party server for a session (independent
+   *  of the SDK's mcpServerStatus, which is unreliable for in-process
+   *  servers). `injected` = would be injected under the current effective
+   *  state; `error` = last build/registration failure. */
+  toolServerStatus(id: string): Array<{ name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; error?: string }> {
+    const s = this.require(id)
+    const out: Array<{ name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; error?: string }> = []
+    for (const server of firstPartyRegistry.list()) {
+      const enabled = this.firstPartyEnabled(s, server.name)
+      const hasCwd = !!s.cwd
+      const injected = enabled && (!server.requiresCwd || hasCwd)
+      out.push({
+        name: server.name,
+        description: server.description,
+        enabled,
+        injected,
+        requiresCwd: server.requiresCwd,
+        hasCwd,
+        error: s.firstPartyErrors?.[server.name],
+      })
+    }
+    return out
+  }
+
+  /** Set a per-session first-party tool server override. `enabled: null`
+   *  clears the override so the session re-inherits the global default.
+   *  IMMEDIATE on live sessions: after persisting the override, re-runs the
+   *  injection path (setMcpServers with the stored user map) so the SDK picks
+   *  up the change now, not at the next spawn. If the re-injection's SDK call
+   *  fails, the override is reverted and the error rethrown (never leave the
+   *  UI showing a state the session isn't actually in). Dormant sessions just
+   *  persist the override — it applies at the next spawn. */
+  async setFirstPartyTool(id: string, name: string, enabled: boolean | null): Promise<SessionInfo> {
+    const s = this.require(id)
+    const prev = s.firstPartyTools?.[name] ?? null
+    const next: Record<string, boolean | null> = { ...(s.firstPartyTools ?? {}) }
+    if (enabled === null) delete next[name]
+    else next[name] = enabled
+    s.firstPartyTools = Object.keys(next).length > 0 ? next : undefined
+    // Keep the legacy appToolsGit surface coherent for the apptools entry.
+    if (name === APP_TOOLS_SERVER_NAME) s.appToolsGit = enabled ?? undefined
+    s.lastActivityAt = Date.now()
+
+    if (s.running) {
+      try {
+        await this.setMcpServers(id, s.dynamicMcpServers ?? {})
+      } catch (err) {
+        // Revert the override so UI (server-backed session info) and reality
+        // stay consistent.
+        const revert: Record<string, boolean | null> = { ...(s.firstPartyTools ?? {}) }
+        if (prev === null) delete revert[name]
+        else revert[name] = prev
+        s.firstPartyTools = Object.keys(revert).length > 0 ? revert : undefined
+        if (name === APP_TOOLS_SERVER_NAME) s.appToolsGit = prev ?? undefined
+        throw err
+      }
+    } else {
+      this.persist(s)
+    }
+    return this.info(s)
   }
 
   /** Merge global MCP configs with session-specific overrides.
@@ -5002,6 +5126,8 @@ export class SessionManager {
       skillOverride: s.skillOverride,
       showPinnedUserMessage: s.showPinnedUserMessage,
       autoRecap: s.autoRecap,
+      appToolsGit: s.appToolsGit,
+      firstPartyTools: s.firstPartyTools,
       slept: s.slept,
     }
   }
@@ -5076,6 +5202,8 @@ export class SessionManager {
       enabledPlugins: meta.enabledPlugins,
       showPinnedUserMessage: meta.showPinnedUserMessage,
       autoRecap: meta.autoRecap,
+      appToolsGit: meta.appToolsGit,
+      firstPartyTools: meta.firstPartyTools,
       slept: meta.slept,
     }
   }

@@ -13,6 +13,14 @@ import type { AppPluginClientInfo } from './runtime-state.js'
 import type { ResolvedPluginContributions } from './contributions.js'
 import type { StatGridPayload } from './widget.js'
 
+/** A cached widget payload replayed inside the snapshot so a freshly
+ *  connected tab renders widgets pushed before it connected. */
+export interface WsWidgetPayload {
+  pluginId: string
+  widgetId: string
+  payload: StatGridPayload
+}
+
 /** Sent on connection (after the sessions snapshot) and whenever the full
  *  plugin set changes in a way that's cheaper to re-broadcast wholesale
  *  than diff (install/uninstall/bulk re-enable). Clients replace their
@@ -20,6 +28,8 @@ import type { StatGridPayload } from './widget.js'
 export interface WsAppPluginsSnapshot {
   kind: 'app-plugins-snapshot'
   plugins: AppPluginClientInfo[]
+  /** Latest payload per widget, replayed so widgets render on first mount. */
+  widgetPayloads: WsWidgetPayload[]
 }
 
 /** A single plugin's runtime state or metadata changed (enable/disable,

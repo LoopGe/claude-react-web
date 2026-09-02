@@ -460,6 +460,7 @@ export class AppPluginManager implements AppPluginBroadcaster {
     this.store.upsert(next)
     await this.store.flush()
     this.contributions.unregister(id)
+    this.bus.clearPluginEvents(id)
     this.refreshSnapshot()
     this.broadcastChanged(next)
     log.info(`disabled ${id}`)
@@ -471,6 +472,7 @@ export class AppPluginManager implements AppPluginBroadcaster {
     this.cancelPluginCommands(id, 'disabled')
     await this.pm.kill(id).catch((err) => log.warn(`[${id}] kill: ${(err as Error).message}`))
     this.contributions.unregister(id)
+    this.bus.clearPluginEvents(id)
     this.store.remove(id)
     await this.store.flush()
     if (opts.deleteData) {

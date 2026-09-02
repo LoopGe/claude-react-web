@@ -195,7 +195,7 @@ interface Props {
    *  `session.<field> ?? globalPrefs.<field>` — a per-session override
    *  wins, otherwise the global default applies. Forwarded to
    *  <SettingsPanel> for the override UI. */
-  globalPrefs: { showPinnedUserMessage: boolean; autoRecap: boolean }
+  globalPrefs: { showPinnedUserMessage: boolean; autoRecap: boolean; appToolsGit: boolean }
   /** True while App is playing the /clear fade-in on this panel. Combined
    *  with the local `clearing` state (which serves the SDK in-band cleared
    *  path) via `effectiveClearing = clearingProp || localClearing`. */

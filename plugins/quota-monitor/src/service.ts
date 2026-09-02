@@ -27,6 +27,7 @@ import { genericAdapter } from './generic.js'
 import type { HttpClient, HttpRequestOptions, HttpResult, PluginConfig, PlatformAdapter } from './platform.js'
 import {
   authErrorSnapshot,
+  nextResetAt,
   resolveDisplay,
   toneForUtilization,
   type LastGoodSnapshot,
@@ -177,6 +178,7 @@ let lastGood: Record<string, LastGoodSnapshot> = {}
 let polling = false
 let timer: NodeJS.Timeout | null = null
 let disposed = false
+let refreshMs = 0
 
 const WINDOW_ORDER: Array<{ name: string; cfgKey: string; label: string }> = [
   { name: 'five_hour', cfgKey: 'fiveHour', label: '5h' },
@@ -244,6 +246,20 @@ function snapshotToWidget(snaps: Array<{ snap: QuotaSnapshot; tag: string }>): R
 
   if (rows.length === 0) {
     rows.push({ id: 'status', label: 'Quota', value: 'No data', tone: 'warn' })
+  }
+
+  // Meta row: the next FUTURE quota reset across the displayed tiers.
+  const resetTiers: Array<{ resets_at: string | null }> = []
+  for (const { snap } of snaps) {
+    if (snap.success) resetTiers.push(...snap.tiers)
+  }
+  const resetAt = nextResetAt(resetTiers, Date.now())
+  if (resetAt !== null) {
+    rows.push({
+      id: 'reset',
+      label: 'Reset',
+      value: new Date(resetAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    })
   }
   return { values: rows }
 }
@@ -347,10 +363,11 @@ async function pollOnce(): Promise<void> {
 function startPoller(): void {
   if (timer) clearInterval(timer)
   const minutes = config.refreshMinutes > 0 ? config.refreshMinutes : 0
-  if (minutes > 0) {
+  refreshMs = minutes * 60_000
+  if (refreshMs > 0) {
     timer = setInterval(() => {
       void pollOnce()
-    }, minutes * 60 * 1000)
+    }, refreshMs)
   }
 }
 
@@ -406,14 +423,20 @@ async function runCheckCommand(): Promise<unknown> {
     }
   }
 
-  const sections = configured
+  const snaps = configured
     .map(({ adapter }) => latest[adapter.id])
     .filter((s): s is QuotaSnapshot => Boolean(s))
-    .map(formatSnapshotSection)
+  const sections = snaps.map(formatSnapshotSection)
+
+  const resetAt = nextResetAt(snaps.flatMap((s) => s.tiers), Date.now())
+  const footer = `_Last checked ${new Date().toLocaleString()}_`
+    + (resetAt !== null
+      ? ` · _Next reset ${new Date(resetAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}_`
+      : '')
 
   const markdown =
     sections.length > 0
-      ? `# Quota Monitor\n\n${sections.join('\n\n')}\n\n_Last checked ${new Date().toLocaleString()}_`
+      ? `# Quota Monitor\n\n${sections.join('\n\n')}\n\n${footer}`
       : 'No quota data yet. Check again in a moment or verify your platform credentials.'
 
   return {

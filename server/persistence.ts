@@ -117,6 +117,14 @@ export interface SessionMeta {
   /** Per-session override for idle auto-recap. Undefined = inherit the
    *  global config default. Persisted so the override survives reload. */
   autoRecap?: boolean
+  /** Per-session override for the first-party `apptools` git MCP server.
+   *  Undefined = inherit the global config default. Persisted so the
+   *  override survives reload. */
+  appToolsGit?: boolean
+  /** Per-session overrides for first-party tool servers (keyed by server
+   *  name). `true`/`false` pin that server; `null` clears the override to
+   *  inherit the global default. Persisted so the override survives reload. */
+  firstPartyTools?: Record<string, boolean | null>
   /** True when the user explicitly slept this session (dormant) via the
    *  "Sleep" action. Distinguishes deliberate dormancy from a passive
    *  restart/crash dormant state so the client can skip auto-resume paths.
@@ -241,6 +249,16 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       : undefined,
     showPinnedUserMessage: typeof r.showPinnedUserMessage === 'boolean' ? r.showPinnedUserMessage : undefined,
     autoRecap: typeof r.autoRecap === 'boolean' ? r.autoRecap : undefined,
+    appToolsGit: typeof r.appToolsGit === 'boolean' ? r.appToolsGit : undefined,
+    firstPartyTools: (() => {
+      const v = r.firstPartyTools
+      if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+      const out: Record<string, boolean | null> = {}
+      for (const [name, val] of Object.entries(v)) {
+        if (typeof val === 'boolean' || val === null) out[name] = val
+      }
+      return Object.keys(out).length > 0 ? out : undefined
+    })(),
     slept: typeof r.slept === 'boolean' ? r.slept : undefined,
   }
 }

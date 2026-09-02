@@ -54,6 +54,10 @@ export interface MpEntry {
   lastRefreshedAt: number
   /** HEAD SHA of the most recent successful clone/pull. */
   lastSha: string
+  /** The branch the clone is checked out on, resolved once at clone/refresh
+   *  time (not per list request). `undefined` for detached-HEAD clones or
+   *  when resolution failed — the display layer falls back to `source.ref`. */
+  branch?: string
   /** Cached parsed manifest. Refreshed on every clone/pull. */
   manifest: MarketplaceManifest
 }
@@ -526,6 +530,7 @@ function coerceMpEntry(raw: unknown, fallbackId: string): MpEntry | null {
     addedAt: typeof r.addedAt === 'number' ? r.addedAt : Date.now(),
     lastRefreshedAt: typeof r.lastRefreshedAt === 'number' ? r.lastRefreshedAt : Date.now(),
     lastSha,
+    branch: typeof r.branch === 'string' && r.branch ? r.branch : undefined,
     manifest,
   }
 }

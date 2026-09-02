@@ -366,6 +366,15 @@ export interface Session {
    *  via SessionMeta and mirrored into SessionInfo so the client can
    *  compute "available" reliably without the flaky mcp-status request. */
   mcpServerNames?: string[]
+  /** Runtime-only: the last user-configured dynamic MCP servers map passed
+   *  to setMcpServers (pre-injection — never contains first-party servers).
+   *  Initialized at spawn from the pre-injection mcpServers map. Used by the
+   *  immediate first-party toggle to re-run injection without dropping the
+   *  user's servers. NOT persisted (re-established by the client on resume). */
+  dynamicMcpServers?: Record<string, unknown>
+  /** Runtime-only: per-first-party-server build/registration errors from the
+   *  last injection, surfaced via toolServerStatus. NOT persisted. */
+  firstPartyErrors?: Record<string, string>
   /** Compound keys of the plugin subset this session was spawned with.
    *  `undefined` = all enabled; `[]` = none. Persisted via SessionMeta. */
   enabledPlugins?: string[]
@@ -490,6 +499,16 @@ export interface Session {
    *  global config default; a boolean pins it. Persisted via SessionMeta
    *  and mirrored into SessionInfo. Pure UI pref — no SDK call. */
   autoRecap?: boolean
+  /** Per-session override for the first-party `apptools` git MCP server.
+   *  Undefined = inherit the global config default; a boolean pins it.
+   *  Persisted via SessionMeta and mirrored into SessionInfo. Read at
+   *  spawn / live setMcpServers; not itself an SDK call. */
+  appToolsGit?: boolean
+  /** Per-session overrides for first-party tool servers (keyed by server
+   *  name, e.g. `apptools`). `true`/`false` pin that server; `null` clears
+   *  the override to inherit the global default. `appToolsGit` is the legacy
+   *  single-entry form of `firstPartyTools.apptools`. */
+  firstPartyTools?: Record<string, boolean | null>
   /** True when the user explicitly slept this session via the "Sleep"
    *  action. Distinguishes deliberate dormancy from passive restart/crash
    *  dormancy so the client can skip auto-resume paths for slept sessions.

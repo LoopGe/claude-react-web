@@ -320,7 +320,7 @@ export function attachWebSocket(
         try {
           for await (const ev of sub.iterable) {
             if (closed) return
-            if (ev.kind === 'snapshot') queue.enqueue({ kind: 'app-plugins-snapshot', plugins: ev.plugins })
+            if (ev.kind === 'snapshot') queue.enqueue({ kind: 'app-plugins-snapshot', plugins: ev.plugins, widgetPayloads: ev.widgetPayloads })
             else if (ev.kind === 'state-changed') queue.enqueue({ kind: 'app-plugin-state-changed', plugin: ev.plugin })
             else if (ev.kind === 'contributions-changed') {
               queue.enqueue({

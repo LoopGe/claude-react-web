@@ -78,6 +78,34 @@ describe('config', () => {
     expect(config.recapModel).toBe('fast-model')
   })
 
+  it('defaults appToolsGit to true', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.appToolsGit).toBe(true)
+  })
+
+  it('honors a false appToolsGit override', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ appToolsGit: false }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.appToolsGit).toBe(false)
+  })
+
+  it('reads structured firstPartyTools and derives the legacy appToolsGit', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ firstPartyTools: { apptools: { enabled: false } } }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.firstPartyTools.apptools.enabled).toBe(false)
+    expect(config.appToolsGit).toBe(false)
+  })
+
+  it('structured firstPartyTools wins over the legacy appToolsGit boolean', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ appToolsGit: false, firstPartyTools: { apptools: { enabled: true } } }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.firstPartyTools.apptools.enabled).toBe(true)
+  })
+
   it('loadConfig filters empty strings from modelList', async () => {
     writeFileSync(
       join(dir, 'config.json'),

@@ -17,7 +17,15 @@ import { HttpError } from '../errors.js'
 import { safeJson } from './index.js'
 import type { SessionManager } from '../session-manager.js'
 import { MpStore, type MpEntry } from '../mp-store.js'
-import { gitClone, gitCloneAtSha, gitPull, gitGetHeadSha, gitLsRemoteHead, assertHttpsUrl } from '../git-clone.js'
+import {
+  assertHttpsUrl,
+  gitBranchName,
+  gitClone,
+  gitCloneAtSha,
+  gitGetHeadSha,
+  gitLsRemoteHead,
+  gitPull,
+} from '../git-clone.js'
 import { parseRepoManifest, type ParsedPlugin, type ParsedPluginSource } from '../marketplace-parser.js'
 import { createLogger } from '../log.js'
 
@@ -40,7 +48,7 @@ function assertSafeName(name: string, label: string): void {
 interface MpListItem {
   id: string
   displayName: string
-  source: MpEntry['source']
+  source: MpEntry['source'] & { branch?: string }
   addedAt: number
   lastRefreshedAt: number
   lastSha: string
@@ -59,10 +67,17 @@ function toListItem(e: MpEntry, store: MpStore): MpListItem {
     (n, p) => (enabledMap[p.name] === true ? n + 1 : n),
     0,
   )
+  // Surface the branch the clone is actually checked out on, so the UI can
+  // show it even when the marketplace was added without an explicit ref (a
+  // default-branch clone). The branch is resolved once at clone/refresh time
+  // and persisted on MpEntry; for pre-branch records fall back to the
+  // user-specified ref so we never hide what the user asked for. NOTE:
+  // `branch` is informational for display only — `e.source.ref` remains the
+  // source of truth for update checks (gitLsRemoteHead).
   return {
     id: e.id,
     displayName: e.displayName,
-    source: e.source,
+    source: { ...e.source, branch: e.branch ?? e.source.ref },
     addedAt: e.addedAt,
     lastRefreshedAt: e.lastRefreshedAt,
     lastSha: e.lastSha,
@@ -115,6 +130,10 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
   // ─── Marketplace listing ─────────────────────────────────────────
 
   app.get('/mp/marketplaces', (c) => {
+    // Pure in-memory read: toListItem no longer hits git (the branch is
+    // persisted on MpEntry at clone/refresh time), so a slow/hung clone dir
+    // can't block the listing, and there's no per-entry async failure to
+    // isolate.
     const items = store.list().map((e) => toListItem(e, store))
     items.sort((a, b) => a.displayName.localeCompare(b.displayName))
     return c.json({ marketplaces: items })
@@ -190,6 +209,10 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
     }
 
     const sha = await gitGetHeadSha(cloneDir)
+    // Resolve the checked-out branch once here (not per list request). A
+    // default-branch clone has no explicit ref, so this is what the UI shows.
+    // Falls back to the user's ref on a failed resolve (detached HEAD, etc.).
+    const branch = (await gitBranchName(cloneDir)) || ref || undefined
     const now = Date.now()
     const entry: MpEntry = {
       id,
@@ -199,6 +222,7 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
       addedAt: now,
       lastRefreshedAt: now,
       lastSha: sha,
+      branch,
       manifest: parseResult.manifest,
     }
     store.upsert(entry)
@@ -227,6 +251,9 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
       manifest: parseResult.manifest,
       // Update displayName from manifest in case the upstream renamed.
       displayName: parseResult.manifest.name || entry.displayName,
+      // Re-resolve the branch after the pull (the remote may have switched
+      // its default branch; --ff-only keeps us on the same one either way).
+      branch: (await gitBranchName(entry.cloneDir)) || entry.source.ref || undefined,
     }
     store.upsert(next)
     await store.flush()

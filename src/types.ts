@@ -453,7 +453,12 @@ export interface RecapResponse {
 export interface MpSource {
   type: 'https'
   url: string
+  /** Explicit ref the user chose at add time, if any. */
   ref?: string
+  /** The branch the marketplace's clone is actually checked out on (resolved
+   *  by the server). Set even when no explicit `ref` was given — e.g. a
+   *  default-branch clone. */
+  branch?: string
 }
 
 /** Marketplace summary returned by GET /mp/marketplaces. The cached

@@ -8,7 +8,7 @@
 
 import { useCallback, useSyncExternalStore } from 'react'
 import { useWsHub } from '../hooks/useWsHub'
-import type { WsServerFrame } from '../ws-types'
+import type { WsServerFrame, WsWidgetPayload } from '../ws-types'
 import type { StatGridPayload } from '../../shared/app-plugins/widget.js'
 
 export interface WidgetState {
@@ -19,6 +19,17 @@ export interface WidgetState {
 const states = new Map<string, WidgetState>()
 // Separator is safe: pluginId/widgetId are dotted prefixed ids (no colons).
 const key = (pluginId: string, widgetId: string) => `${pluginId}:${widgetId}`
+
+/** Hydrate the module-level state map from a snapshot's cached widget
+ *  payloads, so a widget pushed before this tab connected renders on first
+ *  mount instead of waiting for the next push. Set-only: stale entries are
+ *  pruned by the existing ref-count unsubscribe when their widget unmounts
+ *  (e.g. after the owning plugin is disabled). */
+export function hydrateWidgetStates(payloads: WsWidgetPayload[]): void {
+  for (const p of payloads) {
+    states.set(key(p.pluginId, p.widgetId), { payload: p.payload, updatedAt: Date.now() })
+  }
+}
 
 // Ref-counted so a widget's cached payload is pruned once nothing subscribes
 // to it any more. Without this the module-level `states` map would hold every

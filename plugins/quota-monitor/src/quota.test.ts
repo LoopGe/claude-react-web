@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isTransientError, resolveDisplay, toneForUtilization } from './quota.js'
+import { isTransientError, nextResetAt, resolveDisplay, toneForUtilization } from './quota.js'
 import type { QuotaSnapshot } from './quota.js'
 
 function snap(overrides: Partial<QuotaSnapshot>): QuotaSnapshot {
@@ -84,5 +84,31 @@ describe('toneForUtilization', () => {
     expect(toneForUtilization(75)).toBe('warn')
     expect(toneForUtilization(69)).toBe('ok')
     expect(toneForUtilization(0)).toBe('ok')
+  })
+})
+
+describe('nextResetAt', () => {
+  const now = 1_800_000_000_000
+  it('returns the earliest future reset across tiers', () => {
+    const tiers = [
+      { resets_at: new Date(now + 3_600_000).toISOString() },   // +1h
+      { resets_at: null },
+      { resets_at: new Date(now + 600_000).toISOString() },     // +10min
+      { resets_at: new Date(now + 86_400_000).toISOString() },  // +1d
+    ]
+    expect(nextResetAt(tiers, now)).toBe(now + 600_000)
+  })
+
+  it('ignores already-passed / unparseable resets', () => {
+    const tiers = [
+      { resets_at: new Date(now - 3_600_000).toISOString() },   // past
+      { resets_at: 'garbage' },
+      { resets_at: null },
+    ]
+    expect(nextResetAt(tiers, now)).toBeNull()
+  })
+
+  it('returns null for empty input', () => {
+    expect(nextResetAt([], now)).toBeNull()
   })
 })

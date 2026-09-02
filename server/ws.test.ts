@@ -25,6 +25,26 @@ interface MockQueryHandle {
 
 const mockHandles: MockQueryHandle[] = []
 
+// First-party in-process servers are injected at spawn; mock the registry so
+// no real McpServer is constructed (the SDK mock above has no
+// createSdkMcpServer) and spawn stays cheap.
+const { mockInjectAll } = vi.hoisted(() => ({ mockInjectAll: vi.fn() }))
+mockInjectAll.mockImplementation((cwd: string | null, enabled: (name: string) => boolean) => {
+  if (enabled('apptools') && cwd) return { apptools: { type: 'sdk', name: 'apptools' } }
+  return undefined
+})
+vi.mock('./sdk-tools/registry.js', () => ({
+  firstPartyRegistry: {
+    injectAll: mockInjectAll,
+    readOnlyToolFqns: () => new Set(),
+    mutatingToolFqns: () => new Set(),
+    list: () => [],
+  },
+}))
+vi.mock('./sdk-tools/app-tools.js', () => ({
+  APP_TOOLS_SERVER_NAME: 'apptools',
+}))
+
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query({ options }: { prompt: unknown; options: Record<string, unknown> }) {
     const queue: unknown[] = []
