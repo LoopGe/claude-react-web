@@ -520,7 +520,7 @@ export function GlobalSettingsModal({
   )
 }
 
-// — Tab contents ?????????????
+// ── Tab contents ─────────────────────────────────────────────────
 
 function ServerTab({
   maxUploadBytes, historyCap, maxOpenPanels, workingStuckMs,
@@ -1340,7 +1340,7 @@ function McpCard({
   )
 }
 
-// — Logs tab ??????????????
+// ── Logs tab ─────────────────────────────────────────────────────
 
 /** Runtime log-level / scope-filter control and file-logging toggle.
  *  Level/scopes are in-memory only (reset on restart). File logging is
@@ -1498,7 +1498,7 @@ function LogsTab() {
   )
 }
 
-// — About / Updates ????????????
+// ── About / Updates ──────────────────────────────────────────────
 //
 // Shows the running version, the latest npm version (or an error), the
 // last-checked timestamp, and a "Check now" button. The data is owned
@@ -2017,7 +2017,7 @@ function formatRelative(ms: number): string {
   return `${day}d ago`
 }
 
-// — Shared primitives ???????????
+// ── Shared primitives ────────────────────────────────────────────
 
 function Field({ label, hint, controlId, children }: { label: string; hint?: string; controlId?: string; children: React.ReactNode }) {
   // Link the visible label to the field's control (WCAG 1.3.1 / 3.3.2).
