@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { ToastProvider } from './ToastProvider'
 import { SettingsPanel } from './SettingsPanel'
 import type { SessionInfo } from '../types'
@@ -31,6 +31,10 @@ const apptoolsStatus = {
   injected: true,
   requiresCwd: true,
   hasCwd: true,
+  tools: [
+    { name: 'git_status', description: 'Show git working-tree status.', readOnly: true },
+    { name: 'git_stage', description: 'Stage files into the index.', readOnly: false },
+  ],
 }
 
 function renderPanel(opts: {
@@ -56,17 +60,17 @@ function renderPanel(opts: {
   )
 }
 
-/** The ON/OFF label of the first apptools row, once the section renders. */
+/** The ON/OFF toggle of the apptools card, once the section renders. */
 async function findApptoolsToggle(container: HTMLElement) {
   await waitFor(() => expect(container.textContent).toContain('apptools'))
-  const row = container.querySelector('.settings-first-party-row')
-  expect(row, 'first-party row').toBeDefined()
-  const label = row!.querySelector('.settings-toggle span')
-  expect(label, 'first-party ON/OFF label').toBeDefined()
-  return label!.textContent
+  const card = container.querySelector('.settings-first-party-card')
+  expect(card, 'first-party card').toBeDefined()
+  const toggle = card!.querySelector('.settings-first-party-toggle')
+  expect(toggle, 'first-party ON/OFF toggle').toBeDefined()
+  return toggle!.textContent
 }
 
-describe('SettingsPanel first-party row display chain', () => {
+describe('SettingsPanel first-party card display chain', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
@@ -101,5 +105,23 @@ describe('SettingsPanel first-party row display chain', () => {
       globalPrefs: { firstPartyTools: {} },
     })
     await expect(findApptoolsToggle(container)).resolves.toBe('ON')
+  })
+
+  it('expands the embedded tool listing on "List tools" (read-only badge on git_status)', async () => {
+    const { container } = renderPanel({
+      session: mkSession(),
+      globalPrefs: { firstPartyTools: {} },
+    })
+    await waitFor(() => expect(container.textContent).toContain('apptools'))
+    expect(container.textContent).not.toContain('git_status')
+
+    const card = container.querySelector('.settings-first-party-card')!
+    const listBtn = [...card.querySelectorAll('button')].find((b) => b.textContent === 'List tools')
+    expect(listBtn, 'List tools button').toBeDefined()
+    fireEvent.click(listBtn!)
+
+    await waitFor(() => expect(container.textContent).toContain('git_status'))
+    expect(container.textContent).toContain('git_stage')
+    expect(card.querySelector('.settings-tag.readonly')).toBeDefined()
   })
 })

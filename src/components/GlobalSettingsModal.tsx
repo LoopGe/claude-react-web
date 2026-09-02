@@ -19,6 +19,8 @@ import { useToast } from '../hooks/useToast'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { DirectoryPicker } from './DirectoryPicker'
 import { Overlay } from './Overlay'
+import { McpToolsList, firstPartyToolDefsAsMcpTools } from './McpToolsList'
+import type { FirstPartyToolServerInfo } from '../../shared/first-party'
 import type { PublishedVersions, UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 import { isUpdateNagNeeded, isVersionNewer } from '../../shared/update-info'
 
@@ -1036,6 +1038,22 @@ function McpTab({
   onExport: () => void
 }) {
   const firstPartyEntries = Object.entries(firstPartyTools)
+  // Static registry listing (names/descriptions/tools) — the first-party
+  // analog of the live listTools() probe the cards above use. One fetch per
+  // tab mount; cards render from the staged map even before it lands.
+  const [fpInfo, setFpInfo] = useState<Record<string, FirstPartyToolServerInfo>>({})
+  const [fpError, setFpError] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    api.get<{ servers: FirstPartyToolServerInfo[] }>('/first-party-tools')
+      .then((r) => {
+        if (live) setFpInfo(Object.fromEntries(r.servers.map((s) => [s.name, s])))
+      })
+      .catch((e) => {
+        if (live) setFpError((e as Error).message)
+      })
+    return () => { live = false }
+  }, [])
   return (
     <>
       <div className="settings-section-head settings-mcp-head">
@@ -1059,36 +1077,71 @@ function McpTab({
         <McpCard key={srv.name} server={srv} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onRefresh={onRefresh} />
       ))}
       {firstPartyEntries.length > 0 && (
-        <div className="settings-first-party" style={{ marginTop: 16 }}>
-          <div className="settings-section-head compact">
+        <>
+          <div className="settings-section-head compact" style={{ marginTop: 16 }}>
             <span className="settings-note">First-party tools</span>
           </div>
-          <span className="hint">
-            Global default for new sessions. Open sessions without a
-            per-session override keep their current state — use the panel
-            toggle for instant control.
-          </span>
+          <div className="settings-note">
+            Global default for new sessions. Open sessions without a per-session
+            override keep their current state — use the panel toggle for instant
+            control.
+          </div>
+          {fpError && <div className="settings-mcp-tools-error">Tool listing unavailable: {fpError}</div>}
           {firstPartyEntries.map(([name, def]) => (
-            <div key={name} className="settings-first-party-row">
-              <div className="settings-first-party-info">
-                <span className="settings-first-party-name">{name}</span>
-                <span className="hint">Built-in tools this app injects into sessions.</span>
-              </div>
-              <div className="settings-first-party-actions">
-                <label className="settings-toggle">
-                  <input
-                    type="checkbox"
-                    checked={def.enabled}
-                    onChange={() => onToggleFirstParty(name, !def.enabled)}
-                  />
-                  <span>{def.enabled ? 'ON' : 'OFF'}</span>
-                </label>
-              </div>
-            </div>
+            <FirstPartyCard
+              key={name}
+              info={fpInfo[name] ?? { name, description: '', tools: [] }}
+              enabled={def.enabled}
+              onToggle={onToggleFirstParty}
+            />
           ))}
-        </div>
+        </>
       )}
     </>
+  )
+}
+
+/** One first-party tool server as a settings card — same card system as the
+ *  MCP server cards above it (dot / name / badge / meta / .btn actions), so
+ *  the two lists align. `onToggle` STAGES the new value; persistence happens
+ *  on the modal's Save. The static tool listing expands via the shared
+ *  McpToolsList, exactly like a normal MCP server's "List tools". */
+function FirstPartyCard({ info, enabled, onToggle }: {
+  info: FirstPartyToolServerInfo
+  enabled: boolean
+  onToggle: (name: string, enabled: boolean) => void
+}) {
+  const [toolsOpen, setToolsOpen] = useState(false)
+  return (
+    <div className="settings-card settings-mcp-card settings-first-party-card">
+      <div className="settings-card-head settings-mcp-card-head">
+        <span className="settings-card-dot" style={{ '--dot': enabled ? 'var(--plugin-active)' : 'var(--plugin-inactive)' } as CSSProperties} />
+        <span className="settings-card-name">
+          {info.name}
+        </span>
+        <span className="settings-card-badge">built-in</span>
+        {info.tools.length > 0 && (
+          <span className="settings-card-meta">{info.tools.length} tool{info.tools.length !== 1 ? 's' : ''}</span>
+        )}
+        <div className="settings-mcp-actions">
+          <button className="btn" onClick={() => setToolsOpen(!toolsOpen)} disabled={info.tools.length === 0}>
+            List tools
+          </button>
+          <button
+            className="btn settings-first-party-toggle"
+            onClick={() => onToggle(info.name, !enabled)}
+            title={enabled ? 'Disable' : 'Enable'}
+          >
+            {enabled ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      </div>
+      {info.description && <div className="settings-card-note">{info.description}</div>}
+      {info.error && <div className="settings-first-party-error">{info.error}</div>}
+      {toolsOpen && (
+        <McpToolsList tools={firstPartyToolDefsAsMcpTools(info.tools)} loading={false} onClose={() => setToolsOpen(false)} />
+      )}
+    </div>
   )
 }
 
@@ -1283,28 +1336,6 @@ function McpCard({
       {toolsOpen && (
         <McpToolsList tools={currentTools} loading={testing} onClose={() => setToolsOpen(false)} />
       )}
-    </div>
-  )
-}
-
-function McpToolsList({ tools, loading, onClose }: { tools: McpServerTool[]; loading: boolean; onClose: () => void }) {
-  return (
-    <div className="settings-card-body settings-mcp-tools">
-      <div className="settings-mcp-tools-head">
-        <span className="settings-card-grouplabel">Tools</span>
-        <button className="btn btn-xs" onClick={onClose}>Hide</button>
-      </div>
-      {loading && <div className="settings-card-desc">Loading tools...</div>}
-      {!loading && tools.length === 0 && <div className="settings-card-desc">No tools returned by this server.</div>}
-      {!loading && tools.map((tool) => (
-        <div key={tool.name} className="settings-card-item settings-mcp-tool-item">
-          <code>{tool.name}</code>
-          {tool.annotations?.readOnly && <span className="settings-tag readonly">read-only</span>}
-          {tool.annotations?.destructive && <span className="settings-tag destructive">destructive</span>}
-          {tool.annotations?.openWorld && <span className="settings-tag openworld">open-world</span>}
-          {tool.description && <span className="settings-card-desc">{tool.description}</span>}
-        </div>
-      ))}
     </div>
   )
 }

@@ -1370,6 +1370,16 @@
   align-items: center;
   margin-bottom: 4px;
 }
+/* Muted one-liner under a card head (first-party description / reset row). */
+.settings-card-note {
+  padding: 2px 10px 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.settings-mcp-tools-error {
+  color: var(--danger);
+  font-size: 11px;
+}
 .settings-mcp-tool-item code {
   font-family: var(--mono);
 }

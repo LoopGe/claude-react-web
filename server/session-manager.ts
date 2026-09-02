@@ -70,6 +70,7 @@ import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.
 import { coerceRewindResult, type RewindFilesResult } from '../shared/rewind.js'
 import { coerceStructuredOutput, type StructuredRunRequest, type StructuredRunResult } from '../shared/structured.js'
 import { coerceReadFileOutput, type FileReadResult } from '../shared/read-file.js'
+import type { FirstPartyToolDef } from '../shared/first-party.js'
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 import { PermissionBroker } from './permission-broker.js'
@@ -3810,10 +3811,13 @@ export class SessionManager {
   /** Status of each registered first-party server for a session (independent
    *  of the SDK's mcpServerStatus, which is unreliable for in-process
    *  servers). `injected` = would be injected under the current effective
-   *  state; `error` = last build/registration failure. */
-  toolServerStatus(id: string): Array<{ name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; error?: string }> {
+   *  state; `error` = last build/registration failure. Each entry also
+   *  embeds the server's static tool definitions (the registry's listToolDefs
+   *  output for that server) so one fetch paints status AND the tool list. */
+  toolServerStatus(id: string): Array<{ name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; tools: FirstPartyToolDef[]; error?: string }> {
     const s = this.require(id)
-    const out: Array<{ name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; error?: string }> = []
+    const toolDefs = new Map(firstPartyRegistry.listToolDefs().map((info) => [info.name, info]))
+    const out: Array<{ name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; tools: FirstPartyToolDef[]; error?: string }> = []
     for (const server of firstPartyRegistry.list()) {
       const enabled = this.firstPartyEnabled(s, server.name)
       const hasCwd = !!s.cwd
@@ -3825,6 +3829,7 @@ export class SessionManager {
         injected,
         requiresCwd: server.requiresCwd,
         hasCwd,
+        tools: toolDefs.get(server.name)?.tools ?? [],
         error: s.firstPartyErrors?.[server.name],
       })
     }

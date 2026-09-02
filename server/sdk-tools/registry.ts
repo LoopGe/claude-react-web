@@ -8,6 +8,7 @@
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { gitAppTools } from './app-tools.js'
 import type { FirstPartyToolServer } from './types.js'
+import type { FirstPartyToolDef, FirstPartyToolServerInfo } from '../../shared/first-party.js'
 
 export class FirstPartyToolRegistry {
   private readonly servers = new Map<string, FirstPartyToolServer>()
@@ -79,6 +80,35 @@ export class FirstPartyToolRegistry {
 
   private fqn(server: string, tool: string): string {
     return `mcp__${server}__${tool}`
+  }
+
+  /** Static tool metadata for every registered server — the first-party
+   *  analog of a normal MCP server's `listTools()`. In-process servers have
+   *  no live connection to probe, so the listing is built straight from the
+   *  registered `buildTools` definitions (metadata-only: handlers are never
+   *  invoked, and the contract lets `buildTools` accept a null cwd). A
+   *  per-server build failure is reported on that server's `error` with an
+   *  empty tool list; other servers still list. */
+  listToolDefs(): Array<FirstPartyToolServerInfo> {
+    const out: Array<FirstPartyToolServerInfo> = []
+    for (const s of this.servers.values()) {
+      const readOnly = s.readOnlyToolNames ?? new Set<string>()
+      let tools: FirstPartyToolDef[] = []
+      let error: string | undefined
+      try {
+        tools = s.buildTools(null).map((t) => ({
+          name: t.name,
+          description: t.description,
+          readOnly: readOnly.has(t.name),
+        }))
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e)
+      }
+      out.push(error !== undefined
+        ? { name: s.name, description: s.description, tools: [], error }
+        : { name: s.name, description: s.description, tools })
+    }
+    return out
   }
 }
 

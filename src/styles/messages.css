@@ -724,43 +724,11 @@
   border-width: 0 2px 2px 0;
 }
 
-/* First-party tools section (MCP tab) — per-server rows with toggle. */
-.settings-first-party {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  background: var(--bg-elev-1);
-}
-.settings-first-party-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
-}
-.settings-first-party-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.settings-first-party-name {
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg);
-}
+/* First-party server cards reuse the shared .settings-card system — only the
+   per-server error line and the checkbox focus ring remain specific here. */
 .settings-first-party-error {
   color: var(--danger);
   font-size: 12px;
-}
-.settings-first-party-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
 }
 .settings-toggle input[type="checkbox"]:focus-visible {
   outline: 2px solid var(--accent);

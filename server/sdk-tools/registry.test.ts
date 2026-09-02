@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { FirstPartyToolRegistry } from './registry.js'
 import { firstPartyRegistry } from './registry.js'
 import type { FirstPartyToolServer } from './types.js'
+import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
 import { APP_TOOLS_SERVER_NAME, APP_TOOLS_READ_ONLY_TOOLS, APP_TOOLS_MUTATING_TOOLS } from './app-tools.js'
 
 function makeServer(name = 'srv'): FirstPartyToolServer {
@@ -14,6 +15,11 @@ function makeServer(name = 'srv'): FirstPartyToolServer {
     readOnlyToolNames: new Set([`${name}_ro`]),
     mutatingToolNames: new Set([`${name}_mut`]),
   }
+}
+
+/** Minimal SDK tool definition stub — listToolDefs only reads name/description. */
+function def(name: string, description: string): SdkMcpToolDefinition<any> {
+  return { name, description, inputSchema: {}, handler: async () => ({ content: [] }) } as SdkMcpToolDefinition<any>
 }
 
 describe('FirstPartyToolRegistry', () => {
@@ -75,5 +81,48 @@ describe('FirstPartyToolRegistry', () => {
     expect(git.mutatingToolNames).toEqual(APP_TOOLS_MUTATING_TOOLS)
     expect(firstPartyRegistry.mutatingToolFqns()).toContain('mcp__apptools__git_stage')
     expect(firstPartyRegistry.readOnlyToolFqns()).toContain('mcp__apptools__git_status')
+  })
+
+  describe('listToolDefs', () => {
+    it('lists static tool metadata per server with readOnly derived from the bare-name set', () => {
+      const r = new FirstPartyToolRegistry()
+      r.register({
+        ...makeServer('a'),
+        buildTools: () => [def('a_ro', 'read one'), def('a_mut', 'write one')],
+        readOnlyToolNames: new Set(['a_ro']),
+      })
+      r.register({ ...makeServer('b'), buildTools: () => [] })
+      expect(r.listToolDefs()).toEqual([
+        {
+          name: 'a',
+          description: 'desc a',
+          tools: [
+            { name: 'a_ro', description: 'read one', readOnly: true },
+            { name: 'a_mut', description: 'write one', readOnly: false },
+          ],
+        },
+        { name: 'b', description: 'desc b', tools: [] },
+      ])
+    })
+
+    it('reports a per-server listing failure as error + empty tools; other servers still listed', () => {
+      const r = new FirstPartyToolRegistry()
+      r.register({ ...makeServer('bad'), buildTools: () => { throw new Error('boom') } })
+      r.register(makeServer('good'))
+      expect(r.listToolDefs()).toEqual([
+        { name: 'bad', description: 'desc bad', tools: [], error: 'boom' },
+        { name: 'good', description: 'desc good', tools: [] },
+      ])
+    })
+
+    it('the singleton lists the 15 apptools tools, 4 of them read-only', () => {
+      const apptools = firstPartyRegistry.listToolDefs().find((s) => s.name === APP_TOOLS_SERVER_NAME)!
+      expect(apptools.error).toBeUndefined()
+      expect(apptools.tools).toHaveLength(15)
+      expect(apptools.tools.filter((t) => t.readOnly).map((t) => t.name))
+        .toEqual(['git_status', 'git_branches', 'git_stashes', 'git_log'])
+      expect(apptools.tools.every((t) => t.description.length > 0)).toBe(true)
+      expect(apptools.tools.find((t) => t.name === 'git_stage')).toMatchObject({ readOnly: false })
+    })
   })
 })

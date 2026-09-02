@@ -78,6 +78,9 @@ vi.mock('./sdk-tools/registry.js', () => ({
     readOnlyToolFqns: () => new Set(['mcp__apptools__git_status', 'mcp__apptools__git_branches']),
     mutatingToolFqns: () => new Set(['mcp__apptools__git_stage']),
     list: () => [{ name: 'apptools', description: '', defaultEnabled: true, requiresCwd: true, buildTools: () => [] }],
+    // toolServerStatus embeds this listing verbatim — the real registry's
+    // listToolDefs content is pinned in sdk-tools/registry.test.ts.
+    listToolDefs: () => [{ name: 'apptools', description: '', tools: [{ name: 'stub_tool', description: 'stub', readOnly: true }] }],
   },
 }))
 vi.mock('./sdk-tools/app-tools.js', () => ({
@@ -3711,6 +3714,13 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(apptools.requiresCwd).toBe(true)
     expect(apptools.hasCwd).toBe(true)
     expect(apptools.error).toBeUndefined()
+  })
+
+  it('toolServerStatus embeds the registry static tool listing per server', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const status = sm.toolServerStatus(info.id)
+    const apptools = status.find((s) => s.name === 'apptools')!
+    expect(apptools.tools).toEqual([{ name: 'stub_tool', description: 'stub', readOnly: true }])
   })
 
   it('throws for an unknown / non-live session', async () => {

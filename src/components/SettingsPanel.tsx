@@ -15,6 +15,8 @@ import type { AgentInfo, McpServerConfigMeta, McpServerStatus, PermissionMode, P
 import { PERMISSION_MODES } from '../types'
 import type { SkillRecord } from '../../shared/skills'
 import type { SandboxSetting } from '../../shared/sandbox'
+import type { FirstPartyToolDef } from '../../shared/first-party'
+import { McpToolsList, firstPartyToolDefsAsMcpTools } from './McpToolsList'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
 import { IconChevronUp, IconChevronDown, IconLoader, IconSparkles, IconTerminal } from './icons/ToolIcons'
@@ -79,6 +81,8 @@ interface FirstPartyToolStatus {
   injected: boolean
   requiresCwd: boolean
   hasCwd: boolean
+  /** Static tool listing from the registry (embedded in the /tools payload). */
+  tools: FirstPartyToolDef[]
   error?: string
 }
 
@@ -1401,7 +1405,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           </div>
         </div>
         {firstPartyTools.length > 0 && (
-          <div className="settings-first-party">
+          <>
             <div className="settings-section-head compact">
               <span className="settings-note">First-party tools</span>
             </div>
@@ -1414,38 +1418,18 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               // updates open panels in place — no /tools refetch needed.
               const enabled = override ?? globalPrefs.firstPartyTools?.[tool.name]?.enabled ?? tool.enabled
               return (
-                <div key={tool.name} className="settings-first-party-row">
-                  <div className="settings-first-party-info">
-                    <span className="settings-first-party-name">{tool.name}</span>
-                    <span className="hint">{tool.description}</span>
-                    {tool.error && <span className="settings-first-party-error">{tool.error}</span>}
-                    {!tool.hasCwd && <span className="hint">No session working directory — not injected.</span>}
-                  </div>
-                  <div className="settings-first-party-actions">
-                    <label className="settings-toggle">
-                      <input
-                        type="checkbox"
-                        checked={enabled}
-                        disabled={busy || session.terminated}
-                        onChange={() => void toggleFirstParty(tool.name, !enabled)}
-                      />
-                      <span>{enabled ? 'ON' : 'OFF'}</span>
-                    </label>
-                    {override !== undefined && (
-                      <button
-                        type="button"
-                        className="settings-reset-link"
-                        disabled={busy || session.terminated}
-                        onClick={() => void toggleFirstParty(tool.name, null)}
-                      >
-                        Reset (inherit global)
-                      </button>
-                    )}
-                  </div>
-                </div>
+                <FirstPartyStatusCard
+                  key={tool.name}
+                  tool={tool}
+                  enabled={enabled}
+                  hasOverride={override !== undefined}
+                  disabled={busy || session.terminated}
+                  onToggle={(next) => void toggleFirstParty(tool.name, next)}
+                  onReset={() => void toggleFirstParty(tool.name, null)}
+                />
               )
             })}
-          </div>
+          </>
         )}
         {loadingMeta && effectiveMcpWithOverride.length === 0 && <Skeleton rows={2} />}
         {!loadingMeta && effectiveMcpWithOverride.length === 0 && <EmptyState icon={<IconTerminal size={16} />} title="No MCP servers" />}
@@ -1854,6 +1838,67 @@ const STATUS_COLORS: Record<string, string> = {
   'needs-auth': 'var(--warn)',
   disabled: 'var(--fg-muted)',
   pending: 'var(--accent)',
+}
+
+/** Per-session first-party server card. Same `.settings-card` system as the
+ *  MCP cards; the toggle applies immediately (server re-injects via
+ *  setMcpServers) instead of staging for a Save. Tool listings come embedded
+ *  in the /tools payload (static registry metadata), so expansion needs no
+ *  extra fetch. */
+function FirstPartyStatusCard({
+  tool,
+  enabled,
+  hasOverride,
+  disabled,
+  onToggle,
+  onReset,
+}: {
+  tool: FirstPartyToolStatus
+  enabled: boolean
+  hasOverride: boolean
+  disabled: boolean
+  onToggle: (enabled: boolean) => void
+  onReset: () => void
+}) {
+  const [toolsOpen, setToolsOpen] = useState(false)
+  return (
+    <div className="settings-card settings-mcp-card settings-first-party-card">
+      <div className="settings-card-head settings-mcp-card-head">
+        <span className="settings-card-dot" style={{ '--dot': enabled ? 'var(--plugin-active)' : 'var(--plugin-inactive)' } as CSSProperties} />
+        <span className="settings-card-name">{tool.name}</span>
+        <span className="settings-card-badge">built-in</span>
+        {tool.tools.length > 0 && (
+          <span className="settings-card-meta">{tool.tools.length} tool{tool.tools.length !== 1 ? 's' : ''}</span>
+        )}
+        <div className="settings-mcp-actions">
+          <button className="btn" onClick={() => setToolsOpen(!toolsOpen)} disabled={tool.tools.length === 0}>
+            List tools
+          </button>
+          <button
+            className="btn settings-first-party-toggle"
+            onClick={() => onToggle(!enabled)}
+            disabled={disabled}
+            title={enabled ? 'Disable' : 'Enable'}
+          >
+            {enabled ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      </div>
+      {tool.description && <div className="settings-card-note">{tool.description}</div>}
+      {tool.error && <div className="settings-first-party-error">{tool.error}</div>}
+      {!tool.hasCwd && <div className="settings-card-note">No session working directory — not injected.</div>}
+      {hasOverride && (
+        <div className="settings-card-note">
+          <button type="button" className="settings-reset-link" disabled={disabled} onClick={onReset}>
+            Reset (inherit global)
+          </button>
+        </div>
+      )}
+      {toolsOpen && (
+        <McpToolsList tools={firstPartyToolDefsAsMcpTools(tool.tools)} loading={false} onClose={() => setToolsOpen(false)} />
+      )}
+    </div>
+  )
 }
 
 function McpServerCard({

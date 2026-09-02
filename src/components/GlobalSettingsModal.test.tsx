@@ -16,12 +16,23 @@ vi.stubGlobal('matchMedia', () => ({
 
 afterEach(() => { cleanup() })
 
-// api.get is called for both /config/full and /mcp-config — route by URL.
-function mockGet(config: Record<string, unknown>) {
+// api.get is called for /config/full, /mcp-config and /first-party-tools — route by URL.
+function mockGet(config: Record<string, unknown>, fpServers: unknown[] = [apptoolsInfo]) {
   vi.mocked(api.get).mockImplementation((url: string) => {
     if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+    if (url === '/first-party-tools') return Promise.resolve({ servers: fpServers })
     return Promise.resolve(config)
   })
+}
+
+// Static registry listing as GET /first-party-tools serves it.
+const apptoolsInfo = {
+  name: 'apptools',
+  description: 'First-party git tools bound to the session cwd',
+  tools: [
+    { name: 'git_status', description: 'Show git working-tree status.', readOnly: true },
+    { name: 'git_stage', description: 'Stage files into the index.', readOnly: false },
+  ],
 }
 
 describe('GlobalSettingsModal Profiles tab', () => {
@@ -43,8 +54,8 @@ describe('GlobalSettingsModal first-party tools section', () => {
     vi.mocked(api.put).mockResolvedValue({})
   })
 
-  const openMcpTab = async (config: Record<string, unknown>) => {
-    mockGet(config)
+  const openMcpTab = async (config: Record<string, unknown>, fpServers?: unknown[]) => {
+    mockGet(config, fpServers)
     const { container } = render(
       <ToastProvider>
         <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />
@@ -55,29 +66,31 @@ describe('GlobalSettingsModal first-party tools section', () => {
     return container
   }
 
-  const apptoolsRow = (container: HTMLElement) => {
-    const row = container.querySelector('.settings-first-party-row')
-    expect(row, 'first-party row').toBeDefined()
-    return {
-      row: row!,
-      checkbox: row!.querySelector('input[type="checkbox"]') as HTMLInputElement,
-    }
+  /** The apptools card + its staged ON/OFF toggle, once the section renders. */
+  const apptoolsCard = async (container: HTMLElement) => {
+    await waitFor(() => expect(container.textContent).toContain('First-party tools'))
+    const card = container.querySelector('.settings-first-party-card')
+    expect(card, 'first-party card').toBeDefined()
+    const toggle = card!.querySelector('.settings-first-party-toggle') as HTMLButtonElement
+    expect(toggle, 'first-party ON/OFF toggle').toBeDefined()
+    return { card: card!, toggle }
   }
 
-  it('renders one staged row per first-party server from the config map', async () => {
+  it('renders one card per first-party server from the config map', async () => {
     const container = await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
-    await waitFor(() => expect(container.textContent).toContain('First-party tools'))
+    const { toggle } = await apptoolsCard(container)
     expect(container.textContent).toContain('apptools')
-    expect(apptoolsRow(container).checkbox.checked).toBe(true)
+    expect(toggle.textContent).toBe('ON')
   })
 
   it('stages toggles locally and saves the structured key on Save', async () => {
     const container = await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
-    await waitFor(() => expect(container.textContent).toContain('First-party tools'))
+    const { toggle } = await apptoolsCard(container)
 
-    fireEvent.click(apptoolsRow(container).checkbox)
+    fireEvent.click(toggle)
     // Staged — nothing hits the network until Save.
     expect(api.put).not.toHaveBeenCalled()
+    expect(toggle.textContent).toBe('OFF')
 
     fireEvent.click(screen.getByText('Save'))
     await waitFor(() => expect(api.put).toHaveBeenCalled())
@@ -85,6 +98,20 @@ describe('GlobalSettingsModal first-party tools section', () => {
       '/config',
       expect.objectContaining({ firstPartyTools: { apptools: { enabled: false } } }),
     )
+  })
+
+  it('expands the static tool listing on "List tools" (read-only badge on git_status)', async () => {
+    const container = await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
+    const { card } = await apptoolsCard(container)
+    expect(container.textContent).not.toContain('git_status')
+
+    const listBtn = [...card.querySelectorAll('button')].find((b) => b.textContent === 'List tools')
+    expect(listBtn, 'List tools button').toBeDefined()
+    fireEvent.click(listBtn!)
+
+    await waitFor(() => expect(container.textContent).toContain('git_status'))
+    expect(container.textContent).toContain('git_stage')
+    expect(card.querySelector('.settings-tag.readonly')).toBeDefined()
   })
 
   it('hides the section when the global map is empty', async () => {

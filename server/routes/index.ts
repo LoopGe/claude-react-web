@@ -24,6 +24,7 @@ import { buildSearchRouter } from './search.js'
 import { buildSkillsRouter } from './skills.js'
 import { buildHooksRouter } from './hooks.js'
 import { buildStructuredRouter } from './structured.js'
+import { buildFirstPartyRouter } from './first-party.js'
 
 /** Parse JSON body, returning 400 on malformed input instead of silently
  *  falling back to an empty object. */
@@ -76,6 +77,10 @@ export function buildApiRouter(
   // claudeBinary is threaded through so the About tab can surface the
   // CLI version alongside the npm-update info (single round-trip).
   app.route('/', buildUpdateRouter(claudeBinary))
+  // Static first-party tool-server listing (GET /first-party-tools) — the
+  // in-process analog of the normal MCP "List tools" probe. Stateless, like
+  // the update router: serves the code-registered registry directly.
+  app.route('/', buildFirstPartyRouter())
 
   return app
 }
