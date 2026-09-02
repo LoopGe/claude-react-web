@@ -10,6 +10,7 @@ import {
   liteContextUsageFromAssistant,
   liteContextUsageFromResult,
   pump,
+  reapplyAutoCompactWindow,
   toolResultIds,
   userMessageHasToolResult,
   type PumpDeps,
@@ -1714,6 +1715,103 @@ describe('pump: context-usage degraded-snapshot guard', () => {
     expect(contextPushes[1].degraded).toBeUndefined()
     expect(session.lastContextUsage!.totalTokens).toBe(804000)
     expect(session.lastContextUsage!.degraded).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// reapplyAutoCompactWindow — immediate threshold refresh after a pin/clear.
+//
+// The auto-compact threshold only ever derives from a turn's `result` payload,
+// so a successful setAutoCompactWindow used to leave every live ContextBar on
+// the STALE threshold (the auto position, e.g. 83.5% on a 200k model) until
+// the next completed turn — which reads as "the drag did nothing / it snapped
+// back to 84%" (and the pinned "Compact at X%" label stuck with the wrong
+// number). The helper re-derives the threshold from the cached snapshot under
+// the new windowOverride and re-broadcasts without waiting for a turn.
+// ---------------------------------------------------------------------------
+
+describe('reapplyAutoCompactWindow', () => {
+  /** Snapshot shape mirrored from a real deepseek turn on a 200k window:
+   *  auto threshold = 200000 − min(32000, 20000) − 13000 = 167000. */
+  const baseSnapshot = (): LiteContextUsage => ({
+    totalTokens: 38626,
+    maxTokens: 200000,
+    rawMaxTokens: 200000,
+    percentage: 19.3,
+    model: 'deepseek/deepseek-v4-flash',
+    cacheReadTokens: 17152,
+    outputTokens: 42,
+    autoCompactThreshold: 167000,
+    maxOutputTokens: 32000,
+  })
+
+  it('recomputes and broadcasts the threshold immediately on pin', () => {
+    const { session } = makePumpSession([])
+    session.lastContextUsage = baseSnapshot()
+    const pushes: LiteContextUsage[] = []
+    addContextSubscriber(session, pushes)
+
+    reapplyAutoCompactWindow(session, 113000)
+
+    // 113000 − 20000 − 13000 = 80000 → marker lands at the dragged 40%.
+    expect(session.lastContextUsage!.autoCompactThreshold).toBe(80000)
+    expect(pushes).toHaveLength(1)
+    expect(pushes[0].autoCompactThreshold).toBe(80000)
+    // Everything else in the snapshot is carried through untouched.
+    expect(pushes[0].totalTokens).toBe(38626)
+    expect(pushes[0].maxTokens).toBe(200000)
+  })
+
+  it('clearing the pin restores the auto threshold from the model window', () => {
+    const { session } = makePumpSession([])
+    session.lastContextUsage = { ...baseSnapshot(), autoCompactThreshold: 80000 }
+    const pushes: LiteContextUsage[] = []
+    addContextSubscriber(session, pushes)
+
+    reapplyAutoCompactWindow(session, undefined)
+
+    expect(session.lastContextUsage!.autoCompactThreshold).toBe(167000)
+    expect(pushes).toHaveLength(1)
+  })
+
+  it('is a no-op (no broadcast) when the recomputed threshold is unchanged', () => {
+    const { session } = makePumpSession([])
+    session.lastContextUsage = baseSnapshot()
+    const pushes: LiteContextUsage[] = []
+    addContextSubscriber(session, pushes)
+
+    reapplyAutoCompactWindow(session, 200000) // threshold stays 167000
+
+    expect(session.lastContextUsage!.autoCompactThreshold).toBe(167000)
+    expect(pushes).toHaveLength(0)
+  })
+
+  it('is a no-op when no snapshot is cached yet (fresh session)', () => {
+    const { session } = makePumpSession([])
+    const pushes: LiteContextUsage[] = []
+    addContextSubscriber(session, pushes)
+
+    expect(() => reapplyAutoCompactWindow(session, 113000)).not.toThrow()
+    expect(session.lastContextUsage).toBeUndefined()
+    expect(pushes).toHaveLength(0)
+  })
+
+  it('adds a threshold to a snapshot that lacked one, and drops it when undefined', () => {
+    const { session } = makePumpSession([])
+    const withoutThreshold = baseSnapshot()
+    delete withoutThreshold.autoCompactThreshold
+    session.lastContextUsage = withoutThreshold
+
+    reapplyAutoCompactWindow(session, 113000)
+    expect(session.lastContextUsage!.autoCompactThreshold).toBe(80000)
+
+    // A zero window can't yield a threshold (computeAutoCompactThreshold →
+    // undefined) — the key must be REMOVED, not set to undefined, mirroring
+    // assembleLiteUsage's "absent stays distinguishable" convention.
+    session.lastContextUsage = { ...baseSnapshot(), maxTokens: 0, rawMaxTokens: 0 }
+    reapplyAutoCompactWindow(session, undefined)
+    expect(session.lastContextUsage!.autoCompactThreshold).toBeUndefined()
+    expect('autoCompactThreshold' in session.lastContextUsage!).toBe(false)
   })
 })
 

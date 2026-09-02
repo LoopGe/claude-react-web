@@ -1255,6 +1255,36 @@ function applyContextUsage(session: Session, usage: LiteContextUsage): void {
   }
 }
 
+/** Recompute the auto-compact threshold on the cached context-usage snapshot
+ *  after a pinned-window change (setAutoCompactWindow pin/clear, or the
+ *  generic /settings route forwarding `autoCompactWindow`) and re-broadcast
+ *  immediately — WITHOUT waiting for the next turn's `result`.
+ *
+ *  Without this, a successful pin/clear leaves every live ContextBar showing
+ *  the PREVIOUS threshold (typically the auto position — e.g. 83.5% on a
+ *  200k model) until the next completed turn lands, which reads as "the drag
+ *  did nothing / it snapped back to 84%". The threshold only ever derives
+ *  from `result` payloads, so the immediate refresh must re-derive it from
+ *  the last snapshot's own window/maxOutputTokens under the new override
+ *  (mirroring liteContextUsageFromResult's windowOverride handling: the
+ *  override replaces the model window; absent → fall back to the model
+ *  window = "auto").
+ *
+ *  No-op when there is no cached snapshot yet (fresh session — the bar is
+ *  empty regardless, and the next `result` derives the threshold fresh), or
+ *  when the recomputed threshold is unchanged (no pointless broadcast). */
+export function reapplyAutoCompactWindow(session: Session, windowOverride?: number): void {
+  const last = session.lastContextUsage
+  if (!last) return
+  const effectiveWindow = windowOverride && windowOverride > 0 ? windowOverride : last.maxTokens
+  const next = computeAutoCompactThreshold(effectiveWindow, last.maxOutputTokens)
+  if (next === last.autoCompactThreshold) return
+  const updated: LiteContextUsage = { ...last }
+  if (typeof next === 'number') updated.autoCompactThreshold = next
+  else delete updated.autoCompactThreshold
+  applyContextUsage(session, updated)
+}
+
 /** Build a LiteContextUsage from a `result` SDK message. Returns null when
  *  the message lacks the expected fields (e.g. result errors before the
  *  API call landed).

@@ -40,7 +40,7 @@ import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from '
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
 import { fallbackAliasesFor, resolveGroup } from './model-groups.js'
 import { createAsyncSubscription } from './async-subscription.js'
-import { pump as pumpSession, getParentToolUseId, applyTaskEvent, type PumpDeps } from './session-pump.js'
+import { pump as pumpSession, getParentToolUseId, applyTaskEvent, reapplyAutoCompactWindow, type PumpDeps } from './session-pump.js'
 import { isTerminalTaskStatus } from '../shared/tasks.js'
 import {
   type Subscriber,
@@ -3398,6 +3398,9 @@ export class SessionManager {
     if ('autoCompactWindow' in forwarded) {
       const w = forwarded.autoCompactWindow
       s.autoCompactWindow = typeof w === 'number' && Number.isFinite(w) && w > 0 ? Math.round(w) : undefined
+      // Same immediate refresh as the dedicated setAutoCompactWindow path —
+      // the generic /settings route also moves the effective threshold.
+      reapplyAutoCompactWindow(s, s.autoCompactWindow)
     }
     s.lastActivityAt = Date.now()
     this.persist(s)
@@ -3583,6 +3586,12 @@ export class SessionManager {
       'auto-compact window',
     )(flags)
     s.autoCompactWindow = window
+    // Refresh the cached context-usage snapshot NOW so every live ContextBar
+    // jumps to the new threshold immediately — the threshold otherwise only
+    // derives from the next turn's `result`, leaving the bar (and the
+    // "Compact at X%" label) stuck on the stale auto position, which reads
+    // as a failed commit.
+    reapplyAutoCompactWindow(s, window)
     s.lastActivityAt = Date.now()
     this.persist(s)
     return this.info(s)
