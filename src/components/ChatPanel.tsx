@@ -76,7 +76,11 @@ export interface ChatPanelProps {
   /** Global UI-pref defaults (server-backed). Sessions without an explicit
    *  per-session override inherit these. Forwarded to <Chat> (effective-value
    *  resolution) and <SettingsPanel> (override UI hints). */
-  globalPrefs: { showPinnedUserMessage: boolean; autoRecap: boolean; appToolsGit: boolean }
+  globalPrefs: {
+    showPinnedUserMessage: boolean
+    autoRecap: boolean
+    firstPartyTools?: Record<string, { enabled: boolean }>
+  }
   /** True when a turn has completed on this session since the user last
    *  looked at it. Rendered as a small dot next to the slot pill on
    *  non-focused open panels — so in a 2-up/3-up layout the user notices

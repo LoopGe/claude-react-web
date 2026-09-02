@@ -46,8 +46,14 @@ interface Props {
   session: SessionInfo
   /** Global UI-pref defaults (server-backed). Used to compute the effective
    *  value shown by each pref checkbox (`session.<field> ?? global`) and to
-   *  label the "Inheriting global (ON/OFF)" hint when no override is set. */
-  globalPrefs: { showPinnedUserMessage: boolean; autoRecap: boolean; appToolsGit: boolean }
+   *  label the "Inheriting global (ON/OFF)" hint when no override is set.
+   *  `firstPartyTools` is the structured global-default map (from GET
+   *  /config) consulted when a session has no per-server override. */
+  globalPrefs: {
+    showPinnedUserMessage: boolean
+    autoRecap: boolean
+    firstPartyTools?: Record<string, { enabled: boolean }>
+  }
   onClose: () => void
   onSessionUpdate: (s: SessionInfo) => void
   commands?: SlashCommand[]
@@ -1401,7 +1407,12 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             </div>
             {firstPartyTools.map((tool) => {
               const override = session.firstPartyTools?.[tool.name]
-              const enabled = override ?? tool.enabled
+              // Display chain mirrors the server's firstPartyEnabled:
+              // session override → global structured default → the live
+              // tool status (last known injection state). The global map is
+              // read straight off globalPrefs, so a global-settings save
+              // updates open panels in place — no /tools refetch needed.
+              const enabled = override ?? globalPrefs.firstPartyTools?.[tool.name]?.enabled ?? tool.enabled
               return (
                 <div key={tool.name} className="settings-first-party-row">
                   <div className="settings-first-party-info">

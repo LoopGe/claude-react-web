@@ -106,6 +106,26 @@ describe('config', () => {
     expect(config.firstPartyTools.apptools.enabled).toBe(true)
   })
 
+  // The structured map is the single authoritative view of the global
+  // first-party defaults (firstPartyEnabled and the global-settings UI both
+  // read it structured-first). A legacy-only file must therefore fold its
+  // flat boolean INTO the structured `apptools` entry — otherwise the
+  // user's `appToolsGit: false` is silently dead behind the default
+  // `{ apptools: { enabled: true } }`.
+  it('folds a legacy-only appToolsGit into the structured firstPartyTools.apptools entry', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ appToolsGit: false }))
+    await loadConfig(dir)
+    expect(config.firstPartyTools.apptools.enabled).toBe(false)
+    expect(config.appToolsGit).toBe(false)
+  })
+
+  it('folds a legacy-only true appToolsGit into the structured map too', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ appToolsGit: true }))
+    await loadConfig(dir)
+    expect(config.firstPartyTools.apptools.enabled).toBe(true)
+    expect(config.appToolsGit).toBe(true)
+  })
+
   it('loadConfig filters empty strings from modelList', async () => {
     writeFileSync(
       join(dir, 'config.json'),

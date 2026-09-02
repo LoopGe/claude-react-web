@@ -168,6 +168,23 @@ function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Rec
     if (!v.ok) return { ok: false, error: v.error }
     rest.sandbox = v.value
   }
+  // App-level `firstPartyTools` map (per-first-party-server enable/disable
+  // chosen at create time — NOT an SDK Options key; snapshotMeta ignores it
+  // and the claude provider whitelists what reaches the subprocess). Values
+  // must be booleans; unknown server names are tolerated and stored verbatim
+  // (injection looks up overrides by registry name — the same lenient
+  // pattern as the per-session toggle route).
+  if (rest.firstPartyTools !== undefined && rest.firstPartyTools !== null) {
+    const fpt = rest.firstPartyTools
+    if (typeof fpt !== 'object' || Array.isArray(fpt)) {
+      return { ok: false, error: 'firstPartyTools must be an object of booleans' }
+    }
+    for (const [name, value] of Object.entries(fpt)) {
+      if (typeof value !== 'boolean') {
+        return { ok: false, error: `firstPartyTools.${name} must be a boolean` }
+      }
+    }
+  }
   return { ok: true, value: rest }
 }
 

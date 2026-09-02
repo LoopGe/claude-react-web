@@ -181,4 +181,32 @@ describe('session create body validation (narrowCreateBody)', () => {
     expect(res.status).toBe(201)
     expect(sm.create).toHaveBeenCalledWith({ someFutureOption: true, model: 'claude-sonnet-4-6' }, undefined, undefined, false)
   })
+
+  it('rejects a non-boolean firstPartyTools value', async () => {
+    const { app, sm } = makeApp()
+    const res = await post(app, { firstPartyTools: { apptools: 'yes' } })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'firstPartyTools.apptools must be a boolean' })
+    expect(sm.create).not.toHaveBeenCalled()
+  })
+
+  it('rejects a non-object firstPartyTools', async () => {
+    const { app, sm } = makeApp()
+    const res = await post(app, { firstPartyTools: ['apptools'] })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'firstPartyTools must be an object of booleans' })
+    expect(sm.create).not.toHaveBeenCalled()
+  })
+
+  it('accepts a firstPartyTools override map (unknown server names tolerated) and forwards it', async () => {
+    const { app, sm } = makeApp()
+    const res = await post(app, { firstPartyTools: { apptools: false, 'future-server': true } })
+    expect(res.status).toBe(201)
+    expect(sm.create).toHaveBeenCalledWith(
+      expect.objectContaining({ firstPartyTools: { apptools: false, 'future-server': true } }),
+      undefined,
+      undefined,
+      false,
+    )
+  })
 })

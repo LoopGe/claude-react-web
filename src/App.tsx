@@ -32,6 +32,7 @@ import type { PaletteItem } from './components/CommandPalette'
 import type { WsServerFrame } from './ws-types'
 import type { MessageSearchHit } from '../shared/search-results'
 import type { MessageJumpTarget } from '../shared/message-jump'
+import { firstPartyOverridesForCreate } from '../shared/session-info'
 import type { NewSessionForm, PermissionMode, SessionInfo, SessionGroup, SidebarSection } from './types'
 import { PERMISSION_MODE_CYCLE } from './types'
 import { ACCENT_COLORS } from './theme'
@@ -86,6 +87,7 @@ import type { Defaults, ConfigResponse } from './types/config'
 import { setMaxUploadBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
+import { buildNewLikeThisForm } from './utils/new-like-this'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
@@ -200,11 +202,16 @@ export function App() {
   /** Global UI-pref defaults (server-backed, config.json). Sessions without
    *  an explicit per-session override inherit these. Refreshed live whenever
    *  the global settings modal saves (handleGlobalSettingsSaved →
-   *  refreshConfigResponse). Defaults to ON so the features are visible
-   *  before the first /config fetch lands. */
-  const [globalPrefs, setGlobalPrefs] = useState<{ showPinnedUserMessage: boolean; autoRecap: boolean; appToolsGit: boolean }>(
-    { showPinnedUserMessage: true, autoRecap: true, appToolsGit: true },
-  )
+   *  refreshConfigResponse). `firstPartyTools` is the structured global
+   *  default map (GET /config folds the legacy `appToolsGit` boolean into
+   *  it at load, so the map is always authoritative). Defaults to undefined
+   *  so the first-party UI falls back to live tool status until the first
+   *  /config fetch lands. */
+  const [globalPrefs, setGlobalPrefs] = useState<{
+    showPinnedUserMessage: boolean
+    autoRecap: boolean
+    firstPartyTools?: Record<string, { enabled: boolean }>
+  }>({ showPinnedUserMessage: true, autoRecap: true })
   const {
     settingsOpenFor,
     settingsTabRequest,
@@ -434,7 +441,7 @@ export function App() {
         setGlobalPrefs({
           showPinnedUserMessage: r.showPinnedUserMessage ?? true,
           autoRecap: r.autoRecap ?? true,
-          appToolsGit: r.appToolsGit ?? true,
+          firstPartyTools: r.firstPartyTools,
         })
       })
       .catch(() => setIsConfigured(true))
@@ -1624,28 +1631,9 @@ export function App() {
       const source = sessions.find((s) => s.id === id)
       if (!source) return
       const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
-      // Inherit the source's group only. If the source is ungrouped, the
-      // copy stays ungrouped too — never silently drop it into some other
-      // group that happens to have room.
-      const form: NewSessionForm = {
-        cwd: source.cwd,
-        model: source.model,
-        permissionMode: source.permissionMode,
-        title: source.title ? `${source.title} (copy)` : undefined,
-        // Carry forward the beta flags so a 1M-context session stays 1M
-        // when copied. Without this, "new like this" silently downgrades
-        // the window.
-        betas: source.betas,
-        groupId: sourceGroup?.id,
-      }
-      // If the source's group is already full the copy can't join it, so
-      // create it ungrouped. The context menu already warns + confirms this
-      // case before we get here, so there's no dialog/toast to show — just
-      // drop the group so handleAddToGroup doesn't re-fire the "full" toast.
-      if (sourceGroup && sourceGroup.sessionIds.length >= maxGroupSize) {
-        form.groupId = undefined
-      }
-      await handleCreate(form)
+      // Form building (context copy, first-party overrides, group inherit +
+      // full-group drop) lives in buildNewLikeThisForm — see there.
+      await handleCreate(buildNewLikeThisForm(source, sourceGroup, maxGroupSize))
     },
     [sessions, groups, handleCreate, maxGroupSize],
   )
@@ -1752,6 +1740,9 @@ export function App() {
           // Preserve beta flags (notably `context-1m-...`) so restart
           // doesn't silently drop the window from 1M back to 200k.
           betas: source.betas,
+          // Preserve per-first-party-server overrides so a restarted session
+          // keeps its tool set (create-time prefs honor them on FIRST spawn).
+          firstPartyTools: firstPartyOverridesForCreate(source),
           title: source.title,
           joinGroupOf: id,
           // X is being evicted by this restart (swapSession replaces X→Y), so
@@ -3487,7 +3478,7 @@ export function App() {
     setGlobalPrefs({
       showPinnedUserMessage: r.showPinnedUserMessage ?? true,
       autoRecap: r.autoRecap ?? true,
-      appToolsGit: r.appToolsGit ?? true,
+      firstPartyTools: r.firstPartyTools,
     })
   }, [])
 
@@ -3618,6 +3609,7 @@ export function App() {
           skin={skin}
           onSelect={handleSelectFromSidebar}
           onCreate={handleCreate}
+          firstPartyTools={globalPrefs.firstPartyTools}
           onDelete={handleDelete}
           onSleep={sleepSession}
           onClosePanel={closeSession}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { coerceThinkingSetting } from './session-info.js'
+import { coerceThinkingSetting, firstPartyOverridesForCreate } from './session-info.js'
 
 describe('coerceThinkingSetting', () => {
   it('passes through the three valid variants', () => {
@@ -55,5 +55,32 @@ describe('coerceThinkingSetting', () => {
       .toEqual({ type: 'adaptive' })
     expect(coerceThinkingSetting({ type: 'enabled', budgetTokens: 1024, display: null }))
       .toEqual({ type: 'enabled', budgetTokens: 1024 })
+  })
+})
+
+describe('firstPartyOverridesForCreate', () => {
+  it('carries boolean overrides through', () => {
+    expect(firstPartyOverridesForCreate({ firstPartyTools: { apptools: false, other: true } }))
+      .toEqual({ apptools: false, other: true })
+  })
+
+  it('drops null entries (live-session "inherit" markers, not create-body values)', () => {
+    expect(firstPartyOverridesForCreate({ firstPartyTools: { apptools: null } })).toBeUndefined()
+  })
+
+  it('folds the legacy appToolsGit boolean into the apptools entry', () => {
+    expect(firstPartyOverridesForCreate({ appToolsGit: false })).toEqual({ apptools: false })
+    // True is an explicit ON pin too (global default may be OFF) — preserve it.
+    expect(firstPartyOverridesForCreate({ appToolsGit: true })).toEqual({ apptools: true })
+  })
+
+  it('lets the structured map win over the legacy boolean', () => {
+    expect(firstPartyOverridesForCreate({ appToolsGit: false, firstPartyTools: { apptools: true } }))
+      .toEqual({ apptools: true })
+  })
+
+  it('returns undefined when there is nothing to preserve', () => {
+    expect(firstPartyOverridesForCreate({})).toBeUndefined()
+    expect(firstPartyOverridesForCreate({ firstPartyTools: {} })).toBeUndefined()
   })
 })

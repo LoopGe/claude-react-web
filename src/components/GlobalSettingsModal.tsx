@@ -162,6 +162,11 @@ export function GlobalSettingsModal({
   const [showMcpImport, setShowMcpImport] = useState(false)
   const [mcpImportFile, setMcpImportFile] = useState<File | null>(null)
   const mcpImportInputRef = useRef<HTMLInputElement>(null)
+  // Global first-party tool defaults (MCP tab). Staged like every other
+  // field: edited locally, persisted as the structured `firstPartyTools`
+  // key by the unified Save (the server derives the legacy `appToolsGit`
+  // boolean from it at load — only the structured form is ever written).
+  const [firstPartyTools, setFirstPartyTools] = useState<Record<string, { enabled: boolean }>>({})
   const mcpInstallerPresence = useExitPresence(showMcpInstaller)
   const [showResetConfig, setShowResetConfig] = useState(false)
   const resetConfigPresence = useExitPresence(showResetConfig)
@@ -183,6 +188,7 @@ export function GlobalSettingsModal({
         setShowPinnedUserMessage(cfg.showPinnedUserMessage ?? true)
         setAutoRecap(cfg.autoRecap ?? true)
         setAllowSensitivePathEdits(cfg.allowSensitivePathEdits ?? false)
+        setFirstPartyTools(cfg.firstPartyTools ?? {})
       } catch (e) {
         if ((e as Error).name !== 'AbortError') setErr((e as Error).message)
       } finally {
@@ -225,6 +231,12 @@ export function GlobalSettingsModal({
     }
   }, [refreshMcp])
 
+  /** Stage a first-party default toggle. Local only — persisted by the
+   *  unified Save as the structured `firstPartyTools` key. */
+  const toggleFirstPartyDefault = (name: string, enabled: boolean) => {
+    setFirstPartyTools((prev) => ({ ...prev, [name]: { enabled } }))
+  }
+
   const handleSave = async () => {
     setSaving(true)
     setErr(null)
@@ -246,6 +258,12 @@ export function GlobalSettingsModal({
         showPinnedUserMessage,
         autoRecap,
         allowSensitivePathEdits,
+      }
+      // Structured first-party defaults — written verbatim as the single
+      // source of truth (legacy `appToolsGit` is never written; the server
+      // derives it). An empty map is omitted rather than persisted.
+      if (Object.keys(firstPartyTools).length > 0) {
+        updates.firstPartyTools = { ...firstPartyTools }
       }
       await api.put('/config', updates)
       onSaved?.()
@@ -389,6 +407,8 @@ export function GlobalSettingsModal({
               {tab === 'mcp' && (
                 <McpTab
                   servers={mcpServers}
+                  firstPartyTools={firstPartyTools}
+                  onToggleFirstParty={toggleFirstPartyDefault}
                   onAdd={() => { setMcpInstallerEdit(undefined); setShowMcpInstaller(true) }}
                   onEdit={(s) => { setMcpInstallerEdit(s); setShowMcpInstaller(true) }}
                   onDelete={deleteMcpServer}
@@ -1000,9 +1020,13 @@ function SkillsTab({
   )
 }
 function McpTab({
-  servers, onAdd, onEdit, onDelete, onToggle, onRefresh, onImport, onExport,
+  servers, firstPartyTools, onToggleFirstParty, onAdd, onEdit, onDelete, onToggle, onRefresh, onImport, onExport,
 }: {
   servers: McpServerConfigMeta[]
+  /** Global first-party tool defaults, staged in the modal and persisted by
+   *  the unified Save (NOT saved on toggle). Hidden when the map is empty. */
+  firstPartyTools: Record<string, { enabled: boolean }>
+  onToggleFirstParty: (name: string, enabled: boolean) => void
   onAdd: () => void
   onEdit: (s: McpServerConfigMeta) => void
   onDelete: (name: string) => void
@@ -1011,6 +1035,7 @@ function McpTab({
   onImport: () => void
   onExport: () => void
 }) {
+  const firstPartyEntries = Object.entries(firstPartyTools)
   return (
     <>
       <div className="settings-section-head settings-mcp-head">
@@ -1033,6 +1058,36 @@ function McpTab({
       {servers.map((srv) => (
         <McpCard key={srv.name} server={srv} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onRefresh={onRefresh} />
       ))}
+      {firstPartyEntries.length > 0 && (
+        <div className="settings-first-party" style={{ marginTop: 16 }}>
+          <div className="settings-section-head compact">
+            <span className="settings-note">First-party tools</span>
+          </div>
+          <span className="hint">
+            Global default for new sessions. Open sessions without a
+            per-session override keep their current state — use the panel
+            toggle for instant control.
+          </span>
+          {firstPartyEntries.map(([name, def]) => (
+            <div key={name} className="settings-first-party-row">
+              <div className="settings-first-party-info">
+                <span className="settings-first-party-name">{name}</span>
+                <span className="hint">Built-in tools this app injects into sessions.</span>
+              </div>
+              <div className="settings-first-party-actions">
+                <label className="settings-toggle">
+                  <input
+                    type="checkbox"
+                    checked={def.enabled}
+                    onChange={() => onToggleFirstParty(name, !def.enabled)}
+                  />
+                  <span>{def.enabled ? 'ON' : 'OFF'}</span>
+                </label>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </>
   )
 }

@@ -470,8 +470,8 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
   }
 
   // Structured per-first-party-server defaults. The legacy `appToolsGit`
-  // boolean is folded into the `apptools` entry when the structured key is
-  // absent, so old config.json files keep working.
+  // boolean is folded into the `apptools` entry when the file did not itself
+  // provide one, so old config.json files keep working.
   let fileFirstParty: Record<string, { enabled: boolean }> | undefined
   if (file_.firstPartyTools && typeof file_.firstPartyTools === 'object' && !Array.isArray(file_.firstPartyTools)) {
     const structured: Record<string, { enabled: boolean }> = {}
@@ -486,11 +486,23 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
       )
     }
   }
+  // Fold the legacy flat boolean INTO the structured `apptools` entry when
+  // the file did not itself provide one. The structured map is the single
+  // authoritative view of the global defaults (firstPartyEnabled and the
+  // global-settings UI both read it structured-first) — without this fold a
+  // legacy-only `{ appToolsGit: false }` file would leave the structured map
+  // at its default `enabled: true` and the user's setting would be silently
+  // dead behind it.
+  if (typeof file_.appToolsGit === 'boolean' && fileFirstParty?.apptools === undefined) {
+    ;(merged as { firstPartyTools: Record<string, { enabled: boolean }> }).firstPartyTools = Object.freeze({
+      ...merged.firstPartyTools,
+      apptools: Object.freeze({ enabled: file_.appToolsGit }),
+    })
+  }
   // Derive the legacy appToolsGit convenience field from the structured map
   // ONLY when the file itself provided firstPartyTools — structured wins over
-  // the flat legacy boolean. A file with just the flat boolean (no structured
-  // block) leaves merged.firstPartyTools at its default and appToolsGit at
-  // the value the boolean block set above.
+  // the flat legacy boolean. A file with just the flat boolean keeps both
+  // views at the value the boolean block set above (via the fold).
   if (fileFirstParty?.apptools?.enabled !== undefined) {
     ;(merged as { appToolsGit: boolean }).appToolsGit = fileFirstParty.apptools.enabled
   }

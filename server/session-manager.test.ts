@@ -3652,6 +3652,16 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(mcpServers?.apptools).toBeUndefined()
   })
 
+  it('create() seeds a create-time firstPartyTools override so the first spawn honors it', () => {
+    const info = sm.create({ cwd: '/tmp', firstPartyTools: { apptools: false } } as Parameters<SessionManager['create']>[0])
+    // The override lands on the session (persisted via writeStore) AND the
+    // first spawn injection already skips apptools — no create-then-toggle
+    // round-trip needed.
+    expect(info.firstPartyTools).toEqual({ apptools: false })
+    const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown> | undefined
+    expect(mcpServers?.apptools).toBeUndefined()
+  })
+
   it('omits apptools from live setMcpServers when the session override disables it', async () => {
     const info = sm.create({ cwd: '/tmp' })
     // Simulate a per-session override turning apptools off (setAppTools path).

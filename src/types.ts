@@ -117,6 +117,9 @@ export interface NewSessionForm {
   tools?: string[]
   /** Names of global MCP servers to enable for this session. */
   enabledMcpServers?: string[]
+  /** Per-first-party-server overrides chosen at create time. Only servers
+   *  diverging from the global default are included (absent = inherit). */
+  firstPartyTools?: Record<string, boolean>
   /** Compound keys of globally-enabled plugins to carry into this session.
    *  Omitted when all enabled plugins are selected (default); `[]` when none. */
   enabledPlugins?: string[]

@@ -123,3 +123,80 @@ describe('NewSessionDialog plugin picker', () => {
     expect(form.enabledPlugins).toEqual([])
   })
 })
+
+describe('NewSessionDialog first-party tools picker', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+  })
+
+  const findFirstPartyRow = (container: HTMLElement, name: string) => {
+    const label = Array.from(container.querySelectorAll('label')).find((l) =>
+      l.textContent?.includes(name) && l.querySelector('input[type="checkbox"]'),
+    )
+    expect(label, `first-party row for ${name}`).toBeDefined()
+    return {
+      label: label!,
+      checkbox: label!.querySelector('input[type="checkbox"]') as HTMLInputElement,
+    }
+  }
+
+  const clickCreate = async (container: HTMLElement, onSubmit: ReturnType<typeof vi.fn>) => {
+    const createBtn = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Create',
+    )!
+    fireEvent.click(createBtn)
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    return onSubmit.mock.calls[0][0] as NewSessionForm
+  }
+
+  it('pre-checks rows from the global defaults and omits the field when unchanged', async () => {
+    const onSubmit = vi.fn()
+    const { container } = render(
+      <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ apptools: { enabled: true } }} />,
+    )
+    await waitFor(() => expect(container.textContent).toContain('apptools'))
+    expect(findFirstPartyRow(container, 'apptools').checkbox.checked).toBe(true)
+
+    const form = await clickCreate(container, onSubmit)
+    // Unchanged from the global default → no override (the session inherits).
+    expect(form.firstPartyTools).toBeUndefined()
+  })
+
+  it('sends an explicit OFF override when a globally-enabled tool is unchecked', async () => {
+    const onSubmit = vi.fn()
+    const { container } = render(
+      <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ apptools: { enabled: true } }} />,
+    )
+    await waitFor(() => expect(container.textContent).toContain('apptools'))
+    fireEvent.click(findFirstPartyRow(container, 'apptools').checkbox)
+
+    const form = await clickCreate(container, onSubmit)
+    expect(form.firstPartyTools).toEqual({ apptools: false })
+  })
+
+  it('sends an explicit ON override when a globally-disabled tool is checked', async () => {
+    const onSubmit = vi.fn()
+    const { container } = render(
+      <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ apptools: { enabled: false } }} />,
+    )
+    await waitFor(() => expect(container.textContent).toContain('apptools'))
+    expect(findFirstPartyRow(container, 'apptools').checkbox.checked).toBe(false)
+    fireEvent.click(findFirstPartyRow(container, 'apptools').checkbox)
+
+    const form = await clickCreate(container, onSubmit)
+    expect(form.firstPartyTools).toEqual({ apptools: true })
+  })
+
+  it('hides the cluster when the defaults map is empty', async () => {
+    const onSubmit = vi.fn()
+    const { container } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{}} />)
+    await waitFor(() => expect(container.textContent).not.toContain('plugA'))
+    expect(container.textContent).not.toContain('First-party tools')
+    await clickCreate(container, onSubmit)
+  })
+})

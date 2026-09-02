@@ -281,3 +281,25 @@ export interface SessionInfoBase<PM = string> {
    *  flag). Persisted so the intent survives a server restart. */
   slept?: boolean
 }
+
+/** Build the create-time `firstPartyTools` override map that carries a
+ *  session's per-server first-party state into a fresh session (restart,
+ *  and any future fork-style client re-creation). Boolean overrides are
+ *  carried; `null` entries — the live-session "inherit" marker, which is
+ *  NOT a valid create-body value — are dropped; the legacy `appToolsGit`
+ *  boolean folds into the `apptools` entry (name matching the server's
+ *  APP_TOOLS_SERVER_NAME / config.ts's legacy fold) unless the structured
+ *  map already pins that entry. Returns undefined when there is nothing to
+ *  preserve, so the create body can simply omit the key (= inherit). */
+export function firstPartyOverridesForCreate(
+  session: Pick<SessionInfoBase<unknown>, 'firstPartyTools' | 'appToolsGit'>,
+): Record<string, boolean> | undefined {
+  const out: Record<string, boolean> = {}
+  for (const [name, v] of Object.entries(session.firstPartyTools ?? {})) {
+    if (typeof v === 'boolean') out[name] = v
+  }
+  if (!('apptools' in out) && typeof session.appToolsGit === 'boolean') {
+    out.apptools = session.appToolsGit
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}

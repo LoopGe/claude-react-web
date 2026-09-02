@@ -1082,7 +1082,17 @@ export class SessionManager {
       provider: opts.provider ?? this.defaultProvider,
       model: opts.model ?? profileDefaultModel(profile),
     }
-    return this.spawn(randomUUID(), withDefault, customEnv, undefined, undefined, undefined, joinGroupOf, evictingSource)
+    // Create-time per-first-party-server override (app-level `firstPartyTools`
+    // body field — NOT an SDK Options key; the provider whitelists what
+    // reaches the subprocess). Rides into spawn() as prefs so the FIRST
+    // injection honors it — no create-then-toggle round-trip. `appToolsGit`
+    // is mirrored for the apptools entry to keep the legacy surface coherent
+    // (same as setFirstPartyTool).
+    const firstParty = (opts as { firstPartyTools?: Record<string, boolean> }).firstPartyTools
+    const createPrefs = firstParty
+      ? { appToolsGit: firstParty[APP_TOOLS_SERVER_NAME], firstPartyTools: firstParty }
+      : undefined
+    return this.spawn(randomUUID(), withDefault, customEnv, undefined, undefined, createPrefs, joinGroupOf, evictingSource)
   }
 
   /** Resume a previously-persisted session. The SDK loads conversation

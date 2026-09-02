@@ -55,6 +55,10 @@ interface Props {
   deletingIds?: Set<string>
   onSelect: (id: string) => void
   onCreate: (form: NewSessionForm) => void
+  /** Global first-party tool defaults (server config map) — forwarded to
+   *  <NewSessionDialog> so the create form can offer per-server checkboxes
+   *  pre-checked from the global default. */
+  firstPartyTools?: Record<string, { enabled: boolean }>
   onDelete: (id: string) => void
   /** Put a live, idle session into dormant state (release the SDK
    *  subprocess) without deleting it. Reversible via resume. */
@@ -166,6 +170,7 @@ export const SessionList = memo(function SessionList({
   onToggleGroupCollapse,
   onSelect,
   onCreate,
+  firstPartyTools,
   onDelete,
   onSleep,
   onClosePanel,
@@ -1115,6 +1120,7 @@ export const SessionList = memo(function SessionList({
           groups={groups}
           maxGroupSize={maxGroupSize}
           accentLocked={isAccentLocked(skin)}
+          firstPartyTools={firstPartyTools}
           onCancel={() => {
             setShowDialog(false)
             setPrefilledCwd(undefined)

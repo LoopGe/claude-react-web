@@ -40,12 +40,16 @@ export interface NewSessionDialogProps {
   initialGroupId?: string
   /** Max sessions per group. */
   maxGroupSize: number
+  /** Global first-party tool defaults (server config map, name → {enabled}).
+   *  One checkbox row per entry; the initial checked state is the entry's
+   *  `enabled` value. Omitted / empty map → the cluster is hidden. */
+  firstPartyTools?: Record<string, { enabled: boolean }>
   /** When true the active skin locks the accent (Anthropic / HC), so the
    *  per-session accent picker is hidden in the new-session form. */
   accentLocked?: boolean
 }
 
-export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, initialGroupId, maxGroupSize, accentLocked }: NewSessionDialogProps) {
+export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, initialGroupId, maxGroupSize, accentLocked, firstPartyTools }: NewSessionDialogProps) {
   // Per-instance prefix for label↔control id linkage. useId keeps the
   // dialog's ids document-unique even if it ever mounts more than once.
   const uid = useId()
@@ -100,6 +104,13 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>(undefined)
   const mcpInstallerPresence = useExitPresence(showMcpInstaller)
+
+  // First-party tool checkboxes. The state holds ONLY entries diverging from
+  // the global default (`firstPartyDiffs[name] ?? default.enabled` is the
+  // checked state; toggling back to the default deletes the entry), so submit
+  // can pass the map verbatim — absent key = inherit global, per the server's
+  // per-server override model.
+  const [firstPartyDiffs, setFirstPartyDiffs] = useState<Record<string, boolean>>({})
 
   const [recentModels, setRecentModels] = useLocalStorage<string[]>(RECENT_MODELS_KEY, [])
   const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [])
@@ -216,6 +227,9 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       enabledPlugins: enabledPlugins.size === allPluginKeys.length
         ? undefined
         : Array.from(enabledPlugins),
+      // Only entries diverging from the global default (the state never
+      // holds agreeing entries) — absent key = inherit global.
+      firstPartyTools: Object.keys(firstPartyDiffs).length > 0 ? { ...firstPartyDiffs } : undefined,
       mcpServers,
       env,
     })
@@ -263,6 +277,16 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       const next = new Set(prev)
       if (next.has(key)) next.delete(key)
       else next.add(key)
+      return next
+    })
+  }
+
+  const toggleFirstParty = (name: string, globalEnabled: boolean) => {
+    setFirstPartyDiffs((prev) => {
+      const now = !(prev[name] ?? globalEnabled)
+      const next = { ...prev }
+      if (now === globalEnabled) delete next[name]
+      else next[name] = now
       return next
     })
   }
@@ -666,6 +690,30 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                     </span>
                   )}
                 </div>
+                {firstPartyTools && Object.keys(firstPartyTools).length > 0 && (
+                  <div className="settings-field" style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
+                    <label style={{ margin: 0 }}>First-party tools</label>
+                    <span className="hint" style={{ marginTop: 4, display: 'block' }}>
+                      Built-in tools this app injects into the session. Unchecked = not injected.
+                    </span>
+                    {Object.entries(firstPartyTools).map(([name, def]) => {
+                      const checked = firstPartyDiffs[name] ?? def.enabled
+                      return (
+                        <label
+                          key={name}
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleFirstParty(name, def.enabled)}
+                          />
+                          <span style={{ flex: 1 }}>{name}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
                 {allPluginKeys.length > 0 && (
                   <div className="settings-field" style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
                     <label style={{ margin: 0 }}>Plugins</label>
