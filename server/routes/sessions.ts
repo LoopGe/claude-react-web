@@ -624,7 +624,8 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
 
   // Per-session override for the first-party `apptools` git MCP server.
   // `enabled: null` clears the override so the session re-inherits the
-  // global default. Pure UI pref — no SDK round-trip; read at next spawn.
+  // global default. Immediate on live sessions (re-injects); legacy route
+  // forwarding to the generalized first-party toggle below.
   app.post('/sessions/:id/app-tools', async (c) => {
     const body = await safeJson<{ enabled?: unknown }>(c.req)
     const v = body && Object.prototype.hasOwnProperty.call(body, 'enabled') ? body.enabled : null
@@ -633,6 +634,29 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     }
     const info = await sm.setAppTools(c.req.param('id'), v as boolean | null)
     return c.json({ session: info })
+  })
+
+  // Generalized first-party tool server toggle — per-session override for any
+  // registered first-party server. Immediate on live sessions (re-injects via
+  // setMcpServers); `enabled: null` clears the override to inherit global.
+  app.post('/sessions/:id/tools/:name/toggle', async (c) => {
+    const body = await safeJson<{ enabled?: unknown }>(c.req)
+    const v = body && Object.prototype.hasOwnProperty.call(body, 'enabled') ? body.enabled : null
+    if (v !== null && typeof v !== 'boolean') {
+      return c.json({ error: 'enabled must be a boolean or null' }, 400)
+    }
+    const name = c.req.param('name')
+    if (!name) return c.json({ error: 'name is required' }, 400)
+    const info = await sm.setFirstPartyTool(c.req.param('id'), name, v as boolean | null)
+    return c.json({ session: info })
+  })
+
+  // First-party tool server status (independent of SDK mcpServerStatus, which
+  // is unreliable for in-process servers). Reports enabled/injected/error per
+  // registered server so the client can render the first-party section.
+  app.get('/sessions/:id/tools', async (c) => {
+    const tools = sm.toolServerStatus(c.req.param('id'))
+    return c.json({ tools })
   })
 
   // Context usage

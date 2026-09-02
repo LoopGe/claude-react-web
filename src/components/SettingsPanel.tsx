@@ -66,6 +66,23 @@ interface Props {
   onSkillsReloaded?: () => void
 }
 
+interface FirstPartyToolStatus {
+  name: string
+  description: string
+  enabled: boolean
+  injected: boolean
+  requiresCwd: boolean
+  hasCwd: boolean
+  error?: string
+}
+
+/** Wire shape of `POST /sessions/:id/tools/:name/toggle`. */
+interface ToolsToggleResponse {
+  session: SessionInfo
+}
+
+// --- SettingsPanel component -------------------------------------------------
+
 export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs, onClose, onSessionUpdate, commands = [], agents = [], contextUsage, tabRequest, onPluginsReloaded, onSkillsReloaded }: Props) {
   const modelOptions = useModelOptions(session.id, true, session.profileId)
   // Stable per-instance prefix for label/control id linkage. SettingsPanel
@@ -86,6 +103,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // refresh()). The hook itself never fires a request by itself.
   const sessionUsage = useSessionUsage(session.id)
   const [mcp, setMcp] = useState<McpServerStatus[]>([])
+  const [firstPartyTools, setFirstPartyTools] = useState<FirstPartyToolStatus[]>([])
   const [globalMcpNames, setGlobalMcpNames] = useState<Set<string>>(new Set())
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>(undefined)
@@ -125,7 +143,6 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // Effective UI prefs: a per-session override wins, else the global default.
   const effShowPinned = session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage
   const effAutoRecap = session.autoRecap ?? globalPrefs.autoRecap
-  const effAppTools = session.appToolsGit ?? globalPrefs.appToolsGit
   /** POST a per-session pref override. A boolean pins it; `null` clears the
    *  override so the session re-inherits the global default. No success toast
    *  — checkbox toggles are too frequent to toast on every change; only
@@ -143,16 +160,18 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     }
   }
 
-  /** Per-session apptools override (first-party git MCP server). `null`
-   *  clears the override to re-inherit the global default. Takes effect at
-   *  the next session start — the injection happens at spawn / live
-   *  setMcpServers, so a running session keeps its current server set. */
-  const changeAppTools = async (enabled: boolean | null) => {
+  /** Per-session first-party tool server override (e.g. the `apptools` git
+   *  server). `null` clears the override to re-inherit the global default.
+   *  Immediate on live sessions (the server re-injects via setMcpServers). */
+  const toggleFirstParty = async (name: string, enabled: boolean | null) => {
     try {
-      const r = await api.post<{ session: SessionInfo }>(`/sessions/${session.id}/app-tools`, { enabled })
+      const r = await api.post<ToolsToggleResponse>(
+        `/sessions/${session.id}/tools/${encodeURIComponent(name)}/toggle`,
+        { enabled },
+      )
       onSessionUpdate(r.session)
     } catch (e) {
-      toast.error(`Couldn't update app tools: ${(e as Error).message}`)
+      toast.error(`Couldn't update ${name}: ${(e as Error).message}`)
     }
   }
 
@@ -251,6 +270,18 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     })()
     return () => { ac.abort() }
   }, [session.id, session.running])
+
+  // First-party tool server status — cheap (registry-derived, no SDK control
+  // request). Fetched once per panel mount; toggles update it via the
+  // response of the toggle POST (the server returns fresh SessionInfo).
+  useEffect(() => {
+    let cancelled = false
+    api
+      .get<{ tools: FirstPartyToolStatus[] }>(`/sessions/${session.id}/tools`)
+      .then((r) => { if (!cancelled) setFirstPartyTools(r.tools) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [session.id])
 
   // Lazy-load the full context-usage breakdown (skills / agents /
   // memoryFiles / mcpTools). This is the BLOCKING SDK control request we
@@ -557,10 +588,16 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // Global MCP servers not yet connected to this session.
   // Prefer the snapshot-derived mcpServerNames (reliable, arrives via WS)
   // over the mcp-status result (flaky SDK control request that may fail).
-  // The first-party `apptools` in-process server is managed by its own
-  // toggle below, not the MCP server management list — hide it from the
-  // SDK-reported status so it never renders a reconnect/toggle card.
-  const mcpSdkList = useMemo(() => mcp.filter((s) => s.name !== 'apptools'), [mcp])
+  // First-party in-process servers (e.g. `apptools`) are managed by their own
+  // section below, not the MCP server management list — exclude them from the
+  // SDK-reported status so they never render a reconnect/toggle card. Names
+  // come from GET /sessions/:id/tools; fall back to the known apptools name
+  // before that fetch lands.
+  const firstPartyNames = useMemo(
+    () => new Set(firstPartyTools.length > 0 ? firstPartyTools.map((t) => t.name) : ['apptools']),
+    [firstPartyTools],
+  )
+  const mcpSdkList = useMemo(() => mcp.filter((s) => !firstPartyNames.has(s.name)), [mcp, firstPartyNames])
 
   // Fallback to mcp for sessions created before mcpServerNames was added.
   const availableMcpNames = useMemo(() => {
@@ -1357,34 +1394,48 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             </button>
           </div>
         </div>
-        <div className="settings-field">
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={effAppTools}
-              disabled={busy || session.terminated}
-              onChange={() => void changeAppTools(!effAppTools)}
-            />
-            <span>Let Claude use git tools</span>
-          </label>
-          <span className="hint">
-            Injects first-party git tools (status, stage, commit, …) into this
-            session. Changes apply at the next session start.{' '}
-            {session.appToolsGit === undefined
-              ? `Inheriting global (${globalPrefs.appToolsGit ? 'ON' : 'OFF'}).`
-              : 'Session override.'}
-            {session.appToolsGit !== undefined && (
-              <button
-                type="button"
-                className="settings-reset-link"
-                disabled={busy || session.terminated}
-                onClick={() => void changeAppTools(null)}
-              >
-                Reset (inherit global)
-              </button>
-            )}
-          </span>
-        </div>
+        {firstPartyTools.length > 0 && (
+          <div className="settings-first-party">
+            <div className="settings-section-head compact">
+              <span className="settings-note">First-party tools</span>
+            </div>
+            {firstPartyTools.map((tool) => {
+              const override = session.firstPartyTools?.[tool.name]
+              const enabled = override ?? tool.enabled
+              return (
+                <div key={tool.name} className="settings-first-party-row">
+                  <div className="settings-first-party-info">
+                    <span className="settings-first-party-name">{tool.name}</span>
+                    <span className="hint">{tool.description}</span>
+                    {tool.error && <span className="settings-first-party-error">{tool.error}</span>}
+                    {!tool.hasCwd && <span className="hint">No session working directory — not injected.</span>}
+                  </div>
+                  <div className="settings-first-party-actions">
+                    <label className="settings-toggle">
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        disabled={busy || session.terminated}
+                        onChange={() => void toggleFirstParty(tool.name, !enabled)}
+                      />
+                      <span>{enabled ? 'ON' : 'OFF'}</span>
+                    </label>
+                    {override !== undefined && (
+                      <button
+                        type="button"
+                        className="settings-reset-link"
+                        disabled={busy || session.terminated}
+                        onClick={() => void toggleFirstParty(tool.name, null)}
+                      >
+                        Reset (inherit global)
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
         {loadingMeta && effectiveMcpWithOverride.length === 0 && <Skeleton rows={2} />}
         {!loadingMeta && effectiveMcpWithOverride.length === 0 && <EmptyState icon={<IconTerminal size={16} />} title="No MCP servers" />}
         {effectiveMcpWithOverride.map((srv) => (

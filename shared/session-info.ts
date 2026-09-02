@@ -267,6 +267,11 @@ export interface SessionInfoBase<PM = string> {
    *  pins this session to that value. Persisted so it survives resume /
    *  fork / reload. */
   appToolsGit?: boolean
+  /** Per-session overrides for first-party tool servers (keyed by server
+   *  name). `true`/`false` pin that server; `null` clears the override to
+   *  inherit the global default. `appToolsGit` is the legacy single-entry
+   *  form of `firstPartyTools.apptools`. */
+  firstPartyTools?: Record<string, boolean | null>
   /** True when the user explicitly put this session to sleep (dormant) via
    *  the "Sleep" action — distinct from a passive dormant state caused by a
    *  server restart or crash. The client uses this to skip auto/background

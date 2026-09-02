@@ -114,8 +114,15 @@ interface ConfigFile {
   /** Global default for injecting the first-party `apptools` in-process MCP
    *  server (git tools) into sessions. Per-session overrides
    *  (SessionMeta.appToolsGit) take priority; sessions without an override
-   *  inherit this value. */
+   *  inherit this value. LEGACY — superseded by `firstPartyTools.apptools`,
+   *  still read for backward compatibility with old config.json files. */
   appToolsGit: boolean
+  /** Per-first-party-server global defaults. Each key is an in-process MCP
+   *  server name (e.g. `apptools`); sessions without an override inherit
+   *  these. `firstPartyTools.apptools.enabled` supersedes the legacy
+   *  `appToolsGit` boolean (which is folded in at load when the structured
+   *  key is absent). */
+  firstPartyTools?: Record<string, { enabled?: boolean }>
   /** When true, acceptEdits and bypassPermissions modes also auto-approve
    *  edits/commands targeting "sensitive" config paths (.git/, .claude/,
    *  .vscode/, .idea/, shell & git config files) that otherwise still prompt
@@ -169,8 +176,11 @@ export interface ServerConfig {
    *  override inherit this. */
   readonly autoRecap: boolean
   /** Global default for the per-session `apptools` git MCP server. Sessions
-   *  without an explicit override inherit this. */
+   *  without an explicit override inherit this. LEGACY derived convenience —
+   *  equals `firstPartyTools.apptools?.enabled ?? true`. */
   readonly appToolsGit: boolean
+  /** Per-first-party-server global defaults (see ConfigFile). */
+  readonly firstPartyTools: Readonly<Record<string, Readonly<{ enabled: boolean }>>>
   /** When true, acceptEdits/bypassPermissions also bypass the sensitive-path
    *  safety checks. See ConfigFile.allowSensitivePathEdits. */
   readonly allowSensitivePathEdits: boolean
@@ -214,6 +224,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   showPinnedUserMessage: true,
   autoRecap: true,
   appToolsGit: true,
+  firstPartyTools: Object.freeze({ apptools: Object.freeze({ enabled: true }) }),
   allowSensitivePathEdits: false,
   maxOutputTokens: 0,
   profiles: Object.freeze([]),
@@ -458,6 +469,32 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { appToolsGit: boolean }).appToolsGit = file_.appToolsGit
   }
 
+  // Structured per-first-party-server defaults. The legacy `appToolsGit`
+  // boolean is folded into the `apptools` entry when the structured key is
+  // absent, so old config.json files keep working.
+  let fileFirstParty: Record<string, { enabled: boolean }> | undefined
+  if (file_.firstPartyTools && typeof file_.firstPartyTools === 'object' && !Array.isArray(file_.firstPartyTools)) {
+    const structured: Record<string, { enabled: boolean }> = {}
+    for (const [name, raw] of Object.entries(file_.firstPartyTools)) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+      if (typeof raw.enabled === 'boolean') structured[name] = { enabled: raw.enabled }
+    }
+    if (Object.keys(structured).length > 0) {
+      fileFirstParty = structured
+      ;(merged as { firstPartyTools: Record<string, { enabled: boolean }> }).firstPartyTools = Object.freeze(
+        Object.fromEntries(Object.entries(structured).map(([k, v]) => [k, Object.freeze(v)])),
+      )
+    }
+  }
+  // Derive the legacy appToolsGit convenience field from the structured map
+  // ONLY when the file itself provided firstPartyTools — structured wins over
+  // the flat legacy boolean. A file with just the flat boolean (no structured
+  // block) leaves merged.firstPartyTools at its default and appToolsGit at
+  // the value the boolean block set above.
+  if (fileFirstParty?.apptools?.enabled !== undefined) {
+    ;(merged as { appToolsGit: boolean }).appToolsGit = fileFirstParty.apptools.enabled
+  }
+
   if (typeof file_.allowSensitivePathEdits === 'boolean') {
     ;(merged as { allowSensitivePathEdits: boolean }).allowSensitivePathEdits = file_.allowSensitivePathEdits
   }
@@ -514,6 +551,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'showPinnedUserMessage',
   'autoRecap',
   'appToolsGit',
+  'firstPartyTools',
   'allowSensitivePathEdits',
   'maxOutputTokens',
 ] as const

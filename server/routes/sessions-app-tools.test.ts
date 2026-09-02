@@ -8,6 +8,8 @@ function makeApp() {
     create: vi.fn(() => ({ id: 's1' })),
     mergeMcpServersAsync: vi.fn(async () => undefined),
     setAppTools: vi.fn(async () => ({ id: 's1', appToolsGit: false })),
+    setFirstPartyTool: vi.fn(async () => ({ id: 's1', firstPartyTools: { apptools: true } })),
+    toolServerStatus: vi.fn(() => [{ name: 'apptools', enabled: true, injected: true, requiresCwd: true, hasCwd: true }]),
   }
   return { app: buildSessionRouter(sm as unknown as SessionManager), sm }
 }
@@ -58,5 +60,39 @@ describe('POST /sessions/:id/app-tools', () => {
       expect(res.status).toBe(400)
     }
     expect(sm.setAppTools).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /sessions/:id/tools/:name/toggle', () => {
+  it('forwards name + enabled to sm.setFirstPartyTool', async () => {
+    const { app, sm } = makeApp()
+    const res = await post(app, '/sessions/s1/tools/apptools/toggle', { enabled: false })
+    expect(res.status).toBe(200)
+    expect(sm.setFirstPartyTool).toHaveBeenCalledWith('s1', 'apptools', false)
+  })
+
+  it('forwards null to clear the override', async () => {
+    const { app, sm } = makeApp()
+    const res = await post(app, '/sessions/s1/tools/apptools/toggle', { enabled: null })
+    expect(res.status).toBe(200)
+    expect(sm.setFirstPartyTool).toHaveBeenCalledWith('s1', 'apptools', null)
+  })
+
+  it('400s on a non-boolean/non-null body', async () => {
+    const { app, sm } = makeApp()
+    const res = await post(app, '/sessions/s1/tools/apptools/toggle', { enabled: 'yes' })
+    expect(res.status).toBe(400)
+    expect(sm.setFirstPartyTool).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /sessions/:id/tools', () => {
+  it('returns the first-party tool server status', async () => {
+    const { app, sm } = makeApp()
+    const res = await app.request('/sessions/s1/tools')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { tools: Array<{ name: string }> }
+    expect(body.tools).toEqual([{ name: 'apptools', enabled: true, injected: true, requiresCwd: true, hasCwd: true }])
+    expect(sm.toolServerStatus).toHaveBeenCalledWith('s1')
   })
 })

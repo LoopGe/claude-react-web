@@ -179,6 +179,17 @@ describe('SessionStore', () => {
     expect(store2.get('a')?.appToolsGit).toBe(false)
   })
 
+  it('round-trips firstPartyTools across upsert + reload', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a', { firstPartyTools: { apptools: false } }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    expect(store2.get('a')?.firstPartyTools).toEqual({ apptools: false })
+  })
+
   it('drops a sandbox object whose enabled is not true (present = ON contract)', async () => {
     const store = new SessionStore({ stateDir: dir })
     await store.load()

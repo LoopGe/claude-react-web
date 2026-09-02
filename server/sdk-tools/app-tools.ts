@@ -15,6 +15,7 @@
 import { z } from 'zod'
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
+import type { FirstPartyToolServer } from './types.js'
 import {
   getStatus,
   getLog,
@@ -38,6 +39,41 @@ import {
 
 /** Server name — tool FQN is `mcp__apptools__{name}`. */
 export const APP_TOOLS_SERVER_NAME = 'apptools'
+
+/** Bare read-only tool names (registry FQN set prefixes these). */
+export const APP_TOOLS_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  'git_status',
+  'git_branches',
+  'git_stashes',
+  'git_log',
+])
+
+/** Bare mutating tool names — tool_results for these trigger a git-status
+ *  broadcast (worktree change detection). */
+export const APP_TOOLS_MUTATING_TOOLS: ReadonlySet<string> = new Set([
+  'git_stage',
+  'git_unstage',
+  'git_discard',
+  'git_commit',
+  'git_stash_create',
+  'git_stash_pop',
+  'git_stash_drop',
+  'git_abort_merge',
+  'git_abort_rebase',
+  'git_branch_create',
+  'git_checkout',
+])
+
+/** The git server registered into the first-party registry. */
+export const gitAppTools: FirstPartyToolServer = {
+  name: APP_TOOLS_SERVER_NAME,
+  description: 'First-party git tools bound to the session cwd',
+  defaultEnabled: true,
+  requiresCwd: true,
+  buildTools: (cwd) => buildAppToolsTools(cwd ?? ''),
+  readOnlyToolNames: APP_TOOLS_READ_ONLY_TOOLS,
+  mutatingToolNames: APP_TOOLS_MUTATING_TOOLS,
+}
 
 /** Clean `CallToolResult` for a successful call. */
 function ok(text: string): CallToolResult {

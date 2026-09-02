@@ -45,6 +45,9 @@ export interface ConfigResponse {
   /** Global default for the first-party `apptools` git MCP server. Sessions
    *  without an explicit override inherit this. */
   appToolsGit?: boolean
+  /** Per-first-party-server global defaults (keyed by server name, e.g.
+   *  `apptools`). `appToolsGit` is the legacy single-entry form. */
+  firstPartyTools?: Record<string, { enabled: boolean }>
   /** Currently active profile id (multi-profile mode). */
   activeProfileId?: string
   /** Currently active profile name (display only). */
@@ -76,6 +79,8 @@ export interface FullServerConfig {
   autoRecap: boolean
   /** Global default for the first-party `apptools` git MCP server. */
   appToolsGit: boolean
+  /** Per-first-party-server global defaults. */
+  firstPartyTools?: Record<string, { enabled: boolean }>
   /** When true, acceptEdits/bypassPermissions also auto-approve edits/commands
    *  targeting sensitive config paths (.git/, .claude/, shell configs, …). */
   allowSensitivePathEdits: boolean

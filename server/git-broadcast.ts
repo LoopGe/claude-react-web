@@ -14,6 +14,7 @@
 // debounce.
 
 import type { SessionBroadcaster } from './session-types.js'
+import { firstPartyRegistry } from './sdk-tools/registry.js'
 
 const DEBOUNCE_MS = 500
 const timers = new Map<string, NodeJS.Timeout>()
@@ -74,6 +75,14 @@ export const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
   'PowerShell',
 ])
 
+/** Built-in mutating tools ∪ first-party mutating tools (FQNs like
+ *  `mcp__apptools__git_stage`). The pump matches tool_use block names against
+ *  this — FQN form, matching what the SDK reports for in-process MCP tools. */
+const ALL_MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...MUTATING_TOOL_NAMES,
+  ...firstPartyRegistry.mutatingToolFqns(),
+])
+
 interface ToolUseLike {
   type?: string
   name?: string
@@ -87,7 +96,7 @@ export function mutatingToolUseId(block: unknown): string | null {
   if (!block || typeof block !== 'object') return null
   const b = block as ToolUseLike
   if (b.type !== 'tool_use') return null
-  if (typeof b.name !== 'string' || !MUTATING_TOOL_NAMES.has(b.name)) return null
+  if (typeof b.name !== 'string' || !ALL_MUTATING_TOOL_NAMES.has(b.name)) return null
   if (typeof b.id !== 'string') return null
   return b.id
 }
