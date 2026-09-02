@@ -10,7 +10,7 @@
 //   ToolStatusBadge — running/success/error pill, also used standalone
 //                     by some tool views
 
-import { Fragment, memo, useEffect, useRef, type ReactNode } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type AnimationEvent, type ReactNode } from 'react'
 import {
   IconAlertCircle,
   IconArrowDown,
@@ -20,6 +20,7 @@ import {
 } from './icons/ToolIcons'
 import { AnimatedDetails } from './AnimatedCollapse'
 import { useToolResult, useResolvedToolStatus, useToolStatus } from '../hooks/usePlanStatus'
+import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { useCopy } from '../hooks/useCopy'
 import type { ToolResultEntry, ToolStatus } from '../session-store/types'
@@ -428,6 +429,9 @@ export const ToolCard = memo(function ToolCard({
   // result is still pending or for tools that own their result rendering
   // (Plan/Question/Subagent never reach ToolCard anyway).
   const result = useToolResult(toolUseId)
+  // Arms a one-shot entrance animation on the merged result section when the
+  // result genuinely lands (never on scroll-back remounts — see the hook).
+  const resultEntering = useEnterOnArrival(result)
   // Resolved lifecycle status for the background-button gate — the same
   // resolver the badge below uses, so the two can never disagree.
   const resolvedStatus = useResolvedToolStatus(toolUseId, status)
@@ -465,18 +469,45 @@ export const ToolCard = memo(function ToolCard({
         {copyValue && <CopyButton getValue={copyValue} label={copyLabel} />}
       </div>
       {children != null && <div className="tool-card-body">{children}</div>}
-      {result && <ToolCardResult result={result} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />}
+      {result && <ToolResultSection result={result} entering={resultEntering} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />}
     </div>
   )
 })
 
-/** Inline result section at the bottom of a merged tool card. Kept as a
- *  tiny wrapper (rather than inlining the JSX) so the result row carries
- *  its own container class for spacing/border and an error tint. */
-const ToolCardResult = memo(function ToolCardResult({ result, searchQuery, activeMatchIdx }: { result: ToolResultEntry; searchQuery?: string; activeMatchIdx?: number }) {
+/** Inline result section at the bottom of a merged tool card — shared by
+ *  ToolCard, SubagentCard and WorkflowCard so the entrance animation and
+ *  error tint can't drift apart across the three surfaces.
+ *
+ *  `entering` (from useEnterOnArrival) arms a one-shot fade/rise/expand. The
+ *  class is latched in local state so it persists for the full CSS animation
+ *  even when the parent re-renders mid-fade (the status badge flips to "done"
+ *  in the same frame the result lands), then cleared on `animationend` — the
+ *  exact
+ *  end of the CSS animation, so there's no JS duration to keep in sync with
+ *  `--motion-duration-moderate`. */
+export const ToolResultSection = memo(function ToolResultSection({ result, entering = false, searchQuery, activeMatchIdx }: { result: ToolResultEntry; entering?: boolean; searchQuery?: string; activeMatchIdx?: number }) {
+  const [revealing, setRevealing] = useState(entering)
+  const prevEnteringRef = useRef(entering)
+
+  useLayoutEffect(() => {
+    if (entering && !prevEnteringRef.current) setRevealing(true)
+    prevEnteringRef.current = entering
+  }, [entering])
+
+  const handleAnimationEnd = (event: AnimationEvent<HTMLDivElement>) => {
+    if (event.target === event.currentTarget && event.animationName === 'tool-result-enter') {
+      setRevealing(false)
+    }
+  }
+
   return (
-    <div className={`tool-card-result${result.isError ? ' tool-card-result-error' : ''}`}>
-      <ToolResultDetails content={result.content} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
+    <div
+      className={`tool-card-result${result.isError ? ' tool-card-result-error' : ''}${revealing ? ' tool-card-result-enter' : ''}`}
+      onAnimationEnd={handleAnimationEnd}
+    >
+      <div className="tool-card-result-inner">
+        <ToolResultDetails content={result.content} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
+      </div>
     </div>
   )
 })

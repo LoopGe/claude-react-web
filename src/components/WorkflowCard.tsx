@@ -12,9 +12,9 @@
 
 import { memo, useEffect, useState } from 'react'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
+import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
 import { formatElapsed } from '../utils/format'
-import { ToolResultDetails } from './ToolCard'
-import type { ToolResultEntry } from '../session-store/types'
+import { ToolResultSection } from './ToolCard'
 import {
   IconCheck,
   IconCircleDot,
@@ -42,6 +42,7 @@ export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabe
   const startedAt = record?.startedAt
   const endedAt = record?.endedAt
   const result = record?.result
+  const resultEntering = useEnterOnArrival(result)
   const childCount = record?.childAgents.length ?? 0
   const phaseCount = record?.phases.length ?? 0
   const isRunning = status === 'running'
@@ -120,20 +121,7 @@ export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabe
           <span>Open remote session</span>
         </a>
       )}
-      {result && <WorkflowCardResult result={result} />}
-    </div>
-  )
-})
-
-/** Inline result section at the bottom of a merged workflow card — mirrors
- *  ToolCard's ToolCardResult / SubagentCard's SubagentCardResult. Renders the
- *  Workflow's synthesized output (the tool_result that lands on the main
- *  thread) so the card is the Workflow's complete surfacing in the transcript
- *  and the standalone orphan bubble is suppressed. */
-const WorkflowCardResult = memo(function WorkflowCardResult({ result }: { result: ToolResultEntry }) {
-  return (
-    <div className={`tool-card-result${result.isError ? ' tool-card-result-error' : ''}`}>
-      <ToolResultDetails content={result.content} />
+      {result && <ToolResultSection result={result} entering={resultEntering} />}
     </div>
   )
 })

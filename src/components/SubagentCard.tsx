@@ -9,9 +9,9 @@
 import { memo, useEffect, useState } from 'react'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useBackgroundTool } from '../hooks/useBackgroundTool'
+import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
 import { formatElapsed } from '../utils/format'
-import { BackgroundToolButton, ToolResultDetails } from './ToolCard'
-import type { ToolResultEntry } from '../session-store/types'
+import { BackgroundToolButton, ToolResultSection } from './ToolCard'
 import { IconCheck, IconCircleDot, IconAlertTriangle, IconChevronRight, IconExternalLink } from './icons/ToolIcons'
 
 interface Props {
@@ -34,6 +34,7 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
   const startedAt = record?.startedAt
   const endedAt = record?.endedAt
   const result = record?.result
+  const resultEntering = useEnterOnArrival(result)
   const isAsync = record?.isAsync
   // Both 'running' (synchronous, pre-tool_result) and 'background' (async,
   // ack landed but still working) are live states — the elapsed timer must
@@ -137,20 +138,7 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
           {record.progressSummary}
         </div>
       )}
-      {result && <SubagentCardResult result={result} />}
-    </div>
-  )
-})
-
-/** Inline result section at the bottom of a merged subagent card — mirrors
- *  ToolCard's ToolCardResult. Renders the subagent's returned output (the
- *  Agent/Task/Explore tool_result that lands on the main thread) so the
- *  card is the subagent's complete surfacing in the transcript and the
- *  standalone orphan bubble can be suppressed. */
-const SubagentCardResult = memo(function SubagentCardResult({ result }: { result: ToolResultEntry }) {
-  return (
-    <div className={`tool-card-result${result.isError ? ' tool-card-result-error' : ''}`}>
-      <ToolResultDetails content={result.content} />
+      {result && <ToolResultSection result={result} entering={resultEntering} />}
     </div>
   )
 })

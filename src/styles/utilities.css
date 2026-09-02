@@ -161,22 +161,58 @@
    cards like Read/Grep) with a separating border so the result reads as
    a distinct zone of the same card. */
 .tool-card-result {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+/* The animated clip wrapper is a separate element so the entrance can
+   collapse the section's full box height (padding + border included) —
+   `grid-template-rows` only animates the grid track, so the section's
+   padding/border live on this inner element and collapse with it. */
+.tool-card-result-inner {
+  min-height: 0;
+  overflow: hidden;
   border-top: 1px solid var(--border);
   background: var(--bg);
   padding: 2px 6px 4px;
 }
 /* The result <details> already brings its own top margin; collapse it so
    the section padding controls the spacing. */
-.tool-card-result > .tool-result-details {
+.tool-card-result-inner > .tool-result-details {
   margin-top: 0;
 }
 /* Error results get a subtle red tint so failures stand out at a glance
    even while collapsed. */
-.tool-card-result-error {
+.tool-card-result-error .tool-card-result-inner {
   background: color-mix(in srgb, var(--danger) 6%, transparent);
 }
-.tool-card-result-error > .tool-result-details > .tool-result-summary {
+.tool-card-result-error .tool-result-details > .tool-result-summary {
   color: var(--danger);
+}
+/* One-shot entrance for the merged tool_result section. The `-enter` class
+   is added by useEnterOnArrival only when the result genuinely lands (the
+   nullish → non-nullish transition), so a Virtuoso scroll-back remount never
+   replays it. Fade + rise + expand: opacity/translateY are layout-agnostic,
+   while grid-template-rows 0fr→1fr animates the real box height so the
+   content below the card slides open instead of jumping. */
+.tool-card-result.tool-card-result-enter {
+  animation: tool-result-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
+}
+@keyframes tool-result-enter {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-sm));
+    grid-template-rows: 0fr;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    grid-template-rows: 1fr;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-card-result.tool-card-result-enter {
+    animation: none;
+  }
 }
 
 /* File-path title block — bold filename + muted dir suffix.
