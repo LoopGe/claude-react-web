@@ -496,6 +496,19 @@ async function main() {
     },
   )
 
+  // Abrupt client deaths (process kill, network drop, proxy timeout) RST the
+  // TCP socket mid-connection. Neither @hono/node-server nor — for sockets
+  // erroring outside its write path — Node attach a catch-all 'error'
+  // listener, and an 'error' event with NO listener crashes the whole process
+  // ("Unhandled 'error' event … read ECONNRESET"; reproduced by hard-exiting
+  // a single WS client). Swallow it here: every real consumer (hono, ws) has
+  // its own error/close handling — this only stops the fatal unhandled-event
+  // path. 'connection' fires for every TCP socket the server accepts,
+  // including the ones later upgraded to WebSocket.
+  server.on('connection', (socket) => {
+    socket.on('error', () => {})
+  })
+
   // Attach the WebSocket multiplexer to the same HTTP server. The
   // returned shutdown fn closes every live socket during SIGINT.
   // @hono/node-server returns a Node http.Server (same shape), so cast
