@@ -5,6 +5,66 @@ All notable changes to `claude-react-web` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] — 2026-09-02
+
+A focused patch release on top of `0.7.0` — **59 commits**. Headline work is
+the **first-party tool registry** (with an in-process **git MCP server**), a new
+**Uploads Manager**, one-shot **structured output** and **`/compact`**, a
+**Quota Monitor** plugin, per-session **command sandboxing**, and `Stop`-now-
+withdraws-queued-messages interrupt behavior. SDK bumped to `0.3.252`.
+
+### Added
+
+- **First-party tool registry** — app-tools are generalized into a manageable
+  tool system; a bundled in-process **git MCP server** exposes first-party git
+  tools, with a tools list + card UI aligned with MCP servers and a global
+  defaults UI (new-session checkboxes + create-time overrides).
+- **Uploads Manager** — server-side upload registry store + list/delete routes
+  wired through the app/API router and CLI boot; a client dialog with stats,
+  filter, copy-path, delete, and clean-missing actions.
+- **Quota Monitor plugin** — multi-platform quota adapters; the next quota reset
+  is shown in the widget and command footer.
+- **One-shot structured output** — SDK `outputFormat` / JSON-schema.
+- **One-shot manual `/compact`** — summarize + continue in a fresh session.
+- **Read-only file viewer** — session `readFile` surfaces file contents
+  read-only.
+- **Per-session command sandbox** — command-execution sandbox setting.
+- **Interrupt** — `Stop` now withdraws queued messages (interrupt
+  `cancelQueued`).
+- **Thinking display control** — summarized / omitted end-to-end.
+- **Rewind** — surface `skippedLinks` in the rewind receipt.
+- **Tasks** — propagate the SDK 0.3.247 ambient task flag; re-enable todo/task
+  tools via `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`.
+
+### Changed
+
+- Upgrade `@anthropic-ai/claude-agent-sdk` to `0.3.252`.
+- **Git panel** — redesigned overlay UI, click-to-select rows, focus-on-open,
+  tooltip sizing, and a header chip that no longer stretches the panel header.
+- **Profiles** — profile edits propagate to model-option consumers; collapsible
+  accordion; consolidated design tokens (font-size / z-index / motion /
+  spacing).
+- **Streaming** — finalized assistant text is clipped from the StreamingFooter
+  during the turn; tool results animate in with a fade/rise/expand.
+- **Sidebar** — group headers join card runs, hover dropped, focus halo fixed.
+- **App plugins** — replay cached widget payloads in the connection snapshot;
+  the marketplace shows its checked-out branch, resolved once at clone/refresh.
+
+### Fixed
+
+- Provider control-op failures now surface as semantic `502`s.
+- App-plugin network broker lookup no longer breaks on Node 22 Happy Eyeballs.
+- The plugin marketplace excludes build-time noise and plugin-local
+  `package.json`.
+- The background dedup guard re-arms after StrictMode simulated unmount;
+  shutdown exits are no longer misrecorded as crashes and stale crashed state
+  heals at boot.
+- `read-file` accepts any OS-absolute path; slash-picker Enter/Tab confirms the
+  highlighted command.
+- Thinking display: absent display keeps the current mode; explicit
+  `clearDisplay` resets.
+- Empty state is centered when deep-link session ids are stale.
+
 ## [0.7.0] — 2026-08-31
 
 The largest release yet — **346 commits** since `0.6.0`. Headline work is the
@@ -265,5 +325,6 @@ cuts streaming re-render cost and cold-load latency.
 - Build still produces a single `dist/cli.mjs` (ESM, Node 20+) serving both the
   Hono API and the built React client.
 
+[0.7.1]: https://github.com/LoopGe/claude-react-web/releases/tag/0.7.1
 [0.7.0]: https://github.com/LoopGe/claude-react-web/releases/tag/0.7.0
 [0.6.0]: https://github.com/LoopGe/claude-react-web/releases/tag/0.6.0
