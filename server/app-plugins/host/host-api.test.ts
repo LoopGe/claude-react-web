@@ -163,13 +163,16 @@ describe('registerHostApi — sessions.subscribe', () => {
       configurationProps: [],
     })
 
-    const result = await handlers['sessions.subscribe']({ sessionId: 's1' })
-    console.log('RESULT TYPE:', typeof result, 'RESULT:', result)
-    expect((result as any).ok).toBe(true)
-    console.log('UNSUBSCRIBE:', (result as any).unsubscribe)
-    // Just test that true is true to see if expect works
-    expect(true).toBe(true)
-    // Test unsubscribe
-    (result as any).unsubscribe()
+    // Test successful subscribe
+    await expect(handlers['sessions.subscribe']({ sessionId: 's1' })).resolves.toMatchObject({
+      ok: true,
+      unsubscribe: expect.any(Function)
+    })
+
+    // Test unsubscribe works
+    const subResult = await handlers['sessions.subscribe']({ sessionId: 's1' }) as { ok: true; unsubscribe: () => void } | { ok: false; error: string }
+    if ('unsubscribe' in subResult && subResult.ok) {
+      subResult.unsubscribe()
+    }
   })
 })
