@@ -78,6 +78,14 @@ describe('SessionSubscriptionRegistry', () => {
     expect(rB.subscribe('s1', peerB).ok).toBe(true)
     expect(session.pluginSubscribers.size).toBe(2)
 
+    // The pump iterates every map value and pushes a frame into each, and
+    // each subscriber's push must reach ITS OWN peer — both get deliveries.
+    for (const sub of session.pluginSubscribers.values()) {
+      ;(sub as any).push({ type: 'assistant' })
+    }
+    expect(peerA.notify).toHaveBeenCalledWith('sessions.event', expect.objectContaining({ kind: 'message' }))
+    expect(peerB.notify).toHaveBeenCalledWith('sessions.event', expect.objectContaining({ kind: 'message' }))
+
     // Releasing B's subscription must not disturb A's.
     rB.dropPeer(peerB)
     expect(session.pluginSubscribers.size).toBe(1)
