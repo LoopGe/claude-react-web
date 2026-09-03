@@ -41,7 +41,10 @@ export function shouldHideByDefault(msg: SdkMessage): boolean {
     msg.subtype !== 'informational' &&
     // Primary model refused, turn retried on the fallback model. Renders as
     // a fallback notice; the reducer also evicts the retracted uuids.
-    msg.subtype !== 'model_refusal_fallback'
+    msg.subtype !== 'model_refusal_fallback' &&
+    // Primary model refused and NO retry ran (no fallback configured /
+    // per-category routing declined). Renders as a refusal notice card.
+    msg.subtype !== 'model_refusal_no_fallback'
   ) return true
   if (msg.type === 'user' && isLocalCommandLogUserMessage(msg)) return true
   // `command_lifecycle` is a top-level lifecycle marker the `claude` CLI emits

@@ -2396,6 +2396,10 @@ const MessageView = memo(function MessageView({
     return <ModelRefusalFallbackView msg={msg} />
   }
 
+  if (type === 'system' && msg.subtype === 'model_refusal_no_fallback') {
+    return <ModelRefusalNoFallbackView msg={msg} />
+  }
+
   // `tool_use_summary` is a top-level type: a compact "what just happened"
   // one-liner the CLI emits after a tool cascade. Rendered as a subdued
   // summary line — the detailed tool cards above it stay untouched.
@@ -2866,6 +2870,40 @@ function ModelRefusalFallbackView({ msg }: { msg: SdkMessage }) {
       <div className="msg-header">
         <span>
           refused by {from} — retrying on {to}
+          {category ? ` (${category})` : ''}
+        </span>
+      </div>
+      {body && <div className="refusal-fallback-body">{body}</div>}
+      {explanation && (
+        <div className="refusal-fallback-detail" title={explanation}>{explanation}</div>
+      )}
+    </div>
+  )
+}
+
+/** Renders `system/model_refusal_no_fallback` — the primary model ended the
+ *  stream with stop_reason "refusal" and NO retry ran (no fallback model is
+ *  configured, or per-category routing declined the retry). Unlike
+ *  model_refusal_fallback there is no retried leg, so no uuids are evicted —
+ *  this card is the transcript's record of why the turn ended. `content` is
+ *  the CLI's banner text; api_refusal_explanation is unstable prose shown as
+ *  the detail line. */
+function ModelRefusalNoFallbackView({ msg }: { msg: SdkMessage }) {
+  const m = msg as {
+    original_model?: unknown
+    content?: unknown
+    api_refusal_explanation?: unknown
+    api_refusal_category?: unknown
+  }
+  const from = typeof m.original_model === 'string' && m.original_model ? m.original_model : 'primary model'
+  const body = typeof m.content === 'string' ? m.content : ''
+  const explanation = typeof m.api_refusal_explanation === 'string' ? m.api_refusal_explanation : undefined
+  const category = typeof m.api_refusal_category === 'string' ? m.api_refusal_category : undefined
+  return (
+    <div className="msg refusal-fallback" aria-label="model refusal (no fallback)">
+      <div className="msg-header">
+        <span>
+          refused by {from} — no fallback available
           {category ? ` (${category})` : ''}
         </span>
       </div>

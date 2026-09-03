@@ -149,6 +149,11 @@ export const BROADCAST_SYSTEM_SUBTYPES = new Set([
   // `retracted_message_uuids` — the client must see this frame to render
   // the fallback notice AND evict the retracted uuids.
   'model_refusal_fallback',
+  // The primary model refused (stop_reason "refusal") and NO retry ran — no
+  // fallback is configured, or per-category routing declined the retry. There
+  // is no retracted leg (nothing was re-run), but the user must see WHY the
+  // turn ended: this renders as a refusal notice card.
+  'model_refusal_no_fallback',
 ])
 
 /** Check if a message should be broadcast to frontend clients.

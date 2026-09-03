@@ -275,6 +275,16 @@ function normalize(o: RawLine, sessionId: string, trim: boolean): unknown {
         'retracted_message_uuids',
       ])
       : {}),
+    // model_refusal_no_fallback carries its payload at the TOP LEVEL (the
+    // `content` banner + original_model + refusal metadata). Without carrying
+    // them through, a disk-loaded frame (resume / scroll-up) reaches the client
+    // with only `message` — the refusal notice card would render empty.
+    ...(o.type === 'system' && o.subtype === 'model_refusal_no_fallback'
+      ? pickTopLevel(o, [
+        'original_model', 'request_id', 'api_refusal_category',
+        'api_refusal_explanation', 'refused_user_message_uuid', 'content',
+      ])
+      : {}),
     // The refusal-fallback supersede list on assistant frames: evict-on-arrival
     // uuids for the refused leg. Needed so a disk-replayed transcript applies
     // the same eviction the live path does (evictMessages is idempotent).

@@ -163,6 +163,12 @@ describe('shouldHideByDefault', () => {
     ).toBe(false)
   })
 
+  it('keeps model_refusal_no_fallback system frames visible (refusal notice, no retry leg)', () => {
+    expect(
+      shouldHideByDefault({ type: 'system', subtype: 'model_refusal_no_fallback' } as unknown as SdkMessage),
+    ).toBe(false)
+  })
+
   it('keeps assistant messages visible', () => {
     expect(shouldHideByDefault({ type: 'assistant', uuid: 'a1' } as unknown as SdkMessage)).toBe(false)
   })
