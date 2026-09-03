@@ -401,6 +401,15 @@ export interface Session {
    *  frames ('idle' | 'running' | 'requires_action'). The pump forwards the
    *  raw frame to live subscribers only on CHANGE. Ephemeral, not persisted. */
   lastSessionState?: 'idle' | 'running' | 'requires_action'
+  /** Cold-start instrumentation: wall-clock ms when the pump began waiting on
+   *  the CLI's first message (boot start), when the `system/init` handshake
+   *  completed, and when the first turn's `result` landed. Logged once each by
+   *  the pump to quantify cold-start latency (create/resume/fork first turn)
+   *  before deciding whether an SDK `startup()`/WarmQuery pre-warm pool is
+   *  worth building. Not persisted. */
+  bootStartedAt?: number
+  initAtMs?: number
+  firstTurnAtMs?: number
   /** Folded background-task state (task_started / task_updated /
    *  task_progress / task_notification frames), keyed by taskId. The SDK
    *  exposes no task-list query API, so this map IS the list. Seeded both

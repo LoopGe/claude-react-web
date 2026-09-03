@@ -606,6 +606,11 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
     try {
       while (true) {
         nextStartedAt = Date.now()
+        // Cold-start instrumentation anchor: first time the pump actually waits
+        // on the CLI (the first iter.next() triggers the SDK to spawn the child
+        // + run the initialize handshake — the critical path for a fresh
+        // session's first turn).
+        if (session.bootStartedAt === undefined) session.bootStartedAt = Date.now()
         log.debug(`[session ${session.id}] pump awaiting iter.next() for msg #${msgCount + 1}`)
         const step: IteratorResult<SDKMessage> = await Promise.race([iter.next(), abortPromise])
         if (step.done) {
@@ -738,6 +743,22 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           }
         }
         session.lastActivityAt = Date.now()
+        // Cold-start instrumentation: log once when the init handshake lands
+        // (the first `system/init` frame), quantifying CLI spawn + module load
+        // + MCP connect + handshake — the portion startup()/WarmQuery would
+        // pre-pay.
+        if (
+          msg.type === 'system' && (msg as { subtype?: string }).subtype === 'init'
+          && session.initAtMs === undefined
+        ) {
+          session.initAtMs = Date.now()
+          const bootMs = session.bootStartedAt !== undefined ? session.initAtMs - session.bootStartedAt : undefined
+          const model = typeof (msg as { model?: unknown }).model === 'string' ? (msg as { model?: string }).model : ''
+          log.info(
+            `[${session.id}] init handshake done in ${bootMs ?? '?'}ms from pump start` +
+              (model ? ` (model=${model})` : ''),
+          )
+        }
         // Track the SDK-reported fast-mode runtime state. It rides on
         // system/init and result messages; when it changes, broadcast a
         // session-update so the UI's fast-mode chip reflects reality
@@ -946,6 +967,25 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // (skills/agents/memoryFiles/mcpTools) still comes from the
         // on-demand REST endpoint when the user opens SettingsPanel.
         if (msg.type === 'result') {
+          // Cold-start instrumentation: log once on the FIRST result — the
+          // user-visible end of the first turn. Combines our pump-side anchors
+          // with the SDK's own wire timings (ttft_ms = time to first token,
+          // request_sent_wall_ms = wall time from send to response,
+          // time_to_request_from_spawn_ms). Read defensively — older CLIs omit
+          // them.
+          if (session.firstTurnAtMs === undefined) {
+            session.firstTurnAtMs = Date.now()
+            const bootMs = session.bootStartedAt !== undefined ? session.firstTurnAtMs - session.bootStartedAt : undefined
+            const initMs = session.initAtMs !== undefined ? session.firstTurnAtMs - session.initAtMs : undefined
+            const r = msg as { ttft_ms?: unknown; request_sent_wall_ms?: unknown; time_to_request_from_spawn_ms?: unknown }
+            log.info(
+              `[${session.id}] first result: ${bootMs ?? '?'}ms from pump start` +
+                (initMs !== undefined ? `, ${initMs}ms after init` : '') +
+                ` ttft_ms=${typeof r.ttft_ms === 'number' ? r.ttft_ms : 'n/a'}` +
+                ` request_sent_wall_ms=${typeof r.request_sent_wall_ms === 'number' ? r.request_sent_wall_ms : 'n/a'}` +
+                ` time_to_request_from_spawn_ms=${typeof r.time_to_request_from_spawn_ms === 'number' ? r.time_to_request_from_spawn_ms : 'n/a'}`,
+            )
+          }
           // Pass the session's pinned auto-compact window (undefined = auto)
           // so the derived threshold reflects a user override, not just the
           // model's raw context window.
