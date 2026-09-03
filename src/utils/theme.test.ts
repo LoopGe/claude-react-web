@@ -12,6 +12,7 @@ import {
   getStoredSkin,
   toggleTheme,
   isAccentLocked,
+  isBackgroundLocked,
   type Skin,
 } from './theme'
 
@@ -169,5 +170,22 @@ describe('isAccentLocked', () => {
     expect(isAccentLocked(undefined)).toBe(false)
     expect(isAccentLocked(null)).toBe(false)
     expect(isAccentLocked('neon' as Skin)).toBe(false)
+  })
+})
+
+describe('isBackgroundLocked', () => {
+  it('is false for the expressive skins', () => {
+    expect(isBackgroundLocked('default')).toBe(false)
+    expect(isBackgroundLocked('glow')).toBe(false)
+  })
+  it('is true for the branded / a11y skins', () => {
+    expect(isBackgroundLocked('anthropic')).toBe(true)
+    expect(isBackgroundLocked('hc')).toBe(true)
+    expect(isBackgroundLocked('soft-hc')).toBe(true)
+  })
+  it('stays in lockstep with the accent lock', () => {
+    for (const s of ['default', 'glow', 'anthropic', 'hc', 'soft-hc'] as const) {
+      expect(isBackgroundLocked(s)).toBe(isAccentLocked(s))
+    }
   })
 })

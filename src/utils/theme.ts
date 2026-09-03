@@ -44,6 +44,13 @@ export function isAccentLocked(skin: Skin | undefined | null): boolean {
   return skin === 'anthropic' || skin === 'hc' || skin === 'soft-hc'
 }
 
+/** Backgrounds are available only on the expressive skins. The branded /
+ *  a11y skins (Anthropic, HC, Soft-HC) stay pristine — kept in lockstep with
+ *  the accent lock (same skins) so gating sites agree. */
+export function isBackgroundLocked(skin: Skin | undefined | null): boolean {
+  return skin === 'anthropic' || skin === 'hc' || skin === 'soft-hc'
+}
+
 /** Apply a skin by toggling the `data-skin` attribute on <html>. The
  *  'default' skin removes the attribute entirely so the base :root /
  *  [data-theme] rules apply untouched. */
