@@ -5,7 +5,7 @@ import { cors } from 'hono/cors'
 import { bodyLimit } from 'hono/body-limit'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, resolve as resolvePath } from 'node:path'
+import { dirname, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SessionManager } from './session-manager.js'
 import { buildAuthMiddleware, getWebAuth } from './auth.js'
@@ -15,6 +15,7 @@ import { buildApiRouter } from './routes/index.js'
 import { buildFsRouter } from './fs-routes.js'
 import { buildGitRouter } from './git-routes.js'
 import { buildEditLocateRouter } from './edit-locate-routes.js'
+import { buildBackgroundRouter } from './background-routes.js'
 import { buildMcpConfigRouter } from './mcp-routes.js'
 import { buildSnippetRouter } from './snippet-routes.js'
 import { buildUiStateRouter } from './routes/ui-state-routes.js'
@@ -256,6 +257,9 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   app.route('/api/fs', buildFsRouter())
   app.route('/api/git', buildGitRouter())
   app.route('/api/edit-locate', buildEditLocateRouter())
+  if (opts.configDir) {
+    app.route('/api/background', buildBackgroundRouter({ dir: join(opts.configDir, 'backgrounds') }))
+  }
   if (opts.mcpConfigStore) {
     app.route('/api/mcp-config', buildMcpConfigRouter(opts.mcpConfigStore))
   }
