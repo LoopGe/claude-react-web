@@ -53,7 +53,7 @@ const mockHandles: MockQueryHandle[] = []
 // vi.fn default (returns undefined), which makes hasSdkTranscript()
 // always report "transcript missing" and breaks every fork/resume
 // happy-path test.
-const { mockGetSessionInfo, mockListSessions } = vi.hoisted(() => {
+const { mockGetSessionInfo, mockListSessions, mockListSubagents, mockGetSubagentMessages } = vi.hoisted(() => {
   return {
     mockGetSessionInfo: vi.fn<(id: string, opts?: { dir?: string }) => Promise<unknown>>(
       async (id) => ({ sessionId: id }),
@@ -61,6 +61,12 @@ const { mockGetSessionInfo, mockListSessions } = vi.hoisted(() => {
     mockListSessions: vi.fn<(opts?: { dir?: string }) => Promise<unknown[]>>(
       async () => [],
     ),
+    mockListSubagents: vi.fn<(id: string, opts?: { dir?: string }) => Promise<string[]>>(
+      async () => [],
+    ),
+    mockGetSubagentMessages: vi.fn<
+      (id: string, agentId: string, opts?: { dir?: string; limit?: number; offset?: number }) => Promise<unknown[]>
+    >(async () => []),
   }
 })
 
@@ -94,6 +100,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
   return {
     getSessionInfo: (id: string, opts?: { dir?: string }) => mockGetSessionInfo(id, opts),
     listSessions: (opts?: { dir?: string }) => mockListSessions(opts),
+    listSubagents: (id: string, opts?: { dir?: string }) => mockListSubagents(id, opts),
+    getSubagentMessages: (id: string, agentId: string, opts?: { dir?: string; limit?: number; offset?: number }) =>
+      mockGetSubagentMessages(id, agentId, opts),
     query({ prompt, options }: { prompt: unknown; options: Record<string, unknown> }) {
       const queue: unknown[] = []
       let waiter: ((v: IteratorResult<unknown>) => void) | null = null
@@ -3623,6 +3632,10 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     mockGetSessionInfo.mockImplementation(async (id) => ({ sessionId: id }))
     mockListSessions.mockReset()
     mockListSessions.mockImplementation(async () => [])
+    mockListSubagents.mockReset()
+    mockListSubagents.mockImplementation(async () => [])
+    mockGetSubagentMessages.mockReset()
+    mockGetSubagentMessages.mockImplementation(async () => [])
     dir = makeTmpDir()
     mcpDir = makeTmpDir()
     store = new SessionStore({ stateDir: dir })
@@ -3677,6 +3690,28 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
   it('rejects a live setMcpPermissionModeOverride for a ghost session', async () => {
     await expect(sm.setMcpPermissionModeOverride('ghost', 'x', 'default')).rejects.toBeTruthy()
+  })
+
+  it('listSubagents forwards to the SDK standalone scanner with the session cwd', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    mockListSubagents.mockResolvedValueOnce(['agent-1', 'agent-2'])
+    const result = await sm.listSubagents(info.id)
+    expect(mockListSubagents).toHaveBeenCalledWith(info.id, { dir: '/tmp' })
+    expect(result).toEqual(['agent-1', 'agent-2'])
+  })
+
+  it('getSubagentMessages forwards agentId + pagination to the SDK standalone reader', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const fake = [{ type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: 'hi' } }]
+    mockGetSubagentMessages.mockResolvedValueOnce(fake)
+    const result = await sm.getSubagentMessages(info.id, 'agent-1', { limit: 50, offset: 0 })
+    expect(mockGetSubagentMessages).toHaveBeenCalledWith(info.id, 'agent-1', { dir: '/tmp', limit: 50, offset: 0 })
+    expect(result).toEqual(fake)
+  })
+
+  it('rejects listSubagents / getSubagentMessages for a ghost session', async () => {
+    await expect(sm.listSubagents('ghost')).rejects.toBeTruthy()
+    await expect(sm.getSubagentMessages('ghost', 'agent-1')).rejects.toBeTruthy()
   })
 
   it('injects the apptools server into spawn mcpServers when the session has a cwd', async () => {

@@ -4226,6 +4226,33 @@ export class SessionManager {
     return coerceReadFileOutput(raw)
   }
 
+  /** List subagent ids persisted under this session's transcript dir (SDK
+   *  standalone listSubagents — scans `subagents/agent-<id>.jsonl`; no live
+   *  subprocess round-trip). Read-only, works even mid-turn. */
+  async listSubagents(id: string): Promise<string[]> {
+    const s = this.requireLive(id)
+    return this.requireHandleMethod<() => Promise<string[]>>(
+      s,
+      'listSubagents',
+      'list subagents',
+      'supportsSubagentTranscripts',
+    )()
+  }
+
+  /** Read one subagent's full transcript from its own on-disk JSONL (SDK
+   *  standalone getSubagentMessages). Returns SessionMessage[] in
+   *  conversation order — authoritative for background/async subagents whose
+   *  frames were never forwarded onto the main stream. */
+  async getSubagentMessages(id: string, agentId: string, opts?: { limit?: number; offset?: number }): Promise<unknown> {
+    const s = this.requireLive(id)
+    return this.requireHandleMethod<(a: string, o?: { limit?: number; offset?: number }) => Promise<unknown>>(
+      s,
+      'getSubagentMessages',
+      'read subagent transcript',
+      'supportsSubagentTranscripts',
+    )(agentId, opts)
+  }
+
   /** List pending tool-permission requests for a session. */
   listPending(id: string): PermissionRequestSnapshot[] {
     return this.permBroker.listPending(this.require(id))

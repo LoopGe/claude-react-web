@@ -194,6 +194,15 @@ export interface ProviderSessionHandle {
    *  Read-permission rules inside the SDK. `path` is relative to cwd or
    *  absolute; resolves to `{ contents }` or null (denied / missing). */
   readFile?(path: string, options?: { maxBytes?: number; encoding?: 'utf-8' | 'base64' }): Promise<unknown>
+  /** List subagent ids recorded on disk for this session (SDK standalone
+   *  listSubagents — scans `subagents/agent-<id>.jsonl` under the session's
+   *  project transcript dir). Empty when the session has no subagents. */
+  listSubagents?(): Promise<string[]>
+  /** Read one subagent's full transcript from its own JSONL (SDK standalone
+   *  getSubagentMessages — returns SessionMessage[] in conversation order via
+   *  parentUuid links). Works for background/async subagents whose frames were
+   *  never forwarded to the main stream. */
+  getSubagentMessages?(agentId: string, opts?: { limit?: number; offset?: number }): Promise<unknown>
 }
 
 export interface ProviderCapabilities {
@@ -217,6 +226,7 @@ export interface ProviderCapabilities {
   supportsTaskControl: boolean
   supportsStructuredOutput: boolean
   supportsReadFile: boolean
+  supportsSubagentTranscripts: boolean
 }
 
 export interface ListResumableOptions {

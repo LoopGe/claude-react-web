@@ -792,6 +792,30 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json(result)
   })
 
+  // List subagent ids persisted under this session's transcript dir (reads
+  // disk via the SDK — no live subprocess round-trip).
+  app.get('/sessions/:id/subagents', async (c) => {
+    const subagents = await sm.listSubagents(c.req.param('id'))
+    return c.json({ subagents })
+  })
+
+  // Read one subagent's full transcript from its own on-disk JSONL. Returns
+  // SessionMessage[] ({ type: user|assistant|system, uuid, parent_tool_use_id,
+  // parent_agent_id, message }). Authoritative for background/async subagents
+  // whose frames never reached the main stream.
+  app.get('/sessions/:id/subagents/:agentId', async (c) => {
+    const limitQ = c.req.query('limit')
+    const offsetQ = c.req.query('offset')
+    const limit = limitQ !== undefined ? Number(limitQ) : undefined
+    const offset = offsetQ !== undefined ? Number(offsetQ) : undefined
+    if ((limit !== undefined && (!Number.isFinite(limit) || limit < 0)) ||
+        (offset !== undefined && (!Number.isFinite(offset) || offset < 0))) {
+      return c.json({ error: 'limit/offset must be non-negative integers' }, 400)
+    }
+    const messages = await sm.getSubagentMessages(c.req.param('id'), c.req.param('agentId'), { limit, offset })
+    return c.json({ messages })
+  })
+
   // Supported models — the manager translates the SDK's camelCase ModelInfo
   // to the snake_case wire `ModelInfo` (shared/model-info.ts) and filters
   // entries with no identifier, so the route is a passthrough.

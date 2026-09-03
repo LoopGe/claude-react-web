@@ -206,6 +206,7 @@ export class ClaudeProvider implements AgentProvider {
     supportsTaskControl: true,
     supportsStructuredOutput: true,
     supportsReadFile: true,
+    supportsSubagentTranscripts: true,
   }
 
   private readonly processMonitor: ProcessMonitor
@@ -318,6 +319,12 @@ export class ClaudeProvider implements AgentProvider {
       abortController,
       reg.exited,
       () => this.processMonitor.unregister(reg),
+      // opts.id is the app-level session id, which doubles as the SDK on-disk
+      // session id on fresh/fork spawns and equals the resumed id on resume —
+      // so it locates this session's own `subagents/` transcript dir. cwd
+      // narrows the SDK project-dir scan to the right projects subtree.
+      opts.id,
+      opts.cwd,
     )
 
     if (opts.fastMode) {
