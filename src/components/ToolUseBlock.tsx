@@ -282,7 +282,7 @@ function FilePathTitle({
       <span className="tool-card-filepath-base">{base || path}</span>
       {badge && <span className="tool-card-filepath-badge">{badge}</span>}
       {shortDir && <span className="tool-card-filepath-dir">{shortDir}</span>}
-      {copied && <span className="tool-card-filepath-copied">copied</span>}
+      {copied && <span className="tool-card-filepath-copied copied-pop">copied</span>}
     </button>
   )
 }

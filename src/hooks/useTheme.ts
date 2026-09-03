@@ -13,7 +13,7 @@
 // ChatPanel is React.memo'd on its props, so a new accent style per
 // render would defeat that — stable map identity preserves the bail-out.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocalStorage } from './useLocalStorage'
 import {
   ACCENT_COLORS,
@@ -70,10 +70,33 @@ function readSessionColors(): Record<string, string> {
 export function useTheme(): UseThemeResult {
   // --- Light/dark/system theme --------------------------------------------
   const [theme, setTheme] = useState<Theme>(getStoredTheme)
+  // Tracks whether applyTheme has run once already; the transition class is
+  // armed only from the second application onward (see the effect below).
+  const themeAppliedRef = useRef(false)
   // Apply theme on mount and whenever it changes. applyTheme() resolves
   // 'system' to 'dark'/'light' before writing the data-theme attribute.
+  // The `.theme-transitioning` class is armed for the swap only: it gives
+  // `*` a short color crossfade for that one moment, then is removed so no
+  // permanent global transition lingers (avoiding jank + white flash while
+  // keeping the switch smooth). CSS guards it under prefers-reduced-motion.
+  //
+  // The transition is intended ONLY for user-triggered swaps, so the initial
+  // mount (where the stored theme is applied for the first time) arms nothing
+  // — otherwise every page load that overrides the CSS default crossfades the
+  // whole tree on paint.
   useEffect(() => {
     applyTheme(theme)
+    const root = document.documentElement
+    if (themeAppliedRef.current) {
+      root.classList.add('theme-transitioning')
+    } else {
+      themeAppliedRef.current = true
+    }
+    const id = setTimeout(() => root.classList.remove('theme-transitioning'), 250)
+    return () => {
+      clearTimeout(id)
+      root.classList.remove('theme-transitioning')
+    }
   }, [theme])
   // Subscribe to OS theme changes so 'system' mode stays in sync when the
   // user switches their OS preference.

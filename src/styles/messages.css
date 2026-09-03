@@ -2316,6 +2316,31 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   background: color-mix(in srgb, var(--warn) 18%, transparent);
   color: var(--warn);
   border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  /* Status flips remount the pill (AnimatedDetails key={status}), so this
+     entrance pops the new state in; the color transition lets any in-place
+     state updates (e.g. a live allow channel resolving without a remount)
+     morph smoothly rather than snap. */
+  transition:
+    background-color var(--motion-duration-base) var(--motion-ease-standard),
+    color var(--motion-duration-base) var(--motion-ease-standard),
+    border-color var(--motion-duration-base) var(--motion-ease-standard);
+  animation: plan-status-in var(--motion-duration-base) var(--motion-ease-emphasized) both;
+}
+@keyframes plan-status-in {
+  from {
+    opacity: 0;
+    transform: scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plan-card-status {
+    animation: none;
+    transition: none;
+  }
 }
 .plan-card-status.approved {
   background: color-mix(in srgb, var(--ok) 18%, transparent);

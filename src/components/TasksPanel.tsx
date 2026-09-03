@@ -21,6 +21,7 @@ import { useSessionField } from '../session-store/selectors'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useCountUp } from '../hooks/useCountUp'
 import { formatElapsed } from '../utils/format'
 import type { TaskRecordUi } from '../types'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
@@ -111,12 +112,13 @@ export const TasksPanel = memo(function TasksPanel({
 
   const active = tasks.filter((t) => !isTerminal(t.status))
   const finished = tasks.filter((t) => isTerminal(t.status))
+  const animatedActive = Math.round(useCountUp(active.length, 300))
 
   return (
     <aside className="tasks-panel" role="region" aria-label="Tasks" ref={setPanelOs}>
       <header className="tasks-panel-header">
         <span className="tasks-panel-title">Tasks</span>
-        <span className="tasks-panel-count">{active.length > 0 ? `${active.length} running` : 'idle'}</span>
+        <span className="tasks-panel-count">{animatedActive > 0 ? `${animatedActive} running` : 'idle'}</span>
         <span className="tasks-panel-spacer" />
         <button className="tasks-panel-icon-btn" onClick={onClose} aria-label="Close">
           <IconX size={14} />

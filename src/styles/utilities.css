@@ -256,6 +256,22 @@
   color: var(--ok);
   flex-shrink: 0;
 }
+/* Shared "copied" micro-interaction: the indicator (filepath chip, copy
+   button) remounts each time `copied` flips true, so this entrance pops the
+   confirmation in — a small scale + fade rather than a hard text swap. */
+.copied-pop {
+  animation: copied-pop var(--motion-duration-base) var(--motion-ease-emphasized) both;
+}
+@keyframes copied-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
 .tool-card-filepath-base {
   font-family: var(--mono);
   font-weight: 600;
@@ -847,7 +863,8 @@
   .appearance-panel,
   .chat-jump-to-bottom,
   .chat-panel-mode-badge.mode-slide-in,
-  .chat-panel-mode-badge.mode-slide-out {
+  .chat-panel-mode-badge.mode-slide-out,
+  .copied-pop {
     animation-duration: 0.01ms !important;
   }
   .notification-icon .notification-icon-slash,

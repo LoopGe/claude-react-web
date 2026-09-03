@@ -1612,6 +1612,22 @@
   color: var(--accent);
   font-weight: 600;
   letter-spacing: 0.02em;
+  /* Soft crossfade on phase change: MessageList keys this span by the
+     active phase, so it remounts (and replays this entrance) each time the
+     SDK crosses thinking/writing/tool_use — a tiny rise + fade instead of a
+     hard text snap. `both` fill keeps it hidden for the stagger delay only
+     if a caller sets it; idles at the final state otherwise. */
+  animation: phase-label-in var(--motion-duration-base) var(--motion-ease-enter) both;
+}
+@keyframes phase-label-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-sm));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 /* Elapsed-time label. Font-variant-numeric: tabular-nums keeps digits
    from jumping around as seconds tick over ?the badge width stays
@@ -1786,6 +1802,14 @@
   display: inline-flex;
   align-items: center;
 }
+/* Subagent chips enter with a lightweight stagger (per-chip --stagger set by
+   MessageList, capped at ~12 chips so a big fan-out never drags the total
+   past ~360ms). Keyed by toolUseId, so only genuinely-new chips animating;
+   persisted chips skip replay on re-render. */
+.subagent-chip {
+  animation: chip-enter var(--motion-duration-base) var(--motion-ease-enter) both;
+  animation-delay: var(--stagger, 0ms);
+}
 .subagent-chip-clickable {
   border: 1px solid transparent;
   cursor: pointer;
@@ -1816,6 +1840,14 @@
   padding: 2px 8px;
   border-radius: var(--radius-pill);
   white-space: nowrap;
+}
+/* Reduced motion: skip the phase crossfade + chip stagger, render final
+   states immediately. The dots/elapsed timer keep their (essential) motion. */
+@media (prefers-reduced-motion: reduce) {
+  .working-bar-label,
+  .subagent-chip {
+    animation: none;
+  }
 }
 
 /* Inline subagent placeholder card ?replaces the raw tool_use JSON

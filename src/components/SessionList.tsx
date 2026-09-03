@@ -2,7 +2,7 @@
 // The new-session form lives inside a modal (<NewSessionDialog />) so the
 // sidebar can dedicate its vertical space to listing sessions.
 
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
 import { prepareFlip } from '../utils/flip'
 import { api } from '../hooks/useApi'
@@ -262,6 +262,21 @@ export const SessionList = memo(function SessionList({
   const [showNewGroupInput, setShowNewGroupInput] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
   const newGroupInputRef = useRef<HTMLInputElement>(null)
+  // One-shot entrance stagger: the sidebar's session cards fade+rise in a
+  // cascade for the short window after the list actually populates, then the
+  // session-entering class drops so Virtuoso's scroll re-mounts (and any
+  // later re-render) never replay it.
+  const [entered, setEntered] = useState(false)
+  // Start the window only once cards are present (not at mount — a slow load
+  // shows the skeleton, and flipping `entered` under it would skip the
+  // cascade). Window = STAGGER_MS + the moderate 180ms animation, so even the
+  // last staggered card's animation finishes inside the armed window.
+  const ENTRANCE_WINDOW_MS = 650
+  useEffect(() => {
+    if (entered || sessions.length === 0) return
+    const id = setTimeout(() => setEntered(true), ENTRANCE_WINDOW_MS)
+    return () => clearTimeout(id)
+  }, [entered, sessions.length])
   // Overlay scrollbar: covers the grouped view (.session-list scrolls
   // natively) and the flat view (Virtuoso's internal scroller). Only the
   // axis that actually overflows shows a thumb, so wiring both is safe.
@@ -533,13 +548,14 @@ export const SessionList = memo(function SessionList({
    *  the 3 render sites (grouped, ungrouped-section, flat) to avoid
    *  duplicating 17+ props. */
   const renderCard = useCallback(
-    (s: SessionInfo, containerGroupId?: string, isFirst = false, isLast = false) => {
+    (s: SessionInfo, containerGroupId?: string, isFirst = false, isLast = false, idx = 0) => {
       const isDeleting = deletingIds?.has(s.id) ?? false
       return (
         <div
           key={s.id}
           className={`session-item-shell${isDeleting ? ' deleting' : ''}${isFirst ? ' list-first' : ''}${isLast ? ' list-last' : ''}${s.id === focusedId ? ' focused' : ''}`}
           data-session-card-id={s.id}
+          style={{ '--stagger': `${Math.min(idx, 12) * 30}ms` } as CSSProperties}
         >
           <SessionCard
             session={s}
@@ -807,7 +823,7 @@ export const SessionList = memo(function SessionList({
           )}
         </div>
       </div>
-      <div className="session-list" ref={setListScroller}>
+      <div className={`session-list${entered ? '' : ' session-entering'}`} ref={setListScroller}>
           {sessions.length === 0 ? (
             sessionsLoaded === false ? (
               <Skeleton rows={5} className="sidebar-skeleton" />
@@ -1024,7 +1040,7 @@ export const SessionList = memo(function SessionList({
                         }}
                       >
                         {sec.sessions.map((s, i) =>
-                          renderCard(s, sec.group.id, false, i === sec.sessions.length - 1),
+                          renderCard(s, sec.group.id, false, i === sec.sessions.length - 1, i),
                         )}
                       </div>
                     ) : null}
@@ -1042,7 +1058,7 @@ export const SessionList = memo(function SessionList({
                   </div>
                   <div className="group-sessions">
                     {sec.sessions.map((s, i) =>
-                      renderCard(s, undefined, i === 0, i === sec.sessions.length - 1),
+                      renderCard(s, undefined, i === 0, i === sec.sessions.length - 1, i),
                     )}
                   </div>
                 </div>
@@ -1061,7 +1077,7 @@ export const SessionList = memo(function SessionList({
               style={{ flex: 1 }}
               scrollerRef={virtuosoScrollerRef}
               itemContent={(index, s) =>
-                renderCard(s, undefined, index === 0, index === visibleSessions.length - 1)
+                renderCard(s, undefined, index === 0, index === visibleSessions.length - 1, index)
               }
             />
           )}

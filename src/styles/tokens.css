@@ -1065,6 +1065,28 @@
   scrollbar-color: color-mix(in srgb, var(--fg-muted) 45%, transparent) transparent;
 }
 html, body, #root { height: 100%; margin: 0; }
+/* One-shot light/dark crossfade. useTheme adds .theme-transitioning to
+   <html> for ~250ms around a theme flip; while armed, * transitions its
+   color-bearing properties so the swap reads as a smooth fade instead of a
+   hard jump. `!important` beats the many per-element transitions so the
+   whole tree moves as one unit; the reduced-motion override below reclaims
+   precedence so vestibular users pin every element at its final colour. */
+.theme-transitioning,
+.theme-transitioning *,
+.theme-transitioning *::before,
+.theme-transitioning *::after {
+  transition-property: background-color, color, border-color !important;
+  transition-duration: var(--motion-duration-base) !important;
+  transition-timing-function: var(--motion-ease-standard) !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .theme-transitioning,
+  .theme-transitioning *,
+  .theme-transitioning *::before,
+  .theme-transitioning *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;

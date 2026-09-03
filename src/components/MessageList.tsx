@@ -7,7 +7,7 @@
 // Filters out `stream_event` partials (the final assistant message
 // carries the complete content, so showing both just flickers).
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from './Markdown'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
@@ -22,6 +22,7 @@ import { buildTaskStateMap } from '../utils/task-events'
 import { shouldArmEnterAnimation } from '../utils/enter-animation'
 import { Tooltip } from './Tooltip'
 import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useCountUp } from '../hooks/useCountUp'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getBlocks, getEnterPlanToolUseIds, isHumanUserMessage, isTaskNotificationUserMessage, userMessageOriginKind } from '../session-store/normalize'
@@ -3226,6 +3227,37 @@ export const WorkingBubble = memo(function WorkingBubble({
   const taskCount = runningTaskCount ?? 0
   const active = _active ?? true
   const idle = !active && !waiting
+  // Per-phase key so the working-bar-label span remounts (and its entrance
+  // animation replays) when the SDK crosses a thinking/writing/tool_use
+  // boundary — a soft crossfade instead of a hard label swap. Distinct from
+  // the label text so e.g. "Calling <tool>" tool swaps also retrigger.
+  const labelKey = waiting
+    ? 'waiting'
+    : recapping
+      ? 'recap'
+      : activePhase === 'thinking'
+        ? 'thinking'
+        : activePhase === 'writing'
+          ? 'writing'
+          : activePhase
+            ? `tool:${activePhase.name}`
+            : 'working'
+  const labelText = waiting
+    ? 'Waiting...'
+    : recapping
+      ? 'Recap (auto)...'
+      : activePhase === 'thinking'
+        ? 'Thinking...'
+        : activePhase === 'writing'
+          ? 'Writing...'
+          : activePhase
+            ? `Calling ${activePhase.name}...`
+            : 'Working'
+
+  // Live counters ease toward their targets (see useCountUp) so the
+  // token-rate and task-count readouts glide instead of jumping.
+  const countRate = Math.round(useCountUp(tokenRate ?? 0, 250))
+  const countTasks = Math.round(useCountUp(taskCount, 300))
 
   return (
     <div
@@ -3241,18 +3273,8 @@ export const WorkingBubble = memo(function WorkingBubble({
         </div>
       )}
       {!idle && (
-        <span className="working-bar-label">
-          {waiting
-            ? 'Waiting...'
-            : recapping
-            ? 'Recap (auto)...'
-            : activePhase === 'thinking'
-            ? 'Thinking...'
-            : activePhase === 'writing'
-            ? 'Writing...'
-            : activePhase
-            ? `Calling ${activePhase.name}...`
-            : 'Working'}
+        <span key={labelKey} className="working-bar-label">
+          {labelText}
         </span>
       )}
       {/* The turn timer is only meaningful while the turn is active; hide it
@@ -3261,7 +3283,7 @@ export const WorkingBubble = memo(function WorkingBubble({
       {!waiting && !idle && <ElapsedTimer startedAt={startedAt} className="working-timer" />}
       {!waiting && !idle && tokenRate != null && tokenRate > 0 && (
         <span className="working-rate">
-          <IconZap size={12} aria-hidden /> {tokenRate} tok/s
+          <IconZap size={12} aria-hidden /> {countRate} tok/s
         </span>
       )}
       {/* Redacted-thinking progress: no text deltas stream (tokenRate stays
@@ -3286,7 +3308,7 @@ export const WorkingBubble = memo(function WorkingBubble({
           aria-label={`${taskCount} background task${taskCount === 1 ? '' : 's'} running`}
         >
           <IconListTodo size={12} aria-hidden />
-          {taskCount}
+          {countTasks}
         </button>
       )}
       {hasSubagents && (
@@ -3298,13 +3320,14 @@ export const WorkingBubble = memo(function WorkingBubble({
           re-render every second. Pending chips (background subagent
           outliving its parent turn) get a muted visual via the
           subagent-chip-pending class; dismiss is in the overlay, not here. */}
-      {activeSubagents?.slice(0, MAX_VISIBLE_SUBAGENTS).map((a) => {
+      {activeSubagents?.slice(0, MAX_VISIBLE_SUBAGENTS).map((a, i) => {
         const clickable = !!onOpenSubagent
         const Tag = clickable ? 'button' : 'span'
         return (
           <Tag
             key={a.toolUseId}
             type={clickable ? 'button' : undefined}
+            style={{ '--stagger': `${Math.min(i, 12) * 30}ms` } as CSSProperties}
             className={`subagent-chip${clickable ? ' subagent-chip-clickable' : ''}${a.status === 'pending' ? ' subagent-chip-pending' : ''}`}
             title={
               (clickable ? `Open subagent details - ${a.label}` : a.label) +
