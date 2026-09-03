@@ -188,7 +188,13 @@ describe('App Plugins — fixture integration (Stage D)', () => {
       // test-session-123, which attaches a subscriber into the fake session's
       // pluginSubscribers. Verify a subscriber actually exists, then push an
       // assistant SDKMessage through it — this must produce a `sessions.event`
-      // notification that the host forwards to the fixture's child subprocess.
+      // notification the host forwards to the fixture's child subprocess.
+      //
+      // Scope note: this exercises the host→plugin cross-process transport
+      // (registry subscriber → peer.notify → child stdin → child handler).
+      // The pump→pluginSubscribers broadcast hop is covered separately by
+      // server/session-pump.test.ts (Task 2); here we push the message
+      // directly into the attached subscriber to isolate transport.
       const subscribed = testSmStub.get(testSessionId) as unknown as { pluginSubscribers: Map<string, Subscriber> }
       const subscriber = subscribed.pluginSubscribers.values().next().value as Subscriber
       expect(subscriber).toBeDefined()
