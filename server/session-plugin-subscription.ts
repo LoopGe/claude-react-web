@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { Session } from './session-types.js'
 import type { RpcPeer } from './app-plugins/rpc-peer.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
@@ -23,6 +24,13 @@ interface RegistryEntry {
 export class SessionSubscriptionRegistry {
   private readonly entries = new Set<RegistryEntry>()
 
+  /** Unique per registry instance. One registry is created per plugin process
+   *  (in registerHostApi), so this disambiguates multiple plugin processes that
+   *  share the same session's `pluginSubscribers` map — without it, two
+   *  subscriptions to one session collide on a non-unique "'peer':<sessionId>"
+   *  key (RpcPeer has no id), silently shadowing the second subscriber. */
+  private readonly registryId = randomUUID()
+
   constructor(private readonly opts: { getSession: (id: string) => Session | undefined }) {}
 
   subscribe(sessionId: string, peer: RpcPeer): { ok: true } | { ok: false; error: string } {
@@ -31,7 +39,7 @@ export class SessionSubscriptionRegistry {
     // @ts-ignore: closed is private per RpcPeer interface but used for state check
     if (peer.closed) return { ok: false, error: 'peer is closed' }
 
-    const key = `${(peer as any).id ?? 'peer'}:${sessionId}`
+    const key = `${this.registryId}:${sessionId}`
     if (session.pluginSubscribers.has(key)) {
       return { ok: true } // idempotent
     }

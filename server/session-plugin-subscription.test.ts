@@ -63,4 +63,23 @@ describe('SessionSubscriptionRegistry', () => {
     // dropPeer over an already-released registry must be safe too.
     expect(() => r.dropPeer(peer)).not.toThrow()
   })
+
+  it('allows two plugin processes to subscribe to the same session without shadowing', () => {
+    // One registry is created per plugin process, but they all share the same
+    // session.pluginSubscribers map. Each must get its own keyed subscriber,
+    // or the second subscriber is silently shadowed (its push never fires).
+    const session = fakeSession(null)
+    const peerA = fakePeer()
+    const peerB = fakePeer()
+    const rA = new SessionSubscriptionRegistry({ getSession: (id) => (id === 's1' ? session : undefined) })
+    const rB = new SessionSubscriptionRegistry({ getSession: (id) => (id === 's1' ? session : undefined) })
+    expect(rA.subscribe('s1', peerA).ok).toBe(true)
+    expect(rA.subscribe('s1', fakePeer()).ok).toBe(true) // idempotent within A
+    expect(rB.subscribe('s1', peerB).ok).toBe(true)
+    expect(session.pluginSubscribers.size).toBe(2)
+
+    // Releasing B's subscription must not disturb A's.
+    rB.dropPeer(peerB)
+    expect(session.pluginSubscribers.size).toBe(1)
+  })
 })
