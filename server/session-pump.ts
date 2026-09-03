@@ -957,6 +957,9 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           for (const sub of session.subscribers.values()) {
             try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
           }
+          for (const sub of session.pluginSubscribers.values()) {
+            try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
+          }
         }
         msgCount++
         // Derive a context-usage snapshot directly from the result's own
