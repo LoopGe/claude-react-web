@@ -20,9 +20,11 @@ import { AiBroker } from './ai-broker.js'
 import { SessionAdapter } from './session-adapter.js'
 import { GitAdapter } from './git-adapter.js'
 import { WorkspaceAdapter } from './workspace-adapter.js'
+import { SessionSubscriptionRegistry } from '../../session-plugin-subscription.js'
 import type { NormalisedPermission } from '../../../shared/app-plugins/permissions.js'
 import type { PluginConfigurationProperty } from '../../../shared/app-plugins/contributions.js'
 import type { SessionManager } from '../../session-manager.js'
+import type { Session } from '../../session-types.js'
 
 const log = createLogger('app-plugins:host')
 
@@ -50,6 +52,7 @@ export function registerHostApi(peer: RpcPeer, ctx: HostContext): {
   secrets: SecretsService
   config: ConfigurationStore
   checker: PermissionChecker
+  subscriptions: SessionSubscriptionRegistry
 } {
   const checker = new PermissionChecker(ctx.pluginId, ctx.grants)
   const storage = new StorageService(ctx.pluginId, ctx.dataDir)
@@ -57,7 +60,8 @@ export function registerHostApi(peer: RpcPeer, ctx: HostContext): {
   const config = new ConfigurationStore(ctx.pluginId, ctx.dataDir)
   const network = new NetworkBroker(checker)
   const ai = new AiBroker(checker)
-  const sessions = new SessionAdapter(ctx.sm, checker)
+  const subscriptions = new SessionSubscriptionRegistry({ getSession: (id) => ctx.sm.get(id) as unknown as Session })
+  const sessions = new SessionAdapter(ctx.sm, checker, peer, subscriptions)
   const git = new GitAdapter(checker)
   const workspace = new WorkspaceAdapter(checker)
   const pluginLog = createLogger(`plugin:${ctx.pluginId}`)
@@ -114,6 +118,14 @@ export function registerHostApi(peer: RpcPeer, ctx: HostContext): {
   peer.registerHandler('sessions.compact', async (p) => {
     const { sessionId } = requireParams(p, ['sessionId']) as { sessionId: string }
     return sessions.compact(sessionId)
+  })
+  peer.registerHandler('sessions.subscribe', async (p) => {
+    const { sessionId } = requireParams(p, ['sessionId']) as { sessionId: string }
+    return sessions.subscribe(sessionId)
+  })
+  peer.registerHandler('sessions.unsubscribe', async (p) => {
+    const { sessionId } = requireParams(p, ['sessionId']) as { sessionId: string }
+    return sessions.unsubscribe(sessionId)
   })
   peer.registerHandler('config.get', async () => {
     // No permission check: a plugin reads only its OWN declared config.
@@ -176,7 +188,7 @@ export function registerHostApi(peer: RpcPeer, ctx: HostContext): {
     return null
   })
 
-  return { storage, secrets, config, checker }
+  return { storage, secrets, config, checker, subscriptions }
 }
 
 /** Validate `p` is a params object and that every `required` field is present

@@ -166,12 +166,14 @@ export class PluginProcess {
         log.warn(`[${this.pluginId}] deactivate did not complete cleanly: ${(err as Error).message}`)
       }
     }
+    this.host.subscriptions.dropPeer(this.peer)
     await this.peer.close()
   }
 
   /** Hard kill without deactivate (quarantine / shutdown fallback). */
   async kill(): Promise<void> {
     this.closed = true
+    this.host.subscriptions.dropPeer(this.peer)
     await this.peer.close()
   }
 

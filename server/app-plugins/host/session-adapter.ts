@@ -6,11 +6,15 @@
 import type { SessionManager } from '../../session-manager.js'
 import type { SessionActivity } from '../../session-types.js'
 import type { PermissionChecker } from '../permission-manager.js'
+import type { RpcPeer } from '../rpc-peer.js'
+import type { SessionSubscriptionRegistry } from '../../session-plugin-subscription.js'
 
 export class SessionAdapter {
   constructor(
     private readonly sm: SessionManager,
     private readonly perm: PermissionChecker,
+    private readonly peer: RpcPeer,
+    private readonly subscriptions: SessionSubscriptionRegistry,
   ) {}
 
   /** Coarse session metadata (provider, cwd, model). Never the transcript. */
@@ -67,5 +71,24 @@ export class SessionAdapter {
     this.perm.assert('sessions.compact')
     const fresh = await this.sm.compact(sessionId)
     return { ok: true, sessionId: fresh.id }
+  }
+
+  /** Subscribe to a session's outbound event stream. Requires sessions.read
+   *  permission. Returns `{ ok: true }` — the release handle stays host-side;
+   *  a plugin unsubscribes proactively via the separate `sessions.unsubscribe`
+   *  call (a function cannot cross the JSON-RPC wire). */
+  async subscribe(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    this.perm.assert('sessions.read')
+    const res = this.subscriptions.subscribe(sessionId, this.peer)
+    if (!res.ok) return res
+    return { ok: true }
+  }
+
+  /** Release the peer's subscription to `sessionId`, if any. Requires
+   *  sessions.read permission. Idempotent (no-op when not subscribed). */
+  async unsubscribe(sessionId: string): Promise<{ ok: true }> {
+    this.perm.assert('sessions.read')
+    this.subscriptions.unsubscribe(this.peer, sessionId)
+    return { ok: true }
   }
 }

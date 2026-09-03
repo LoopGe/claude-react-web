@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { vi, describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -8,6 +8,7 @@ import { PermissionChecker, PermissionDeniedError } from '../permission-manager.
 import { normalisePermissions } from '../../../shared/app-plugins/permissions.js'
 import type { PluginConfigurationProperty } from '../../../shared/app-plugins/contributions.js'
 import type { SessionManager } from '../../session-manager.js'
+import type { RpcPeer } from '../rpc-peer.js'
 
 // The idle-compact plugin's declared configuration — the defaults config.get
 // must apply when nothing has been written yet.
@@ -34,7 +35,7 @@ describe('SessionAdapter — permission gates', () => {
 
   function make(perms: ReturnType<typeof grants>) {
     checker = new PermissionChecker('idle-compact.claude-react-web', perms)
-    adapter = new SessionAdapter(sm, checker)
+    adapter = new SessionAdapter(sm, checker, {} as unknown as RpcPeer, {} as any)
   }
 
   it('list() is denied without sessions.read', async () => {
@@ -112,5 +113,61 @@ describe('registerHostApi — config.get wiring', () => {
     for (const m of ['sessions.list', 'sessions.contextUsage', 'sessions.compact']) {
       expect(typeof handlers[m]).toBe('function')
     }
+  })
+})
+
+describe('registerHostApi — sessions.subscribe', () => {
+  let dir: string
+  let handlers: Record<string, (params: unknown) => Promise<unknown>>
+  let fakePeer: any
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'host-api-sub-'))
+    handlers = {}
+    fakePeer = {
+      registerHandler: (m: string, fn: (p: unknown) => Promise<unknown>) => { handlers[m] = fn },
+      notify: vi.fn(),
+      closed: false,
+    }
+    registerHostApi(fakePeer, {
+      pluginId: 'test-plugin',
+      dataDir: dir,
+      stateDir: dir,
+      grants: [],
+      sm: {} as unknown as SessionManager,
+      configurationProps: [],
+    })
+  })
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }))
+
+  it('sessions.subscribe is denied without sessions.read permission', async () => {
+    expect(typeof handlers['sessions.subscribe']).toBe('function')
+    await expect(handlers['sessions.subscribe']({ sessionId: 's1' })).rejects.toBeInstanceOf(PermissionDeniedError)
+  })
+
+  it('sessions.subscribe registers subscriber with sessions.read permission', async () => {
+    // Re-register handlers with the updated grants
+    handlers = {}
+    fakePeer = {
+      registerHandler: (m: string, fn: (p: unknown) => Promise<unknown>) => { handlers[m] = fn },
+      notify: vi.fn(),
+      closed: false,
+    } as unknown as RpcPeer
+    registerHostApi(fakePeer, {
+      pluginId: 'test-plugin',
+      dataDir: dir,
+      stateDir: dir,
+      grants: grants('sessions.read'),
+      sm: { get: () => ({ pluginSubscribers: new Map(), id: 's1' }) } as unknown as SessionManager,
+      configurationProps: [],
+    })
+
+    // subscribe returns { ok: true } — the host-side release handle does not
+    // cross the JSON-RPC wire; a plugin releases via sessions.unsubscribe.
+    await expect(handlers['sessions.subscribe']({ sessionId: 's1' })).resolves.toEqual({ ok: true })
+
+    // unsubscribe is a distinct host call returning { ok: true }.
+    await expect(handlers['sessions.unsubscribe']({ sessionId: 's1' })).resolves.toEqual({ ok: true })
   })
 })

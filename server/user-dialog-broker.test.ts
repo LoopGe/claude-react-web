@@ -19,6 +19,7 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     provider: 'claude',
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
+    pluginSubscribers: new Map(),
     handle: {
       provider: 'claude',
       messages,

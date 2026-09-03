@@ -6,6 +6,8 @@ import { resolve as resolvePath } from 'node:path'
 import { AppPluginStore } from './app-plugin-store.js'
 import { AppPluginManager } from './app-plugin-manager.js'
 import type { SessionManager } from '../session-manager.js'
+import type { Subscriber } from '../session-types.js'
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 
 // Real fixture dirs (repo-rooted). The test installs them by local-directory
 // reference, exactly like the management UI does.
@@ -126,5 +128,107 @@ describe('App Plugins — fixture integration (Stage D)', () => {
       asset: 'assets/nyan.svg',
       when: 'session.working == true',
     })
+  })
+
+  it('fixture.session-subscription: receives sessions.event notifications', async () => {
+    const testSessionId = 'test-session-123'
+    // Stable session object: the registry attaches its subscriber into THIS
+    // session's pluginSubscribers Map, and the test must read the same Map.
+    const testSession = { id: testSessionId, pluginSubscribers: new Map() }
+
+    // Create a mock SessionManager
+    const testSmStub = {
+      get: (id: string) => {
+        if (id === testSessionId) {
+          return testSession
+        }
+        return undefined
+      },
+      subscribeSessionCleared: () => ({
+        iterable: (async function*() {})(),
+        unsubscribe: () => {}
+      }),
+      sessions: {
+        subscribe: () => Promise.resolve(),
+        unsubscribe: () => Promise.resolve()
+      }
+    } as unknown as SessionManager
+
+    // Create new manager with our stub
+    const stateDir = mkdtempSync(join(tmpdir(), 'apm-fix-session-sub-'))
+    const store = new AppPluginStore({ stateDir })
+    const manager = new AppPluginManager({ store, stateDir, hostVersion: '0.6.0', hostNodeMajor: 20, sm: testSmStub })
+
+    try {
+      const dir = join(FIXTURES, 'fixture.session-subscription')
+      await manager.install({ type: 'local', path: dir })
+      await manager.enable('fixture.session-subscription')
+
+      // First command: should return empty event list
+      const firstResult = await manager.executeCommand({
+        pluginId: 'fixture.session-subscription',
+        commandId: 'fixture.session-subscription.subscribe',
+        context: {
+          source: 'session',
+          invocationId: 'test-1',
+          commandId: 'fixture.session-subscription.subscribe',
+          invokedAt: Date.now(),
+          // @ts-expect-error: Session context has extra properties for testing
+          session: { id: testSessionId }
+        }
+      }) as any
+
+      expect(firstResult.type).toBe('notification')
+      if (firstResult.type === 'notification') {
+        const events = JSON.parse((firstResult.content as { text: string }).text)
+        expect(events).toHaveLength(0)
+      }
+
+      // The first command drove the fixture to call `sessions.subscribe` for
+      // test-session-123, which attaches a subscriber into the fake session's
+      // pluginSubscribers. Verify a subscriber actually exists, then push an
+      // assistant SDKMessage through it — this must produce a `sessions.event`
+      // notification the host forwards to the fixture's child subprocess.
+      //
+      // Scope note: this exercises the host→plugin cross-process transport
+      // (registry subscriber → peer.notify → child stdin → child handler).
+      // The pump→pluginSubscribers broadcast hop is covered separately by
+      // server/session-pump.test.ts (Task 2); here we push the message
+      // directly into the attached subscriber to isolate transport.
+      const subscribed = testSmStub.get(testSessionId) as unknown as { pluginSubscribers: Map<string, Subscriber> }
+      const subscriber = subscribed.pluginSubscribers.values().next().value as Subscriber
+      expect(subscriber).toBeDefined()
+      subscriber.push({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'HELLO-EVENT' }] },
+      } as unknown as SDKMessage)
+
+      // Second command: the fixture's buffer now holds the sessions.event
+      // notification whose payload contains HELLO-EVENT.
+      const secondResult = await manager.executeCommand({
+        pluginId: 'fixture.session-subscription',
+        commandId: 'fixture.session-subscription.subscribe',
+        context: {
+          source: 'session',
+          invocationId: 'test-2',
+          commandId: 'fixture.session-subscription.subscribe',
+          invokedAt: Date.now(),
+          // @ts-expect-error: Session context has extra properties for testing
+          session: { id: testSessionId }
+        }
+      }) as any
+      expect(secondResult.type).toBe('notification')
+      if (secondResult.type === 'notification') {
+        const events = JSON.parse((secondResult.content as { text: string }).text) as unknown[]
+        expect(events.length).toBeGreaterThan(0)
+        expect(JSON.stringify(events)).toContain('HELLO-EVENT')
+      }
+
+      // The plugin is active and buffered a session event that reached it.
+      expect(manager.get('fixture.session-subscription')?.runtimeState).toBe('active')
+    } finally {
+      await manager.shutdown().catch(() => {})
+      rmSync(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
   })
 })

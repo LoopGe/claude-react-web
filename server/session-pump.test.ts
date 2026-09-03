@@ -1252,6 +1252,7 @@ function makeTaskSession(): { session: Session; snapshots: TaskRecordUi[][] } {
   const session = {
     tasks: new Map<string, TaskRecordUi>(),
     taskSubscribers: new Set([{ push: (t: TaskRecordUi[]) => snapshots.push(t) }]),
+    pluginSubscribers: new Map(),
   } as unknown as Session
   return { session, snapshots }
 }
@@ -1523,6 +1524,7 @@ describe('applyBackgroundTasksChanged', () => {
 function makePumpSession(msgs: SDKMessage[]): {
   session: Session
   broadcasts: SDKMessage[]
+  pluginBroadcasts: SDKMessage[]
   taskSnapshots: TaskRecordUi[][]
 } {
   let i = 0
@@ -1538,14 +1540,23 @@ function makePumpSession(msgs: SDKMessage[]): {
     },
   }
   const broadcasts: SDKMessage[] = []
+  const pluginBroadcasts: SDKMessage[] = []
   const taskSnapshots: TaskRecordUi[][] = []
   const session = {
     id: 's-pump',
     handle: { messages, abortSignal: new AbortController().signal, queueDepth: 0 },
     subscribers: new Map([['c1', { push: (m: SDKMessage) => broadcasts.push(m) }]]),
+    permissionSubscribers: new Map(),
+    elicitationSubscribers: new Map(),
+    dialogSubscribers: new Map(),
+    pluginSubscribers: new Map([['p1', { push: (m: SDKMessage) => pluginBroadcasts.push(m) }]]),
     taskSubscribers: new Set([{ push: (t: TaskRecordUi[]) => taskSnapshots.push(t) }]),
     promptSuggestionSubscribers: new Set(),
     contextUsageSubscribers: new Set(),
+    gitStatusSubscribers: new Map(),
+    messageStatusSubscribers: new Map(),
+    commandSubscribers: new Map(),
+    hookRunSubscribers: new Map(),
     tasks: new Map(),
     history: [],
     subagentHistory: [],
@@ -1569,7 +1580,7 @@ function makePumpSession(msgs: SDKMessage[]): {
     exiting: false,
     recovering: false,
   } as unknown as Session
-  return { session, broadcasts, taskSnapshots }
+  return { session, broadcasts, pluginBroadcasts, taskSnapshots }
 }
 
 function makePumpDeps(overrides: Partial<PumpDeps> = {}): PumpDeps {
@@ -2110,5 +2121,38 @@ describe('pump: cli notification frames', () => {
     await pump(session, makePumpDeps({ onCliNotification }))
     expect(onCliNotification).not.toHaveBeenCalled()
     expect(session.history).toHaveLength(0)
+  })
+})
+
+describe('pump: broadcasts to plugin subscribers', () => {
+  it('sends broadcastable messages to both regular and plugin subscribers', async () => {
+    const testMessage = sysFrame('task_notification', { task_id: 't1', status: 'completed' })
+    const { session, broadcasts, pluginBroadcasts } = makePumpSession([
+      testMessage,
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage
+    ])
+    await pump(session, makePumpDeps())
+
+    expect(broadcasts).toHaveLength(2)
+    expect(broadcasts[0]).toMatchObject(testMessage)
+    expect((broadcasts[1] as { subtype?: string }).subtype).toBe('success')
+
+    expect(pluginBroadcasts).toHaveLength(2)
+    expect(pluginBroadcasts[0]).toMatchObject(testMessage)
+    expect((pluginBroadcasts[1] as { subtype?: string }).subtype).toBe('success')
+  })
+
+  it('does not send non-broadcastable messages to plugin subscribers', async () => {
+    const nonBroadcastMessage = sysFrame('task_progress', { task_id: 't1', summary: 'working' })
+    const { session, broadcasts, pluginBroadcasts } = makePumpSession([
+      nonBroadcastMessage,
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage
+    ])
+    await pump(session, makePumpDeps())
+
+    expect(broadcasts).toHaveLength(1)
+    expect((broadcasts[0] as { subtype?: string }).subtype).toBe('success')
+    expect(pluginBroadcasts).toHaveLength(1)
+    expect((pluginBroadcasts[0] as { subtype?: string }).subtype).toBe('success')
   })
 })

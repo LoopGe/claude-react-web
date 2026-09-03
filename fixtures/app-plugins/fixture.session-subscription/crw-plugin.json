@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "id": "fixture.session-subscription",
+  "name": "Fixture: Session Subscription",
+  "description": "Fixture for testing sessions.event outbound notifications",
+  "version": "1.0.0",
+  "publisher": "claude-react-web",
+  "license": "MIT",
+  "engines": { "claudeReactWeb": "^0.6.0", "node": ">=20" },
+  "runtime": { "service": "dist/service.mjs" },
+  "activationEvents": ["onCommand:fixture.session-subscription.subscribe"],
+  "permissions": ["sessions.read"],
+  "contributes": {
+    "commands": [
+      { "id": "fixture.session-subscription.subscribe", "title": "Subscribe to Session Events", "category": "global", "showInPalette": true }
+    ],
+    "contextMenus": [],
+    "actions": [],
+    "configuration": { "properties": [] }
+  }
+}
