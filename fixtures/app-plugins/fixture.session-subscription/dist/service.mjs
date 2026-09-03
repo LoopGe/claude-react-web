@@ -71,7 +71,10 @@ const handlers = {
     subscribedSessionId = null
     return { ok: true }
   },
-  executeCommand: async ({ invocationId, sessionId }) => {
+  // Fix per reviewer: read session from context.session.id, not top-level sessionId
+  executeCommand: async (params) => {
+    const { invocationId } = params ?? {}
+    const sessionId = params?.context?.session?.id
     // Subscribe to the session once if not already subscribed
     if (sessionId && sessionId !== subscribedSessionId) {
       subscribedSessionId = sessionId
