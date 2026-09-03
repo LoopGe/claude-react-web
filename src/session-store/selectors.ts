@@ -1,6 +1,7 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react'
 import { sessionStoreRegistry } from './registry'
 import type { SessionSnapshot, SessionState } from './types'
+import { getActiveWorktree, type ActiveWorktree } from './normalize'
 
 export function useSessionSnapshot(sessionId: string): SessionSnapshot {
   const store = sessionStoreRegistry.getOrCreate(sessionId)
@@ -74,6 +75,30 @@ export function useSessionTaskCounts(sessionId: string): { all: number; waiting:
 
 export function getSessionLastMessageUuid(sessionId: string): string | null {
   return sessionStoreRegistry.getOrCreate(sessionId).getState().mirror.lastMessageUuid
+}
+
+/** Reactive subscription to the session's current "isolated in a
+ *  worktree" state, folded from EnterWorktree/ExitWorktree in the
+ *  mirrored transcript. Reference-stable when the derived value is
+ *  unchanged, so appending unrelated messages doesn't re-render chips
+ *  that merely show this. */
+export function useSessionActiveWorktree(sessionId: string): ActiveWorktree | null {
+  const store = sessionStoreRegistry.getOrCreate(sessionId)
+  const prevRef = useRef<ActiveWorktree | null>(null)
+  const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store])
+  const getSnapshot = useCallback(() => {
+    const active = getActiveWorktree(store.getState().mirror.messages)
+    if (
+      prevRef.current &&
+      prevRef.current.name === active?.name &&
+      prevRef.current.enterMsgId === active?.enterMsgId
+    ) {
+      return prevRef.current
+    }
+    prevRef.current = active
+    return prevRef.current
+  }, [store])
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
 export function getSessionStore(sessionId: string) {

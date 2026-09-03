@@ -78,8 +78,20 @@ export const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
 /** Built-in mutating tools ∪ first-party mutating tools (FQNs like
  *  `mcp__apptools__git_stage`). The pump matches tool_use block names against
  *  this — FQN form, matching what the SDK reports for in-process MCP tools. */
+/** Worktree entry/exit tools. EnterWorktree creates a linked worktree (a
+ *  real filesystem + git mutation); ExitWorktree removes one (action
+ *  'remove') or leaves it in place ('keep'). Either way the repo's
+ *  worktree set can change, so a tool_result for these should also nudge
+ *  git consumers — the chip reconciles EnterWorktree intent against
+ *  `git worktree list`. */
+const WORKTREE_CHANGE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'EnterWorktree',
+  'ExitWorktree',
+])
+
 const ALL_MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
   ...MUTATING_TOOL_NAMES,
+  ...WORKTREE_CHANGE_TOOL_NAMES,
   ...firstPartyRegistry.mutatingToolFqns(),
 ])
 

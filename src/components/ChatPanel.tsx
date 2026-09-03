@@ -2,7 +2,7 @@
  *  carries the close button, focus click-target, and a dormant/terminated
  *  placeholder when the session's Query isn't live. */
 
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
 import { Chat } from './Chat'
@@ -12,6 +12,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
+import { useSessionActiveWorktree } from '../session-store/selectors'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
 import { useGitStatus } from '../hooks/useGitStatus'
 import { useChatStream } from '../hooks/useChatStream'
@@ -24,7 +25,7 @@ import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { shortenPath } from '../utils/paths'
 import { gitChipText } from '../utils/git-chip'
-import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch, IconEyeOff } from './icons/ToolIcons'
+import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff } from './icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingSetting } from '../types'
 import type { Skin } from '../utils/theme'
@@ -46,6 +47,32 @@ function gitChipTitle(s: GitStatus): ReactNode {
   if (s.ahead > 0 || s.behind > 0) lines.push(`Sync: ${s.ahead} ahead, ${s.behind} behind`)
   lines.push(`State: ${s.state}`)
   lines.push(`Staged: ${s.staged.length} · Unstaged: ${s.unstaged.length} · Untracked: ${s.untracked.length}`)
+  lines.push('Click to open Git panel')
+  return lines.map((line, i) => <div key={i}>{line}</div>)
+}
+
+/** Reconcile the agent's EnterWorktree intent (a name) against the git
+ *  fact of what worktrees actually exist, matching by the conventional
+ *  `worktree-<name>` branch or the worktree path basename. Returns the
+ *  matched worktree (branch, lock state) or null when git has no such
+ *  worktree yet — a timing gap right after Enter, or a stale claim. */
+function worktreeMatch(
+  active: { name: string },
+  wts: GitStatus['linkedWorktrees'] | undefined,
+): GitStatus['linkedWorktrees'][number] | null {
+  if (!wts) return null
+  const byBranch = wts.find((w) => w.branch === `worktree-${active.name}`)
+  if (byBranch) return byBranch
+  return wts.find((w) => w.path.split(/[/\\]/).filter(Boolean).pop() === active.name) ?? null
+}
+
+function worktreeChipTitle(
+  match: GitStatus['linkedWorktrees'][number] | null,
+): ReactNode {
+  const lines = match
+    ? ['Agent isolated in worktree', `Worktree: ${match.path}`, `Branch: ${match.branch ?? 'detached'}`]
+    : ['Agent isolated in worktree', 'Git worktree not yet confirmed']
+  if (match?.locked) lines.push(`Locked: ${match.lockMessage ?? 'yes'}`)
   lines.push('Click to open Git panel')
   return lines.map((line, i) => <div key={i}>{line}</div>)
 }
@@ -379,6 +406,16 @@ export const ChatPanel = memo(function ChatPanel({
   // vanish (and never return) the moment a session went idle, because the
   // hook resets data to null when disabled. Only the cwd matters here.
   const gitStatus = useGitStatus(session.cwd, session.id, { enabled: !!session.cwd })
+
+  // Agent-driven worktree isolation state, folded from EnterWorktree /
+  // ExitWorktree in this session's transcript, reconciled against the git
+  // fact (what worktrees actually exist + their lock state).
+  const activeWorktree = useSessionActiveWorktree(session.id)
+  const activeWorktreeMatch = useMemo(() => {
+    if (!activeWorktree) return null
+    const wts = gitStatus.data?.isRepo === true ? gitStatus.data.linkedWorktrees : undefined
+    return worktreeMatch(activeWorktree, wts)
+  }, [activeWorktree, gitStatus.data])
 
   // Side Chat stream — always subscribed so the drawer can mount without
   // replay cost and the collapsed badge gets live permission data.
@@ -993,6 +1030,23 @@ export const ChatPanel = memo(function ChatPanel({
                   <IconGitBranch size={12} className="chat-panel-git-badge-icon" aria-hidden />
                   <span className="chat-panel-git-badge-value">{gitChipText(gitStatus.data)}</span>
                 </button>
+              </Tooltip>
+            )}
+            {/* Worktree chip — the agent is isolating work in a worktree
+                opened by EnterWorktree (not yet exited). Distinguishes a
+                git-confirmed worktree (normal tint) from a claimed-but-
+                unconfirmed one (warning tint, tooltip says so). Click
+                opens the Git panel. */}
+            {activeWorktree && (
+              <Tooltip label={worktreeChipTitle(activeWorktreeMatch)} placement="bottom">
+                {/* Informational, not a button — full detail lives in the
+                    tooltip; the branch git badge is the Git panel entry. */}
+                <span
+                  className={['chat-panel-worktree-badge', activeWorktreeMatch ? '' : 'unconfirmed'].filter(Boolean).join(' ')}
+                >
+                  <IconGitFork size={12} className="chat-panel-worktree-badge-icon" aria-hidden />
+                  <span className="chat-panel-worktree-badge-value">{activeWorktree.name}</span>
+                </span>
               </Tooltip>
             )}
           </div>

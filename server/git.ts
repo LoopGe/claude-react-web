@@ -29,6 +29,7 @@ import type {
   GitDiff,
   GitFileEntry,
   GitFileStatus,
+  GitLinkedWorktree,
   GitRepoState,
   GitStashEntry,
   GitStatus,
@@ -480,6 +481,17 @@ export async function getStatusInRepo(cwd: string): Promise<GitStatus> {
     buckets.untracked.length > 0
   const state: GitRepoState = inProgress ?? (dirty ? 'dirty' : 'clean')
 
+  // Only spawn `git worktree list --porcelain` when the repo actually has
+  // linked worktrees. The common case (no worktrees) would otherwise pay an
+  // extra git subprocess on every status fetch — a debounce-hot path. The
+  // main git dir at `<repoRoot>/.git/worktrees/` holds every linked worktree
+  // for the whole repo regardless of which worktree `cwd` lives in, so a
+  // single stat is enough and is correct from any cwd.
+  const hasLinkedWorktrees = await fsPromises
+    .access(join(repoRoot, '.git', 'worktrees'))
+    .then(() => true)
+    .catch(() => false)
+
   return {
     isRepo: true,
     repoRoot,
@@ -489,8 +501,43 @@ export async function getStatusInRepo(cwd: string): Promise<GitStatus> {
     behind,
     upstream,
     state,
+    linkedWorktrees: hasLinkedWorktrees ? await listWorktrees(cwd) : [],
     ...buckets,
   }
+}
+
+// ── Worktrees ────────────────────────────────────────────────────────
+
+/** Resolve `git worktree list --porcelain` into structured entries. The
+ *  first entry is always the primary checkout; linked worktrees (e.g.
+ *  `.claude/worktrees/<name>` created by EnterWorktree) follow. Parsed so
+ *  callers can reconcile an agent EnterWorktree intent against the git
+ *  fact (does the branch exist? is it locked, and by whom?). */
+export async function listWorktrees(cwd: string): Promise<GitLinkedWorktree[]> {
+  const { stdout } = await runGit(cwd, ['worktree', 'list', '--porcelain'])
+  const out: GitLinkedWorktree[] = []
+  for (const record of stdout.split('\n\n')) {
+    if (!record.trim()) continue
+    let path = ''
+    let branch: string | null = null
+    let detached = false
+    let locked = false
+    let lockMessage: string | null = null
+    for (const line of record.split('\n')) {
+      if (line.startsWith('worktree ')) path = line.slice('worktree '.length)
+      else if (line.startsWith('branch ')) branch = line.slice('branch refs/heads/'.length)
+      else if (line === 'detached') detached = true
+      // `git worktree lock` prints a bare `locked` when no --reason was
+      // given, or `locked <reason>` when one was — match both.
+      else if (line === 'locked' || line.startsWith('locked ')) {
+        locked = true
+        lockMessage = line === 'locked' ? null : line.slice('locked '.length)
+      }
+      // `bare` and `prunable` records are ignored for the UI's purposes.
+    }
+    out.push({ path, branch: detached ? null : branch, locked, lockMessage })
+  }
+  return out
 }
 
 // ── Diff ────────────────────────────────────────────────────────────

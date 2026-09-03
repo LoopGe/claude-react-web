@@ -7,7 +7,7 @@ import type {
   WorkflowPhaseMeta,
   WorkflowRecord,
 } from './types'
-import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME } from '../constants/toolNames'
+import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME, ENTER_WORKTREE_TOOL_NAME, EXIT_WORKTREE_TOOL_NAME } from '../constants/toolNames'
 import { extractMessagePlainText } from '../search'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 /** Strings the SDK / canUseTool deny path uses to mean "user said no".
@@ -513,6 +513,43 @@ export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
     out.push({ toolUseId: id, label, prompt, isAsync, status: 'running', toolCount: 0 })
   }
   return out
+}
+
+/** The agent is currently isolating work in a worktree opened by
+ *  EnterWorktree and not yet closed by ExitWorktree. `name` is the
+ *  worktree's name (from input.name, or the input.path basename when the
+ *  agent switched to an existing one); `enterMsgId` is the message uuid
+ *  that carried the Enter, so callers can anchor on the transition. */
+export interface ActiveWorktree {
+  name: string
+  enterMsgId: string
+}
+
+/** Fold a transcript's EnterWorktree/ExitWorktree tool_use calls into the
+ *  "currently isolated in a worktree" state. Enter sets the active worktree,
+ *  a later Exit clears it; repeated Enters keep the most recent unmatched
+ *  one. Returns null when no Enter is still open. */
+export function getActiveWorktree(messages: readonly SdkMessage[]): ActiveWorktree | null {
+  let active: ActiveWorktree | null = null
+  for (const msg of messages) {
+    if (msg.type !== 'assistant') continue
+    for (const block of getBlocks(msg)) {
+      const toolName = block.name
+      if (toolName === ENTER_WORKTREE_TOOL_NAME) {
+        const input = block.input as Record<string, unknown> | undefined
+        const rawName = typeof input?.name === 'string' && input.name ? input.name : null
+        const rawPath = typeof input?.path === 'string' && input.path ? input.path : null
+        const name =
+          rawName ??
+          (rawPath ? rawPath.split(/[/\\]/).filter(Boolean).pop() ?? null : null) ??
+          'worktree'
+        active = { name, enterMsgId: msg.uuid ?? '' }
+      } else if (toolName === EXIT_WORKTREE_TOOL_NAME) {
+        active = null
+      }
+    }
+  }
+  return active
 }
 
 /** Extract the Workflow tool_use starts from an assistant message — the

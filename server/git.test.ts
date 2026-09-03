@@ -23,6 +23,8 @@ import {
   getStatus,
   tryCaptureGitHead,
   getStagedDiff,
+  listWorktrees,
+  getStatusInRepo,
 } from './git.js'
 import { Hono } from 'hono'
 import { createErrorHandler } from './errors.js'
@@ -803,5 +805,76 @@ describe('git-routes', () => {
         expect(r.text).toContain('[diff truncated')
       })
     })
+  })
+})
+
+describe('listWorktrees', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = tempDir('git-wt')
+  })
+  afterEach(() => {
+    void rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => {})
+  })
+
+  // git reports worktree paths as their resolvable realpath, whereas
+  // tempDir() sits under os.tmpdir() (a symlink like /var → /private/var
+  // on macOS). Normalise the expected path the same way existing tests do
+  // (realpathSync.native) before matching against git's output.
+  // git reports worktree paths as their resolvable realpath, whereas
+  // tempDir() sits under os.tmpdir() (a symlink like /var → /private/var
+  // on macOS). Normalise dir (exists) to its realpath and build the
+  // worktree path off that, so it matches what git prints.
+  const wtPath = (name: string): string => join(realpathSync.native(dir), '.claude', 'worktrees', name)
+
+  it.skipIf(!gitOk)('lists the primary worktree plus a linked worktree', async () => {
+    gitInit(dir)
+    writeFileSync(join(dir, 'a.txt'), 'a\n')
+    gitCommitAll(dir, 'root')
+    execFileSync('git', ['worktree', 'add', wtPath('feature-auth'), '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
+
+    const wts = await listWorktrees(dir)
+    const primary = wts.find((w) => w.path === realpathSync.native(dir))
+    const linked = wts.find((w) => w.path === wtPath('feature-auth'))
+    expect(primary?.branch).toBe('main')
+    expect(primary?.locked).toBe(false)
+    expect(linked?.branch).toBe('worktree-feature-auth')
+    expect(linked?.locked).toBe(false)
+  })
+
+  it.skipIf(!gitOk)('reports a locked linked worktree with its lock message', async () => {
+    gitInit(dir)
+    writeFileSync(join(dir, 'a.txt'), 'a\n')
+    gitCommitAll(dir, 'root')
+    execFileSync('git', ['worktree', 'add', wtPath('feature-auth'), '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
+    execFileSync('git', ['worktree', 'lock', wtPath('feature-auth'), '--reason', 'claude session feature-auth (pid 123)'], { cwd: dir })
+
+    const wts = await listWorktrees(dir)
+    const linked = wts.find((w) => w.path === wtPath('feature-auth'))
+    expect(linked?.locked).toBe(true)
+    expect(linked?.lockMessage).toContain('claude session feature-auth')
+  })
+
+  it.skipIf(!gitOk)('detects a lock even when no --reason was given (bare `locked` line)', async () => {
+    gitInit(dir)
+    writeFileSync(join(dir, 'a.txt'), 'a\n')
+    gitCommitAll(dir, 'root')
+    execFileSync('git', ['worktree', 'add', wtPath('feature-auth'), '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
+    execFileSync('git', ['worktree', 'lock', wtPath('feature-auth')], { cwd: dir })
+
+    const wts = await listWorktrees(dir)
+    const linked = wts.find((w) => w.path === wtPath('feature-auth'))
+    expect(linked?.locked).toBe(true)
+    expect(linked?.lockMessage).toBeNull()
+  })
+
+  it.skipIf(!gitOk)('exposes linked worktrees through getStatusInRepo', async () => {
+    gitInit(dir)
+    writeFileSync(join(dir, 'a.txt'), 'a\n')
+    gitCommitAll(dir, 'root')
+    execFileSync('git', ['worktree', 'add', wtPath('feature-auth'), '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
+
+    const status = await getStatusInRepo(dir)
+    expect(status.linkedWorktrees.some((w) => w.branch === 'worktree-feature-auth')).toBe(true)
   })
 })

@@ -1,8 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { sessionStoreRegistry } from './registry'
-import { getSessionStore, useSessionTaskCounts } from './selectors'
-import type { TaskRecordUi } from '../types'
+import { getSessionStore, useSessionTaskCounts, useSessionActiveWorktree } from './selectors'
+import type { SdkMessage, TaskRecordUi } from '../types'
+
+function asst(msgUuid: string, blocks: unknown[]): SdkMessage {
+  return { type: 'assistant', uuid: msgUuid, message: { role: 'assistant', content: blocks }, parent_tool_use_id: null } as unknown as SdkMessage
+}
+const enter = (name: string, id = 'wt-1'): unknown => ({ type: 'tool_use', id, name: 'EnterWorktree', input: { name } })
+const exit = (id = 'wt-x'): unknown => ({ type: 'tool_use', id, name: 'ExitWorktree', input: { action: 'keep' } })
 
 function task(overrides: Partial<TaskRecordUi> = {}): TaskRecordUi {
   return { taskId: 't', description: 'work', status: 'running', updatedAt: 0, ...overrides }
@@ -69,5 +75,63 @@ describe('useSessionTaskCounts', () => {
       getSessionStore('s1').dispatch({ type: 'TASKS_SNAPSHOT', tasks: [task({ taskId: 'a', status: 'completed' })] })
     })
     expect(result.current).toEqual({ all: 0, waiting: 0 })
+  })
+})
+
+describe('useSessionActiveWorktree', () => {
+  beforeEach(async () => {
+    await sessionStoreRegistry.clear()
+  })
+  afterEach(async () => {
+    await sessionStoreRegistry.clear()
+  })
+
+  it('null with no messages, active after EnterWorktree, null again after ExitWorktree', () => {
+    const { result } = renderHook(() => useSessionActiveWorktree('s1'))
+    expect(result.current).toBeNull()
+
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'REPLAY_REPLACE',
+        messages: [asst('a-enter', [enter('feature-auth')])],
+        permissions: [],
+      })
+    })
+    expect(result.current).toEqual({ name: 'feature-auth', enterMsgId: 'a-enter' })
+
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'REPLAY_REPLACE',
+        messages: [asst('a-enter', [enter('feature-auth')]), asst('a-exit', [exit()])],
+        permissions: [],
+      })
+    })
+    expect(result.current).toBeNull()
+  })
+
+  it('stays reference-stable when unrelated messages are appended (no rerender churn)', () => {
+    const { result } = renderHook(() => useSessionActiveWorktree('s1'))
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'REPLAY_REPLACE',
+        messages: [asst('a1', [enter('x')])],
+        permissions: [],
+      })
+    })
+    const first = result.current
+    expect(first).toEqual({ name: 'x', enterMsgId: 'a1' })
+
+    // A follow-up Edit tool call must not change the derived worktree state.
+    act(() => {
+      getSessionStore('s1').dispatch({
+        type: 'REPLAY_REPLACE',
+        messages: [
+          asst('a1', [enter('x')]),
+          asst('a2', [{ type: 'tool_use', id: 'e1', name: 'Edit', input: { file_path: 'a.ts' } }]),
+        ],
+        permissions: [],
+      })
+    })
+    expect(result.current).toBe(first)
   })
 })

@@ -31,6 +31,22 @@ export interface GitFileEntry {
   deletions?: number
 }
 
+/** One entry from `git worktree list --porcelain`. The first entry is
+ *  always the primary checkout; the rest are linked worktrees. Used to
+ *  reconcile an agent's EnterWorktree intent against the git fact. */
+export interface GitLinkedWorktree {
+  /** Absolute worktree directory (primary = repo top level; linked e.g.
+   *  `<repo>/.claude/worktrees/<name>`). */
+  path: string
+  /** Checked-out head branch, or null when detached. */
+  branch: string | null
+  /** True when the worktree has a `locked` file (git worktree lock). */
+  locked: boolean
+  /** Contents of the `locked` file when present (e.g. "claude session
+   *  <name> (pid …)"), else null. */
+  lockMessage: string | null
+}
+
 /** Repo-wide working state. `dirty` just means "has any file changes";
  *  the other states correspond to in-progress git operations that block
  *  commits and need a banner in the UI. */
@@ -61,6 +77,11 @@ export interface GitStatus {
   /** Upstream tracking ref (e.g. "origin/main"), or null. */
   upstream: string | null
   state: GitRepoState
+  /** All worktrees of this repo (includes the primary checkout at
+   *  repoRoot). Lets clients reconcile an agent-driven EnterWorktree
+   *  intent against the git fact of what worktrees + branches actually
+   *  exist, and whether one of Claude's sessions has locked it. */
+  linkedWorktrees: GitLinkedWorktree[]
   /** Files with index-column changes. May overlap with `unstaged` when
    *  a file has been staged AND further modified. */
   staged: GitFileEntry[]

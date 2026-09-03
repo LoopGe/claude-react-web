@@ -981,6 +981,47 @@ body.resizing-col .app {
   padding-bottom: 1px;
   line-height: 1;
 }
+/* Worktree chip — the agent is isolating work in a worktree opened by
+   EnterWorktree (not yet exited). Informational only (a span, not a
+   button — the git badge is the Git panel entry), so no cursor / hover /
+   focus affordances. Same compact row-2 shape as the git badge. A
+   confirmed worktree (matched in `git worktree list`) uses the accent; a
+   claimed-but-unconfirmed one uses the warn colour so the divergence is
+   visible at a glance. Reuses existing theme vars only. */
+.chat-panel-worktree-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 160px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--mono);
+  color: var(--accent);
+  border-radius: var(--radius-xs);
+  flex-shrink: 1;
+  min-width: 0;
+  user-select: none;
+  line-height: 1;
+}
+.chat-panel-worktree-badge-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+/* Unconfirmed: EnterWorktree claimed isolation but git has no matching
+   worktree yet (timing gap right after Enter, or a stale claim). */
+.chat-panel-worktree-badge.unconfirmed,
+.chat-panel-worktree-badge.unconfirmed .chat-panel-worktree-badge-icon,
+.chat-panel-worktree-badge.unconfirmed .chat-panel-worktree-badge-value {
+  color: var(--warn);
+}
+.chat-panel-worktree-badge-value {
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* Entrance animation for the git chip — reuses the global `chip-enter`
    keyframe (defined in chat.css, fade + scale + slight rise) that the
    attachment/preview chips already use, so the badge appears instead of

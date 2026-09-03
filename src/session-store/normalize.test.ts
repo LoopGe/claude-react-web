@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription, countQueuedUserTurns } from './normalize'
+import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription, countQueuedUserTurns, getActiveWorktree } from './normalize'
 import type { SdkMessage } from '../types'
 
 /** Build a top-level `user` message with the given text content (string or
@@ -23,6 +23,19 @@ function userMsgBlocks(text: string, uuid = 'u1'): SdkMessage {
     parent_tool_use_id: null,
   } as unknown as SdkMessage
 }
+
+/** Build a top-level `assistant` message carrying the given tool_use blocks. */
+function asstTools(blocks: Array<Record<string, unknown>>, uuid = 'a1'): SdkMessage {
+  return {
+    type: 'assistant',
+    uuid,
+    message: { role: 'assistant', content: blocks },
+    parent_tool_use_id: null,
+  } as unknown as SdkMessage
+}
+
+const enterWorktree = (input: Record<string, unknown>, id = 'wt-1') => ({ type: 'tool_use', id, name: 'EnterWorktree', input })
+const exitWorktree = (id = 'wt-x') => ({ type: 'tool_use', id, name: 'ExitWorktree', input: { action: 'keep' } })
 
 describe('computeWaiting', () => {
   it('is false while the turn is active', () => {
@@ -235,5 +248,57 @@ describe('countQueuedUserTurns', () => {
 
   it('returns 0 for an empty transcript', () => {
     expect(countQueuedUserTurns([])).toBe(0)
+  })
+})
+
+describe('getActiveWorktree', () => {
+  it('returns null for an empty or non-worktree transcript', () => {
+    expect(getActiveWorktree([])).toBeNull()
+    expect(getActiveWorktree([
+      asstTools([{ type: 'tool_use', id: 'e1', name: 'Edit', input: { file_path: 'a.txt' } }]),
+      userMsgBlocks('ok'),
+    ])).toBeNull()
+  })
+
+  it('is active with the entered name + enter message uuid after EnterWorktree', () => {
+    const enter = asstTools([enterWorktree({ name: 'feature-auth' })], 'a-enter')
+    expect(getActiveWorktree([enter])).toEqual({ name: 'feature-auth', enterMsgId: 'a-enter' })
+  })
+
+  it('falls back to the path basename when EnterWorktree carries only input.path', () => {
+    expect(getActiveWorktree([
+      asstTools([enterWorktree({ path: '/repo/.claude/worktrees/feishu-plugin' })], 'a-enter'),
+    ])).toEqual({ name: 'feishu-plugin', enterMsgId: 'a-enter' })
+  })
+
+  it('clears to null once a later ExitWorktree lands', () => {
+    const msgs = [
+      asstTools([enterWorktree({ name: 'feature-auth' })], 'a-enter'),
+      asstTools([exitWorktree()], 'a-exit'),
+    ]
+    expect(getActiveWorktree(msgs)).toBeNull()
+  })
+
+  it('is still active after EnterWorktree with no later Exit (live or replay join)', () => {
+    expect(getActiveWorktree([
+      userMsgBlocks('start'),
+      asstTools([enterWorktree({ name: 'feature-auth' })], 'a-enter'),
+      userMsgBlocks('more work'),
+    ])).toEqual({ name: 'feature-auth', enterMsgId: 'a-enter' })
+  })
+
+  it('keeps the most recent unmatched Enter over multiple EnterWorktree calls', () => {
+    const msgs = [
+      asstTools([enterWorktree({ name: 'one' })], 'a1'),
+      asstTools([enterWorktree({ name: 'two' })], 'a2'),
+    ]
+    expect(getActiveWorktree(msgs)).toEqual({ name: 'two', enterMsgId: 'a2' })
+  })
+
+  it('ignores non-assistant frames and does not treat them as exits', () => {
+    expect(getActiveWorktree([
+      asstTools([enterWorktree({ name: 'feature-auth' })], 'a-enter'),
+      userMsgBlocks('interrupt note'),
+    ])).toEqual({ name: 'feature-auth', enterMsgId: 'a-enter' })
   })
 })

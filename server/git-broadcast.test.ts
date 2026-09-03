@@ -32,6 +32,11 @@ describe('mutatingToolUseId', () => {
     expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__apptools__git_status', id: 'tu_gr' })).toBeNull()
   })
 
+  it('returns the id for EnterWorktree / ExitWorktree blocks (worktree-change seam)', () => {
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'EnterWorktree', id: 'tu_w1' })).toBe('tu_w1')
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'ExitWorktree', id: 'tu_w2' })).toBe('tu_w2')
+  })
+
   it('returns null for non-mutating tools', () => {
     expect(mutatingToolUseId({ type: 'tool_use', name: 'Read', id: 'tu_5' })).toBeNull()
     expect(mutatingToolUseId({ type: 'tool_use', name: 'Glob', id: 'tu_6' })).toBeNull()

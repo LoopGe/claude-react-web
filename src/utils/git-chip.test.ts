@@ -12,6 +12,7 @@ function makeStatus(overrides: Partial<GitStatus> = {}): GitStatus {
     behind: 0,
     upstream: null,
     state: 'clean',
+    linkedWorktrees: [],
     staged: [],
     unstaged: [],
     untracked: [],
