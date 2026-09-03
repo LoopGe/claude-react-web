@@ -286,10 +286,63 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
     }
   }
 
+  pushTasksSnapshot(session)
+}
+
+/** Push the current `session.tasks` contents as a full snapshot to every
+ *  task subscriber. Shared by applyTaskEvent and
+ *  applyBackgroundTasksChanged. */
+function pushTasksSnapshot(session: Session): void {
   const snapshot = Array.from(session.tasks.values())
   for (const sub of session.taskSubscribers) {
     try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
   }
+}
+
+/** Fold a `system/background_tasks_changed` frame into `session.tasks`.
+ *
+ *  The SDK emits this as a REPLACE-semantics snapshot of the LIVE background
+ *  task set whenever membership changes (start / completion / kill / a
+ *  foreground agent being backgrounded) and — crucially — right behind a
+ *  repeated `initialize`, so a reconnecting host that missed the edge
+ *  `task_started`/`task_updated`/`task_notification` stream can reconcile.
+ *
+ *  Forward-only reconciliation: each listed task means "running right now",
+ *  so a missing record is seeded as a running, backgrounded record; an
+ *  existing record is only back-filled for fields it still lacks (never
+ *  demoted, never deleted — the live set only tracks background tasks, so a
+ *  foreground/completed task absent from it must keep its state). A
+ *  background agent that finished during a disconnect is reconciled by the
+ *  subagent-watcher's synthesized task_notification, not by this frame. */
+export function applyBackgroundTasksChanged(session: Session, msg: SDKMessage): void {
+  if (msg.type !== 'system') return
+  const raw = msg as { subtype?: unknown; tasks?: unknown }
+  if (raw.subtype !== 'background_tasks_changed' || !Array.isArray(raw.tasks)) return
+  const now = Date.now()
+  for (const t of raw.tasks as Array<Record<string, unknown>>) {
+    const taskId = typeof t.task_id === 'string' && t.task_id !== '' ? t.task_id : ''
+    if (!taskId) continue
+    const existing = session.tasks.get(taskId)
+    if (existing) {
+      const next = { ...existing }
+      if (!next.description && typeof t.description === 'string') next.description = t.description
+      if (!next.taskType && typeof t.task_type === 'string') next.taskType = t.task_type
+      if (t.ambient === true) next.ambient = true
+      next.updatedAt = now
+      session.tasks.set(taskId, next)
+    } else {
+      session.tasks.set(taskId, {
+        taskId,
+        description: typeof t.description === 'string' ? t.description : '',
+        taskType: typeof t.task_type === 'string' ? t.task_type : undefined,
+        ambient: t.ambient === true,
+        isBackgrounded: true,
+        status: 'running',
+        updatedAt: now,
+      })
+    }
+  }
+  pushTasksSnapshot(session)
 }
 
 /** Extract the SDK-reported `fast_mode_state` from a message, if present.
@@ -793,6 +846,13 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           const subtype = (msg as { subtype?: string }).subtype
           if (subtype === 'task_started' || subtype === 'task_updated' || subtype === 'task_progress') {
             applyTaskEvent(session, msg)
+            continue
+          }
+          // REPLACE-semantics live-set snapshot (see applyBackgroundTasksChanged).
+          // Ephemeral like the edge task events: fold + early-continue, never the
+          // history ring or the message channel.
+          if (subtype === 'background_tasks_changed') {
+            applyBackgroundTasksChanged(session, msg)
             continue
           }
           if (subtype === 'task_notification') {

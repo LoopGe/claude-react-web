@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
+  applyBackgroundTasksChanged,
   applyTaskEvent,
   backgroundSubagentLaunches,
   compactingOf,
@@ -1439,6 +1440,70 @@ describe('applyTaskEvent', () => {
     expect(session.tasks.has('t2')).toBe(true)
     expect(session.tasks.has('t51')).toBe(true)
     expect(session.tasks.has('active-1')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// applyBackgroundTasksChanged — REPLACE-semantics live-set snapshot.
+// ---------------------------------------------------------------------------
+
+describe('applyBackgroundTasksChanged', () => {
+  it('seeds missing records as running + backgrounded and pushes a snapshot', () => {
+    const { session, snapshots } = makeTaskSession()
+    applyBackgroundTasksChanged(session, sysFrame('background_tasks_changed', {
+      tasks: [
+        { task_id: 'a1', task_type: 'subagent', description: 'research', ambient: false },
+        { task_id: 'a2', task_type: 'shell', description: 'build', ambient: true },
+      ],
+    }))
+    expect(session.tasks.get('a1')).toMatchObject({
+      taskId: 'a1', taskType: 'subagent', description: 'research',
+      status: 'running', isBackgrounded: true, ambient: false,
+    })
+    expect(session.tasks.get('a2')?.ambient).toBe(true)
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0]).toHaveLength(2)
+  })
+
+  it('never demotes or deletes existing records (forward-only reconcile)', () => {
+    const { session } = makeTaskSession()
+    // A completed foreground task and a running background task both predate the snapshot.
+    session.tasks.set('done-1', { taskId: 'done-1', description: 'done', status: 'completed', updatedAt: 1 })
+    session.tasks.set('bg-1', {
+      taskId: 'bg-1', description: 'keep', status: 'running', isBackgrounded: true,
+      progressSummary: 'keep me', updatedAt: 1,
+    })
+    // Snapshot lists only bg-1 (still live) and a NEW bg-2.
+    applyBackgroundTasksChanged(session, sysFrame('background_tasks_changed', {
+      tasks: [
+        { task_id: 'bg-1', task_type: 'shell', description: 'keep' },
+        { task_id: 'bg-2', task_type: 'subagent', description: 'new' },
+      ],
+    }))
+    // done-1 absent from the live set is NOT deleted.
+    expect(session.tasks.get('done-1')?.status).toBe('completed')
+    // bg-1 keeps its progressSummary + status; description already present is untouched.
+    expect(session.tasks.get('bg-1')).toMatchObject({ status: 'running', progressSummary: 'keep me', description: 'keep' })
+    // bg-2 is seeded running.
+    expect(session.tasks.get('bg-2')).toMatchObject({ taskId: 'bg-2', status: 'running', isBackgrounded: true })
+  })
+
+  it('back-fills only missing fields on an existing record', () => {
+    const { session } = makeTaskSession()
+    session.tasks.set('x', { taskId: 'x', description: '', status: 'running', updatedAt: 1 })
+    applyBackgroundTasksChanged(session, sysFrame('background_tasks_changed', {
+      tasks: [{ task_id: 'x', task_type: 'shell', description: 'late desc' }],
+    }))
+    expect(session.tasks.get('x')).toMatchObject({ description: 'late desc', taskType: 'shell', status: 'running' })
+  })
+
+  it('ignores non-system frames, other subtypes, and malformed tasks arrays', () => {
+    const { session } = makeTaskSession()
+    applyBackgroundTasksChanged(session, { type: 'assistant' } as unknown as SDKMessage)
+    applyBackgroundTasksChanged(session, sysFrame('task_started', { task_id: 't1' }))
+    applyBackgroundTasksChanged(session, { type: 'system', subtype: 'background_tasks_changed', tasks: 'nope' } as unknown as SDKMessage)
+    applyBackgroundTasksChanged(session, { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: '' }] } as unknown as SDKMessage)
+    expect(session.tasks.size).toBe(0)
   })
 })
 
