@@ -125,3 +125,40 @@ export function buildSessionAccentMap(
   }
   return map
 }
+
+// ── Global background image (default/glow skins only) ──────────────────
+//
+// A host appearance preference on the same footing as the accent colour:
+// stored client-side, applied by useBackground() as CSS variables on <html>.
+// Only the `default` and `glow` skins expose it (see isBackgroundLocked in
+// utils/theme.ts); the branded/a11y skins suppress the effect but preserve
+// the stored choice.
+
+export type BackgroundPref =
+  | { kind: 'none' }
+  | { kind: 'custom'; src: string }     // http(s) URL, or /api/background/files/<uuid>.<ext>
+
+export interface BackgroundSetting {
+  pref: BackgroundPref
+  /** Chrome-surface translucency, 0.55..1 — lower = more of the image shows. */
+  opacity: number
+}
+
+export const BACKGROUND_KEY = 'claude-react-web:background'
+export const BACKGROUND_DEFAULT_OPACITY = 0.85
+export const BACKGROUND_OPACITY_MIN = 0.55
+export const BACKGROUND_OPACITY_MAX = 1
+
+/** Type-guard for useLocalStorage's `validate` — rejects corrupt /
+ *  hand-edited values so a bad localStorage entry collapses to the default. */
+export function isBackgroundSetting(v: unknown): v is BackgroundSetting {
+  if (!v || typeof v !== 'object') return false
+  const s = v as { pref?: unknown; opacity?: unknown }
+  if (typeof s.opacity !== 'number' || Number.isNaN(s.opacity)) return false
+  if (s.opacity < BACKGROUND_OPACITY_MIN || s.opacity > BACKGROUND_OPACITY_MAX) return false
+  const p = s.pref as { kind?: unknown; src?: unknown } | null
+  if (!p || typeof p !== 'object') return false
+  if (p.kind === 'none') return true
+  if (p.kind === 'custom') return typeof p.src === 'string' && p.src.length > 0 && p.src.length <= 4096
+  return false
+}

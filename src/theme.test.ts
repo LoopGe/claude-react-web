@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildSessionAccentMap } from './theme'
+import { buildSessionAccentMap, isBackgroundSetting } from './theme'
 
 describe('buildSessionAccentMap', () => {
   const colors = { s1: '#7b8cde', s2: '#e07080' }
@@ -38,5 +38,20 @@ describe('buildSessionAccentMap', () => {
 
   it('returns an empty map for undefined input', () => {
     expect(buildSessionAccentMap(undefined, 'default').size).toBe(0)
+  })
+})
+
+describe('isBackgroundSetting', () => {
+  it('accepts a none setting', () => {
+    expect(isBackgroundSetting({ pref: { kind: 'none' }, opacity: 0.85 })).toBe(true)
+  })
+  it('accepts a custom setting with an http(s) src', () => {
+    expect(isBackgroundSetting({ pref: { kind: 'custom', src: 'https://example.com/bg.png' }, opacity: 0.7 })).toBe(true)
+  })
+  it('rejects a corrupt / hand-edited value', () => {
+    expect(isBackgroundSetting(null)).toBe(false)
+    expect(isBackgroundSetting({ pref: { kind: 'custom' }, opacity: 0.7 })).toBe(false) // missing src
+    expect(isBackgroundSetting({ pref: { kind: 'none' }, opacity: 2 })).toBe(false)      // opacity out of range
+    expect(isBackgroundSetting({ pref: { kind: 'weird' }, opacity: 0.5 })).toBe(false)
   })
 })
