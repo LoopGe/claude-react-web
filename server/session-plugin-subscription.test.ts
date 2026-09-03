@@ -40,6 +40,7 @@ describe('SessionSubscriptionRegistry', () => {
     const r = new SessionSubscriptionRegistry({ getSession: (id) => (id === 's1' ? session : undefined) })
     const res = r.subscribe('s1', peer)
     expect(res.ok).toBe(true)
+    expect(session.pluginSubscribers.size).toBe(1)
     const sub = session.pluginSubscribers.values().next().value as any
     const endSpy = vi.spyOn(sub, 'end')
     r.dropPeer(peer)
