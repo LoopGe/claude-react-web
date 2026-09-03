@@ -3784,6 +3784,26 @@ export class SessionManager {
     return result
   }
 
+  /** Pin (or clear, mode:null) a per-MCP-server permission-mode override on a
+   *  live session (SDK Query.setMcpPermissionModeOverride — tighten-only:
+   *  'default' | 'auto' | null). Resolves `{ warning? }`; the warning is
+   *  informational (server-name typo detection) and is forwarded to the client.
+   *  NOTE: the override is per-process and the SDK does not report the pinned
+   *  value back, so it is NOT persisted — a resume/reconnect starts clean. */
+  async setMcpPermissionModeOverride(
+    id: string,
+    serverName: string,
+    mode: 'default' | 'auto' | null,
+  ): Promise<{ warning?: string }> {
+    const s = this.requireLive(id)
+    return this.requireHandleMethod<(n: string, m: 'default' | 'auto' | null) => Promise<{ warning?: string }>>(
+      s,
+      'setMcpPermissionModeOverride',
+      'MCP permission mode',
+      'supportsMcp',
+    )(serverName, mode)
+  }
+
   /** Effective first-party server enabled state: per-session override (null =
    *  inherit), legacy session `appToolsGit`, global structured config, legacy
    *  global `appToolsGit`, then the server's own default. */

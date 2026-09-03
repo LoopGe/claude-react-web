@@ -252,6 +252,11 @@ export class ClaudeProvider implements AgentProvider {
     if (sdkOptions.enableFileCheckpointing === undefined) {
       sdkOptions.enableFileCheckpointing = true
     }
+    // The app renders a per-task stop control (POST /sessions/:id/tasks/:taskId/stop)
+    // for every background task, so declare the per-task stop affordance to the
+    // CLI — it can then route interrupt semantics through the per-task control
+    // instead of aborting the whole turn.
+    sdkOptions.perTaskStopAffordance = true
 
     const requestedMode = (opts.permissionMode ?? sdkOptions.permissionMode) as PermissionMode | undefined
     this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins, group, profile)

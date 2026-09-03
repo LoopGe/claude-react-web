@@ -166,6 +166,11 @@ export interface ProviderSessionHandle {
   reconnectMcpServer?(name: string): Promise<void>
   toggleMcpServer?(name: string, enabled: boolean): Promise<void>
   setMcpServers?(servers: Record<string, unknown>): Promise<unknown>
+  /** Pin (or clear, mode:null) a per-MCP-server permission-mode override
+   *  (SDK Query.setMcpPermissionModeOverride — tighten-only: 'default' |
+   *  'auto' | null). Resolves `{ warning? }`; the warning is set when the
+   *  server name matches no currently-known server. */
+  setMcpPermissionModeOverride?(serverName: string, mode: 'default' | 'auto' | null): Promise<{ warning?: string }>
   reloadPlugins?(): Promise<unknown>
   reloadSkills(): Promise<unknown>
   getContextUsage?(): Promise<unknown>

@@ -832,6 +832,19 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ ok: true })
   })
 
+  // Pin (or clear, mode:null) a per-MCP-server permission-mode override
+  // (tighten-only: 'default' | 'auto' | null). Server-only for now — no client
+  // UI surfaces the pinned value, and the SDK doesn't report it back.
+  app.post('/sessions/:id/mcp/:name/permission-mode', async (c) => {
+    const body = await safeJson<{ mode?: unknown }>(c.req)
+    const mode = body.mode
+    if (mode !== 'default' && mode !== 'auto' && mode !== null) {
+      return c.json({ error: "mode must be 'default' | 'auto' | null" }, 400)
+    }
+    const result = await sm.setMcpPermissionModeOverride(c.req.param('id'), c.req.param('name'), mode)
+    return c.json({ ok: true, ...(result?.warning ? { warning: result.warning } : {}) })
+  })
+
   // Reload plugins from disk
   app.post('/sessions/:id/plugins/reload', async (c) => {
     const result = await sm.reloadPlugins(c.req.param('id'))

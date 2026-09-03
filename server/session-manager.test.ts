@@ -32,6 +32,7 @@ interface MockQueryHandle {
   supportedAgents: ReturnType<typeof vi.fn>
   mcpServerStatus: ReturnType<typeof vi.fn>
   setMcpServers: ReturnType<typeof vi.fn>
+  setMcpPermissionModeOverride: ReturnType<typeof vi.fn>
   getContextUsage: ReturnType<typeof vi.fn>
   accountInfo: ReturnType<typeof vi.fn>
   rewindFiles: ReturnType<typeof vi.fn>
@@ -177,6 +178,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
           removed: [],
           errors: {},
         })),
+        setMcpPermissionModeOverride: vi.fn(async () => ({})),
         getContextUsage: vi.fn(async () => ({})),
         accountInfo: vi.fn(async () => ({})),
         rewindFiles: vi.fn(async () => ({ canRewind: true })),
@@ -220,6 +222,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         supportedAgents: handle.supportedAgents,
         mcpServerStatus: handle.mcpServerStatus,
         setMcpServers: handle.setMcpServers,
+        setMcpPermissionModeOverride: handle.setMcpPermissionModeOverride,
         getContextUsage: handle.getContextUsage,
         accountInfo: handle.accountInfo,
         rewindFiles: handle.rewindFiles,
@@ -3651,6 +3654,29 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       apptools: expect.anything(),
     })
     expect(result).toEqual({ added: ['x', 'apptools'], removed: [], errors: {} })
+  })
+
+  it('spawn sets perTaskStopAffordance so the per-task stop control is declared', async () => {
+    sm.create({ cwd: '/tmp' })
+    expect(mockHandles[0].options.perTaskStopAffordance).toBe(true)
+  })
+
+  it('setMcpPermissionModeOverride forwards to the handle and surfaces the warning', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    mockHandles[0].setMcpPermissionModeOverride.mockResolvedValueOnce({ warning: 'unknown server' })
+    const result = await sm.setMcpPermissionModeOverride(info.id, 'global-a', 'auto')
+    expect(mockHandles[0].setMcpPermissionModeOverride).toHaveBeenCalledWith('global-a', 'auto')
+    expect(result).toEqual({ warning: 'unknown server' })
+  })
+
+  it('setMcpPermissionModeOverride forwards a null (clear) mode verbatim', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    await sm.setMcpPermissionModeOverride(info.id, 'global-a', null)
+    expect(mockHandles[0].setMcpPermissionModeOverride).toHaveBeenCalledWith('global-a', null)
+  })
+
+  it('rejects a live setMcpPermissionModeOverride for a ghost session', async () => {
+    await expect(sm.setMcpPermissionModeOverride('ghost', 'x', 'default')).rejects.toBeTruthy()
   })
 
   it('injects the apptools server into spawn mcpServers when the session has a cwd', async () => {

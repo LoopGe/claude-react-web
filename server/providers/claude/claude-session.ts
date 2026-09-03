@@ -174,6 +174,15 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.setMcpServers(servers as Parameters<Query['setMcpServers']>[0])
   }
 
+  /** Pin (or clear, mode:null) a per-MCP-server permission-mode override
+   *  (tighten-only: 'default' | 'auto' | null). The SDK resolves
+   *  `{ warning?: string }` — set when the server name matches no known
+   *  server (typo detection); the override still applies if that server
+   *  connects later. */
+  setMcpPermissionModeOverride(serverName: string, mode: 'default' | 'auto' | null): Promise<{ warning?: string }> {
+    return this.query.setMcpPermissionModeOverride(serverName, mode)
+  }
+
   reloadPlugins(): Promise<unknown> {
     return this.query.reloadPlugins()
   }
