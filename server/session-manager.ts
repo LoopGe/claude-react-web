@@ -2129,6 +2129,7 @@ export class SessionManager {
       elicitationPending: new Map(),
       dialogSubscribers: new Map(),
       dialogPending: new Map(),
+      pluginSubscribers: new Map(),
       // Seed the in-memory ring with the on-disk transcript tail on resume.
       // A normally-running session maintains the invariant "history holds the
       // session's recent messages"; a resumed session starts with an empty

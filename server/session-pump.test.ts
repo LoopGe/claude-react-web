@@ -1252,6 +1252,7 @@ function makeTaskSession(): { session: Session; snapshots: TaskRecordUi[][] } {
   const session = {
     tasks: new Map<string, TaskRecordUi>(),
     taskSubscribers: new Set([{ push: (t: TaskRecordUi[]) => snapshots.push(t) }]),
+    pluginSubscribers: new Map(),
   } as unknown as Session
   return { session, snapshots }
 }
@@ -1547,6 +1548,7 @@ function makePumpSession(msgs: SDKMessage[]): {
     promptSuggestionSubscribers: new Set(),
     contextUsageSubscribers: new Set(),
     tasks: new Map(),
+    pluginSubscribers: new Map(),
     history: [],
     subagentHistory: [],
     pending: new Map(),
