@@ -967,13 +967,19 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // (skills/agents/memoryFiles/mcpTools) still comes from the
         // on-demand REST endpoint when the user opens SettingsPanel.
         if (msg.type === 'result') {
-          // Cold-start instrumentation: log once on the FIRST result — the
-          // user-visible end of the first turn. Combines our pump-side anchors
-          // with the SDK's own wire timings (ttft_ms = time to first token,
-          // request_sent_wall_ms = wall time from send to response,
-          // time_to_request_from_spawn_ms). Read defensively — older CLIs omit
-          // them.
-          if (session.firstTurnAtMs === undefined) {
+          // Pass the session's pinned auto-compact window (undefined = auto)
+          // so the derived threshold reflects a user override, not just the
+          // model's raw context window.
+          const usage = liteContextUsageFromResult(msg, session.autoCompactWindow)
+          // Cold-start instrumentation: log once on the FIRST REAL result —
+          // the user-visible end of the first turn. The spawn/restart
+          // `result` warm-up carries an ALL-ZERO usage payload (liteContext
+          // returns null for it), so gating on `usage` skips that placeholder;
+          // a real turn's result always has input_tokens > 0. Combines our
+          // pump-side anchors with the SDK's own wire timings (ttft_ms = time
+          // to first token, request_sent_wall_ms = wall time from send to
+          // response, time_to_request_from_spawn_ms). Read defensively.
+          if (usage && session.firstTurnAtMs === undefined) {
             session.firstTurnAtMs = Date.now()
             const bootMs = session.bootStartedAt !== undefined ? session.firstTurnAtMs - session.bootStartedAt : undefined
             const initMs = session.initAtMs !== undefined ? session.firstTurnAtMs - session.initAtMs : undefined
@@ -986,10 +992,6 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
                 ` time_to_request_from_spawn_ms=${typeof r.time_to_request_from_spawn_ms === 'number' ? r.time_to_request_from_spawn_ms : 'n/a'}`,
             )
           }
-          // Pass the session's pinned auto-compact window (undefined = auto)
-          // so the derived threshold reflects a user override, not just the
-          // model's raw context window.
-          const usage = liteContextUsageFromResult(msg, session.autoCompactWindow)
           if (usage) applyContextUsage(session, usage)
         }
         // Also derive a snapshot from each main-thread `assistant` message

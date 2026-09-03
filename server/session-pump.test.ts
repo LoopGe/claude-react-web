@@ -1699,6 +1699,41 @@ describe('pump: files_persisted probe', () => {
   })
 })
 
+describe('pump: cold-start timing', () => {
+  it('ignores the spawn/restart zero-usage warm-up result when stamping the first turn', async () => {
+    const { session } = makePumpSession([
+      sysFrame('init'),
+      makeResult({
+        usage: {
+          input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          iterations: [],
+        },
+        modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+      }),
+    ])
+    await pump(session, makePumpDeps())
+    expect(session.initAtMs).toBeTypeOf('number')
+    // The warm-up placeholder is NOT the user-visible first turn — timing must
+    // not fire on it (otherwise "first result" ≈ init time, meaningless).
+    expect(session.firstTurnAtMs).toBeUndefined()
+  })
+
+  it('stamps the first turn on a real result (usage > 0)', async () => {
+    const { session } = makePumpSession([
+      sysFrame('init'),
+      makeResult({
+        usage: { input_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        modelUsage: { 'claude-opus-4-7': { contextWindow: 200000, maxOutputTokens: 32000 } },
+      }),
+    ])
+    await pump(session, makePumpDeps())
+    expect(session.initAtMs).toBeTypeOf('number')
+    expect(session.firstTurnAtMs).toBeTypeOf('number')
+  })
+})
+
 describe('pump: task lifecycle frames', () => {
   it('early-continues task_started/updated/progress: folds state + snapshot, skips ring + broadcast', async () => {
     const { session, broadcasts, taskSnapshots } = makePumpSession([

@@ -59,7 +59,17 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
   }, [getTranscript, agentId])
 
   return (
-    <Overlay variant="modal" onClose={onClose} ariaLabel={`Subagent transcript: ${label}`} cardStyle={{ maxWidth: 620, maxHeight: '80vh' }}>
+    <Overlay
+      variant="modal"
+      onClose={onClose}
+      ariaLabel={`Subagent transcript: ${label}`}
+      cardStyle={{ maxWidth: 620, maxHeight: '80vh' }}
+      // Portal to body: this dialog is opened from inside the TasksPanel
+      // overlay (an animated ancestor that would otherwise become the
+      // containing block for the fixed backdrop, clipping the modal to the
+      // panel). The escape/focus stacks still order it as the top overlay.
+      portal
+    >
       <div className="subagent-transcript">
         <header className="subagent-transcript-header">
           <span className="subagent-transcript-title" title={agentId}>
