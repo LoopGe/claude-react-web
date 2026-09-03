@@ -22,6 +22,7 @@ import { useSessionNotifications } from './hooks/useSessionNotifications'
 import { useSessionUrl } from './hooks/useSessionUrl'
 import { registerSW } from './sw-register'
 import { useTheme } from './hooks/useTheme'
+import { useBackground } from './hooks/useBackground'
 import { useToast } from './hooks/useToast'
 import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
 import { usePluginRegistry } from './app-plugins/usePluginRegistry'
@@ -272,6 +273,10 @@ export function App() {
     sessionAccentMap,
     handleSessionColorChange,
   } = useTheme()
+  // Global background image (default/glow skins). Depends on `skin` so a
+  // switch to a background-locked skin suppresses the effect but keeps the
+  // stored choice (see useBackground).
+  const { setting: backgroundSetting, setSetting: setBackgroundSetting } = useBackground(skin)
   /** Ids currently being resumed — briefly disables the item so a double-
    *  click doesn't fire two POSTs. */
   const [resuming, setResuming] = useState<Set<string>>(new Set())
@@ -3734,6 +3739,8 @@ export function App() {
               onSkin={setSkin}
               onMode={setMode}
               onAccent={(v) => setAccentColor(v ?? ACCENT_COLORS[0].accent)}
+              background={backgroundSetting}
+              onBackgroundChange={setBackgroundSetting}
               className="btn btn-icon"
             />
             <button
