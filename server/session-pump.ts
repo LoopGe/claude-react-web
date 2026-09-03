@@ -861,6 +861,22 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // the ToolCards already show their own elapsed state — so drop it
         // entirely: no ring slot, no broadcast.
         if (msg.type === 'tool_progress') continue
+        // PROBE (see decision gate): `system/files_persisted` semantics are
+        // unconfirmed for local SDK sessions — the payload
+        // (SDKFilesPersistedEvent: `files: {filename, file_id}[]`) carries a
+        // `file_id`, which reads like SDK artifact/file-persistence rather than
+        // a workspace git write, so it must NOT be wired to scheduleGitBroadcast
+        // on speculation. Log + early-continue so a real session can tell us
+        // whether it ever fires and what `filename` looks like. Gate: if it
+        // fires with repo-relative filenames, promote to scheduleGitBroadcast;
+        // otherwise remove this branch (it should never hit the ring either way).
+        if (msg.type === 'system' && (msg as { subtype?: string }).subtype === 'files_persisted') {
+          const f = msg as { files?: unknown; failed?: unknown }
+          log.info(
+            `[${session.id}] files_persisted files=${JSON.stringify(f.files ?? [])} failed=${JSON.stringify(f.failed ?? [])}`,
+          )
+          continue
+        }
         // Task lifecycle events fold into the dedicated task-state cache and
         // ride the `tasks` channel as full snapshots. task_started /
         // task_updated / task_progress are EPHEMERAL (high-frequency update

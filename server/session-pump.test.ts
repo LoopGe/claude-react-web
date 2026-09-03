@@ -1678,6 +1678,27 @@ describe('pump: session_state_changed', () => {
   })
 })
 
+describe('pump: files_persisted probe', () => {
+  it('early-continues the frame (never ring/broadcast) without throwing', async () => {
+    const { session, broadcasts } = makePumpSession([
+      {
+        type: 'system',
+        subtype: 'files_persisted',
+        files: [{ filename: 'out.png', file_id: 'file_1' }],
+        failed: [],
+        processed_at: '2026-09-03T00:00:00Z',
+      } as unknown as SDKMessage,
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    await pump(session, makePumpDeps())
+
+    // Probe branch is ephemeral — only the result hit the message channel and
+    // the durable ring.
+    expect(broadcasts.map((m) => (m as { subtype?: string }).subtype)).toEqual(['success'])
+    expect(session.history.map((m) => (m as { subtype?: string }).subtype)).toEqual(['success'])
+  })
+})
+
 describe('pump: task lifecycle frames', () => {
   it('early-continues task_started/updated/progress: folds state + snapshot, skips ring + broadcast', async () => {
     const { session, broadcasts, taskSnapshots } = makePumpSession([
