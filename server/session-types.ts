@@ -270,6 +270,12 @@ export interface Session {
   /** Pending MCP elicitation (auth) requests awaiting a user decision. */
   elicitationPending: Map<string, PendingElicitation>
   dialogSubscribers: Map<string, DialogSubscriber>
+  /** Plugin outbound-event subscribers (App Plugin `sessions.subscribe`).
+   *  Separate from `subscribers` so plugin consumers can't block or be
+   *  evicted by browser-tab logic, and so we can end them at teardown
+   *  without touching the WS live set. Each entry is owned by a
+   *  SessionSubscriptionRegistry and pushes already-filtered SDKMessages. */
+  pluginSubscribers: Map<string, Subscriber>
   /** Pending user dialogs (e.g. refusal fallback) awaiting a user decision. */
   dialogPending: Map<string, PendingUserDialog>
   history: SDKMessage[]
@@ -558,6 +564,7 @@ export function endAllSubscribers(s: Session): void {
   endAndClear(s.permissionSubscribers)
   endAndClear(s.elicitationSubscribers)
   endAndClear(s.dialogSubscribers)
+  endAndClear(s.pluginSubscribers)
   endAndClear(s.contextUsageSubscribers)
   endAndClear(s.promptSuggestionSubscribers)
   endAndClear(s.taskSubscribers)
