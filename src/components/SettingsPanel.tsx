@@ -16,7 +16,7 @@ import { PERMISSION_MODES } from '../types'
 import type { SkillRecord } from '../../shared/skills'
 import type { SandboxSetting } from '../../shared/sandbox'
 import type { FirstPartyToolDef } from '../../shared/first-party'
-import { McpToolsList, firstPartyToolDefsAsMcpTools } from './McpToolsList'
+import { McpToolRow, firstPartyToolDefsAsMcpTools } from './McpToolsList'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
 import { IconChevronUp, IconChevronDown, IconLoader, IconSparkles, IconTerminal } from './icons/ToolIcons'
@@ -133,6 +133,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // refreshed truth afterwards. `pendingMcp` tracks in-flight names so the
   // clicked button shows a spinner instead of silently awaiting a round-trip.
   const [pendingMcp, setPendingMcp] = useState<Set<string>>(new Set())
+  // In-flight first-party toggle names (mirror of pendingMcp for the
+  // first-party section) so the card shows the same spinner the MCP cards do.
+  const [pendingFirstParty, setPendingFirstParty] = useState<Set<string>>(new Set())
   const [mcpOverride, setMcpOverride] = useState<Record<string, Partial<McpServerStatus>>>({})
   const clearMcpOverride = useCallback((name: string) => {
     setMcpOverride((o) => {
@@ -170,18 +173,41 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     }
   }
 
+  /** Re-fetch the static first-party server status after a toggle so the
+   *  card's no-override/no-global fallback (`tool.enabled`) tracks the
+   *  server's post-injection state — mirrors how McpServerCard refetches
+   *  mcp-status after a toggle. Non-fatal: on failure the snapshot stays
+   *  until the next mount. */
+  const refreshFirstPartyTools = useCallback(async () => {
+    try {
+      const r = await api.get<{ tools: FirstPartyToolStatus[] }>(`/sessions/${session.id}/tools`)
+      setFirstPartyTools(r.tools)
+    } catch {
+      // ignore — non-fatal status refresh
+    }
+  }, [session.id])
+
   /** Per-session first-party tool server override (e.g. the `apptools` git
    *  server). `null` clears the override to re-inherit the global default.
    *  Immediate on live sessions (the server re-injects via setMcpServers). */
   const toggleFirstParty = async (name: string, enabled: boolean | null) => {
+    setPendingFirstParty((s) => new Set(s).add(name))
     try {
       const r = await api.post<ToolsToggleResponse>(
         `/sessions/${session.id}/tools/${encodeURIComponent(name)}/toggle`,
         { enabled },
       )
       onSessionUpdate(r.session)
+      // Reconcile the /tools snapshot with the server's new injection state.
+      void refreshFirstPartyTools()
     } catch (e) {
       toast.error(`Couldn't update ${name}: ${(e as Error).message}`)
+    } finally {
+      setPendingFirstParty((s) => {
+        const n = new Set(s)
+        n.delete(name)
+        return n
+      })
     }
   }
 
@@ -1424,6 +1450,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
                   enabled={enabled}
                   hasOverride={override !== undefined}
                   disabled={busy || session.terminated}
+                  pending={pendingFirstParty.has(tool.name)}
                   onToggle={(next) => void toggleFirstParty(tool.name, next)}
                   onReset={() => void toggleFirstParty(tool.name, null)}
                 />
@@ -1840,16 +1867,18 @@ const STATUS_COLORS: Record<string, string> = {
   pending: 'var(--accent)',
 }
 
-/** Per-session first-party server card. Same `.settings-card` system as the
- *  MCP cards; the toggle applies immediately (server re-injects via
- *  setMcpServers) instead of staging for a Save. Tool listings come embedded
- *  in the /tools payload (static registry metadata), so expansion needs no
- *  extra fetch. */
+/** Per-session first-party server card. Mirrors the MCP server card's
+ *  controls: Enable/Disable at .btn-xs with an in-flight spinner, and an
+ *  inline chevron expansion of the tool listing (no overlay). The toggle
+ *  applies immediately (server re-injects via setMcpServers) instead of
+ *  staging for a Save. Tool listings come embedded in the /tools payload
+ *  (static registry metadata), so expansion needs no extra fetch. */
 function FirstPartyStatusCard({
   tool,
   enabled,
   hasOverride,
   disabled,
+  pending,
   onToggle,
   onReset,
 }: {
@@ -1857,46 +1886,63 @@ function FirstPartyStatusCard({
   enabled: boolean
   hasOverride: boolean
   disabled: boolean
+  pending: boolean
   onToggle: (enabled: boolean) => void
   onReset: () => void
 }) {
   const [toolsOpen, setToolsOpen] = useState(false)
+  const inert = disabled || pending
   return (
     <div className="settings-card settings-mcp-card settings-first-party-card">
-      <div className="settings-card-head settings-mcp-card-head">
+      <div className="settings-card-head">
         <span className="settings-card-dot" style={{ '--dot': enabled ? 'var(--plugin-active)' : 'var(--plugin-inactive)' } as CSSProperties} />
         <span className="settings-card-name">{tool.name}</span>
         <span className="settings-card-badge">built-in</span>
         {tool.tools.length > 0 && (
           <span className="settings-card-meta">{tool.tools.length} tool{tool.tools.length !== 1 ? 's' : ''}</span>
         )}
-        <div className="settings-mcp-actions">
-          <button className="btn" onClick={() => setToolsOpen(!toolsOpen)} disabled={tool.tools.length === 0}>
-            List tools
-          </button>
+        {pending ? (
+          <span className="settings-card-pending" aria-label="updating">
+            <IconLoader size={12} className="settings-card-spin" />
+          </span>
+        ) : (
           <button
-            className="btn settings-first-party-toggle"
+            className="btn btn-xs"
             onClick={() => onToggle(!enabled)}
-            disabled={disabled}
+            disabled={inert}
             title={enabled ? 'Disable' : 'Enable'}
           >
-            {enabled ? 'ON' : 'OFF'}
+            {enabled ? 'Disable' : 'Enable'}
           </button>
-        </div>
+        )}
+        {tool.tools.length > 0 && (
+          <button
+            className="btn btn-xs"
+            onClick={() => setToolsOpen(!toolsOpen)}
+            aria-label={toolsOpen ? 'Collapse' : 'Expand'}
+            aria-expanded={toolsOpen}
+          >
+            {toolsOpen ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />}
+          </button>
+        )}
       </div>
       {tool.description && <div className="settings-card-note">{tool.description}</div>}
       {tool.error && <div className="settings-first-party-error">{tool.error}</div>}
       {!tool.hasCwd && <div className="settings-card-note">No session working directory — not injected.</div>}
       {hasOverride && (
         <div className="settings-card-note">
-          <button type="button" className="settings-reset-link" disabled={disabled} onClick={onReset}>
+          <button type="button" className="settings-reset-link" disabled={inert} onClick={onReset}>
             Reset (inherit global)
           </button>
         </div>
       )}
-      {toolsOpen && (
-        <McpToolsList tools={firstPartyToolDefsAsMcpTools(tool.tools)} loading={false} onClose={() => setToolsOpen(false)} />
-      )}
+      <AnimatedCollapse open={toolsOpen && tool.tools.length > 0}>
+        <div className="settings-card-body">
+          {firstPartyToolDefsAsMcpTools(tool.tools).map((t) => (
+            <McpToolRow key={t.name} tool={t} />
+          ))}
+        </div>
+      </AnimatedCollapse>
     </div>
   )
 }
@@ -1983,13 +2029,7 @@ function McpServerCard({
       <AnimatedCollapse open={expanded && !!server.tools}>
         <div className="settings-card-body">
           {server.tools?.map((t) => (
-            <div key={t.name} className="settings-card-item">
-              <code>{t.name}</code>
-              {t.annotations?.readOnly && <span className="settings-tag readonly">read-only</span>}
-              {t.annotations?.destructive && <span className="settings-tag destructive">destructive</span>}
-              {t.annotations?.openWorld && <span className="settings-tag openworld">open-world</span>}
-              {t.description && <span className="settings-card-desc">{t.description}</span>}
-            </div>
+            <McpToolRow key={t.name} tool={t} />
           ))}
         </div>
       </AnimatedCollapse>

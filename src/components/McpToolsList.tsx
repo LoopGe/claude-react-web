@@ -12,6 +12,21 @@ export function firstPartyToolDefsAsMcpTools(defs: FirstPartyToolDef[]): McpServ
   return defs.map((t) => ({ name: t.name, description: t.description, annotations: { readOnly: t.readOnly } }))
 }
 
+/** One tool row in a settings tool list — shared by the overlay list
+ *  (McpToolsList) and the inline card expansions (McpServerCard /
+ *  FirstPartyStatusCard) so every tool renders identically. */
+export function McpToolRow({ tool, itemClassName }: { tool: McpServerTool; itemClassName?: string }) {
+  return (
+    <div className={itemClassName ? `settings-card-item ${itemClassName}` : 'settings-card-item'}>
+      <code>{tool.name}</code>
+      {tool.annotations?.readOnly && <span className="settings-tag readonly">read-only</span>}
+      {tool.annotations?.destructive && <span className="settings-tag destructive">destructive</span>}
+      {tool.annotations?.openWorld && <span className="settings-tag openworld">open-world</span>}
+      {tool.description && <span className="settings-card-desc">{tool.description}</span>}
+    </div>
+  )
+}
+
 export function McpToolsList({ tools, loading, error, onClose }: {
   tools: McpServerTool[]
   loading: boolean
@@ -30,13 +45,7 @@ export function McpToolsList({ tools, loading, error, onClose }: {
       {!loading && error && <div className="settings-mcp-tools-error">{error}</div>}
       {!loading && !error && tools.length === 0 && <div className="settings-card-desc">No tools returned by this server.</div>}
       {!loading && !error && tools.map((tool) => (
-        <div key={tool.name} className="settings-card-item settings-mcp-tool-item">
-          <code>{tool.name}</code>
-          {tool.annotations?.readOnly && <span className="settings-tag readonly">read-only</span>}
-          {tool.annotations?.destructive && <span className="settings-tag destructive">destructive</span>}
-          {tool.annotations?.openWorld && <span className="settings-tag openworld">open-world</span>}
-          {tool.description && <span className="settings-card-desc">{tool.description}</span>}
-        </div>
+        <McpToolRow key={tool.name} tool={tool} itemClassName="settings-mcp-tool-item" />
       ))}
     </div>
   )

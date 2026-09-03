@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import { ToastProvider } from './ToastProvider'
 import { SettingsPanel } from './SettingsPanel'
 import type { SessionInfo } from '../types'
@@ -60,14 +61,17 @@ function renderPanel(opts: {
   )
 }
 
-/** The ON/OFF toggle of the apptools card, once the section renders. */
-async function findApptoolsToggle(container: HTMLElement) {
+/** The action button (Enable/Disable) of the apptools card, once the section
+ *  renders. Mirrors the MCP server card, so the label is state-dependent. */
+async function findApptoolsAction(container: HTMLElement) {
   await waitFor(() => expect(container.textContent).toContain('apptools'))
   const card = container.querySelector('.settings-first-party-card')
   expect(card, 'first-party card').toBeDefined()
-  const toggle = card!.querySelector('.settings-first-party-toggle')
-  expect(toggle, 'first-party ON/OFF toggle').toBeDefined()
-  return toggle!.textContent
+  const action = [...card!.querySelectorAll('button')].find(
+    (b) => b.textContent === 'Enable' || b.textContent === 'Disable',
+  )
+  expect(action, 'first-party Enable/Disable action').toBeDefined()
+  return action!.textContent
 }
 
 describe('SettingsPanel first-party card display chain', () => {
@@ -88,7 +92,7 @@ describe('SettingsPanel first-party card display chain', () => {
       session: mkSession(),
       globalPrefs: { firstPartyTools: { apptools: { enabled: false } } },
     })
-    await expect(findApptoolsToggle(container)).resolves.toBe('OFF')
+    await expect(findApptoolsAction(container)).resolves.toBe('Enable')
   })
 
   it('prefers a session override over the global map', async () => {
@@ -96,7 +100,7 @@ describe('SettingsPanel first-party card display chain', () => {
       session: mkSession({ apptools: true }),
       globalPrefs: { firstPartyTools: { apptools: { enabled: false } } },
     })
-    await expect(findApptoolsToggle(container)).resolves.toBe('ON')
+    await expect(findApptoolsAction(container)).resolves.toBe('Disable')
   })
 
   it('falls back to the live tool status when the global map lacks the name', async () => {
@@ -104,10 +108,10 @@ describe('SettingsPanel first-party card display chain', () => {
       session: mkSession(),
       globalPrefs: { firstPartyTools: {} },
     })
-    await expect(findApptoolsToggle(container)).resolves.toBe('ON')
+    await expect(findApptoolsAction(container)).resolves.toBe('Disable')
   })
 
-  it('expands the embedded tool listing on "List tools" (read-only badge on git_status)', async () => {
+  it('expands the embedded tool listing inline on chevron (read-only badge on git_status)', async () => {
     const { container } = renderPanel({
       session: mkSession(),
       globalPrefs: { firstPartyTools: {} },
@@ -116,12 +120,63 @@ describe('SettingsPanel first-party card display chain', () => {
     expect(container.textContent).not.toContain('git_status')
 
     const card = container.querySelector('.settings-first-party-card')!
-    const listBtn = [...card.querySelectorAll('button')].find((b) => b.textContent === 'List tools')
-    expect(listBtn, 'List tools button').toBeDefined()
-    fireEvent.click(listBtn!)
+    const expand = card.querySelector('button[aria-label="Expand"]') as HTMLButtonElement | null
+    expect(expand, 'expand chevron').toBeDefined()
+    fireEvent.click(expand!)
 
     await waitFor(() => expect(container.textContent).toContain('git_status'))
     expect(container.textContent).toContain('git_stage')
     expect(card.querySelector('.settings-tag.readonly')).toBeDefined()
+  })
+
+  it('shows a pending spinner while the toggle round-trip is in flight', async () => {
+    let release!: (value: unknown) => void
+    ;(api.post as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () =>
+        new Promise((res) => {
+          release = res
+        }),
+    )
+    // Stateful wrapper: applies onSessionUpdate responses so the card really
+    // reconciles (renderPanel's no-op updater would hide a regression where
+    // the toggle response is never reflected in the card state).
+    const Harness = () => {
+      const [session, setSession] = useState(mkSession())
+      return (
+        <ToastProvider>
+          <SettingsPanel
+            session={session}
+            globalPrefs={
+              {
+                showPinnedUserMessage: true,
+                autoRecap: true,
+                firstPartyTools: {},
+              } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
+            }
+            onClose={() => {}}
+            onSessionUpdate={setSession}
+            tabRequest={{ tab: 'mcp', nonce: 1 }}
+          />
+        </ToastProvider>
+      )
+    }
+    const { container } = render(<Harness />)
+    await waitFor(() => expect(container.textContent).toContain('apptools'))
+    const card = container.querySelector('.settings-first-party-card')!
+    const disable = [...card.querySelectorAll('button')].find((b) => b.textContent === 'Disable')
+    expect(disable, 'Disable action').toBeDefined()
+    fireEvent.click(disable!)
+
+    await waitFor(() => expect(card.querySelector('.settings-card-pending')).toBeDefined())
+
+    // Release the round-trip inside act so the response is applied: the
+    // returned session carries the override, so the card must flip to Enable
+    // and expose the Reset (inherit global) link.
+    await act(async () => {
+      release({ session: mkSession({ apptools: false }) })
+    })
+    expect(card.querySelector('.settings-card-pending')).toBeNull()
+    expect([...card.querySelectorAll('button')].some((b) => b.textContent === 'Enable')).toBe(true)
+    expect(card.textContent).toContain('Reset (inherit global)')
   })
 })
