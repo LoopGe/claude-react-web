@@ -163,16 +163,11 @@ describe('registerHostApi — sessions.subscribe', () => {
       configurationProps: [],
     })
 
-    // Test successful subscribe
-    await expect(handlers['sessions.subscribe']({ sessionId: 's1' })).resolves.toMatchObject({
-      ok: true,
-      unsubscribe: expect.any(Function)
-    })
+    // subscribe returns { ok: true } — the host-side release handle does not
+    // cross the JSON-RPC wire; a plugin releases via sessions.unsubscribe.
+    await expect(handlers['sessions.subscribe']({ sessionId: 's1' })).resolves.toEqual({ ok: true })
 
-    // Test unsubscribe works
-    const subResult = await handlers['sessions.subscribe']({ sessionId: 's1' }) as { ok: true; unsubscribe: () => void } | { ok: false; error: string }
-    if ('unsubscribe' in subResult && subResult.ok) {
-      subResult.unsubscribe()
-    }
+    // unsubscribe is a distinct host call returning { ok: true }.
+    await expect(handlers['sessions.unsubscribe']({ sessionId: 's1' })).resolves.toEqual({ ok: true })
   })
 })

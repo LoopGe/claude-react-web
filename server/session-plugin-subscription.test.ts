@@ -47,4 +47,20 @@ describe('SessionSubscriptionRegistry', () => {
     expect(session.pluginSubscribers.size).toBe(0)
     expect(endSpy).toHaveBeenCalled()
   })
+
+  it('unsubscribe releases only the targeted peer+session subscription', () => {
+    const session = fakeSession(null)
+    const peer = fakePeer()
+    const r = new SessionSubscriptionRegistry({ getSession: (id) => (id === 's1' ? session : undefined) })
+    expect(r.subscribe('s1', peer).ok).toBe(true)
+    expect(session.pluginSubscribers.size).toBe(1)
+
+    r.unsubscribe(peer, 's1')
+    expect(session.pluginSubscribers.size).toBe(0)
+
+    // Idempotent: releasing an absent subscription must not throw.
+    r.unsubscribe(peer, 's1')
+    // dropPeer over an already-released registry must be safe too.
+    expect(() => r.dropPeer(peer)).not.toThrow()
+  })
 })

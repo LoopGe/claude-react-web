@@ -7,10 +7,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
  *  (shouldBroadcastMessage), so it aligns with BROADCAST_SYSTEM_SUBTYPES/base
  *  frames — deliberately the same content a browser tab's subscribers
  *  fan-out sees. */
-export type SessionEventOut =
-  | { kind: 'message'; sessionId: string; message: SDKMessage }
-  | { kind: 'session-cleared'; sessionId: string }
-  | { kind: 'subscription-ended'; sessionId: string; reason: 'session-gone' | 'plugin-disabled' | 'peer-closed' }
+export type SessionEventOut = { kind: 'message'; sessionId: string; message: SDKMessage }
 
 /** Routes clock-ticked end() back so we can drop the registration record. */
 interface RegistryEntry {
@@ -65,6 +62,20 @@ export class SessionSubscriptionRegistry {
   dropPeer(peer: RpcPeer): void {
     for (const entry of [...this.entries]) {
       if (entry.peer === peer) entry.release()
+    }
+  }
+
+  /** Release a single subscription for `peer` on `sessionId`. The JSON-RPC
+   *  wire cannot carry a function back to the plugin (the `unsubscribe`
+   *  closure is host-side), so plugins release proactively via a
+   *  `sessions.unsubscribe` host call that maps here. No-op when the peer
+   *  has no subscription to that session. */
+  unsubscribe(peer: RpcPeer, sessionId: string): void {
+    for (const entry of this.entries) {
+      if (entry.peer === peer && entry.sessionId === sessionId) {
+        entry.release()
+        return
+      }
     }
   }
 

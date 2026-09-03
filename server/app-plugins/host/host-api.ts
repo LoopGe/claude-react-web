@@ -123,6 +123,10 @@ export function registerHostApi(peer: RpcPeer, ctx: HostContext): {
     const { sessionId } = requireParams(p, ['sessionId']) as { sessionId: string }
     return sessions.subscribe(sessionId)
   })
+  peer.registerHandler('sessions.unsubscribe', async (p) => {
+    const { sessionId } = requireParams(p, ['sessionId']) as { sessionId: string }
+    return sessions.unsubscribe(sessionId)
+  })
   peer.registerHandler('config.get', async () => {
     // No permission check: a plugin reads only its OWN declared config.
     // Defaults are applied against the manifest properties so a config that
