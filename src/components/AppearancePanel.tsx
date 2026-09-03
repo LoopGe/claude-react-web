@@ -15,8 +15,11 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
 import type { Skin, Theme } from '../utils/theme'
+import { isBackgroundLocked } from '../utils/theme'
 import { ACCENT_COLORS } from '../theme'
+import type { BackgroundSetting } from '../theme'
 import { AccentSwatchGrid } from './AccentPicker'
+import { BackgroundPicker } from './BackgroundPicker'
 import { IconSparkles, IconSun, IconMoon, IconMonitor, IconCheck } from './icons/ToolIcons'
 
 interface Props {
@@ -26,6 +29,8 @@ interface Props {
   onSkin: (skin: Skin) => void
   onMode: (mode: Theme) => void
   onAccent: (color: string) => void
+  background?: BackgroundSetting
+  onBackgroundChange?: (next: BackgroundSetting) => void
   className?: string
 }
 
@@ -66,6 +71,8 @@ function AppearancePopover({
   onSkin,
   onMode,
   onAccent,
+  background = { pref: { kind: 'none' }, opacity: 0.85 },
+  onBackgroundChange = () => {},
   anchor,
   onClose,
 }: {
@@ -75,6 +82,8 @@ function AppearancePopover({
   onSkin: (skin: Skin) => void
   onMode: (mode: Theme) => void
   onAccent: (color: string) => void
+  background?: BackgroundSetting
+  onBackgroundChange?: (next: BackgroundSetting) => void
   anchor: { x: number; y: number }
   onClose: () => void
 }) {
@@ -211,6 +220,14 @@ function AppearancePopover({
           />
         )}
       </div>
+
+      {/* Background */}
+      {!isBackgroundLocked(skin) && (
+        <div className="appearance-section">
+          <div className="appearance-heading">Background</div>
+          <BackgroundPicker setting={background} onChange={onBackgroundChange} />
+        </div>
+      )}
     </div>,
     document.body,
   )
@@ -223,6 +240,8 @@ export function AppearancePanel({
   onSkin,
   onMode,
   onAccent,
+  background = { pref: { kind: 'none' }, opacity: 0.85 },
+  onBackgroundChange = () => {},
   className,
 }: Props) {
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -260,6 +279,8 @@ export function AppearancePanel({
           onSkin={onSkin}
           onMode={onMode}
           onAccent={onAccent}
+          background={background}
+          onBackgroundChange={onBackgroundChange}
           anchor={anchor}
           onClose={() => {
             setAnchor(null)
