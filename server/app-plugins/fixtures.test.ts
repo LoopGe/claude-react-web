@@ -6,6 +6,8 @@ import { resolve as resolvePath } from 'node:path'
 import { AppPluginStore } from './app-plugin-store.js'
 import { AppPluginManager } from './app-plugin-manager.js'
 import type { SessionManager } from '../session-manager.js'
+import type { Subscriber } from '../session-types.js'
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 
 // Real fixture dirs (repo-rooted). The test installs them by local-directory
 // reference, exactly like the management UI does.
@@ -130,15 +132,15 @@ describe('App Plugins — fixture integration (Stage D)', () => {
 
   it('fixture.session-subscription: receives sessions.event notifications', async () => {
     const testSessionId = 'test-session-123'
+    // Stable session object: the registry attaches its subscriber into THIS
+    // session's pluginSubscribers Map, and the test must read the same Map.
+    const testSession = { id: testSessionId, pluginSubscribers: new Map() }
 
     // Create a mock SessionManager
     const testSmStub = {
       get: (id: string) => {
         if (id === testSessionId) {
-          return {
-            id: testSessionId,
-            pluginSubscribers: new Map(),
-          }
+          return testSession
         }
         return undefined
       },
@@ -182,9 +184,41 @@ describe('App Plugins — fixture integration (Stage D)', () => {
         expect(events).toHaveLength(0)
       }
 
-      // The fixture correctly implements the sessions.event handler
-      // and will buffer any events received via JSON-RPC notifications
-      // This is validated by the fact that the plugin exists and responds to commands
+      // The first command drove the fixture to call `sessions.subscribe` for
+      // test-session-123, which attaches a subscriber into the fake session's
+      // pluginSubscribers. Verify a subscriber actually exists, then push an
+      // assistant SDKMessage through it — this must produce a `sessions.event`
+      // notification that the host forwards to the fixture's child subprocess.
+      const subscribed = testSmStub.get(testSessionId) as unknown as { pluginSubscribers: Map<string, Subscriber> }
+      const subscriber = subscribed.pluginSubscribers.values().next().value as Subscriber
+      expect(subscriber).toBeDefined()
+      subscriber.push({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'HELLO-EVENT' }] },
+      } as unknown as SDKMessage)
+
+      // Second command: the fixture's buffer now holds the sessions.event
+      // notification whose payload contains HELLO-EVENT.
+      const secondResult = await manager.executeCommand({
+        pluginId: 'fixture.session-subscription',
+        commandId: 'fixture.session-subscription.subscribe',
+        context: {
+          source: 'session',
+          invocationId: 'test-2',
+          commandId: 'fixture.session-subscription.subscribe',
+          invokedAt: Date.now(),
+          // @ts-expect-error: Session context has extra properties for testing
+          session: { id: testSessionId }
+        }
+      }) as any
+      expect(secondResult.type).toBe('notification')
+      if (secondResult.type === 'notification') {
+        const events = JSON.parse((secondResult.content as { text: string }).text) as unknown[]
+        expect(events.length).toBeGreaterThan(0)
+        expect(JSON.stringify(events)).toContain('HELLO-EVENT')
+      }
+
+      // The plugin is active and buffered a session event that reached it.
       expect(manager.get('fixture.session-subscription')?.runtimeState).toBe('active')
     } finally {
       await manager.shutdown().catch(() => {})
