@@ -931,6 +931,36 @@
   box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
+/* ── glow · settings controls (Server tab) ───────────────────────
+   The Server-tab controls (carded groups, stepper, segmented, switch)
+   only inherit the skin's flat tokens, so under glow they'd read as
+   default-skin widgets next to the modal's glowing buttons / focus
+   rings. Same vocabulary as the rules above: accent-tinted borders,
+   a faint white top sheen on the raised wells, and accent halos.
+   Tone-agnostic (color-mix + effect tokens) so dark and light share it. */
+[data-skin="glow"] .settings-group {
+  background-image: var(--surface-gradient);
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--border));
+}
+[data-skin="glow"] .stepper,
+[data-skin="glow"] .segmented {
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent);
+}
+[data-skin="glow"] .stepper-btn:hover:not(:disabled) {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+[data-skin="glow"] .stepper-btn:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+[data-skin="glow"] .segmented-btn.active {
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+[data-skin="glow"] .settings-switch.on {
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
 /* ════════════════════════════════════════════════════════════════════
    ANTHROPIC SKIN  ([data-skin="anthropic"])
    ────────────────────────────────────────────────────────────────────

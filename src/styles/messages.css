@@ -752,6 +752,201 @@
 .settings-reset-link:hover { opacity: 0.8; }
 .settings-reset-link:disabled { opacity: 0.5; cursor: default; text-decoration: none; }
 
+/* ── Global Settings · reusable setting cards ────────────────────
+   Carded groups. Each row has a left text column (title + optional
+   description) and a right-aligned control — stepper, segmented or
+   switch — so every row in a tab lines up. Used by the Server tab and
+   shared by the Logs / MCP switches. */
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.settings-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  overflow: hidden;
+}
+.settings-group-head {
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background: var(--bg-elev);
+}
+.settings-group-head h4 {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+}
+.settings-group-desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+}
+.settings-row + .settings-row { border-top: 1px solid var(--border); }
+.settings-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-row-title { font-size: 13px; color: var(--fg); }
+.settings-row-hint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+.settings-row-hint code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-3xs);
+  padding: 0 3px;
+}
+.settings-row-control { flex-shrink: 0; }
+
+/* Stepper: [−] value [unit] [+] — no native spinner. */
+.stepper {
+  display: inline-flex;
+  align-items: stretch;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-1);
+  overflow: hidden;
+}
+.stepper-btn {
+  width: 26px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.stepper-btn:hover:not(:disabled) { background: var(--bg-elev-2); color: var(--fg); }
+.stepper-btn:active:not(:disabled) { background: var(--btn-hover-bg); }
+.stepper-btn:disabled { opacity: 0.35; cursor: default; }
+.stepper-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  z-index: 1;
+}
+.stepper-input {
+  width: 46px;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  text-align: center;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  -moz-appearance: textfield;
+}
+.stepper-input::-webkit-outer-spin-button,
+.stepper-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper-input:focus { outline: none; }
+.stepper-suffix {
+  align-self: center;
+  padding-right: 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* Segmented control (Max open panels). */
+.segmented {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-elev-1);
+}
+.segmented-btn {
+  min-width: 28px;
+  padding: 5px 9px;
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  position: relative;
+  transition:
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    background var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.segmented-btn:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 22%;
+  bottom: 22%;
+  width: 1px;
+  background: var(--border);
+}
+.segmented-btn:hover { color: var(--fg); background: var(--bg-elev-2); }
+.segmented-btn.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-weight: 600;
+}
+.segmented-btn.active::after { display: none; }
+.segmented-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Switch (boolean row control). */
+.settings-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--border);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.settings-switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-circle);
+  background: var(--bg);
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.settings-switch.on { background: var(--accent); }
+.settings-switch.on .settings-switch-thumb { transform: translateX(14px); }
+.settings-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* Sandbox advanced (network / filesystem) overrides — a bordered, muted
    collapsible so the extra fields don't crowd the three primary toggles. */
 .settings-advanced {

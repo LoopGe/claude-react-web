@@ -5,7 +5,6 @@ import { cloneElement, isValidElement, lazy, Suspense, useCallback, useEffect, u
 import { api } from '../hooks/useApi'
 import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
-import { formatBytes } from '../utils/format'
 import { IconX, IconCheck, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconFileText, IconSparkles, IconTerminal } from './icons/ToolIcons'
 import { EmptyState } from './EmptyState'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
@@ -18,6 +17,7 @@ import { useMergedRef } from '../utils/mergedRef'
 import { useToast } from '../hooks/useToast'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { DirectoryPicker } from './DirectoryPicker'
+import { Switch } from './Switch'
 import { Overlay } from './Overlay'
 import { McpToolsList, firstPartyToolDefsAsMcpTools } from './McpToolsList'
 import type { FirstPartyToolServerInfo } from '../../shared/first-party'
@@ -522,6 +522,13 @@ export function GlobalSettingsModal({
 
 // ── Tab contents ─────────────────────────────────────────────────
 
+// Raw config values for the two "unit" fields are bytes / milliseconds, but a
+// human edits them in MB / minutes. Rounding only affects a value the user
+// actually touches — untouched values are written back verbatim by the Save
+// handler, so nothing is lost just by opening the modal.
+const MB = 1024 * 1024
+const MIN_MS = 60 * 1000
+
 function ServerTab({
   maxUploadBytes, historyCap, maxOpenPanels, workingStuckMs,
   showPinnedUserMessage, autoRecap, allowSensitivePathEdits,
@@ -545,100 +552,256 @@ function ServerTab({
   onAutoRecapChange: (v: boolean) => void
   onAllowSensitivePathEditsChange: (v: boolean) => void
 }) {
+  const uploadMb = Math.round(maxUploadBytes / MB)
+  const stuckMin = Math.round(workingStuckMs / MIN_MS)
+
   return (
-    <>
-      <NumberField
-        label="Max Upload Size (bytes)"
-        hint={`Current: ${formatBytes(maxUploadBytes)}. Default: 25 MB`}
-        value={maxUploadBytes}
-        onChange={onMaxUploadBytesChange}
-        min={0}
-      />
-      <NumberField
-        label="History Cap"
-        hint="Max messages kept in memory per session"
-        value={historyCap}
-        onChange={onHistoryCapChange}
-        min={1}
-      />
-      <NumberField
-        label="Max Open Panels"
-        hint="Side-by-side chat panels (2-5)"
-        value={maxOpenPanels}
-        onChange={onMaxOpenPanelsChange}
-        min={2}
-        max={5}
-      />
-      <NumberField
-        label="Working Stuck Timeout (ms)"
-        hint={workingStuckMs > 0 ? `~${Math.round(workingStuckMs / 60000)} min. 0 = disabled` : 'Disabled'}
-        value={workingStuckMs}
-        onChange={onWorkingStuckMsChange}
-        min={0}
-      />
-      <div className="settings-section">
-        <h4>Preferences (global defaults)</h4>
-        <span className="hint" style={{ display: 'block', marginBottom: 8 }}>
-          Defaults for every session. Individual sessions can override these in
-          their own Settings panel.
-        </span>
-        <div className="settings-field">
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={showPinnedUserMessage}
-              onChange={(e) => onShowPinnedUserMessageChange(e.target.checked)}
-            />
-            <span>Show pinned "current question" header</span>
-          </label>
-          <span className="hint">
-            Pins the user message of the turn in view at the top of the chat
-            when it scrolls out of sight.
+    <div className="settings-stack">
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Limits</h4>
+          <span className="settings-group-desc">Server-wide caps applied to every session.</span>
+        </div>
+        <ServerRow
+          title="Max upload size"
+          hint="Largest pasted image or uploaded file accepted. 0 = no override (server default 25 MB)."
+        >
+          <Stepper
+            ariaLabel="Max upload size, in megabytes"
+            value={uploadMb}
+            min={0}
+            step={1}
+            suffix="MB"
+            onChange={(mb) => onMaxUploadBytesChange(mb * MB)}
+          />
+        </ServerRow>
+        <ServerRow
+          title="History cap"
+          hint="Messages kept in memory per session. Server default 500."
+        >
+          <Stepper
+            ariaLabel="History cap"
+            value={historyCap}
+            min={1}
+            step={100}
+            onChange={onHistoryCapChange}
+          />
+        </ServerRow>
+        <ServerRow
+          title="Working-stuck timeout"
+          hint={workingStuckMs > 0
+            ? `Auto-interrupt a session that stays mid-turn without output for ~${stuckMin} min. 0 = disabled.`
+            : 'Auto-interrupt is off (0).'}
+        >
+          <Stepper
+            ariaLabel="Working-stuck timeout, in minutes"
+            value={stuckMin}
+            min={0}
+            step={5}
+            suffix="min"
+            onChange={(min) => onWorkingStuckMsChange(min * MIN_MS)}
+          />
+        </ServerRow>
+        <ServerRow
+          title="Max open panels"
+          hint="How many side-by-side chat panels you can open at once."
+        >
+          <Segmented
+            ariaLabel="Max open panels"
+            value={maxOpenPanels}
+            options={[2, 3, 4, 5]}
+            onChange={onMaxOpenPanelsChange}
+          />
+        </ServerRow>
+      </section>
+
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Preferences</h4>
+          <span className="settings-group-desc">
+            Defaults for every session. Individual sessions can override these in
+            their own Settings panel.
           </span>
         </div>
-        <div className="settings-field">
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={autoRecap}
-              onChange={(e) => onAutoRecapChange(e.target.checked)}
-            />
-            <span>Auto-generate session recap</span>
-          </label>
-          <span className="hint">
-            Automatically produces a session summary after the conversation has
-            been idle. Manual recap (Alt+R) still works when this is off.
+        <ServerRow
+          title="Show pinned “current question” header"
+          hint="Pins the user message of the turn in view at the top of the chat when it scrolls out of sight."
+        >
+          <Switch
+            label="Show pinned “current question” header"
+            checked={showPinnedUserMessage}
+            onChange={onShowPinnedUserMessageChange}
+          />
+        </ServerRow>
+        <ServerRow
+          title="Auto-generate session recap"
+          hint="Automatically produces a session summary after the conversation has been idle. Manual recap (Alt+R) still works when this is off."
+        >
+          <Switch
+            label="Auto-generate session recap"
+            checked={autoRecap}
+            onChange={onAutoRecapChange}
+          />
+        </ServerRow>
+      </section>
+
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Permissions</h4>
+          <span className="settings-group-desc">
+            Relaxes the sensitive-path safety check that still prompts in
+            acceptEdits and bypassPermissions modes.
           </span>
         </div>
-      </div>
-      <div className="settings-section">
-        <h4>Permissions (global)</h4>
-        <span className="hint" style={{ display: 'block', marginBottom: 8 }}>
-          Relaxes the sensitive-path safety check that still prompts in
-          acceptEdits and bypassPermissions modes.
-        </span>
-        <div className="settings-field">
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={allowSensitivePathEdits}
-              onChange={(e) => onAllowSensitivePathEditsChange(e.target.checked)}
-            />
-            <span>Allow editing sensitive paths in auto-approve modes</span>
-          </label>
-          <span className="hint">
-            When on, acceptEdits and bypassPermissions also auto-approve edits
+        <ServerRow
+          title="Allow editing sensitive paths in auto-approve modes"
+          hint={<>When on, acceptEdits and bypassPermissions also auto-approve edits
             and commands targeting <code>.git/</code>, <code>.claude/</code>,{' '}
             <code>.vscode/</code>, <code>.idea/</code>, and shell/git config
             files instead of prompting. Off (default) keeps the safe behavior.
             Plan review (ExitPlanMode) and questions (AskUserQuestion) still
-            prompt regardless.
-          </span>
-        </div>
-      </div>
-    </>
+            prompt regardless.</>}
+        >
+          <Switch
+            label="Allow editing sensitive paths in auto-approve modes"
+            checked={allowSensitivePathEdits}
+            onChange={onAllowSensitivePathEditsChange}
+          />
+        </ServerRow>
+      </section>
+    </div>
   )
 }
+
+/** Row layout shared by every Server-tab setting: a left text column
+ *  (title + optional description) and a right-aligned control. */
+function ServerRow({ title, hint, children }: {
+  title: React.ReactNode
+  hint?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <div className="settings-row">
+      <div className="settings-row-text">
+        <span className="settings-row-title">{title}</span>
+        {hint != null && <span className="settings-row-hint">{hint}</span>}
+      </div>
+      <div className="settings-row-control">{children}</div>
+    </div>
+  )
+}
+
+/** Custom stepper replacing the native number input's spinner. The value is
+ *  still editable by typing; only digits are accepted and the value is
+ *  clamped to [min, max] when it loses focus. */
+function Stepper({
+  value, onChange, min = 0, max, step = 1, suffix, ariaLabel,
+}: {
+  value: number
+  onChange: (v: number) => void
+  min?: number
+  max?: number
+  step?: number
+  suffix?: string
+  ariaLabel: string
+}) {
+  // null = not editing → show the prop value. While focused/typing we keep the
+  // user's raw text so characters don't jump around as the prop updates.
+  const [draft, setDraft] = useState<string | null>(null)
+  const displayed = draft ?? String(value)
+
+  const clamp = (n: number) => {
+    let v = Number.isFinite(n) ? Math.round(n) : min
+    if (v < min) v = min
+    if (max !== undefined && v > max) v = max
+    return v
+  }
+  const commit = (raw: number) => {
+    const next = clamp(raw)
+    setDraft(null)
+    onChange(next)
+  }
+  const numericDraft = () => {
+    if (draft == null || draft === '') return NaN
+    return Number(draft)
+  }
+  const curValue = Number.isNaN(numericDraft()) ? value : clamp(numericDraft())
+
+  return (
+    <div className="stepper">
+      <button
+        type="button"
+        className="stepper-btn"
+        aria-label={`Decrease ${ariaLabel}`}
+        disabled={value <= min}
+        onClick={() => commit(curValue - step)}
+      >−</button>
+      <input
+        className="stepper-input"
+        type="text"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        autoComplete="off"
+        spellCheck={false}
+        aria-label={ariaLabel}
+        value={displayed}
+        onChange={(e) => {
+          // Digits only — this is a non-negative integer control.
+          const raw = e.target.value.replace(/\D/g, '')
+          setDraft(raw)
+          if (raw !== '') {
+            const n = Number(raw)
+            if (n >= min && (max === undefined || n <= max)) onChange(n)
+          }
+        }}
+        onBlur={() => {
+          // Focus-then-blur without typing shouldn't touch the value. Only an
+          // actual edit (draft set) is committed; an emptied field is restored
+          // rather than snapped to the min.
+          if (draft === null) return
+          if (draft === '') { setDraft(null); return }
+          commit(Number(draft))
+        }}
+      />
+      {suffix && <span className="stepper-suffix">{suffix}</span>}
+      <button
+        type="button"
+        className="stepper-btn"
+        aria-label={`Increase ${ariaLabel}`}
+        disabled={max !== undefined && value >= max}
+        onClick={() => commit(curValue + step)}
+      >+</button>
+    </div>
+  )
+}
+
+/** Compact segmented picker for small ordinal ranges (e.g. 2–5 panels). */
+function Segmented<T extends number>({
+  value, options, onChange, ariaLabel,
+}: {
+  value: T
+  options: readonly T[]
+  onChange: (v: T) => void
+  ariaLabel: string
+}) {
+  return (
+    <div className="segmented" role="radiogroup" aria-label={ariaLabel}>
+      {options.map((opt) => (
+        <button
+          key={opt}
+          type="button"
+          role="radio"
+          aria-checked={value === opt}
+          className={`segmented-btn${value === opt ? ' active' : ''}`}
+          onClick={() => onChange(opt)}
+        >
+          {opt}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 
 function SkillsTab({
   cwd,
@@ -2043,25 +2206,5 @@ function Field({ label, hint, controlId, children }: { label: string; hint?: str
       {control}
       {hint && <span className="hint">{hint}</span>}
     </div>
-  )
-}
-
-function NumberField({
-  label, hint, value, onChange, min, max,
-}: {
-  label: string; hint?: string; value: number
-  onChange: (v: number) => void; min?: number; max?: number
-}) {
-  return (
-    <Field label={label} hint={hint}>
-      <input
-        className="input"
-        type="number"
-        value={value}
-        onChange={(e) => onChange(Math.round(Number(e.target.value) || 0))}
-        min={min}
-        max={max}
-      />
-    </Field>
   )
 }
