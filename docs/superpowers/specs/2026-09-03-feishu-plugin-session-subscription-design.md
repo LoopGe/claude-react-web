@@ -21,8 +21,10 @@ claude-react-web 的 App Plugin 框架目前只能**入站**驱动原生会话�
 
 ### 飞书插件（第二优先级，框架能力的消费方）
 
-- **Goal:** `plugins/feishu/` 后台服务 + 清单，提供一个**最小但完整**的飞书桥接闭环：飞书文本消息 → 桥接到指定的原生会话 → 会话增量（Claude 回话）/ 进度 → 飞书侧渲染并回发。
+- **Goal:** 飞书插件以**独立 GitHub marketplace repo** 分发（**不是** claude-react-web 仓库内的官方 `plugins/`），经 marketplace 机制按需安装；用户在主仓 UI 添加该 repo 后安装插件。提供一个**最小但完整**的飞书桥接闭环：飞书文本消息 → 桥接到指定的原生会话 → 会话增量（Claude 回话）/ 进度 → 飞书侧渲染并回发。
 - **Goal:** v1 只做**双向纯文本 + 文本回话**；映射粒度 = **一飞书聊天 ⇔ 一原生会话**（映射表）。
+- **Goal（框架能力的可运行验收）:** claude-react-web 主仓保留一个**最小出站订阅消费 fixture**（`fixtures/app-plugins/fixture.session-subscription/`），**不连飞书**，作为 `sessions.subscribe` 的可运行验收 + 协议契约测试——宿主能力（Task 1–4）的验收不依赖独立插件是否实装，也让 `sessions.event` 载荷的序列化/推送契约有回归兜底。
+- **版本契约:** 插件 manifest `engines.claudeReactWeb` 需声明 ≥ 含 `sessions.subscribe` 的宿主版本；低于该版本的宿主应拒绝安装/激活（插件运行时依赖此能力）。
 - **Non-goal (v1 显式排除，见 v2 section):** 飞书消息触发的工具权限审批（Bash/写文件）；图片 / 文件资源收发（resource download）；进度预览卡片；斜杠命令；群聊多用户 @ 与身份区分；webhook 私有化部署模式；自定义 iframe UI 面板（宿主框架后续能力，非本插件）。
 
 ## Architecture
@@ -56,17 +58,17 @@ claude-react-web 的 App Plugin 框架目前只能**入站**驱动原生会话�
 
 增量事件直接透出已有 `ServerMessage` 帧（`server/ws-protocol.ts` 绑定的、`BROADCAST_SYSTEM_SUBTYPES` 允许的那些），外加 `replay-done` / `message-consumed` 这类让插件判断"轮到我了 / 这轮还没开始"的信号。框架能力不与浏览器对齐一套专有类型，避免双轨。
 
-载体（`shared/app-plugins/` 新增，避免 `shared/ws-protocol.ts` 膨出插件耦合）：
+载体（**server 侧**，见下方"修正"说明——不在 `shared/`）：
 
 ```ts
-// shared/app-plugins/session-events.ts
-export type SessionEventOutFrame =
-  | { kind: 'message'; message: /* ServerMessage 裁剪结构 */ }
-  | { kind: 'replay-done' }
-  | { kind: 'message-consumed' }
-  | { kind: 'session-cleared' }
-  | { kind: 'subscription-ended'; reason: 'session-gone' | 'plugin-disabled' | 'peer-closed' }
+// server/session-plugin-subscription.ts —— 修订：载荷放 server 侧
+export type SessionEventOut =
+  | { kind: 'message'; sessionId: string; message: SDKMessage }
+  | { kind: 'session-cleared'; sessionId: string }
+  | { kind: 'subscription-ended'; sessionId: string; reason: 'session-gone' | 'plugin-disabled' | 'peer-closed' }
 ```
+
+> **修正 vs 初稿**：初稿把 `SessionEventOutFrame` 放到 `shared/app-plugins/`。review 时发现该载荷携带 `SDKMessage`（`@anthropic-ai/claude-agent-sdk` 类型），而 `shared/` 会被浏览器 bundle import，绝不能引入 SDK 类型。故载荷与注册表放入 server 端 `server/session-plugin-subscription.ts`，浏览器端不 import。这也是"复用 pump 已有的过滤消息流"的直接体现：`message` 帧就是 pump 里 `shouldBroadcastMessage` 放行的原始 `SDKMessage`，与 WS `subscribers` 收到的同源。
 
 ### 2. `SessionAdapter.subscribe` + 订阅注册表
 
@@ -97,9 +99,11 @@ export class SessionSubscriptionRegistry {
 - **即时回放缓冲**：插件常是 `onStartup` 常驻，可能错过会话中断期间产生的帧。subscribe 时若会话活跃，把 pump 当前未落盘的增量（或磁盘上最近一小段）回放给新订阅者（对齐现有 `replay`/`replay-done` 语义）。回放策略默认**从当前状态开始，不回溯历史 transcript**（保持"外围工具"边界）。
 - **清理路径**：`dropPeer`（插件进程 exit / disable / uninstall）；`dropSession`（会话删除，`session-manager` 删除会话时调用注册表）；订阅内事件游标失效（session-cleared）自然断链。
 
-### 4. `plugin-runtime.ts` 子进程端
+### 4. 子进程端接收 `sessions.event`
 
-子进程端注册 `sessions.event` notification handler，把帧派发给插件注册的回调（插件 SDK 侧暴露一个 `sessions.onEvent` / connection 事件的订阅面）。与现有 `app.event`（插件→宿主）方向互补：这是**宿主→插件**的第二条数据通路，需在 RPC 协议文档标注。
+> **修正 vs 初稿**：初稿写"新增宿主文件 `plugin-runtime.ts`"。review 时发现**宿主侧不需要新建文件**——子进程跑的是插件自己的 stdio runtime（宿主 `rpc-peer` 的 `notify()` 把 `sessions.event` 写到子进程 stdout，子进程端 runtime（范式见 `fixtures/app-plugins/_lib/runtime.mjs` 的 inbound-notification 分发）已能接无 id 的 notification 并派发给 handler。因此这个 handler 属于**插件一方**（独立 repo），不在宿主仓库内。
+
+与现有 `app.event`（插件→宿主）方向互补：`sessions.event` 是宿主→插件的第二条数据通路，需在 RPC 协议文档标注。
 
 ### 5. 测试（宿主侧）
 
@@ -110,15 +114,26 @@ export class SessionSubscriptionRegistry {
 
 > 以下为框架能力打通后的第一个消费者。宿主能力未完成前，插件开发可与宿主 stub（本地注入假 `sessions.event`）并行。
 
-### 6. `plugins/feishu/` 结构与清单
+### 6. 独立 marketplace repo 结构（飞书插件）
 
-| 文件 | 职责 |
-|---|---|
-| `crw-plugin.json` | 清单：config properties（appId / appSecret / encryptKey / webhookPort / allowChats / groupOnly）+ 命令（start / stop / status）+ widget 状态指示 |
-| `src/bot/feishu-client.ts` | 飞书长连接封装（`@larksuiteoapi/node-sdk`）：收消息、回文本。WS 为主；v1 不做 webhook。凭证读插件 secrets |
-| `src/bridge.ts` | 映射表（chat_id↔sessionId，存插件 storage）；收到飞书消息 → `sessions.send`；`allow_chat` / `groupOnly` / 群聊 @ 触发过滤 |
-| `src/stream.ts` | `sessions.subscribe` 订阅 + 增量聚合成可读文本（对齐文本块 / end）→ 回发 |
-| `src/main.ts` | 插件入口：`onStartup` 常驻；`config` / `command` / `shutdown` 生命周期挂接 |
+插件是独立 GitHub repo，顶层是 marketplace：根目录可选 `app-plugins-marketplace.json`（目录清单）；省略则由解析器 auto-scan 顶层带 `crw-plugin.json` 的目录。插件子目录预编译 `dist/service.mjs`（宿主不跑构建）。
+
+```
+feishu-plugin/                       <- 独立 GitHub repo（marketplace 源）
+├── app-plugins-marketplace.json     (可选目录清单；省略则 auto-scan)
+└── feishu.bridge/                   <- 插件子目录
+    ├── crw-plugin.json              config(appId/appSecret/allowChats/groupOnly)
+    │                                + commands(status) + widget 状态指示
+    ├── dist/service.mjs             预编译 ESM service（宿主不跑构建）
+    └── src/
+        ├── main.ts                  入口：onStartup 常驻；config/command/shutdown
+        ├── runtime.ts               子进程 stdio runtime（接 sessions.event）
+        ├── bot.ts                   飞书长连接封装(@larksuiteoapi/node-sdk)：收文本/回文本
+        ├── bridge.ts                映射表 chat_id↔sessionId(存 storage)；sessions.send；过滤
+        └── stream.ts                sessions.subscribe + 增量聚合成可读文本 → 回发
+```
+
+安装/分发：marketplace 分发（用户添加 repo URL 安装）。若尚未发布为可 clone URL，用户也可本地 clone 后走 `POST /api/app-plugins/install {source:{type:'local',path}}`。
 
 ### 7. 安全与健壮性
 
@@ -135,12 +150,14 @@ export class SessionSubscriptionRegistry {
 
 ## 交付顺序（框架能力优先）
 
-1. **Phase 0 — 框架能力**（宿主改造，先落地并测试）：
-   `shared/app-plugins/session-events.ts` → 注册表 → `SessionAdapter.subscribe` → `host-api` 处理器 → `plugin-runtime` 子进程 handler → 生命周期清理 → 测试。
-2. **Phase 1 — 插件骨架**：`plugins/feishu/` manifest + 入口 + config 读写 + 命令骨架，对宿主能力用 stub 联调。
-3. **Phase 2 — 飞书机器人**：`bot/feishu-client` 长连接 + 收发 + 消息过滤，本地 fixture 联调。
-4. **Phase 3 — 闭环**：`bridge` + `stream` 接上真实 `sessions.subscribe`，一个端到端"飞书消息 → Claude 回话 → 回发飞书"demo。
-5. **Phase 4 — 打磨**：状态指示 widget、错误回话细分、重连健壮性、文档（宿主能力 + 插件 README）。
+1. **Phase 0 — 框架能力**（宿主改造，先落地并测试，主仓 PR）：
+   `server/session-plugin-subscription.ts`（载荷+注册表）→ `Session.pluginSubscribers` + pump fan-out → `SessionAdapter.subscribe` / `host-api` 处理器 → `PluginProcess` peer 清理 → 测试。
+2. **Phase 0.5 — 验收 fixture**（主仓，本次 PR 自带）：
+   `fixtures/app-plugins/fixture.session-subscription/`——一个不连飞书的出站订阅消费 fixture，作为 `sessions.subscribe` 的可运行验收与 `sessions.event` 协议契约测试。
+3. **Phase 1 — 独立插件 repo 搭建**：独立 GitHub repo（marketplace 源）+ `crw-plugin.json` + 入口 + 子进程 runtime + config/命令骨架，对宿主能力用 stub 联调。
+4. **Phase 2 — 飞书机器人**：`bot.ts` 长连接 + 收发 + 消息过滤，本地 fixture 联调（不连外网）。
+5. **Phase 3 — 闭环**：`bridge` + `stream` 接上真实 `sessions.subscribe`，一个端到端"飞书消息 → Claude 回话 → 回发飞书"demo。
+6. **Phase 4 — 打磨**：状态指示 widget、错误回话细分、重连健壮性、文档（宿主能力 + 插件 README）。
 
 ## v2（显式不做）
 
