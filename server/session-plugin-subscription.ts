@@ -25,7 +25,7 @@ export class SessionSubscriptionRegistry {
 
   constructor(private readonly opts: { getSession: (id: string) => Session | undefined }) {}
 
-  subscribe(sessionId: string, peer: RpcPeer): { ok: true; unsubscribe: () => void } | { ok: false; error: string } {
+  subscribe(sessionId: string, peer: RpcPeer): { ok: true } | { ok: false; error: string } {
     const session = this.opts.getSession(sessionId)
     if (!session) return { ok: false, error: `session not found: ${sessionId}` }
     // @ts-ignore: closed is private per RpcPeer interface but used for state check
@@ -33,7 +33,7 @@ export class SessionSubscriptionRegistry {
 
     const key = `${(peer as any).id ?? 'peer'}:${sessionId}`
     if (session.pluginSubscribers.has(key)) {
-      return { ok: true, unsubscribe: () => {} } // idempotent
+      return { ok: true } // idempotent
     }
 
     let entry: RegistryEntry
@@ -54,7 +54,7 @@ export class SessionSubscriptionRegistry {
         this.notify(sessionId, { kind: 'message', sessionId, message })
       },
     })
-    return { ok: true, unsubscribe: release }
+    return { ok: true }
   }
 
   /** Remove every subscription belonging to one peer (called by
