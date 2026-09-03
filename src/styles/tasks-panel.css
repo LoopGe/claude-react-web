@@ -233,3 +233,122 @@
   white-space: nowrap;
   max-width: 260px;
 }
+
+/* --- per-row "view disk transcript" action ------------------------------ */
+
+.tasks-row-view {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tasks-row-view:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+
+/* --- subagent disk-transcript dialog ------------------------------------ */
+
+.subagent-transcript {
+  display: flex;
+  flex-direction: column;
+  min-width: 320px;
+  max-width: 100%;
+}
+.subagent-transcript-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.subagent-transcript-title {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-transcript-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.subagent-transcript-spacer { flex: 1; }
+.subagent-transcript-close {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.subagent-transcript-close:hover { background: var(--btn-hover-bg); color: var(--fg); }
+.subagent-transcript-body {
+  padding: 10px 14px 14px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 120px;
+  max-height: 62vh;
+}
+.subagent-transcript-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.subagent-transcript-role {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+.subagent-transcript-text {
+  margin: 0;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.subagent-transcript-empty,
+.subagent-transcript-empty-state {
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+.subagent-transcript-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+.subagent-transcript-spin { animation: tasks-row-spin 1s linear infinite; }
+.subagent-transcript-error {
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}

@@ -23,7 +23,8 @@ import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { formatElapsed } from '../utils/format'
 import type { TaskRecordUi } from '../types'
-import { IconX, IconCheck, IconAlertCircle, IconClock, IconLoader, IconTerminal, IconBot, IconListTodo, IconWorkflow } from './icons/ToolIcons'
+import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
+import { IconX, IconCheck, IconAlertCircle, IconClock, IconLoader, IconTerminal, IconBot, IconListTodo, IconWorkflow, IconFileText } from './icons/ToolIcons'
 
 /** Terminal statuses — shared/tasks.ts keeps the canonical list, but
  *  re-declaring the check locally avoids importing server-typed helpers
@@ -76,6 +77,16 @@ export const TasksPanel = memo(function TasksPanel({
   const setPanelOs = useOverlayScrollbar({ autoHide: 'leave' })
   const toast = useToast()
   const [stopping, setStopping] = useState<Set<string>>(new Set())
+  const [transcript, setTranscript] = useState<{ agentId: string; label: string } | null>(null)
+
+  // A terminal SUBAGENT task's taskId is the Agent's agentId (the watcher /
+  // task_started seed it from the SDK), which keys the on-disk
+  // subagents/agent-<id>.jsonl transcript. Only those rows offer the
+  // disk-transcript viewer — shell tasks and ambient housekeeping have none.
+  const openTranscript = useCallback(
+    (task: TaskRecordUi) => setTranscript({ agentId: task.taskId, label: task.description || task.taskId }),
+    [],
+  )
 
   const stopTask = useCallback(
     async (taskId: string) => {
@@ -120,7 +131,7 @@ export const TasksPanel = memo(function TasksPanel({
         {active.length > 0 && (
           <section className="tasks-panel-section">
             {active.map((t) => (
-              <TaskRow key={t.taskId} task={t} stopping={stopping.has(t.taskId)} onStop={stopTask} />
+              <TaskRow key={t.taskId} task={t} stopping={stopping.has(t.taskId)} onStop={stopTask} onViewTranscript={openTranscript} />
             ))}
           </section>
         )}
@@ -128,11 +139,19 @@ export const TasksPanel = memo(function TasksPanel({
           <section className="tasks-panel-section">
             <div className="tasks-panel-section-title">Finished</div>
             {finished.map((t) => (
-              <TaskRow key={t.taskId} task={t} stopping={false} onStop={stopTask} />
+              <TaskRow key={t.taskId} task={t} stopping={false} onStop={stopTask} onViewTranscript={openTranscript} />
             ))}
           </section>
         )}
       </div>
+      {transcript && (
+        <SubagentTranscriptDialog
+          sessionId={sessionId}
+          agentId={transcript.agentId}
+          label={transcript.label}
+          onClose={() => setTranscript(null)}
+        />
+      )}
     </aside>
   )
 })
@@ -141,12 +160,17 @@ const TaskRow = memo(function TaskRow({
   task,
   stopping,
   onStop,
+  onViewTranscript,
 }: {
   task: TaskRecordUi
   stopping: boolean
   onStop: (taskId: string) => void
+  onViewTranscript?: (task: TaskRecordUi) => void
 }) {
   const terminal = isTerminal(task.status)
+  // Only finished subagent rows can open the disk-transcript viewer: their
+  // taskId is the Agent's agentId that keys subagents/agent-<id>.jsonl.
+  const canViewTranscript = terminal && (task.taskType === 'subagent' || Boolean(task.subagentType))
   return (
     <div className={`tasks-row${terminal ? ' tasks-row-terminal' : ''}${task.status === 'failed' || task.status === 'killed' ? ' tasks-row-error' : ''}`}>
       <span className="tasks-row-icon">
@@ -177,6 +201,17 @@ const TaskRow = memo(function TaskRow({
         <span className="tasks-row-timer tasks-row-timer-final">
           {formatElapsed(Math.max(0, task.endedAt - task.startedAt))}
         </span>
+      )}
+      {canViewTranscript && onViewTranscript && (
+        <button
+          type="button"
+          className="tasks-row-view"
+          title={`View on-disk transcript: ${task.description || task.taskId}`}
+          aria-label="View subagent transcript"
+          onClick={() => onViewTranscript(task)}
+        >
+          <IconFileText size={12} />
+        </button>
       )}
       {!terminal && (
         <button
