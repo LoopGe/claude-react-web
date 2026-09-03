@@ -130,12 +130,6 @@ describe('App Plugins — fixture integration (Stage D)', () => {
 
   it('fixture.session-subscription: receives sessions.event notifications', async () => {
     const testSessionId = 'test-session-123'
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const testEvent = {
-      kind: 'message',
-      sessionId: testSessionId,
-      message: { role: 'assistant', content: [{ type: 'text', text: 'test message' }] }
-    }
 
     // Create a mock SessionManager
     const testSmStub = {
