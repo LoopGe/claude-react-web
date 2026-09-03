@@ -31,6 +31,25 @@ describe('ClaudeSessionHandle.setMaxThinkingTokens', () => {
   })
 })
 
+describe('ClaudeSessionHandle.destroy', () => {
+  it('closes the underlying SDK Query once (idempotent on repeated destroy)', () => {
+    const close = vi.fn()
+    const handle = makeHandle({ close } as Partial<Query>)
+    handle.destroy()
+    handle.destroy()
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not throw when the SDK Query is already gone / close throws', () => {
+    const close = vi.fn(() => {
+      throw new Error('already closed')
+    })
+    const handle = makeHandle({ close } as Partial<Query>)
+    expect(() => handle.destroy()).not.toThrow()
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('ClaudeSessionHandle.interrupt', () => {
   it('forwards a plain interrupt as undefined (identical on the wire — the SDK builds the control request conditionally)', async () => {
     const interrupt = vi.fn(async () => undefined)

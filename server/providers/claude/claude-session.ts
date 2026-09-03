@@ -77,6 +77,20 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     this.isClosed = true
     this.input.end()
     this.abortController.abort()
+    // Query.close() is the SDK's authoritative resource cleanup: flush the
+    // transcript-mirror batcher, abort every in-flight cancel controller, close
+    // the transport (stdin EOF → grace → SIGTERM/SIGKILL) and reject pending
+    // control responses. input.end() + abortController.abort() above ask the
+    // SDK to wind down; this is the belt-and-suspenders call that guarantees
+    // MCP transports and pending requests are released even if the graceful
+    // path stalls. Idempotent in the SDK (performCleanup guards on a
+    // cleanupPromise) and safe to call when the process already exited — it
+    // either already ran or throws, so swallow.
+    try {
+      this.query.close()
+    } catch {
+      /* already closed / process exited before cleanup — nothing to do */
+    }
     this.cleanupMonitor()
   }
 

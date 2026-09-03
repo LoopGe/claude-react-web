@@ -22,6 +22,7 @@ interface MockQueryHandle {
   interrupt: ReturnType<typeof vi.fn>
   backgroundTasks: ReturnType<typeof vi.fn>
   stopTask: ReturnType<typeof vi.fn>
+  close: ReturnType<typeof vi.fn>
   setMaxThinkingTokens: ReturnType<typeof vi.fn>
   setModel: ReturnType<typeof vi.fn>
   setPermissionMode: ReturnType<typeof vi.fn>
@@ -157,6 +158,12 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         interrupt: vi.fn(async () => {}),
         backgroundTasks: vi.fn(async () => false),
         stopTask: vi.fn(async () => {}),
+        // Query.close() terminates the stream — mark the generator done so any
+        // parked/pending next() resolves instead of hanging the pump.
+        close: vi.fn(() => {
+          done = true
+          pushResolved({ value: undefined, done: true })
+        }),
         setMaxThinkingTokens: vi.fn(async () => {}),
         setModel: vi.fn(async () => {}),
         setPermissionMode: vi.fn(async () => {}),
@@ -203,6 +210,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         interrupt: handle.interrupt,
         backgroundTasks: handle.backgroundTasks,
         stopTask: handle.stopTask,
+        close: handle.close,
         setMaxThinkingTokens: handle.setMaxThinkingTokens,
         setModel: handle.setModel,
         setPermissionMode: handle.setPermissionMode,
@@ -1810,6 +1818,10 @@ describe('SessionManager', () => {
     await store.flush()
     expect(store.get(info.id)).toBeUndefined()
     expect(() => sm.get(info.id)).toThrow(/not found/)
+    // unload() → handle.destroy() must close the underlying SDK Query so the
+    // CLI subprocess / MCP transports / pending control requests are released.
+    const handle = mockHandles.find((h) => h.options.sessionId === info.id || h.options.resume === info.id)
+    expect(handle?.close).toHaveBeenCalled()
   })
 
   it('delete() resolves pending permissions as deny so SDK awaiters never hang', async () => {
