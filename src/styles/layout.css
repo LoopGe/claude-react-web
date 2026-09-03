@@ -1009,6 +1009,21 @@ body.resizing-col .app {
   color: var(--accent);
   flex-shrink: 0;
 }
+/* The fork chip is a clickable button that opens the Worktree-changes
+   overlay — restore the affordances removed when it was a plain span. */
+.chat-panel-worktree-badge.clickable {
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard), transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.chat-panel-worktree-badge.clickable:hover {
+  background: var(--bg-elev-2);
+}
+.chat-panel-worktree-badge.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 /* Unconfirmed: EnterWorktree claimed isolation but git has no matching
    worktree yet (timing gap right after Enter, or a stale claim). */
 .chat-panel-worktree-badge.unconfirmed,

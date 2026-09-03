@@ -9,6 +9,7 @@ import { Chat } from './Chat'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
+import { WorktreeChanges } from './WorktreeChanges'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
@@ -416,6 +417,7 @@ export const ChatPanel = memo(function ChatPanel({
     const wts = gitStatus.data?.isRepo === true ? gitStatus.data.linkedWorktrees : undefined
     return worktreeMatch(activeWorktree, wts)
   }, [activeWorktree, gitStatus.data])
+  const [worktreeChangesOpen, setWorktreeChangesOpen] = useState(false)
 
   // Side Chat stream — always subscribed so the drawer can mount without
   // replay cost and the collapsed badge gets live permission data.
@@ -1036,20 +1038,39 @@ export const ChatPanel = memo(function ChatPanel({
                 opened by EnterWorktree (not yet exited). Distinguishes a
                 git-confirmed worktree (normal tint) from a claimed-but-
                 unconfirmed one (warning tint, tooltip says so). Click
-                opens the Git panel. */}
+                opens the Worktree-changes overlay — its own view of what
+                the isolated worktree did, distinct from the git panel. */}
             {activeWorktree && (
               <Tooltip label={worktreeChipTitle(activeWorktreeMatch)} placement="bottom">
-                {/* Informational, not a button — full detail lives in the
-                    tooltip; the branch git badge is the Git panel entry. */}
-                <span
-                  className={['chat-panel-worktree-badge', activeWorktreeMatch ? '' : 'unconfirmed'].filter(Boolean).join(' ')}
+                <button
+                  type="button"
+                  className={[
+                    'chat-panel-worktree-badge',
+                    'clickable',
+                    activeWorktreeMatch ? '' : 'unconfirmed',
+                  ].filter(Boolean).join(' ')}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setWorktreeChangesOpen(true)
+                  }}
                 >
                   <IconGitFork size={12} className="chat-panel-worktree-badge-icon" aria-hidden />
                   <span className="chat-panel-worktree-badge-value">{activeWorktree.name}</span>
-                </span>
+                </button>
               </Tooltip>
             )}
           </div>
+        )}
+        {worktreeChangesOpen && (
+          <WorktreeChanges
+            sessionId={session.id}
+            cwd={activeWorktreeMatch?.path ?? null}
+            branchName={activeWorktreeMatch?.branch ?? null}
+            baseRef={gitStatus.data?.isRepo === true ? (gitStatus.data.branch ?? 'main') : 'main'}
+            displayName={activeWorktree?.name ?? ''}
+            onClose={() => setWorktreeChangesOpen(false)}
+          />
         )}
         {/* App Plugin `chat.header` action slot. Renders nothing when no
             enabled plugin contributes an action here. */}

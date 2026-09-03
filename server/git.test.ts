@@ -25,6 +25,8 @@ import {
   getStagedDiff,
   listWorktrees,
   getStatusInRepo,
+  getRangeDiffFiles,
+  getRangeDiffFile,
 } from './git.js'
 import { Hono } from 'hono'
 import { createErrorHandler } from './errors.js'
@@ -876,5 +878,95 @@ describe('listWorktrees', () => {
 
     const status = await getStatusInRepo(dir)
     expect(status.linkedWorktrees.some((w) => w.branch === 'worktree-feature-auth')).toBe(true)
+  })
+})
+
+describe('getRangeDiff', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = tempDir('git-range')
+  })
+  afterEach(() => {
+    void rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => {})
+  })
+
+  // Build a repo + a linked worktree whose branch commits two changes atop a
+  // main that stays put: a.txt modified, b.txt added.
+  function seed(cwd: string): { wt: string } {
+    gitInit(cwd)
+    writeFileSync(join(cwd, 'a.txt'), 'alpha\n')
+    gitCommitAll(cwd, 'c1')
+    const wt = join(realpathSync.native(cwd), '.claude', 'worktrees', 'feature-auth')
+    execFileSync('git', ['worktree', 'add', wt, '-b', 'worktree-feature-auth', 'main'], { cwd })
+    writeFileSync(join(wt, 'a.txt'), 'alpha2\n')
+    writeFileSync(join(wt, 'b.txt'), 'beta\n')
+    gitCommitAll(wt, 'feature work')
+    return { wt }
+  }
+
+  it.skipIf(!gitOk)('lists files changed between refs with status + +/- counts', async () => {
+    seed(dir)
+    const files = await getRangeDiffFiles(dir, 'main', 'worktree-feature-auth')
+    const a = files.find((f) => f.path === 'a.txt')
+    const b = files.find((f) => f.path === 'b.txt')
+    expect(a?.status).toBe('M')
+    expect(a?.insertions).toBe(1)
+    expect(a?.deletions).toBe(1)
+    expect(b?.status).toBe('A')
+    expect(b?.insertions).toBe(1)
+    expect(b?.deletions).toBe(0)
+  })
+
+  it.skipIf(!gitOk)('returns an empty list when the two refs are identical', async () => {
+    seed(dir)
+    const files = await getRangeDiffFiles(dir, 'main', 'main')
+    expect(files).toEqual([])
+  })
+
+  it.skipIf(!gitOk)('parses a renamed file on the branch (numstat -z rename encoding)', async () => {
+    gitInit(dir)
+    writeFileSync(join(dir, 'a.txt'), 'a\n')
+    gitCommitAll(dir, 'c1')
+    const wt = join(realpathSync.native(dir), '.claude', 'worktrees', 'feature-auth')
+    execFileSync('git', ['worktree', 'add', wt, '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
+    // Pure rename on the branch: a.txt → c.txt (R100).
+    execFileSync('git', ['mv', 'a.txt', 'c.txt'], { cwd: wt })
+    gitCommitAll(wt, 'rename')
+    const files = await getRangeDiffFiles(dir, 'main', 'worktree-feature-auth')
+    const renamed = files.find((f) => f.path === 'c.txt')
+    expect(renamed?.status).toBe('R')
+    expect(renamed?.renamedFrom).toBe('a.txt')
+    // The renamed-from source is not a separate entry.
+    expect(files.some((f) => f.path === 'a.txt')).toBe(false)
+  })
+
+  it.skipIf(!gitOk)('mergeBase (three-dot) reports the branch work; tip (two-dot) also shows main-only changes', async () => {
+    gitInit(dir)
+    writeFileSync(join(dir, 'a.txt'), 'a1\n')
+    gitCommitAll(dir, 'c1')
+    const wt = join(realpathSync.native(dir), '.claude', 'worktrees', 'feature-auth')
+    execFileSync('git', ['worktree', 'add', wt, '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
+    // branch adds b.txt (its own work)…
+    writeFileSync(join(wt, 'b.txt'), 'beta\n')
+    gitCommitAll(wt, 'branch work')
+    // …while main moves ahead after the fork (a change NOT on the branch).
+    writeFileSync(join(dir, 'a.txt'), 'a1-main\n')
+    gitCommitAll(dir, 'main moved')
+
+    const threeDot = await getRangeDiffFiles(dir, 'main', 'worktree-feature-auth', true)
+    expect(threeDot.some((f) => f.path === 'b.txt')).toBe(true)
+    expect(threeDot.some((f) => f.path === 'a.txt')).toBe(false)
+
+    const twoDot = await getRangeDiffFiles(dir, 'main', 'worktree-feature-auth', false)
+    expect(twoDot.some((f) => f.path === 'a.txt')).toBe(true)
+  })
+
+  it.skipIf(!gitOk)('returns the unified diff body for a single file (clipped at the cap)', async () => {
+    seed(dir)
+    const d = await getRangeDiffFile(dir, 'main', 'worktree-feature-auth', 'a.txt')
+    expect(d.text).toContain('-alpha')
+    expect(d.text).toContain('+alpha2')
+    expect(d.isBinary).toBe(false)
+    expect(d.truncated).toBe(false)
   })
 })

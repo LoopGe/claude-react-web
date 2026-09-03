@@ -25,6 +25,7 @@ import type {
   GitStatusResponse,
   GitCommit,
   GitStashEntry,
+  GitRangeDiffResponse,
 } from '../../shared/git-types'
 
 interface BaseFetchState<T> {
@@ -208,6 +209,127 @@ export function useGitDiff(
       ctrl.abort()
     }
   }, [cwd, path, staged, enabled, tick])
+
+  const refresh = useCallback(() => {
+    setTick((n) => n + 1)
+  }, [])
+
+  return { data, loading, error, refresh }
+}
+
+// ── useGitRangeDiff ───────────────────────────────────────────────────
+
+export interface UseGitRangeDiffReturn extends BaseFetchState<GitRangeDiffResponse> {
+  refresh: () => void
+}
+
+/** Fetch the per-file change list between two refs (`/git/diff-range`).
+ *  Used by the Worktree-changes view to show what an isolated worktree
+ *  branch did. Lazy via `enabled`, like useGitDiff — only fetched once
+ *  the branch-range tab is actually opened. */
+export function useGitRangeDiff(
+  cwd: string | undefined,
+  from: string | undefined,
+  to: string | undefined,
+  mergeBase: boolean,
+  enabled: boolean,
+): UseGitRangeDiffReturn {
+  const [data, setData] = useState<GitRangeDiffResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [tick, setTick] = useState(0)
+  const abortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    if (!enabled || !cwd || !from || !to) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
+      setData(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
+    const ctrl = new AbortController()
+    abortRef.current?.abort()
+    abortRef.current = ctrl
+    setLoading(true)
+    setError(null)
+    const qs = new URLSearchParams({ cwd, from, to, ...(mergeBase ? { mode: 'mergeBase' } : {}) })
+    api
+      .get<GitRangeDiffResponse>(`/git/diff-range?${qs.toString()}`, { signal: ctrl.signal })
+      .then((res) => {
+        if (ctrl.signal.aborted) return
+        setData(res)
+        setLoading(false)
+      })
+      .catch((err: Error) => {
+        if (ctrl.signal.aborted) return
+        setError(err.message)
+        setData(null)
+        setLoading(false)
+      })
+    return () => {
+      ctrl.abort()
+    }
+  }, [cwd, from, to, mergeBase, enabled, tick])
+
+  const refresh = useCallback(() => {
+    setTick((n) => n + 1)
+  }, [])
+
+  return { data, loading, error, refresh }
+}
+
+export interface UseGitRangeDiffFileReturn extends BaseFetchState<GitDiff> {
+  refresh: () => void
+}
+
+/** Fetch ONE file's unified diff across a ref range, lazily on row expand.
+ *  Mirrors useGitDiff but with `from`/`to` refs instead of staged/unstaged. */
+export function useGitRangeDiffFile(
+  cwd: string | undefined,
+  from: string | undefined,
+  to: string | undefined,
+  mergeBase: boolean,
+  path: string | undefined,
+  enabled: boolean,
+): UseGitRangeDiffFileReturn {
+  const [data, setData] = useState<GitDiff | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [tick, setTick] = useState(0)
+  const abortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    if (!enabled || !cwd || !from || !to || !path) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
+      setData(null)
+      setError(null)
+      setLoading(false)
+      return
+    }
+    const ctrl = new AbortController()
+    abortRef.current?.abort()
+    abortRef.current = ctrl
+    setLoading(true)
+    setError(null)
+    const qs = new URLSearchParams({ cwd, from, to, path, ...(mergeBase ? { mode: 'mergeBase' } : {}) })
+    api
+      .get<GitDiff>(`/git/diff-range-file?${qs.toString()}`, { signal: ctrl.signal })
+      .then((res) => {
+        if (ctrl.signal.aborted) return
+        setData(res)
+        setLoading(false)
+      })
+      .catch((err: Error) => {
+        if (ctrl.signal.aborted) return
+        setError(err.message)
+        setData(null)
+        setLoading(false)
+      })
+    return () => {
+      ctrl.abort()
+    }
+  }, [cwd, from, to, mergeBase, path, enabled, tick])
 
   const refresh = useCallback(() => {
     setTick((n) => n + 1)

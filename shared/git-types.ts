@@ -99,6 +99,25 @@ export interface GitNotARepo {
 
 export type GitStatusResponse = GitStatus | GitNotARepo
 
+/** One file changed between two refs (branch range diff), for the
+ *  Worktree-changes view — "what did the isolated worktree branch do". */
+export interface GitRangeFile {
+  /** Repo-relative path on the destination side (for renames, the new path). */
+  path: string
+  /** A/M/D/R/C status projected from the range diff's name-status. */
+  status: GitFileStatus
+  insertions: number
+  deletions: number
+  /** Original path for renames/copies. */
+  renamedFrom?: string
+}
+
+export interface GitRangeDiffResponse {
+  from: string
+  to: string
+  files: GitRangeFile[]
+}
+
 export interface GitDiff {
   /** Path the diff is for (the destination side for renames). */
   path: string

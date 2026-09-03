@@ -30,6 +30,7 @@ import type {
   GitFileEntry,
   GitFileStatus,
   GitLinkedWorktree,
+  GitRangeFile,
   GitRepoState,
   GitStashEntry,
   GitStatus,
@@ -595,6 +596,119 @@ export async function getDiff(cwd: string, path: string, staged: boolean): Promi
   const { stdout } = await runGit(cwd, diffArgs)
   const trunc = truncateDiff(stdout)
   return { path: safePath, staged, ...trunc, isBinary: false }
+}
+
+// ── Branch range diff ────────────────────────────────────────────────
+// Used by the Worktree-changes view to answer "what did the isolated
+// worktree branch do": the per-file list (numstat + name-status) and a
+// lazily-fetched per-file unified body. `from`/`to` are refs resolved
+// inside the worktree's repo (the confining `.claude/worktrees/<name>`
+// worktree or `main`), passed as positional execFile args — never a shell.
+
+/** Parse `git diff --numstat -z` into a path→{ins,del} map keyed by the
+ *  destination path. The -z encoding differs for a single file vs a
+ *  rename/copy (verified against real git output):
+ *
+ *    modified  a.txt →  `<adds>\t<dels>\ta.txt\0`          (one NUL token)
+ *    renamed   a→b   →  `<adds>\t<dels>\t\0a\0b\0`        (empty path slot,
+ *                          then each path as its own NUL token)
+ *
+ *  So the record spans the counts token plus any following tokens that
+ *  hold no tab (the path components). The destination is always the last
+ *  path component. Binary files show `-\t-` → 0/0. */
+function parseNumstatZ(stdout: string): Map<string, { ins: number; del: number }> {
+  const toks = stdout.split('\0')
+  const out = new Map<string, { ins: number; del: number }>()
+  let i = 0
+  while (i < toks.length && toks[i] !== '') {
+    const parts = toks[i].split('\t')
+    i++
+    const ins = Number(parts[0]) || 0
+    const del = Number(parts[1]) || 0
+    // Path component(s) of this record: the tail of the counts token
+    // (empty for a rename's old-path slot) plus any following NUL tokens
+    // that contain no tab (the rename's paths).
+    const pathParts = parts.slice(2)
+    while (i < toks.length && toks[i] !== '' && !toks[i].includes('\t')) {
+      pathParts.push(toks[i])
+      i++
+    }
+    const dest = pathParts[pathParts.length - 1]
+    if (dest) out.set(dest, { ins, del })
+  }
+  return out
+}
+
+/** Guard a ref (branch name or SHA) passed as a positional execFile arg.
+ *  Since args never hit a shell, injection isn't the concern — we only
+ *  reject refs that git would misread as options (leading `-`) or that
+ *  contain whitespace/control (which would split args or hang us). Real
+ *  checked-out branch names (`@`, unicode, dots, slashes) are all legal. */
+export function validateRef(ref: string): void {
+  if (!ref || ref.startsWith('-') || /\s/.test(ref)) {
+    throw new HttpError(400, `invalid ref: ${ref.slice(0, 64)}`)
+  }
+}
+
+/** Build the git ref-arg pair. `mergeBase` selects three-dot semantics
+ *  (`A...B` = changes on B since it diverged from A — "what the worktree
+ *  branch did"); tip uses two-dot (`A..B` = full head-to-head diff). */
+function rangeRefArgs(from: string, to: string, mergeBase: boolean): string[] {
+  if (mergeBase) return [`${from}...${to}`]
+  return [from, to]
+}
+
+/** Per-file change summary between two refs (`git diff <from> <to>`).
+ *  Mirrors the status/diff surface but across a commit range, so the
+ *  Worktree-changes view can list what the worktree branch introduced. */
+export async function getRangeDiffFiles(cwd: string, from: string, to: string, mergeBase = false): Promise<GitRangeFile[]> {
+  validateRef(from)
+  validateRef(to)
+  await ensureGitRepo(cwd)
+
+  const refs = rangeRefArgs(from, to, mergeBase)
+  const [numRes, stRes] = await Promise.all([
+    runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--numstat', '-z', ...refs]),
+    runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--name-status', '-z', ...refs]),
+  ])
+  const counts = parseNumstatZ(numRes.stdout)
+
+  const out: GitRangeFile[] = []
+  const toks = stRes.stdout.split('\0')
+  let i = 0
+  while (i < toks.length && toks[i] !== '') {
+    const field = toks[i].trim()
+    i++
+    const status = (field[0] || 'M') as GitFileStatus
+    const isRename = field[0] === 'R' || field[0] === 'C'
+    const p1 = toks[i]
+    i++
+    const renamedFrom = isRename ? p1 : undefined
+    const path = isRename ? toks[i++] : p1
+    const c = counts.get(path) ?? { ins: 0, del: 0 }
+    out.push({ path, status, insertions: c.ins, deletions: c.del, ...(renamedFrom ? { renamedFrom } : {}) })
+  }
+  return out
+}
+
+/** Unified diff body for ONE file across a range, clipped at MAX_DIFF_LINES.
+ *  Returns an empty body with isBinary when git flags the file binary. */
+export async function getRangeDiffFile(cwd: string, from: string, to: string, path: string, mergeBase = false): Promise<GitDiff> {
+  validateRef(from)
+  validateRef(to)
+  await ensureGitRepo(cwd)
+  const safePath = validateRepoRelativePath(path)
+  const refs = rangeRefArgs(from, to, mergeBase)
+
+  const numRes = await runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--numstat', ...refs, '--', safePath])
+  const isBinary = /^-\s+-\s+/.test(numRes.stdout.trim())
+  if (isBinary) {
+    return { path: safePath, staged: false, truncated: false, totalLines: 0, text: '', isBinary: true }
+  }
+
+  const { stdout } = await runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--no-color', ...refs, '--', safePath])
+  const trunc = truncateDiff(stdout)
+  return { path: safePath, staged: false, ...trunc, isBinary: false }
 }
 
 // ── Log ─────────────────────────────────────────────────────────────

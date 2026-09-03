@@ -14,8 +14,8 @@
 import { Hono } from 'hono'
 import { isAbsolute } from 'node:path'
 import { HttpError, createErrorHandler } from './errors.js'
-import { getDiff, getLog, getStatusCached } from './git.js'
-import type { GitLogResponse } from '../shared/git-types.js'
+import { getDiff, getLog, getStatusCached, getRangeDiffFiles, getRangeDiffFile, validateRef } from './git.js'
+import type { GitLogResponse, GitRangeDiffResponse } from '../shared/git-types.js'
 
 export function buildGitRouter(): Hono {
   const app = new Hono()
@@ -54,6 +54,39 @@ export function buildGitRouter(): Hono {
     if (!path) throw new HttpError(400, 'path query param is required')
     const staged = c.req.query('staged') === '1'
     const diff = await getDiff(cwd, path, staged)
+    return c.json(diff)
+  })
+
+  // --- GET /diff-range ---------------------------------------------------
+  // Per-file change summary between two refs (e.g. main → worktree branch).
+  // `from`/`to` are ref names resolved within the repo, not user paths.
+  app.get('/diff-range', async (c) => {
+    const cwd = requireCwd(c.req.query('cwd'))
+    const from = c.req.query('from')
+    const to = c.req.query('to')
+    if (!from || !to) throw new HttpError(400, 'from and to query params are required')
+    validateRef(from)
+    validateRef(to)
+    // mode=mergeBase → three-dot (A...B, branch since fork); default tip (A..B).
+    const mergeBase = c.req.query('mode') === 'mergeBase'
+    const files = await getRangeDiffFiles(cwd, from, to, mergeBase)
+    const body: GitRangeDiffResponse = { from, to, files }
+    return c.json(body)
+  })
+
+  // --- GET /diff-range-file ---------------------------------------------
+  // Unified body for one file across a range, lazily fetched on expand.
+  app.get('/diff-range-file', async (c) => {
+    const cwd = requireCwd(c.req.query('cwd'))
+    const from = c.req.query('from')
+    const to = c.req.query('to')
+    const path = c.req.query('path')
+    if (!from || !to) throw new HttpError(400, 'from and to query params are required')
+    if (!path) throw new HttpError(400, 'path query param is required')
+    validateRef(from)
+    validateRef(to)
+    const mergeBase = c.req.query('mode') === 'mergeBase'
+    const diff = await getRangeDiffFile(cwd, from, to, path, mergeBase)
     return c.json(diff)
   })
 
