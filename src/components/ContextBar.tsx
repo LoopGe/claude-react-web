@@ -25,10 +25,11 @@ import { formatTokens } from '../utils/format'
 import { windowForAutoCompactThreshold } from '../../shared/auto-compact'
 
 /** Marker drag range / grid. Min 20 keeps auto-compact far enough from the
- *  prompt edge to be useful; step 5 matches the old slider's snap. */
+ *  prompt edge to be useful; step 1 gives per-point fine control over both
+ *  the drag snap grid and the arrow-key increment. */
 const MIN_PCT = 20
 const MAX_PCT = 100
-const STEP_PCT = 5
+const STEP_PCT = 1
 /** A pointer interaction must move this far (px) before it counts as a drag
  *  and commits. Below this a click is a no-op → double-click-to-reset is
  *  clean (no intermediate pin POST). */

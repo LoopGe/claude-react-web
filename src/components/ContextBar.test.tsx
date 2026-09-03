@@ -128,9 +128,9 @@ describe('ContextBar', () => {
     fireEvent.keyDown(marker, { key: 'ArrowLeft' })
     fireEvent.keyUp(marker, { key: 'ArrowLeft' })
 
-    // threshold 83.5 → 78.5 → snap to 80 → window = 0.8*200k + 33k = 193k.
+    // threshold 83.5 → 82.5 → snap to 83 → window = 0.83*200k + 33k = 199k.
     expect(onSetWindow).toHaveBeenCalledTimes(1)
-    expect(onSetWindow).toHaveBeenCalledWith(193000)
+    expect(onSetWindow).toHaveBeenCalledWith(199000)
   })
 
   it('resets to auto on Delete key', () => {
