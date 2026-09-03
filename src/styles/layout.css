@@ -1525,3 +1525,31 @@ body.resizing-col .app {
 .update-banner-deprecated .update-banner-btn-ghost {
   border-color: color-mix(in srgb, var(--danger) 35%, var(--bg));
 }
+
+/* ── Frosted chrome when a background image is active ───────────────────
+   Toggled by useBackground (body.has-bg). Each surface keeps its own base
+   fill token (sidebar/header = --bg-elev, chat-panel = --bg) so opacity
+   100% resolves to exactly today's look. Guarded by @supports so browsers
+   without backdrop-filter keep fully-opaque fills. */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  body.has-bg {
+    --app-chrome-blur: 24px;
+  }
+  body.has-bg .sidebar,
+  body.has-bg .main-header {
+    background-color: color-mix(in srgb, var(--bg-elev) var(--app-chrome-alpha), transparent);
+    backdrop-filter: blur(var(--app-chrome-blur));
+    -webkit-backdrop-filter: blur(var(--app-chrome-blur));
+  }
+  body.has-bg .chat-panel {
+    background-color: color-mix(in srgb, var(--bg) var(--app-chrome-alpha), transparent);
+    backdrop-filter: blur(var(--app-chrome-blur));
+    -webkit-backdrop-filter: blur(var(--app-chrome-blur));
+  }
+  body.has-bg .main-body {
+    background: transparent;
+  }
+  body.has-bg .chat-panel-header {
+    background-color: color-mix(in srgb, var(--accent) 6%, transparent);
+  }
+}

@@ -18,6 +18,11 @@
   --bg: #0f1115;
   --bg-elev: #15181f;
   --bg-elev-2: #1c2029;
+  /* App background layer + chrome translucency (useBackground). Alpha is
+     written by JS as a percentage ('85%'); 100% = fully opaque = today's
+     look. Only has an effect under body.has-bg. */
+  --app-bg-image: none;
+  --app-chrome-alpha: 100%;
   --border: #262b36;
   --fg: #e6e8eb;
   --fg-muted: #8c94a3;
@@ -1072,7 +1077,11 @@ html, body, #root { height: 100%; margin: 0; }
 }
 body {
   font-family: var(--sans);
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image: var(--app-bg-image);
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
   color: var(--fg);
   font-size: var(--fs-md);
   -webkit-font-smoothing: antialiased;
