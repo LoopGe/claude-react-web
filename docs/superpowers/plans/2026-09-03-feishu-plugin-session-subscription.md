@@ -1,49 +1,52 @@
-# Feishu Bridge — Session Outbound Subscription (Framework Ability) + Feishu Plugin Implementation Plan
+# Feishu Bridge — Session Outbound Subscription (Framework Ability) + Independent Feishu Plugin Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give the App Plugin framework an outbound "session event stream" (`sessions.subscribe`) so a plugin can see a native session's output, then land a minimal Feishu/Lark bot plugin that bridges a Feishu chat to a native session as its first consumer.
+**Goal:** Give the App Plugin framework an outbound "session event stream" (`sessions.subscribe`) so a plugin can see a native session's output, land a reusable acceptance fixture in the host repo, then ship a minimal Feishu/Lark bot plugin as an **independent marketplace repo** that bridges a Feishu chat to a native session.
 
-**Architecture:** A host-side `SessionSubscriptionRegistry` wires each plugin's `RpcPeer` into a new per-session `pluginSubscribers` fan-out (mirroring the existing WS `session.subscribers`), pushing already-filtered `SDKMessage`s via `peer.notify('sessions.event', …)`. A plugin subprocess receives those notifications in its own stdio runtime and routes them into a bridge → a Feishu bot replies. Framework ability first (Tasks 1–4); Feishu plugin second (Tasks 5–9).
+**Architecture:** A host-side `SessionSubscriptionRegistry` wires each plugin's `RpcPeer` into a new per-session `pluginSubscribers` fan-out (mirroring the existing WS `session.subscribers`), pushing already-filtered `SDKMessage`s via `peer.notify('sessions.event', …)`. A plugin subprocess receives those notifications in its own stdio runtime and routes them into a bridge → a Feishu bot replies. Host framework ability + acceptance fixture land in the claude-react-web monorepo (Tasks 1–5); the Feishu plugin ships in its own GitHub marketplace repo (Tasks 6–10).
 
-**Tech Stack:** TypeScript (server + plugin); `peer.notify`/RPC via `server/app-plugins/rpc-peer.ts`; `process.execPath` child + newline-delimited JSON-RPC/stdio (child runtime, pattern from `fixtures/app-plugins/_lib/runtime.mjs`); `@larksuiteoapi/node-sdk` (Feishu), `vitest` (tests); plugin built to ESM `.mjs` service.
+**Tech Stack:** TypeScript (server + plugin); `peer.notify`/RPC via `server/app-plugins/rpc-peer.ts`; `process.execPath` child + newline-delimited JSON-RPC/stdio (child runtime, pattern from `fixtures/app-plugins/_lib/runtime.mjs`); `@larksuiteoapi/node-sdk` (Feishu, in the independent repo), `vitest` (tests); plugin built to ESM `.mjs` service.
 
 **Spec:** `docs/superpowers/specs/2026-09-03-feishu-plugin-session-subscription-design.md`
 
 ## Global Constraints
 
-- All diagnostic logging via `createLogger(scope)` from `server/log.ts`; never bare `console.*` for diagnostics (plugin subprocess stderr is captured + rate-limited by the host — the child may use stderr for debug, it is not the logger).
+- All diagnostic logging via `createLogger(scope)` from `server/log.ts`; never bare `console.*` for diagnostics (plugin subprocess stderr is captured + rate-limited by the host).
 - Permissions use the existing `PermissionChecker`; `sessions.subscribe` requires `sessions.read`. Plugin only gets the **incremental event stream**, never transcript pull or session control.
-- The outbound payload re-uses the pump's already-filtered broadcast (`shouldBroadcastMessage`), i.e. it aligns with `BROADCAST_SYSTEM_SUBTYPES`/base frames. Do not invent a second parallel message abstraction.
+- Outbound payload re-uses the pump's already-filtered broadcast (`shouldBroadcastMessage`), i.e. it aligns with `BROADCAST_SYSTEM_SUBTYPES`/base frames. Do not invent a second parallel message abstraction.
 - v1 default: subscribe starts from "now", **no backfill of transcript history** (spec §3).
 - One Feishu chat ⇔ one native session (mapping table), stored in plugin `storage` service.
 - v1 scope only: bidirectional **text** + text replies. v2 (out of scope here): card approval, images/files, progress cards, slash commands, group multi-user @, webhook deployment, custom iframe UI.
+- **Plugin ownership:** the Feishu plugin is an independent GitHub marketplace repo, NOT this monorepo's official `plugins/`. Host repo only ships the framework ability (Tasks 1–4) + a no-network acceptance fixture (Task 5).
+- **Version contract:** plugin manifest `engines.claudeReactWeb` must declare ≥ the host version that introduced `sessions.subscribe`; older hosts reject it.
 - Tests are TDD: write the failing test first, run to see it fail, implement, run to see it pass, then commit. Commits review before landing (host-side code must pass the `code-review` skill on the diff per CLAUDE.md).
-- Repo tooling: `npm run typecheck` runs both tsconfigs; `npm run test` is vitest; Scope server tests under Node. `plugins/` is eslint-ignored; `plugins/**/*.test.ts` runs under vitest.
+- Repo tooling (host): `npm run typecheck` runs both tsconfigs; `npm run test` is vitest; server tests under Node. `fixtures/**/*.test.ts` runs under vitest.
 
 ---
 
 ## File Structure
 
-**Host (framework ability) — new/changed:**
+**Host repo (framework ability + acceptance fixture) — new/changed:**
 - Modify `server/session-types.ts` — add `pluginSubscribers` field to `Session`; add it to `endAllSubscribers`.
 - Modify `server/session-pump.ts` — fan out to `pluginSubscribers` alongside `subscribers` in the broadcast path.
 - Create `server/session-plugin-subscription.ts` — `SessionEventOut` types + `SessionSubscriptionRegistry`.
 - Modify `server/app-plugins/host/host-api.ts` — register `sessions.subscribe`, return `subscriptions` from `registerHostApi`.
 - Modify `server/app-plugins/host/session-adapter.ts` — thin `subscribe` method delegating to the registry.
 - Modify `server/app-plugins/plugin-process.ts` — hold the registry; call `dropPeer` on deactivate/kill.
-- Test files mirroring existing patterns (`host-api.test.ts`, `server/session-pump` test fixture conventions).
+- Create `fixtures/app-plugins/fixture.session-subscription/` — no-network acceptance fixture consuming `sessions.subscribe`.
+- Test files mirroring existing patterns (`host-api.test.ts`, `server/session-pump` fixture conventions).
 
-**Plugin (Feishu) — new `plugins/feishu/`:**
-- `crw-plugin.json` — manifest (config, commands, status widget).
-- `package.json`, `tsconfig.json`.
-- `src/runtime.ts` — hand-rolled stdio JSON-RPC child runtime (pattern from `fixtures/app-plugins/_lib/runtime.mjs`), registered handlers incl. `sessions.event`, `activate`, `executeCommand`, `deactivate`.
-- `src/main.ts` — plugin entry, wires config → bot + bridge + stream; command dispatch; status widget pushes.
-- `src/bot.ts` — Feishu long-connection wrapper (`@larksuiteoapi/node-sdk`), receive text + reply text; credentials via `secrets` host calls.
-- `src/bridge.ts` — mapping table (chat_id↔sessionId) via `storage`; `sessions.send`; allow_chat/groupOnly filtering.
-- `src/stream.ts` — `sessions.subscribe` + aggregate replied text → `bot` reply.
-- `src/status.ts` — status indicator data.
-- Tests per module (vitest), Feishu SDK stubbed (never real network).
+**Independent plugin repo (Feishu) — new, AI-driven in its own checkout:**
+- `feishu.bridge/crw-plugin.json` — manifest (config, commands, status widget). `feishu.bridge/` is the marketplace plugin subdir; the repo root is the marketplace source (auto-scan finds `feishu.bridge/` via its `crw-plugin.json`).
+- `feishu.bridge/package.json`, `feishu.bridge/tsconfig.json`.
+- `feishu.bridge/src/runtime.ts` — hand-rolled stdio JSON-RPC child runtime (pattern from `fixtures/app-plugins/_lib/runtime.mjs`), includes inbound `sessions.event` dispatch.
+- `feishu.bridge/src/main.ts` — plugin entry wires config → bot + bridge + stream; command dispatch; status pushes.
+- `feishu.bridge/src/bot.ts` — Feishu long-connection wrapper (`@larksuiteoapi/node-sdk`), receive text + reply text; credentials via `secrets` host calls.
+- `feishu.bridge/src/bridge.ts` — mapping table (chat_id↔sessionId) via `storage`; `sessions.send`; allow_chat/groupOnly filtering.
+- `feishu.bridge/src/stream.ts` — `sessions.subscribe` + aggregate replied text → `bot` reply.
+- `feishu.bridge/src/status.ts` — status indicator data.
+- Tests per module (vitest in the independent repo), Feishu SDK stubbed (never real network).
 
 ---
 
@@ -51,7 +54,7 @@
 
 **Files:**
 - Modify: `server/session-types.ts` (add field to `Session`; add line to `endAllSubscribers`)
-- Test: `server/session-types.test.ts` (new) — or extend an existing session-types test if present. Grep first; add to whichever asserts teardown behavior.
+- Test: `server/session-plugin-subscription.test.ts` — created in Task 3; for **this** task, create `server/session-types.test.ts` (or extend an existing one if present — grep first) asserting teardown.
 
 **Interfaces:**
 - Consumes: existing `Session` interface; existing `Subscriber` type (`{ id, push(msg: SDKMessage), end, closed }`); existing `endAndClear(collection)` helper.
@@ -93,7 +96,7 @@ describe('endAllSubscribers handles pluginSubscribers', () => {
 })
 ```
 
-Note: the `Session` type is wide; if the existing test already builds a `fakeSession`, extend it rather than duplicate. If `server/session-types` has no test file, create one with this fixture.
+Note: the `Session` type is wide; if the existing test already builds a `fakeSession`, extend it rather than duplicate. If no `server/session-types.test.ts` exists, create it with this fixture.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -127,7 +130,7 @@ Expected: PASS.
 - [ ] **Step 5: Typecheck**
 
 Run: `npm run typecheck`
-Expected: clean (both tsconfigs). Some callers may construct a `Session` literal without the new field — if TS flags them, add `pluginSubscribers: new Map()` to those fixtures/constructions (grep `: Session =` / `as Session`).
+Expected: clean. If TS flags `Session` literal constructions missing the field, add `pluginSubscribers: new Map()` to those fixtures (grep `: Session =` / `as Session`).
 
 - [ ] **Step 6: Commit**
 
@@ -162,7 +165,7 @@ it('fans broadcastable messages out to pluginSubscribers', async () => {
 })
 ```
 
-If there is no existing `session-pump.test.ts`, follow Task 1's test-file-creation approach with the pump's deps fixture (see `PumpDeps` in `session-pump.ts`).
+If there is no existing `session-pump.test.ts`, follow Task 1's test-file-creation approach with the pump's deps fixture (see `PumpDeps` in `session-pump.ts`, `server/session-pump.test.ts` if present).
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -219,7 +222,7 @@ git commit -m "feat(app-plugins): pump fans broadcastable messages to plugin sub
     - `dropPeer(peer: RpcPeer): void`
     - `notify(sessionId: string, frame: SessionEventOut): void`
 
-Note: the payload type lives **server-side** (not `shared/`) because it carries an `SDKMessage` which the browser bundle must never import.
+Note: this file **must live server-side** (not `shared/`) because `SessionEventOut` carries an `SDKMessage` which the browser bundle must never import.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -288,25 +291,25 @@ import type { Session } from './session-types.js'
 import type { RpcPeer } from './app-plugins/rpc-peer.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 
-/** Outbound frame pushed host→plugin on a session subscription. The payload
- *  is server-only (carries an SDKMessage); the child runtime surfaces it to
- *  plugin code. `message` is already filtered by the pump (shouldBroadcastMessage),
- *  so it aligns with BROADCAST_SYSTEM_SUBTYPES/base frames — deliberately the
- *  same content a browser tab's `subscribers` fan-out sees. */
+/** Outbound frame pushed host→plugin on a session subscription. Server-only
+ *  (carries an SDKMessage). `message` is already filtered by the pump
+ *  (shouldBroadcastMessage), so it aligns with BROADCAST_SYSTEM_SUBTYPES/base
+ *  frames — deliberately the same content a browser tab's subscribers
+ *  fan-out sees. */
 export type SessionEventOut =
   | { kind: 'message'; sessionId: string; message: SDKMessage }
   | { kind: 'session-cleared'; sessionId: string }
   | { kind: 'subscription-ended'; sessionId: string; reason: 'session-gone' | 'plugin-disabled' | 'peer-closed' }
 
+/** Routes clock-ticked end() back so we can drop the registration record. */
 interface RegistryEntry {
   sessionId: string
   peer: RpcPeer
-  // routes clock-ticked end() back so we can drop the registration record
   release: () => void
 }
 
 /** Manages plugin → session outbound subscriptions. One instance per plugin
- *  process. The unit it manipulates is a single session's `pluginSubscribers`
+ *  process's Host API. It manipulates a single session's `pluginSubscribers`
  *  map (Task 1); a Subscriber's `push` forwards the already-filtered message
  *  as a `sessions.event` notification to that plugin's RpcPeer. */
 export class SessionSubscriptionRegistry {
@@ -319,20 +322,19 @@ export class SessionSubscriptionRegistry {
     if (!session) return { ok: false, error: `session not found: ${sessionId}` }
     if (peer.closed) return { ok: false, error: 'peer is closed' }
 
-    // Keyspace per peer per session: one subscriber per (peer, session).
     const key = `${peer['id'] ?? 'peer'}:${sessionId}`
     if (session.pluginSubscribers.has(key)) {
-      // already subscribed — idempotent
-      return { ok: true, unsubscribe: () => {} }
+      return { ok: true, unsubscribe: () => {} } // idempotent
     }
 
+    let entry: RegistryEntry
     const release = () => {
       if (!session.pluginSubscribers.has(key)) return
       session.pluginSubscribers.get(key)?.end()
       session.pluginSubscribers.delete(key)
-      this.entries.delete(this.entry)
+      this.entries.delete(entry)
     }
-    const entry: RegistryEntry = { sessionId, peer, release }
+    entry = { sessionId, peer, release }
     this.entries.add(entry)
 
     session.pluginSubscribers.set(key, {
@@ -347,7 +349,7 @@ export class SessionSubscriptionRegistry {
   }
 
   /** Remove every subscription belonging to one peer (called by
-   *  PluginProcess on deactivate/kill, and by peer-exit). */
+   *  PluginProcess on deactivate/kill). */
   dropPeer(peer: RpcPeer): void {
     for (const entry of [...this.entries]) {
       if (entry.peer === peer) entry.release()
@@ -365,16 +367,6 @@ export class SessionSubscriptionRegistry {
   }
 }
 ```
-
-Note on `release` closure-using-`entry` before assignment: assign `let entry!: RegistryEntry` then `entry = { ... }` to satisfy TS strict. Concretely, redeclare as:
-
-```ts
-let entry: RegistryEntry
-// ... compute key/session ...
-entry = { sessionId, peer, release }
-```
-
-and reference `this.entries.delete(entry)` inside the closure (it captures the binding).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -408,14 +400,12 @@ git commit -m "feat(app-plugins): session outbound subscription registry (sessio
 - Produces:
   - `session-adapter.ts`: `subscribe(sessionId): { ok: true; unsubscribe: () => void } | { ok: false; error: string }` gated on `sessions.read`.
   - `registerHostApi` returns an extra key `subscriptions: SessionSubscriptionRegistry` (alongside `storage/secrets/config/checker`).
-  - `SessionAdapter.subscribe` is implemented via a registry the adapter owns/accepts.
-  - `PluginProcess` holds the registry and calls `this.subscriptions.dropPeer(this.peer)` in `deactivate` and `kill`.
+  - The registry is built in `registerHostApi` with `getSession` over `ctx.sm`.
+  - `PluginProcess` holds the registry and calls `subscriptions.dropPeer(this.peer)` in `deactivate` and `kill`.
 
-Design note: the registry needs `getSession` = the manager's `get`. `host-api.ts` already receives `sm` via `ctx.sm`; register a new handler idempotently backed by the registry constructed at `registerHostApi` time. The `pluginSubscribers` Subscriber map is per-session and shared across plugins, so a second plugin subscribing to the same session is independent (own keyspace).
+- [ ] **Step 1: Write the failing test** (extend `host-api.test.ts`)
 
-- [ ] **Step 1: Write the failing test** (extend `host-api.test.ts` — follow its existing peer/handler conventions)
-
-The test will: build a host-api peer with `sm` whose `get` returns a fake session with `pluginSubscribers`; grant `sessions.read`; call the `sessions.subscribe` handler; assert it returns `{ ok: true }` and that a subsequent pump-push to `session.pluginSubscribers` produces a `sessions.event` notification on the peer. Because the host-api test constructs peers via the existing helper, mirror that helper; add one case:
+The test builds a host-api peer with `sm` whose `get` returns a fake session with `pluginSubscribers`; grants `sessions.read`; calls the `sessions.subscribe` handler; asserts `{ ok: true }` and that a subsequent pump-push to `session.pluginSubscribers` produces a `sessions.event` notification on the peer. Mirror the existing host-api test's peer/`callHost` helpers:
 
 ```ts
 it('sessions.subscribe requires sessions.read and registers a session plugin subscriber', async () => {
@@ -428,7 +418,7 @@ it('sessions.subscribe requires sessions.read and registers a session plugin sub
 })
 ```
 
-Add a `case` that asserts denial without the grant (extend the existing not-granted assertions to include `sessions.subscribe`).
+Add a case asserting denial without the grant (extend the existing not-granted assertions to include `sessions.subscribe`).
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -437,13 +427,14 @@ Expected: FAIL — `sessions.subscribe` not registered.
 
 - [ ] **Step 3: Implement**
 
-`server/app-plugins/host/session-adapter.ts` — add (delegating to a registry the adapter gains):
+`server/app-plugins/host/session-adapter.ts` — build with the peer + registry; add `subscribe`:
 
 ```ts
 export class SessionAdapter {
   constructor(
     private readonly sm: SessionManager,
     private readonly perm: PermissionChecker,
+    private readonly peer: RpcPeer,
     private readonly subscriptions: SessionSubscriptionRegistry,
   ) {}
 
@@ -457,11 +448,12 @@ export class SessionAdapter {
 }
 ```
 
-Note: `SessionAdapter` needs the `RpcPeer`. Build the adapter with the peer at construction (add a `peer` field). The registry is constructed in `registerHostApi`.
-
-`server/app-plugins/host/host-api.ts` — construct the registry with `getSession` that unwraps the manager, build the adapter with the peer + registry, register the handler, and return the registry:
+`server/app-plugins/host/host-api.ts` — build the registry with `getSession` unwrapping the manager, build the adapter with peer + registry, register the handler, return the registry:
 
 ```ts
+import type { Session } from '../../session-types.js'
+import { SessionSubscriptionRegistry } from '../../session-plugin-subscription.js'
+
 const subscriptions = new SessionSubscriptionRegistry({
   getSession: (id) => (ctx.sm as unknown as { get(id: string): Session | undefined }).get(id),
 })
@@ -475,18 +467,17 @@ peer.registerHandler('sessions.subscribe', async (p) => {
 return { storage, secrets, config, checker, subscriptions }
 ```
 
-Import `Session` and `SessionSubscriptionRegistry` at the top of `host-api.ts`.
-
 `server/app-plugins/plugin-process.ts` — hold the registry and drop on teardown:
 
 ```ts
 const res = registerHostApi(this.peer, { /* existing */ })
 this.host = res
 this.subscriptions = res.subscriptions
-// in deactivate(), after/around peer.close():
-this.subscriptions.dropPeer(this.peer)
+// in deactivate(): this.subscriptions.dropPeer(this.peer) before/around peer.close()
 // in kill(): this.subscriptions.dropPeer(this.peer)
 ```
+
+Add `private subscriptions!: SessionSubscriptionRegistry` field to `PluginProcess`. Fix any construction/tests that assert the exact `registerHostApi` return object (add `subscriptions`).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -496,7 +487,7 @@ Expected: PASS.
 - [ ] **Step 5: Typecheck**
 
 Run: `npm run typecheck`
-Expected: clean. If `SessionAdapter` callers (host-api) don't pass the new args, fix them; if `PluginProcess` test constructs the host result with an exact object, extend it.
+Expected: clean.
 
 - [ ] **Step 6: Commit**
 
@@ -507,29 +498,116 @@ git commit -m "feat(app-plugins): sessions.subscribe host api + peer lifecycle c
 
 ---
 
-## Task 5: Feishu plugin scaffold + child runtime
+## Task 5: Acceptance fixture — no-network consumer of `sessions.subscribe`
 
 **Files:**
-- Create: `plugins/feishu/crw-plugin.json`
-- Create: `plugins/feishu/package.json`
-- Create: `plugins/feishu/tsconfig.json`
-- Create: `plugins/feishu/src/runtime.ts`
-- Create: `plugins/feishu/src/main.ts`
-- Create: `plugins/feishu/src/runtime.test.ts`
+- Create: `fixtures/app-plugins/fixture.session-subscription/crw-plugin.json`
+- Create: `fixtures/app-plugins/fixture.session-subscription/dist/service.mjs`
+- Create: `fixtures/app-plugins/fixture.session-subscription/src/*` (source, if you keep fixture source in-repo)
+- Test: `fixtures/app-plugins/fixture-session-subscription.test.ts` (or extend an existing fixture test — grep first)
 
 **Interfaces:**
-- Consumes: host JSON-RPC contract: `activate` / `executeCommand` / `deactivate` inbound; `sessions.event` inbound notification (Task 4); Host API calls `storage.get/set`, `secrets.read/write`, `config.get`, `sessions.send`. Exact JSON-RPC over stdio per `fixtures/app-plugins/_lib/runtime.mjs`.
-- Produces: a plugin entry `src/main.ts` that exports a default `Runtime` wiring a child runtime. `runtime.ts` exposes `setupRuntime({ activate, executeCommand, deactivate, onSessionEvent, callHost }): RpcPlug`.
+- Consumes: `sessions.subscribe` (Host API, Task 4) + the `sessions.event` notification (Task 3). No network. This fixture is how the host repo itself exercises the outbound stream without depending on the independent Feishu plugin.
+- Produces: a plugin whose activation calls `sessions.subscribe` on a chosen session, buffers assistant text, and surfaces it via the `app.event` widget path / command result — proving host→plugin outbound delivery end-to-end in CI.
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// plugins/feishu/src/runtime.test.ts
-import { describe, it, expect, vi } from 'vitest'
-// runtime must let a caller register a sessions.event handler and dispatch
-// a host notification to it. Design the runtime so this is testable without
-// spawning a process: extract a pure dispatch function.
+// fixtures/app-plugins/fixture-session-subscription.test.ts
+import { describe, it, expect } from 'vitest'
+// Drive the fixture's service scripts? Follow the existing fixture test
+// conventions (see fixtures.test.ts / plugin-runtime.test.ts) — the
+// assertion is that a host session event fans out to the child as a
+// sessions.event notification the fixture's runtime dispatches to its
+// configured handler.
+describe('fixture.session-subscription', () => {
+  it('routes shared SDKMessage frames to the plugin', () => {
+    // Use the host test harness to: activate the fixture with a fake
+    // session, subscribe, push an assistant message through
+    // session.pluginSubscribers, and assert the child's surfaced result
+    // (widget payload or command result) contains the text.
+  })
+})
+```
 
+This test exercises the full host→child path (registry → peer.notify → child runtime dispatch → plugin handler), the "protocol contract test" the spec requires. Reuse whatever harness `plugin-runtime.test.ts` / `fixtures.test.ts` uses to spawn a real child.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run fixtures/app-plugins/fixture-session-subscription.test.ts`
+Expected: FAIL — fixture/module missing.
+
+- [ ] **Step 3: Implement**
+
+`fixtures/app-plugins/fixture.session-subscription/crw-plugin.json`:
+```json
+{
+  "manifestVersion": 1,
+  "id": "fixture.session-subscription",
+  "name": "Fixture: Session Subscription",
+  "description": "Framework-verification fixture: subscribes to a session's outbound stream and surfaces assistant text. No network.",
+  "version": "1.0.0",
+  "publisher": "claude-react-web",
+  "license": "MIT",
+  "engines": { "claudeReactWeb": "^0.6.0", "node": ">=20" },
+  "runtime": { "service": "dist/service.mjs" },
+  "activationEvents": ["onStartup"],
+  "permissions": ["sessions.read"],
+  "contributes": {
+    "commands": [
+      { "id": "fixture.session-subscription.bind", "title": "Fixture: subscribe to session", "category": "session", "showInPalette": true }
+    ]
+  }
+}
+```
+
+`fixtures/app-plugins/fixture.session-subscription/dist/service.mjs` — child runtime (pattern from `fixtures/app-plugins/_lib/runtime.mjs`) that:
+- on `activate`, calls host `sessions.list` (to enumerate) and, if a session is bound (via the command or a fixed id), calls `sessions.subscribe { sessionId }`; stores the returned unsubscribe.
+- on `sessions.event` notification (`{ kind:'message', sessionId, message }`), accumulates `message.type==='assistant'` text blocks into a buffer.
+- on `executeCommand` for `fixture.session-subscription.bind`, returns a `PluginCommandResult` whose `message.text` is the buffered text (the visible proof of deltas) or "subscribed" after wiring.
+- on `deactivate`, calls unsubscribe.
+
+Follow `fixtures/app-plugins/_lib/runtime.mjs` and one existing fixture (`fixture.nyan` / `fixture.declarative`) for exact shape (handler map, `callHost`, stdio loop). Source may live under `src/` and be committed as built → `dist/service.mjs`, or hand-author the `.mjs` directly like `fixture.nyan` does; prefer matching the closest existing fixture's convention.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run fixtures/app-plugins/fixture-session-subscription.test.ts`
+Expected: PASS — proves the outbound stream reaches a real child.
+
+- [ ] **Step 5: Typecheck + full host suite**
+
+Run: `npm run typecheck && npm run test`
+Expected: clean; no regressions.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add fixtures/app-plugins/fixture.session-subscription fixtures/app-plugins/fixture-session-subscription.test.ts
+git commit -m "test(fixtures): acceptance fixture for session outbound subscription (sessions.event)"
+```
+
+---
+
+## Task 6: Independent plugin repo — scaffold + child runtime
+
+**Files (all inside the independent Feishu repo checkout; "Bridged" here by `feishu.bridge/` as the marketplace plugin subdir at the repo root):**
+- Create: `feishu.bridge/crw-plugin.json`
+- Create: `feishu.bridge/package.json`
+- Create: `feishu.bridge/tsconfig.json`
+- Create: `feishu.bridge/app-plugins-marketplace.json` (repo root: catalog listing `feishu.bridge`)
+- Create: `feishu.bridge/src/runtime.ts`
+- Create: `feishu.bridge/src/main.ts`
+- Create: `feishu.bridge/src/runtime.test.ts`
+
+**Interfaces:**
+- Consumes: host JSON-RPC contract: `activate` / `executeCommand` / `deactivate` inbound; `sessions.event` inbound notification (Task 4); Host API calls `storage.get/set`, `secrets.read/write`, `config.get`, `sessions.send`, `sessions.subscribe`. Exact JSON-RPC over stdio per `fixtures/app-plugins/_lib/runtime.mjs` (copied into this repo's `runtime.ts`).
+- Produces: a plugin entry `src/main.ts` exporting `createPlugin()`. `runtime.ts` exposes `setupRuntime(handlers)` and a pure `dispatchInbound(msg, handlers)`.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// feishu.bridge/src/runtime.test.ts
+import { describe, it, expect, vi } from 'vitest'
 import { dispatchInbound } from './runtime.js'
 
 describe('runtime inbound dispatch', () => {
@@ -544,39 +622,44 @@ describe('runtime inbound dispatch', () => {
 })
 ```
 
-Make `dispatchInbound` a pure, exported function in `runtime.ts` so the stdio loop and the tests share one dispatch path.
+Make `dispatchInbound` a pure, exported function so the stdio loop and tests share one dispatch path.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run plugins/feishu/src/runtime.test.ts`
+Run: `npx vitest run feishu.bridge/src/runtime.test.ts`
 Expected: FAIL — `dispatchInbound` undefined.
 
 - [ ] **Step 3: Implement**
 
-`plugins/feishu/package.json`:
+`feishu.bridge/package.json`:
 ```json
 {
-  "name": "feishu-integration-plugin",
+  "name": "feishu-bridge-plugin",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc && esbuild src/main.ts --bundle --platform=node --format=esm --outfile=dist/service.mjs",
+    "build": "tsc && esbuild src/main.ts --bundle --platform=node --format=esm --outfile=dist/service.mjs --external:@larksuiteoapi/node-sdk",
     "test": "vitest run"
   },
-  "dependencies": {
-    "@larksuiteoapi/node-sdk": "^6.0.0"
-  },
+  "dependencies": { "@larksuiteoapi/node-sdk": "^6.0.0" },
   "devDependencies": {
-    "typescript": "^5.0.0",
-    "esbuild": "^0.19.0",
-    "vitest": "^1.0.0",
-    "@types/node": "^20.0.0"
+    "typescript": "^5.0.0", "esbuild": "^0.19.0", "vitest": "^1.0.0", "@types/node": "^20.0.0"
   }
 }
 ```
 
-`plugins/feishu/crw-plugin.json`:
+`feishu.bridge/app-plugins-marketplace.json` (repo root):
+```json
+{
+  "name": "Feishu Bridge",
+  "plugins": [
+    { "id": "feishu.bridge", "dir": "feishu.bridge" }
+  ]
+}
+```
+
+`feishu.bridge/crw-plugin.json`:
 ```json
 {
   "manifestVersion": 1,
@@ -584,7 +667,7 @@ Expected: FAIL — `dispatchInbound` undefined.
   "name": "Feishu Bridge",
   "description": "Bridge a Feishu/Lark chat to a native Claude session",
   "version": "0.1.0",
-  "publisher": "claude-react-web",
+  "publisher": "feishu-bridge",
   "license": "MIT",
   "engines": { "claudeReactWeb": "^0.6.0", "node": ">=20" },
   "runtime": { "service": "dist/service.mjs" },
@@ -599,14 +682,15 @@ Expected: FAIL — `dispatchInbound` undefined.
         { "key": "feishu.bridge.appId", "type": "string", "title": "Feishu App ID" },
         { "key": "feishu.bridge.appSecret", "type": "string", "title": "Feishu App Secret" },
         { "key": "feishu.bridge.allowChats", "type": "array", "items": "string", "title": "Allowed chat IDs" },
-        { "key": "feishu.bridge.groupOnly", "type": "boolean", "title": "Group chat only", "default": false }
+        { "key": "feishu.bridge.groupOnly", "type": "boolean", "title": "Group chat only", "default": false },
+        { "key": "feishu.bridge.sessionId", "type": "string", "title": "Default bound native session id" }
       ]
     }
   }
 }
 ```
 
-`plugins/feishu/tsconfig.json`:
+`feishu.bridge/tsconfig.json`:
 ```json
 {
   "compilerOptions": {
@@ -618,7 +702,7 @@ Expected: FAIL — `dispatchInbound` undefined.
 }
 ```
 
-`plugins/feishu/src/runtime.ts` (pure dispatch + stdio loop):
+`feishu.bridge/src/runtime.ts` (pure dispatch + stdio loop):
 ```ts
 import readline from 'node:readline'
 
@@ -626,30 +710,59 @@ export interface PluginHandlers {
   activate?: (params: any) => Promise<any>
   executeCommand?: (params: any) => Promise<any>
   deactivate?: (params: any) => Promise<any>
-  onSessionEvent: (event: any) => void
+  onSessionEvent: (params: any) => void
 }
 
-/** Pure dispatch: route one inbound JSON-RPC msg. Separated from the stdio
- *  loop so tests exercise the same path. */
 export function dispatchInbound(msg: any, handlers: PluginHandlers): void {
   if (!msg || typeof msg !== 'object') return
   if ('method' in msg && msg.method === 'sessions.event') {
     handlers.onSessionEvent(msg.params)
-    return
   }
 }
 
-export interface RpcPlug {
-  callHost: (method: string, params?: any) => Promise<any>
-}
+export interface RpcPlug { callHost: (method: string, params?: any) => Promise<any> }
 
-/** Wire the stdio JSON-RPC loop (pattern from fixtures/_lib/runtime.mjs). */
 export function setupRuntime(handlers: PluginHandlers): RpcPlug {
-  return { callHost: () => Promise.resolve() }
+  // stdio JSON-RPC loop (pattern from fixtures/app-plugins/_lib/runtime.mjs).
+  // Reads newline-delimited JSON-RPC from stdin, dispatches via
+  // dispatchInbound, responds to requests, and provides callHost(). Full
+  // implementation here; completes in Task 10 main wiring.
+  const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>()
+  let nextId = 1
+  const rl = readline.createInterface({ input: process.stdin })
+  const send = (msg: unknown) => process.stdout.write(JSON.stringify(msg) + '\n')
+  const callHost = (method: string, params?: any): Promise<any> =>
+    new Promise((resolve, reject) => {
+      const id = nextId++
+      pending.set(id, { resolve, reject })
+      send({ jsonrpc: '2.0', id, method, params })
+    })
+  rl.on('line', (line) => {
+    let msg: any
+    try { msg = JSON.parse(line) } catch { return }
+    if (!msg || typeof msg !== 'object') return
+    if ('id' in msg && ('result' in msg || 'error' in msg)) {
+      const p = pending.get(msg.id)
+      if (!p) return
+      pending.delete(msg.id)
+      if (msg.error) p.reject(new Error(msg.error.message)); else p.resolve(msg.result)
+      return
+    }
+    if ('method' in msg) {
+      if (!('id' in msg)) { dispatchInbound(msg, handlers); return } // notification
+      const handler = (handlers as any)[msg.method]
+      Promise.resolve(handler ? handler(msg.params) : undefined).then(
+        (result) => send({ jsonrpc: '2.0', id: msg.id, result: result ?? null }),
+        (err: Error) => send({ jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: err.message } }),
+      )
+    }
+  })
+  globalThis.__callHost = callHost
+  return { callHost }
 }
 ```
 
-`plugins/feishu/src/main.ts`:
+`feishu.bridge/src/main.ts`:
 ```ts
 import { setupRuntime, type PluginHandlers } from './runtime.js'
 
@@ -658,68 +771,68 @@ export function createPlugin(): PluginHandlers {
     activate: async () => ({ ok: true }),
     executeCommand: async () => ({ kind: 'message', title: 'Feishu Bridge not configured' }),
     deactivate: async () => ({ ok: true }),
-    onSessionEvent: () => { /* wired in Task 9 */ },
+    onSessionEvent: () => { /* wired in Task 10 */ },
   }
 }
 
-if (process.env.NODE_ENV !== 'test') {
-  setupRuntime(createPlugin()) // populates callHost; full main wiring in Task 9
-  // NOTE: real entry starts the stdio loop. For this scaffold, wire in Task 9.
+export function main(): void {
+  if (process.env.NODE_ENV !== 'test') {
+    setupRuntime(createPlugin())
+  }
 }
+
+if (require.main === module) main()
 ```
 
-For this task the stdio loop may be stubbed; Task 9 completes `main.ts` with the real loop + `callHost`. Keep `setupRuntime`'s stdio loop implementation for Task 9.
+The `require.main === module` guard keeps unit tests from starting the stdio loop.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npx vitest run plugins/feishu/src/runtime.test.ts`
+Run: `cd feishu.bridge && npx vitest run src/runtime.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Build the plugin service**
+- [ ] **Step 5: Build**
 
-Run: `cd plugins/feishu && npm install && npm run build`
-Expected: `plugins/feishu/dist/service.mjs` appears (this is a throwaway scaffold; the real one lands in Task 9). Confirm `plugins/` is eslint-ignored (it is) so this doesn't break lint.
+Run: `cd feishu.bridge && npm install && npm run build`
+Expected: `feishu.bridge/dist/service.mjs` appears (ESM, `--external:@larksuiteoapi/node-sdk`).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Commit** (in the independent repo)
 
 ```bash
-git add plugins/feishu
-git commit -m "feat(feishu): plugin scaffold + child runtime dispatch (sessions.event)"
+git add feishu.bridge
+git commit -m "feat(feishu): independent plugin scaffold + marketplace catalog + child runtime"
 ```
 
 ---
 
-## Task 6: Feishu bot client (receive text, reply text) — stubbed-verifiable
+## Task 7: Feishu bot client (receive text, reply text) — stubbed-verifiable
 
-**Files:**
-- Create: `plugins/feishu/src/bot.ts`
-- Create: `plugins/feishu/src/bot.test.ts`
+**Files (independent repo):**
+- Create: `feishu.bridge/src/bot.ts`
+- Create: `feishu.bridge/src/bot.test.ts`
 
 **Interfaces:**
-- Consumes: `callHost('secrets.read', { key })`; `@larksuiteoapi/node-sdk` `App`/`createNodeAdapter`.
+- Consumes: `callHost('secrets.read', { key })`; `@larksuiteoapi/node-sdk` `App`.
 - Produces:
   - `interface BridgeMessage { chatId: string; senderId: string; senderName: string; text: string; isGroup: boolean; atBot: boolean }`
-  - `class FeishuBot` with `constructor(opts: { appId: string; appSecret: string })`, `start(): Promise<void>`, `stop(): Promise<void>`, `onMessage?: (m: BridgeMessage) => void`, `replyText(chatId: string, text: string): Promise<void>`.
-  - Pure helpers `parseMessageEvent(raw): BridgeMessage | null` and `isAllowed(chatId, allowChats, groupOnly, m): boolean` exported for tests (SDK interaction stubbed).
+  - `class FeishuBot` with `constructor(opts: { appId: string; appSecret: string; allowChats: string[]; groupOnly: boolean; createApp?: (o:any)=>App })`, `start()`, `stop()`, `onMessage?: (m: BridgeMessage) => void`, `replyText(chatId: string, text: string): Promise<void>`.
+  - Pure `parseMessageEvent(raw): BridgeMessage | null` and `isAllowed(chatId, allowChats, groupOnly, m): boolean` for tests (SDK interaction stubbed).
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// plugins/feishu/src/bot.test.ts
+// feishu.bridge/src/bot.test.ts
 import { describe, it, expect } from 'vitest'
 import { parseMessageEvent, isAllowed } from './bot.js'
 
 describe('parseMessageEvent', () => {
   it('extracts text + sender from a receive_v1 event', () => {
-    const ev = {
-      event: {
-        message: { message_id: 'm1', message_type: 'text', content: JSON.stringify({ text: 'hi' }) },
-        sender: { sender_type: 'user', sender_id: { open_id: 'u1' } },
-        chat_id: 'oc_1',
-      },
-    }
-    const m = parseMessageEvent(ev)
-    expect(m).toMatchObject({ chatId: 'oc_1', senderId: 'u1', text: 'hi' })
+    const ev = { event: {
+      message: { message_id: 'm1', message_type: 'text', content: JSON.stringify({ text: 'hi' }) },
+      sender: { sender_type: 'user', sender_id: { open_id: 'u1' } },
+      chat_id: 'oc_1',
+    } }
+    expect(parseMessageEvent(ev)).toMatchObject({ chatId: 'oc_1', senderId: 'u1', text: 'hi' })
   })
   it('returns null for bot messages and non-text', () => {
     expect(parseMessageEvent({ event: { sender: { sender_type: 'bot' } } })).toBeNull()
@@ -739,16 +852,13 @@ describe('isAllowed', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd plugins/feishu && npx vitest run src/bot.test.ts`
+Run: `cd feishu.bridge && npx vitest run src/bot.test.ts`
 Expected: FAIL — `parseMessageEvent` / `isAllowed` undefined.
 
 - [ ] **Step 3: Implement** (`bot.ts`)
 
-Pure helpers + a bot class with the Feishu SDK adapter; SDK calls are thin and stubbed in tests — never real network in CI. Minimal:
-
 ```ts
-import { App, createNodeAdapter } from '@larksuiteoapi/node-sdk'
-import type { RpcPlug } from './runtime.js'
+import type { App } from '@larksuiteoapi/node-sdk'
 
 export interface BridgeMessage {
   chatId: string; senderId: string; senderName: string; text: string
@@ -781,118 +891,99 @@ export function isAllowed(chatId: string, allowChats: string[], groupOnly: boole
 }
 
 export class FeishuBot {
-  readonly onMessage?: (m: BridgeMessage) => void
+  onMessage?: (m: BridgeMessage) => void
   private app?: App
   private adapter?: any
-  constructor(private readonly opts: { appId: string; appSecret: string }) {}
-  async start(): Promise<void> { /* create adapter, register onMessage via parse+filter, start WS — implemented in Task 7 against a testable seam */ }
+  constructor(private readonly opts: {
+    appId: string; appSecret: string; allowChats: string[]; groupOnly: boolean
+    createApp?: (o: { appId: string; appSecret: string }) => App
+  }) {}
+  async start(): Promise<void> { /* SDK wiring in Task 8; stub throws until then */ }
   async stop(): Promise<void> { /* close */ }
-  async replyText(chatId: string, text: string): Promise<void> { /* call adapter.sendText — implemented Task 7; throw if not started */ }
+  async replyText(chatId: string, text: string): Promise<void> { /* SDK wiring in Task 8 */ }
 }
 ```
 
-For **this** task, leave `start/replyText` minimal stubs that throw `new Error('not started')` unless started; the message parsing + filtering logic (the testable surface) is complete. Task 7 fills the live SDK wiring behind the same signature. (This keeps Task 6 purely testable without the SDK.)
+For **this** task, `start`/`replyText` may throw `new Error('not started')` until started; the parsing/filtering surface is complete and tested. Task 8 fills the live SDK wiring behind the same signature.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd plugins/feishu && npx vitest run src/bot.test.ts`
+Run: `cd feishu.bridge && npx vitest run src/bot.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit** (in the independent repo)
 
 ```bash
-git add plugins/feishu/src/bot.ts plugins/feishu/src/bot.test.ts
+git add feishu.bridge/src/bot.ts feishu.bridge/src/bot.test.ts
 git commit -m "feat(feishu): bot message-parse + allow filters (testable seam)"
 ```
 
 ---
 
-## Task 7: Live Feishu SDK wiring (receive + reply over long connection)
+## Task 8: Live Feishu SDK wiring (receive + reply over long connection)
 
-**Files:**
-- Modify: `plugins/feishu/src/bot.ts` (fill `start`/`replyText`)
-- Test: `plugins/feishu/src/bot.sdk.test.ts` — SDK interaction mocked; no real network
+**Files (independent repo):**
+- Modify: `feishu.bridge/src/bot.ts` (fill `start`/`replyText`)
+- Test: `feishu.bridge/src/bot.sdk.test.ts` — SDK mocked; no real network
 
 **Interfaces:**
-- Consumes: `parseMessageEvent`, `isAllowed`, `FeishuBot` shape from Task 6; secrets via `callHost`.
-- Produces: `FeishuBot.start()` connects the Feishu long connection, routes incoming text to `onMessage` after `isAllowed` filtering; `replyText` sends a text message.
+- Consumes: `parseMessageEvent`, `isAllowed`, `FeishuBot` shape (Task 7).
+- Produces: `FeishuBot.start()` connects the Feishu long connection, routes incoming text to `onMessage` after `isAllowed`; `replyText` sends a text message. Uses the injectable `createApp` factory so tests stub the SDK.
 
-- [ ] **Step 1: Write the failing test** (mock the SDK, assert it's invoked correctly)
+- [ ] **Step 1: Write the failing test** (mock the SDK via injected factory)
 
-```ts
-// plugins/feishu/src/bot.sdk.test.ts
-import { describe, it, expect, vi } from 'vitest'
-import { FeishuBot } from './bot.js'
-// Mock @larksuiteoapi/node-sdk before importing bot.ts, or inject a client.
-// Design FeishuBot to accept an injected `createAdapter` so tests pass a stub.
-```
-
-Refactor `FeishuBot` to accept an injectable adapter factory (`createApp?: (opts) => App`) defaulting to the real SDK. The test injects a stub whose `im.message.create` records calls, then asserts `replyText('oc_1','hi')` sends `{ receive_id:'oc_1', msg_type:'text', content: JSON.stringify({text:'hi'}) }`. A second test drives `onMessage` by invoking the registered event callback directly with a crafted receive_v1 event and asserting `onMessage` fired with the parsed `BridgeMessage`.
+Refactor `FeishuBot` to use `this.opts.createApp` (default = real `@larksuiteoapi/node-sdk`). Test injects a stub whose `im.message.create` records calls; asserts `replyText('oc_1','hi')` sends `{ receive_id:'oc_1', msg_type:'text', content: JSON.stringify({text:'hi'}) }`. A second test drives `onMessage` by invoking the registered event callback with a crafted receive_v1 event and asserts the parsed `BridgeMessage` reached it.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd plugins/feishu && npx vitest run src/bot.sdk.test.ts`
+Run: `cd feishu.bridge && npx vitest run src/bot.sdk.test.ts`
 Expected: FAIL — messages not sent / events not routed.
 
 - [ ] **Step 3: Implement**
 
-In `FeishuBot.start()`: create the adapter via the injected factory (or the real SDK), register a message-receive handler that runs `parseMessageEvent` → applies `isAllowed` using the bot's config → calls `this.onMessage`. In `replyText`, call the SDK `im.message.create` with `receive_id_type: 'chat_id'` and a text message. Store credentials resolution from secrets (read `feishu.appSecret` at start). Keep the SDK surface behind the injectable factory.
-
-Exact SDK code (to be adapted if the installed `@larksuiteoapi/node-sdk` version's API differs — check its types):
-
-```ts
-const adapter = createNodeAdapter(this.app) // createNodeAdapter(startEventClient)
-adapter.on('im.message.receive_v1', async (event: any) => {
-  const m = parseMessageEvent(event)
-  if (!m) return
-  if (!isAllowed(m.chatId, this.allowChats, this.groupOnly, m)) return
-  this.onMessage?.(m)
-})
-await adapter.start()
-```
+In `FeishuBot.start()`: create the app via `createApp`; register a message-receive handler that runs `parseMessageEvent` → `isAllowed` → `this.onMessage`. In `replyText`, call the SDK `im.message.create` with `receive_id_type: 'chat_id'` and text content. Resolve credentials from `callHost('secrets.read', { key: 'feishu.appSecret' })` (the appId/secret also come from `config.get`; `main.ts` passes them in). Exact SDK surface per the installed `@larksuiteoapi/node-sdk` types (verify method names against its typings at implementation time — the seams `app`/`adapter` are untyped `any` in this layer precisely so the SDK version can't propagate).
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cd plugins/feishu && npx vitest run src/bot.sdk.test.ts`
+Run: `cd feishu.bridge && npx vitest run src/bot.sdk.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Build**
 
-Run: `cd plugins/feishu && npm run build`
+Run: `cd feishu.bridge && npm run build`
 Expected: `dist/service.mjs` builds.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Commit** (in the independent repo)
 
 ```bash
-git add plugins/feishu/src/bot.ts plugins/feishu/src/bot.sdk.test.ts
+git add feishu.bridge/src/bot.ts feishu.bridge/src/bot.sdk.test.ts
 git commit -m "feat(feishu): live Feishu long-connection receive + reply"
 ```
 
 ---
 
-## Task 8: Bridge (mapping + send) and Stream (subscribe + aggregate)
+## Task 9: Bridge (mapping + send) and Stream (subscribe + aggregate)
 
-**Files:**
-- Create: `plugins/feishu/src/bridge.ts`
-- Create: `plugins/feishu/src/bridge.test.ts`
-- Create: `plugins/feishu/src/stream.ts`
-- Create: `plugins/feishu/src/stream.test.ts`
+**Files (independent repo):**
+- Create: `feishu.bridge/src/bridge.ts`, `feishu.bridge/src/bridge.test.ts`
+- Create: `feishu.bridge/src/stream.ts`, `feishu.bridge/src/stream.test.ts`
 
 **Interfaces:**
-- Consumes: `callHost('sessions.send', { sessionId, text })`; `callHost('sessions.subscribe', { sessionId })` returning `{ ok, unsubscribe }`; storage mapping keys via `callHost('storage.get'/'storage.set')`; `BridgeMessage` (Task 6); the `sessions.event` payload from Task 3 (`{ kind, sessionId, message }`).
+- Consumes: `callHost('sessions.send', { sessionId, text })`; `callHost('sessions.subscribe', { sessionId })` returning `{ ok, unsubscribe }`; `callHost('storage.get'/'storage.set')` for the mapping; `BridgeMessage` (Task 7); `sessions.event` payload (Task 3: `{ kind, sessionId, message }`).
 - Produces:
-  - `bridge.ts`: `class Bridge` with `constructor(callHost)`, `async route(m: BridgeMessage): Promise<string>` (returns a human-readable error string or ''), and mapping helpers `getSessionId(chatId)`, `setMapping(chatId, sessionId)`. Sends `sessions.send`.
-  - `stream.ts`: `class StreamRouter` with `constructor(callHost, { onReply })`, `async attach(sessionId): Promise<void>` (subscribes `sessions.event`), `handleSessionEvent(ev)` (aggregates `kind==='message'` assistant text blocks + result frames into a string; on turn-end returns a final text), and `onReply`.
+  - `bridge.ts`: `class Bridge { constructor(callHost); route(m: BridgeMessage): Promise<string>; getSessionId(chatId); setMapping(chatId, sessionId) }` — `route` returns '' on success or a human error string.
+  - `stream.ts`: `class StreamRouter { constructor(callHost, { onReply }); async attach(sessionId); handleSessionEvent(ev); detach() }` — aggregates assistant text; on `kind==='message'` with message `type==='result'`, emits `onReply(trimmedText)`.
+  - `chunkText(text, max=4000): string[]` helper for Feishu's per-message length cap.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-// plugins/feishu/src/bridge.test.ts
+// feishu.bridge/src/bridge.test.ts
 import { describe, it, expect, vi } from 'vitest'
 import { Bridge } from './bridge.js'
 
 describe('Bridge.route', () => {
-  it('sends a mapped message to the session and returns empty (ok) on queue', async () => {
+  it('sends a mapped message to the session and returns empty (ok)', async () => {
     const callHost = vi.fn(async (m: string, p: any) => {
       if (m === 'storage.get') return { value: null }
       if (m === 'storage.set') return null
@@ -907,15 +998,15 @@ describe('Bridge.route', () => {
   it('returns an error string when there is no mapping', async () => {
     const callHost = vi.fn(async () => ({ value: null }))
     const b = new Bridge(callHost as any)
-    expect(await b.route({ chatId: 'oc_x', text: 'hi', /* ... */ } as any)).toMatch(/no session/i)
+    expect(await b.route({ chatId: 'oc_x', text: 'hi', /* other fields */ } as any)).toMatch(/no session/i)
   })
 })
 ```
 
 ```ts
-// plugins/feishu/src/stream.test.ts
+// feishu.bridge/src/stream.test.ts
 import { describe, it, expect, vi } from 'vitest'
-import { StreamRouter } from './stream.js'
+import { StreamRouter, chunkText } from './stream.js'
 
 describe('StreamRouter', () => {
   it('aggregates assistant text blocks into the reply', async () => {
@@ -931,12 +1022,18 @@ describe('StreamRouter', () => {
     expect(onReply.mock.calls[0][0]).toBe('Hello world')
   })
 })
+
+describe('chunkText', () => {
+  it('splits long text at Feishu length cap', () => {
+    expect(chunkText('x'.repeat(9000), 4000).map((c) => c.length)).toEqual([4000, 4000, 1000])
+  })
+})
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd plugins/feishu && npx vitest run src/bridge.test.ts src/stream.test.ts`
-Expected: FAIL — modules/methods undefined.
+Run: `cd feishu.bridge && npx vitest run src/bridge.test.ts src/stream.test.ts`
+Expected: FAIL — modules undefined.
 
 - [ ] **Step 3: Implement**
 
@@ -946,7 +1043,6 @@ import type { BridgeMessage } from './bot.js'
 
 export class Bridge {
   constructor(private readonly callHost: (m: string, p?: any) => Promise<any>) {}
-
   async getSessionId(chatId: string): Promise<string | null> {
     const r = await this.callHost('storage.get', { scope: 'workspace', key: `mapping:${chatId}` })
     return r?.value ?? null
@@ -954,8 +1050,6 @@ export class Bridge {
   async setMapping(chatId: string, sessionId: string): Promise<void> {
     await this.callHost('storage.set', { scope: 'workspace', key: `mapping:${chatId}`, value: sessionId })
   }
-  /** Route a Feishu message → sessions.send. Returns '' on success, or a
-   *  human error string to reply back to Feishu. */
   async route(m: BridgeMessage): Promise<string> {
     const sessionId = await this.getSessionId(m.chatId)
     if (!sessionId) return 'No session is bound to this chat. Bind one first.'
@@ -967,21 +1061,24 @@ export class Bridge {
 
 `stream.ts`:
 ```ts
+export function chunkText(text: string, max = 4000): string[] {
+  const out: string[] = []
+  for (let i = 0; i < text.length; i += max) out.push(text.slice(i, i + max))
+  return out.length ? out : ['']
+}
+
 export class StreamRouter {
-  private buf = ''
   private claudeLine = ''
   private unsub: (() => void) | null = null
   constructor(
     private readonly callHost: (m: string, p?: any) => Promise<any>,
     private readonly opts: { onReply: (text: string) => void },
   ) {}
-
   async attach(sessionId: string): Promise<void> {
     const r = await this.callHost('sessions.subscribe', { sessionId })
     if (!r?.ok) return
     this.unsub = r.unsubscribe
   }
-
   handleSessionEvent(ev: any): void {
     if (ev?.kind !== 'message') return
     const message = ev.message
@@ -999,47 +1096,44 @@ export class StreamRouter {
       }
     }
   }
-
   detach(): void { this.unsub?.(); this.unsub = null }
 }
 ```
 
-The buffer/progress-card concerns (cc-connect `card.go` equivalent) are v2; v1 only assembles the final reply text on `result`. Long single-message replies over 4000 Feishu chars should be split — add a helper `chunkText(text, max=4000)` (test it) that `main.ts` uses before `replyText`.
+Progress cards / thinking rendering are v2; v1 assembles only the final reply on `result`. `main.ts` (Task 10) uses `chunkText` before each `replyText`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd plugins/feishu && npx vitest run src/bridge.test.ts src/stream.test.ts`
+Run: `cd feishu.bridge && npx vitest run src/bridge.test.ts src/stream.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit** (in the independent repo)
 
 ```bash
-git add plugins/feishu/src/bridge.ts plugins/feishu/src/bridge.test.ts plugins/feishu/src/stream.ts plugins/feishu/src/stream.test.ts
+git add feishu.bridge/src/bridge.ts feishu.bridge/src/bridge.test.ts feishu.bridge/src/stream.ts feishu.bridge/src/stream.test.ts
 git commit -m "feat(feishu): bridge mapping + stream subscribe/aggregate"
 ```
 
 ---
 
-## Task 9: Assemble main.ts (real stdio loop, config→bot/bridge/stream) + status
+## Task 10: Assemble main.ts (config→bot/bridge/stream) + status + README
 
-**Files:**
-- Modify: `plugins/feishu/src/main.ts` (full wiring)
-- Modify: `plugins/feishu/src/runtime.ts` (complete the stdio loop + real `callHost`)
-- Create: `plugins/feishu/src/status.ts`
-- Create: `plugins/feishu/src/status.test.ts`
-- Test: `plugins/feishu/src/main.test.ts`
+**Files (independent repo):**
+- Modify: `feishu.bridge/src/main.ts` (full wiring via `setupRuntime`)
+- Create: `feishu.bridge/src/status.ts`, `feishu.bridge/src/status.test.ts`
+- Create: `feishu.bridge/src/main.test.ts`
+- Create: `feishu.bridge/README.md`
 
 **Interfaces:**
-- Consumes: `setupRuntime` (Task 5), `FeishuBot` (Task 7), `Bridge` (Task 8), `StreamRouter` (Task 8), `config.get` host call for `appId/appSecret/allowChats/groupOnly`.
-- Produces: `main.ts` wires: on `activate` read `config.get`, construct `FeishuBot` + `Bridge` + `StreamRouter`; `bot.onMessage = m => bridge.route(m).then(err => err && bot.replyText(m.chatId, err))`; `stream.onReply = text => bot.replyText(chatId, text)`; `bot.start()`. `executeCommand` for `feishu.bridge.status` returns a message card with bot state; `onSessionEvent` feeds `stream.handleSessionEvent`. `deactivate` stops the bot. A `status.ts` pushes status via the `app.event` widget notification path (optional for v1 — a widget `stat-grid` showing "connected/stopped").
+- Consumes: `setupRuntime` (Task 6), `FeishuBot` (Task 8), `Bridge` (Task 9), `StreamRouter` (Task 9), `chunkText` (Task 9), `config.get` (appId/appSecret/allowChats/groupOnly/sessionId).
+- Produces: `main.ts` wires `activate` → read config, construct bot/bridge/stream, `bot.onMessage = m => bridge.route(m).then(err => err && bot.replyText(m.chatId, err))`, `stream.onReply = text => chunkText(text).forEach(c => bot.replyText(m.chatId, c))`, `bot.start()`; `onSessionEvent` → `stream.handleSessionEvent`; `executeCommand` `feishu.bridge.status`; `deactivate` → `bot.stop()`. `status.ts` exports `statusPayload(state)`.
 
-- [ ] **Step 1: Write the failing test** (status + config-drives-start)
+- [ ] **Step 1: Write the failing test**
 
 ```ts
-// plugins/feishu/src/status.test.ts
+// feishu.bridge/src/status.test.ts
 import { describe, it, expect } from 'vitest'
 import { statusPayload } from './status.js'
-
 describe('statusPayload', () => {
   it('produces a stat-grid payload reflecting bot state', () => {
     expect(statusPayload({ connected: true })).toMatchObject({ stats: expect.any(Array) })
@@ -1048,10 +1142,9 @@ describe('statusPayload', () => {
 ```
 
 ```ts
-// plugins/feishu/src/main.test.ts
-import { describe, it, expect, vi } from 'vitest'
+// feishu.bridge/src/main.test.ts
+import { describe, it, expect } from 'vitest'
 import { createPlugin } from './main.js'
-
 describe('createPlugin', () => {
   it('provides activate/executeCommand/deactivate/onSessionEvent handlers', () => {
     const p = createPlugin()
@@ -1063,8 +1156,8 @@ describe('createPlugin', () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd plugins/feishu && npx vitest run src/status.test.ts src/main.test.ts`
-Expected: FAIL — module/methods undefined.
+Run: `cd feishu.bridge && npx vitest run src/status.test.ts src/main.test.ts`
+Expected: FAIL — modules undefined.
 
 - [ ] **Step 3: Implement**
 
@@ -1080,42 +1173,39 @@ export function statusPayload(state: { connected: boolean; sessionCount?: number
 }
 ```
 
-`runtime.ts` — complete the stdio loop + real `callHost` (based on `fixtures/app-plugins/_lib/runtime.mjs`): read stdin lines, dispatch requests/notifications through `dispatchInbound`, keep a `pending` map, and write responses to stdout. Wire `sessions.event` and `app.event` (for status widget) into `dispatchInbound`.
+`main.ts` — full wiring. `createPlugin(overrides?)` for tests injects a `bot` factory; the real process entry calls `setupRuntime` on it. Read appId/appSecret from `config.get`; require both before `bot.start()` (else activation still succeeds but bot stays stopped — surface via status). Bind mapping: if `config.sessionId` is set, `bridge.setMapping` is skipped (mapping is per-chat; v1 binds the default session when a chat has no explicit map — i.e., `bridge.route` falls back to `sessionId` when the `mapping:chatId` key is empty). Implement that fallback in `bridge.ts` (add an optional default-session param to `Bridge`):
 
-`main.ts` — full wiring:
 ```ts
-import readline from 'node:readline'
-// ... (see Task 5 interface; complete the real entry here)
+export class Bridge {
+  constructor(callHost, private readonly defaultSessionId?: string) {}
+  async route(m: BridgeMessage): Promise<string> {
+    let sessionId = await this.getSessionId(m.chatId) ?? this.defaultSessionId ?? null
+    if (!sessionId) return 'No session is bound to this chat. Bind one first.'
+    await this.callHost('sessions.send', { sessionId, text: m.text })
+    return ''
+  }
+}
 ```
-
-Detailed wiring (both the pure `createPlugin(overrides)` for tests and the process-entry `main()` that starts the stdio loop):
-- `activate`: `config.get` → `{ appId, appSecret, allowChats, groupOnly }`; if `appId`/`appSecret` set, construct `bot`, `bridge`, `stream`; set `bot.onMessage` and `stream.onReply`; `await bot.start()`; return `{ ok: true }`.
-- `onSessionEvent(ev)`: `stream.handleSessionEvent(ev)`.
-- `executeCommand` for `feishu.bridge.status`: return a `PluginCommandResult` message reflecting `bot` connected state.
-- `deactivate`: `await bot?.stop()`; return `{ ok: true }`.
-
-Keep `NODE_ENV !== 'test'` guard (with an explicit "main() starts the stdio loop") so unit tests instantiate `createPlugin` without blocking on stdin.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd plugins/feishu && npx vitest run src/status.test.ts src/main.test.ts`
-Expected: PASS.
+Run: `cd feishu.bridge && npx vitest run`
+Expected: all pass (runtime, bot, bot.sdk, bridge, stream, status, main).
 
-- [ ] **Step 5: Build**
+- [ ] **Step 5: Build + verify manifest**
 
-Run: `cd plugins/feishu && npm run build`
-Expected: `dist/service.mjs` builds cleanly (ESM, no TS errors).
+Run: `cd feishu.bridge && npm run build`
+Expected: `dist/service.mjs` builds clean. Confirm `crw-plugin.json` validates against the host (local install test: `POST /api/app-plugins/install {source:{type:'local',path:'<repo>/feishu.bridge'}}` or marketplace add of the repo URL).
 
-- [ ] **Step 6: Typecheck + full test suite**
+- [ ] **Step 6: README**
 
-Run: `cd plugins/feishu && npx vitest run` then `npm run typecheck` at repo root (verify no regressions from `plugins/feishu` imports).
-Expected: all pass.
+Write `feishu.bridge/README.md`: Feishu Open Platform app setup (create app, enable long connection, subscribe to message receive), config values (appId/appSecret/allowChats/groupOnly/sessionId), install steps (add this repo as a marketplace in claude-react-web → install `feishu.bridge` → configure), the permission model note (v1 target session uses a relaxed permission mode; v2 adds card approval), and v1/v2 scope.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Commit** (in the independent repo)
 
 ```bash
-git add plugins/feishu
-git commit -m "feat(feishu): assemble plugin — config→bot→bridge→stream + status"
+git add feishu.bridge
+git commit -m "feat(feishu): assemble plugin — config→bot→bridge→stream + status + README"
 ```
 
 ---
@@ -1123,28 +1213,29 @@ git commit -m "feat(feishu): assemble plugin — config→bot→bridge→stream 
 ## Self-Review
 
 **1. Spec coverage:**
-- §2 sessions.subscribe host api → Tasks 1–4 (subscriber set, pump fan-out, registry, host-api + lifecycle).
-- §2 "reuse message 帧/BROADCAST_SYSTEM_SUBTYPES" → Task 2 (pump's `shouldBroadcastMessage` path is reused verbatim). ✓
-- §2 ledger cleanup (peer/session gone, replay buffer) → Task 3 `dropPeer`/`end`, Task 4 `PluginProcess` hooks; v1 no-history-backfill decision honored (registry starts from now). ✓
-- §3 payload types note → corrected: `SessionEventOut` lives server-side (Task 3), not `shared/`, because it carries an `SDKMessage`. Documented in Task 3. ✓
-- §4 child-side handler → no separate host `plugin-runtime.ts`; the child runtime is the plugin's own (Task 5 `runtime.ts`), which already dispatches `sessions.event`. Corrected vs spec. ✓
-- §6–8 Feishu plugin (manifest, bot, bridge mapping, stream, config, status, security, tests) → Tasks 5–9. ✓
-- Spec v1 scope (text-only, no card approval/images/progress) → honored (Task 8 note: card.go progress is v2). ✓
+- §2 `sessions.subscribe` host api → Tasks 1–4 (subscriber set, pump fan-out, registry, host-api + lifecycle).
+- §2 "reuse message 帧/BROADCAST_SYSTEM_SUBTYPES" → Task 2 (pump's `shouldBroadcastMessage` path reused verbatim). ✓
+- §2 ledger cleanup (peer/session gone) → Task 3 `dropPeer`/`end`, Task 4 `PluginProcess` hooks; v1 no-history-backfill honored. ✓
+- §3 payload server-side (`SessionEventOut`, `SDKMessage`) → Task 3; browser never imports it. ✓
+- §4 child handler in the plugin's own runtime (not a host file) → Task 6 `runtime.ts`; documented. ✓
+- §5 host tests → Tasks 1–5 (unit + acceptance fixture). The acceptance fixture (Task 5) is the "reusable framework ability" the review added. ✓
+- §6 independent marketplace repo structure → Task 6 (`app-plugins-marketplace.json` + `feishu.bridge/` subdir). ✓
+- §7 security (secrets, allow rail, explicit errors) → Tasks 7–10. ✓
+- §8 plugin tests → Tasks 7–10. ✓
 
-**2. Placeholder scan:** No TBD/TODO. All tasks contain concrete code, test samples, run/build/commit commands. Task 7 and Task 9's Feishu SDK wiring are the only steps that say "adapt to installed SDK types" — those are bound to a specific SDK whose exact method names I can't verify offline; they reference evaluation-live checks (`check its types`) rather than vague "implement later". The `start()`/`replyText` stubs with `throw new Error('not started')` are intentional early-TDD seams, not placeholders.
+**2. Placeholder scan:** No TBD/TODO. Every code step carries real code + test + run/build/commit commands. Task 8 and Task 10's Feishu SDK wiring say "verify against the installed SDK types at implementation time" — that is a live version check, not a vague placeholder (the SDK in the independent repo isn't installed here; the seams `app`/`adapter` are `any` so the version can't propagate). The `throw new Error('not started')` stubs in Task 7 are intentional early-TDD seams, not placeholders.
 
-**3. Type consistency:** `pluginSubscribers: Map<string, Subscriber>` defined Task 1, consumed Task 2–4. `SessionEventOut` union defined Task 3, consumed by `sessions.event` in Task 5/8/9. `BridgeMessage` defined Task 6, used Task 8–9. `callHost` type flows from Task 5 `RpcPlug` through Task 8/9. `sessions.subscribe` returns `{ ok, unsubscribe }` consistently in Tasks 4/8. `strip` helper names (`setupRuntime`, `dispatchInbound`, `createPlugin`, `parseMessageEvent`, `isAllowed`, `Bridge.route`, `StreamRouter.attach/handleSessionEvent`) are identical across tasks. ✓
+**3. Type consistency:** `pluginSubscribers: Map<string, Subscriber>` (Task 1) consumed in Tasks 2–4. `SessionEventOut` (Task 3) consumed by `sessions.event` in Tasks 5/6/9/10. `BridgeMessage` (Task 7) used Tasks 7–10. `callHost` flows from Task 6 `RpcPlug` through Tasks 7–10. `sessions.subscribe` returns `{ ok, unsubscribe }` consistently in Tasks 4/9. Names (`setupRuntime`, `dispatchInbound`, `createPlugin`, `parseMessageEvent`, `isAllowed`, `Bridge.route`, `StreamRouter.attach/handleSessionEvent`, `chunkText`, `statusPayload`) are identical across tasks. `SessionAdapter` gains the peer + registry via its constructor in Task 4 — any other construction sites are updated there. ✓
 
-**Gap noted:** Task 4's code has a temporary-`let entry` nuance flagged inline; nothing else is inconsistent.
+**Gap handled:** Host Tasks 1–5 land in the claude-react-web repo as a self-contained, self-verifying framework PR (+ acceptance fixture); the Feishu plugin ships in its own independent marketplace repo (Tasks 6–10) consuming the same `sessions.event` protocol.
 
 ---
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-09-03-feishu-plugin-session-subscription.md`. Wait — before executing, commit this plan (CLAUDE.md review rule: it's an unreviewed doc; I'll flag it for the code-review skill before merge, consistent with the repo convention).
-
 Two execution options:
-1. **Subagent-Driven (recommended)** — dispatch a fresh subagent per task, review between tasks, fast iteration.
+
+1. **Subagent-Driven (recommended)** — dispatch a fresh subagent per task, review between tasks, fast iteration. Host tasks 1–5 run in the claude-react-web checkout; plugin tasks 6–10 run in the independent Feishu repo checkout.
 2. **Inline Execution** — execute tasks in this session with checkpoints.
 
 Which approach?
