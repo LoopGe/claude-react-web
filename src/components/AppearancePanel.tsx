@@ -42,6 +42,8 @@ const SKIN_OPTIONS: { value: Skin; label: string; desc: string }[] = [
   { value: 'soft-hc', label: 'Soft High Contrast', desc: 'Near-B/W · rounded · contrast' },
 ]
 
+const BACKGROUND_DEFAULT: BackgroundSetting = { pref: { kind: 'none' }, opacity: 0.85 }
+
 /** Anthropic's locked brand accent (terracotta). Mirrors the value in
  *  styles.css's [data-skin="anthropic"] block — shown as a non-interactive
  *  swatch so users see the colour is fixed, not pickable. */
@@ -71,7 +73,7 @@ function AppearancePopover({
   onSkin,
   onMode,
   onAccent,
-  background = { pref: { kind: 'none' }, opacity: 0.85 },
+  background = BACKGROUND_DEFAULT,
   onBackgroundChange = () => {},
   anchor,
   onClose,
@@ -240,7 +242,7 @@ export function AppearancePanel({
   onSkin,
   onMode,
   onAccent,
-  background = { pref: { kind: 'none' }, opacity: 0.85 },
+  background = BACKGROUND_DEFAULT,
   onBackgroundChange = () => {},
   className,
 }: Props) {
