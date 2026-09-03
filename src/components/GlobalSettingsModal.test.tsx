@@ -136,7 +136,7 @@ describe('GlobalSettingsModal Server tab', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Server' })).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Server' }))
     // Content is gated on the /config/full fetch — wait for a Server-only control.
-    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Max open panels' })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Max group panels' })).toBeTruthy())
   }
 
   const save = () => fireEvent.click(screen.getByText('Save'))
@@ -145,7 +145,7 @@ describe('GlobalSettingsModal Server tab', () => {
     await openServerTab({
       maxUploadBytes: 30 * 1024 * 1024,
       historyCap: 1000,
-      maxOpenPanels: 4,
+      maxGroupPanels: 4,
       workingStuckMs: 3600000,
       showPinnedUserMessage: true,
       autoRecap: false,
@@ -159,7 +159,7 @@ describe('GlobalSettingsModal Server tab', () => {
     expect((screen.getByLabelText('Working-stuck timeout, in minutes') as HTMLInputElement).value).toBe('60')
     expect(screen.getByText('min')).toBeTruthy()
 
-    // Max open panels is a segmented picker; the configured value is active.
+    // Max group panels is a segmented picker; the configured value is active.
     expect(screen.getByRole('radio', { name: '4' }).getAttribute('aria-checked')).toBe('true')
 
     // Booleans render as switches reflecting the loaded values.
@@ -224,7 +224,7 @@ describe('GlobalSettingsModal Server tab', () => {
 
   it('persists a segmented panel choice and a switch flip', async () => {
     await openServerTab({
-      maxOpenPanels: 3,
+      maxGroupPanels: 3,
       showPinnedUserMessage: true,
       autoRecap: true,
       allowSensitivePathEdits: false,
@@ -236,7 +236,7 @@ describe('GlobalSettingsModal Server tab', () => {
     save()
     await waitFor(() => expect(api.put).toHaveBeenCalled())
     expect(vi.mocked(api.put)).toHaveBeenCalledWith('/config', expect.objectContaining({
-      maxOpenPanels: 5,
+      maxGroupPanels: 5,
       allowSensitivePathEdits: true,
     }))
   })

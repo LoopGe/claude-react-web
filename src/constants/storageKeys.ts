@@ -18,7 +18,7 @@ export const PANEL_MIN_RATIO_DEFAULT = 0.15
  *  as unread. Pruned when sessions disappear from the server. */
 export const LAST_SEEN_TURN_KEY = 'claude-react-web:last-seen-turn'
 
-/** Allowed range for the max-panels / max-sessions-per-group setting. */
+/** Allowed range for the max-group-panels / max-sessions-per-group setting. */
 export const MAX_OPEN_MIN = 2
 export const MAX_OPEN_MAX = 5
 /** Clamp a user-supplied max-open value to the allowed range. */

@@ -873,7 +873,7 @@
   color: var(--fg-muted);
 }
 
-/* Segmented control (Max open panels). */
+/* Segmented control (Max group panels). */
 .segmented {
   display: inline-flex;
   align-items: stretch;

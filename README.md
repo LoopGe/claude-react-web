@@ -115,7 +115,7 @@ Any other `ANTHROPIC_*` variable in the environment is forwarded to the SDK subp
 
 ### Configuration file
 
-Most server-side defaults (model list, recap model, commit-message model, upload limits, history cap, max open panels, etc.) are configured via `~/.claude-react-web/config.json`. See [CONFIG.md](./CONFIG.md) for the full field reference, or copy [`config.example.json`](./config.example.json) to get started:
+Most server-side defaults (model list, recap model, commit-message model, upload limits, history cap, max group panels, etc.) are configured via `~/.claude-react-web/config.json`. See [CONFIG.md](./CONFIG.md) for the full field reference, or copy [`config.example.json`](./config.example.json) to get started:
 
 ```bash
 mkdir -p ~/.claude-react-web

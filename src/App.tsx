@@ -50,6 +50,7 @@ import { useExitPresence } from './hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
 import { createCallbackRegistry, type CallbackRegistry } from './utils/callbackRegistry'
 import { shouldAutoResumeOnSelect } from './utils/select-resume'
+import { openTargetForSession } from './utils/open-target'
 
 // How long the evicted session X fades out (WAAPI, opacity only) before the
 // atomic X→Y swap commits. The replacement Y then fades in over X's empty
@@ -323,9 +324,10 @@ export function App() {
   const saveCurrentAsSnippet = useCallback((content: string) => {
     setPendingSnippetSave({ content })
   }, [])
-  /** Max number of chat panels open at once, and max sessions per group.
-   *  Shared setting because the main grid and groups should agree on
-   *  capacity. Server-driven via /api/config → config.json. */
+  /** Max sessions per group — and therefore max side-by-side panels, because
+   *  the grid is group-centric: it always shows either a single ungrouped
+   *  session or the members of one group (up to this many). Server-driven via
+   *  /api/config → config.json (`maxGroupPanels`). */
   const [serverMaxOpen, setServerMaxOpen] = useState<number>(3)
   // True at/below the mobile breakpoint (<=768px). Drives single-panel mode
   // and the drawer sidebar.
@@ -441,7 +443,7 @@ export function App() {
         if (r.configured === false) return
         setDefaults(r.defaults)
         if (r.models?.length) setServerModels(r.models)
-        if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
+        if (r.maxGroupPanels != null) setServerMaxOpen(r.maxGroupPanels)
         if (r.maxUploadBytes != null) setMaxUploadBytes(r.maxUploadBytes)
         setGlobalPrefs({
           showPinnedUserMessage: r.showPinnedUserMessage ?? true,
@@ -1057,6 +1059,62 @@ export function App() {
     [setLastSeenTurn],
   )
 
+  /** Unified "open a session in the main grid". Group-centric rule: the grid is
+   *  always one ungrouped session OR the members of one group (capped at
+   *  maxOpen). Opening a session that isn't part of the current view SWITCHES
+   *  the grid to that session's group / single panel instead of stacking it
+   *  beside the current panels — the pre-unification `openSession` behaviour
+   *  that let a foreign session mix into a group view. When the session is
+   *  already open but its group is only partially shown (a mobile single-panel
+   *  view that later resized to desktop), selecting it again expands the grid
+   *  to the whole group rather than leaving the partial view.
+   *
+   *  Unlike handleSelect it does NOT auto-resume — callers that need a resume
+   *  (Resume dialog) do it themselves first. `opts.groupId` forces the target
+   *  group when the store hasn't adopted the membership yet (a fork inheriting
+   *  its source group); pass `null` to force single-panel. `opts.extraLive`
+   *  lists ids that are about to appear in `sessions` (freshly created forks /
+   *  adopted resume targets) so the helper doesn't treat them as stale. */
+  const openSessionInGrid = useCallback(
+    (id: string, opts?: { groupId?: string | null; extraLive?: string[]; lastTurnAt?: number }) => {
+      const currentOpen = openIdsRef.current
+      const live = new Set(sessionsRef.current.map((s) => s.id))
+      for (const extra of opts?.extraLive ?? []) live.add(extra)
+      const target = openTargetForSession({
+        id,
+        groups: groupsRef.current,
+        liveSessionIds: live,
+        maxOpen: maxOpenRef.current,
+        forceGroupId: opts?.groupId,
+      })
+      if (!target) return // stale / unknown id — never mint a ghost panel
+      // Order-insensitive same-set test (mirrors handleSelect): a group whose
+      // members are all already open — even if the sidebar was reordered — is
+      // just refocused, not rewritten, and its siblings keep their unread dots.
+      const sameSet =
+        target.openIds.length === currentOpen.length &&
+        target.openIds.every((x) => currentOpen.includes(x))
+      const now = Date.now()
+      setLastSeenTurn((prev) => {
+        const next = { ...prev }
+        next[id] = opts?.lastTurnAt ?? now
+        if (!sameSet) {
+          // Opening / expanding to a group's panels: mark its siblings seen so
+          // newly-opened panels don't flash unread (mirrors handleSelect).
+          for (const gid of target.openIds) {
+            if (gid === id) continue
+            const sib = sessionsRef.current.find((x) => x.id === gid)
+            next[gid] = sib?.lastTurnAt ?? now
+          }
+        }
+        return next
+      })
+      setFocusedId(id)
+      if (!sameSet) setOpenIds(target.openIds)
+    },
+    [setLastSeenTurn],
+  )
+
   /** Tear down the Side Chat hosted on `parentId` (if any): drop the drawer
    *  state, DELETE the ephemeral session, purge its transcript cache. Mirrors
    *  the block that used to live inline in `closeSession`; extracted so
@@ -1490,16 +1548,25 @@ export function App() {
         // `some` guard prevents a duplicate if that frame already landed).
         setSessions((prev) => (prev.some((s) => s.id === res.session.id) ? prev : [res.session, ...prev]))
 
-        // Assign to group (optional — ungrouped sessions are allowed).
+        // Assign to group (optional — ungrouped sessions are allowed). A new
+        // session only joins while the group has room; a full group makes
+        // handleAddToGroup toast and refuse, leaving the session ungrouped.
+        // The capacity guard reads the live ref (not the pre-await closure
+        // snapshot) so a concurrent group fill is reflected here, matching
+        // handleAddToGroup's own re-check.
+        const targetGroup = groupId ? groupsRef.current.find((g) => g.id === groupId) : undefined
+        const joinsGroup = targetGroup != null && targetGroup.sessionIds.length < maxGroupSizeRef.current
         if (groupId) handleAddToGroup(res.session.id, groupId)
 
-        // When viewing a group, only open the new session in the grid
-        // if it belongs to that group. Otherwise leave it in the sidebar
-        // so it doesn't intrude on the group view.
+        // When viewing a group, only open the new session in the grid if it
+        // actually joined that group. A refused add (full group) leaves it in
+        // the sidebar so the group view is neither collapsed nor mixed with an
+        // ungrouped panel. Otherwise it stays out of the grid too (different
+        // group than the one being viewed).
         const effectiveGroupId = groupId || null
-        if (activeGroupId && effectiveGroupId !== activeGroupId) {
+        if (activeGroupId && (effectiveGroupId !== activeGroupId || !joinsGroup)) {
           setLastSeenTurn((prev) => ({ ...prev, [res.session.id]: res.session.lastTurnAt ?? Date.now() }))
-        } else if (activeGroupId && effectiveGroupId === activeGroupId) {
+        } else if (activeGroupId && effectiveGroupId === activeGroupId && joinsGroup) {
           // Same group — append to existing group grid (matches handleSelect
           // behaviour for same-group sessions).
           openSession(res.session.id, res.session.lastTurnAt)
@@ -1530,18 +1597,34 @@ export function App() {
         // openIds adopts it below, even if the session-created WS frame lags
         // (session-created refreshes it in place — idempotent).
         setSessions((prev) => (prev.some((s) => s.id === res.session.id) ? prev : [res.session, ...prev]))
-        // Open the forked session right away so the user can see the
-        // divergence point. The global `created` event from the server
-        // will add the row to the sidebar.
-        openSession(res.session.id, res.session.lastTurnAt)
-        // Inherit group from source session.
+        // Inherit group from source session first so the fork's membership is
+        // settled before we decide where (or whether) it opens. A fork only
+        // joins the group while it has room — a full group (already at
+        // maxGroupPanels) rejects the add, leaving the fork ungrouped.
         const sourceGroup = groups.find((g) => g.sessionIds.includes(id))
-        if (sourceGroup) handleAddToGroup(res.session.id, sourceGroup.id)
+        const joinsGroup = sourceGroup != null && sourceGroup.sessionIds.length < maxGroupSizeRef.current
+        if (joinsGroup) handleAddToGroup(res.session.id, sourceGroup.id)
+        // Open the fork in the grid only when the source is already on screen
+        // (a panel fork) AND showing it can't tear down the current view:
+        //   - ungrouped source → the fork replaces the lone ungrouped panel;
+        //   - grouped source with room → the fork joins the group view;
+        //   - grouped source whose group is FULL → the fork can't join, so it is
+        //     left in the sidebar instead of collapsing the whole group grid to a
+        //     single ungrouped fork panel. A sidebar fork of an off-screen
+        //     session likewise just lands in the sidebar.
+        const sourceOpen = openIdsRef.current.includes(id)
+        if (sourceOpen && (sourceGroup == null || joinsGroup)) {
+          openSessionInGrid(res.session.id, {
+            groupId: sourceGroup?.id ?? null,
+            extraLive: [res.session.id],
+            lastTurnAt: res.session.lastTurnAt,
+          })
+        }
       } catch (e) {
         toast.error(`Couldn't fork session: ${(e as Error).message}`)
       }
     },
-    [openSession, groups, handleAddToGroup, toast],
+    [openSessionInGrid, groups, handleAddToGroup, toast],
   )
 
   /** Crash-recovery fork: fork a terminated session from its last completed
@@ -1561,16 +1644,23 @@ export function App() {
           forkFromLastSafe: true,
           replacesSource: true,
         })
-        // Add Y to `sessions` locally so openSession resolves it the instant
+        // Add Y to `sessions` locally so the panels resolve it the instant
         // openIds adopts it below, even if the session-created WS frame lags
         // (session-created refreshes it in place — idempotent).
         setSessions((prev) => (prev.some((s) => s.id === res.session.id) ? prev : [res.session, ...prev]))
-        openSession(res.session.id, res.session.lastTurnAt)
+        // Y replaces X in the open panel set + focus, mirroring the
+        // replacesSource frame's X→Y inheritance for groups/sidebar order —
+        // NOT openSession's eviction-append, which would leave the dead X open
+        // beside Y and drop a sibling (a mixed grid). The crash-fork banner
+        // only exists on X's own open panel, so X is always in openIds here.
+        setOpenIds((prev) => prev.map((openId) => (openId === id ? res.session.id : openId)))
+        setFocusedId((prev) => (prev === id ? res.session.id : prev))
+        setLastSeenTurn((prev) => ({ ...prev, [res.session.id]: res.session.lastTurnAt ?? Date.now() }))
       } catch (e) {
         toast.error(`Couldn't fork session: ${(e as Error).message}`)
       }
     },
-    [openSession, toast],
+    [setLastSeenTurn, toast],
   )
 
   /** Close the Side Chat drawer and delete the ephemeral session.
@@ -1967,15 +2057,20 @@ export function App() {
       }
 
       // Grouped session — sync the whole group into the main grid and focus
-      // the clicked member. `groupIds` is the set we want open: every
-      // existing member of the group when they all fit, otherwise just the
-      // clicked one (mobile single-panel). `sameSet` detects the already-
-      // synced case so a plain refocus doesn't churn the panels or clobber
-      // siblings' unread dots.
-      const sessionSet = new Set(sessionsRef.current.map((x) => x.id))
-      const validGroupIds = sessionGroup.sessionIds.filter((gid) => sessionSet.has(gid))
-      const canShowAll = validGroupIds.length <= maxOpenRef.current
-      const groupIds = canShowAll ? validGroupIds : [id]
+      // the clicked member. The pure `openTargetForSession` is the single
+      // "what should the grid show" rule shared with palette/resume/fork:
+      // every live group member when they all fit, otherwise just the clicked
+      // one (mobile single-panel). `sameSet` detects the already-synced case
+      // so a plain refocus doesn't churn the panels or clobber siblings'
+      // unread dots.
+      const target = openTargetForSession({
+        id,
+        groups,
+        liveSessionIds: sessionsRef.current.map((x) => x.id),
+        maxOpen: maxOpenRef.current,
+      })
+      if (!target) return // id is live + grouped (checked above) — defensive.
+      const groupIds = target.openIds
       const prevOpen = openIdsRef.current
       const sameSet =
         prevOpen.length === groupIds.length && groupIds.every((gid) => prevOpen.includes(gid))
@@ -3479,7 +3574,7 @@ export function App() {
     const r = await api.get<ConfigResponse>('/config')
     setDefaults(r.defaults)
     if (r.models?.length) setServerModels(r.models)
-    if (r.maxOpenPanels != null) setServerMaxOpen(r.maxOpenPanels)
+    if (r.maxGroupPanels != null) setServerMaxOpen(r.maxGroupPanels)
     setGlobalPrefs({
       showPinnedUserMessage: r.showPinnedUserMessage ?? true,
       autoRecap: r.autoRecap ?? true,
@@ -3965,12 +4060,12 @@ export function App() {
           pluginCommands={pluginPaletteCommands}
           onSelectMessage={handleSelectMessage}
           onSelectSession={(id) => {
-            if (openIds.includes(id)) {
-              setFocusedId(id)
-            } else {
-              const s = sessions.find((s) => s.id === id)
-              openSession(id, s?.lastTurnAt)
-            }
+            const s = sessions.find((s) => s.id === id)
+            // Group-aware open: focuses when already open, otherwise switches
+            // the grid to the session's group / single panel — never stacks a
+            // foreign session next to the current view (unified group-panels
+            // semantics).
+            openSessionInGrid(id, { lastTurnAt: s?.lastTurnAt })
             setPaletteOpen(false)
           }}
         />
@@ -3999,12 +4094,26 @@ export function App() {
                 // never auto-resumes a terminated session).
                 void handleSelect(id)
               } else if (known?.running) {
-                openSession(id, known.lastTurnAt)
+                openSessionInGrid(id, { lastTurnAt: known.lastTurnAt })
               } else {
                 // Unknown (CLI-created) or not-yet-tracked session: resume
                 // directly. The server adopts it into the store, then we
                 // open the panel. resumeSession surfaces any error toast.
-                void resumeSession(id, (res) => openSession(id, res.session.lastTurnAt))
+                void resumeSession(id, (res) => {
+                  // resumeSession's own setSessions is a `.map(...)`, a no-op
+                  // for an id that isn't tracked yet — so the session may still
+                  // be absent when the switch below runs. Add it locally so the
+                  // switched-to panel renders immediately instead of blanking
+                  // the grid until the session-created WS frame lands
+                  // (session-created refreshes it in place — idempotent).
+                  setSessions((prev) =>
+                    prev.some((s) => s.id === res.session.id) ? prev : [res.session, ...prev],
+                  )
+                  openSessionInGrid(res.session.id, {
+                    lastTurnAt: res.session.lastTurnAt,
+                    extraLive: [res.session.id],
+                  })
+                })
               }
             }}
             onCancel={closeResume}

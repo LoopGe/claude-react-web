@@ -31,7 +31,7 @@ const log = createLogger('reset')
 // resets each profile's model fields to DEFAULT_PROFILE (keeping credentials).
 const APP_SETTING_KEYS: readonly string[] = [
   'maxUploadBytes', 'historyCap',
-  'maxOpenPanels', 'workingStuckMs', 'updateCheckRegistry', 'skillLoadMode',
+  'maxGroupPanels', 'maxOpenPanels', 'workingStuckMs', 'updateCheckRegistry', 'skillLoadMode',
   'enabledSkills', 'autoClassifierModel', 'autoClassifierTimeout',
   'showPinnedUserMessage', 'autoRecap', 'appToolsGit', 'firstPartyTools', 'allowSensitivePathEdits',
 ]

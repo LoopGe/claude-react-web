@@ -183,7 +183,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       activeProfileId: serverConfig.activeProfileId,
       maxUploadBytes: serverConfig.maxUploadBytes,
       historyCap: serverConfig.historyCap,
-      maxOpenPanels: serverConfig.maxOpenPanels,
+      maxGroupPanels: serverConfig.maxGroupPanels,
       workingStuckMs: serverConfig.workingStuckMs,
       updateCheckRegistry: serverConfig.updateCheckRegistry,
       skillLoadMode: serverConfig.skillLoadMode,

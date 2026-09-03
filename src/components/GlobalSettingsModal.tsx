@@ -135,7 +135,7 @@ export function GlobalSettingsModal({
   // — Server tab state ?
   const [maxUploadBytes, setMaxUploadBytes] = useState(0)
   const [historyCap, setHistoryCap] = useState(500)
-  const [maxOpenPanels, setMaxOpenPanels] = useState(3)
+  const [maxGroupPanels, setMaxGroupPanels] = useState(3)
   const [workingStuckMs, setWorkingStuckMs] = useState(0)
   const [defaultCwd, setDefaultCwd] = useState('')
   // Global UI-pref defaults (Server tab). Sessions without an explicit
@@ -181,7 +181,7 @@ export function GlobalSettingsModal({
         const cfg = await api.get<FullServerConfig>('/config/full', { signal: ac.signal })
         setMaxUploadBytes(cfg.maxUploadBytes ?? 0)
         setHistoryCap(cfg.historyCap ?? 500)
-        setMaxOpenPanels(cfg.maxOpenPanels ?? 3)
+        setMaxGroupPanels(cfg.maxGroupPanels ?? 3)
         setWorkingStuckMs(cfg.workingStuckMs ?? 0)
         setUpdateCheckRegistry(cfg.updateCheckRegistry ?? '')
         setDefaultCwd(cfg.defaults?.cwd ?? '')
@@ -246,7 +246,7 @@ export function GlobalSettingsModal({
       const updates: Record<string, unknown> = {
         maxUploadBytes: maxUploadBytes > 0 ? maxUploadBytes : null,
         historyCap: historyCap > 0 ? historyCap : null,
-        maxOpenPanels,
+        maxGroupPanels,
         workingStuckMs,
         // Empty / whitespace clears the override (server treats that as
         // "feature disabled"). PUT /config translates null/'' to a key
@@ -383,14 +383,14 @@ export function GlobalSettingsModal({
                 <ServerTab
                   maxUploadBytes={maxUploadBytes}
                   historyCap={historyCap}
-                  maxOpenPanels={maxOpenPanels}
+                  maxGroupPanels={maxGroupPanels}
                   workingStuckMs={workingStuckMs}
                   showPinnedUserMessage={showPinnedUserMessage}
                   autoRecap={autoRecap}
                   allowSensitivePathEdits={allowSensitivePathEdits}
                   onMaxUploadBytesChange={setMaxUploadBytes}
                   onHistoryCapChange={setHistoryCap}
-                  onMaxOpenPanelsChange={setMaxOpenPanels}
+                  onMaxGroupPanelsChange={setMaxGroupPanels}
                   onWorkingStuckMsChange={setWorkingStuckMs}
                   onShowPinnedUserMessageChange={setShowPinnedUserMessage}
                   onAutoRecapChange={setAutoRecap}
@@ -530,23 +530,23 @@ const MB = 1024 * 1024
 const MIN_MS = 60 * 1000
 
 function ServerTab({
-  maxUploadBytes, historyCap, maxOpenPanels, workingStuckMs,
+  maxUploadBytes, historyCap, maxGroupPanels, workingStuckMs,
   showPinnedUserMessage, autoRecap, allowSensitivePathEdits,
-  onMaxUploadBytesChange, onHistoryCapChange, onMaxOpenPanelsChange,
+  onMaxUploadBytesChange, onHistoryCapChange, onMaxGroupPanelsChange,
   onWorkingStuckMsChange,
   onShowPinnedUserMessageChange, onAutoRecapChange,
   onAllowSensitivePathEditsChange,
 }: {
   maxUploadBytes: number
   historyCap: number
-  maxOpenPanels: number
+  maxGroupPanels: number
   workingStuckMs: number
   showPinnedUserMessage: boolean
   autoRecap: boolean
   allowSensitivePathEdits: boolean
   onMaxUploadBytesChange: (v: number) => void
   onHistoryCapChange: (v: number) => void
-  onMaxOpenPanelsChange: (v: number) => void
+  onMaxGroupPanelsChange: (v: number) => void
   onWorkingStuckMsChange: (v: number) => void
   onShowPinnedUserMessageChange: (v: boolean) => void
   onAutoRecapChange: (v: boolean) => void
@@ -603,14 +603,14 @@ function ServerTab({
           />
         </ServerRow>
         <ServerRow
-          title="Max open panels"
-          hint="How many side-by-side chat panels you can open at once."
+          title="Max group panels"
+          hint="Max sessions per group. Opening a group fans out that many side-by-side panels."
         >
           <Segmented
-            ariaLabel="Max open panels"
-            value={maxOpenPanels}
+            ariaLabel="Max group panels"
+            value={maxGroupPanels}
             options={[2, 3, 4, 5]}
-            onChange={onMaxOpenPanelsChange}
+            onChange={onMaxGroupPanelsChange}
           />
         </ServerRow>
       </section>

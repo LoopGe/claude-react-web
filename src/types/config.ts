@@ -34,7 +34,7 @@ export interface ConfigResponse {
   defaults: Defaults
   models?: string[]
   modelGroups?: ModelGroupConfig[]
-  maxOpenPanels?: number
+  maxGroupPanels?: number
   maxUploadBytes?: number
   /** Global default for the pinned "current question" header. Sessions
    *  without an explicit override inherit this. */
@@ -65,7 +65,7 @@ export interface FullServerConfig {
   commitMessageModel: string
   maxUploadBytes: number
   historyCap: number
-  maxOpenPanels: number
+  maxGroupPanels: number
   workingStuckMs: number
   logToFile?: boolean
   /** Empty string when the user hasn't configured a registry — the

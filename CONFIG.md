@@ -164,22 +164,22 @@ Must be a non-negative integer.
 
 ---
 
-### `maxOpenPanels`
+### `maxGroupPanels`
 
 | | |
 |---|---|
 | Type | `number` |
 | Default | `3` |
 
-Maximum number of chat panels open side-by-side, and also the maximum number of sessions per group. Must be in the range 2–5.
+Maximum number of sessions a group may contain, and therefore the maximum number of side-by-side chat panels opened when that group is activated. The main grid is group-centric: it always shows either a single ungrouped session or the members of one group, so this one value governs both. Must be in the range 2–5.
 
 ```json
 {
-  "maxOpenPanels": 5
+  "maxGroupPanels": 5
 }
 ```
 
-Values outside the 2–5 range are clamped. This replaced the previous per-browser UI selector; the value is now server-controlled and shared by all clients.
+Values outside the 2–5 range are clamped. This replaced the previous per-browser UI selector; the value is now server-controlled and shared by all clients. Legacy `config.json` files that set `maxOpenPanels` are still read — `maxGroupPanels` wins when both are present.
 
 ---
 

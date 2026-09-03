@@ -205,44 +205,94 @@ describe('config', () => {
     expect(() => { (config as any).historyCap = 1 }).toThrow()
   })
 
-  it('exports sensible maxOpenPanels default', () => {
-    expect(config.maxOpenPanels).toBe(3)
+  it('exports sensible maxGroupPanels default', () => {
+    expect(config.maxGroupPanels).toBe(3)
   })
 
-  it('loadConfig applies maxOpenPanels from config.json', async () => {
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 5 }))
+  it('loadConfig applies maxGroupPanels from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxGroupPanels: 5 }))
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(config.maxOpenPanels).toBe(5)
+    expect(config.maxGroupPanels).toBe(5)
     log.mockRestore()
   })
 
-  it('loadConfig clamps maxOpenPanels to [2, 5]', async () => {
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 10 }))
+  it('loadConfig clamps maxGroupPanels to [2, 5]', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxGroupPanels: 10 }))
     vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(config.maxOpenPanels).toBe(5)
+    expect(config.maxGroupPanels).toBe(5)
   })
 
-  it('loadConfig clamps negative maxOpenPanels to 2', async () => {
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: -1 }))
+  it('loadConfig clamps negative maxGroupPanels to 2', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxGroupPanels: -1 }))
     vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(config.maxOpenPanels).toBe(2)
+    expect(config.maxGroupPanels).toBe(2)
   })
 
-  it('loadConfig reverts maxOpenPanels to default when config.json sets it to 0', async () => {
+  it('loadConfig reverts maxGroupPanels to default when config.json sets it to 0', async () => {
     // Same revert-to-default semantics as modelList: an explicit zero
     // means "no override", which falls back to the hardcoded default
     // (3) — not silently retaining whatever was in memory before.
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxGroupPanels: 5 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.maxGroupPanels).toBe(5)
+
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxGroupPanels: 0 }))
+    await loadConfig(dir)
+    expect(config.maxGroupPanels).toBe(3)
+  })
+
+  it('loadConfig still reads the legacy maxOpenPanels alias when maxGroupPanels is absent', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 5 }))
     vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(config.maxOpenPanels).toBe(5)
+    expect(config.maxGroupPanels).toBe(5)
+  })
 
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 0 }))
+  it('maxGroupPanels wins over the legacy maxOpenPanels alias when both are present', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxGroupPanels: 4, maxOpenPanels: 5 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(config.maxOpenPanels).toBe(3)
+    expect(config.maxGroupPanels).toBe(4)
+  })
+
+  it('loadConfig reverts a legacy maxOpenPanels of 0 to the default', async () => {
+    // The legacy alias flows through the same `!== 0` revert-to-default guard
+    // as the canonical key — a pre-rename file carrying `maxOpenPanels: 0`
+    // must mean "no override" (default 3), not silently retain the 0.
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 0 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.maxGroupPanels).toBe(3)
+  })
+
+  it('updateConfigFile retires the legacy maxOpenPanels alias when maxGroupPanels is written', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxOpenPanels: 5 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.maxGroupPanels).toBe(5)
+    await updateConfigFile(dir, { maxGroupPanels: 4 })
+    expect(config.maxGroupPanels).toBe(4)
+    const raw = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')) as Record<string, unknown>
+    expect('maxOpenPanels' in raw).toBe(false)
+    expect(raw.maxGroupPanels).toBe(4)
+  })
+
+  it('clearing maxGroupPanels does not resurrect a lingering legacy maxOpenPanels value', async () => {
+    // Writing the canonical key retires the alias; clearing it must then fall
+    // back to the hardcoded default (3), NOT re-read the stale legacy value.
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ maxGroupPanels: 5, maxOpenPanels: 5 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.maxGroupPanels).toBe(5)
+    await updateConfigFile(dir, { maxGroupPanels: null })
+    expect(config.maxGroupPanels).toBe(3)
+    const raw = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')) as Record<string, unknown>
+    expect('maxGroupPanels' in raw).toBe(false)
+    expect('maxOpenPanels' in raw).toBe(false)
   })
 
   it('updateConfigFile keeps the queue alive after a write failure', async () => {

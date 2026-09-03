@@ -68,6 +68,12 @@ interface ConfigFile {
    *  SDK Options key (spawn-time only — NOT a Settings key, so it cannot
    *  be flipped at runtime). Default: true. */
   forwardSubagentText?: boolean
+  /** Max sessions per group / max side-by-side panels when a group is open.
+   *  Range 2–5. Renamed from `maxOpenPanels` to reflect that the grid is
+   *  group-centric (a group fans out that many panels). */
+  maxGroupPanels?: number
+  /** LEGACY alias for `maxGroupPanels` — still read so existing config.json
+   *  files keep working; `maxGroupPanels` wins when both are present. */
   maxOpenPanels?: number
   /** Milliseconds of SDK silence before the session is considered stuck
    *  and auto-interrupted. Set to 0 to disable. Default: 1 hour. */
@@ -148,7 +154,7 @@ export interface ServerConfig {
   /** Forward subagent text/thinking — see ConfigFile.forwardSubagentText. */
   readonly forwardSubagentText: boolean
   readonly workingStuckMs: number
-  readonly maxOpenPanels: number
+  readonly maxGroupPanels: number
   /** Undefined until config.json is loaded and `authToken` is populated.
    *  `requireAuthToken()` throws if accessed before that. */
   readonly authToken: string | undefined
@@ -211,7 +217,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   subagentHistoryCap: 300,
   forwardSubagentText: true,
   workingStuckMs: 60 * 60 * 1000,
-  maxOpenPanels: 3,
+  maxGroupPanels: 3,
   authToken: undefined,
   baseUrl: 'https://api.anthropic.com',
   accessToken: '',
@@ -299,7 +305,7 @@ export async function loadConfig(stateDir: string): Promise<void> {
           activeProfileId: 'default',
           maxUploadBytes: config.maxUploadBytes,
           historyCap: config.historyCap,
-          maxOpenPanels: config.maxOpenPanels,
+          maxGroupPanels: config.maxGroupPanels,
         },
         null,
         2,
@@ -407,9 +413,12 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     log.info(`forwardSubagentText: ${merged.forwardSubagentText}`)
   }
 
-  if (typeof file_.maxOpenPanels === 'number' && file_.maxOpenPanels !== 0) {
-    ;(merged as { maxOpenPanels: number }).maxOpenPanels = Math.max(2, Math.min(5, Math.round(file_.maxOpenPanels)))
-    log.info(`maxOpenPanels: ${merged.maxOpenPanels}`)
+  // maxGroupPanels (canonical) wins over the legacy `maxOpenPanels` alias.
+  // Reading both keeps pre-rename config.json files working unchanged.
+  const maxGroupValue = file_.maxGroupPanels ?? file_.maxOpenPanels
+  if (typeof maxGroupValue === 'number' && maxGroupValue !== 0) {
+    ;(merged as { maxGroupPanels: number }).maxGroupPanels = Math.max(2, Math.min(5, Math.round(maxGroupValue)))
+    log.info(`maxGroupPanels: ${merged.maxGroupPanels}`)
   }
 
   if (typeof file_.workingStuckMs === 'number' && file_.workingStuckMs >= 0) {
@@ -550,6 +559,9 @@ export const WRITABLE_CONFIG_KEYS = [
   'activeProfileId',
   'maxUploadBytes',
   'historyCap',
+  'maxGroupPanels',
+  // Legacy alias — still writable so an app-settings reset can clear it from
+  // an old config.json alongside the canonical key.
   'maxOpenPanels',
   'workingStuckMs',
   'logToFile',
@@ -631,6 +643,11 @@ async function doUpdateConfigFile(
       } else {
         existing[key] = val
       }
+      // Writing the canonical key retires the legacy `maxOpenPanels` alias in
+      // the same pass — both when setting a value and when clearing it. Without
+      // this, a stale legacy value left in the file would be resurrected by the
+      // `??` fallback on a later partial clear instead of reverting to default.
+      if (key === 'maxGroupPanels') delete existing.maxOpenPanels
     }
   }
   const file = join(stateDir, 'config.json')

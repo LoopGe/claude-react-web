@@ -12,6 +12,6 @@
   "historyCap": 500,
   "subagentHistoryCap": 300,
   "forwardSubagentText": true,
-  "maxOpenPanels": 3,
+  "maxGroupPanels": 3,
   "allowSensitivePathEdits": false
 }
