@@ -319,6 +319,17 @@ export function useChatStream(
         }
         case 'message': {
           const message = frame.message as SdkMessage
+          // system/session_state_changed is an ephemeral liveness frame
+          // (idle / running / requires_action), NOT transcript content — the
+          // server early-continues it out of the ring, so mirror it and skip
+          // the transcript pipeline entirely.
+          if (message.type === 'system' && message.subtype === 'session_state_changed') {
+            const state = (message as { state?: unknown }).state
+            if (state === 'idle' || state === 'running' || state === 'requires_action') {
+              store.dispatch({ type: 'SESSION_STATE', state })
+            }
+            break
+          }
           store.dispatch({ type: 'MESSAGE', message })
           if (!replaying) {
             const lastUuid = getSessionLastMessageUuid(sessionId)

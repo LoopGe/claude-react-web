@@ -3445,3 +3445,16 @@ describe('live turn finalized-text pruning', () => {
     expect(after.mirror.liveTurn?.flushedText).toEqual([])
   })
 })
+
+describe('reducer: SESSION_STATE', () => {
+  it('mirrors the CLI session state onto the snapshot', () => {
+    let state = createInitialSessionState('s1')
+    expect(state.mirror.sessionState).toBeNull()
+    state = reduceSessionState(state, { type: 'SESSION_STATE', state: 'running' })
+    expect(state.mirror.sessionState).toBe('running')
+    state = reduceSessionState(state, { type: 'SESSION_STATE', state: 'idle' })
+    expect(state.mirror.sessionState).toBe('idle')
+    // Only the mirror changed — transcript untouched.
+    expect(state.mirror.items).toHaveLength(0)
+  })
+})

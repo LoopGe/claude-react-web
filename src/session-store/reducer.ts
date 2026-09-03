@@ -150,6 +150,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       return withMirror(state, { ...state.mirror, contextUsage: action.usage })
     case 'PROMPT_SUGGESTION':
       return withMirror(state, { ...state.mirror, promptSuggestion: action.suggestion })
+    case 'SESSION_STATE':
+      return withMirror(state, { ...state.mirror, sessionState: action.state })
     case 'TASKS_SNAPSHOT': {
       // Replace the whole task list, then enrich matching subagent records.
       // Joining by toolUseId (not taskId) because activeSubagents are keyed

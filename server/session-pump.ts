@@ -362,6 +362,16 @@ export function fastModeStateOf(msg: SDKMessage): FastModeState | undefined {
   return fms === 'off' || fms === 'cooldown' || fms === 'on' ? fms : undefined
 }
 
+/** Extract the CLI's authoritative session state from a
+ *  `system/session_state_changed` frame ('idle' | 'running' |
+ *  'requires_action'). Returns undefined for any other frame so callers can
+ *  detect a no-op. Pure — exported for tests. */
+export function sessionStateOf(msg: SDKMessage): 'idle' | 'running' | 'requires_action' | undefined {
+  const raw = msg as { type?: unknown; subtype?: unknown; state?: unknown }
+  if (raw.type !== 'system' || raw.subtype !== 'session_state_changed') return undefined
+  return raw.state === 'idle' || raw.state === 'running' || raw.state === 'requires_action' ? raw.state : undefined
+}
+
 /** Extract the SDK-reported compaction state from a message, if present.
  *  The flag rides on `system/status` frames: `status: 'compacting'` marks
  *  compaction in progress, and a later status frame (`status: null` /
@@ -827,6 +837,22 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         if (msg.type === 'system' && (msg as { subtype?: string }).subtype === 'thinking_tokens') {
           for (const sub of session.subscribers.values()) {
             try { sub.push(msg) } catch { /* subscriber dead — skip */ }
+          }
+          continue
+        }
+        // `system/session_state_changed`: the CLI's authoritative turn state
+        // ('idle' after a turn fully settles — including a held-back result /
+        // exited bg-agent do-while — 'running' mid-turn, 'requires_action'
+        // while it waits on the user). Ephemeral — mirror only state CHANGES
+        // to live subscribers (never the history ring); the client keeps it in
+        // a dedicated slot rather than the transcript.
+        if (msg.type === 'system' && (msg as { subtype?: string }).subtype === 'session_state_changed') {
+          const st = sessionStateOf(msg)
+          if (st && st !== session.lastSessionState) {
+            session.lastSessionState = st
+            for (const sub of session.subscribers.values()) {
+              try { sub.push(msg) } catch { /* subscriber dead — skip */ }
+            }
           }
           continue
         }

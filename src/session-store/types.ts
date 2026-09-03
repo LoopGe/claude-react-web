@@ -352,6 +352,10 @@ export interface ServerMirror {
    *  `result` (turn end) or `user` (new turn) message. Null when no
    *  estimate is in flight. */
   thinkingTokens: number | null
+  /** Latest authoritative CLI session state (`system/session_state_changed`).
+   *  Ephemeral — lives outside items/messages/IDB, reset on CLEAR_TRANSCRIPT.
+   *  Null until the first frame. */
+  sessionState: CliSessionState | null
   /** message-consumed frames that arrived before the matching message row.
    *  The WS channels are independent, so an idle session can deliver the
    *  consumed signal before the user-message broadcast. Cache it here and
@@ -393,6 +397,12 @@ export interface ServerMirror {
    *  so snapshots only reallocate when a Workflow record actually changes. */
   activeWorkflows: Map<string, WorkflowRecord>
 }
+
+/** Authoritative CLI session state reported by `system/session_state_changed`
+ *  frames ('idle' after a turn fully settles — including a held-back result /
+ *  exited bg-agent do-while — 'running' mid-turn, 'requires_action' when the
+ *  CLI waits on the user). Null until the first frame. */
+export type CliSessionState = 'idle' | 'running' | 'requires_action'
 
 /** Client-only intent. The server has no opinion about this layer; only
  *  user actions originate writes here (with one carve-out: ERROR frames
@@ -471,6 +481,9 @@ export type SessionAction =
    *  matching activeSubagents (taskId / progressSummary / lastToolName,
    *  and the running→background flip when the SDK backgrounds a task). */
   | { type: 'TASKS_SNAPSHOT'; tasks: TaskRecordUi[] }
+  /** Latest authoritative CLI session state (`system/session_state_changed`
+   *  frame). Ephemeral — never transcript content; drives derived status. */
+  | { type: 'SESSION_STATE'; state: CliSessionState }
   /** The SDK read a queued user turn off its input queue. Flips the
    *  matching message's deliveryStatus from 'queued' to 'consumed'. */
   | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
@@ -558,6 +571,9 @@ export interface SessionSnapshot {
   /** Transient thinking-token estimate mirrored from ServerMirror
    *  (see there) — drives the WorkingBubble's token hint. */
   thinkingTokens: number | null
+  /** Latest authoritative CLI session state mirrored from ServerMirror
+   *  (see there). Null until the first frame. */
+  sessionState: CliSessionState | null
 }
 
 /** Build a fresh ServerMirror. Used by createInitialSessionState and by any
@@ -576,6 +592,7 @@ export function createInitialServerMirror(): ServerMirror {
     lastMessageUuid: null,
     apiRetry: null,
     thinkingTokens: null,
+    sessionState: null,
     pendingConsumedMessages: new Map<string, number>(),
     permissionPending: new Map(),
     permissionDecisions: new Map(),

@@ -1062,6 +1062,7 @@ export class SessionStore {
       tasks: mirror.tasks,
       apiRetry: mirror.apiRetry,
       thinkingTokens: mirror.thinkingTokens,
+      sessionState: mirror.sessionState,
       error: intent.error,
       permissionDecisions: mirror.permissionDecisions,
       planStatus: mirror.planStatus,

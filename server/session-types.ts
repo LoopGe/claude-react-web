@@ -397,6 +397,10 @@ export interface Session {
    *  subscribed tab gets the current suggestion immediately. Cleared on
    *  /clear. Not persisted. */
   lastPromptSuggestion?: string | null
+  /** Last authoritative CLI session state from `system/session_state_changed`
+   *  frames ('idle' | 'running' | 'requires_action'). The pump forwards the
+   *  raw frame to live subscribers only on CHANGE. Ephemeral, not persisted. */
+  lastSessionState?: 'idle' | 'running' | 'requires_action'
   /** Folded background-task state (task_started / task_updated /
    *  task_progress / task_notification frames), keyed by taskId. The SDK
    *  exposes no task-list query API, so this map IS the list. Seeded both

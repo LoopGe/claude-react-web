@@ -1643,6 +1643,41 @@ describe('pump: compacting state tracking', () => {
   })
 })
 
+describe('pump: session_state_changed', () => {
+  it('mirrors state CHANGES to subscribers only; duplicates no-op; never ring/broadcast', async () => {
+    const { session, broadcasts } = makePumpSession([
+      sysFrame('session_state_changed', { state: 'running' }),
+      sysFrame('session_state_changed', { state: 'running' }), // duplicate — no re-broadcast
+      sysFrame('session_state_changed', { state: 'idle' }),
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    await pump(session, makePumpDeps())
+
+    // Two transitions reached the message channel (running, idle); the
+    // duplicate was skipped. The result also broadcast.
+    const states = broadcasts
+      .filter((m) => (m as { subtype?: string }).subtype === 'session_state_changed')
+      .map((m) => (m as { state?: string }).state)
+    expect(states).toEqual(['running', 'idle'])
+    expect(session.lastSessionState).toBe('idle')
+    // Ephemeral — never entered the durable ring.
+    const ringSubtypes = session.history.map((m) => (m as { subtype?: string }).subtype)
+    expect(ringSubtypes).toEqual(['success'])
+  })
+
+  it('early-continues a malformed state frame (never ring) but mirrors nothing', async () => {
+    const { session, broadcasts } = makePumpSession([
+      sysFrame('session_state_changed', { state: 'bogus' }),
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    await pump(session, makePumpDeps())
+
+    expect(broadcasts).toHaveLength(1) // only the result
+    expect(session.lastSessionState).toBeUndefined()
+    expect(session.history.map((m) => (m as { subtype?: string }).subtype)).toEqual(['success'])
+  })
+})
+
 describe('pump: task lifecycle frames', () => {
   it('early-continues task_started/updated/progress: folds state + snapshot, skips ring + broadcast', async () => {
     const { session, broadcasts, taskSnapshots } = makePumpSession([
