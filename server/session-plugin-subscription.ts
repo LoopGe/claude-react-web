@@ -36,7 +36,7 @@ export class SessionSubscriptionRegistry {
   subscribe(sessionId: string, peer: RpcPeer): { ok: true } | { ok: false; error: string } {
     const session = this.opts.getSession(sessionId)
     if (!session) return { ok: false, error: `session not found: ${sessionId}` }
-    // @ts-ignore: closed is private per RpcPeer interface but used for state check
+    // @ts-expect-error: closed is private per RpcPeer interface but used for state check
     if (peer.closed) return { ok: false, error: 'peer is closed' }
 
     const key = `${this.registryId}:${sessionId}`
@@ -44,14 +44,16 @@ export class SessionSubscriptionRegistry {
       return { ok: true } // idempotent
     }
 
-    let entry: RegistryEntry
-    const release = () => {
-      if (!session.pluginSubscribers.has(key)) return
-      session.pluginSubscribers.get(key)?.end()
-      session.pluginSubscribers.delete(key)
-      this.entries.delete(entry)
+    const entry: RegistryEntry = {
+      sessionId,
+      peer,
+      release: () => {
+        if (!session.pluginSubscribers.has(key)) return
+        session.pluginSubscribers.get(key)?.end()
+        session.pluginSubscribers.delete(key)
+        this.entries.delete(entry)
+      },
     }
-    entry = { sessionId, peer, release }
     this.entries.add(entry)
 
     session.pluginSubscribers.set(key, {
@@ -92,7 +94,7 @@ export class SessionSubscriptionRegistry {
     for (const entry of this.entries) {
       if (entry.sessionId !== sessionId) continue
       try {
-        // @ts-ignore: closed is private per RpcPeer interface but used for state check
+        // @ts-expect-error: closed is private per RpcPeer interface but used for state check
         if (!entry.peer.closed) entry.peer.notify('sessions.event', frame)
       } catch { /* peer gone — best-effort */ }
     }

@@ -2,7 +2,7 @@
 // Lets the user pick None or a Custom image — via a remote http(s) URL or a
 // local file uploaded to /api/background — and adjust the frosted opacity.
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import {
   BACKGROUND_OPACITY_MIN,
   BACKGROUND_OPACITY_MAX,
@@ -24,8 +24,13 @@ export function BackgroundPicker({ setting, onChange }: Props) {
   // the parent hasn't re-rendered with the new setting prop yet.
   const [mode, setMode] = useState<'none' | 'custom'>(setting.pref.kind === 'custom' ? 'custom' : 'none')
   // Sync mode when setting changes externally (reset-to-defaults, preset load,
-  // fork/resume) so the toggle never goes stale.
-  useEffect(() => { setMode(setting.pref.kind === 'custom' ? 'custom' : 'none') }, [setting.pref.kind])
+  // fork/resume) so the toggle never goes stale. React's "adjust state during
+  // render" pattern instead of an effect, which would trigger cascading renders.
+  const [prevKind, setPrevKind] = useState(setting.pref.kind)
+  if (prevKind !== setting.pref.kind) {
+    setPrevKind(setting.pref.kind)
+    setMode(setting.pref.kind === 'custom' ? 'custom' : 'none')
+  }
   const isCustom = mode === 'custom'
   const [urlText, setUrlText] = useState(isCustom && setting.pref.kind === 'custom' ? setting.pref.src : '')
   const [applied, setApplied] = useState(false)
