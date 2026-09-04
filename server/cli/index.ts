@@ -4,6 +4,7 @@ import { fmtJson } from './render.js'
 import { mcpGroup } from './mcp.js'
 import { marketplaceGroup } from './marketplace.js'
 import { configGroup } from './config.js'
+import { sessionsGroup } from './sessions.js'
 import { doctorGroup } from './doctor.js'
 
 // Later tasks add each remaining group's import + entry (and extend the
@@ -12,6 +13,7 @@ export const GROUPS: CliGroup[] = [
   mcpGroup,
   marketplaceGroup,
   configGroup,
+  sessionsGroup,
   doctorGroup,
 ]
 
