@@ -1,7 +1,9 @@
 // claude-react-web — bin entry.
 //
-// Parses argv, starts the Hono server on the chosen port, and (unless
-// --no-open) opens the user's default browser at the served URL.
+// Parses argv. A leading subcommand (`mcp`, `marketplace`, …) dispatches to a
+// single-shot management command; otherwise it starts the Hono server on the
+// chosen port and (unless --no-open) opens the user's default browser at the
+// served URL.
 
 import { serve } from '@hono/node-server'
 import type { Server } from 'node:http'
@@ -29,137 +31,50 @@ import { attachWebSocket } from './ws.js'
 import { checkForUpdates } from './update-checker.js'
 import { startEventLoopProbe } from './event-loop-probe.js'
 import { resolveClaudeBinary } from './claude-binary.js'
+import { parseServerArgs, parseArgv, HELP, type CliArgs } from './cli/args.js'
+import { runCliCommand, topLevelHelp, GROUPS } from './cli/index.js'
+import type { CliContext } from './cli/types.js'
 
 const log = createLogger('cli')
 
-interface CliArgs {
-  port: number
-  host: string
-  open: boolean
-  cwd?: string
-  model?: string
-  stateDir?: string
-  claudeBinary?: string
-  token?: string
-  disableAppPlugins: boolean
-  safeMode: boolean
-  help: boolean
-  version: boolean
-}
+async function main() {
+  const argv = process.argv.slice(2)
+  const { stateDir: sd, command, commandArgv } = parseArgv(argv)
 
-const HELP = `
-claude-react-web — local interactive chat powered by @anthropic-ai/claude-agent-sdk
-
-Usage:
-  claude-react-web [options]
-
-Options:
-  -p, --port <port>    Server port (default: 3456)
-      --host <host>    Bind host (default: 127.0.0.1). Use 0.0.0.0 to allow
-                       LAN access (e.g. from a phone) — this REQUIRES a web
-                       access token (auto-generated if --token is omitted).
-      --token <token>  Shared web access token required to use the UI. When
-                       set, every visitor must supply it via /?token=<token>
-                       once (a cookie is then set). Auto-generated when the
-                       host is non-loopback and no token is configured. Pin
-                       a stable value here or as "accessToken" in config.json.
-  -o, --open           Open browser on start (default)
-      --no-open        Do not open a browser window
-      --cwd <path>     Default cwd advertised to new sessions (informational)
-      --model <name>   Default model advertised to new sessions (informational)
-      --state-dir <p>  Where to keep session metadata and config.json
-                       (default: ~/.claude-react-web)
-      --claude-binary <path>
-                       Path to the claude CLI binary. Default: resolved from
-                       CLAUDE_CODE_BINARY env or \`which claude\`. Use this if
-                       the SDK's auto-detection picks a wrong native build
-                       (e.g. musl binary on a glibc host).
-  -V, --version        Print version and exit
-  -h, --help           Show this help and exit
-`.trim()
-
-function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = {
-    port: 3456,
-    host: '127.0.0.1',
-    open: true,
-    disableAppPlugins: false,
-    safeMode: false,
-    help: false,
-    version: false,
-  }
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]
-    const next = () => argv[++i]
-    switch (a) {
-      case '-p':
-      case '--port': {
-        const v = Number(next())
-        if (!Number.isInteger(v) || v <= 0 || v > 65535) {
-          console.error(`invalid --port: ${argv[i]}`)
-          process.exit(2)
-        }
-        args.port = v
-        break
-      }
-      case '--host':
-        args.host = next() ?? args.host
-        break
-      case '-o':
-      case '--open':
-        args.open = true
-        break
-      case '--no-open':
-        args.open = false
-        break
-      case '--cwd':
-        args.cwd = next()
-        break
-      case '--model':
-        args.model = next()
-        break
-      case '--state-dir':
-        args.stateDir = next()
-        break
-      case '--claude-binary':
-        args.claudeBinary = next()
-        break
-      case '--token':
-        args.token = next()
-        break
-      case '--disable-app-plugins':
-        args.disableAppPlugins = true
-        break
-      case '--safe-mode':
-        args.safeMode = true
-        break
-      case '-h':
-      case '--help':
-        args.help = true
-        break
-      case '-V':
-      case '--version':
-        args.version = true
-        break
-      default:
-        console.error(`unknown argument: ${a}`)
-        process.exit(2)
+  // Subcommand mode: run one management command headless and exit.
+  if (command !== undefined) {
+    if (!GROUPS.some((g) => g.name === command)) {
+      console.error(`unknown command: ${command}`)
+      process.exit(2)
+    }
+    const stateDir = sd ?? defaultStateDir()
+    await loadConfig(stateDir)
+    try {
+      const code = await runCliCommand({ stateDir } satisfies CliContext, command, commandArgv)
+      process.exit(code)
+    } catch (err) {
+      const e = err as { exitCode?: number; message?: string }
+      console.error(e.message ?? String(err))
+      process.exit(typeof e.exitCode === 'number' ? e.exitCode : 1)
     }
   }
-  return args
-}
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2))
+  // Server mode (default).
+  const args = parseServerArgs(argv)
   if (args.version) {
     console.log(pkg.version)
     return
   }
   if (args.help) {
     console.log(HELP)
+    console.log()
+    console.log(topLevelHelp())
     return
   }
+  await runServer(args)
+}
 
+async function runServer(args: CliArgs): Promise<void> {
   const stateDir = args.stateDir ?? defaultStateDir()
   await loadConfig(stateDir)
   if (!config.authToken) {
