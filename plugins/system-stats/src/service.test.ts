@@ -59,8 +59,12 @@ afterAll(() => {
 // Each test spawns a real Node child running the bundled service, which on
 // Windows additionally spawns PowerShell for the GPU-utilization probe. That is
 // far slower than vitest's 5s default timeout under suite contention, so both
-// tests set an explicit generous timeout.
-const SERVICE_TEST_TIMEOUT = 20_000
+// tests set an explicit outer timeout. SERVICE_TEST_TIMEOUT is only a safety
+// net that keeps vitest from killing the test before the poll deadline below
+// fires; the binding flake budget is the 25s first-sample wait deadline. In
+// isolation the first sample lands in ~6s, but under a busy maxWorkers pool the
+// child's PowerShell probe can stall well past the old 12s.
+const SERVICE_TEST_TIMEOUT = 30_000
 
 describe('system-stats service child loop', () => {
   it(
@@ -100,7 +104,7 @@ describe('system-stats service child loop', () => {
       })
       // On Windows the GPU-utilization probe adds up to PROBE_MAX_MS (5s) to the
       // first sample, so allow a comfortable margin over the default interval.
-      const deadline = Date.now() + 12_000
+      const deadline = Date.now() + 25_000
       while (events.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25))
       expect(events.length).toBeGreaterThan(0)
       const first = events[0] as { params: { widgetId: string; payload: { values: unknown[] } } }

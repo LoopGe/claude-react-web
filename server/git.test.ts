@@ -41,26 +41,65 @@ vi.setConfig({ testTimeout: 20_000 })
 // already crystallised at the initial `false` and skipped the whole suite.
 const gitOk = ((): boolean => {
   try {
-    execFileSync('git', ['--version'], { stdio: 'ignore' })
-    return true
+    const v = execFileSync('git', ['--version'], { encoding: 'utf8' }).trim()
+    // applyTestGitEnv() injects identity via GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n
+    // env vars, which git only honours since 2.31 — older git silently ignores
+    // them, leaving repos without identity (commits fail) and on branch
+    // "master" (assertions + `git worktree add ... main` fail). Skip the whole
+    // integration suite on unsupported git rather than let every test red.
+    const m = /^git version (\d+)\.(\d+)/.exec(v)
+    if (!m) return false
+    const major = Number(m[1])
+    const minor = Number(m[2])
+    return major > 2 || (major === 2 && minor >= 31)
   } catch {
     return false
   }
 })()
 
-/** Initialise an empty git repo with deterministic identity. We pass
- *  config via -c so the test environment doesn't need a global gitconfig.
- *  `init.defaultBranch=main` keeps the branch name stable across git
- *  versions (older git defaulted to "master"). */
+/** git identity + behaviour config, injected as GIT_CONFIG_* environment
+ *  variables rather than per-repo `git config` writes.
+ *
+ *  Every git child process spawned in this worker — both the test's own
+ *  execFileSync helpers AND the runGit() spawns under test — inherits
+ *  process.env, so setting these once is equivalent to passing
+ *  `-c user.email=… -c core.autocrlf=false …` on every command. This
+ *  replaces the five `git config` spawns gitInit used to make per test
+ *  (~0.5s × ~55 tests on Windows, where each git process costs ~130ms).
+ *  Repo-local config is left untouched; env config never persists.
+ *
+ *  `CRW_TEST_GIT_ENV` guards against re-applying if the module is loaded
+ *  more than once in a shared worker. */
+function applyTestGitEnv(): void {
+  if (process.env.CRW_TEST_GIT_ENV === '1') return
+  process.env.CRW_TEST_GIT_ENV = '1'
+  const pairs: Array<[string, string]> = [
+    ['user.email', 'test@example.com'],
+    ['user.name', 'Tester'],
+    ['commit.gpgsign', 'false'],
+    ['core.autocrlf', 'false'],
+    ['init.defaultBranch', 'main'],
+  ]
+  process.env.GIT_CONFIG_COUNT = String(pairs.length)
+  pairs.forEach(([k, v], i) => {
+    process.env[`GIT_CONFIG_KEY_${i}`] = k
+    process.env[`GIT_CONFIG_VALUE_${i}`] = v
+  })
+}
+
+applyTestGitEnv()
+
+/** Initialise an empty git repo. Identity/behaviour config comes from the
+ *  GIT_CONFIG_* env injected above, so a single spawn replaces the old
+ *  `git init` + four `git config` calls. `init.defaultBranch=main` is part
+ *  of the env config, keeping the branch name stable across git versions
+ *  (older git defaulted to "master").
+ *
+ *  Windows autocrlf note: disabling it (env-injected above) keeps checkout
+ *  on LF instead of converting to CRLF, so `expect('orig\n')` assertions
+ *  don't see '\r\n' and fail. */
 function gitInit(cwd: string): void {
-  execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', '--quiet'], { cwd })
-  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd })
-  execFileSync('git', ['config', 'user.name', 'Tester'], { cwd })
-  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd })
-  // Windows: disable autocrlf so checkout preserves LF instead of
-  // converting to CRLF. Otherwise our `expect('orig\n')` assertions
-  // get '\r\n' back and fail.
-  execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd })
+  execFileSync('git', ['init', '--quiet'], { cwd })
 }
 
 function gitCommitAll(cwd: string, message: string): string {
@@ -836,8 +875,8 @@ describe('listWorktrees', () => {
     execFileSync('git', ['worktree', 'add', wtPath('feature-auth'), '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
 
     const wts = await listWorktrees(dir)
-    const primary = wts.find((w) => w.path === realpathSync.native(dir))
-    const linked = wts.find((w) => w.path === wtPath('feature-auth'))
+    const primary = wts.find((w) => realpathSync.native(w.path) === realpathSync.native(dir))
+    const linked = wts.find((w) => realpathSync.native(w.path) === realpathSync.native(wtPath('feature-auth')))
     expect(primary?.branch).toBe('main')
     expect(primary?.locked).toBe(false)
     expect(linked?.branch).toBe('worktree-feature-auth')
@@ -852,7 +891,7 @@ describe('listWorktrees', () => {
     execFileSync('git', ['worktree', 'lock', wtPath('feature-auth'), '--reason', 'claude session feature-auth (pid 123)'], { cwd: dir })
 
     const wts = await listWorktrees(dir)
-    const linked = wts.find((w) => w.path === wtPath('feature-auth'))
+    const linked = wts.find((w) => realpathSync.native(w.path) === realpathSync.native(wtPath('feature-auth')))
     expect(linked?.locked).toBe(true)
     expect(linked?.lockMessage).toContain('claude session feature-auth')
   })
@@ -865,7 +904,7 @@ describe('listWorktrees', () => {
     execFileSync('git', ['worktree', 'lock', wtPath('feature-auth')], { cwd: dir })
 
     const wts = await listWorktrees(dir)
-    const linked = wts.find((w) => w.path === wtPath('feature-auth'))
+    const linked = wts.find((w) => realpathSync.native(w.path) === realpathSync.native(wtPath('feature-auth')))
     expect(linked?.locked).toBe(true)
     expect(linked?.lockMessage).toBeNull()
   })

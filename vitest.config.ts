@@ -12,10 +12,14 @@ export default defineConfig({
     // default concurrency (≈ CPU cores), several processes coexist — each
     // holding a full copy of jsdom (~11MB) + React 19 + @testing-library +
     // (for markdown tests) highlight.js (~8MB). That easily blows past 1–2GB.
-    // Cap concurrent worker processes to keep peak memory bounded; total
-    // wall-clock cost is small since most suites are sub-second. `maxWorkers`
-    // is the top-level concurrency knob (vitest 3 has no per-pool maxThreads).
-    maxWorkers: 2,
+    // Cap concurrent worker processes to keep peak memory bounded. Was 2 when
+    // the suite was ~70 files; it is now ~245, and most of those finish in
+    // <1s — their fixed per-file cost (transform + module collect + jsdom env
+    // setup) is what dominated the old wall clock, serialised behind just 2
+    // workers. 8 is measured (on 15.6 GB) to cut the non-git suite from 278s
+    // to ~103s. `maxWorkers` is the top-level concurrency knob (vitest 3 has
+    // no per-pool maxThreads).
+    maxWorkers: 8,
     globals: false,
     // `environmentMatchGlobs` is first-match-wins (Vitest breaks on the first
     // matching glob), so the narrow `node` overrides MUST precede the broad

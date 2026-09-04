@@ -105,6 +105,15 @@ export class RpcPeer {
       this.opts.onLog?.(line)
     })
 
+    // A dead child surfaces EPIPE on its stdin either as a synchronous throw
+    // from write() (handled in send()) or as an async 'error' event. Without
+    // a listener the async variant would crash the host as an unhandled
+    // error — a transport-teardown condition, not a bug. Swallow EPIPE only;
+    // surface anything else in case it indicates a real problem.
+    proc.stdin?.on('error', (err) => {
+      if ((err as NodeJS.ErrnoException).code !== 'EPIPE') log.warn(`plugin stdin error: ${err.message}`)
+    })
+
     proc.on('exit', (code, signal) => {
       this.exited = true
       if (this.closed) return
@@ -223,7 +232,33 @@ export class RpcPeer {
       }
       return
     }
-    this.proc.stdin.write(json + '\n')
+    if (this.proc.stdin) {
+      try {
+        this.proc.stdin.write(json + '\n')
+      } catch (err) {
+        // Race: the child's stdin pipe broke between the `exited` guard in
+        // call()/notify() and this write — the process died mid-send. A
+        // fire-and-forget notification or an inbound-request reply must not
+        // surface as an unhandled EPIPE. The peer is gone; fast-fail
+        // subsequent call()s via `exited`. If this was an in-flight request,
+        // reject it now (mirroring the oversized-message drop above) instead
+        // of leaving the caller to the 15s timeout — the imminent 'exit'
+        // event would reject it via failAll anyway.
+        if ((err as NodeJS.ErrnoException).code === 'EPIPE') {
+          this.exited = true
+          if ('id' in msg && msg.id != null) {
+            const p = this.pending.get(msg.id)
+            if (p) {
+              this.pending.delete(msg.id)
+              clearTimeout(p.timer)
+              p.reject(new Error('plugin process exited (stdin pipe closed)'))
+            }
+          }
+          return
+        }
+        throw err
+      }
+    }
   }
 
   private onStdoutLine(line: string): void {

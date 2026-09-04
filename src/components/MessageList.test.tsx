@@ -1896,7 +1896,13 @@ describe('TaskOutput tool card', () => {
 describe('ApiRetryView divider', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.useRealTimers()
+    // ApiRetryView runs a 1s countdown interval whose lifetime scales with
+    // retry_delay_ms (9s in the first test). Under REAL timers that interval
+    // can outlive the file's execution and fire one last setState after the
+    // jsdom environment is torn down ("window is not defined"). None of these
+    // tests need real time — render + assert static labels, or advance fake
+    // timers — so fake them.
+    vi.useFakeTimers()
   })
 
   it('renders an api_retry frame as a retry divider with countdown + attempt', () => {
