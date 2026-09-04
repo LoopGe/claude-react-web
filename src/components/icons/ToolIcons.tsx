@@ -154,11 +154,23 @@ export function IconListTodo(props: IconProps) {
 }
 
 export function IconMessageQuestion(props: IconProps) {
+  // The ? is compact and centered in the bubble so it clears the rim AND keeps
+  // its dot detached from the tail once the thick base stroke is added. The
+  // base stroke is ~2.6 viewBox units at 14px (the size ToolUseBlock renders
+  // this at), so the original mark — whose head apex sat ~0.85 units from the
+  // bubble rim — fused with it (~1.7 units of ink overlap). A uniform scale of
+  // that mark fixes the rim but shrinks the tail→dot gap below the stroke, so
+  // the dot reads attached; instead the head is a smaller arc (r=1.9 about
+  // (12,11.5), apex ≈y9.6) whose end tangent flows into the tail cubic, hook
+  // tip ≈y13.95, dot at y16.7. Measured at 14px: ≈1.4 units above, ≈1.7 below,
+  // and ≈1.2 units of ink between tail and dot. Clearances are tuned to the 14px
+  // resolved stroke; if ever rendered ≤12px the stroke thickens and the tail→dot
+  // gap collapses — re-verify before reusing at smaller sizes.
   return (
     <Icon {...props}>
       <path d="M21 12c0 4.42-3.58 8-8 8a8.96 8.96 0 0 1-3.93-.9L4 20l1-4.5A8 8 0 1 1 21 12Z" />
-      <path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 1-1 1.7" />
-      <circle cx="12" cy="16" r="0.5" fill="currentColor" stroke="none" />
+      <path d="M10.1 11.5A1.9 1.9 0 1 1 13.5 12.6c-.52.71-.9 1.3-1.5 1.35" />
+      <circle cx="12" cy="16.7" r="0.5" fill="currentColor" stroke="none" />
     </Icon>
   )
 }
