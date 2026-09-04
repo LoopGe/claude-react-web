@@ -14,6 +14,7 @@ export function useAppOverlays() {
   } | null>(null)
   const [gitPanelOpenFor, setGitPanelOpenFor] = useState<string | null>(null)
   const [tasksPanelOpenFor, setTasksPanelOpenFor] = useState<string | null>(null)
+  const [worktreeOpenFor, setWorktreeOpenFor] = useState<string | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
   const [helpCommands, setHelpCommands] = useState<SlashCommand[]>([])
 
@@ -22,24 +23,38 @@ export function useAppOverlays() {
     setSettingsOpenFor(id)
     setGitPanelOpenFor(null)
     setTasksPanelOpenFor(null)
+    setWorktreeOpenFor(null)
   }, [])
   const handleCloseGitPanel = useCallback(() => setGitPanelOpenFor(null), [])
   const handleOpenGitPanel = useCallback((id: string) => {
     setGitPanelOpenFor(id)
     setSettingsOpenFor(null)
     setTasksPanelOpenFor(null)
+    setWorktreeOpenFor(null)
   }, [])
   const handleCloseTasksPanel = useCallback(() => setTasksPanelOpenFor(null), [])
   const handleOpenTasksPanel = useCallback((id: string) => {
     setTasksPanelOpenFor(id)
     setSettingsOpenFor(null)
     setGitPanelOpenFor(null)
+    setWorktreeOpenFor(null)
+  }, [])
+  /** The Worktree-changes overlay joins the same mutual-exclusion group as
+   *  settings / git / tasks: opening any one of them closes the rest. */
+  const handleCloseWorktree = useCallback(() => setWorktreeOpenFor(null), [])
+  const handleOpenWorktree = useCallback((id: string) => {
+    setWorktreeOpenFor(id)
+    setSettingsOpenFor(null)
+    setGitPanelOpenFor(null)
+    setTasksPanelOpenFor(null)
   }, [])
 
   const settingsTabNonceRef = useRef(0)
   const openSettingsTab = useCallback((id: string, tab: SettingsTabName) => {
     setSettingsOpenFor(id)
     setGitPanelOpenFor(null)
+    setTasksPanelOpenFor(null)
+    setWorktreeOpenFor(null)
     settingsTabNonceRef.current += 1
     setSettingsTabRequest({ sessionId: id, tab, nonce: settingsTabNonceRef.current })
   }, [])
@@ -63,6 +78,9 @@ export function useAppOverlays() {
     tasksPanelOpenFor,
     handleCloseTasksPanel,
     handleOpenTasksPanel,
+    worktreeOpenFor,
+    handleOpenWorktree,
+    handleCloseWorktree,
     helpOpen,
     setHelpOpen,
     helpCommands,

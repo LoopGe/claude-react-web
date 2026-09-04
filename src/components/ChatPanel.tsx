@@ -9,7 +9,6 @@ import { Chat } from './Chat'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
-import { WorktreeChanges } from './WorktreeChanges'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
@@ -74,7 +73,7 @@ function worktreeChipTitle(
     ? ['Agent isolated in worktree', `Worktree: ${match.path}`, `Branch: ${match.branch ?? 'detached'}`]
     : ['Agent isolated in worktree', 'Git worktree not yet confirmed']
   if (match?.locked) lines.push(`Locked: ${match.lockMessage ?? 'yes'}`)
-  lines.push('Click to open Git panel')
+  lines.push('Click to view worktree changes')
   return lines.map((line, i) => <div key={i}>{line}</div>)
 }
 
@@ -235,6 +234,12 @@ export interface ChatPanelProps {
   tasksPanelOpen?: boolean
   onOpenTasksPanel: (sessionId: string) => void
   onCloseTasksPanel: () => void
+  /** When true, render the Worktree-changes overlay on top of this panel.
+   *  Mutually exclusive with `settingsOpen` / `gitPanelOpen` /
+   *  `tasksPanelOpen` (parent App enforces via the same shared dispatch). */
+  worktreeOpen?: boolean
+  onOpenWorktree: (sessionId: string) => void
+  onCloseWorktree: () => void
   /** Forwarded to <Chat> so it can register its interrupt callback with
    *  the parent App. Enables ESC shortcut to trigger the same code-path
    *  as the Composer's interrupt button. */
@@ -318,6 +323,9 @@ export const ChatPanel = memo(function ChatPanel({
   tasksPanelOpen,
   onOpenTasksPanel,
   onCloseTasksPanel,
+  worktreeOpen,
+  onOpenWorktree,
+  onCloseWorktree,
   onRegisterInterrupt,
   onRegisterRecap,
   onRegisterBackground,
@@ -417,7 +425,31 @@ export const ChatPanel = memo(function ChatPanel({
     const wts = gitStatus.data?.isRepo === true ? gitStatus.data.linkedWorktrees : undefined
     return worktreeMatch(activeWorktree, wts)
   }, [activeWorktree, gitStatus.data])
-  const [worktreeChangesOpen, setWorktreeChangesOpen] = useState(false)
+  // Data for the Worktree-changes overlay. Precomputed here (the header chip
+  // already owns the match) and threaded into <Chat>, which hosts the overlay
+  // inside .chat so its .git-overlay fills the body below the header — the
+  // same positioning as the Git overlay. Memoized so Chat's memo() doesn't
+  // re-render on every parent render when nothing relevant changed.
+  const worktreeView = useMemo(
+    () =>
+      activeWorktree
+        ? {
+            cwd: activeWorktreeMatch?.path ?? null,
+            branchName: activeWorktreeMatch?.branch ?? null,
+            baseRef: gitStatus.data?.isRepo === true ? (gitStatus.data.branch ?? 'main') : 'main',
+            displayName: activeWorktree.name,
+          }
+        : null,
+    [activeWorktree, activeWorktreeMatch, gitStatus.data],
+  )
+  // Close the Worktree overlay the moment the worktree it was showing goes
+  // away (ExitWorktree / transcript cleared). The open flag lives at the App
+  // level (settings/git mutual-exclusion group); without this it would stay
+  // latched and a later EnterWorktree in the same session would auto-reopen
+  // an overlay the user never asked to open.
+  useEffect(() => {
+    if (worktreeOpen && !activeWorktree) onCloseWorktree()
+  }, [worktreeOpen, activeWorktree, onCloseWorktree])
 
   // Side Chat stream — always subscribed so the drawer can mount without
   // replay cost and the collapsed badge gets live permission data.
@@ -1052,7 +1084,7 @@ export const ChatPanel = memo(function ChatPanel({
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation()
-                    setWorktreeChangesOpen(true)
+                    onOpenWorktree(session.id)
                   }}
                 >
                   <IconGitFork size={12} className="chat-panel-worktree-badge-icon" aria-hidden />
@@ -1061,16 +1093,6 @@ export const ChatPanel = memo(function ChatPanel({
               </Tooltip>
             )}
           </div>
-        )}
-        {worktreeChangesOpen && (
-          <WorktreeChanges
-            sessionId={session.id}
-            cwd={activeWorktreeMatch?.path ?? null}
-            branchName={activeWorktreeMatch?.branch ?? null}
-            baseRef={gitStatus.data?.isRepo === true ? (gitStatus.data.branch ?? 'main') : 'main'}
-            displayName={activeWorktree?.name ?? ''}
-            onClose={() => setWorktreeChangesOpen(false)}
-          />
         )}
         {/* App Plugin `chat.header` action slot. Renders nothing when no
             enabled plugin contributes an action here. */}
@@ -1112,6 +1134,9 @@ export const ChatPanel = memo(function ChatPanel({
             gitLoading={gitStatus.loading}
             gitError={gitStatus.error}
             onGitRefresh={gitStatus.refresh}
+            worktreeOpen={worktreeOpen}
+            onCloseWorktree={onCloseWorktree}
+            worktreeView={worktreeView}
             recapOpen={recapOpen}
             onCloseRecap={() => setRecapDismissedAt(session.recap?.generatedAt ?? null)}
             onRegisterInterrupt={onRegisterInterrupt}

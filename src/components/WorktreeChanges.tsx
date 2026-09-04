@@ -17,6 +17,7 @@ import { useState } from 'react'
 import { Overlay } from './Overlay'
 import { FileViewer } from './FileViewer'
 import { Tooltip } from './Tooltip'
+import { DiffView } from './DiffView'
 import {
   useGitStatus,
   useGitDiff,
@@ -28,10 +29,11 @@ import {
   IconRefresh,
   IconLoader,
   IconGitFork,
-  IconFileText,
   IconSearch,
+  IconChevronDown,
+  IconChevronRight,
 } from './icons/ToolIcons'
-import type { GitRangeFile, GitStatus } from '../../shared/git-types'
+import type { GitDiff, GitRangeFile, GitStatus } from '../../shared/git-types'
 
 type Tab = 'uncommitted' | 'branch' | 'base'
 
@@ -52,9 +54,9 @@ interface Props {
 }
 
 const TABS: Array<{ id: Tab; label: string }> = [
-  { id: 'uncommitted', label: '未提交改动' },
-  { id: 'branch', label: '分支提交' },
-  { id: 'base', label: '对比 base' },
+  { id: 'uncommitted', label: 'Uncommitted' },
+  { id: 'branch', label: 'Branch' },
+  { id: 'base', label: 'vs base' },
 ]
 
 function diffTitle(files: RangeRow[] | undefined): string {
@@ -96,7 +98,7 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
         <header className="git-panel-header">
           <span className="git-panel-branch">
             <IconGitFork size={14} />
-            {cwd ? branchName ?? displayName : `${displayName} (未确认)`}
+            {cwd ? branchName ?? displayName : `${displayName} (unconfirmed)`}
           </span>
           <div className="git-panel-tabs" role="tablist" aria-label="Change scope">
             {TABS.map((t) => (
@@ -115,16 +117,16 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
           <Tooltip label={diffTitle(tab === 'uncommitted' ? (uncommittedFiles as RangeRow[]) : rangeFiles)} placement="bottom">
             <span className="git-panel-total-changes">
               {tab === 'uncommitted' && uncommittedFiles.length > 0 && (
-                <span>
+                <>
                   <span className="git-file-additions">+{uncommittedFiles.reduce((n, f) => n + (f.insertions ?? 0), 0)}</span>
                   <span className="git-file-deletions">−{uncommittedFiles.reduce((n, f) => n + (f.deletions ?? 0), 0)}</span>
-                </span>
+                </>
               )}
               {tab !== 'uncommitted' && rangeFiles.length > 0 && (
-                <span>
+                <>
                   <span className="git-file-additions">+{rangeFiles.reduce((n, f) => n + f.insertions, 0)}</span>
                   <span className="git-file-deletions">−{rangeFiles.reduce((n, f) => n + f.deletions, 0)}</span>
-                </span>
+                </>
               )}
             </span>
           </Tooltip>
@@ -141,15 +143,15 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
         <div className="git-panel-scroll">
           {!cwd || !branchName ? (
             <div className="git-panel-empty">
-              git 中尚未确认到对应 worktree（EnterWorktree 后存在时序间隙，或声明已失效）。
+              No matching worktree confirmed in git yet (a timing gap right after EnterWorktree, or the claim is stale).
             </div>
           ) : error ? (
             <div className="git-panel-error">{error}</div>
           ) : loading ? (
-            <div className="git-panel-empty">加载中…</div>
+            <div className="git-panel-empty">Loading…</div>
           ) : tab === 'uncommitted' ? (
             uncommittedFiles.length === 0 ? (
-              <div className="git-panel-empty">worktree 内没有未提交的改动。</div>
+              <div className="git-panel-empty">No uncommitted changes in the worktree.</div>
             ) : (
               <UncommittedList
                 cwd={cwd}
@@ -160,7 +162,7 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
               />
             )
           ) : rangeFiles.length === 0 ? (
-            <div className="git-panel-empty">该范围没有文件改动。</div>
+            <div className="git-panel-empty">No file changes in this range.</div>
           ) : (
             <RangeList
               cwd={cwd}
@@ -297,30 +299,91 @@ function RowShell(props: {
   open: boolean
   onToggle: () => void
   onOpen: (path: string) => void
-  diff: { loading: boolean; error: string | null; data: { isBinary: boolean; text: string } | null }
+  diff: { loading: boolean; error: string | null; data: GitDiff | null }
 }) {
   const { row, open, onToggle, onOpen, diff } = props
   const path = row.path
+  const isUntracked = row.status[0] === '?'
+  const hasCounts = row.insertions != null || row.deletions != null
+  // Tracked rows are an accordion: a `.git-file-row-line` holding the toggle
+  // (status / path / +− counts / chevron) + actions, then the diff body below
+  // when open. This mirrors GitPanel's `.git-file-row` DOM contract — the CSS
+  // column-flexes `.git-file-row` and expects the header row to be a single
+  // full-width toggle, NOT bare sibling spans (which stack vertically).
+  if (isUntracked) {
+    // Untracked files have no diff to expand (GitPanel treats them the same
+    // way): a static inline row with only the open-file action.
+    return (
+      <div className="git-file-row untracked">
+        <div className="git-file-row-line">
+          <span className="git-file-row-toggle untracked-static" title={path}>
+            <span className="git-file-status status-?">?</span>
+            <span className="git-file-path">{path}</span>
+          </span>
+          <div className="git-file-actions">
+            <button
+              type="button"
+              className="git-action-btn"
+              onClick={() => onOpen(path)}
+              aria-label={`Open ${path}`}
+              title="Open file"
+            >
+              <IconSearch size={13} />
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
   return (
-    <div className={['git-file-row', row.status.startsWith('?') ? 'untracked' : ''].filter(Boolean).join(' ')}>
-      <button className="git-file-row-toggle" onClick={onToggle} aria-expanded={open} aria-label={`Toggle diff for ${path}`}>
-        <IconFileText size={13} />
-      </button>
-      <span className={`git-file-status status-${row.status[0]}`}>{row.status[0]}</span>
-      <span className="git-file-path" title={path}>{path}</span>
-      {(row.insertions ?? 0) > 0 && <span className="git-file-additions">+{row.insertions}</span>}
-      {(row.deletions ?? 0) > 0 && <span className="git-file-deletions">−{row.deletions}</span>}
-      {(row.status[0] !== 'D' && row.status[0] !== 'R') && (
-        <button className="git-panel-icon-btn" onClick={() => onOpen(path)} aria-label={`Open ${path}`} title="Open file">
-          <IconSearch size={12} />
+    <div className={open ? 'git-file-row open' : 'git-file-row'}>
+      <div className="git-file-row-line">
+        <button
+          type="button"
+          className="git-file-row-toggle"
+          onClick={onToggle}
+          aria-expanded={open}
+          aria-label={`Toggle diff for ${path}`}
+          title={path}
+        >
+          <span className={`git-file-status status-${row.status[0]}`}>{row.status[0]}</span>
+          <span className="git-file-path">{path}</span>
+          {hasCounts && (
+            <span className="git-file-changes">
+              {row.insertions != null && row.insertions > 0 && (
+                <span className="git-file-additions">+{row.insertions}</span>
+              )}
+              {row.deletions != null && row.deletions > 0 && (
+                <span className="git-file-deletions">−{row.deletions}</span>
+              )}
+            </span>
+          )}
+          <span className="git-file-arrow" aria-hidden>
+            {open ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+          </span>
         </button>
-      )}
+        {row.status[0] !== 'D' && row.status[0] !== 'R' && (
+          <div className="git-file-actions">
+            <button
+              type="button"
+              className="git-action-btn"
+              onClick={() => onOpen(path)}
+              aria-label={`Open ${path}`}
+              title="Open file"
+            >
+              <IconSearch size={13} />
+            </button>
+          </div>
+        )}
+      </div>
       {open && (
         <div className="git-file-diff-wrap">
-          {diff.loading && <div className="git-file-diff-loading">加载中…</div>}
+          {diff.loading && <div className="git-file-diff-loading">Loading…</div>}
           {diff.error && <div className="git-file-diff-error">{diff.error}</div>}
-          {diff.data && !diff.data.isBinary && <DiffBody text={diff.data.text} />}
           {diff.data && diff.data.isBinary && <div className="git-file-diff-binary">(binary file)</div>}
+          {diff.data && !diff.data.isBinary && (
+            <DiffView text={diff.data.text} truncated={diff.data.truncated} totalLines={diff.data.totalLines} />
+          )}
         </div>
       )}
     </div>
@@ -358,9 +421,4 @@ function RangeFileRow(props: {
     open,
   )
   return <RowShell row={row} open={open} onToggle={onToggle} onOpen={onOpen} diff={{ loading, error, data }} />
-}
-
-/** Minimal unified-diff renderer reusing the git-panel diff styling. */
-function DiffBody({ text }: { text: string }) {
-  return <pre className="git-file-diff">{text}</pre>
 }

@@ -221,6 +221,9 @@ export function App() {
     tasksPanelOpenFor,
     handleCloseTasksPanel,
     handleOpenTasksPanel,
+    worktreeOpenFor,
+    handleOpenWorktree,
+    handleCloseWorktree,
     helpOpen,
     setHelpOpen,
     helpCommands,
@@ -2553,10 +2556,12 @@ export function App() {
           combo: 'mod+shift+o',
           handler: () => {
             const fid = focusedIdRef.current
-            // Close any open settings/git overlay on this panel first —
-            // same mutual-exclusion as requestResumeForPanel (focus traps).
+            // Close any open settings/git/worktree overlay on this panel
+            // first — same mutual-exclusion as requestResumeForPanel (focus
+            // traps).
             handleCloseSettings()
             handleCloseGitPanel()
+            handleCloseWorktree()
             setResumeTargetPanelId(fid ?? null)
             setResumeDialogOpen(true)
           },
@@ -2708,7 +2713,7 @@ export function App() {
       // [handleCloseSettings, handleCloseGitPanel]), so the omission only
       // affects eslint's static analysis, not runtime behaviour.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, setSidebarCollapsed],
+      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, handleCloseWorktree, setSidebarCollapsed],
     )
   useKeyboardShortcuts(shortcuts)
 
@@ -3391,13 +3396,14 @@ export function App() {
   // as an in-panel overlay (variant="panel") inside that panel's <Chat>, and
   // onResume calls handlePanelResume → resumeIntoPanel to swap the slot.
   const requestResumeForPanel = useCallback((panelSessionId: string) => {
-    // Joins the settings/git mutual-exclusion group: each overlay has its
-    // own focus trap, and two mounted at once would fight over focus.
+    // Joins the settings/git/worktree mutual-exclusion group: each overlay
+    // has its own focus trap, and two mounted at once would fight over focus.
     handleCloseSettings()
     handleCloseGitPanel()
+    handleCloseWorktree()
     setResumeTargetPanelId(panelSessionId)
     setResumeDialogOpen(true)
-  }, [handleCloseSettings, handleCloseGitPanel])
+  }, [handleCloseSettings, handleCloseGitPanel, handleCloseWorktree])
 
   // Close the resume picker (shared by both variants). Clears both the open
   // flag and the panel target so neither the App-root modal nor any in-panel
@@ -3964,6 +3970,9 @@ export function App() {
                       tasksPanelOpen={tasksPanelOpenFor === s.id}
                       onOpenTasksPanel={handleOpenTasksPanel}
                       onCloseTasksPanel={handleCloseTasksPanel}
+                      worktreeOpen={worktreeOpenFor === s.id}
+                      onOpenWorktree={handleOpenWorktree}
+                      onCloseWorktree={handleCloseWorktree}
                       onSwap={swapPanels}
                       onRegisterInterrupt={registerInterrupt}
                       onRegisterRecap={registerRecap}

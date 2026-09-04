@@ -52,6 +52,7 @@ import { SubagentOverlay } from './SubagentOverlay'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import { WorkflowOverlay } from './WorkflowOverlay'
 import { WorkflowProvider } from '../hooks/useWorkflowContext'
+import { WorktreeChanges } from './WorktreeChanges'
 import { ReopenQuestionProvider } from '../hooks/useReopenQuestion'
 import { useMinimizedSet } from '../hooks/useMinimizedSet'
 import { TodoChecklist } from './TodoChecklist'
@@ -170,6 +171,21 @@ interface Props {
   gitLoading?: boolean
   gitError?: string | null
   onGitRefresh?: () => void
+  /** When true, render the Worktree-changes overlay (the agent-isolated
+   *  worktree diff view) over this chat panel. Hosted here inside .chat,
+   *  alongside the Git overlay, so its .git-overlay fills the panel body
+   *  below the header rather than the whole panel. */
+  worktreeOpen?: boolean
+  onCloseWorktree?: () => void
+  /** Worktree-overlay inputs, precomputed by ChatPanel (which owns the
+   *  header worktree chip + the git reconciliation). Null while no
+   *  worktree is active. */
+  worktreeView?: {
+    cwd: string | null
+    branchName: string | null
+    baseRef: string
+    displayName: string
+  } | null
   /** When true, render the Tasks overlay (background-task list) on top of
    *  this chat panel. Data comes from the session store's `tasks` mirror —
    *  TasksPanel subscribes itself, no prop drilling of the list. */
@@ -324,6 +340,7 @@ export const Chat = memo(function Chat({
   clearing: clearingProp,
   settingsOpen, onCloseSettings,
   gitPanelOpen, onCloseGitPanel, gitStatus, gitLoading, gitError, onGitRefresh,
+  worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
   onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onCompactSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onInterruptFired, historyOpen, onCloseHistory,
@@ -2247,6 +2264,23 @@ export const Chat = memo(function Chat({
           />
         </Suspense>
       </Overlay>
+
+      {/* Worktree-changes overlay — the agent-isolated worktree diff view.
+          Self-contained (renders its own `git`-variant Overlay), so it's
+          mounted directly here inside .chat, giving it the same body-only
+          footprint as the Git overlay above rather than covering the whole
+          panel incl. the header. Data is precomputed by ChatPanel (owner of
+          the header worktree chip). */}
+      {worktreeOpen && worktreeView && (
+        <WorktreeChanges
+          sessionId={session.id}
+          cwd={worktreeView.cwd}
+          branchName={worktreeView.branchName}
+          baseRef={worktreeView.baseRef}
+          displayName={worktreeView.displayName}
+          onClose={() => onCloseWorktree?.()}
+        />
+      )}
 
       <Overlay
         variant="tasks"

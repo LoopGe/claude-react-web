@@ -19,15 +19,16 @@
 // All destructive operations (discard, drop, abort, amend, force
 // checkout) are gated by <ConfirmDialog>.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { useGitDiff, useGitLog, useGitBranches, useGitStashes } from '../hooks/useGitStatus'
 import { useGitWrite } from '../hooks/useGitWrite'
 import { ConfirmDialog } from './ConfirmDialog'
 import { FileViewer } from './FileViewer'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { Tooltip } from './Tooltip'
-import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw, IconFileText, IconSearch } from './icons/ToolIcons'
+import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw, IconSearch } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
+import { DiffView } from './DiffView'
 import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { AnimatePresence } from 'motion/react'
@@ -35,7 +36,6 @@ import type {
   GitFileEntry,
   GitStatusResponse,
 } from '../../shared/git-types'
-import { parseUnifiedDiff } from '../utils/diff-parse'
 import { gitStatusTitle } from '../utils/git-status'
 
 interface Props {
@@ -820,7 +820,7 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
               className="git-action-btn"
               aria-label="View file content"
               onClick={(e) => { e.stopPropagation(); onOpenFile(file.path) }}
-            ><IconFileText size={13} /></button>
+            ><IconSearch size={13} /></button>
           </Tooltip>
           {staged ? (
             <Tooltip label="Unstage" placement="left">
@@ -940,7 +940,7 @@ function UntrackedRow({ file, selected, selectIndex, onSelect, writeOps, onError
               className="git-action-btn"
               aria-label="View file content"
               onClick={(e) => { e.stopPropagation(); onOpenFile(file.path) }}
-            ><IconFileText size={13} /></button>
+            ><IconSearch size={13} /></button>
           </Tooltip>
           <Tooltip label="Stage" placement="left">
             <button
@@ -983,40 +983,6 @@ function UntrackedRow({ file, selected, selectIndex, onSelect, writeOps, onError
     </div>
   )
 }
-
-// ── Diff renderer ────────────────────────────────────────────────────
-
-interface DiffViewProps {
-  text: string
-  truncated: boolean
-  totalLines: number
-}
-
-// memo: GitPanel re-renders on every commit-textarea keystroke. Without
-// memo, every open DiffView re-parses the diff and re-renders ~500 rows
-// even though its props are unchanged.
-const DiffView = memo(function DiffView({ text, truncated, totalLines }: DiffViewProps) {
-  const rows = useMemo(() => parseUnifiedDiff(text), [text])
-  const setDiffOs = useOverlayScrollbar({ orientation: 'both', autoHide: 'leave' })
-  return (
-    <div className="git-file-diff" ref={setDiffOs}>
-      {rows.map((row, i) => (
-        <div key={i} className={`git-diff-row ${row.type}`}>
-          <span className="git-diff-gutter">{row.newLine ?? row.oldLine ?? ''}</span>
-          <span className="git-diff-sign">{row.type === 'add' ? '+' : row.type === 'del' ? '−' : ''}</span>
-          <span className="git-diff-body">{row.content || ' '}</span>
-        </div>
-      ))}
-      {truncated && (
-        <div className="git-diff-row truncated">
-          <span className="git-diff-gutter" />
-          <span className="git-diff-sign" />
-          <span className="git-diff-body">— diff truncated; {totalLines} lines total —</span>
-        </div>
-      )}
-    </div>
-  )
-})
 
 // ── Commit bar (sticky footer) ────────────────────────────────────────
 

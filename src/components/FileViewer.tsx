@@ -34,7 +34,19 @@ export function FileViewer({ open, onClose, sessionId, path, name }: Props) {
   const pending = loading || (!error && data === null)
 
   return (
-    <Overlay open={open} onClose={onClose} variant="modal" ariaLabel="File viewer" cardClassName="file-viewer" cardStyle={{ width: 720, maxWidth: '92vw' }}>
+    <Overlay
+      open={open}
+      onClose={onClose}
+      variant="modal"
+      ariaLabel="File viewer"
+      cardClassName="file-viewer"
+      cardStyle={{ width: 720, maxWidth: '92vw' }}
+      // Portal to <body>: callers mount FileViewer inside a per-panel overlay
+      // (`.git-overlay` / settings), whose backdrop-filter makes it the
+      // containing block for fixed descendants — a non-portaled modal would be
+      // clipped to that panel box and render visibly cut off.
+      portal
+    >
       <div className="modal-header">
         <h3 className="file-viewer-title" title={path ?? undefined}>{title}</h3>
         <button className="btn btn-icon-sm" onClick={onClose} aria-label="Close"><IconX /></button>
