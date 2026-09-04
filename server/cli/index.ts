@@ -7,8 +7,8 @@ import { appPluginGroup } from './app-plugin.js'
 import { configGroup } from './config.js'
 import { sessionsGroup } from './sessions.js'
 import { doctorGroup } from './doctor.js'
+import { updateGroup } from './update.js'
 
-// The final group (update) is added by the last task.
 export const GROUPS: CliGroup[] = [
   mcpGroup,
   marketplaceGroup,
@@ -16,6 +16,7 @@ export const GROUPS: CliGroup[] = [
   configGroup,
   sessionsGroup,
   doctorGroup,
+  updateGroup,
 ]
 
 export function topLevelHelp(): string {

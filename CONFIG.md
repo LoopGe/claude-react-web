@@ -323,6 +323,31 @@ Configuration values are resolved in this order (highest priority first):
 2. **`config.json`** — the file described above
 3. **Built-in defaults** — hardcoded in `server/config.ts`
 
+## Terminal commands
+
+Running `claude-react-web <command>` manages config without the browser —
+single-shot, headless, and scriptable (`--json` for structured output, `--yes`
+to confirm destructive verbs, `--state-dir <path>` to target a non-default
+state dir):
+
+- `claude-react-web mcp …` — list / add / update / remove / enable / disable /
+  test global MCP servers (`mcp-config.json`)
+- `claude-react-web marketplace …` — add / list / remove agent-plugin
+  marketplaces (`marketplaces.json`)
+- `claude-react-web app-plugin …` — manage App Plugin marketplaces and
+  installed App Plugins (`app-plugins/`)
+- `claude-react-web config get|set` — read (tokens masked) / update writable
+  keys of `config.json`
+- `claude-react-web sessions list|delete` — persisted session management
+- `claude-react-web doctor` — local environment checks (exit 0 when healthy)
+- `claude-react-web update` — npm-registry update check
+
+`config set` only accepts the writable keys listed under `WRITABLE_CONFIG_KEYS`
+in `server/config.ts` (the same set the in-app settings panel can change);
+`authToken` / `accessToken` are never writable from the command line — edit
+`config.json` for those. Run `claude-react-web <command> --help` for flags.
+
+
 ## Client-side settings (localStorage)
 
 Some UI layout and behavior constants are stored in the browser's `localStorage` instead of `config.json`. These are per-browser and don't require a server restart:

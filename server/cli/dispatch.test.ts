@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { runCliCommand, GROUPS } from './index.js'
+import { runCliCommand, GROUPS, topLevelHelp } from './index.js'
 import { parseArgv } from './args.js'
 
 describe('parseArgv (from args.ts)', () => {
@@ -18,9 +18,13 @@ describe('parseArgv (from args.ts)', () => {
 })
 
 describe('registry', () => {
-  it('registers app-plugin/sessions/config/mcp/marketplace/doctor (update added last)', () => {
+  it('registers the full set of groups', () => {
     const names = GROUPS.map((g) => g.name).sort()
-    expect(names).toEqual(['app-plugin', 'config', 'doctor', 'marketplace', 'mcp', 'sessions'])
+    expect(names).toEqual(['app-plugin', 'config', 'doctor', 'marketplace', 'mcp', 'sessions', 'update'])
+  })
+  it('top-level help lists every group', () => {
+    const help = topLevelHelp()
+    for (const g of GROUPS) expect(help).toContain(g.name)
   })
   it('runs the doctor default and reports a non-zero exit for a broken setup', async () => {
     const code = await runCliCommand({ stateDir: '/nonexistent-cli-test' }, 'doctor', [])

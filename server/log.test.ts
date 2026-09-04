@@ -1,9 +1,9 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { writeFileSync, existsSync } from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { clearLogFile, enableFileLogging, disableFileLogging } from './log.js'
+import { clearLogFile, enableFileLogging, disableFileLogging, setLogToStderr, createLogger } from './log.js'
 
 describe('clearLogFile', () => {
   let tempDir: string
@@ -38,5 +38,32 @@ describe('clearLogFile', () => {
 
     // Logs dir should be gone entirely
     expect(existsSync(logDir)).toBe(false)
+  })
+})
+
+describe('setLogToStderr', () => {
+  const origLog = console.log
+  const origError = console.error
+  afterEach(() => {
+    setLogToStderr(false)
+    console.log = origLog
+    console.error = origError
+  })
+
+  it('routes info/debug/trace to stderr when enabled, stdout otherwise', () => {
+    const logSpy = vi.fn()
+    const errSpy = vi.fn()
+    console.log = logSpy as unknown as typeof console.log
+    console.error = errSpy as unknown as typeof console.error
+    const log = createLogger('logstderr-test')
+    setLogToStderr(true)
+    log.info('info-msg')
+    log.info('info-msg-2')
+    expect(errSpy).toHaveBeenCalledWith('[logstderr-test]', 'info-msg')
+    expect(errSpy).toHaveBeenCalledWith('[logstderr-test]', 'info-msg-2')
+    expect(logSpy).not.toHaveBeenCalled()
+    setLogToStderr(false)
+    log.info('after-msg')
+    expect(logSpy).toHaveBeenCalledWith('[logstderr-test]', 'after-msg')
   })
 })

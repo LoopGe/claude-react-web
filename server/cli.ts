@@ -15,7 +15,7 @@ import pkg from '../package.json' with { type: 'json' }
 import { isLoopbackHost, lanIPv4Addresses } from './net.js'
 import { setWebAuth } from './auth.js'
 import { loadConfig, config } from './config.js'
-import { disableFileLogging, getLogFilePath, createLogger } from './log.js'
+import { disableFileLogging, getLogFilePath, createLogger, setLogToStderr } from './log.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
 import { McpConfigStore } from './mcp-config.js'
 import { SessionManager } from './session-manager.js'
@@ -48,6 +48,10 @@ async function main() {
       process.exit(2)
     }
     const stateDir = sd ?? defaultStateDir()
+    // Logger diagnostics go to stderr so stdout carries only the command's
+    // result (critical for --json). Set BEFORE loadConfig so even boot logs
+    // stay off the result stream.
+    setLogToStderr(true)
     await loadConfig(stateDir)
     try {
       const code = await runCliCommand({ stateDir } satisfies CliContext, command, commandArgv)
