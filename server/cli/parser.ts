@@ -1,9 +1,9 @@
 import { CliError } from './types.js'
 
 export interface ParseSpec {
-  string?: string[]
-  repeatable?: string[]
-  boolean?: string[]
+  string?: readonly string[]
+  repeatable?: readonly string[]
+  boolean?: readonly string[]
   minPositional?: number
   maxPositional?: number
 }

@@ -1,11 +1,13 @@
 import { CliContext, CliError, CliGroup } from './types.js'
 import { parseArgs } from './parser.js'
 import { fmtJson } from './render.js'
+import { mcpGroup } from './mcp.js'
 import { doctorGroup } from './doctor.js'
 
-// Task 3 registers only doctorGroup. Later tasks add each group's import +
-// entry (and extend the dispatch.test.ts name list).
+// Task 3 registers only doctorGroup; Task 4 adds mcp. Later tasks add each
+// remaining group's import + entry (and extend the dispatch.test.ts name list).
 export const GROUPS: CliGroup[] = [
+  mcpGroup,
   doctorGroup,
 ]
 
