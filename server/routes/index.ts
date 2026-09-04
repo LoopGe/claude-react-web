@@ -54,7 +54,7 @@ export function buildApiRouter(
   // to preserve Hono's route-matching priority.
   app.route('/', buildHealthRouter(claudeBinary))
   app.route('/', buildConfigRouter(sm, configDir))
-  app.route('/', buildProfilesRouter(configDir))
+  app.route('/', buildProfilesRouter(configDir, sm))
   app.route('/', buildSessionRouter(sm, mpStore))
   app.route('/', buildHooksRouter(sm))
   app.route('/', buildSkillsRouter(sm))

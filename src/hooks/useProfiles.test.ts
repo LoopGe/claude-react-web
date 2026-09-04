@@ -50,11 +50,11 @@ describe('useProfiles', () => {
     try {
       const { result } = renderHook(() => useProfiles())
       await waitFor(() => expect(result.current.profiles.length).toBeGreaterThan(0))
-      await act(() => (
-        method === 'create' ? result.current.create({ name: 'N' })
-          : method === 'update' ? result.current.update('b', {})
-            : result.current[method]('b')
-      ))
+      await act(() => {
+        if (method === 'create') void result.current.create({ name: 'N' })
+        else if (method === 'update') void result.current.update('b', {})
+        else void result.current[method]('b')
+      })
       expect(events.length).toBe(1)
     } finally {
       window.removeEventListener('crw-profiles-changed', onEvent)

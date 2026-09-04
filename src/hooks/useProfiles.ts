@@ -10,7 +10,11 @@ export interface ProfilesData {
   create: (input: Record<string, unknown>) => Promise<void>
   update: (id: string, input: Record<string, unknown>) => Promise<void>
   remove: (id: string) => Promise<void>
-  activate: (id: string) => Promise<void>
+  activate: (id: string, restartSessions?: string[]) => Promise<{
+    activeProfileId?: string
+    restarted?: string[]
+    skipped?: string[]
+  }>
 }
 
 export function useProfiles(): ProfilesData {
@@ -55,10 +59,20 @@ export function useProfiles(): ProfilesData {
     emitProfilesChanged()
   }, [refresh])
 
-  const activate = useCallback(async (id: string) => {
-    await api.post('/profiles/activate', { profileId: id })
+  const activate = useCallback(async (id: string, restartSessions?: string[]): Promise<{
+    activeProfileId?: string
+    restarted?: string[]
+    skipped?: string[]
+  }> => {
+    const res = await api.post<{ activeProfileId?: string; restarted?: string[]; skipped?: string[] }>(
+      '/profiles/activate', {
+        profileId: id,
+        ...(restartSessions && restartSessions.length > 0 ? { restartSessions } : {}),
+      },
+    )
     await refresh()
     emitProfilesChanged()
+    return res ?? {}
   }, [refresh])
 
   return { profiles, activeProfileId, refresh, create, update, remove, activate }

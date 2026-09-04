@@ -10,6 +10,7 @@ import {
 } from '../config.js'
 import { maskToken } from '../profiles.js'
 import { createLogger } from '../log.js'
+import type { SessionManager } from '../session-manager.js'
 
 const log = createLogger('profiles')
 
@@ -33,7 +34,7 @@ function toWire(profiles: readonly unknown[], activeProfileId: string) {
   }
 }
 
-export function buildProfilesRouter(configDir?: string): Hono {
+export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Hono {
   const app = new Hono()
 
   app.get('/profiles', async (c) => {
@@ -129,17 +130,37 @@ export function buildProfilesRouter(configDir?: string): Hono {
 
   app.post('/profiles/activate', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
-    const body = await safeJson<{ profileId?: string }>(c.req)
+    const body = await safeJson<{ profileId?: string; restartSessions?: unknown }>(c.req)
     const profileId = body.profileId
     if (typeof profileId !== 'string' || !serverConfig.profiles.some((p) => p.id === profileId)) {
       throw new HttpError(400, `profile ${profileId} not found`)
     }
+    // Optional list of live sessions to restart into the newly-active profile.
+    // Sessions following global (empty profileId) re-resolve the active profile
+    // at respawn, so `sm.restart` picks up the change immediately. A busy /
+    // just-died session is skipped, never fatal to the activation as a whole.
+    const restartSessions = Array.isArray(body.restartSessions)
+      ? body.restartSessions.filter((s): s is string => typeof s === 'string')
+      : []
     await queueConfigWrite(configDir, (existing) => {
       existing.activeProfileId = profileId
     })
     await loadConfig(configDir)
+    const restarted: string[] = []
+    const skipped: string[] = []
+    if (sm) {
+      for (const id of restartSessions) {
+        try {
+          await sm.restart(id)
+          restarted.push(id)
+        } catch (e) {
+          skipped.push(id)
+          log.warn(`[profiles] restart session ${id} skipped: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+    }
     log.info(`active profile switched to id=${profileId}`)
-    return c.json({ ok: true, activeProfileId: serverConfig.activeProfileId })
+    return c.json({ ok: true, activeProfileId: serverConfig.activeProfileId, restarted, skipped })
   })
 
   app.post('/profiles/:id/test', async (c) => {

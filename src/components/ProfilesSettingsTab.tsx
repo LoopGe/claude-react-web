@@ -85,7 +85,7 @@ function ProfileCard({
   onToggleExpand: () => void
   onSave: (updates: Record<string, unknown>) => Promise<void>
   onDelete: () => Promise<void>
-  onActivate: () => Promise<void>
+  onActivate: () => unknown
 }) {
   // — Editor state (local; initialized from the profile prop once) ?
   const [name, setName] = useState(profile.name)
