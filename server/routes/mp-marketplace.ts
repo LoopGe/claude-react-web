@@ -18,15 +18,14 @@ import { safeJson } from './index.js'
 import type { SessionManager } from '../session-manager.js'
 import { MpStore, type MpEntry } from '../mp-store.js'
 import {
-  assertHttpsUrl,
   gitBranchName,
-  gitClone,
   gitCloneAtSha,
   gitGetHeadSha,
   gitLsRemoteHead,
   gitPull,
 } from '../git-clone.js'
 import { parseRepoManifest, type ParsedPlugin, type ParsedPluginSource } from '../marketplace-parser.js'
+import { addMarketplaceByUrl } from '../mp-ops.js'
 import { createLogger } from '../log.js'
 
 const log = createLogger('mp-marketplace')
@@ -176,63 +175,9 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
     const body = await safeJson<{ url?: unknown; ref?: unknown }>(c.req)
     const url = typeof body.url === 'string' ? body.url.trim() : ''
     if (!url) throw new HttpError(400, 'url is required')
-    assertHttpsUrl(url)
     const ref = typeof body.ref === 'string' && body.ref.trim() ? body.ref.trim() : undefined
-
-    const id = store.generateId(url)
-    const cloneDir = store.cloneDirFor(id)
-
-    // Mkdir the parent (cache root) before clone — git itself creates the
-    // final dest dir. If the user wiped their state dir mid-session, the
-    // base JsonFileStore won't have re-created the cache subdir for us.
-    await mkdir(dirname(cloneDir), { recursive: true })
-
-    // Clone failures leave nothing behind (git's clone is atomic w.r.t.
-    // the dest dir — failure means the dir wasn't created or was
-    // partial; either way we don't track the entry, so the HttpError
-    // from gitClone propagates straight out.
-    await gitClone(url, cloneDir, { ref })
-
-    let parseResult
-    try {
-      parseResult = await parseRepoManifest(cloneDir)
-    } catch (err) {
-      // Parse failure means we've cloned a repo that isn't a plugin source we
-      // recognise (no marketplace.json and no plugin.json, or a malformed
-      // manifest). Tear down the clone before rethrowing — keeping it around
-      // would orphan disk space and confuse the user.
-      try {
-        const { rm } = await import('node:fs/promises')
-        await rm(cloneDir, { recursive: true, force: true })
-      } catch { /* best-effort cleanup */ }
-      throw new HttpError(400, `plugin source parse failed: ${(err as Error).message}`)
-    }
-
-    const sha = await gitGetHeadSha(cloneDir)
-    // Resolve the checked-out branch once here (not per list request). A
-    // default-branch clone has no explicit ref, so this is what the UI shows.
-    // Falls back to the user's ref on a failed resolve (detached HEAD, etc.).
-    const branch = (await gitBranchName(cloneDir)) || ref || undefined
-    const now = Date.now()
-    const entry: MpEntry = {
-      id,
-      displayName: parseResult.manifest.name || id,
-      source: { type: 'https', url, ref },
-      cloneDir,
-      addedAt: now,
-      lastRefreshedAt: now,
-      lastSha: sha,
-      branch,
-      manifest: parseResult.manifest,
-    }
-    store.upsert(entry)
-    await store.flush()
-
-    return c.json({
-      ok: true,
-      entry: toListItem(entry, store),
-      warnings: parseResult.warnings,
-    })
+    const { entry, warnings } = await addMarketplaceByUrl(store, { url, ref })
+    return c.json({ ok: true, entry: toListItem(entry, store), warnings })
   })
 
   // ─── Refresh ─────────────────────────────────────────────────────
