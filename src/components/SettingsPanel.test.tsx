@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, waitFor } from '@testing-library/react'
+import { ToastHost } from './ToastHost'
 import { ToastProvider } from './ToastProvider'
 import { SettingsPanel } from './SettingsPanel'
 import type { SessionInfo } from '../types'
@@ -178,5 +179,164 @@ describe('SettingsPanel first-party card display chain', () => {
     expect(card.querySelector('.settings-card-pending')).toBeNull()
     expect([...card.querySelectorAll('button')].some((b) => b.textContent === 'Enable')).toBe(true)
     expect(card.textContent).toContain('Reset (inherit global)')
+  })
+})
+
+describe('SettingsPanel MCP reconnect feedback', () => {
+  const filesystemServer = {
+    name: 'filesystem',
+    status: 'connected',
+    tools: [{ name: 'read_file', description: 'Read a file.' }],
+  }
+
+  const globalPrefs = {
+    showPinnedUserMessage: true,
+    autoRecap: true,
+  } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
+
+  /** Render the session panel on its MCP tab with a ToastHost mounted under
+   *  the same provider so success/error toasts are asserted via textContent. */
+  function renderMcpPanel() {
+    return render(
+      <ToastProvider>
+        <SettingsPanel
+          session={mkSession()}
+          globalPrefs={globalPrefs}
+          onClose={() => {}}
+          onSessionUpdate={() => {}}
+          tabRequest={{ tab: 'mcp', nonce: 1 }}
+        />
+        <ToastHost />
+      </ToastProvider>,
+    )
+  }
+
+  function stubMcpStatus(server: { name: string; status: string; tools?: unknown[] }) {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [server] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      if (url === '/profiles') return Promise.resolve({ profiles: [] })
+      if (url === '/config') return Promise.resolve({ models: [] })
+      return Promise.resolve({})
+    })
+  }
+
+  async function findFilesystemCard(container: HTMLElement) {
+    await waitFor(() => expect(container.textContent).toContain('filesystem'))
+    const card = [...container.querySelectorAll('.settings-card')].find((c) =>
+      c.textContent?.includes('filesystem'),
+    )!
+    expect(card, 'filesystem card').toBeDefined()
+    return card
+  }
+
+  function reconnectButton(card: Element) {
+    return [...card.querySelectorAll('button')].find((b) => b.textContent === 'Reconnect')
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    stubMcpStatus(filesystemServer)
+  })
+
+  it('shows an in-flight spinner then a success toast when Reconnect lands', async () => {
+    let release!: (value: unknown) => void
+    ;(api.post as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () =>
+        new Promise((res) => {
+          release = res
+        }),
+    )
+
+    const { container } = renderMcpPanel()
+    const card = await findFilesystemCard(container)
+    const reconnect = reconnectButton(card)
+    expect(reconnect, 'Reconnect button').toBeDefined()
+
+    fireEvent.click(reconnect!)
+    // The click actually hits the reconnect endpoint for this server.
+    expect(api.post).toHaveBeenCalledWith('/sessions/s1/mcp/filesystem/reconnect')
+
+    // In-flight: the card swaps the action buttons for a spinner and the
+    // Reconnect button is disabled until the round-trip resolves.
+    await waitFor(() => expect(card.querySelector('.settings-card-pending')).toBeDefined())
+    expect((reconnectButton(card) as HTMLButtonElement | undefined)?.disabled).toBe(true)
+
+    await act(async () => {
+      release({ ok: true })
+    })
+
+    await waitFor(() => expect(card.querySelector('.settings-card-pending')).toBeNull())
+    await waitFor(() =>
+      expect(container.textContent).toContain('Reconnected MCP server "filesystem"'),
+    )
+    // A confirmed live connection is a genuine success toast.
+    expect(container.querySelector('.toast-success')).not.toBeNull()
+  })
+
+  it('toasts the server error when the reconnect POST fails', async () => {
+    ;(api.post as ReturnType<typeof vi.fn>).mockImplementationOnce(() =>
+      Promise.reject(new Error('MCP reconnect failed: Connection closed')),
+    )
+
+    const { container } = renderMcpPanel()
+    const card = await findFilesystemCard(container)
+    const reconnect = reconnectButton(card)
+    expect(reconnect, 'Reconnect button').toBeDefined()
+
+    fireEvent.click(reconnect!)
+
+    await waitFor(() =>
+      expect(container.textContent).toContain('MCP reconnect failed: Connection closed'),
+    )
+    // The failure is an error toast, and the spinner is gone once it lands.
+    expect(container.querySelector('.toast-error')).not.toBeNull()
+    expect(card.querySelector('.settings-card-pending')).toBeNull()
+  })
+
+  it('errors rather than claims success when the server still reports failed', async () => {
+    // A reconnect that lands back on 'failed' must not toast a green
+    // success — report the failure and let the card's red state speak.
+    stubMcpStatus({ ...filesystemServer, status: 'failed' })
+
+    const { container } = renderMcpPanel()
+    const card = await findFilesystemCard(container)
+    const reconnect = reconnectButton(card)
+    expect(reconnect, 'Reconnect button').toBeDefined()
+
+    fireEvent.click(reconnect!)
+
+    await waitFor(() =>
+      expect(container.textContent).toContain('Reconnect did not restore MCP server "filesystem"'),
+    )
+    expect(container.querySelector('.toast-error')).not.toBeNull()
+    expect(container.querySelector('.toast-success')).toBeNull()
+    expect(card.querySelector('.settings-card-pending')).toBeNull()
+  })
+
+  it('acknowledges with an info toast when the follow-up status read does not land', async () => {
+    // The mount reads already resolved, so make the post-reconnect mcp-status
+    // read fail: refreshMcp swallows it and returns undefined (the documented
+    // flaky-read branch), and the ack must not over-claim a live connection.
+    const { container } = renderMcpPanel()
+    const card = await findFilesystemCard(container)
+    const reconnect = reconnectButton(card)
+    expect(reconnect, 'Reconnect button').toBeDefined()
+
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementationOnce((url: string) =>
+      url.endsWith('/mcp-status')
+        ? Promise.reject(new Error('Request timed out after 10s'))
+        : Promise.resolve({}),
+    )
+
+    fireEvent.click(reconnect!)
+
+    await waitFor(() =>
+      expect(container.textContent).toContain('Reconnect requested for MCP server "filesystem"'),
+    )
+    expect(container.querySelector('.toast-info')).not.toBeNull()
+    expect(container.querySelector('.toast-success')).toBeNull()
+    expect(card.querySelector('.settings-card-pending')).toBeNull()
   })
 })

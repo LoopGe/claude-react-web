@@ -131,7 +131,8 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // mcp-status control read is flaky and may not reflect a toggle promptly,
   // so we flip the card status locally on click and reconcile against the
   // refreshed truth afterwards. `pendingMcp` tracks in-flight names so the
-  // clicked button shows a spinner instead of silently awaiting a round-trip.
+  // clicked button shows a spinner instead of silently awaiting a round-trip;
+  // Reconnect rides the same set for its in-flight spinner.
   const [pendingMcp, setPendingMcp] = useState<Set<string>>(new Set())
   // In-flight first-party toggle names (mirror of pendingMcp for the
   // first-party section) so the card shows the same spinner the MCP cards do.
@@ -532,21 +533,60 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     await setSandboxField({ filesystem: { ...(session.sandbox?.filesystem ?? {}), allowWrite: paths } })
   }
 
-  const refreshMcp = async () => {
+  const refreshMcp = async (timeoutMs?: number): Promise<McpServerStatus[] | undefined> => {
     try {
-      const r = await api.get<{ mcp: McpServerStatus[] }>(`/sessions/${session.id}/mcp-status`)
+      const r = await api.get<{ mcp: McpServerStatus[] }>(`/sessions/${session.id}/mcp-status`, {
+        timeoutMs,
+      })
       setMcp(r.mcp)
-    } catch { /* ignore */ }
+      return r.mcp
+    } catch { /* ignore — non-fatal status refresh */ }
   }
 
   const reconnectMcp = async (name: string) => {
+    if (pendingMcp.has(name)) return
+    // In-flight feedback mirrors toggleMcp: mark the name pending so the card
+    // swaps the action buttons for a spinner until the round-trip resolves.
+    setPendingMcp((s) => new Set(s).add(name))
     try {
       await api.post(`/sessions/${session.id}/mcp/${encodeURIComponent(name)}/reconnect`)
-      await refreshMcp()
+      // mcp-status is a hang-prone SDK control read (the mount effect caps it
+      // at 10s + backoff), so bound this follow-up read rather than let the
+      // pending spinner ride out the 30s default timeout.
+      const fresh = await refreshMcp(10_000)
+      const status = fresh?.find((s) => s.name === name)?.status
+      // A Reconnect button is only reachable when the card isn't 'disabled',
+      // so the only optimistic override that can coexist with it is an
+      // unconfirmed Enable's 'pending'. Drop it once the read confirms the
+      // server moved to a real state; a 'disabled' read (or a read that didn't
+      // land) still means the SDK hasn't caught up, so keep it rather than
+      // regress the card to the pre-toggle state.
+      if (status && status !== 'disabled') {
+        clearMcpOverride(name)
+      }
+      // Match toast severity to the confirmed outcome: a live connection is a
+      // success, a confirmed 'failed' is an error, and anything unconfirmed
+      // (still settling, needs-auth, or a flaky read that didn't land) is an
+      // acknowledgement — never a false green success over a red card.
+      if (status === 'connected') {
+        toast.success(`Reconnected MCP server "${name}"`)
+      } else if (status === 'failed') {
+        toast.error(`Reconnect did not restore MCP server "${name}"`)
+      } else {
+        toast.info(`Reconnect requested for MCP server "${name}"`)
+      }
     } catch (e) {
       // Server errors are already self-describing (e.g. "MCP reconnect
-      // failed: Connection closed") — no client-side prefix needed.
+      // failed: Connection closed") — no client-side prefix needed. The card
+      // is left untouched on failure: no override teardown or background
+      // refresh that could contradict the error toast.
       toast.error((e as Error).message)
+    } finally {
+      setPendingMcp((s) => {
+        const n = new Set(s)
+        n.delete(name)
+        return n
+      })
     }
   }
 
@@ -1991,10 +2031,10 @@ function McpServerCard({
           </button>
         )}
         {pending ? (
-          // While a toggle is in flight, hide both Disable/Enable and show a
-          // spinner. Re-rendering the *other* button (status flips optimistically)
-          // would be confusing — e.g. clicking Disable then seeing a spinning
-          // Enable. A dedicated spinner avoids that ambiguity.
+          // While a toggle or reconnect is in flight, hide both Disable/Enable
+          // and show a spinner. Re-rendering the *other* button (status flips
+          // optimistically) would be confusing — e.g. clicking Disable then
+          // seeing a spinning Enable. A dedicated spinner avoids that ambiguity.
           <span className="settings-card-pending" aria-label="updating">
             <IconLoader size={12} className="settings-card-spin" />
           </span>
