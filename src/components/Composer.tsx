@@ -690,12 +690,22 @@ export const Composer = memo(function Composer({
             if (pickerOpen) {
               if (e.key === 'ArrowUp') {
                 e.preventDefault()
-                setPickerIndex((i) => Math.max(0, i - 1))
+                // Wrap: ArrowUp on the first candidate jumps to the bottom one.
+                setPickerIndex((i) => {
+                  const n = pickerCommands.length
+                  if (n <= 1) return 0
+                  return i > 0 ? i - 1 : n - 1
+                })
                 return
               }
               if (e.key === 'ArrowDown') {
                 e.preventDefault()
-                setPickerIndex((i) => Math.min(i + 1, pickerCommands.length - 1))
+                // Wrap: ArrowDown on the bottom candidate jumps back to the first.
+                setPickerIndex((i) => {
+                  const n = pickerCommands.length
+                  if (n <= 1) return 0
+                  return i < n - 1 ? i + 1 : 0
+                })
                 return
               }
               if (e.key === 'Enter' || e.key === 'Tab') {

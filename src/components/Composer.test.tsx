@@ -198,6 +198,39 @@ describe('Composer', () => {
     expect(ta.value).toBe('/clear ')
   })
 
+  it('wraps ArrowUp from the first candidate to the bottom, and ArrowDown from the bottom to the top', () => {
+    // Regression: the picker used to clamp the arrow keys, so ArrowUp on the
+    // first candidate was a no-op instead of wrapping to the last one (and
+    // ArrowDown on the last candidate could not wrap back to the first).
+    Element.prototype.scrollIntoView = vi.fn()
+    const commands: SlashCommand[] = [
+      { name: 'clear', description: 'Clear chat', argumentHint: '' },
+      { name: 'help', description: 'Show help', argumentHint: '' },
+      { name: 'usage', description: 'Show usage', argumentHint: '' },
+    ]
+    function Harness() {
+      const [input, setInput] = useState('')
+      return <Composer {...defaultProps} input={input} setInput={setInput} commands={commands} />
+    }
+    const { container } = render(<Harness />)
+    const ta = container.querySelector('textarea')!
+
+    fireEvent.change(ta, { target: { value: '/', selectionStart: 1, selectionEnd: 1 } })
+    expect(container.querySelector('[role="listbox"]')).not.toBeNull()
+
+    const active = () => container.querySelector<HTMLButtonElement>('.cmd-picker-item.active')
+    // Freshly opened picker starts on the first candidate.
+    expect(active()?.textContent).toContain('clear')
+
+    // ArrowUp at the top wraps to the bottom candidate.
+    fireEvent.keyDown(ta, { key: 'ArrowUp' })
+    expect(active()?.textContent).toContain('usage')
+
+    // ArrowDown at the bottom wraps back to the top candidate.
+    fireEvent.keyDown(ta, { key: 'ArrowDown' })
+    expect(active()?.textContent).toContain('clear')
+  })
+
   it('shows session ended instead of textarea when terminated', () => {
     const { container } = render(
       <Composer {...defaultProps} terminated />,
