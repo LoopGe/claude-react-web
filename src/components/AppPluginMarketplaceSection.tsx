@@ -13,6 +13,7 @@ import type { AppPluginMarketplaceInfo, AppPluginMarketplacePlugin } from '../..
 export function AppPluginMarketplaceSection() {
   const [marketplaces, setMarketplaces] = useState<AppPluginMarketplaceInfo[]>([])
   const [addUrl, setAddUrl] = useState('')
+  const [addSubdir, setAddSubdir] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -42,13 +43,26 @@ export function AppPluginMarketplaceSection() {
   const add = useCallback(async () => {
     const url = addUrl.trim()
     if (!url) return
+    // Only include subdir when non-blank — the server trims/drops blank
+    // values itself, so an empty string on the wire is never meaningful.
+    const body: { url: string; subdir?: string } = { url }
+    const subdir = addSubdir.trim()
+    if (subdir) body.subdir = subdir
     setBusy(true); setError(null)
     try {
-      await api.post('/app-plugins/marketplaces', { url })
+      const res = await api.post<{ ok: true; marketplace: AppPluginMarketplaceInfo }>(
+        '/app-plugins/marketplaces',
+        body,
+      )
+      // The POST response carries the freshly-created marketplace — replace or
+      // append it locally instead of refetching the whole list (mirrors
+      // MarketplaceTab.handleAdd).
+      const mp = res.marketplace
+      setMarketplaces((prev) => [...prev.filter((m) => m.id !== mp.id), mp])
       setAddUrl('')
-      await refreshList()
+      setAddSubdir('')
     } catch (e) { setError((e as Error).message) } finally { setBusy(false) }
-  }, [addUrl, refreshList])
+  }, [addUrl, addSubdir])
 
   const refreshMp = useCallback(async (id: string) => {
     setBusy(true); setError(null)
@@ -167,9 +181,25 @@ export function AppPluginMarketplaceSection() {
           value={addUrl}
           onChange={(e) => setAddUrl(e.target.value)}
           aria-label="Marketplace URL"
+          disabled={busy || bulkBusy}
+          onKeyDown={(e) => { if (e.key === 'Enter') void add() }}
+        />
+        <input
+          className="input app-plugins-subdir-input"
+          type="text"
+          placeholder="plugins"
+          value={addSubdir}
+          onChange={(e) => setAddSubdir(e.target.value)}
+          aria-label="Marketplace content subfolder (optional)"
+          aria-describedby="app-plugin-subdir-hint"
+          disabled={busy || bulkBusy}
+          onKeyDown={(e) => { if (e.key === 'Enter') void add() }}
         />
         <button className="btn btn-primary" disabled={busy || bulkBusy || !addUrl.trim()} onClick={add}>Add</button>
       </div>
+      <p id="app-plugin-subdir-hint" className="app-plugins-subdir-hint">
+        Optional: usually auto-detected. Only needed when a repo nests its catalog in a subfolder that auto-detection can’t pick, e.g. “plugins”.
+      </p>
 
       {error && <div className="modal-error">{error}</div>}
 

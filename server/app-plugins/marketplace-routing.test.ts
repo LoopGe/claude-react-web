@@ -184,6 +184,95 @@ describe('marketplace refresh — subdir marketplace', () => {
   })
 })
 
+describe('marketplace refresh — auto-detects a nested content dir when none was stored', () => {
+  let stateDir: string
+  let manager: AppPluginManager
+  let mpStore: AppPluginMarketplaceStore
+  let cloneDir: string
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(join(tmpdir(), 'mp-refresh-auto-'))
+    cloneDir = mkdtempSync(join(tmpdir(), 'mp-clone-auto-'))
+    // Content lives under <clone>/plugins/ (catalog + plugin dirs). The record
+    // mirrors one added before auto-detect existed: no subdir, empty manifest.
+    mkdirSync(join(cloneDir, 'plugins'), { recursive: true })
+    writeFileSync(join(cloneDir, 'plugins', 'app-plugins-marketplace.json'), JSON.stringify({
+      name: 'Nested Market',
+      appPlugins: [{ name: 'translator', dir: 'translator', description: 'Translate', version: '1.0.0' }],
+    }))
+    const store = new AppPluginStore({ stateDir })
+    mpStore = new AppPluginMarketplaceStore({ stateDir })
+    manager = new AppPluginManager({ store, stateDir, hostVersion: '0.6.0', hostNodeMajor: 20, sm: smStub, marketplaceStore: mpStore })
+    const now = Date.now()
+    mpStore.upsert({
+      id: 'legacy',
+      displayName: 'Nested Market',
+      source: { type: 'local', path: cloneDir },
+      cloneDir,
+      addedAt: now,
+      lastRefreshedAt: 0,
+      lastSha: '',
+      manifest: { name: 'Nested Market', plugins: [] },
+    })
+    return mpStore.flush()
+  })
+
+  afterEach(async () => {
+    await manager.shutdown().catch(() => {})
+    rmSync(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    rmSync(cloneDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  })
+
+  it('POST /:id/refresh detects the nested subdir and persists it on the record', async () => {
+    const app = new Hono()
+    app.route('/api/app-plugins/marketplaces', buildAppPluginMarketplaceRouter(mpStore, manager))
+    const res = await app.request('/api/app-plugins/marketplaces/legacy/refresh', { method: 'POST' })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      ok: boolean
+      marketplace: { pluginCount: number; subdir?: string; sourceType: string }
+    }
+    expect(body.ok).toBe(true)
+    expect(body.marketplace.pluginCount).toBe(1)
+    expect(body.marketplace.subdir).toBe('plugins')
+    expect(body.marketplace.sourceType).toBe('local')
+    expect(mpStore.get('legacy')?.subdir).toBe('plugins')
+    expect(mpStore.get('legacy')?.manifest.plugins).toHaveLength(1)
+  })
+
+  it('POST /:id/refresh heals a persisted subdir whose dir was removed (content moved to root)', async () => {
+    // Same record id as the beforeEach, but re-point it at a fresh clone whose
+    // content sits at the ROOT while the record still carries subdir 'plugins'
+    // (the plugins/ dir no longer exists upstream).
+    const app = new Hono()
+    app.route('/api/app-plugins/marketplaces', buildAppPluginMarketplaceRouter(mpStore, manager))
+    // Create a fresh root-layout clone and point the 'legacy' record at it.
+    const rootClone = mkdtempSync(join(tmpdir(), 'mp-clone-root-'))
+    try {
+      writeFileSync(join(rootClone, 'app-plugins-marketplace.json'), JSON.stringify({
+        name: 'Root Market',
+        appPlugins: [{ name: 'translator', dir: 'translator', description: 'Translate', version: '1.0.0' }],
+      }))
+      const rec = mpStore.get('legacy')!
+      rec.cloneDir = rootClone
+      rec.subdir = 'plugins'
+      mpStore.upsert(rec)
+      await mpStore.flush()
+
+      const res = await app.request('/api/app-plugins/marketplaces/legacy/refresh', { method: 'POST' })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { ok: boolean; marketplace: { pluginCount: number; subdir?: string } }
+      expect(body.ok).toBe(true)
+      expect(body.marketplace.pluginCount).toBe(1)
+      expect(body.marketplace.subdir).toBeUndefined()
+      expect(mpStore.get('legacy')?.subdir).toBeUndefined()
+      expect(mpStore.get('legacy')?.manifest.plugins).toHaveLength(1)
+    } finally {
+      rmSync(rootClone, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
+  })
+})
+
 describe('marketplace GET /:id/plugins — installed annotation', () => {
   let stateDir: string
   let cloneDir: string

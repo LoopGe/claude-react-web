@@ -12,12 +12,16 @@ import { dirname } from 'node:path'
 import { HttpError, createErrorHandler } from '../errors.js'
 import { safeJson } from '../routes/index.js'
 import { assertHttpsUrl, gitClone, gitGetHeadSha, gitPull } from '../git-clone.js'
-import { parseAppPluginMarketplace } from './marketplace-parser.js'
+import { parseAppPluginMarketplaceAuto } from './marketplace-parser.js'
 import { validateRelativePath } from '../../shared/app-plugins/path-security.js'
 import { createLogger } from '../log.js'
 import type { AppPluginMarketplaceStore } from './marketplace-store.js'
 import type { AppPluginManager } from './app-plugin-manager.js'
-import type { AppPluginMarketplaceInfo, AppPluginMarketplaceRecord } from '../../shared/app-plugins/marketplace.js'
+import type {
+  AppPluginMarketplaceInfo,
+  AppPluginMarketplaceManifest,
+  AppPluginMarketplaceRecord,
+} from '../../shared/app-plugins/marketplace.js'
 import type { AppPluginRecord } from '../../shared/app-plugins/runtime-state.js'
 
 const log = createLogger('app-plugins:mp-routes')
@@ -38,10 +42,10 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
     if (!url) throw new HttpError(400, 'url is required')
     assertHttpsUrl(url)
     const ref = typeof body.ref === 'string' && body.ref.trim() ? body.ref.trim() : undefined
-    let subdir: string | undefined
+    let explicitSubdir: string | undefined
     if (typeof body.subdir === 'string' && body.subdir.trim()) {
-      subdir = body.subdir.trim()
-      const subErr = validateRelativePath(subdir, { isWindows: process.platform === 'win32' })
+      explicitSubdir = body.subdir.trim()
+      const subErr = validateRelativePath(explicitSubdir, { isWindows: process.platform === 'win32' })
       if (subErr) throw new HttpError(400, `invalid subdir: ${subErr}`)
     }
     const id = store.generateId(url)
@@ -53,13 +57,18 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
       await rm(cloneDir, { recursive: true, force: true }).catch(() => {})
       throw new HttpError(400, `clone failed: ${(err as Error).message}`)
     }
-    let manifest
+    // Parse, auto-detecting a nested content subdir (e.g. a monorepo
+    // `plugins/` folder) when the caller gave none and the root is empty. The
+    // detected subdir is persisted on the record so refresh / install resolve
+    // against the same content root.
+    let parsed: { subdir?: string; manifest: AppPluginMarketplaceManifest }
     try {
-      manifest = await parseAppPluginMarketplace(cloneDir, subdir)
+      parsed = await parseAppPluginMarketplaceAuto(cloneDir, explicitSubdir)
     } catch (err) {
       await rm(cloneDir, { recursive: true, force: true }).catch(() => {})
       throw new HttpError(400, `marketplace parse failed: ${(err as Error).message}`)
     }
+    const { subdir, manifest } = parsed
     const sha = await gitGetHeadSha(cloneDir)
     const now = Date.now()
     const record: AppPluginMarketplaceRecord = {
@@ -90,9 +99,31 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
     // re-parse from the effective root (cloneDir + optional subdir).
     let updated: AppPluginMarketplaceRecord
     let didUpdate = false
+    // Auto-detect (same as create): a record added before detection existed —
+    // or whose subdir/manifest went stale — heals on refresh by re-searching
+    // for content and persisting the winning subdir + fresh manifest.
+    const refreshed = (parsed: { subdir?: string; manifest: AppPluginMarketplaceManifest }): AppPluginMarketplaceRecord => ({
+      ...record,
+      // A healed record whose displayName had fallen back to the id slug picks
+      // up the detected catalog's name; an already-friendly name is kept.
+      displayName: parsed.manifest.name ?? record.displayName,
+      subdir: parsed.subdir,
+      manifest: parsed.manifest,
+      lastRefreshedAt: Date.now(),
+    })
+    const parse = async (): Promise<AppPluginMarketplaceRecord> => {
+      let parsed: { subdir?: string; manifest: AppPluginMarketplaceManifest }
+      try {
+        parsed = await parseAppPluginMarketplaceAuto(record.cloneDir, record.subdir)
+      } catch (err) {
+        // A malformed catalog inside the clone — surface as a 400 (like create)
+        // rather than an unhandled 500.
+        throw new HttpError(400, `marketplace parse failed: ${(err as Error).message}`)
+      }
+      return refreshed(parsed)
+    }
     if (record.source.type === 'local') {
-      const manifest = await parseAppPluginMarketplace(record.cloneDir, record.subdir)
-      updated = { ...record, manifest, lastRefreshedAt: Date.now() }
+      updated = await parse()
     } else {
       let pull
       try {
@@ -100,8 +131,7 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
       } catch (err) {
         throw new HttpError(400, `refresh failed: ${(err as Error).message}`)
       }
-      const manifest = await parseAppPluginMarketplace(record.cloneDir, record.subdir)
-      updated = { ...record, manifest, lastRefreshedAt: Date.now(), lastSha: pull.newSha }
+      updated = { ...(await parse()), lastSha: pull.newSha }
       didUpdate = pull.updated
     }
     store.upsert(updated)

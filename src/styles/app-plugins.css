@@ -23,6 +23,14 @@
 .app-plugins-install .input {
   flex: 1;
 }
+.app-plugins-install .input.app-plugins-subdir-input {
+  flex: 0 0 130px;
+}
+.app-plugins-subdir-hint {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+}
 .app-plugins-list {
   list-style: none;
   margin: 0;

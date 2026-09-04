@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, fireEvent, waitFor, cleanup } from '@testing-library/react'
 import { AppPluginMarketplaceSection } from './AppPluginMarketplaceSection'
 import type { AppPluginMarketplaceInfo } from '../../shared/app-plugins/marketplace.js'
 
@@ -9,6 +9,11 @@ vi.mock('../hooks/useApi', () => ({
 }))
 
 import { api } from '../hooks/useApi'
+
+// vitest runs with `globals: false`, so @testing-library/react cannot register
+// its own auto-cleanup. Without this, rendered DOM accumulates across tests in
+// this file and unscoped queries (getByLabelText) start matching duplicates.
+afterEach(() => cleanup())
 
 const mkMp = (id: string, sourceType: 'https' | 'local'): AppPluginMarketplaceInfo => ({
   id,
@@ -153,5 +158,65 @@ describe('AppPluginMarketplaceSection Update all', () => {
         "No updates found. 1 marketplace couldn't be refreshed: MP mp1: boom",
       ),
     )
+  })
+})
+
+describe('AppPluginMarketplaceSection add marketplace', () => {
+  const url = 'https://github.com/LoopGe/claude-react-web-plugins'
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue({ marketplaces: [] })
+    ;(api.post as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      marketplace: mkMp('added', 'https'),
+    })
+  })
+
+  it('sends the trimmed subdir in the add request and clears both fields on success', async () => {
+    const { getByLabelText, getByRole } = render(<AppPluginMarketplaceSection />)
+    const urlInput = getByLabelText('Marketplace URL') as HTMLInputElement
+    const subdirInput = getByLabelText('Marketplace content subfolder (optional)') as HTMLInputElement
+    fireEvent.change(urlInput, { target: { value: url } })
+    fireEvent.change(subdirInput, { target: { value: '  plugins  ' } })
+    fireEvent.click(getByRole('button', { name: 'Add' }))
+
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/app-plugins/marketplaces', { url, subdir: 'plugins' }),
+    )
+    await waitFor(() => {
+      expect(urlInput.value).toBe('')
+      expect(subdirInput.value).toBe('')
+    })
+  })
+
+  it('omits subdir from the add request when the subfolder is blank', async () => {
+    const { getByLabelText, getByRole } = render(<AppPluginMarketplaceSection />)
+    fireEvent.change(getByLabelText('Marketplace URL'), { target: { value: url } })
+    fireEvent.click(getByRole('button', { name: 'Add' }))
+
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/app-plugins/marketplaces', { url }),
+    )
+  })
+
+  it('shows the marketplace returned by the add response without refetching the list', async () => {
+    const { getByLabelText, getByRole, container } = render(<AppPluginMarketplaceSection />)
+    await waitFor(() => expect(container.textContent).toContain('No marketplaces added.'))
+    fireEvent.change(getByLabelText('Marketplace URL'), { target: { value: url } })
+    fireEvent.change(getByLabelText('Marketplace content subfolder (optional)'), {
+      target: { value: 'plugins' },
+    })
+    ;(api.post as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      marketplace: mkMp('added-mp', 'https'),
+    })
+    fireEvent.click(getByRole('button', { name: 'Add' }))
+
+    await waitFor(() => expect(container.textContent).toContain('MP added-mp'))
+    const listGets = (api.get as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => c[0] === '/app-plugins/marketplaces',
+    )
+    expect(listGets).toHaveLength(1)
   })
 })
