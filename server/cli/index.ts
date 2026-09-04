@@ -3,6 +3,7 @@ import { parseArgs } from './parser.js'
 import { fmtJson } from './render.js'
 import { mcpGroup } from './mcp.js'
 import { marketplaceGroup } from './marketplace.js'
+import { configGroup } from './config.js'
 import { doctorGroup } from './doctor.js'
 
 // Later tasks add each remaining group's import + entry (and extend the
@@ -10,6 +11,7 @@ import { doctorGroup } from './doctor.js'
 export const GROUPS: CliGroup[] = [
   mcpGroup,
   marketplaceGroup,
+  configGroup,
   doctorGroup,
 ]
 

@@ -18,9 +18,9 @@ describe('parseArgv (from args.ts)', () => {
 })
 
 describe('registry', () => {
-  it('registers mcp/marketplace/doctor (more added by later tasks)', () => {
+  it('registers config/mcp/marketplace/doctor (more added by later tasks)', () => {
     const names = GROUPS.map((g) => g.name).sort()
-    expect(names).toEqual(['doctor', 'marketplace', 'mcp'])
+    expect(names).toEqual(['config', 'doctor', 'marketplace', 'mcp'])
   })
   it('runs the doctor default and reports a non-zero exit for a broken setup', async () => {
     const code = await runCliCommand({ stateDir: '/nonexistent-cli-test' }, 'doctor', [])
