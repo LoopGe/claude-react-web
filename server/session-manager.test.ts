@@ -296,6 +296,7 @@ import { execCommand as mockExecCommand } from './exec.js'
 import { summarizeForCompact } from './compact-summary.js'
 import { buildSessionRouter } from './routes/sessions.js'
 import { HttpError } from './errors.js'
+import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
@@ -340,6 +341,38 @@ describe('SessionManager', () => {
     // matches `id` (the bug this guards against: SDK auto-generated its own
     // UUID, so our id matched no jsonl and fork/resume probes failed).
     expect(mockHandles[0].options.sessionId).toBe(info.id)
+  })
+
+  it('create() defaults betas to the 1M-context flag when none is supplied', () => {
+    const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+    // The SDK subprocess must be spawned with the 1M beta, exactly like the
+    // New Session dialog does on every create.
+    expect(mockHandles[0].options.betas).toEqual([ONE_M_CONTEXT_BETA])
+    // And it must be persisted onto the session meta so resume / fork / clear
+    // inherit it instead of silently dropping back to 200K on the next spawn.
+    expect(store.get(info.id)?.betas).toEqual([ONE_M_CONTEXT_BETA])
+  })
+
+  it('create() leaves explicitly supplied betas untouched', () => {
+    const info = sm.create({
+      cwd: '/tmp',
+      model: 'test-model',
+      betas: ['some-custom-beta'],
+    } as unknown as Parameters<SessionManager['create']>[0])
+    expect(mockHandles[0].options.betas).toEqual(['some-custom-beta'])
+    expect(store.get(info.id)?.betas).toEqual(['some-custom-beta'])
+  })
+
+  it('create() respects an explicit empty betas list as an opt-out (no 1M default)', () => {
+    const info = sm.create({
+      cwd: '/tmp',
+      model: 'test-model',
+      betas: [],
+    } as Parameters<SessionManager['create']>[0])
+    // `[]` is the API-visible way to say "run at the model's native window" —
+    // it must NOT be rewritten to the 1M flag.
+    expect(mockHandles[0].options.betas).toEqual([])
+    expect(store.get(info.id)?.betas).toEqual([])
   })
 
   it('pins subagent model-alias env vars to the session model', () => {
@@ -3278,6 +3311,25 @@ describe('SessionManager', () => {
       expect(handle.options.resume).toBe('orphan')
       // The session is now adopted into the store (known on next listing).
       expect(store.get('orphan')).toBeTruthy()
+    })
+
+    it('resumes an adopted CLI session with the default 1M beta (no persisted meta)', async () => {
+      // A CLI-created session has no app-side SessionMeta, so getSessionInfo
+      // can't supply betas — the resume must default to the 1M flag instead of
+      // silently dropping to the model's default 200K window.
+      mockGetSessionInfo.mockResolvedValueOnce({
+        sessionId: 'orphan-cli',
+        cwd: '/tmp/orphan',
+        summary: 'CLI session',
+        lastModified: 1234,
+        createdAt: 1000,
+      })
+
+      await sm.resume('orphan-cli')
+      const handle = mockHandles[mockHandles.length - 1]
+      expect(handle.options.betas).toEqual([ONE_M_CONTEXT_BETA])
+      // Defaulted value must be persisted so later resume/fork/clear inherit it.
+      expect(store.get('orphan-cli')?.betas).toEqual([ONE_M_CONTEXT_BETA])
     })
 
     it('404s when the session exists neither in store nor on disk', async () => {

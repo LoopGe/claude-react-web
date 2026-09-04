@@ -108,6 +108,7 @@ import {
 } from '../shared/skills.js'
 import { listSkills } from './skills.js'
 import { SUPPORTED_DIALOG_KINDS } from '../shared/user-dialog.js'
+import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -2057,6 +2058,22 @@ export class SessionManager {
     // (no SDK-side mode). The session's own `permissionMode` field (set below)
     // stays the source of truth for canUseTool and the UI.
     fullOpts.permissionMode = requestedMode
+
+    // The app's default is the 1M-context beta — the New Session dialog sends
+    // it on every create. Fill the same default on every OTHER spawn path here
+    // (the single funnel create / resume / respawnFresh / fork / clear pass
+    // through) so a session that carries no betas — chiefly one adopted from
+    // disk, CLI-created or re-opened after delete — doesn't resume bare-model
+    // and silently drop to the model's default 200K window. Normalizing
+    // fullOpts BEFORE snapshotMeta keeps the persisted meta and the subprocess
+    // consistent, so resume/fork/clear/restart inherit the flag.
+    //
+    // Only ABSENT betas (undefined) are defaulted. An explicitly supplied
+    // list — including `[]`, the API-visible way to opt out of the 1M window
+    // and run at the model's native context — is respected verbatim.
+    if (fullOpts.betas === undefined) {
+      fullOpts.betas = [ONE_M_CONTEXT_BETA]
+    }
 
     if (!fullOpts.resume || fullOpts.forkSession) {
       fullOpts.sessionId = id
