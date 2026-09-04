@@ -19,12 +19,16 @@ vi.mock('./git-clone.js', async () => {
     gitPull: vi.fn(async () => ({ updated: false, newSha: FAKE_SHA })),
   }
 })
-vi.mock('./marketplace-parser.js', () => ({
-  parseRepoManifest: vi.fn(async () => ({
-    manifest: { name: 'Test MP', plugins: [{ name: 'p1', description: 'd', version: '1.0.0' }] },
-    warnings: [],
-  })),
-}))
+vi.mock('./marketplace-parser.js', async () => {
+  const actual = await import('./marketplace-parser.js')
+  return {
+    ...actual,
+    parseRepoManifest: vi.fn(async () => ({
+      manifest: { name: 'Test MP', plugins: [{ name: 'p1', description: 'd', version: '1.0.0' }] },
+      warnings: [],
+    })),
+  }
+})
 
 describe('addMarketplaceByUrl', () => {
   let dir: string
