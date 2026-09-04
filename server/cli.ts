@@ -1,14 +1,13 @@
 // claude-react-web — bin entry.
 //
-// Parses argv, starts the Hono server on the chosen port, and (unless
-// --no-open) opens the user's default browser at the served URL.
+// Parses argv. A leading subcommand (`mcp`, `marketplace`, …) dispatches to a
+// single-shot management command; otherwise it starts the Hono server on the
+// chosen port and (unless --no-open) opens the user's default browser at the
+// served URL.
 
 import { serve } from '@hono/node-server'
 import type { Server } from 'node:http'
-import { execSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
 import open from 'open'
 import QRCode from 'qrcode'
 import { buildApp } from './app.js'
@@ -16,7 +15,7 @@ import pkg from '../package.json' with { type: 'json' }
 import { isLoopbackHost, lanIPv4Addresses } from './net.js'
 import { setWebAuth } from './auth.js'
 import { loadConfig, config } from './config.js'
-import { disableFileLogging, getLogFilePath, createLogger } from './log.js'
+import { disableFileLogging, getLogFilePath, createLogger, setLogToStderr } from './log.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
 import { McpConfigStore } from './mcp-config.js'
 import { SessionManager } from './session-manager.js'
@@ -31,244 +30,55 @@ import { seedBuiltinMarketplace } from './app-plugins/builtin-marketplace.js'
 import { attachWebSocket } from './ws.js'
 import { checkForUpdates } from './update-checker.js'
 import { startEventLoopProbe } from './event-loop-probe.js'
+import { resolveClaudeBinary } from './claude-binary.js'
+import { parseServerArgs, parseArgv, HELP, type CliArgs } from './cli/args.js'
+import { runCliCommand, topLevelHelp, GROUPS } from './cli/index.js'
+import type { CliContext } from './cli/types.js'
 
 const log = createLogger('cli')
 
-interface CliArgs {
-  port: number
-  host: string
-  open: boolean
-  cwd?: string
-  model?: string
-  stateDir?: string
-  claudeBinary?: string
-  token?: string
-  disableAppPlugins: boolean
-  safeMode: boolean
-  help: boolean
-  version: boolean
-}
-
-/** Resolve the absolute path to the `claude` CLI binary.
- *
- *  Priority:
- *   1. Explicit CLI flag (--claude-binary)
- *   2. CLAUDE_CODE_BINARY env var
- *   3. `which claude` (Unix) / `where claude` (Windows) lookup on PATH
- *   4. Windows .cmd shim parsing — extracts the real script path from
- *      npm's cmd-shim wrapper (handles pnpm/yarn global installs)
- *   5. undefined → let the SDK fall back to its own resolution
- *
- *  Why this matters: `@anthropic-ai/claude-agent-sdk` bundles platform-
- *  specific native binary packages (e.g. -linux-x64-musl, -linux-x64).
- *  npm ought to install only the matching one, but on at least some
- *  glibc hosts npm installs both AND the SDK picks the musl path first,
- *  which then fails to exec (no musl linker on glibc systems). Passing
- *  a real path via Options.pathToClaudeCodeExecutable side-steps the
- *  whole detection path. */
-function resolveClaudeBinary(explicit: string | undefined): string | undefined {
-  if (explicit) {
-    if (!existsSync(explicit)) {
-      log.warn(`--claude-binary ${explicit} does not exist; ignoring`)
-    } else {
-      return explicit
-    }
-  }
-  const fromEnv = process.env.CLAUDE_CODE_BINARY
-  if (fromEnv) {
-    if (!existsSync(fromEnv)) {
-      log.warn(`CLAUDE_CODE_BINARY=${fromEnv} does not exist; ignoring`)
-    } else {
-      return fromEnv
-    }
-  }
-
-  const isWin = process.platform === 'win32'
-
-  // PATH lookup — `which` on Unix, `where` on Windows
-  const lookupCmd = isWin ? 'where claude' : 'which claude'
-  try {
-    const out = execSync(lookupCmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-    if (out) {
-      // `where` can return multiple paths (one per line); prefer .cmd on Windows
-      const candidates = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-      if (isWin && candidates.length > 1) {
-        const cmdCandidate = candidates.find((p) => p.endsWith('.cmd'))
-        if (cmdCandidate) {
-          const resolved = resolveCmdShim(cmdCandidate)
-          if (resolved) return resolved
-          if (existsSync(cmdCandidate)) return cmdCandidate
-        }
-      }
-      const first = candidates[0]
-      if (first && existsSync(first)) {
-        // On Windows, if the hit is a .cmd shim try to resolve through it
-        if (isWin && first.endsWith('.cmd')) {
-          const resolved = resolveCmdShim(first)
-          return resolved || first
-        }
-        return first
-      }
-    }
-  } catch {
-    /* claude not on PATH — fall through */
-  }
-
-  // Windows only: try common global install locations
-  if (isWin) {
-    const appData = process.env.APPDATA
-    if (appData) {
-      const globalCli = join(appData, 'npm', 'claude.cmd')
-      if (existsSync(globalCli)) {
-        const resolved = resolveCmdShim(globalCli)
-        return resolved || globalCli
-      }
-    }
-  }
-
-  return undefined
-}
-
-/** Parse an npm cmd-shim .cmd file to extract the real script path.
- *
- *  npm's cmd-shim generates files with a line like:
- *    "%_prog%"  %~dp0\node_modules\...\claude.js %*
- *  We extract the script path relative to the .cmd file's directory. */
-function resolveCmdShim(cmdPath: string): string | null {
-  try {
-    const content = readFileSync(cmdPath, 'utf8')
-    const cmdDir = dirname(cmdPath)
-
-    // Match the NPM cmd-shim execution line pattern:
-    //   "%_prog%" ... "%dp0%\relative\path.js" %*
-    // or: %dp0%\relative\path.js
-    const match = content.match(/%dp0%\\([^"]+\.js)"?\s*[%*]/) ?? content.match(/"%dp0%\\([^"]+)"/)
-    if (match) {
-      const resolved = join(cmdDir, match[1])
-      if (existsSync(resolved)) {
-        log.info(`resolved claude via .cmd shim: ${cmdPath} → ${resolved}`)
-        return resolved
-      }
-    }
-  } catch {
-    /* unreadable .cmd — fall through */
-  }
-  return null
-}
-
-const HELP = `
-claude-react-web — local interactive chat powered by @anthropic-ai/claude-agent-sdk
-
-Usage:
-  claude-react-web [options]
-
-Options:
-  -p, --port <port>    Server port (default: 3456)
-      --host <host>    Bind host (default: 127.0.0.1). Use 0.0.0.0 to allow
-                       LAN access (e.g. from a phone) — this REQUIRES a web
-                       access token (auto-generated if --token is omitted).
-      --token <token>  Shared web access token required to use the UI. When
-                       set, every visitor must supply it via /?token=<token>
-                       once (a cookie is then set). Auto-generated when the
-                       host is non-loopback and no token is configured. Pin
-                       a stable value here or as "accessToken" in config.json.
-  -o, --open           Open browser on start (default)
-      --no-open        Do not open a browser window
-      --cwd <path>     Default cwd advertised to new sessions (informational)
-      --model <name>   Default model advertised to new sessions (informational)
-      --state-dir <p>  Where to keep session metadata and config.json
-                       (default: ~/.claude-react-web)
-      --claude-binary <path>
-                       Path to the claude CLI binary. Default: resolved from
-                       CLAUDE_CODE_BINARY env or \`which claude\`. Use this if
-                       the SDK's auto-detection picks a wrong native build
-                       (e.g. musl binary on a glibc host).
-  -V, --version        Print version and exit
-  -h, --help           Show this help and exit
-`.trim()
-
-function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = {
-    port: 3456,
-    host: '127.0.0.1',
-    open: true,
-    disableAppPlugins: false,
-    safeMode: false,
-    help: false,
-    version: false,
-  }
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]
-    const next = () => argv[++i]
-    switch (a) {
-      case '-p':
-      case '--port': {
-        const v = Number(next())
-        if (!Number.isInteger(v) || v <= 0 || v > 65535) {
-          console.error(`invalid --port: ${argv[i]}`)
-          process.exit(2)
-        }
-        args.port = v
-        break
-      }
-      case '--host':
-        args.host = next() ?? args.host
-        break
-      case '-o':
-      case '--open':
-        args.open = true
-        break
-      case '--no-open':
-        args.open = false
-        break
-      case '--cwd':
-        args.cwd = next()
-        break
-      case '--model':
-        args.model = next()
-        break
-      case '--state-dir':
-        args.stateDir = next()
-        break
-      case '--claude-binary':
-        args.claudeBinary = next()
-        break
-      case '--token':
-        args.token = next()
-        break
-      case '--disable-app-plugins':
-        args.disableAppPlugins = true
-        break
-      case '--safe-mode':
-        args.safeMode = true
-        break
-      case '-h':
-      case '--help':
-        args.help = true
-        break
-      case '-V':
-      case '--version':
-        args.version = true
-        break
-      default:
-        console.error(`unknown argument: ${a}`)
-        process.exit(2)
-    }
-  }
-  return args
-}
-
 async function main() {
-  const args = parseArgs(process.argv.slice(2))
+  const argv = process.argv.slice(2)
+  const { stateDir: sd, command, commandArgv } = parseArgv(argv)
+
+  // Subcommand mode: run one management command headless and exit.
+  if (command !== undefined) {
+    if (!GROUPS.some((g) => g.name === command)) {
+      console.error(`unknown command: ${command}`)
+      process.exit(2)
+    }
+    const stateDir = sd ?? defaultStateDir()
+    // Logger diagnostics go to stderr so stdout carries only the command's
+    // result (critical for --json). Set BEFORE loadConfig so even boot logs
+    // stay off the result stream.
+    setLogToStderr(true)
+    await loadConfig(stateDir)
+    try {
+      const code = await runCliCommand({ stateDir } satisfies CliContext, command, commandArgv)
+      process.exit(code)
+    } catch (err) {
+      const e = err as { exitCode?: number; message?: string }
+      console.error(e.message ?? String(err))
+      process.exit(typeof e.exitCode === 'number' ? e.exitCode : 1)
+    }
+  }
+
+  // Server mode (default).
+  const args = parseServerArgs(argv)
   if (args.version) {
     console.log(pkg.version)
     return
   }
   if (args.help) {
     console.log(HELP)
+    console.log()
+    console.log(topLevelHelp())
     return
   }
+  await runServer(args)
+}
 
+async function runServer(args: CliArgs): Promise<void> {
   const stateDir = args.stateDir ?? defaultStateDir()
   await loadConfig(stateDir)
   if (!config.authToken) {

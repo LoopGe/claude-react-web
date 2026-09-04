@@ -6,14 +6,11 @@
 // helpers (server/git-clone.ts): HTTPS-only URLs, no shell, fixed argv.
 
 import { Hono } from 'hono'
-import { promises as fs } from 'node:fs'
-import { rm } from 'node:fs/promises'
-import { dirname } from 'node:path'
 import { HttpError, createErrorHandler } from '../errors.js'
 import { safeJson } from '../routes/index.js'
-import { assertHttpsUrl, gitClone, gitGetHeadSha, gitPull } from '../git-clone.js'
+import { gitPull } from '../git-clone.js'
 import { parseAppPluginMarketplaceAuto } from './marketplace-parser.js'
-import { validateRelativePath } from '../../shared/app-plugins/path-security.js'
+import { addAppPluginMarketplaceByUrl } from './marketplace-ops.js'
 import { createLogger } from '../log.js'
 import type { AppPluginMarketplaceStore } from './marketplace-store.js'
 import type { AppPluginManager } from './app-plugin-manager.js'
@@ -40,51 +37,10 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
     const body = await safeJson<{ url?: string; ref?: string; subdir?: string }>(c.req)
     const url = body.url?.trim()
     if (!url) throw new HttpError(400, 'url is required')
-    assertHttpsUrl(url)
     const ref = typeof body.ref === 'string' && body.ref.trim() ? body.ref.trim() : undefined
-    let explicitSubdir: string | undefined
-    if (typeof body.subdir === 'string' && body.subdir.trim()) {
-      explicitSubdir = body.subdir.trim()
-      const subErr = validateRelativePath(explicitSubdir, { isWindows: process.platform === 'win32' })
-      if (subErr) throw new HttpError(400, `invalid subdir: ${subErr}`)
-    }
-    const id = store.generateId(url)
-    const cloneDir = store.cloneDirFor(id)
-    await fs.mkdir(dirname(cloneDir), { recursive: true })
-    try {
-      await gitClone(url, cloneDir, ref ? { ref } : {})
-    } catch (err) {
-      await rm(cloneDir, { recursive: true, force: true }).catch(() => {})
-      throw new HttpError(400, `clone failed: ${(err as Error).message}`)
-    }
-    // Parse, auto-detecting a nested content subdir (e.g. a monorepo
-    // `plugins/` folder) when the caller gave none and the root is empty. The
-    // detected subdir is persisted on the record so refresh / install resolve
-    // against the same content root.
-    let parsed: { subdir?: string; manifest: AppPluginMarketplaceManifest }
-    try {
-      parsed = await parseAppPluginMarketplaceAuto(cloneDir, explicitSubdir)
-    } catch (err) {
-      await rm(cloneDir, { recursive: true, force: true }).catch(() => {})
-      throw new HttpError(400, `marketplace parse failed: ${(err as Error).message}`)
-    }
-    const { subdir, manifest } = parsed
-    const sha = await gitGetHeadSha(cloneDir)
-    const now = Date.now()
-    const record: AppPluginMarketplaceRecord = {
-      id,
-      displayName: manifest.name ?? id,
-      source: { type: 'https', url, ref },
-      subdir,
-      cloneDir,
-      addedAt: now,
-      lastRefreshedAt: now,
-      lastSha: sha,
-      manifest,
-    }
-    store.upsert(record)
-    await store.flush()
-    log.info(`added marketplace ${id} (${manifest.plugins.length} plugins) from ${url}`)
+    const subdir = typeof body.subdir === 'string' && body.subdir.trim() ? body.subdir.trim() : undefined
+    const { record } = await addAppPluginMarketplaceByUrl(store, { url, ref, subdir })
+    log.info(`added marketplace ${record.id} (${record.manifest.plugins.length} plugins) from ${url}`)
     return c.json({ ok: true, marketplace: toInfo(record) })
   })
 

@@ -75,6 +75,18 @@ const state: ResolvedConfig = {
   scopes: parseScopes(process.env.LOG_SCOPES),
 }
 
+/** When true, info/debug/trace messages are written to stderr (console.error)
+ *  instead of stdout (console.log). The single-shot CLI subcommands enable this
+ *  so logger diagnostics never pollute the result stream that stdout carries
+ *  (critical for --json output). Server mode leaves it off — behaviour
+ *  unchanged. */
+let forceStderr = false
+
+/** Route logger output to stderr (CLI subcommand mode) or back to stdout. */
+export function setLogToStderr(enabled: boolean): void {
+  forceStderr = enabled
+}
+
 function scopeAllowed(scope: string): boolean {
   if (!state.scopes) return true
   return state.scopes.has(scope) || state.scopes.has('*')
@@ -102,7 +114,10 @@ export function createLogger(scope: string): Logger {
   const tag = `[${scope}]`
   function emit(level: LogLevel, consoleFn: (...a: unknown[]) => void, args: unknown[]) {
     if (!passes(scope, level)) return
-    consoleFn(tag, ...args)
+    const fn = forceStderr && (level === 'info' || level === 'debug' || level === 'trace')
+      ? console.error
+      : consoleFn
+    fn(tag, ...args)
     writeToFile(tag, args)
   }
   return {

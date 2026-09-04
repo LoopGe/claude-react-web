@@ -99,6 +99,29 @@ claude-react-web [options]
 
 When bound to a non-loopback host the server prints a token-bearing URL (plus a scannable QR code) so you can open the already-authenticated UI from a phone on the same network.
 
+### Terminal commands
+
+Run with no command to start the web server. Pass a subcommand to manage the
+same persisted config the UI edits — headless and scriptable (`--json` for
+structured output, `--yes` to confirm destructive verbs, `--state-dir <path>`
+to target a non-default state dir):
+
+```
+claude-react-web mcp list | add <name> | update <name> | remove <name> | enable <name> | disable <name> | test <name>
+claude-react-web marketplace add <url> | list | remove <id-or-url>
+claude-react-web app-plugin marketplace add <url> | list | remove <id>
+claude-react-web app-plugin list | install <marketplaceId>:<pluginName> | uninstall <id>
+claude-react-web config get [key] | set <key> <value>
+claude-react-web sessions list | delete <id>
+claude-react-web doctor
+claude-react-web update
+```
+
+`claude-react-web doctor` runs local environment checks and exits non-zero when
+something is broken; `claude-react-web update` checks the npm registry for a
+newer release. `claude-react-web <command> --help` prints the full flags for a
+command.
+
 ### Environment variables
 
 Anthropic credentials live in `config.json` (`authToken` / `baseUrl`), not in env vars — the server injects them into each SDK subprocess. The variables below tune the server itself and are all optional:
