@@ -186,9 +186,10 @@ export interface ClaudeProviderOptions {
 }
 
 /** Inject enabled custom agent definitions from the store into SDK
- *  `Options.agents`, merging over any pre-existing `opts.agents` (store wins
- *  on name clash). Exported pure so it's unit-testable without mocking the
- *  whole SDK Query surface. */
+ *  `Options.agents`, merging over the existing value. Store defs are the base;
+ *  any pre-existing `opts.agents` overload them on a name clash (the spread
+ *  of `opts.agents` comes last and wins). Exported pure so it's unit-testable
+ *  without mocking the whole SDK Query surface. */
 export function injectAgentDefinitions(opts: Options, store: AgentDefinitionStore | undefined): void {
   if (!store) return
   const agents = store.getEnabledDefinitions()

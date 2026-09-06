@@ -4274,6 +4274,31 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(mockHandles.length).toBe(3)
     })
 
+    it('respawnInPlace drops a start-as agent whose def was disabled (same drop-guard as resume/fork)', async () => {
+      const defs: Record<string, { enabled: boolean }> = { reviewer: { enabled: true } }
+      const agentStore = {
+        get: (n: string) => defs[n],
+        getEnabledDefinitions: () => Object.fromEntries(
+          Object.entries(defs).filter(([, d]) => d.enabled).map(([n]) => [n, { description: n }]),
+        ),
+      } as unknown as AgentDefinitionStore
+      sm = new SessionManager({ store, agentStore, crashRecovery: true })
+      const info = sm.create({ cwd: dir, agent: 'reviewer' })
+      const h0 = mockHandles.at(-1)!
+      expect(h0.options.agent).toBe('reviewer')
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      // Disable the def → the in-place respawn (crash recovery Step 1) must
+      // NOT carry the stale agent name; it re-spawns as a normal session.
+      defs.reviewer = { enabled: false }
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => mockHandles.length >= 2)
+      expect(mockHandles[1].options.agent).toBeUndefined()
+    })
+
     it('rejects sends during the recovering window (no message loss)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = sm.create({ cwd: dir })

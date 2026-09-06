@@ -49,6 +49,10 @@ export function buildAgentDefinitionsRouter(store: AgentDefinitionStore): Hono {
       throw new HttpError(400, 'data.name is required')
     }
     if (store.has(data.name)) throw new HttpError(409, `agent "${data.name}" already exists`)
+    // Strip the immutable keys from `data` before the spread (mirroring
+    // applyUpdate) so a client-supplied name/timestamps can't spoof them;
+    // createdAt/updatedAt are stamped server-side below.
+    const { name: _n, createdAt: _c, updatedAt: _u, ...mutable } = data as Record<string, unknown>
     const withMeta: StoredAgentDefinition = {
       name: data.name,
       description: 'description' in data && data.description ? String(data.description) : '',
@@ -56,7 +60,7 @@ export function buildAgentDefinitionsRouter(store: AgentDefinitionStore): Hono {
       enabled: data.enabled !== false,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      ...(data as Record<string, unknown>),
+      ...mutable,
     }
     const def = coerceDef(withMeta)
     store.upsert(def)

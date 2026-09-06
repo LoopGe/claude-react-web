@@ -230,9 +230,8 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     }
     // Start-as custom agent (`agent` = an AgentDefinitionStore name). It must be
     // a string AND refer to an enabled definition — an unknown or disabled name
-    // is a 400 here (we won't spin the session up under a persona we can't
-    // honour). When the store is absent (tests / providers without agents) the
-    // field is passed through and the provider decides.
+    // (or any non-null agent when no store is mounted) is a 400 here: we won't
+    // spin the session up under a persona we can't honour.
     const rawAgent = rest.agent
     if (rawAgent != null) {
       if (typeof rawAgent !== 'string') {

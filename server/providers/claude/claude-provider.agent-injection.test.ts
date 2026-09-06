@@ -27,11 +27,13 @@ describe('injectAgentDefinitions', () => {
     injectAgentDefinitions(opts, store)
     expect(opts.agents).toEqual({ reviewer: { description: 'Reviews', prompt: 'You are a reviewer.' } })
   })
-  it('merges over pre-existing opts.agents (custom wins on name clash)', () => {
-    store.upsert({ name: 'reviewer', description: 'R', prompt: 'P', enabled: true, createdAt: 1, updatedAt: 1 })
-    const opts: Options = { agents: { builtin: { description: 'B', prompt: 'PB' } } }
+  it('store defs are the base; pre-existing opts.agents win on name clash', () => {
+    store.upsert({ name: 'reviewer', description: 'FromStore', prompt: 'StoreP', enabled: true, createdAt: 1, updatedAt: 1 })
+    const opts: Options = { agents: { reviewer: { description: 'FromOpts', prompt: 'OptsP' }, builtin: { description: 'B', prompt: 'PB' } } }
     injectAgentDefinitions(opts, store)
+    // builtin has no store def → still present.
     expect(Object.keys(opts.agents!)).toContain('builtin')
-    expect(opts.agents!.reviewer).toBeDefined()
+    // reviewer exists in both → the pre-existing opts.agents overload wins.
+    expect(opts.agents!.reviewer).toEqual({ description: 'FromOpts', prompt: 'OptsP' })
   })
 })

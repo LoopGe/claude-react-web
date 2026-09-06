@@ -47,4 +47,22 @@ describe('AgentDefinitionStore', () => {
     expect(coerceStoredAgentDefinition(baseDef({ model: '' }))).toBeNull() // empty model rejected
     expect(coerceStoredAgentDefinition(baseDef())).not.toBeNull()
   })
+
+  it('coerceStoredAgentDefinition rejects garbage in optional agent fields', () => {
+    // invalid memory enum
+    expect(coerceStoredAgentDefinition(baseDef({ memory: 'bad' }))).toBeNull()
+    // invalid effort
+    expect(coerceStoredAgentDefinition(baseDef({ effort: 'ultra' }))).toBeNull()
+    // invalid permissionMode
+    expect(coerceStoredAgentDefinition(baseDef({ permissionMode: 'everything' }))).toBeNull()
+    // non-finite maxTurns (NaN / Infinity both rejected)
+    expect(coerceStoredAgentDefinition(baseDef({ maxTurns: Number.NaN }))).toBeNull()
+    expect(coerceStoredAgentDefinition(baseDef({ maxTurns: Infinity }))).toBeNull()
+    // non-boolean background
+    expect(coerceStoredAgentDefinition(baseDef({ background: 'yes' }))).toBeNull()
+    // a valid tools array of non-empty strings passes
+    expect(coerceStoredAgentDefinition(baseDef({ tools: ['Read', 'Bash'] }))).not.toBeNull()
+    // but an empty-string tool is still rejected
+    expect(coerceStoredAgentDefinition(baseDef({ tools: ['Read', ''] }))).toBeNull()
+  })
 })

@@ -5585,7 +5585,12 @@ export class SessionManager {
       profile: effectiveProfileFor(session.profileId),
       cwd: session.cwd,
       model: session.model,
-      agent: session.agent,
+      // Carry the start-as agent forward only while its def still exists and
+      // is enabled (same drop-guard as create/resume/fork); otherwise the
+      // respawn drops it (logged) to a normal session. Options.agents is
+      // freshly re-injected at each respawn, so passing a stale/deleted name
+      // would otherwise set Options.agent to an absent entry.
+      agent: this.effectiveStartAsAgent({ agent: session.agent }, 'respawn', session.id),
       permissionMode: session.permissionMode,
       title: session.title,
       betas: session.betas,
