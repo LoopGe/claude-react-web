@@ -12,7 +12,8 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
-import { useSessionActiveWorktree } from '../session-store/selectors'
+import { useSessionActiveWorktree, getSessionState } from '../session-store/selectors'
+import { recentMessagesDescription } from '../session-store/normalize'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
 import { useGitStatus } from '../hooks/useGitStatus'
 import { useChatStream } from '../hooks/useChatStream'
@@ -405,6 +406,34 @@ export const ChatPanel = memo(function ChatPanel({
   // fetch window.
   const modelOptions = useModelOptions(session.id, !!modelMenu && !!session.running, session.profileId)
   const chipsDisabled = !session.running || session.terminated
+  // Click-to-regenerate the session title. Mirrors chipsDisabled so the
+  // affordance only exists on a live session — the server's autoGenerateTitle
+  // requireLive would 404 a dormant one anyway. `regenerating` just drives a
+  // dimmed/pressed style for feedback; the real result lands via the server's
+  // session-update broadcast.
+  const canRegenerateTitle = !chipsDisabled
+  const [regenerating, setRegenerating] = useState(false)
+  // Ref guard for the in-flight window: `regenerating` state lags a re-render,
+  // so a rapid second click/Enter reads the stale closure and would double-fire.
+  const regeneratingRef = useRef(false)
+  const regenerateTitle = useCallback(() => {
+    if (!canRegenerateTitle || regeneratingRef.current) return
+    const messages = getSessionState(session.id).mirror.messages
+    const description = recentMessagesDescription(messages)
+    regeneratingRef.current = true
+    setRegenerating(true)
+    void api
+      .post(`/sessions/${session.id}/title`, { force: true, description })
+      .then(() => {
+        regeneratingRef.current = false
+        setRegenerating(false)
+      })
+      .catch(() => {
+        regeneratingRef.current = false
+        setRegenerating(false)
+        toast.error("Couldn't regenerate title")
+      })
+  }, [canRegenerateTitle, session.id, toast])
   // Git status powers BOTH the header chip (always-visible summary) and
   // the GitPanel overlay (mounted inside <Chat>). Hoisting the hook here
   // means a single fetch satisfies both consumers; the panel receives
@@ -746,8 +775,34 @@ export const ChatPanel = memo(function ChatPanel({
             />
           </Tooltip>
         )}
-        <Tooltip label={session.cwd ?? ''} placement="bottom" disabled={!session.cwd}>
-          <span className="chat-panel-title">
+        <Tooltip
+          label={canRegenerateTitle
+            ? `Click title to regenerate${session.cwd ? ` · ${session.cwd}` : ''}`
+            : (session.cwd ?? '')}
+          placement="bottom"
+          disabled={!session.cwd && !canRegenerateTitle}
+        >
+          <span
+            className={`chat-panel-title${canRegenerateTitle ? ' clickable' : ''}${regenerating ? ' regenerating' : ''}`}
+            role={canRegenerateTitle ? 'button' : undefined}
+            tabIndex={canRegenerateTitle ? 0 : undefined}
+            // Mirror the mode-badge pattern: the header is the panel-swap drag
+            // handle, so a child control blocks the drag at pointerdown — else
+            // a drag started on the title could co-fire a click on release.
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              if (!canRegenerateTitle) return
+              e.stopPropagation()
+              regenerateTitle()
+            }}
+            onKeyDown={(e) => {
+              // Activate like a native button: Enter or Space.
+              if (!canRegenerateTitle || (e.key !== 'Enter' && e.key !== ' ')) return
+              e.preventDefault()
+              e.stopPropagation()
+              regenerateTitle()
+            }}
+          >
             {session.title ?? session.id.slice(0, 8)}
           </span>
         </Tooltip>

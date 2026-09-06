@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription, countQueuedUserTurns, getActiveWorktree } from './normalize'
+import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription, recentMessagesDescription, countQueuedUserTurns, getActiveWorktree } from './normalize'
 import type { SdkMessage } from '../types'
 
 /** Build a top-level `user` message with the given text content (string or
@@ -69,6 +69,46 @@ describe('autoTitleDescription', () => {
   it('truncates to 300 chars', () => {
     const long = 'x'.repeat(400)
     expect(autoTitleDescription(long, long).length).toBe(300)
+  })
+})
+
+describe('recentMessagesDescription', () => {
+  it('joins the most recent human-typed user turns, most recent last', () => {
+    const messages = [
+      userMsg('first thing'),
+      userMsg('second thing'),
+      userMsg('latest thing'),
+    ]
+    expect(recentMessagesDescription(messages)).toBe('first thing second thing latest thing')
+  })
+  it('excludes tool_result/user messages fed back by the SDK (parent_tool_use_id set)', () => {
+    const toolResult = {
+      type: 'user',
+      uuid: 'tr1',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'the output' }] },
+      parent_tool_use_id: 't1',
+    } as unknown as SdkMessage
+    expect(recentMessagesDescription([userMsg('real input'), toolResult])).toBe('real input')
+  })
+  it('handles array-form text blocks (multimodal) from the user', () => {
+    expect(recentMessagesDescription([userMsgBlocks('an image caption')])).toBe('an image caption')
+  })
+  it('returns empty string when there are no human-typed turns', () => {
+    expect(recentMessagesDescription([])).toBe('')
+  })
+  it('caps at maxMessages and truncates to maxChars', () => {
+    const many = Array.from({ length: 10 }, (_, i) => userMsg(`turn ${i}`))
+    const within = recentMessagesDescription(many)
+    // only the last 5 chronological turns survive
+    expect(within).toBe('turn 5 turn 6 turn 7 turn 8 turn 9')
+    const long = 'x'.repeat(2000)
+    expect(recentMessagesDescription([userMsg(long)]).length).toBe(600)
+  })
+  it('does not walk past an image-only tail back into stale opening context', () => {
+    const imgOnly = Array.from({ length: 11 }, (_, i) => userMsg('', `img${i}`))
+    const messages = [userMsg('the opener', 'first'), ...imgOnly]
+    // The last 8 messages are all textless, so the bounded scan finds nothing.
+    expect(recentMessagesDescription(messages)).toBe('')
   })
 })
 

@@ -328,11 +328,14 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
   // Auto-generate a session title (first user message as description). The
   // manager no-ops when the session already has a title, so this never
   // overwrites a user-chosen name. `description` is optional and truncated.
+  // `force: true` renames an already-titled session (click-to-regenerate) —
+  // the manager skips its overwrite guard only when explicitly asked to.
   app.post('/sessions/:id/title', async (c) => {
     const id = c.req.param('id')
-    const body = await safeJson<{ description?: string }>(c.req)
+    const body = await safeJson<{ description?: string; force?: boolean }>(c.req)
     const description = typeof body?.description === 'string' ? body.description.slice(0, 600) : ''
-    const info = await sm.autoGenerateTitle(id, description)
+    const force = body?.force === true
+    const info = await sm.autoGenerateTitle(id, description, { force })
     return c.json({ session: info })
   })
 

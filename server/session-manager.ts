@@ -4240,10 +4240,12 @@ export class SessionManager {
    *  Mirrors usage()/accountInfo() as a capability-gated provider passthrough,
    *  but additionally writes the title into SessionMeta + broadcasts a
    *  session-update so every tab's sidebar refreshes. */
-  async autoGenerateTitle(id: string, description: string): Promise<SessionInfo> {
+  async autoGenerateTitle(id: string, description: string, opts?: { force?: boolean }): Promise<SessionInfo> {
     const s = this.requireLive(id)
-    // Guard FIRST: a named session must never trigger an LLM title call.
-    if (s.title) return this.info(s)
+    // Guard FIRST: a named session must never trigger an LLM title call —
+    // UNLESS the caller explicitly opts into `force` (regenerating a title by
+    // clicking the header). The default path stays strictly overwrite-free.
+    if (s.title && !opts?.force) return this.info(s)
     const fn = this.requireHandleMethod<(desc: string) => Promise<unknown>>(
       s,
       'generateTitle',

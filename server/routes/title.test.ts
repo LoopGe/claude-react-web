@@ -26,7 +26,7 @@ describe('session auto-title route', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as { session: { title?: string } }
     expect(body.session.title).toBe('Generated Title')
-    expect(sm.autoGenerateTitle).toHaveBeenCalledWith('s1', 'Always on')
+    expect(sm.autoGenerateTitle).toHaveBeenCalledWith('s1', 'Always on', { force: false })
   })
 
   it('treats a missing description as empty (image-only first turn)', async () => {
@@ -37,6 +37,17 @@ describe('session auto-title route', () => {
       body: JSON.stringify({}),
     })
     expect(res.status).toBe(200)
-    expect(sm.autoGenerateTitle).toHaveBeenCalledWith('s1', '')
+    expect(sm.autoGenerateTitle).toHaveBeenCalledWith('s1', '', { force: false })
+  })
+
+  it('forwards force: true for click-to-regenerate without touching the description', async () => {
+    const { app, sm } = makeApp()
+    const res = await app.request('/sessions/s1/title', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ description: 'years of context', force: true }),
+    })
+    expect(res.status).toBe(200)
+    expect(sm.autoGenerateTitle).toHaveBeenCalledWith('s1', 'years of context', { force: true })
   })
 })

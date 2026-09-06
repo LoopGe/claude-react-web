@@ -482,6 +482,38 @@ export function autoTitleDescription(text: string, full: string): string {
   return src.trim().slice(0, 300)
 }
 
+/** Build the description for RE-generating a session title (click-to-rename):
+ *  the plain text of the most recent human-typed user turns, joined
+ *  chronologically and truncated, so the title-generation LLM sees the tail of
+ *  the conversation (its current concern) rather than the opening message.
+ *  Candidate turns are filtered through the canonical `isHumanUserMessage`, so
+ *  slash-command logs, synthetic injections, and SDK tool-feedbacks never skew
+ *  the title. Returns '' when there are no human-typed turns yet — the server
+ *  warns and leaves the session untitled. `autoTitleDescription` handles the
+ *  initial one-shot naming; this is the regenerate path. */
+export function recentMessagesDescription(
+  messages: readonly SdkMessage[],
+  maxChars = 600,
+  maxMessages = 5,
+  maxScanWindow = 8,
+): string {
+  const parts: string[] = []
+  // Scan only the tail of the transcript (bounded by maxScanWindow total
+  // messages, NOT "5 text turns wherever they are"), so an image-only recent
+  // stretch can't drag the scan all the way back to stale opening context.
+  const start = Math.max(0, messages.length - maxScanWindow)
+  for (let i = messages.length - 1; i >= start && parts.length < maxMessages; i--) {
+    const msg = messages[i]
+    if (!isHumanUserMessage(msg)) continue
+    // For a human message topLevelUserPromptSignature is non-null and IS the
+    // extracted plain text — reuse it instead of re-extracting.
+    const text = topLevelUserPromptSignature(msg)?.trim()
+    if (text) parts.unshift(text) // keep chronological order
+  }
+  const joined = parts.join(' ').trim()
+  return joined.length > maxChars ? joined.slice(0, maxChars) : joined
+}
+
 export function computeWaiting(args: {
   turnActive: boolean
   terminated: boolean

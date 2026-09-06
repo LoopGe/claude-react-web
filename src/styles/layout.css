@@ -332,6 +332,23 @@ body.resizing-col .app {
   min-width: 0;
   flex-shrink: 1;
 }
+/* Click-to-regenerate affordance: pointer + hover tint only on live sessions
+   (the .clickable class is applied client-side when the session is running).
+   .regenerating dims the title while the async LLM title call is in flight. */
+.chat-panel-title.clickable {
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  padding: 0 4px;
+  margin: 0 -4px;
+}
+.chat-panel-title.clickable:hover {
+  background: var(--btn-hover-bg);
+}
+.chat-panel-title.regenerating {
+  opacity: 0.55;
+  pointer-events: none;
+  cursor: progress;
+}
 
 /* Slot pill — same numeric label as the sidebar card, so users can
    mentally link "card 2 in sidebar" with "panel 2 in grid". Filled when

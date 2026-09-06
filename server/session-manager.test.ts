@@ -2620,6 +2620,14 @@ describe('SessionManager', () => {
     expect(handle.generateSessionTitle).not.toHaveBeenCalled()
   })
 
+  it('autoGenerateTitle with force:true overwrites an existing title (click-to-regenerate)', async () => {
+    const info = sm.create({ cwd: '/tmp', title: 'My session' })
+    const handle = mockHandles[mockHandles.length - 1]
+    const titled = await sm.autoGenerateTitle(info.id, 'A now-more-accurate description', { force: true })
+    expect(titled.title).toBe('Mock auto title')
+    expect(handle.generateSessionTitle).toHaveBeenCalledWith('A now-more-accurate description', { persist: true })
+  })
+
   it('setMemorySettings() forwards only present keys and records them on the session', async () => {
     const info = sm.create({})
     expect(info.memory).toBeUndefined()
