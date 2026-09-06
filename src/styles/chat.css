@@ -532,19 +532,57 @@
   color: var(--fg-muted);
   font-family: var(--mono);
 }
-.ctx-bar-nums { letter-spacing: 0.02em; }
-.ctx-bar-pct { color: var(--fg-muted); }
+.ctx-bar-nums { letter-spacing: 0.02em; flex-shrink: 0; }
 .ctx-bar-out { color: var(--fg-muted); }
 .ctx-bar-cache { color: var(--fg-muted); }
-.ctx-bar-warning {
-  font-size: 11px;
-  font-family: var(--mono);
-  color: var(--fg-muted);
-  text-align: right;
+/* The three always-on percentages (used / compact / until), each a label +
+   value pair. Positioning is stable whether or not a value exists yet. */
+.ctx-bar-stats {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+  /* flex:1 + min-width:0 lets the three nowrap cells shrink and clip first,
+     so the always-on token nums on the right never get pushed off a narrow
+     panel. */
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
-.ctx-bar-warning-ok { color: var(--fg-muted); }
-.ctx-bar-warning-warn { color: var(--warn); }
-.ctx-bar-warning-danger { color: var(--danger); }
+.ctx-bar-stat {
+  white-space: nowrap;
+  /* Baseline-align the word label and the number as one line. This is a flex
+     container so the label's baseline comes from its *text*, not its (overflow
+     clipped) box edge — otherwise `overflow: hidden` on the label would reset
+     its inline-block baseline to the bottom margin and misalign the two. */
+  display: inline-flex;
+  align-items: baseline;
+}
+.ctx-bar-stat-label {
+  display: inline-block;
+  overflow: hidden;
+  white-space: nowrap;
+  /* Collapsed at rest: zero width + transparent. Expanding `max-width` (not
+     display) is what lets the words' *width* animate instead of snapping. */
+  max-width: 0;
+  opacity: 0;
+  margin-right: 0;
+  color: var(--fg-muted);
+  transition:
+    max-width var(--motion-duration-moderate) var(--motion-ease-standard),
+    opacity var(--motion-duration-moderate) var(--motion-ease-standard),
+    margin-right var(--motion-duration-moderate) var(--motion-ease-standard);
+}
+.ctx-bar-revealed .ctx-bar-stat-label {
+  max-width: 72px;
+  opacity: 1;
+  margin-right: 3px;
+}
+.ctx-bar-sep {
+  color: var(--fg-muted);
+  opacity: 0.5;
+}
+.ctx-bar-stat-warn { color: var(--warn); }
+.ctx-bar-stat-danger { color: var(--danger); }
 .ctx-bar-model {
   margin-left: 6px;
   font-size: 11px;
@@ -576,7 +614,6 @@
   transition: transform var(--motion-duration-moderate) var(--motion-ease-standard);
 }
 /* All levels use accent ?urgency is conveyed by the percentage text. */
-.ctx-bar-empty .ctx-bar-fill { background: var(--border); }
 
 /* Draggable auto-compact threshold marker, fused onto the ContextBar track.
    The marker sits at the pump's autoCompactThreshold (% of the model window):
@@ -666,15 +703,6 @@
 @media (prefers-reduced-motion: reduce) {
   .ctx-bar-marker-interactive { transition: none; }
 }
-/* "Compact at N%" readout beside the warning while custom / dragging. */
-.ctx-bar-compact {
-  color: var(--fg-muted);
-  margin-right: 8px;
-}
-.ctx-bar-compact-dragging {
-  color: var(--accent);
-}
-
 /* Expanded textarea — Alt+Enter enlarges the composer textarea from its
    default 180px cap to a much larger area. */
 .chat-composer textarea.textarea-expanded {

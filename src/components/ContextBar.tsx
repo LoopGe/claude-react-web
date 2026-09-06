@@ -14,6 +14,7 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -34,6 +35,10 @@ const STEP_PCT = 1
  *  and commits. Below this a click is a no-op → double-click-to-reset is
  *  clean (no intermediate pin POST). */
 const DRAG_SLOP_PX = 3
+/** The percentage-cells show bare numbers (25% · 84% · 70%) by default; the
+ *  "used / compact / until" word labels are revealed on hover and revert to
+ *  numbers-only this many ms after the pointer leaves the bar. */
+const REVEAL_DELAY_MS = 3000
 
 function snapPct(p: number): number {
   return Math.min(MAX_PCT, Math.max(MIN_PCT, Math.round(p / STEP_PCT) * STEP_PCT))
@@ -79,6 +84,34 @@ export const ContextBar = memo(function ContextBar({
   const trackRectRef = useRef<DOMRect | null>(null)
   const keyboardDraftRef = useRef<number | null>(null)
 
+  // ── hover-reveal of the used/compact/until word labels ────────────────
+  // Resting state shows bare percentages; hovering the bar reveals the words.
+  // On pointer-leave a 3s timer hides them again (and is cancelled if the
+  // pointer re-enters first). State stays holdable for the whole bar.
+  const [revealed, setRevealed] = useState(false)
+  const revealTimerRef = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (revealTimerRef.current != null) window.clearTimeout(revealTimerRef.current)
+    },
+    [],
+  )
+  const revealLabels = useCallback(() => {
+    if (revealTimerRef.current != null) {
+      window.clearTimeout(revealTimerRef.current)
+      revealTimerRef.current = null
+    }
+    setRevealed(true)
+  }, [])
+  const hideLabelsAfterDelay = useCallback(() => {
+    if (revealTimerRef.current == null) {
+      revealTimerRef.current = window.setTimeout(() => {
+        revealTimerRef.current = null
+        setRevealed(false)
+      }, REVEAL_DELAY_MS)
+    }
+  }, [])
+
   const interactive = editable && !disabled && onSetWindow != null
 
   // % of the model window → absolute Settings.autoCompactWindow tokens such
@@ -101,46 +134,62 @@ export const ContextBar = memo(function ContextBar({
     [onSetWindow, pctToWindow],
   )
 
-  if (!usage || max == null || max <= 0) {
-    return (
-      <div className="ctx-bar ctx-bar-empty">
-        <div className="ctx-bar-label">Context: —</div>
-        <div className="ctx-bar-track" aria-hidden>
-          <div
-            className="ctx-bar-fill"
-            style={{ ['--ctx-progress' as string]: 0 } as CSSProperties}
-          />
-        </div>
-      </div>
-    )
-  }
+  // The bar always shows the same three percentages (used / auto-compact
+  // threshold / until auto-compact). When there's no data yet — no usage
+  // snapshot, or a window of unknown/zero size — every stat falls back to a
+  // `—` placeholder so the label row's size stays stable (no layout jump).
+  const hasData = usage != null && max != null && max > 0
 
-  const used = usage.totalTokens ?? 0
+  const usedTokens = hasData && usage ? (usage.totalTokens ?? 0) : null
   // Prefer SDK's percentage (it may weigh differently than raw tokens / max)
   // but fall back to a straight division if absent.
-  const computedPct = usage.percentage ?? (used / max) * 100
-  const bounded = Math.min(100, Math.max(0, computedPct))
-  const level = bounded >= 90 ? 'danger' : bounded >= 70 ? 'warn' : 'ok'
+  const bounded =
+    hasData && usage && usedTokens != null
+      ? Math.min(100, Math.max(0, usage.percentage ?? (usedTokens / max) * 100))
+      : null
+  const barLevel: 'ok' | 'warn' | 'danger' =
+    bounded == null ? 'ok' : bounded >= 90 ? 'danger' : bounded >= 70 ? 'warn' : 'ok'
 
-  // Auto-compact warning: only render once we have a threshold (i.e. after
-  // the first `result`) AND the user is far enough along that the nudge is
-  // actionable (within 50% of the threshold). Mirrors the CLI's TokenWarning
-  // "X% until auto-compact" line.
-  const threshold = usage.autoCompactThreshold
+  // Threshold-relative stats only exist once `autoCompactThreshold` is known
+  // (i.e. after the first `result` supplies the model's context window).
+  const threshold = hasData && usage ? usage.autoCompactThreshold : undefined
   const thresholdPct =
-    typeof threshold === 'number' && threshold > 0 ? (threshold / max) * 100 : null
-  let warning: { percentLeft: number; level: 'ok' | 'warn' | 'danger' } | null = null
-  if (typeof threshold === 'number' && threshold > 0) {
-    const percentLeft = Math.max(0, Math.round(((threshold - used) / threshold) * 100))
-    if (percentLeft <= 50) {
-      warning = {
-        percentLeft,
-        level: percentLeft <= 15 ? 'danger' : percentLeft <= 30 ? 'warn' : 'ok',
-      }
-    }
+    typeof threshold === 'number' && threshold > 0 && max != null
+      ? (threshold / max) * 100
+      : null
+  let percentLeft: number | null = null
+  let untilLevel: 'ok' | 'warn' | 'danger' = 'ok'
+  if (hasData && typeof threshold === 'number' && threshold > 0 && usedTokens != null) {
+    // Mirrors the CLI's TokenWarning line: share of the threshold still free.
+    // Higher = safer; it carries the ok/warn/danger color of the old warning.
+    const pct = Math.max(0, Math.round(((threshold - usedTokens) / threshold) * 100))
+    percentLeft = pct
+    untilLevel = pct <= 15 ? 'danger' : pct <= 30 ? 'warn' : 'ok'
   }
 
   const displayPct = draftPct ?? thresholdPct
+
+  // One percentage cell. The word label is always mounted; it is visually
+  // collapsed to zero width / transparent at rest and expands via a CSS
+  // max-width transition when the bar carries `.ctx-bar-revealed` (hovered).
+  // Keeping it mounted is what lets the *width* animate instead of snapping.
+  // `lvl` colors the "until" stat as it approaches the threshold (warn/danger);
+  // ok and missing stay muted. aria-label always carries the full "used 25%"
+  // meaning for AT, even though the words are visually hidden at rest.
+  const stat = (
+    name: string,
+    label: string,
+    value: number | null,
+    lvl?: 'warn' | 'danger',
+  ) => (
+    <span
+      className={`ctx-bar-stat ctx-bar-stat-${name}${lvl ? ` ctx-bar-stat-${lvl}` : ''}`}
+      aria-label={value != null ? `${label} ${Math.round(value)}%` : `${label} —`}
+    >
+      <span className="ctx-bar-stat-label">{label}</span>
+      {value != null ? `${Math.round(value)}%` : '—'}
+    </span>
+  )
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!interactive || e.button !== 0) return
@@ -260,29 +309,36 @@ export const ContextBar = memo(function ContextBar({
     (editable ? ' ctx-bar-marker-interactive' : '')
 
   return (
-    <div className={`ctx-bar ctx-bar-${level}`}>
+    <div
+      className={`ctx-bar ctx-bar-${barLevel}${revealed ? ' ctx-bar-revealed' : ''}`}
+      onPointerEnter={revealLabels}
+      onPointerLeave={hideLabelsAfterDelay}
+    >
       <div className="ctx-bar-label">
-        <span>
-          {editable && displayPct != null && (dragging || custom) && (
-            <span className={`ctx-bar-compact${dragging ? ' ctx-bar-compact-dragging' : ''}`}>
-              Compact at {Math.round(displayPct)}%
-            </span>
-          )}
-          {warning && (
-            <span className={`ctx-bar-warning ctx-bar-warning-${warning.level}`}>
-              {warning.percentLeft}% until auto-compact
-            </span>
+        <span className="ctx-bar-stats">
+          {stat('used', 'used', bounded)}
+          <span className="ctx-bar-sep" aria-hidden>
+            /
+          </span>
+          {stat('compact', 'compact', displayPct)}
+          <span className="ctx-bar-sep" aria-hidden>
+            /
+          </span>
+          {stat(
+            'until',
+            'until',
+            percentLeft,
+            untilLevel === 'warn' || untilLevel === 'danger' ? untilLevel : undefined,
           )}
         </span>
         <span className="ctx-bar-nums">
-          {formatTokens(used)} / {formatTokens(max)}
-          <span className="ctx-bar-pct"> · {bounded.toFixed(1)}%</span>
-          {usage.outputTokens != null && usage.outputTokens > 0 && (
+          {hasData ? `${formatTokens(usedTokens!)} / ${formatTokens(max!)}` : '— / —'}
+          {usage?.outputTokens != null && usage.outputTokens > 0 && (
             <span className="ctx-bar-out" title={`Output tokens this call: ${formatTokens(usage.outputTokens)}`}>
               {' '}· {formatTokens(usage.outputTokens)} out
             </span>
           )}
-          {usage.cacheReadTokens != null && usage.cacheReadTokens > 0 && (
+          {usage?.cacheReadTokens != null && usage.cacheReadTokens > 0 && (
             <span className="ctx-bar-cache" title={`Cache hit: ${formatTokens(usage.cacheReadTokens)} read · ${formatTokens(usage.cacheCreationTokens ?? 0)} written`}>
               {' '}· cache {formatTokens(usage.cacheReadTokens)}
             </span>
@@ -301,7 +357,7 @@ export const ContextBar = memo(function ContextBar({
         <div className="ctx-bar-track" aria-hidden>
           <div
             className="ctx-bar-fill"
-            style={{ ['--ctx-progress' as string]: bounded / 100 } as CSSProperties}
+            style={{ ['--ctx-progress' as string]: (bounded ?? 0) / 100 } as CSSProperties}
           />
         </div>
         {displayPct != null && (
