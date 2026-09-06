@@ -289,6 +289,7 @@ const tick = () => new Promise((r) => setImmediate(r))
 import { SessionManager, resolveConfiguredModel } from './session-manager.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
+import type { AgentDefinitionStore } from './agent-definition-store.js'
 import { __setConfigForTest, config as defaultConfig } from './config.js'
 import { McpConfigStore } from './mcp-config.js'
 import { MpStore } from './mp-store.js'
@@ -2339,6 +2340,41 @@ describe('SessionManager', () => {
     // Thinking is a spawn-time Options key — the fork's fresh Query must have
     // received it directly (no post-spawn applyFlagSettings needed).
     expect(mockHandles[1].options.thinking).toEqual({ type: 'enabled', budgetTokens: 4096 })
+  })
+
+  it('start-as agent rides create into the SDK + meta; fork carries it while enabled, drops it when disabled', async () => {
+    const defs: Record<string, { enabled: boolean }> = { reviewer: { enabled: true } }
+    const agentStore = {
+      get: (n: string) => defs[n],
+      getEnabledDefinitions: () => Object.fromEntries(
+        Object.entries(defs).filter(([, d]) => d.enabled).map(([n]) => [n, { description: n }]),
+      ),
+    } as unknown as AgentDefinitionStore
+    const sm2 = new SessionManager({ store, agentStore })
+    try {
+      // create with a start-as agent → SDK receives Options.agent, meta persists it
+      const info = sm2.create({ model: 'test-model', agent: 'reviewer' })
+      expect(mockHandles[0].options.agent).toBe('reviewer')
+      expect(store.get(info.id)?.agent).toBe('reviewer')
+
+      // give the source a completed turn so fork() will allow the branch
+      sm2.send(info.id, 'hi')
+      mockHandles[0].emit({ type: 'result' })
+      await tick()
+
+      // fork while the def is still enabled → the fork's fresh Query carries it
+      const forked = await sm2.fork(info.id)
+      expect(mockHandles[1].options.agent).toBe('reviewer')
+      expect(store.get(forked.id)?.agent).toBe('reviewer')
+
+      // disable the def → subsequent fork drops the agent (persona gone)
+      defs.reviewer = { enabled: false }
+      const forked2 = await sm2.fork(info.id)
+      expect(mockHandles[2].options.agent).toBeUndefined()
+      expect(store.get(forked2.id)?.agent).toBeUndefined()
+    } finally {
+      await sm2.shutdown()
+    }
   })
 
   it('thinkingSupported is classified from the model id at spawn', async () => {

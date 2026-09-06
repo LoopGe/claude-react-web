@@ -187,6 +187,10 @@ export interface Session {
   lastActivityAt: number
   cwd?: string
   model?: string
+  /** Start-as custom agent name (SDK Options.agent). Stored on the live
+   *  session; persisted via SessionMeta so resume/restart/fork keep the
+   *  persona (dropped with a warning if its def is later deleted/disabled). */
+  agent?: string
   /** Active model group id (set at create time; the group's resolved main
    *  model becomes `model`). Stored on the live session; persisted via
    *  SessionMeta so resume/restart/fork keep the group identity. */

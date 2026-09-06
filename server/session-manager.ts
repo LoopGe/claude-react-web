@@ -922,6 +922,7 @@ export class SessionManager {
       lastActivityAt: s.lastActivityAt,
       cwd: s.cwd,
       model: s.model,
+      agent: s.agent,
       modelGroupId: s.modelGroupId,
       permissionMode: s.permissionMode,
       title: s.title,
@@ -983,7 +984,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -991,6 +992,9 @@ export class SessionManager {
       provider,
       cwd: opts.cwd,
       model: opts.model,
+      // Start-as custom agent name (Options.agent), persisted so resume/fork
+      // restart the session in the same persona.
+      agent: opts.agent,
       modelGroupId: (opts as { modelGroupId?: string }).modelGroupId,
       profileId: (opts as { profileId?: string }).profileId,
       permissionMode: opts.permissionMode,
@@ -1032,6 +1036,18 @@ export class SessionManager {
         return sb && sb.enabled === true ? sb : undefined
       })(),
     }
+  }
+
+  /** The start-as custom agent name to carry onto a re-spawn (resume/fork),
+   *  or undefined. A session is only re-spun in the same persona while its
+   *  def still exists AND is enabled in the current store; otherwise the
+   *  agent is dropped (with a warning) so the session re-spawns as a normal
+   *  session rather than resurrecting a persona the user deleted/disabled. */
+  private effectiveStartAsAgent(meta: { agent?: string } | undefined, what: string, id: string): string | undefined {
+    if (!meta?.agent) return undefined
+    if (this.agentStore?.get(meta.agent)?.enabled === true) return meta.agent
+    log.warn(`[${id}] start-as agent "${meta.agent}" no longer enabled/defined ${what}; ${what}ing as a normal session`)
+    return undefined
   }
 
   /** Create a brand-new session and start pumping.
@@ -1247,6 +1263,9 @@ export class SessionManager {
       resume: id,
       cwd: meta.cwd,
       model: resolvedModel,
+      // Carry the start-as agent forward only while its def still exists and
+      // is enabled; otherwise resume drops it (logged) to a normal session.
+      agent: this.effectiveStartAsAgent(meta, 'resume', id),
       modelGroupId: meta.modelGroupId,
       // Use the persisted permissionMode if available (sessions we created).
       // For CLI sessions adopted from disk (no permissionMode in meta), fall
@@ -1576,6 +1595,9 @@ export class SessionManager {
       forkSession: true,
       cwd: meta.cwd,
       model: meta.model,
+      // Carry the start-as agent forward only while its def still exists and
+      // is enabled; otherwise the fork drops it (logged) to a normal session.
+      agent: this.effectiveStartAsAgent(meta, 'fork', id),
       modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
       title,
@@ -2352,6 +2374,7 @@ export class SessionManager {
       profile,
       cwd: fullOpts.cwd,
       model: fullOpts.model,
+      agent: fullOpts.agent,
       permissionMode: requestedMode,
       title: fullOpts.title,
       betas: Array.isArray(fullOpts.betas) ? fullOpts.betas : undefined,
@@ -5562,6 +5585,7 @@ export class SessionManager {
       profile: effectiveProfileFor(session.profileId),
       cwd: session.cwd,
       model: session.model,
+      agent: session.agent,
       permissionMode: session.permissionMode,
       title: session.title,
       betas: session.betas,

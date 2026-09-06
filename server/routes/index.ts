@@ -8,6 +8,7 @@ import { SessionManager } from '../session-manager.js'
 import { HttpError, createErrorHandler } from '../errors.js'
 import type { MpStore } from '../mp-store.js'
 import type { UploadStore } from '../upload-store.js'
+import type { AgentDefinitionStore } from '../agent-definition-store.js'
 import { buildSessionRouter } from './sessions.js'
 import { buildPermissionRouter } from './permissions.js'
 import { buildElicitationRouter } from './elicitation.js'
@@ -42,6 +43,7 @@ export function buildApiRouter(
   mpStore?: MpStore,
   claudeBinary?: string,
   uploadStore?: UploadStore,
+  agentDefinitionStore?: AgentDefinitionStore,
 ): Hono {
   const app = new Hono()
 
@@ -55,7 +57,7 @@ export function buildApiRouter(
   app.route('/', buildHealthRouter(claudeBinary))
   app.route('/', buildConfigRouter(sm, configDir))
   app.route('/', buildProfilesRouter(configDir, sm))
-  app.route('/', buildSessionRouter(sm, mpStore))
+  app.route('/', buildSessionRouter(sm, mpStore, agentDefinitionStore))
   app.route('/', buildHooksRouter(sm))
   app.route('/', buildSkillsRouter(sm))
   app.route('/', buildUploadRouter(sm, uploadStore))

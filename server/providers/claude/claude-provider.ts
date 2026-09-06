@@ -241,6 +241,7 @@ export class ClaudeProvider implements AgentProvider {
     if (opts.resumeSessionAt !== undefined) sdkOptions.resumeSessionAt = opts.resumeSessionAt
     if (opts.cwd !== undefined) sdkOptions.cwd = opts.cwd
     if (opts.model !== undefined) sdkOptions.model = opts.model
+    if (opts.agent !== undefined) sdkOptions.agent = opts.agent
     if (opts.title !== undefined) sdkOptions.title = opts.title
     if (opts.betas !== undefined) sdkOptions.betas = opts.betas as Options['betas']
     if (opts.mcpServers !== undefined) sdkOptions.mcpServers = opts.mcpServers as Options['mcpServers']
