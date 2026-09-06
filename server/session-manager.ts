@@ -487,6 +487,7 @@ export class SessionManager {
       claudeBinary: opts.claudeBinary,
       mpStore: opts.mpStore,
       agentStore: this.agentStore,
+      mcpStore: this.mcpStore,
       onProcessExit: (info) => this.handleProcessExit(info),
     })
     this.defaultProvider = opts.defaultProvider ?? 'claude'

@@ -9,6 +9,7 @@ import {
   type SDKResultError,
   type SDKResultSuccess,
   type SDKSessionInfo,
+  type AgentDefinition,
 } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import { config as defaultConfig, DEFAULT_PROFILE } from '../../config.js'
@@ -25,6 +26,7 @@ import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
 import type { SessionMeta } from '../../persistence.js'
 import type { MpStore } from '../../mp-store.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
+import type { McpConfigStore } from '../../mcp-config.js'
 import { createPushable } from '../../pushable.js'
 import { ProcessMonitor, type ProcessExitInfo } from '../../process-monitor.js'
 import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities } from '../types.js'
@@ -183,19 +185,62 @@ export interface ClaudeProviderOptions {
   claudeBinary?: string
   mpStore?: MpStore
   agentStore?: AgentDefinitionStore
+  mcpStore?: McpConfigStore
   onProcessExit?: (info: ProcessExitInfo) => void
+}
+
+// Behavior switch seeded by Workstream A. Default TRUE = assume a bare MCP
+// string does NOT resolve and must be substituted from the configured store.
+// Flip to false if the probe proves the SDK resolves bare strings (documented
+// in the flip-point runbook, Task 3).
+export const RESOLVE_PER_AGENT_MCP = true
+
+/** Resolve each string entry of an agent's `mcpServers` list against the
+ *  global MCP store, producing `{ name: config }` records. Already-formatted
+ *  `{ name: config }` entries pass through verbatim; unresolved string names
+ *  are DROPPED (never left as a bare string, which the SDK would not resolve).
+ *  Returns `undefined` when nothing remains so the field can be omitted. */
+function resolveAgentMcpServers(
+  mcpServers: unknown[] | undefined,
+  mcpStore: McpConfigStore | undefined,
+): unknown[] | undefined {
+  if (!mcpServers || !RESOLVE_PER_AGENT_MCP) return mcpServers
+  const out: unknown[] = []
+  for (const spec of mcpServers) {
+    if (typeof spec === 'string') {
+      const cfg = mcpStore?.getSdkServerConfig(spec)
+      if (cfg) out.push({ [spec]: cfg })
+      // unresolved name => dropped (never left as a bare string)
+    } else {
+      out.push(spec) // already { name: config }; keep verbatim
+    }
+  }
+  return out.length > 0 ? out : undefined
 }
 
 /** Inject enabled custom agent definitions from the store into SDK
  *  `Options.agents`, merging over the existing value. Store defs are the base;
  *  any pre-existing `opts.agents` overload them on a name clash (the spread
- *  of `opts.agents` comes last and wins). Exported pure so it's unit-testable
- *  without mocking the whole SDK Query surface. */
-export function injectAgentDefinitions(opts: Options, store: AgentDefinitionStore | undefined): void {
+ *  of `opts.agents` comes last and wins). Each enabled def's `mcpServers`
+ *  string names are resolved against `mcpStore` (via `resolveAgentMcpServers`)
+ *  on a COPY so the store's cached defs are never mutated. Exported pure so
+ *  it's unit-testable without mocking the whole SDK Query surface. */
+export function injectAgentDefinitions(
+  opts: Options,
+  store: AgentDefinitionStore | undefined,
+  mcpStore?: McpConfigStore,
+): void {
   if (!store) return
-  const agents = store.getEnabledDefinitions()
-  if (Object.keys(agents).length === 0) return
-  opts.agents = { ...agents, ...(opts.agents ?? {}) }
+  const defs = store.getEnabledDefinitions()
+  // resolve a copy so the store's entries are not mutated
+  const resolved: Record<string, AgentDefinition> = {}
+  for (const [name, def] of Object.entries(defs)) {
+    resolved[name] = def.mcpServers
+      ? { ...def, mcpServers: resolveAgentMcpServers(def.mcpServers, mcpStore) as AgentDefinition['mcpServers'] }
+      : def
+  }
+  if (Object.keys(resolved).length === 0) return
+  opts.agents = { ...resolved, ...(opts.agents ?? {}) }
 }
 
 export class ClaudeProvider implements AgentProvider {
@@ -658,7 +703,7 @@ export class ClaudeProvider implements AgentProvider {
     }
     // Enabled custom agent definitions ride every spawn's Options.agents,
     // mirroring how the mpStore block injects plugin paths above.
-    injectAgentDefinitions(opts, this.opts.agentStore)
+    injectAgentDefinitions(opts, this.opts.agentStore, this.opts.mcpStore)
   }
 
   private buildAnthropicEnv(profile: ProviderProfile = resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE)): NodeJS.ProcessEnv {
