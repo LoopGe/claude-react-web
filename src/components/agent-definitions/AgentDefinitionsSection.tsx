@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import type { StoredAgentDefinition } from '../../types'
+import { AgentDefinitionForm } from './AgentDefinitionForm'
 
 export interface AgentDefinitionsSectionProps {
   agents: StoredAgentDefinition[]
@@ -6,9 +8,8 @@ export interface AgentDefinitionsSectionProps {
   disabled?: boolean
   toggleEnabled: (name: string, enabled: boolean) => void
   remove: (name: string) => void
-  /** Task 6 stub: opens the create/edit form. When defined, edits this
-   *  definition; when undefined, creates a new one. */
-  onEdit: (def?: StoredAgentDefinition) => void
+  /** Re-reads the definition list after a create/edit save. */
+  refresh: () => void | Promise<void>
 }
 
 export function AgentDefinitionsSection({
@@ -17,17 +18,30 @@ export function AgentDefinitionsSection({
   disabled,
   toggleEnabled,
   remove,
-  onEdit,
+  refresh,
 }: AgentDefinitionsSectionProps) {
+  // Which definition the form is editing: `undefined` open for "new",
+  // a def for an in-place edit, `null` for the list with no form open.
+  const [editDef, setEditDef] = useState<StoredAgentDefinition | undefined | null>(null)
+
+  if (editDef !== null) {
+    return (
+      <AgentDefinitionForm
+        initial={editDef}
+        onSaved={() => {
+          setEditDef(null)
+          void refresh()
+        }}
+        onCancel={() => setEditDef(null)}
+      />
+    )
+  }
+
   return (
     <div className="settings-section">
       <div className="settings-section-head">
         <h4>Agents</h4>
-        <button
-          className="btn btn-sm"
-          disabled={disabled}
-          onClick={() => onEdit(undefined)}
-        >
+        <button className="btn btn-sm" disabled={disabled} onClick={() => setEditDef(undefined)}>
           New
         </button>
       </div>
@@ -55,11 +69,7 @@ export function AgentDefinitionsSection({
                 aria-label={`Enable ${def.name}`}
               />
             </label>
-            <button
-              className="btn btn-sm"
-              disabled={disabled}
-              onClick={() => onEdit(def)}
-            >
+            <button className="btn btn-sm" disabled={disabled} onClick={() => setEditDef(def)}>
               Edit
             </button>
             <button
