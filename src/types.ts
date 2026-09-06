@@ -99,6 +99,9 @@ export interface NewSessionForm {
   provider?: string
   cwd?: string
   model?: string
+  /** Name of a custom agent definition to start this session as. Omitted
+   *  when no agent is selected ("None"). Injected as `Options.agent`. */
+  agent?: string
   systemPrompt?: string
   permissionMode?: PermissionMode
   maxTurns?: number
