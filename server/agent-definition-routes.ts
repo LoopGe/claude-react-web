@@ -39,10 +39,10 @@ export function buildAgentDefinitionsRouter(store: AgentDefinitionStore): Hono {
   app.onError(createErrorHandler('[agent-definitions]'))
 
   // List all stored definitions.
-  app.get('/agent-definitions', (c) => c.json({ agents: store.list() }))
+  app.get('/', (c) => c.json({ agents: store.list() }))
 
   // Create a new definition. Unique by name — duplicate names are a 409.
-  app.post('/agent-definitions', async (c) => {
+  app.post('/', async (c) => {
     const body = await safeJson<{ data?: unknown }>(c.req)
     const data = body?.data as PartialDef | undefined
     if (!data || typeof data !== 'object' || typeof data.name !== 'string' || !data.name.trim()) {
@@ -65,7 +65,7 @@ export function buildAgentDefinitionsRouter(store: AgentDefinitionStore): Hono {
 
   // Update an existing definition by name. Immutable fields (name/timestamps)
   // are ignored from the patch.
-  app.put('/agent-definitions/:name', async (c) => {
+  app.put('/:name', async (c) => {
     const name = c.req.param('name')
     const existing = store.get(name)
     if (!existing) throw new HttpError(404, `agent "${name}" not found`)
@@ -77,7 +77,7 @@ export function buildAgentDefinitionsRouter(store: AgentDefinitionStore): Hono {
   })
 
   // Delete a definition by name.
-  app.delete('/agent-definitions/:name', (c) => {
+  app.delete('/:name', (c) => {
     store.remove(c.req.param('name'))
     return c.body(null, 204)
   })
