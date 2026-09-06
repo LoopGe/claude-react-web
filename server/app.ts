@@ -141,6 +141,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       store: opts.sessionStore,
       mcpConfigStore: opts.mcpConfigStore,
       mpStore: opts.mpStore,
+      agentStore: opts.agentDefinitionStore,
       claudeBinary: opts.defaults?.claudeBinary,
       autoResume: true,
       crashRecovery: true,

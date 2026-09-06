@@ -28,6 +28,7 @@ import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type 
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
 import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
 import { McpConfigStore } from './mcp-config.js'
+import type { AgentDefinitionStore } from './agent-definition-store.js'
 import { RecapManager } from './recap.js'
 import { summarizeForCompact } from './compact-summary.js'
 import type { SessionActivity, SessionPhase, SessionRecap } from './session-types.js'
@@ -437,6 +438,7 @@ export class SessionManager {
   private turnAnchorStore: TurnAnchorStore
   private resultFrameStore: ResultFrameStore
   private mcpStore?: McpConfigStore
+  private agentStore?: AgentDefinitionStore
   private providers: ProviderRegistry
   private defaultProvider: string
   private globalSubscribers = new Map<string, GlobalSubscriber>()
@@ -474,9 +476,11 @@ export class SessionManager {
     this.turnAnchorStore = new TurnAnchorStore(this.store.getDir(), this.historyCap)
     this.resultFrameStore = new ResultFrameStore(this.store.getDir(), this.historyCap)
     this.mcpStore = opts.mcpConfigStore ?? new McpConfigStore()
+    this.agentStore = opts.agentStore
     this.providers = opts.providers ?? createDefaultProviders({
       claudeBinary: opts.claudeBinary,
       mpStore: opts.mpStore,
+      agentStore: this.agentStore,
       onProcessExit: (info) => this.handleProcessExit(info),
     })
     this.defaultProvider = opts.defaultProvider ?? 'claude'

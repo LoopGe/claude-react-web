@@ -18,6 +18,7 @@ import type { Pushable } from './pushable.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { MpStore } from './mp-store.js'
+import type { AgentDefinitionStore } from './agent-definition-store.js'
 import type { SessionInfoBase, SessionMemorySettings, ThinkingSetting } from '../shared/session-info.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import type { ProviderRegistry } from './providers/registry.js'
@@ -602,6 +603,9 @@ export interface SessionManagerOptions {
   /** When set, every new SDK Query is spawned with plugin paths from
    *  enabled marketplace plugins injected into Options.plugins. */
   mpStore?: MpStore
+  /** When set, every new SDK Query is spawned with enabled custom agent
+   *  definitions injected into Options.agents. See agent-definition-store. */
+  agentStore?: AgentDefinitionStore
   /** Absolute path to the `claude` CLI binary, injected into every
    *  Query's Options.pathToClaudeCodeExecutable. Bypasses the SDK's
    *  internal platform-native-package resolution, which can pick a
