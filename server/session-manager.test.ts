@@ -1,10 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import * as nodeFs from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { rmRf } from './__test-utils__/index.js'
 import { subagentTranscriptPath } from './subagent-watcher.js'
+
+// Wrap node:fs/promises so `stat` is a controllable mock that defaults to the
+// real implementation (preexisting stat users keep working) but individual
+// tests can override it — SessionManager.readFile stats the file to floor an
+// mtime before seeding the CLI read-state cache. vi.mock guarantees the
+// manager's `import { stat }` reads this same mocked `stat`.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof nodeFs
+  return { ...actual, stat: vi.fn(actual.stat) }
+})
 
 // --- SDK mock ---------------------------------------------------------------
 //
@@ -36,6 +47,8 @@ interface MockQueryHandle {
   getContextUsage: ReturnType<typeof vi.fn>
   accountInfo: ReturnType<typeof vi.fn>
   rewindFiles: ReturnType<typeof vi.fn>
+  readFile: ReturnType<typeof vi.fn>
+  seedReadState: ReturnType<typeof vi.fn>
   generateSessionTitle: ReturnType<typeof vi.fn>
 }
 
@@ -53,7 +66,7 @@ const mockHandles: MockQueryHandle[] = []
 // vi.fn default (returns undefined), which makes hasSdkTranscript()
 // always report "transcript missing" and breaks every fork/resume
 // happy-path test.
-const { mockGetSessionInfo, mockListSessions, mockListSubagents, mockGetSubagentMessages } = vi.hoisted(() => {
+const { mockGetSessionInfo, mockListSessions, mockListSubagents, mockGetSubagentMessages, mockRenameSession } = vi.hoisted(() => {
   return {
     mockGetSessionInfo: vi.fn<(id: string, opts?: { dir?: string }) => Promise<unknown>>(
       async (id) => ({ sessionId: id }),
@@ -67,6 +80,7 @@ const { mockGetSessionInfo, mockListSessions, mockListSubagents, mockGetSubagent
     mockGetSubagentMessages: vi.fn<
       (id: string, agentId: string, opts?: { dir?: string; limit?: number; offset?: number }) => Promise<unknown[]>
     >(async () => []),
+    mockRenameSession: vi.fn<(id: string, title: string, opts?: { dir?: string }) => Promise<unknown>>(async () => {}),
   }
 })
 
@@ -103,6 +117,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
     listSubagents: (id: string, opts?: { dir?: string }) => mockListSubagents(id, opts),
     getSubagentMessages: (id: string, agentId: string, opts?: { dir?: string; limit?: number; offset?: number }) =>
       mockGetSubagentMessages(id, agentId, opts),
+    renameSession: (id: string, title: string, opts?: { dir?: string }) => mockRenameSession(id, title, opts),
     query({ prompt, options }: { prompt: unknown; options: Record<string, unknown> }) {
       const queue: unknown[] = []
       let waiter: ((v: IteratorResult<unknown>) => void) | null = null
@@ -191,6 +206,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         getContextUsage: vi.fn(async () => ({})),
         accountInfo: vi.fn(async () => ({})),
         rewindFiles: vi.fn(async () => ({ canRewind: true })),
+        readFile: vi.fn(async () => ({ available: false })),
+        seedReadState: vi.fn(async () => {}),
         generateSessionTitle: vi.fn(async (_desc: string, _opts?: { persist?: boolean }) => 'Mock auto title'),
       }
       mockHandles.push(handle)
@@ -235,6 +252,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         getContextUsage: handle.getContextUsage,
         accountInfo: handle.accountInfo,
         rewindFiles: handle.rewindFiles,
+        readFile: handle.readFile,
+        seedReadState: handle.seedReadState,
         generateSessionTitle: handle.generateSessionTitle,
       }
       return q
@@ -2498,6 +2517,89 @@ describe('SessionManager', () => {
     bcast.mockRestore()
   })
 
+  // --- readFile: SDK readFile + CLI read-state seeding (seedReadState) ---
+
+  it('readFile() seeds the CLI read-state cache after a successful read', async () => {
+    const info = sm.create({})
+    mockHandles[0].readFile.mockResolvedValueOnce({ available: true, contents: 'body' })
+    const statMock = nodeFs.stat as MockedFunction<typeof nodeFs.stat>
+    statMock.mockResolvedValue({ mtimeMs: 12345.9 } as Awaited<ReturnType<typeof nodeFs.stat>>)
+    try {
+      const res = await sm.readFile(info.id, '/repo/a.txt')
+      expect(res).toEqual({ available: true, contents: 'body' })
+      // mtime floored to whole ms — the SDK compares against this.
+      expect(statMock).toHaveBeenCalledWith('/repo/a.txt')
+      expect(mockHandles[0].seedReadState).toHaveBeenCalledWith('/repo/a.txt', 12345)
+    } finally {
+      statMock.mockReset()
+    }
+  })
+
+  it('readFile() does not seed when the read is denied or missing', async () => {
+    const info = sm.create({})
+    mockHandles[0].readFile.mockResolvedValueOnce({ available: false })
+    const res = await sm.readFile(info.id, '/repo/secret.txt')
+    expect(res).toEqual({ available: false })
+    expect(mockHandles[0].seedReadState).not.toHaveBeenCalled()
+  })
+
+  it('readFile() still returns contents when seeding fails (best-effort)', async () => {
+    const info = sm.create({})
+    mockHandles[0].readFile.mockResolvedValueOnce({ available: true, contents: 'body' })
+    const statMock = nodeFs.stat as MockedFunction<typeof nodeFs.stat>
+    statMock.mockRejectedValueOnce(new Error('ENOENT'))
+    try {
+      const res = await sm.readFile(info.id, '/repo/a.txt')
+      expect(res).toEqual({ available: true, contents: 'body' })
+      expect(mockHandles[0].seedReadState).not.toHaveBeenCalled()
+    } finally {
+      statMock.mockReset()
+    }
+  })
+
+  // --- tool-profile (per-session built-in tool surface) ---
+
+  it('captures create-body tool fields into the session tool profile and projects them at spawn', async () => {
+    const info = sm.create({ tools: ['Bash'], allowedTools: ['Read'] })
+    expect(sm.getToolProfile(info.id)).toEqual({ tools: ['Bash'], allowedTools: ['Read'] })
+    expect(mockHandles[0].options.tools).toEqual(['Bash'])
+    expect(mockHandles[0].options.allowedTools).toEqual(['Read'])
+  })
+
+  it('setToolProfile()/getToolProfile() round-trip a RAM-only profile and clear it with undefined', async () => {
+    const info = sm.create({})
+    expect(sm.getToolProfile(info.id)).toBeUndefined()
+    await sm.setToolProfile(info.id, { tools: ['Edit'], toolAliases: { Bash: 'mcp__ws__bash' } })
+    expect(sm.getToolProfile(info.id)).toEqual({ tools: ['Edit'], toolAliases: { Bash: 'mcp__ws__bash' } })
+    await sm.setToolProfile(info.id, undefined)
+    expect(sm.getToolProfile(info.id)).toBeUndefined()
+  })
+
+  it('create-body passthrough wins over a session tool profile at spawn', async () => {
+    const info = sm.create({ tools: ['Edit'] }) // body passes tools through
+    await sm.setToolProfile(info.id, { tools: ['Bash'] }) // later RAM profile
+    const cleared = await sm.clear(info.id)
+    expect(cleared).toBeDefined()
+    const newHandle = mockHandles[mockHandles.length - 1]
+    // /clear rebuilds opts from the session/meta, so the body-only passthrough
+    // is gone and the RAM tool profile carries — projected as 'Bash'.
+    expect(newHandle.options.tools).toEqual(['Bash'])
+  })
+
+  it('clear() carries the RAM tool profile onto the fresh session spawn', async () => {
+    const info = sm.create({})
+    await sm.setToolProfile(info.id, { tools: ['Edit'], disallowedTools: ['WebFetch'] })
+    const cleared = await sm.clear(info.id)
+    expect(cleared).toBeDefined()
+    const newHandle = mockHandles[mockHandles.length - 1]
+    expect(newHandle.options.tools).toEqual(['Edit'])
+    expect(newHandle.options.disallowedTools).toEqual(['WebFetch'])
+  })
+
+  it('setToolProfile() requires a live session', async () => {
+    await expect(sm.setToolProfile('nope', { tools: ['Bash'] })).rejects.toThrow('not found')
+  })
+
   it('autoGenerateTitle persists a generated title on an untitled session, exactly once', async () => {
     const info = sm.create({ cwd: '/tmp' })
     const handle = mockHandles[mockHandles.length - 1]
@@ -2673,6 +2775,32 @@ describe('SessionManager', () => {
     const info = sm.create({ title: 'keep me' })
     const updated = sm.rename(info.id, '   ')
     expect(updated.title).toBeUndefined()
+  })
+
+  it('rename() also writes the manual title into the CLI transcript (best-effort renameSession)', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    mockRenameSession.mockClear()
+    const renamed = sm.rename(info.id, '  My Title  ')
+    expect(renamed.title).toBe('My Title')
+    await tick()
+    expect(mockRenameSession).toHaveBeenCalledWith(info.id, 'My Title', { dir: '/tmp' })
+  })
+
+  it('rename() does not write an empty/cleared title to the CLI transcript', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    mockRenameSession.mockClear()
+    sm.rename(info.id, '   ')
+    await tick()
+    expect(mockRenameSession).not.toHaveBeenCalled()
+  })
+
+  it('rename() keeps the app-level rename even when transcript persistence fails', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    mockRenameSession.mockClear()
+    mockRenameSession.mockRejectedValueOnce(new Error('boom'))
+    const renamed = sm.rename(info.id, 'Still Works')
+    expect(renamed.title).toBe('Still Works')
+    await tick()
   })
 
   it('setPermissionMode() to a non-plan mode forwards "default" to the SDK (canUseTool owns it)', async () => {

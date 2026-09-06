@@ -239,6 +239,15 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.readFile(path, options)
   }
 
+  /** Seed the CLI's readFileState cache with a path+mtime entry so a later
+   *  Edit on it won't fail "file not read yet" after the model's Read was
+   *  trimmed from context. The SDK skips the seed if the file changed on disk
+   *  since `mtime` (floored ms), preserving the must-re-read guarantee after
+   *  an external edit. */
+  seedReadState(path: string, mtime: number): Promise<void> {
+    return this.query.seedReadState(path, mtime)
+  }
+
   /** Auto-generated session title (SDK `generate_session_title` control
    *  request). `persist: true` writes the title into the CLI transcript so
    *  it survives `--resume`. The SDK resolves to the title STRING (it

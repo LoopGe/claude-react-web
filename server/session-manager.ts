@@ -23,6 +23,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import type { ProcessExitInfo } from './process-monitor.js'
 import { randomUUID } from 'node:crypto'
+import { stat } from 'node:fs/promises'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
@@ -32,6 +33,11 @@ import type { AgentDefinitionStore } from './agent-definition-store.js'
 import { RecapManager } from './recap.js'
 import { summarizeForCompact } from './compact-summary.js'
 import type { SessionActivity, SessionPhase, SessionRecap } from './session-types.js'
+import {
+  applyToolProfile,
+  extractToolProfile,
+  type SessionToolProfile,
+} from '../shared/tool-profile.js'
 import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
 import { tryCaptureGitHead, invalidateStatusCache } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
@@ -1661,6 +1667,9 @@ export class SessionManager {
       undefined, // evictingSource
       undefined, // promptUuids
       opts?.replacesSource,
+      // Carry the parent's tool-surface profile so a fork doesn't silently
+      // drop a configured built-in tool set (RAM-only, like skillOverride).
+      live?.toolProfile,
     )
     if (parentOverride && parentOverride.kind !== 'inherit') {
       // Best-effort — the dynamic flag-layer pin matters mostly when the
@@ -2072,6 +2081,12 @@ export class SessionManager {
      *  group slot even when the group is at `maxGroupSize` — X leaves the
      *  group, so it never overflows. Undefined for every other caller. */
     replacesSource?: boolean,
+    /** Per-session tool-surface profile to carry onto this spawn (RAM-only,
+     *  like skillOverride): set by /clear and fork so a configured tool
+     *  surface survives those respawns. On a fresh create, the create-body
+     *  passthrough is captured instead (see extractToolProfile). Undefined =
+     *  no default tool surface beyond whatever the create body set. */
+    toolProfile?: SessionToolProfile,
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
@@ -2156,6 +2171,10 @@ export class SessionManager {
       createdAt,
       lastActivityAt: Date.now(),
       ...metaSnapshot,
+      // Carry a spawn-scoped tool-surface profile. A caller-supplied profile
+      // (/clear, fork) wins; otherwise capture any create-body passthrough so
+      // it too survives a later /clear. RAM-only — see Session.toolProfile.
+      toolProfile: toolProfile ?? extractToolProfile(fullOpts),
       // For group sessions, metaSnapshot.model was set to the resolved group
       // main by the model-group block above (and metaSnapshot.modelGroupId to
       // the group id, or cleared by self-heal). For non-group sessions the
@@ -2339,7 +2358,9 @@ export class SessionManager {
       session.onUserDialog = fullOpts.onUserDialog as Session['onUserDialog']
     }
 
-    const sdkOptions = { ...applySkillPolicyToOptions(fullOpts, skillOverride) } as Options & { provider?: string }
+    const sdkOptions = {
+      ...applyToolProfile(applySkillPolicyToOptions(fullOpts, skillOverride), session.toolProfile),
+    } as Options & { provider?: string }
     delete sdkOptions.provider
     // Strip the app-level plugin selection so it doesn't reach the SDK:
     // Options.enabledPlugins is a {[k:string]: string[]|boolean|object} MAP
@@ -2981,6 +3002,9 @@ export class SessionManager {
         // clear() must do the same or Y silently falls back to the global
         // (possibly permissive) policy.
         skillOverride: s.skillOverride,
+        // Carry X's tool-surface profile onto Y the same way (tool surface is
+        // spawn-time, so a fresh spawn would lose a configured tool set).
+        toolProfile: s.toolProfile,
       }
 
       // Spawn a fresh session Y under a new id, same settings, no `resume:`.
@@ -3044,6 +3068,9 @@ export class SessionManager {
         // group only grows transiently until swapSession / session-removed
         // evicts X). Without this, a full group flashes Y under "Ungrouped".
         true,
+        undefined, // promptUuids
+        undefined, // replacesSource
+        settings.toolProfile,
       )
       const newYId = newY.id
 
@@ -3367,6 +3394,11 @@ export class SessionManager {
       live.title = trimmed
       live.lastActivityAt = Date.now()
       this.persist(live)
+      // Best-effort: mirror the manual title into the provider's on-disk
+      // transcript so it survives an external `claude --resume` (which prefers
+      // the transcript title over this app's metadata). Fire-and-forget — the
+      // metadata rename is authoritative and must not block on a failed write.
+      void this.persistTitleToTranscript(live.provider, id, trimmed, live.cwd)
       return this.info(live)
     }
     if (!this.store) throw new HttpError(404, `session ${id} not found`)
@@ -3376,7 +3408,30 @@ export class SessionManager {
     this.store.upsert(nextMeta)
     const info = this.infoFromMeta(nextMeta)
     this.broadcastGlobal({ kind: 'update', session: info })
+    void this.persistTitleToTranscript(meta.provider, id, trimmed, meta.cwd)
     return info
+  }
+
+  /** Best-effort durability: append a custom-title entry to the provider's
+   *  on-disk transcript (Provider.renameSession / SDK renameSession) so a
+   *  manual retitle survives a resume done outside this app. A blank title
+   *  (title cleared) is intentionally NOT written — dropping the custom-title
+   *  entry would clobber a transcript title the user may still want. Any
+   *  failure is swallowed: the app-level metadata title remains the source of
+   *  truth and the rename itself already succeeded. */
+  private async persistTitleToTranscript(
+    providerName: string | undefined,
+    id: string,
+    title: string | undefined,
+    cwd?: string,
+  ): Promise<void> {
+    if (!providerName || !title) return
+    try {
+      const provider = this.providers.get(providerName)
+      await provider?.renameSession?.(id, title, cwd ? { dir: cwd } : undefined)
+    } catch (err) {
+      log.warn(`[session ${id}] renameSession (transcript title) failed; app title kept:`, err)
+    }
   }
 
   async setPermissionMode(id: string, mode: PermissionMode): Promise<SessionInfo> {
@@ -4049,6 +4104,25 @@ export class SessionManager {
     return this.info(s)
   }
 
+  /** Read the session's current RAM tool-surface profile. Undefined = inherit
+   *  the SDK's / global defaults (create-body passthrough already applied). */
+  getToolProfile(id: string): SessionToolProfile | undefined {
+    return this.requireLive(id).toolProfile
+  }
+
+  /** Pin (or clear, with undefined) the session's tool-surface profile. Tool
+   *  surface is spawn-time-only (not a Settings key), so the change takes
+   *  effect on the next clear() or fork() respawn — which carry the profile —
+   *  not mid-turn. RAM-only like skillOverride: dropped when the live query is
+   *  unloaded and a session is resumed from disk. */
+  async setToolProfile(id: string, profile: SessionToolProfile | undefined): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    s.toolProfile = profile
+    s.lastActivityAt = Date.now()
+    log.info(`[session ${id}] tool profile set:`, profile)
+    return this.info(s)
+  }
+
   /** Send the session's currently-effective skill policy to the SDK via
    *  applyFlagSettings({ skillOverrides: <map> }). The map is built from the
    *  set of skills actually available to this cwd (user + project), so the
@@ -4268,7 +4342,26 @@ export class SessionManager {
       'supportsReadFile',
     )
     const raw = await this.timeSdkControl(id, 'readFile', () => fn(path, opts))
-    return coerceReadFileOutput(raw)
+    const result = coerceReadFileOutput(raw)
+    // Seed the CLI's readFileState cache so a subsequent Edit doesn't fail
+    // "file not read yet" once the model's own Read has been trimmed from
+    // context (compact/snip). Stat for the file's mtime (floored to ms) and
+    // hand it to the SDK — it skips the seed if the file changed on disk
+    // since that mtime, which keeps the must-re-read-after-external-edit
+    // guarantee. Best-effort and provider-optional: any stat/seed failure
+    // just skips seeding, never failing the read itself.
+    // Seed only a COMPLETE read (truncated prefix would mark a path as fully
+    // "read" when the model only ever saw the first N bytes, letting a later
+    // Edit proceed from incomplete knowledge).
+    if (result.available && !result.truncated && typeof s.handle.seedReadState === 'function') {
+      try {
+        const st = await stat(path)
+        await s.handle.seedReadState(path, Math.floor(st.mtimeMs))
+      } catch (err) {
+        log.debug(`[session ${id}] seedReadState skipped for ${path}:`, err)
+      }
+    }
+    return result
   }
 
   /** List subagent ids persisted under this session's transcript dir (SDK

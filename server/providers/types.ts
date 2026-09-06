@@ -198,6 +198,13 @@ export interface ProviderSessionHandle {
    *  Read-permission rules inside the SDK. `path` is relative to cwd or
    *  absolute; resolves to `{ contents }` or null (denied / missing). */
   readFile?(path: string, options?: { maxBytes?: number; encoding?: 'utf-8' | 'base64' }): Promise<unknown>
+  /** Seed the CLI's readFileState cache with a path+mtime entry (SDK
+   *  Query.seedReadState). Used after this app surfaces a file read (via the
+   *  read-file route) so a later Edit won't fail "file not read yet" once the
+   *  model's own Read has been trimmed from context (compact/snip). The SDK
+   *  skips the seed if the file changed on disk since the given mtime.
+   *  Optional: providers that lack it simply skip seeding. */
+  seedReadState?(path: string, mtime: number): Promise<void>
   /** List subagent ids recorded on disk for this session (SDK standalone
    *  listSubagents — scans `subagents/agent-<id>.jsonl` under the session's
    *  project transcript dir). Empty when the session has no subagents. */
@@ -253,4 +260,11 @@ export interface AgentProvider {
   readHistoryPage?(id: string, opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string }): Promise<HistoryPage>
   readHistoryEntries?(id: string, opts: { afterUuid?: string }): Promise<HistoryEntry[]>
   hasTranscript?(meta: SessionMeta): Promise<boolean>
+  /** Rename a session by appending a custom-title entry to its provider-side
+   *  (on-disk) transcript (SDK renameSession), so the title survives a resume
+   *  performed outside this app — the CLI transcript title takes precedence
+   *  on such a resume. `dir` scopes the project-dir scan; omit to search all
+   *  projects. Optional: providers that can't retitle transcripts omit it and
+   *  the host keeps its own metadata title as the source of truth. */
+  renameSession?(sessionId: string, title: string, opts?: { dir?: string }): Promise<unknown>
 }

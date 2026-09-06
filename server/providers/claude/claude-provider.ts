@@ -2,6 +2,7 @@ import {
   getSessionInfo,
   listSessions,
   query,
+  renameSession as sdkRenameSession,
   type Options,
   type PermissionMode,
   type SDKMessage,
@@ -547,6 +548,14 @@ export class ClaudeProvider implements AgentProvider {
   async hasTranscript(meta: SessionMeta): Promise<boolean> {
     const info = await getSessionInfo(meta.id, meta.cwd ? { dir: meta.cwd } : undefined)
     return !!info
+  }
+
+  /** Append a custom-title entry to the session's on-disk transcript (SDK
+   *  renameSession), so a manual retitle also survives an external
+   *  `claude --resume` — which otherwise prefers the CLI's own transcript
+   *  title over this app's metadata. `dir` scopes the project-dir scan. */
+  async renameSession(sessionId: string, title: string, opts?: { dir?: string }): Promise<void> {
+    await sdkRenameSession(sessionId, title, opts?.dir ? { dir: opts.dir } : undefined)
   }
 
   private toResumable(info: SDKSessionInfo): ResumableSession {

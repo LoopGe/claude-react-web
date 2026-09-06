@@ -25,6 +25,7 @@ import type { ProviderRegistry } from './providers/registry.js'
 import type { ProviderSessionHandle } from './providers/types.js'
 import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../shared/hooks.js'
 import type { SessionSkillOverride } from '../shared/skills.js'
+import type { SessionToolProfile } from '../shared/tool-profile.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
 import type { CliNotification, WsMessageConsumed, WsMessagesWithdrawn } from '../shared/ws-protocol.js'
@@ -514,6 +515,13 @@ export interface Session {
    *     and the global policy is re-applied. Pin-and-forget is not the
    *     intended UX — overrides are scoped to "the current run". */
   skillOverride?: SessionSkillOverride
+  /** Per-session tool-surface profile (tools / allowedTools / disallowedTools
+   *  / toolAliases / toolConfig). RAM-only like skillOverride — retitles a
+   *  session's built-in tool surface at spawn (these are spawn-time Options,
+   *  not runtime Settings). Applied on create / clear / fork; dropped on
+   *  resume-from-disk so the (possibly out-of-date) profile never pins a
+   *  session forever. */
+  toolProfile?: SessionToolProfile
   /** Per-session override for the pinned "current question" header.
    *  Undefined = inherit the global config default; a boolean pins it.
    *  Persisted via SessionMeta and mirrored into SessionInfo. Pure UI
