@@ -215,6 +215,61 @@
   }
 }
 
+/* Generic grid-clip entrance — a faithful generalization of the
+   `.tool-card-result` reveal above, for any single row whose mount would
+   otherwise snap the surrounding box taller. The wrapper is a 1-row grid;
+   the `-inner` child holds `min-height:0` + `overflow:hidden` so animating
+   the track from `0fr→1fr` collapses/expands the row's REAL box height
+   (padding + border included, since they live on `-inner`), smoothly sliding
+   content below rather than jumping it.
+
+   The animation lives only on the gated `-entering` modifier (GridClipEnter
+   sets it from a parent `useEnterOnArrival` gate), so the clip plays exactly
+   once on a genuine arrival and NEVER replays when a Virtuoso-virtualized
+   transcript remounts the row on scroll-back. Under reduced-motion the
+   animation is off and the base track stays `1fr`, so the row shows in full. */
+.grid-clip-enter {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+.grid-clip-enter.grid-clip-entering {
+  animation: grid-clip-reveal var(--motion-duration-moderate) var(--motion-ease-enter);
+}
+.grid-clip-enter-inner {
+  min-height: 0;
+}
+/* `overflow:hidden` is needed ONLY while the track is collapsing/expanding
+   (so the content clips to the growing box instead of sticking out). Once
+   the reveal ends the row is at full height, so the clip is removed —
+   keeping `overflow:hidden` permanently here would cut off the contained
+   button's keyboard :focus-visible outline, which extends ~3px outside the
+   button's box. */
+.grid-clip-enter.grid-clip-entering .grid-clip-enter-inner {
+  overflow: hidden;
+}
+@keyframes grid-clip-reveal {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .grid-clip-enter.grid-clip-entering {
+    animation: none;
+  }
+  /* With the reveal animation disabled the track never collapses, so the
+     clip is not needed — and it would only clip the contained button's
+     focus ring during the brief window the `-entering` class is applied.
+     Keep the box unclipped so reduced-motion users never lose the outline. */
+  .grid-clip-enter.grid-clip-entering .grid-clip-enter-inner {
+    overflow: visible;
+  }
+}
+
 /* File-path title block — bold filename + muted dir suffix.
  *
  * Uses inline-flex so a row of file paths in the same card body wraps

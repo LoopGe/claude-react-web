@@ -1338,7 +1338,7 @@
     animation: none;
   }
 }
-/* New-message entrance animation ("blur + rise"). Applied for one play to
+/* New-message entrance animation ("rise"). Applied for one play to
    the item wrapper of a genuinely-new live arrival (see MessageList's gate),
    then stripped on animationend so scroll re-mounts don't replay it. The
    class lives on .virtuoso-item-wrapper ?animating the wrapper (not the
@@ -1369,15 +1369,13 @@
        the content bottom, so scrollHeight never grows and no phantom
        scrollbar appears. */
     transform: translateY(calc(-1 * var(--motion-distance-md)));
-    filter: blur(6px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
-    filter: blur(0);
   }
 }
-/* Respect reduced-motion: appear instantly, no transform/blur. */
+/* Respect reduced-motion: appear instantly, no transform. */
 @media (prefers-reduced-motion: reduce) {
   .virtuoso-item-wrapper.msg-enter {
     animation: none;

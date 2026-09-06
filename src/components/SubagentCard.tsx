@@ -12,6 +12,7 @@ import { useBackgroundTool } from '../hooks/useBackgroundTool'
 import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
 import { formatElapsed } from '../utils/format'
 import { BackgroundToolButton, ToolResultSection } from './ToolCard'
+import { GridClipEnter } from './GridClipEnter'
 import { IconCheck, IconCircleDot, IconAlertTriangle, IconChevronRight, IconExternalLink } from './icons/ToolIcons'
 
 interface Props {
@@ -43,6 +44,18 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
   // timer stops and elapsed freezes at the last-known endedAt — the
   // completion signal will refresh endedAt when it lands.
   const isRunning = status === 'running' || status === 'background'
+  // Arrival gates for the two mid-turn rows that mount/dismount while the
+  // card is live (the synchronous backgournd-action row and the ~30s
+  // progress summary line). `useEnterOnArrival` arms each only on a genuine
+  // null → non-null transition during THIS mounted card's lifetime — not on
+  // a Virtuoso scroll-back remount, where `record`/`progressSummary` are
+  // already present and the row would otherwise replay its grid-clip
+  // entrance every time the transcript scrolls through the card. Mirrors
+  // the existing `resultEntering` gate above.
+  const showActions = record != null && status === 'running' && !isAsync && backgroundTool
+  const showProgress = !!record?.progressSummary && isRunning
+  const actionsEntering = useEnterOnArrival(showActions ? record : null)
+  const progressEntering = useEnterOnArrival(showProgress ? record?.progressSummary : null)
 
   // Tick once a second while running so the elapsed display stays fresh.
   // Stops once the record is no longer live (pending/done/interrupted/
@@ -120,23 +133,27 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
           is absence of data, not evidence the subagent is live — an action
           must not gate on it. Clicking detaches exactly this subagent via
           POST /tasks/background { toolUseId } and the turn continues. */}
-      {record != null && status === 'running' && !isAsync && backgroundTool && (
-        <div className="subagent-card-actions">
-          <BackgroundToolButton
-            onClick={() => backgroundTool(toolUseId)}
-            title="Background this subagent — the turn continues while it runs in the background task list (Alt+B backgrounds every running task)"
-            ariaLabel="Background this subagent"
-          />
-        </div>
+      {showActions && (
+        <GridClipEnter entering={actionsEntering}>
+          <div className="subagent-card-actions">
+            <BackgroundToolButton
+              onClick={() => backgroundTool(toolUseId)}
+              title="Background this subagent — the turn continues while it runs in the background task list (Alt+B backgrounds every running task)"
+              ariaLabel="Background this subagent"
+            />
+          </div>
+        </GridClipEnter>
       )}
       {/* Present-tense progress summary (agentProgressSummaries —
           task_progress.summary, ~every 30s). Only shown while the subagent
           is live; the record clears it when the task reaches a terminal
           state, so a finished card doesn't show stale progress text. */}
-      {record?.progressSummary && isRunning && (
-        <div className="subagent-card-progress" title={record.progressSummary}>
-          {record.progressSummary}
-        </div>
+      {showProgress && (
+        <GridClipEnter entering={progressEntering}>
+          <div className="subagent-card-progress" title={record?.progressSummary ?? ''}>
+            {record?.progressSummary}
+          </div>
+        </GridClipEnter>
       )}
       {result && <ToolResultSection result={result} entering={resultEntering} />}
     </div>

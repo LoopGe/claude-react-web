@@ -125,6 +125,28 @@
   border-radius: var(--radius-sm);
   background: var(--bg);
   border: 1px solid var(--border);
+  /* One-shot entrance on insertion (a task appears, or a task completing
+     crosses the active→finished boundary and remounts here). The TasksPanel
+     body is a plain non-virtualized scroll list, so a mount animation cannot
+     replay on a Virtuoso-style scroll-back — it plays once per row insert
+     and stays put on status updates. Upward (negative Y) so the row slides
+     into place without growing the panel's scrollHeight. */
+  animation: tasks-row-in var(--motion-duration-moderate) var(--motion-ease-enter);
+}
+@keyframes tasks-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--motion-distance-sm)));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tasks-row {
+    animation: none;
+  }
 }
 
 .tasks-row-terminal { opacity: 0.7; }

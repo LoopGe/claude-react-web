@@ -1417,6 +1417,23 @@
   /* Subtle accent glow so the panel doesn't feel like just another
      divider — it's actionable context the user should glance at. */
   border-top: 2px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  /* One-shot entrance when the panel mounts (a visible task list appears at
+     turn start). Plays per insertion only — the panel is a single non-
+     virtualized sticky element, so there is no scroll-back remount to worry
+     about. Transform/opacity only: sticky positioning is unaffected and no
+     layout-height reflow is triggered. The shift is UPWARD (negative Y) so the
+     panel slides down into its final spot without growing scrollHeight. */
+  animation: todo-panel-in var(--motion-duration-moderate) var(--motion-ease-enter);
+}
+@keyframes todo-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--motion-distance-sm)));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .todo-panel-header {
   display: flex;
@@ -1577,6 +1594,10 @@
   .todo-item.todo-item-pressing::after {
     animation: none;
     opacity: 0;
+  }
+  /* Entrance is decorative — reduced-motion users get the panel instantly. */
+  .todo-panel {
+    animation: none;
   }
 }
 .todo-icon {
