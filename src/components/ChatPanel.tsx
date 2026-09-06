@@ -422,11 +422,19 @@ export const ChatPanel = memo(function ChatPanel({
     const description = recentMessagesDescription(messages)
     regeneratingRef.current = true
     setRegenerating(true)
+    // Generous timeout: the server runs an LLM call for the title, and the
+    // session-update broadcast will still rename the header even if this
+    // request times out — so a short timeout would show a false error.
     void api
-      .post(`/sessions/${session.id}/title`, { force: true, description })
-      .then(() => {
+      .post<{ session: { title?: string } }>(`/sessions/${session.id}/title`, { force: true, description }, { timeoutMs: 60_000 })
+      .then((res) => {
         regeneratingRef.current = false
         setRegenerating(false)
+        // Only claim success when a new non-empty title actually appeared; an
+        // empty LLM result leaves the title unchanged (server returns 200),
+        // so reporting "regenerated" would be a false success.
+        const newTitle = res.session?.title
+        if (newTitle) toast.success(`Title regenerated: ${newTitle}`)
       })
       .catch(() => {
         regeneratingRef.current = false
@@ -803,6 +811,9 @@ export const ChatPanel = memo(function ChatPanel({
               regenerateTitle()
             }}
           >
+            {regenerating && <span className="chat-panel-title-spinner" aria-label="regenerating title" />}
+            {/* Keep the title text rendered while regenerating so the header's
+                width doesn't collapse and nudge sibling controls. */}
             {session.title ?? session.id.slice(0, 8)}
           </span>
         </Tooltip>

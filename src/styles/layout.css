@@ -345,9 +345,20 @@ body.resizing-col .app {
   background: var(--btn-hover-bg);
 }
 .chat-panel-title.regenerating {
-  opacity: 0.55;
   pointer-events: none;
   cursor: progress;
+}
+/* In-title spinner shown while the LLM renames the session, so the click
+   always gets visible feedback even when generation is quick. */
+.chat-panel-title-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: var(--radius-circle);
+  animation: msg-sending-spin 0.8s linear infinite;
+  vertical-align: middle;
 }
 
 /* Slot pill — same numeric label as the sidebar card, so users can
