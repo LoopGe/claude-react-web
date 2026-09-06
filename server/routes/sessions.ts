@@ -11,6 +11,7 @@ import { isUserSelectablePermissionMode, permissionModeList } from '../permissio
 import { formatHooksValidationErrors, toSdkHooksSettings, validateSessionHooksConfig } from '../../shared/hooks.js'
 import { coerceThinkingSetting } from '../../shared/session-info.js'
 import { validateSandboxSetting } from '../../shared/sandbox.js'
+import { coerceToolProfile } from '../../shared/tool-profile.js'
 import { createLogger } from '../log.js'
 
 const log = createLogger('http')
@@ -119,6 +120,41 @@ function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Rec
     const v = rest[name]
     if (v !== undefined && typeof v !== 'boolean') {
       return { ok: false, error: `${name} must be a boolean` }
+    }
+  }
+  // Tool-surface fields are spawn-time SDK Options. Validate shape so a
+  // malformed value (e.g. tools: "Bash") is a 400 instead of leaking into the
+  // CLI arg builder. `tools` is special-cased because the SDK accepts BOTH a
+  // string[] and a `{ type: 'preset', preset: 'claude_code' }` object — the
+  // per-session coerce only knows the string[] form, which would wrongly
+  // reject the valid preset object.
+  const toolFields = ['tools', 'allowedTools', 'disallowedTools', 'toolAliases', 'toolConfig'] as const
+  if (toolFields.some((k) => rest[k] !== undefined)) {
+    const tools = rest.tools
+    if (tools !== undefined) {
+      const t = tools as { type?: unknown; preset?: unknown }
+      // Only the single documented preset value is accepted; anything else
+      // shaped like {type:'preset'} (omitted/unknown preset) is rejected here
+      // rather than forwarding a spawn-time failure to the SDK.
+      const isPreset = typeof tools === 'object' && tools !== null
+        && t.type === 'preset' && t.preset === 'claude_code'
+      if (!isPreset && (!Array.isArray(tools) || tools.some((x) => typeof x !== 'string'))) {
+        return { ok: false, error: 'tools must be a string[] or { type: "preset", preset: "claude_code" }' }
+      }
+    }
+    // The remaining fields ride the same strict coerce as the per-session
+    // /tool-profile route (string[] vars + plain-object maps)
+    const profile = coerceToolProfile({
+      allowedTools: rest.allowedTools,
+      disallowedTools: rest.disallowedTools,
+      toolAliases: rest.toolAliases,
+      toolConfig: rest.toolConfig,
+    })
+    if (profile === null) {
+      return {
+        ok: false,
+        error: 'allowedTools/disallowedTools must be string[]; toolAliases/toolConfig must be plain objects',
+      }
     }
   }
   const maxTurns = rest.maxTurns
@@ -570,6 +606,39 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     const body = await safeJson<{ settings?: Settings }>(c.req)
     const info = await sm.applySettings(c.req.param('id'), body.settings ?? {})
     return c.json({ session: info })
+  })
+
+  // Read the session's RAM tool-surface profile (tools / allowedTools /
+  // disallowedTools / toolAliases / toolConfig). Undefined = inherit defaults.
+  app.get('/sessions/:id/tool-profile', async (c) => {
+    const toolProfile = sm.getToolProfile(c.req.param('id'))
+    return c.json({ toolProfile })
+  })
+
+  // Set (or clear, with an empty body) the session's tool-surface profile.
+  // Tool surface is spawn-time-only, so it takes effect on the next /clear or
+  // fork respawn (both carry the profile) — NOT mid-turn.
+  app.put('/sessions/:id/tool-profile', async (c) => {
+    const body = await safeJson<{ toolProfile?: unknown }>(c.req)
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({ error: 'body must be a JSON object' }, 400)
+    }
+    const profile = coerceToolProfile(body.toolProfile)
+    // Only a malformed known field is a 400. An empty/absent payload (coerce
+    // returns undefined) CLEARS the profile back to defaults — distinct from
+    // null, which means an invalid value was supplied, not "nothing".
+    if (profile === null) {
+      return c.json(
+        { error: 'toolProfile must be a subset of { tools, allowedTools, disallowedTools, toolAliases, toolConfig } with well-formed values' },
+        400,
+      )
+    }
+    if (profile === undefined) {
+      const cleared = await sm.setToolProfile(c.req.param('id'), undefined)
+      return c.json({ session: cleared, toolProfile: undefined })
+    }
+    const info = await sm.setToolProfile(c.req.param('id'), profile)
+    return c.json({ session: info, toolProfile: profile })
   })
 
   // Toggle fast mode (research-preview Opus speedup). Forwards the intent to

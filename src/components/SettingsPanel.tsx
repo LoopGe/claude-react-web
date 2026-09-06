@@ -29,6 +29,7 @@ import { UsagePanel } from './UsagePanel'
 import { SessionProfileSelect } from './SessionProfileSelect'
 import { Overlay } from './Overlay'
 import { AgentDefinitionsSection } from './agent-definitions/AgentDefinitionsSection'
+import ToolsTab from './tools/ToolsTab'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
 
 // MarketplaceTab and McpInstaller are heavy modal-within-modal
@@ -44,7 +45,7 @@ import { formatTokens, formatJson } from '../utils/format'
 import { pluginTagOf } from '../utils/text'
 import type { ContextUsage } from '../hooks/useChatStream'
 
-type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents'
+type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents' | 'tools'
 
 interface Props {
   session: SessionInfo
@@ -840,6 +841,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     { key: 'mcp', label: 'MCP Servers' },
     { key: 'usage', label: 'Usage' },
     { key: 'agents', label: 'Agents' },
+    { key: 'tools', label: 'Tools' },
   ]
 
   const panelBodyRef = useRef<HTMLDivElement | null>(null)
@@ -1557,6 +1559,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           remove={(n) => void agentDefs.remove(n)}
           refresh={() => void agentDefs.refresh()}
         />
+      )}
+
+      {tab === 'tools' && (
+        <ToolsTab sessionId={session.id} />
       )}
         </div>
       </div>
