@@ -797,8 +797,34 @@
   min-height: 40px;
   max-height: 180px;
   resize: none;
-  transition: max-height var(--motion-duration-base) var(--motion-ease-standard),
-              min-height var(--motion-duration-base) var(--motion-ease-standard);
+  transition:
+    max-height var(--motion-duration-base) var(--motion-ease-standard),
+    min-height var(--motion-duration-base) var(--motion-ease-standard),
+    /* Focus glow. The soft box-shadow + accent border below are the single
+       focus indicator; animating them eases the ring in instead of a hard
+       snap. box-shadow is paint-only — no layout reflow on focus. */
+    border-color var(--motion-duration-moderate) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-moderate) var(--motion-ease-standard);
+}
+/* One animated focus indicator for the composer textarea: accent border
+   (also set by `.textarea:focus`) plus a soft translucent accent glow that
+   fades in/out. The global `:focus-visible` offset outline is suppressed so
+   keyboard focus shows this single ring instead of a redundant second one
+   around the border. */
+.chat-composer textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Focus must stay clearly visible — just without the fade. Drop the
+     border/box-shadow transition so the glow appears instantly on focus
+     (keep the functional expand/collapse transitions). */
+  .chat-composer textarea {
+    transition:
+      max-height var(--motion-duration-base) var(--motion-ease-standard),
+      min-height var(--motion-duration-base) var(--motion-ease-standard);
+  }
 }
 .chat-composer-actions { display: flex; flex-direction: column; gap: 6px; }
 /* The send/interrupt button always stretches to fill the actions column
