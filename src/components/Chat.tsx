@@ -43,6 +43,7 @@ import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
 import { usePhaseDwell } from '../hooks/usePhaseDwell'
 import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
+import { RunAsAgentControl } from './agent-definitions/RunAsAgentControl'
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog, type QuestionDraft } from './QuestionDialog'
@@ -366,6 +367,8 @@ export const Chat = memo(function Chat({
   // section below) because it gates the recap/pinned presence hooks, which
   // hide those overlays while search is open so the search bar isn't covered.
   const [searchOpen, setSearchOpen] = useState(false)
+  // In-session "run a custom agent" delegation control open state.
+  const [agentRunOpen, setAgentRunOpen] = useState(false)
   // Effective UI prefs: a per-session override (session.<field>) wins,
   // otherwise the global default (globalPrefs.<field>, server-backed) applies.
   // Computed inline so a SettingsPanel override or a global-settings save
@@ -2080,7 +2083,20 @@ export const Chat = memo(function Chat({
           disabled={session.terminated || !session.running}
           onSetWindow={commitWindow}
         />
+        <button
+          type="button"
+          className="btn composer-aux-btn"
+          title="Run an enabled custom agent with a task"
+          onClick={() => setAgentRunOpen(true)}
+          disabled={session.terminated || !session.running}
+        >
+          Run as agent
+        </button>
       </div>
+
+      {agentRunOpen && (
+        <RunAsAgentControl sessionId={session.id} onClose={() => setAgentRunOpen(false)} />
+      )}
 
       <Composer
       suggestion={stream.promptSuggestion}
