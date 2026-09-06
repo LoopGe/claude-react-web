@@ -45,6 +45,11 @@ import { Composer } from './Composer'
 import { ContextBar } from './ContextBar'
 import { RunAsAgentControl } from './agent-definitions/RunAsAgentControl'
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
+
+// The "Run as agent" delegation control is temporarily HIDDEN pending a UI
+// redesign (it rendered as an untidy composer button). The component + tests
+// stay; flip this back to `true` to restore the entry point.
+const SHOW_RUN_AS_AGENT = false
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog, type QuestionDraft } from './QuestionDialog'
 import { ElicitationDialog } from './ElicitationDialog'
@@ -2083,18 +2088,20 @@ export const Chat = memo(function Chat({
           disabled={session.terminated || !session.running}
           onSetWindow={commitWindow}
         />
-        <button
-          type="button"
-          className="btn composer-aux-btn"
-          title="Run an enabled custom agent with a task"
-          onClick={() => setAgentRunOpen(true)}
-          disabled={session.terminated || !session.running}
-        >
-          Run as agent
-        </button>
+        {SHOW_RUN_AS_AGENT && (
+          <button
+            type="button"
+            className="btn composer-aux-btn"
+            title="Run an enabled custom agent with a task"
+            onClick={() => setAgentRunOpen(true)}
+            disabled={session.terminated || !session.running}
+          >
+            Run as agent
+          </button>
+        )}
       </div>
 
-      {agentRunOpen && (
+      {SHOW_RUN_AS_AGENT && agentRunOpen && (
         <RunAsAgentControl sessionId={session.id} onClose={() => setAgentRunOpen(false)} />
       )}
 
