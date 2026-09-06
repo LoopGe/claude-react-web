@@ -814,7 +814,7 @@
 .chat-composer textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 @media (prefers-reduced-motion: reduce) {
   /* Focus must stay clearly visible — just without the fade. Drop the

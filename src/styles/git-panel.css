@@ -289,6 +289,10 @@
     animation: none;
     transition: none;
   }
+  /* Focus must stay visible, just without the fade — the glow snaps on. */
+  .git-commit-textarea {
+    transition: none;
+  }
 }
 
 
@@ -616,10 +620,17 @@
   font-size: 12px;
   line-height: 1.5;
   box-sizing: border-box;
+  /* Focus glow — same single animated indicator as the composer and side
+     drawer: accent border + soft accent glow that eases in. box-shadow is
+     paint-only, so no layout reflow on focus. */
+  transition:
+    border-color var(--motion-duration-moderate) var(--motion-ease-standard),
+    box-shadow var(--motion-duration-moderate) var(--motion-ease-standard);
 }
 .git-commit-textarea:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .git-commit-textarea:disabled {
   opacity: 0.6;
