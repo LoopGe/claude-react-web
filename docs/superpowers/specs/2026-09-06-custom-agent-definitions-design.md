@@ -106,7 +106,7 @@ display order).
 
 `AgentDefinitionStore extends JsonFileStore<StoredAgentDefinition>`:
 
-- `constructor(opts)` → `super(opts, 'agent-definitions.json', DEFAULT_DIR_NAME, 'composer-agents')`
+- `constructor(opts)` → `super(opts, 'agent-definitions.json', DEFAULT_DIR_NAME, 'agent-definitions')`
 - `getKey(def)` → `def.name`
 - `parseItems(raw)` → array; drops malformed entries defensively
 - `serializeForWrite(items)` → plain array (preserve order)
@@ -149,17 +149,31 @@ if (this.opts.agentStore) {
 }
 ```
 
-- `agentStore` is threaded into `ClaudeProviderOptions` (like `mpStore`), from
-  `cli.ts` → `app.ts` → provider construction.
+- `agentStore` is threaded **exactly along `mpStore`'s path** — not a direct
+  app→provider route:
+  `cli.ts` (instantiate) → `app.ts` (`opts.agentStore`, passed into the
+  `SessionManager` options, mirroring `mpStore` at app.ts:137) →
+  `session-manager.ts` `createDefaultProviders({ claudeBinary, mpStore,
+  onProcessExit, agentStore, … })` (session-manager.ts:477) → claude-provider
+  `ClaudeProviderOptions.agentStore` (mirroring `mpStore` at claude-provider.ts:182).
+  The route router receives the store separately, via `buildApiRouter`
+  (app.ts:215), so `server/routes/agent-definitions.ts` is mounted there.
 - This makes every session — create, resume, fork, respawn — expose all enabled
   custom agents as subagents automatically.
 
 ### Start-as-agent
 
 - `POST /sessions` accepts `agent?: string`; validated against the store (unknown
-  name → 400). Provider passes `agent` → `Options.agent`.
+  or disabled name → 400). Provider passes `agent` → `Options.agent`.
 - `snapshotMeta` captures `agent` onto `SessionMeta`, so resume/fork/re-spawn
-  re-apply it (same propagation as `model`/`thinking`).
+  re-apply it (same multi-point propagation as `model`/`thinking`: snapshotMeta
+  at session-manager.ts:982; `resumeOpts.agent = meta.agent` at :1241-1268;
+  forkOpts at :1545-1601).
+- **Resume/fork guard**: a start-as agent may have been deleted or disabled since
+  the session's meta was written. When resuming or forking, only set `agent` if
+  the name still exists **and** is enabled in the current store; otherwise drop
+  it and log a warning (resume as a normal session rather than point
+  `Options.agent` at an un-injected definition).
 - If spike #2 shows `Options.agent` does **not** carry the def's `model`
   /`permissionMode`/`effort`, mirror those fields into the create body
   (pre-fill from the def in NewSessionDialog).
@@ -169,7 +183,9 @@ if (this.opts.agentStore) {
 `GET /sessions/:id/agents` (`server/routes/sessions.ts:834`) returns
 `sm.supportedAgents()`. Regardless of spike #1's answer, server-side **union** the
 store's enabled definition names into the returned agent list so custom agents
-are always visible in the client's agent list.
+are always visible in the client's agent list. **De-dupe on name collision** with
+a built-in agent: the built-in entry wins; the custom definition is offered under
+a `custom:` namespace marker in the payload if colliding names are shown.
 
 ## 5. Client
 
@@ -212,8 +228,10 @@ are always visible in the client's agent list.
 
 - **Store layer**: corrupt/non-array/malformed entries dropped on `load()` (fail
   soft, spawn unaffected); store load failure → empty store.
-- **Route layer**: shape validation → 400; duplicate `name` → 409; unknown create
-  `agent` → 400.
+- **Route layer**: shape validation → 400; duplicate `name` → 409; unknown or
+  disabled create `agent` → 400.
+- **Resume/fork layer**: stored `agent` missing or disabled in the current store
+  → drop the selection + log a warning, never fail the resume/fork.
 - **Client form**: shared validator with routes; inline field errors; save blocked
   while invalid.
 
@@ -231,8 +249,10 @@ are always visible in the client's agent list.
 - Provider spawn injection test — `Options.agents` set from store; `Options.agent`
   set for start-as; `getEnabledDefinitions` strips bookkeeping fields.
 - `snapshotMeta` / resume / fork — `agent` survives resume & fork (mirror
-  existing model/thinking propagation tests).
-- `/sessions/:id/agents` — union includes store defs.
+  existing model/thinking propagation tests); **resume with a deleted/disabled
+  start-as agent degrades to a normal session**.
+- `/sessions/:id/agents` — union includes store defs; built-in name collision
+  de-dupes (built-in wins).
 - Client — form validation + rendering.
 
 **Manual:**
