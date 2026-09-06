@@ -496,6 +496,27 @@
   min-width: 0;
   border-top: none;
 }
+/* "Run as agent" delegation trigger sits to the right of the context bar. */
+.ctx-bar-row .composer-aux-btn {
+  margin: auto 8px;
+}
+/* In-session "run as agent" delegation control modal. */
+.runasagent-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.runasagent-label {
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.runasagent-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-top: 6px;
+}
 .ctx-bar {
   padding: 6px var(--chat-reading-inset) 4px;
   background: var(--bg-elev);
