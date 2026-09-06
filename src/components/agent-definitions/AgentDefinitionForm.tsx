@@ -53,7 +53,10 @@ interface FormState {
   mcpServers: string[]
   skills: string[]
   model: string
-  effort: string
+  /** Effort presets ('low'…'max') or a numeric token budget. The number type
+   *  is preserved through edit so numeric-effort definitions round-trip
+   *  unchanged (stringifying collapses it into a non-enum value → 400). */
+  effort: string | number
   permissionMode: string
   maxTurns: string
   background: boolean
@@ -96,7 +99,7 @@ function fromDef(def: StoredAgentDefinition): FormState {
     mcpServers: def.mcpServers ?? [],
     skills: def.skills ?? [],
     model: def.model ?? '',
-    effort: def.effort === undefined ? '' : typeof def.effort === 'number' ? String(def.effort) : def.effort,
+    effort: def.effort ?? '',
     permissionMode: def.permissionMode ?? '',
     maxTurns: def.maxTurns === undefined ? '' : String(def.maxTurns),
     background: def.background ?? false,
@@ -120,7 +123,16 @@ function buildData(f: FormState): Record<string, unknown> {
   for (const a of OPTIONAL_STRING_ARRAYS) {
     if (f[a].length) data[a] = f[a]
   }
-  if (f.effort) data.effort = f.effort
+  if (f.effort !== '') {
+    // A numeric effort (or a numeric-looking string) round-trips as a
+    // NUMBER; anything else is an enum preset string the server accepts.
+    data.effort =
+      typeof f.effort === 'number'
+        ? f.effort
+        : !Number.isNaN(Number(f.effort))
+          ? Number(f.effort)
+          : f.effort
+  }
   if (f.permissionMode) data.permissionMode = f.permissionMode
   if (f.memory) data.memory = f.memory
   if (f.maxTurns !== '') data.maxTurns = Number(f.maxTurns)
@@ -275,15 +287,27 @@ export function AgentDefinitionForm({ initial, onSaved, onCancel }: AgentDefinit
           <span>Model</span>
           <input type="text" value={form.model} onChange={(e) => set('model', e.target.value)} />
         </label>
-        <label className="settings-field">
-          <span>Effort</span>
-          <select value={form.effort} onChange={(e) => set('effort', e.target.value)}>
-            <option value="">Default</option>
-            {EFFORT_OPTIONS.map((o) => (
-              <option key={o} value={o}>{o}</option>
-            ))}
-          </select>
-        </label>
+        {typeof form.effort === 'number' ? (
+          <label className="settings-field">
+            <span>Effort</span>
+            <input
+              type="number"
+              step="any"
+              value={form.effort}
+              onChange={(e) => set('effort', e.target.value === '' ? '' : Number(e.target.value))}
+            />
+          </label>
+        ) : (
+          <label className="settings-field">
+            <span>Effort</span>
+            <select value={form.effort} onChange={(e) => set('effort', e.target.value)}>
+              <option value="">Default</option>
+              {EFFORT_OPTIONS.map((o) => (
+                <option key={o} value={o}>{o}</option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="settings-field">
           <span>Permission mode</span>
           <select value={form.permissionMode} onChange={(e) => set('permissionMode', e.target.value)}>
