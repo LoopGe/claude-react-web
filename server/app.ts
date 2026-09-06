@@ -18,6 +18,8 @@ import { buildEditLocateRouter } from './edit-locate-routes.js'
 import { buildBackgroundRouter } from './background-routes.js'
 import { buildMcpConfigRouter } from './mcp-routes.js'
 import { buildSnippetRouter } from './snippet-routes.js'
+import { buildAgentDefinitionsRouter } from './agent-definition-routes.js'
+import type { AgentDefinitionStore } from './agent-definition-store.js'
 import { buildUiStateRouter } from './routes/ui-state-routes.js'
 import { buildResetRouter } from './routes/reset.js'
 import { config as serverConfig } from './config.js'
@@ -72,6 +74,10 @@ export interface AppOptions {
   /** Composer snippet store. Mounted as /api/snippets. Persists the
    *  user's reusable text macros to disk (previously localStorage-only). */
   snippetStore?: SnippetStore
+  /** Custom agent definition store. Mounted as /api/agent-definitions.
+   *  Provides CRUD over user-defined agent definitions (feed into SDK
+   *  Options.agents at spawn, see agent-definition-store.ts). */
+  agentDefinitionStore?: AgentDefinitionStore
   /** Uploaded-file registry store. Powered by buildUploadRouter: records
    *  POST /sessions/:id/uploads traffic and mounts GET /uploads +
    *  DELETE /uploads/:id for the Uploads Manager dialog. Optional —
@@ -265,6 +271,9 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   }
   if (opts.snippetStore) {
     app.route('/api/snippets', buildSnippetRouter(opts.snippetStore))
+  }
+  if (opts.agentDefinitionStore) {
+    app.route('/api/agent-definitions', buildAgentDefinitionsRouter(opts.agentDefinitionStore))
   }
   if (opts.uiStateStore) {
     app.route('/api/ui-state', buildUiStateRouter(opts.uiStateStore))
