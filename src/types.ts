@@ -512,3 +512,30 @@ export interface MpParseWarning {
   kind: 'plugin-missing-name' | 'plugin-dir-not-found' | 'plugin-invalid-name' | 'plugin-bad-shape'
   detail: string
 }
+
+/** A custom agent definition, as persisted by the server. Mirrors the
+ *  server-side `StoredAgentDefinition` (SDK `AgentDefinition` plus app
+ *  bookkeeping). Optional SDK fields are typed permissively since the list
+ *  view only consumes name/enabled/description. */
+export interface StoredAgentDefinition {
+  name: string
+  enabled: boolean
+  description: string
+  prompt: string
+  createdAt: number
+  updatedAt: number
+  model?: string
+  permissionMode?: string
+  effort?: string | number
+  maxTurns?: number
+  background?: boolean
+  memory?: 'user' | 'project' | 'local'
+  initialPrompt?: string
+  tools?: string[]
+  disallowedTools?: string[]
+  mcpServers?: string[]
+  skills?: string[]
+  observer?: string
+  observerMessage?: string
+  criticalSystemReminder_EXPERIMENTAL?: string
+}

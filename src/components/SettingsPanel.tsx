@@ -28,6 +28,9 @@ import { HooksPanel } from './HooksPanel'
 import { UsagePanel } from './UsagePanel'
 import { SessionProfileSelect } from './SessionProfileSelect'
 import { Overlay } from './Overlay'
+import { AgentDefinitionsSection } from './agent-definitions/AgentDefinitionsSection'
+import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
+import type { StoredAgentDefinition } from '../types'
 
 // MarketplaceTab and McpInstaller are heavy modal-within-modal
 // components opened only on user intent (Browse plugins / Add MCP).
@@ -42,7 +45,7 @@ import { formatTokens, formatJson } from '../utils/format'
 import { pluginTagOf } from '../utils/text'
 import type { ContextUsage } from '../hooks/useChatStream'
 
-type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage'
+type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents'
 
 interface Props {
   session: SessionInfo
@@ -112,6 +115,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // demand when the Usage tab mounts (UsagePanel's mount effect calls
   // refresh()). The hook itself never fires a request by itself.
   const sessionUsage = useSessionUsage(session.id)
+  const agentDefs = useAgentDefinitions()
+  // Task 6 stub: opens the create/edit agent form (undefined = new).
+  const openAgentEdit = useCallback((_def?: StoredAgentDefinition): void => {
+    // TODO(Task 6): open the definition create/edit form for `_def` (undefined = new).
+  }, [])
   const [mcp, setMcp] = useState<McpServerStatus[]>([])
   const [firstPartyTools, setFirstPartyTools] = useState<FirstPartyToolStatus[]>([])
   const [globalMcpNames, setGlobalMcpNames] = useState<Set<string>>(new Set())
@@ -836,6 +844,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     { key: 'plugins', label: 'Plugins' },
     { key: 'mcp', label: 'MCP Servers' },
     { key: 'usage', label: 'Usage' },
+    { key: 'agents', label: 'Agents' },
   ]
 
   const panelBodyRef = useRef<HTMLDivElement | null>(null)
@@ -1542,6 +1551,16 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           error={sessionUsage.error}
           onRefresh={sessionUsage.refresh}
           available={session.running && !session.terminated}
+        />
+      )}
+
+      {tab === 'agents' && (
+        <AgentDefinitionsSection
+          agents={agentDefs.agents}
+          error={agentDefs.error}
+          toggleEnabled={(n, on) => void agentDefs.toggleEnabled(n, on)}
+          remove={(n) => void agentDefs.remove(n)}
+          onEdit={openAgentEdit}
         />
       )}
         </div>
