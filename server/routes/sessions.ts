@@ -6,6 +6,7 @@ import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-age
 import { SessionManager } from '../session-manager.js'
 import { safeJson } from './index.js'
 import type { MpStore } from '../mp-store.js'
+import type { AgentDefinitionStore } from '../agent-definition-store.js'
 import { isUserSelectablePermissionMode, permissionModeList } from '../permission-modes.js'
 import { formatHooksValidationErrors, toSdkHooksSettings, validateSessionHooksConfig } from '../../shared/hooks.js'
 import { coerceThinkingSetting } from '../../shared/session-info.js'
@@ -188,7 +189,7 @@ function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Rec
   return { ok: true, value: rest }
 }
 
-export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono {
+export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentDefinitionStore?: AgentDefinitionStore): Hono {
   const app = new Hono()
 
   // List sessions (snapshot only — for push-based updates the frontend
@@ -226,6 +227,21 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     const evicting = evictingSource === true
     if (rest.permissionMode != null && !isUserSelectablePermissionMode(rest.permissionMode)) {
       return c.json({ error: `permissionMode must be one of ${permissionModeList()}` }, 400)
+    }
+    // Start-as custom agent (`agent` = an AgentDefinitionStore name). It must be
+    // a string AND refer to an enabled definition — an unknown or disabled name
+    // (or any non-null agent when no store is mounted) is a 400 here: we won't
+    // spin the session up under a persona we can't honour.
+    const rawAgent = rest.agent
+    if (rawAgent != null) {
+      if (typeof rawAgent !== 'string') {
+        return c.json({ error: 'agent must be a string' }, 400)
+      }
+      const def = agentDefinitionStore?.get(rawAgent)
+      if (!def?.enabled) {
+        const why = agentDefinitionStore?.has(rawAgent) ? 'is disabled' : 'is not defined'
+        return c.json({ error: `agent "${rawAgent}" ${why}` }, 400)
+      }
     }
     if (rest.settings && typeof rest.settings === 'object' && !Array.isArray(rest.settings) && 'hooks' in rest.settings) {
       const settings = rest.settings as Record<string, unknown>
@@ -830,9 +846,20 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore): Hono 
     return c.json({ commands })
   })
 
-  // Supported agents
+  // Supported agents: the SDK's built-in list UNIONed with the enabled custom
+  // AgentDefinitionStore defs. De-duped by name with a built-in winning — a
+  // colliding custom def (same name as an SDK agent) is not added twice.
   app.get('/sessions/:id/agents', async (c) => {
-    const agents = await sm.supportedAgents(c.req.param('id'))
+    const id = c.req.param('id')
+    const builtins = (await sm.supportedAgents(id)) as Array<{ name: string; description?: string }> | undefined
+    const agents = Array.isArray(builtins) ? [...builtins] : []
+    const custom = agentDefinitionStore?.getEnabledDefinitions() ?? {}
+    const seen = new Set(agents.map((a) => a.name))
+    for (const name of Object.keys(custom)) {
+      if (seen.has(name)) continue
+      seen.add(name)
+      agents.push({ name, ...custom[name] })
+    }
     return c.json({ agents })
   })
 

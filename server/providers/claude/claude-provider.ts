@@ -23,6 +23,7 @@ import { readHistoryEntries, readHistoryPage } from '../../history-reader.js'
 import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
 import type { SessionMeta } from '../../persistence.js'
 import type { MpStore } from '../../mp-store.js'
+import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import { createPushable } from '../../pushable.js'
 import { ProcessMonitor, type ProcessExitInfo } from '../../process-monitor.js'
 import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities } from '../types.js'
@@ -180,7 +181,20 @@ function resolveConfiguredModel(
 export interface ClaudeProviderOptions {
   claudeBinary?: string
   mpStore?: MpStore
+  agentStore?: AgentDefinitionStore
   onProcessExit?: (info: ProcessExitInfo) => void
+}
+
+/** Inject enabled custom agent definitions from the store into SDK
+ *  `Options.agents`, merging over the existing value. Store defs are the base;
+ *  any pre-existing `opts.agents` overload them on a name clash (the spread
+ *  of `opts.agents` comes last and wins). Exported pure so it's unit-testable
+ *  without mocking the whole SDK Query surface. */
+export function injectAgentDefinitions(opts: Options, store: AgentDefinitionStore | undefined): void {
+  if (!store) return
+  const agents = store.getEnabledDefinitions()
+  if (Object.keys(agents).length === 0) return
+  opts.agents = { ...agents, ...(opts.agents ?? {}) }
 }
 
 export class ClaudeProvider implements AgentProvider {
@@ -228,6 +242,7 @@ export class ClaudeProvider implements AgentProvider {
     if (opts.resumeSessionAt !== undefined) sdkOptions.resumeSessionAt = opts.resumeSessionAt
     if (opts.cwd !== undefined) sdkOptions.cwd = opts.cwd
     if (opts.model !== undefined) sdkOptions.model = opts.model
+    if (opts.agent !== undefined) sdkOptions.agent = opts.agent
     if (opts.title !== undefined) sdkOptions.title = opts.title
     if (opts.betas !== undefined) sdkOptions.betas = opts.betas as Options['betas']
     if (opts.mcpServers !== undefined) sdkOptions.mcpServers = opts.mcpServers as Options['mcpServers']
@@ -632,6 +647,9 @@ export class ClaudeProvider implements AgentProvider {
         ]
       }
     }
+    // Enabled custom agent definitions ride every spawn's Options.agents,
+    // mirroring how the mpStore block injects plugin paths above.
+    injectAgentDefinitions(opts, this.opts.agentStore)
   }
 
   private buildAnthropicEnv(profile: ProviderProfile = resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE)): NodeJS.ProcessEnv {

@@ -8,6 +8,7 @@ import { AccentPicker } from '../AccentPicker'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import { PERMISSION_MODES } from '../../types'
 import { useExitPresence } from '../../hooks/useExitPresence'
+import { useAgentDefinitions } from '../../hooks/useAgentDefinitions'
 import { Overlay } from '../Overlay'
 
 // McpInstaller is only opened when the user clicks "Add MCP" from inside
@@ -78,6 +79,28 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // success, but a slow create call would otherwise let an impatient
   // user click "Create" twice and spawn duplicate sessions.
   const [submitting, setSubmitting] = useState(false)
+
+  // Custom agent definitions (Task 5). The dropdown lists only ENABLED
+  // definitions — a disabled def can't be used to start a session (the
+  // server 400s on unknown/disabled names), so showing it would dead-end.
+  const { agents } = useAgentDefinitions()
+  const enabledAgents = agents.filter((a) => a.enabled)
+  const [selectedAgent, setSelectedAgent] = useState('')
+
+  /** Selecting an agent PRE-FILLS the model / permission-mode / effort
+   *  fields from the definition (each only when the def declares it, falling
+   *  back to whatever the user already chose). This is the spec's "start-as
+   *  mirrors the def" fallback that works even if the SDK itself doesn't
+   *  inherit those options from `Options.agent`. */
+  const handleAgentChange = (value: string) => {
+    setSelectedAgent(value)
+    if (!value) return
+    const def = agents.find((a) => a.name === value)
+    if (!def) return
+    if (def.model) setModel(def.model)
+    if (def.permissionMode) setPermissionMode(def.permissionMode as PermissionMode)
+    if (def.effort != null && def.effort !== '') setEffort(String(def.effort))
+  }
 
   // Advanced options
   const [effort, setEffort] = useState('')
@@ -207,6 +230,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     onSubmit({
       cwd: cwd.trim() || undefined,
       model: model.trim() || undefined,
+      agent: selectedAgent || undefined,
       permissionMode,
       systemPrompt: systemPrompt.trim() || undefined,
       title: title.trim() || undefined,
@@ -389,6 +413,23 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
               />
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor={uid + '-agent'}>Agent</label>
+              <select
+                className="select"
+                id={uid + '-agent'}
+                value={selectedAgent}
+                onChange={(e) => handleAgentChange(e.target.value)}
+              >
+                <option value="">None</option>
+                {enabledAgents.map((a) => (
+                  <option key={a.name} value={a.name}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="settings-field">

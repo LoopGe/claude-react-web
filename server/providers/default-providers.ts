@@ -1,4 +1,5 @@
 import type { MpStore } from '../mp-store.js'
+import type { AgentDefinitionStore } from '../agent-definition-store.js'
 import type { ProcessExitInfo } from '../process-monitor.js'
 import { ClaudeProvider } from './claude/claude-provider.js'
 import { ProviderRegistry } from './registry.js'
@@ -6,6 +7,7 @@ import { ProviderRegistry } from './registry.js'
 export interface DefaultProvidersOptions {
   claudeBinary?: string
   mpStore?: MpStore
+  agentStore?: AgentDefinitionStore
   onProcessExit?: (info: ProcessExitInfo) => void
 }
 

@@ -35,6 +35,10 @@ export interface SessionMeta {
   lastActivityAt: number
   cwd?: string
   model?: string
+  /** Start-as custom agent name (described in the agent-definitions store).
+   *  Persisted so resume/restart/fork keep spinning the session in the same
+   *  persona; dropped (with a warning) if the def is later deleted/disabled. */
+  agent?: string
   /** Active model group id. Set at create time; the group's resolved main
    *  model becomes `model`. Persisted so resume/restart/fork keep the group
    *  identity. */
@@ -212,6 +216,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     lastActivityAt,
     cwd: typeof r.cwd === 'string' ? r.cwd : undefined,
     model: typeof r.model === 'string' ? r.model : undefined,
+    agent: typeof r.agent === 'string' ? r.agent : undefined,
     modelGroupId: typeof r.modelGroupId === 'string' ? r.modelGroupId : undefined,
     profileId: typeof r.profileId === 'string' ? r.profileId : undefined,
     permissionMode: typeof r.permissionMode === 'string' ? (r.permissionMode as PermissionMode) : undefined,

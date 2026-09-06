@@ -12,6 +12,10 @@ export interface CreateSessionOptions {
   provider?: string
   cwd?: string
   model?: string
+  /** Start-as custom agent name (SDK Options.agent). The provider maps it
+   *  explicitly into sdkOptions so it always reaches the SDK even if the
+   *  sdkOptions spreading path changes. */
+  agent?: string
   permissionMode?: string
   title?: string
   betas?: string[]
