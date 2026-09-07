@@ -1420,15 +1420,16 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentResult })
     expect(state.mirror.activeSubagents.get('tu_sync')?.result?.content).toBe('final summary')
     expect(state.mirror.activeSubagents.get('tu_sync')?.status).toBe('done')
-    // Sync: no child frame arrived after the tool_result, so isAsync stays
-    // false (frame timing never flips it for a synchronous subagent).
+    // Sync: isAsync stays false — TASKS_SNAPSHOT is the sole authority
+    // and none was fed (run_in_background: false).
     expect(state.mirror.activeSubagents.get('tu_sync')?.isAsync).toBe(false)
   })
 
-  it('detects async via frame timing (child arrives after the ack result)', () => {
+  it('TASKS_SNAPSHOT sets isAsync while child frames advance endedAt', () => {
     // No run_in_background flag on the input — isAsync starts undefined.
-    // The ack (tool_result) lands first, then a child frame arrives. A
-    // child-after-result is the async signature, so isAsync flips to true.
+    // The ack (tool_result) lands first, then a TASKS_SNAPSHOT flips
+    // running→background + isAsync:true, then a child frame arrives and
+    // advances endedAt. isAsync is the snapshot's sole authority.
     const toolUse: SdkMessage = {
       type: 'assistant',
       uuid: 'a-async',
@@ -1467,17 +1468,16 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     })
     expect(state.mirror.activeSubagents.get('tu_async')?.status).toBe('background')
     state = reduceSessionState(state, { type: 'MESSAGE', message: child })
-    // Child after ack → async.
+    // isAsync was already set by the TASKS_SNAPSHOT above; child only
+    // advances endedAt. Verify the snapshot's value persisted.
     expect(state.mirror.activeSubagents.get('tu_async')?.isAsync).toBe(true)
+    expect(state.mirror.activeSubagents.get('tu_async')?.endedAt).toBe(5_000)
   })
 
   it('does not mislabel a sync subagent as async when child text sets result', () => {
-    // Regression guard: the toolCount branch writes `result` from child
-    // text (the #2 fix), so a naive `result != null` check for "ack
-    // landed" would flip isAsync on the SECOND child of a sync subagent.
-    // The detector uses `status === 'done'` instead (only the result-merge
-    // branch sets done), so a sync subagent with multiple text-bearing
-    // children stays sync throughout.
+    // Guard: child frames no longer infer isAsync at all — TASKS_SNAPSHOT
+    // is the sole authority. Multiple child frames for a running sync
+    // subagent must never flip isAsync.
     const toolUse: SdkMessage = {
       type: 'assistant',
       uuid: 'a-sync2',
@@ -3597,6 +3597,23 @@ describe('reducer: TASKS_SNAPSHOT is the single authority for isAsync (D1/D2)', 
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
     state = snap(state, [task({ toolUseId: 'tu_a', status: 'completed', isBackgrounded: false })])
     expect(state.mirror.activeSubagents.get('tu_a')?.isAsync).toBe(false)
+  })
+
+  it('child frames alone (no TASKS_SNAPSHOT) do NOT set isAsync', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'user', uuid: 'u1', receivedAt: 5, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_a', content: 'Async agent launched successfully.\nagentId: xyz', is_error: false }] } } as unknown as SdkMessage,
+    })
+    // D2-B: ack skipped, record stays running
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('running')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'assistant', uuid: 'c1', parent_tool_use_id: 'tu_a', receivedAt: 100, message: { role: 'assistant', content: [{ type: 'text', text: 'working...' }] } } as unknown as SdkMessage,
+    })
+    // No snapshot -> isAsync still undefined (child frames do not flip it)
+    expect(state.mirror.activeSubagents.get('tu_a')?.isAsync).toBeUndefined()
   })
 })
 

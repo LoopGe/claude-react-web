@@ -1524,8 +1524,8 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         endedAt: existing?.endedAt,
         status: existing?.status ?? 'running',
         toolCount: existing?.toolCount ?? 0,
-        // Frame-timing detection (child after result) overrides the input
-        // flag, so preserve an existing value across replay re-encounters.
+        // TASKS_SNAPSHOT is the sole isAsync authority, so preserve any
+        // existing value across replay re-encounters.
         isAsync: existing?.isAsync ?? subagent.isAsync,
       })
     }
@@ -1589,53 +1589,34 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
   // For an async/background subagent the Agent tool_result is just a launch
   // ack ("Async agent launched successfully … agentId") that arrives within
   // ms of the tool_use — well before the subagent's real work streams as
-  // child frames (parent_tool_use_id === subagent id). The result-merge
-  // branch above flips the record to 'background' WITHOUT setting endedAt
-  // (the ack time isn't the real run time), so without this extension the
-  // card shows no elapsed at all until completion. Keep advancing endedAt to
-  // each child frame so the chip/card timer reflects real work. The subagent
-  // emits no dedicated end frame of its own, so the last child frame before
-  // the <task-notification> is the de-facto completion signal. For a
-  // synchronous subagent the tool_result already lands last, so
-  // this is a no-op (stamp ≤ existing.endedAt). Fires for any child frame
+  // child frames (parent_tool_use_id === subagent id). TASKS_SNAPSHOT flips
+  // the record to 'background' and sets isAsync (the sole authority), but
+  // does NOT set endedAt (the ack time isn't the real run time). Without
+  // this extension the card shows no elapsed at all until completion. Keep
+  // advancing endedAt to each child frame so the chip/card timer reflects
+  // real work. The subagent emits no dedicated end frame of its own, so the
+  // last child frame before the <task-notification> is the de-facto completion
+  // signal. For a synchronous subagent the tool_result already lands last, so
+  // this is a no-op (stamp <= existing.endedAt). Fires for any child frame
   // (assistant text, tool_use, internal tool_result) — the latest wins.
+  //
+  // isAsync is NOT touched here — TASKS_SNAPSHOT is the sole authority for
+  // that field. Child frames only advance timing and capture tool counts /
+  // result text (handled separately below).
   if (activeSubagents.size > 0) {
     const parentId = typeof message.parent_tool_use_id === 'string' ? message.parent_tool_use_id : ''
     if (parentId) {
       const existing = activeSubagents.get(parentId)
-      // Only advance endedAt/isAsync for LIVE records (running/background/
-      // pending). A dismissed/interrupted/done/rejected record is settled —
-      // a late child frame (an async subagent still streaming after the user
-      // dismissed it or after completion) must NOT advance its endedAt, or the
-      // card's frozen elapsed display would jump forward.
+      // Only advance endedAt for LIVE records (running/background/pending).
+      // A dismissed/interrupted/done/rejected record is settled — a late
+      // child frame (an async subagent still streaming after the user
+      // dismissed it or after completion) must NOT advance its endedAt, or
+      // the card's frozen elapsed display would jump forward.
       if (existing && (existing.status === 'running' || existing.status === 'background' || existing.status === 'pending')) {
         const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
-        // A child frame arriving AFTER the Agent tool_result is the
-        // signature of an async/background subagent: the tool_result was a
-        // launch ack, not the completion (sync subagents' tool_result lands
-        // LAST). Flip isAsync on the first such frame — it stays true after.
-        // Use `status === 'background' || 'pending'` (set ONLY by the
-        // result-merge / sweep branches — 'background' from TASKS_SNAPSHOT, 'pending'
-        // for an ack whose parent turn then ended) rather than `result !=
-        // null`: the toolCount branch below also writes `result` from child
-        // text, so a sync subagent with 2+ text-bearing child frames would
-        // otherwise mislabel as async on the second frame. Status itself is
-        // NOT touched here — a 'background'/'pending' record stays as-is
-        // (still working) and just gets its endedAt advanced. 'pending' is
-        // included because a background subagent's child frames can keep
-        // streaming after the parent turn ended (the sweep moved it to
-        // 'pending'); they're still proof of async.
-        const nowAsync = existing.isAsync === true ? true
-          : existing.status === 'background' || existing.status === 'pending'
-        const endedAtChanged = existing.endedAt == null || stamp > existing.endedAt
-        const asyncChanged = existing.isAsync !== nowAsync && nowAsync
-        if (endedAtChanged || asyncChanged) {
+        if (existing.endedAt == null || stamp > existing.endedAt) {
           if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
-          activeSubagents.set(parentId, {
-            ...existing,
-            ...(endedAtChanged ? { endedAt: stamp } : {}),
-            ...(asyncChanged ? { isAsync: true } : {}),
-          })
+          activeSubagents.set(parentId, { ...existing, endedAt: stamp })
           changed = true
         }
       }
@@ -1659,7 +1640,7 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     const parentId = message.parent_tool_use_id
     if (typeof parentId === 'string') {
       const existing = activeSubagents.get(parentId)
-      // Same non-live guard as the async-detector above: don't mutate settled
+      // Same non-live guard as the endedAt-advancement block above: don't mutate settled
       // (done/interrupted/dismissed/rejected) records — late child frames
       // from an async subagent that completed or was dismissed must not
       // advance toolCount/result or churn the Map identity.
@@ -1697,7 +1678,7 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
   // (the XML path always, the system frame optionally). Match it back to the
   // record and flip to 'done' ('interrupted' on failed/stopped), stamping
   // endedAt to the notification's receivedAt (the true completion moment, ≥
-  // the last child frame the async-detector branch advanced endedAt to).
+  // the last child frame the endedAt-advancement block above advanced endedAt to).
   // Mirrors the synchronous result-merge so SubagentCard merges the output
   // inline. `isAsync` is NOT touched here — it is the sole authority of
   // TASKS_SNAPSHOT (the `isBackgrounded` field), so a pure-foreground sync
