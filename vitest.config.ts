@@ -1,7 +1,98 @@
 import { defineConfig } from 'vitest/config'
+// Type-only: erased at runtime, so it pulls nothing from the `vitest` entry.
+import type { Reporter } from 'vitest'
+
+// ── Per-module duration summary reporter ─────────────────────────────
+// After every `vitest run`, print a total/files/avg breakdown per module so
+// the slow areas are visible at a glance without grepping the stream.
+//
+// Grouping: `src/*` files are grouped by their second path segment
+// (src/components, src/hooks, …; a bare `src/foo.test.ts` is "src"); every
+// other top-level dir (server, shared, plugins, packages) is its own group.
+// Durations are pure test-run time (File.result.duration) — the same ms vitest
+// already prints per file. Per-file import/collect/jsdom-env overhead is NOT
+// included (that is why tiny files can still add up to a big group wall time).
+function durationReporter(): Reporter {
+  // File.filepath is absolute (D:/codes/…/server/x.test.ts); the repo root is
+  // process.cwd(). Resolve it once, and strip it case-insensitively — Windows
+  // can hand us a `d:` prefix for a `D:` cwd, and an unmatched prefix must not
+  // collapse every file into one "D:" bucket.
+  const root = process.cwd().replace(/\\/g, '/').replace(/\/+$/, '')
+  // Adaptive: sub-second durations stay readable as ms (a 6ms file must not
+  // render as "0.0s"), totals/avgs above 1s render as seconds.
+  const fmt = (ms: number): string =>
+    ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`
+  return {
+    onFinished(files) {
+      if (files.length === 0) return
+      type Row = { count: number; totalMs: number; slowest: (typeof files)[number] }
+      const rows = new Map<string, Row>()
+      for (const file of files) {
+        if (!file.filepath) continue
+        const dur = file.result?.duration ?? 0
+        const group = groupKey(file.filepath, root)
+        let row = rows.get(group)
+        if (!row) {
+          row = { count: 0, totalMs: 0, slowest: file }
+          rows.set(group, row)
+        }
+        row.count++
+        row.totalMs += dur
+        if (dur > (row.slowest.result?.duration ?? 0)) row.slowest = file
+      }
+      const sorted = [...rows.entries()].sort((a, b) => b[1].totalMs - a[1].totalMs)
+      const totalMs = sorted.reduce((s, [, r]) => s + r.totalMs, 0)
+      const lines: string[] = []
+      lines.push('')
+      lines.push('Test files by module (test-run time):')
+      lines.push(
+        'Module'.padEnd(22) +
+          'Files'.padStart(6) +
+          'Total'.padStart(10) +
+          'Avg'.padStart(9) +
+          '  Slowest file',
+      )
+      for (const [group, row] of sorted) {
+        const slowMs = row.slowest.result?.duration ?? 0
+        lines.push(
+          group.padEnd(22) +
+            String(row.count).padStart(6) +
+            fmt(row.totalMs).padStart(10) +
+            fmt(row.totalMs / row.count).padStart(9) +
+            `  ${row.slowest.filepath.split('/').pop()} (${fmt(slowMs)})`,
+        )
+      }
+      lines.push('─'.repeat(66))
+      lines.push(`Total: ${fmt(totalMs)} test-run time across ${files.length} files`)
+      lines.push('')
+      process.stdout.write(lines.join('\n') + '\n')
+    },
+  }
+}
+
+/** Directory a test file belongs to for the module summary. */
+function groupKey(filepath: string, root: string): string {
+  let rel = filepath.replace(/\\/g, '/')
+  if (root && rel.toLowerCase().startsWith(root.toLowerCase())) {
+    rel = rel.slice(root.length).replace(/^\/+/, '')
+  }
+  // Leftover drive prefix means the file lives outside `root` (e.g. a --root
+  // override); still group by the first meaningful segment, not a bare "D:".
+  rel = rel.replace(/^[a-zA-Z]:\//, '')
+  const slash = rel.indexOf('/')
+  const top = slash === -1 ? rel : rel.slice(0, slash)
+  if (top === 'src') {
+    const rest = slash === -1 ? '' : rel.slice(slash + 1)
+    const next = rest.indexOf('/')
+    // A bare src/foo.test.ts sits at the src root; everything else is an area.
+    return next === -1 ? 'src' : `src/${rest.slice(0, next)}`
+  }
+  return top || '(root)'
+}
 
 export default defineConfig({
   test: {
+    reporters: ['default', durationReporter()],
     // Server tests run in Node; client hook tests run in jsdom.
     // Use workspace-style overrides so both share one `vitest run`.
     environment: 'node',
