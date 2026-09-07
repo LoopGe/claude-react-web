@@ -420,6 +420,7 @@ export const ChatPanel = memo(function ChatPanel({
     if (!canRegenerateTitle || regeneratingRef.current) return
     const messages = getSessionState(session.id).mirror.messages
     const description = recentMessagesDescription(messages)
+    const previousTitle = session.title
     regeneratingRef.current = true
     setRegenerating(true)
     // Generous timeout: the server runs an LLM call for the title, and the
@@ -430,18 +431,21 @@ export const ChatPanel = memo(function ChatPanel({
       .then((res) => {
         regeneratingRef.current = false
         setRegenerating(false)
-        // Only claim success when a new non-empty title actually appeared; an
-        // empty LLM result leaves the title unchanged (server returns 200),
-        // so reporting "regenerated" would be a false success.
+        // Only claim success when a NEW title actually appeared: an empty LLM
+        // result leaves the title unchanged (server returns 200), and so does a
+        // regenerated-but-identical title — reporting "regenerated" for either
+        // would be a false success.
         const newTitle = res.session?.title
-        if (newTitle) toast.success(`Title regenerated: ${newTitle}`)
+        if (newTitle && newTitle !== previousTitle) toast.success(`Title regenerated: ${newTitle}`)
       })
       .catch(() => {
         regeneratingRef.current = false
         setRegenerating(false)
         toast.error("Couldn't regenerate title")
       })
-  }, [canRegenerateTitle, session.id, toast])
+    // `session.title` is in the deps so `previousTitle` reflects the current
+    // header on each render (the session prop is not otherwise a dependency).
+  }, [canRegenerateTitle, session.id, session.title, toast])
   // Git status powers BOTH the header chip (always-visible summary) and
   // the GitPanel overlay (mounted inside <Chat>). Hoisting the hook here
   // means a single fetch satisfies both consumers; the panel receives

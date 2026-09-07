@@ -488,23 +488,31 @@ export function autoTitleDescription(text: string, full: string): string {
  *  the conversation (its current concern) rather than the opening message.
  *  Candidate turns are filtered through the canonical `isHumanUserMessage`, so
  *  slash-command logs, synthetic injections, and SDK tool-feedbacks never skew
- *  the title. Returns '' when there are no human-typed turns yet — the server
- *  warns and leaves the session untitled. `autoTitleDescription` handles the
- *  initial one-shot naming; this is the regenerate path. */
+ *  the title. Returns '' when there are no human-typed turns yet, OR when the
+ *  most recent `maxMessages` human turns are all textless (image-only) — the
+ *  server then warns and leaves the session untitled. `autoTitleDescription`
+ *  handles the initial one-shot naming; this is the regenerate path. */
 export function recentMessagesDescription(
   messages: readonly SdkMessage[],
   maxChars = 600,
   maxMessages = 5,
-  maxScanWindow = 8,
 ): string {
   const parts: string[] = []
-  // Scan only the tail of the transcript (bounded by maxScanWindow total
-  // messages, NOT "5 text turns wherever they are"), so an image-only recent
-  // stretch can't drag the scan all the way back to stale opening context.
-  const start = Math.max(0, messages.length - maxScanWindow)
-  for (let i = messages.length - 1; i >= start && parts.length < maxMessages; i--) {
+  // Walk the transcript BACKWARD from the tail, collecting the most recent
+  // human-typed turns. The walk is bounded by the NUMBER of human turns seen,
+  // not a fixed raw-message window: a single CLI turn expands into many
+  // assistant / tool_result / thinking frames, so the latest human prompt is
+  // routinely dozens (or hundreds) of raw messages behind the mirror tail — a
+  // small fixed window (the old `maxScanWindow = 8`) found nothing and sent an
+  // empty description, so click-to-regenerate could never re-title a session.
+  // Textless human turns (image-only prompts) still count toward the cap so a
+  // recent image-only stretch can't drag the scan all the way back to stale
+  // opening context.
+  let humanSeen = 0
+  for (let i = messages.length - 1; i >= 0 && humanSeen < maxMessages; i--) {
     const msg = messages[i]
     if (!isHumanUserMessage(msg)) continue
+    humanSeen++
     // For a human message topLevelUserPromptSignature is non-null and IS the
     // extracted plain text — reuse it instead of re-extracting.
     const text = topLevelUserPromptSignature(msg)?.trim()

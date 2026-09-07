@@ -104,10 +104,29 @@ describe('recentMessagesDescription', () => {
     const long = 'x'.repeat(2000)
     expect(recentMessagesDescription([userMsg(long)]).length).toBe(600)
   })
+  it('finds the most recent human text even when a long SDK tail buries it', () => {
+    // A single CLI turn expands to many assistant / tool_result / thinking
+    // frames, so the latest human prompt is routinely dozens (here: 40) of raw
+    // messages before the mirror tail. The description must still surface it —
+    // a fixed small raw-message window returns '' and the title never changes.
+    const noise: SdkMessage[] = []
+    for (let i = 0; i < 40; i++) {
+      noise.push(asstTools([{ type: 'tool_use', id: `t${i}`, name: 'Read', input: { file_path: `/f${i}` } }], `a${i}`))
+      noise.push({
+        type: 'user',
+        uuid: `tr${i}`,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'ok' }] },
+        parent_tool_use_id: `t${i}`,
+      } as unknown as SdkMessage)
+    }
+    const messages = [userMsg('refactor the auth flow', 'u0'), ...noise]
+    expect(recentMessagesDescription(messages)).toBe('refactor the auth flow')
+  })
   it('does not walk past an image-only tail back into stale opening context', () => {
     const imgOnly = Array.from({ length: 11 }, (_, i) => userMsg('', `img${i}`))
     const messages = [userMsg('the opener', 'first'), ...imgOnly]
-    // The last 8 messages are all textless, so the bounded scan finds nothing.
+    // The 5 most recent human turns are all textless (image-only) and consume
+    // the human-turn cap, so the scan stops without reaching the older opener.
     expect(recentMessagesDescription(messages)).toBe('')
   })
 })
