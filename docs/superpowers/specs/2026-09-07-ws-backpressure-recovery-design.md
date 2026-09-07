@@ -11,7 +11,7 @@
 
 1. **ring 入口无字节闸**。`trimLargeToolResults`(`server/history-utils.ts:341`)只裁 `tool_result` 块;用户消息顶层 `image` 块与纯文本不经过任何裁剪——`sendContent → dispatchUserMessage → pushToSession`(`server/session-manager.ts:2506/2542/2600`)直接原样入 ring 并广播。客户端允许 10MB/张(`src/hooks/usePastedImages.ts:8`),base64 ≈ 13.98M 字符,**一张被接受的图就已超过 WS 写队列上限 `MAX_QUEUE_CHARS = 8_000_000`**(`server/ws.ts:73`);REST 路由的 28M 总闸(`server/routes/sessions.ts:435`)同样大于 8M。三个数字互不派生、互相矛盾。
 2. **死循环自维持**。`enqueueRaw` 在超限处先 `stop()`(清空待发队列)再 `ws.close()`(`server/ws.ts:115-131`)——超大帧**从未送达**,客户端游标只在 `replay-done` 提交(`src/hooks/useChatStream.ts:277-318`),永远停在该帧之前 → 每次重连的 ring 重放(`server/ws.ts:441-498` 按 50 条/帧切块,不看字节)再次命中同一帧 → 每 ~15s 一轮,该会话全部标签页瘫痪,排在其后的消息(含新消息实时流)不可达。历史报告版本说"直到服务重启",更准确:**除非该消息被 500 条 ring 淘汰挤出,而用户已无法与死会话交互来制造淘汰**。
-3. **订阅队列溢出的恢复注释为真、实现为假**。`server/async-subscription.ts:55-66` 溢出 2000 条 → `end()`;ws 驱动在 msg 通道 `done` 时只 `stop()`(`server/ws.ts:539-547,602-608`),注释声称"the WS write loop drains and closes — the client detects the close and reconnects",**代码中不存在该 close**(全文件唯一 close 在 `MAX_QUEUE_CHARS` 处)。慢客户端(合盖、渲染卡顿)期间流式会话 ≈ 200 delta/s,溢出并不罕见,后果是面板静默冻结、`running` 不翻转、客户端永不重订。
+3. **订阅队列溢出的恢复注释为真、实现为假**。`server/async-subscription.ts:55-66` 溢出 2000 条 → `end()`;ws 驱动在 msg 通道 `done` 时只 `stop()`(`server/ws.ts:539-547,602-608`),注释声称"the WS write loop drains and closes — the client detects the close and reconnects",**msg 通道结束路径上没有任何 close**(文件里的 `ws.close` 仅有三处:`MAX_QUEUE_CHARS` 最后防线 :122-130、socket error 清理 :816、server shutdown :831——没有一处挂在这条路上)。慢客户端(合盖、渲染卡顿)期间流式会话 ≈ 200 delta/s,溢出并不罕见,后果是面板静默冻结、`running` 不翻转、客户端永不重订。
 
 另有一个结构性地雷决定了修法形状:`dispatchUserMessage` 的 `{ ...userMsg }` 是浅拷贝,SDK 队列副本与 ring 原件**共享 `message.content` 数组**——任何就地裁剪会连模型收到的原图一起裁掉。ring 侧裁剪必须 copy-on-write。
 
@@ -39,6 +39,8 @@ export function capUserPromptContent(content: unknown): { content: unknown; capp
 
 marker 文案:`'[image omitted — too large to sync]'` 复用现文案与现论证(`history-utils.ts:219-226`)——语义一致(源头丢弃、ring/线上永无)。
 
+**v3 补(评审 I2a/I2b):单块预算不防多块拼帧**——五块各差一口气于 2M 的文本块合起来仍是 >10M 的 ring 帧、原样复刻 §1.2 活锁。故 `capUserPromptContent` 另设**全消息总预算 `MAX_USER_PROMPT_TOTAL_CHARS = 6_000_000`**(text 字符、base64、tool_result content 一律计入):超总预算的文本块按剩余额度再截(`truncateMiddle`),图片块一律 marker 替换,未知形状块计入估算长度。**调用点补一处:`execInSession` 的本地 `!cmd` 分支**(`session-manager.ts:2894` 直连 `pushToSession`,不走 `dispatchUserMessage`)——`<bash-stdout>` 单流 1M × `escapeXml` 最坏 5× 展开(每个 `&`→`&amp;`)可推过 8M,此分支同样过本闸(copy-on-write 同样必须,输出文本与返回给 REST 的 `message` 共享)。
+
 调用点(`server/session-manager.ts`):
 - `send()`(文本,现完全无上限——`routes/sessions.ts:442-446` 只查非空):走同一闸。
 - `sendContent()`:走同一闸。
@@ -58,9 +60,12 @@ marker 文案:`'[image omitted — too large to sync]'` 复用现文案与现论
 
 `trimLargeToolResults` 扩展:`user` 帧中**非** `tool_result` 的顶层块同样过 3.1 的预算(此处输入是 history-reader 新构造对象,可就地;但统一走 `capUserPromptContent` 返回副本,一条心智规则)。效果:中毒会话在 resume/翻页/搜索路径被治愈(D1c 决策:运行中的 live ring 不做一次性 re-trim,500 条自然淘汰 + 重启即愈)。
 
+**v3 补(评审 I2c):fork/discard 的 live-ring 种子是治愈决策的真实漏洞**——`historySeed` 取自父会话内存 ring 且**按引用**插入子会话环(`session-manager.ts:1773-1779` 取种、`:2164` 循环、`:2216` 插入,中间无任何裁剪),磁盘种子路径有 3.2 把关而此路没有:已中毒会话会把毒帧**移植**进新会话(其 replay 立刻活锁)。修法:`:2164` 种子循环内对 user 帧加一遍 `capUserPromptContent`——COW 强制(父 ring 对象绝不能被就地改)。
+
 ### 3.3 Replay 字节预算切块
 
-`server/ws.ts` replay 路径(`:469-498`):chunk 边界从「每 50 条」改为「每 50 条 **或** 累计序列化长度 ≤ `REPLAY_CHUNK_CHARS = 2_000_000`,先到为准」;单条超预算者独立成帧(3.1/3.2 后理论不存在,保留此臂作为非队列生产者兜底)。长度以 `JSON.stringify(msg).length` 累加估算(+分隔符常数;估算与真实帧长偏差 <5%,2M « 8M 余量足够)。
+`server/ws.ts` replay 路径(`:469-498`):chunk 边界从「每 50 条」改为「每 50 条 **或** 累计序列化长度 ≤ `REPLAY_CHUNK_CHARS = 2_000_000`,先到为准」;单条超预算者独立成帧(3.1 总预算 + 3.2 磁盘闸 + fork 种子闸封死三个生产者后,此臂仅作最后防线)。
+- **v3 边界认领(评审 Minor)**:「游标可推进、重连即自愈」对**会冲刷的慢客户端**成立;对**完全停滞的 TCP**(drain 永不完成、合法积压 >8M),`replay-done` 仍可能挤不进队列顶——游标动不了,该场景仍是活锁,只是需要客户端彻底僵死才会到达。定位为最后防线,不追求覆盖。长度以 `JSON.stringify(msg).length` 累加估算(+分隔符常数;估算与真实帧长偏差 <5%,2M « 8M 余量足够)。
 - 客户端零改动:多帧 `replay` 累积到 `replay-done` 才提交(`useChatStream.ts:277-318`),顺序由单 TCP + FIFO 写队列保证——已核实。
 - permissions/elicitations/dialogs 快照仍走「首帧或 replay-done」两条既有臂,协议文档(`shared/ws-protocol.ts:127-154`)同步语义不变。
 - `BACKPRESSURE_HIGH=1M`(`ws.ts:61`)与 2M chunk 的配合:drain 在 chunk 间可穿插,不会积压。配套纪律(spec 修订 v2,原「累计 4M 截断」条款作废——它会误杀 gate 后仍合法的多 MB 级长回放):切块循环每 enqueue 一帧 `await setImmediate` **让出事件循环**,让 `WsWriteQueue.drain` 得以回收 `totalChars`;真正慢/停滞的客户端仍由 `MAX_QUEUE_CHARS=8M` 强关兜底(3.1/3.2 后游标可推进,重连即自愈,不再构成活锁)。
@@ -71,16 +76,19 @@ marker 文案:`'[image omitted — too large to sync]'` 复用现文案与现论
 - `server/session-manager.ts` `subscribe()` 返回对象补 `overflowed` 透出(`SessionBroadcaster` 契约 `session-types.ts:684+` 同步)。
 - `server/ws.ts` 驱动 msg 通道 `done` 臂(`:602-608`):`if (msg.overflowed) { log.warn(...); try { ws.close(1011, 'msg subscriber overflow') } catch {} }`——让注释描述的事实成真;`finally` 的 `subs` 清理与 `cleanup === stop` 守卫(`:716-729`)不动。
 - 溢出丢的是该 subscriber 自己的积压(`async-subscription.ts:63` 清空),游标由客户端在 lastMessageUuid 处,重连增量重放,自愈成立。
+- **v3 补 blast-radius(评审 Minor)**:close 的是**整条 tab 连接**——同 socket 上其他会话的流与 global channel 一并中断,恢复走 hub 全量重连重订(`useWsHub.ts:127-143` + 每会话 subscribe replay)。D1a 接受此代价的完整理由:溢出本已使该会话流死亡,不 close 则永久冻结;close 让全 tab 停摆半拍换取一切自愈。
 
 ### 3.5 客户端粘贴图压缩(UX 保底,使 3.1 的 marker 对真实用户几乎不可达)
 
-`src/hooks/usePastedImages.ts`:仅当 `file.size > 1.5MB` 时走 `createImageBitmap → canvas.drawImage → canvas.toBlob(jpeg/webp)` 压到 ≤1.5MB 二进制(≈2M base64,预算内),降采样与质量双收敛、设下限防死循环;小图保持无损原样。已知取舍:超标的 GIF/动图 WebP 压缩后只剩首帧(只有本来就会触发 marker 的超大图才降级,净收益)。API/插件直发的超大图不走此路——3.1 的闸是它们的兜底。
+`src/hooks/usePastedImages.ts`:仅当 `file.size > 1.5MB` 时走 `createImageBitmap → canvas.drawImage → canvas.toBlob(jpeg/webp)` 压到 ≤1.5MB 二进制(≈2M base64,预算内),降采样与质量双收敛、设下限防死循环;小图保持无损原样。已知取舍:超标的 GIF/动图 WebP 压缩后只剩首帧(只有本来就会触发 marker 的超大图才降级,净收益);PNG→JPEG 丢 alpha 透明度(同样只发生在本来就超限的图上)。API/插件直发的超大图不走此路——3.1 的闸是它们的兜底。
+- **v3 补(评审 I4)**:per-image 1.5MB 预算需与**单消息 4M base64 总预算**联动——3 张 1.5MB 图 = 6M base64 仍超总量,第 3 张会被服务端静默 marker 化。改:客户端按张数摊预算 `perImage = min(1.5MB, 3MB ÷ (已有张数+1))`(3MB 二进制 ≈ 4M base64)。
 
 ### 3.6 陈旧注释/文档对账(随本次一并修)
 
 - `ws.ts:604-607`:改述真实行为(3.4 落地后此注释变真,措辞精确化为「msg 通道因溢出结束时主动关闭 socket」)。
 - `ws.ts:63-72` MAX_QUEUE_CHARS 注释:补「ring 入口已有单帧闸,本值为最后防线」。
 - `history-utils.ts:200-217`:补「同一预算现亦覆盖用户顶层块(3.1/3.2)」。
+- `shared/ws-protocol.ts:144-146`(「chunked replay(>50 messages)」):字节预算切块落地后条件变宽,改述为「chunked replay(>50 条或 >2M 字符)」(评审 Minor)。
 - CLAUDE.md:「Total base64 payload capped at 28 MB」句后补 ring 同步闸与语义(显示降级、模型无损)。
 
 ## 4. 兼容性与数据形状

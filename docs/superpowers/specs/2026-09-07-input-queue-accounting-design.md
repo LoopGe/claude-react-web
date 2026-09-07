@@ -23,7 +23,7 @@
 **In**:配对占位条目方案、429+onEvict 双保险、consumedAt 落 ring(修法 A)、`compactionInFlight` 标志、`requireSendable` 三闸、health skip 一行、上述全部回归测试、注释/CLAUDE.md 对账。
 **Out**:msgstat `consumedUuids` 集合播种(裁决 D2d:修 A 后无必要)、`compacting` 现有字段改造(pump 维护的 CLI 状态镜像,语义不同,**不复用不合并**)、phaseOf 全面重构、provider 层抽象调整。
 
-与 Spec ① 领地几乎不相交(①:ws.ts/async-subscription/history-utils 尺寸闸;②:session-manager 簿记/pushable/session-health)。共享文件仅 `history-utils.ts`(① 新增 `capUserPromptContent`,② 只改 `stampConsumedAt` 周边注释)与 `session-manager.ts` 不同函数群;`dispatchUserMessage` ① 改构造、② 不改。按 ①→② 顺序实施则无冲突,反之亦然。
+与 Spec ① 领地大体不相交(①:ws.ts/async-subscription/history-utils 尺寸闸;②:session-manager 簿记/pushable/session-health),但**两族都碰 `dispatchUserMessage`**:① 改其 ring 副本构造,② 的 A′ 在同函数加一行盖戳,且 `:2524-2541` docblock ② 必须对账、① 已声明让位(其计划把该注释留给本族)。按 ①→② 顺序实施时,② 实现者**预期要一次 rebase 这两处**——是计划内的交接点,不是事故。`history-utils.ts` 同样共写(① 新函数 + ② 的 `stampConsumedAt` 注释)。
 
 ## 3. 设计
 
@@ -36,6 +36,8 @@
   2. 溢出裁剪钩子(3.2)必须连 synthetic 一起剪,否则被挤掉的 seed 留下永不可配占位 = R-2 复刻 R-1;
   3. 红灯测试(§5-1)先行。
 
+  **正确性前提与证明(评审 Minor 项的处置)**:占位方案依赖「seed echo 终会回来并配进占位」。穷举现调用图确认无孤儿占位路径:`clearQueuedInput` 唯一生产调用点作用于 X(`:2972`)而非持有占位的 Y;Y 的 unload 令内存 unpaired 条目随 Session 对象消亡,sidecar 仅持久 paired(`prompt-uuid-store.ts:92`)。**不做防御性剪枝**:「已消费但 echo 未回」窗口里 `queueDepth`/`pendingTurns` 同为 0,任何条件剪枝都可能把占位错杀、让该 echo 改偷下一条真实配对——前提以枚举证明 + §5-2(重排序序)测试钉死。
+
 ### 3.2 溢出语义:429 封顶 + onEvict 收敛到 withdrawal 机械
 
 - **429**:`requireSendable` 增 `if (s.handle.queueDepth >= INPUT_QUEUE_MAX_DEPTH) throw new HttpError(429, 'session input queue is full; wait for the current turn to drain')`。上限常量从 claude-provider 提升导出(`providers/types.ts` 或 claude provider 公开);`handle.queueDepth` 已类型化(`providers/types.ts:122`)。已核实客户端失败面干净:`Chat.tsx:1501-1510` catch → `setLocalError` + `rollbackUserMessage` + 文本留在输入框;429 不匹配 `/recovering/i` 重试面。**send 与 sendContent 同源覆盖**(都过 requireSendable),同步段内 check→push 原子。
@@ -45,8 +47,11 @@
 ### 3.3 consumedAt:修法 A(ring 原件盖戳)
 
 `onInputConsumed` 在现有 clone 盖戳 + `message-consumed` 广播之后:自尾向前扫 `s.history` 找 `type==='user' && uuid===u` 的原件,`stampConsumedAt(original)`。成本 ≤historyCap 次比较、每消费一次,可忽略;幂等 first-wins 语义(`history-utils.ts:72-74`)保住 crash-recovery `drainQueue` 重推与 interrupt 失败重推不移动时间戳。
-- 已核实的时序细节:idle 直传(hand-off 竞争窗口,`:2527-2534`)下同步 `onConsume` 先于 `pushToSession`——此时原件尚未入 ring,扫不到即跳过(该消息消费先于入环,客户端本来就由 live `message-consumed` + `pendingConsumedMessages`(`reducer.ts:880-893`)自愈,无幽灵态)。测试 §5-6 覆盖。
-- 注释对账:`:2540-2541` 的 "fallback" 承诺改述为已实现的 ring 盖戳;`:4723-4727` 的 "SAME object reference" 修正为 clone 隔离的准确描述;`history-utils.ts:61-68` 同步。
+- **v2 案例矩阵(评审 I3:修 A 单独会漏)**——消费发生时有两种时序,fix A 的扫描只覆盖其一:
+  - **queued-consume**(回合中入队、消费发生在 `next()` shift,`pushable.ts:148-155`):ring 已含原件 → 扫描盖到 ✓。
+  - **idle 直传**(waiter 在等,`notifyConsume` 于 `enqueueUserMessage`(:2552)内**同步**触发,早于 `pushToSession(:2553)`):原件尚未入 ring,扫描扑空 → **原件永无 consumedAt**。当刻在线的标签页靠 live `message-consumed` + `pendingConsumedMessages`(`reducer.ts:880-893`)自愈 ✓;但**晚开的标签页**走 ring 重放:`receivedAt` 在、`consumedAt` 无 → `deriveDeliveryStatus`('queued' `normalize.ts:164-172`),且 msgstat 种子只重放 withdrawnUuids(:4578-4579)、无 consumed 播种——**普通 idle 会话的每一回合都走这条序**,故修 A 单独不成立。
+  - **A′(必含,一行)**:`dispatchUserMessage` 中 `enqueueUserMessage(clone)` 同步返回后读 `clone.consumedAt`,已置则于 `pushToSession` 前盖到 ring 副本上。语义严格正确:有 consumedAt 即消费先于广播,显示 'queued' 本就是谎言;clone 隔离设计保护的「真排队可见」路径不受影响。live 侧无行为变化(`pendingConsumedMessages` 幂等,`:819-878`)。
+- 注释对账:`:2540-2541` 的 "fallback" 承诺改述为「ring 盖戳由修 A(queued-consume)+ A′(idle 直传)落地后成真」;`:4723-4727` 的 "SAME object reference" 修正为 clone 隔离的准确描述;`history-utils.ts:61-68` 同步。
 
 ### 3.4 生命周期守卫:`compactionInFlight` + requireSendable 三闸 + health 一行
 
@@ -71,7 +76,7 @@
 3. sidecar:synthetic 条目 paired 后持久化、`rewriteSeedPromptUuids` 对 seed 映射正确重写。
 4. 429:queueDepth=64 时 `send` 抛 429 且不入 ring;文案不匹配 `/recovering/i`。
 5. onEvict:绕过 429(直接驱动 provider input.push)灌爆队列 → 断言 evict 项经 withdrawal 机械全套(ring 除名、promptUuids 剪除含 synthetic、withdrawnUuids 入账、`messages-withdrawn` 帧)。
-6. consumedAt:非 idle 时序消费 → 新订阅者重放携带 `consumedAt`;idle 直传竞争路径不回归。
+6. consumedAt 全矩阵:①**idle 直传**(主流序):send 即被消费 → 新订阅者 ring 重放携带 `consumedAt`(A′ 路径);②queued-consume:回合中入队 → 消费后 ring 原件被扫描盖戳(修 A 路径);③live 标签页两序下 `pendingConsumedMessages` 竞态不回归;④drainQueue/interrupt 失败重推不移动时间戳(first-wins)。
 7. compacting/clearing 409:compact await 中 `send` → 409;clear await 点人工驻留中 `send` → 409;`clear()` 自身仍可重入(幂等早退)。
 8. **新建 `server/session-health.test.ts`**(该模块首测;`HealthMonitorDeps` 已可注入):`clearing:true` 桩不 interrupt 不 unload;`clearing:false` 孪生桩照常触发(防"修成静音")。
 
@@ -89,4 +94,4 @@
 | D2b | seed 占位进 sidecar | 允许(paired-only 规则不变,顺带获得 resume 一致性) |
 | D2c | compacting 409 文案 | 避开 `/recovering/i`(纳入实现纪律) |
 | D2d | `/clear` 进行中拒发 | 要(与 compact 同一不变式) |
-| D2e | R-6 修 A vs A+D | 修 A(ring 原件盖戳);msgstat consumedUuids 播种不做 |
+| D2e | R-6 修 A vs A+D | **修 A + A′**(ring 扫描盖戳 + stamp-at-insert;评审 I3:idle 直传是主流序,修 A 单用仍留晚开标签页幽灵);msgstat consumedUuids 播种(D)继续不做——A′ 覆盖同场景且无新状态 |

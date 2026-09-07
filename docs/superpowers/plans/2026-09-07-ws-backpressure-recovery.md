@@ -13,9 +13,9 @@
 ## Global Constraints
 
 - 线格式零变化:`WsServerFrame` 各帧的 kind/字段名/系统 subtype 字符串一律不动;`shared/ws-protocol.ts` 无改动。
-- 预算常数(与 spec 逐字一致):图片单块 **2_000_000** base64 字符、单消息图片合计 **4_000_000**、用户文本块 **2_000_000**(truncateMiddle head 1_500_000 / tail 400_000)、replay 单 chunk **2_000_000** 字符估算 **或** 50 条先到为准;`MAX_QUEUE_CHARS = 8_000_000` 保留不动。
+- 预算常数(与 spec v3 逐字一致):图片单块 **2_000_000** base64 字符、单消息图片合计 **4_000_000**、用户文本块 **2_000_000**(truncateMiddle head 1_500_000 / tail 400_000)、**全消息总预算 `MAX_USER_PROMPT_TOTAL_CHARS = 6_000_000`**(text+base64+tool_result 内容一律计入——无总闸时 5×1.9M 文本块仍拼出 >10M 活锁帧,评审 I2a)、replay 单 chunk **2_000_000** 字符估算 **或** 50 条先到为准;`MAX_QUEUE_CHARS = 8_000_000` 保留不动。
 - **绝不就地修改用户消息的 `message.content`**(SDK 队列浅拷贝副本与 ring 原件共享该数组——spec §1 地雷;闸必须是 copy-on-write)。
-- marker 文案逐字:`'[image omitted — too large to sync]'`(复用 `TOOL_RESULT_IMAGE_OMITTED_MARKER`)。
+- marker 文案逐字:图片 `'[image omitted — too large to sync]'`(复用 `TOOL_RESULT_IMAGE_OMITTED_MARKER`);总量退化文本 `'[message truncated — over size budget]'`。
 - 诊断日志只走 `createLogger(scope)`,禁 bare `console.*`(CLAUDE.md Logging)。
 - CSS 无关;本计划不触样式。
 - 每个任务提交前过 review 门(CLAUDE.md「Never commit unreviewed code」;subagent-driven 模式下评审发生在任务边界)。
@@ -36,7 +36,7 @@
 | `server/session-manager.test.ts` | 修改 | SDK 无损 / ring 有闸 的集成回归 |
 | `server/async-subscription.test.ts` | 新建 | overflow 原因判别单测 |
 | `server/ws.test.ts` | 修改 | 溢出→close、合法 teardown→不 close、replay 字节预算 |
-| `src/utils/image-downscale.test.ts` | 新建 | 触发门与回退臂(jsdom 无 canvas,只测决策分支) |
+| `src/utils/image-downscale.test.ts` | 新建 | node 环境(:135 first-match):回退臂天然覆盖 + `vi.stubGlobal` 成功臂 + 预算透传 |
 
 **PR 分组(spec §6):** Tasks 1–3 = PR-A(止血);Tasks 4–6 = PR-B(恢复语义);Task 7 = 收口验证。任务按序执行,PR-B 不依赖 PR-A 的代码,但验证门依赖两者。
 
@@ -99,6 +99,14 @@ describe('capUserPromptContent', () => {
     const r = capUserPromptContent([tr])
     expect(r.changed).toBe(false)
   })
+
+  it('caps the WHOLE message at 6M even when every block passes its per-block budget (I2a)', () => {
+    const blocks = Array.from({ length: 5 }, () => ({ type: 'text', text: 't'.repeat(1_900_000) }))
+    const r = capUserPromptContent(blocks)
+    expect(r.changed).toBe(true)
+    const total = (r.content as Array<{ text?: string }>).reduce((n, b) => n + (b.text?.length ?? 0), 0)
+    expect(total).toBeLessThanOrEqual(6_000_000 + 4_096) // last blocks degrade toward the marker
+  })
 })
 ```
 
@@ -110,42 +118,53 @@ Expected: FAIL —「capUserPromptContent is not a function」(或 import 解析
 - [ ] **Step 3: 实现**(`server/history-utils.ts`,放在 `truncateMiddle` 定义之后、`trimToolResultItem` 之前)
 
 ```ts
-/** Maximum chars for a single top-level user-prompt TEXT block (ring +
- *  broadcast copy). 2M chars + image budget siblings stay comfortably under
- *  WsWriteQueue.MAX_QUEUE_CHARS (8M). The send() path had NO text cap at all
- *  before this gate (the route only enforces Hono's 32MB body limit). */
+/** Per-block cap for a top-level user-prompt TEXT block (ring + broadcast
+ *  copy). The send() path had NO text cap at all before this gate (the route
+ *  only enforces Hono's 32MB body limit). */
 const MAX_USER_TEXT_CHARS = 2_000_000
+/** Message-wide retained-size budget — text chars + base64 image chars +
+ *  tool_result content all counted. Without it, five 1.9M text blocks pass
+ *  every per-block budget and reconstitute a >10M ring frame — exactly the
+ *  §1.2 livelock (review I2a). 6M leaves JSON-overhead headroom under the
+ *  8M queue ceiling. */
+const MAX_USER_PROMPT_TOTAL_CHARS = 6_000_000
+/** Degradation marker for a text block whose remaining total-budget share is
+ *  too small to head+tail-truncate meaningfully. */
+const USER_MSG_TRUNCATE_MARKER = '[message truncated — over size budget]'
 
-/** Copy-on-write size gate for TOP-LEVEL user prompt content (sent/sendContent
- *  ring copies, disk-read user frames). Reuses the tool_result image budgets
- *  (2M per image, 4M per message) with the same marker; oversized text gets
- *  head+tail truncation. Returns `changed: false` with the SAME reference when
- *  nothing exceeds budget.
- *
- *  MUST NOT mutate its input: on the send path the SDK queue holds a shallow
- *  `{ ...userMsg }` clone that SHARES `message.content` with the ring object —
- *  an in-place trim would silently replace the image the MODEL receives with
- *  the marker. Every replacement therefore builds a new array / new block
- *  object and reuses untouched blocks by reference.
- *  (tool_result blocks are deliberately passed through untouched: they are
- *  capped in-place by trimLargeToolResults, whose objects never ride the SDK
- *  input queue.) */
-function capUserBlock(block: unknown, retainedImageChars: number): { block: unknown; retained: number } {
-  if (!block || typeof block !== 'object') return { block, retained: 0 }
-  const b = block as { type?: unknown; text?: unknown }
-  if (b.type === 'image') {
-    const len = base64ImageDataLen(b as { type?: unknown; source?: unknown })
-    if (len > 0 && (len > MAX_TOOL_RESULT_IMAGE_CHARS || retainedImageChars + len > MAX_TOOL_RESULT_TOTAL_IMAGE_CHARS)) {
-      return { block: { type: 'text', text: TOOL_RESULT_IMAGE_OMITTED_MARKER }, retained: 0 }
+/** Size contributed to the total budget by a block this gate does NOT
+ *  rewrite (tool_result — capped in place by trimLargeToolResults — and
+ *  unknown shapes). Returns 0 when nothing string-like is present. */
+function blockContentChars(block: { content?: unknown }): number {
+  const c = block.content
+  if (typeof c === 'string') return c.length
+  if (Array.isArray(c)) {
+    let n = 0
+    for (const item of c) {
+      n += base64ImageDataLen(item as { type?: unknown; source?: unknown })
+      const t = (item as { text?: unknown } | null | undefined)?.text
+      if (typeof t === 'string') n += t.length
     }
-    return { block, retained: len }
+    return n
   }
-  if (b.type === 'text' && typeof b.text === 'string' && b.text.length > MAX_USER_TEXT_CHARS) {
-    return { block: { ...b, text: truncateMiddle(b.text, 1_500_000, 400_000) }, retained: 0 }
-  }
-  return { block, retained: 0 }
+  return 0
 }
 
+/** Copy-on-write size gate for TOP-LEVEL user prompt content (sent/sendContent
+ *  ring copies, `!` exec-ring copies, spawn seeds, disk-read user frames).
+ *  Image blocks: the tool_result budgets (2M per image / 4M per message) with
+ *  the same marker. Text blocks: MAX_USER_TEXT_CHARS each. ALL blocks: the
+ *  6M message-wide total budget (over-budget text degrades head+tail, then to
+ *  USER_MSG_TRUNCATE_MARKER; over-budget images to the image marker).
+ *  Returns `changed: false` with the SAME reference when nothing exceeds any
+ *  budget.
+ *
+ *  MUST NOT mutate its input: on the send path the SDK queue holds a shallow
+ *  `{ ...userMsg }` clone that SHARES `message.content` with the ring object,
+ *  and spawn seeds share objects with the PARENT session's live ring. An
+ *  in-place trim would silently rewrite what the MODEL receives / what the
+ *  parent still displays. Every replacement builds a new array / new block
+ *  object and reuses untouched blocks by reference. */
 export function capUserPromptContent(content: unknown): { content: unknown; changed: boolean } {
   if (typeof content === 'string') {
     return content.length > MAX_USER_TEXT_CHARS
@@ -154,14 +173,47 @@ export function capUserPromptContent(content: unknown): { content: unknown; chan
   }
   if (!Array.isArray(content)) return { content, changed: false }
   let out: unknown[] | null = null
-  let retained = 0
+  let imageRetained = 0
+  let totalRetained = 0
   for (let i = 0; i < content.length; i++) {
-    const r = capUserBlock(content[i], retained)
-    retained += r.retained
-    if (r.block !== content[i]) {
-      if (!out) out = content.slice()
-      out[i] = r.block
+    const block = content[i]
+    if (!block || typeof block !== 'object') {
+      totalRetained += String(block ?? '').length
+      continue
     }
+    const b = block as { type?: unknown; text?: unknown; content?: unknown }
+    if (b.type === 'image') {
+      const len = base64ImageDataLen(b as { type?: unknown; source?: unknown })
+      if (len > 0 && (len > MAX_TOOL_RESULT_IMAGE_CHARS
+        || imageRetained + len > MAX_TOOL_RESULT_TOTAL_IMAGE_CHARS
+        || totalRetained + len > MAX_USER_PROMPT_TOTAL_CHARS)) {
+        const marker = { type: 'text', text: TOOL_RESULT_IMAGE_OMITTED_MARKER }
+        if (!out) out = content.slice()
+        out[i] = marker
+        totalRetained += marker.text.length
+      } else {
+        imageRetained += len
+        totalRetained += len
+      }
+      continue
+    }
+    if (b.type === 'text' && typeof b.text === 'string') {
+      const room = Math.min(MAX_USER_TEXT_CHARS, MAX_USER_PROMPT_TOTAL_CHARS - totalRetained)
+      if (b.text.length > room) {
+        const replacement = room > 4096
+          ? { ...b, text: truncateMiddle(b.text, Math.floor(room * 0.75), Math.floor(room * 0.25)) }
+          : { ...b, text: USER_MSG_TRUNCATE_MARKER }
+        if (!out) out = content.slice()
+        out[i] = replacement
+        totalRetained += (replacement.text as string).length
+      } else {
+        totalRetained += b.text.length
+      }
+      continue
+    }
+    // tool_result / unknown shapes: left for the dedicated in-place trimmer;
+    // only accounted for against the total budget.
+    totalRetained += blockContentChars(b)
   }
   return out ? { content: out, changed: true } : { content, changed: false }
 }
@@ -172,7 +224,7 @@ export function capUserPromptContent(content: unknown): { content: unknown; chan
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `npx vitest run server/history-utils.test.ts`
-Expected: PASS(全部 8 例 = 既有 removeFromHistory 3 例 + 新增 5 例)。
+Expected: PASS(全部 10 例 = 既有 removeFromHistory 4 例 + 新增 6 例;`grep -c "it(" ` 现值 4,评审 I 已核)。
 
 - [ ] **Step 5: 提交**
 
@@ -183,10 +235,10 @@ git commit -m "history-utils: copy-on-write size gate for top-level user prompt 
 
 ---
 
-### Task 2: `dispatchUserMessage` 接入闸(session-manager.ts)
+### Task 2: 接入闸(send/sendContent/exec 本地路径;session-manager.ts)
 
 **Files:**
-- Modify: `server/session-manager.ts`(`dispatchUserMessage :2542-2555`、`send` 返回 `:2502`、`sendContent` 返回 `:2521`)
+- Modify: `server/session-manager.ts`(`dispatchUserMessage :2542-2555`、`send` 返回 `:2502`、`sendContent` 返回 `:2521`、`execInSession` 本地 `!` 分支 `:2892-2905`)
 - Test: `server/session-manager.test.ts`(`describe('SessionManager')` 内追加)
 
 **Interfaces:**
@@ -235,6 +287,24 @@ it('send: oversized plain text is head+tail capped in the ring copy, SDK gets th
   expect(ringMsg.message!.content).toContain('chars omitted')
   expect((ringMsg.message!.content as string).length).toBeLessThan(text.length)
 })
+
+it('execInSession(!): local-only synthetic frame is ring-gated too (I2b)', async () => {
+  const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+  // 2.4M mock stdout ⇒ synthetic string content > MAX_USER_TEXT_CHARS (2M).
+  // (Real execCommand trims at 1M/stream, but escapeXml's worst-case 5x
+  // expansion (`&`→`&amp;`) can still push an under-cap stream past 8M —
+  // the gate is on the post-escape synthetic string, so it must run here.)
+  vi.mocked(mockExecCommand).mockResolvedValueOnce({
+    exitCode: 0, stdout: 'x'.repeat(2_400_000), stderr: '', interrupted: false, truncated: false,
+  } as never)
+  const res = await sm.execInSession(info.id, 'fake-cmd', { share: false })
+  const content = (res.message as { message: { content: string } }).message.content
+  expect(content).toContain('chars omitted')
+  expect(content.length).toBeLessThanOrEqual(2_000_000 + 100_000) // tags/escape overhead slack
+  const ring = (sm as unknown as { sessions: Map<string, { history: Array<{ uuid?: string; message?: { content?: string } }> }> })
+    .sessions.get(info.id)!.history
+  expect(ring.find((m) => m.uuid === (res.message as { uuid?: string }).uuid)!.message!.content).toBe(content) // response == ring copy
+})
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -275,7 +345,27 @@ Expected: 两条 FAIL(ring 里仍是 marker 缺失/未截断)。
    *  withdrawals, rewind), so the copy/clone divergence is transparent.
 ```
 
-`send` 的 `:2502` 与 `sendContent` 的 `:2521` 改为 `return this.dispatchUserMessage(s, userMsg) as SentUserMessage`(`:2498`/`:2520` 处原调用合并进 return;`SentUserMessage = SDKUserMessage & { receivedAt: number }`,`:410`)。`execInSession`(`:2889`)忽略返回值,不依赖新签名,无需改动。
+`send` 的 `:2502` 与 `sendContent` 的 `:2521` 改为 `return this.dispatchUserMessage(s, userMsg) as SentUserMessage`(`:2498`/`:2520` 处原调用合并进 return;`SentUserMessage = SDKUserMessage & { receivedAt: number }`,`:410`)。`execInSession` 的 `!!` 共享路径走 `dispatchUserMessage`(:2889)自动受闸;**本地 `!` 分支(:2892-2905)直连 `pushToSession`,须显式过闸**(评审 I2b):
+
+```ts
+    } else {
+      // `!` — local only …(原注释块保留)…
+      // Ring-entry gate (spec① §3.1 / review I2b): the escapeXml-expanded
+      // synthetic string can exceed the per-block text budget. This frame
+      // never rides the SDK queue, so no clone-sharing hazard — but the ring,
+      // the live broadcast, and the REST response all use THIS one object,
+      // so cap once and propagate the capped copy everywhere.
+      const gate = capUserPromptContent(userMsg.message.content)
+      const ringMsg: SDKUserMessage = gate.changed
+        ? ({ ...userMsg, message: { ...userMsg.message, content: gate.content } } as SDKUserMessage)
+        : userMsg
+      this.pushToSession(s, ringMsg)
+      …(pendingTurns 复位与 broadcastGlobal 原样)…
+    }
+    return { ...result, message: /* 本地分支取 ringMsg,共享分支取 userMsg —— 提变量出 if/else */ userMsg }
+```
+
+实施提示:在 `if (share)` 之前构造 `let outMsg = userMsg`,else 分支内赋 `outMsg = ringMsg`,`return { ...result, message: outMsg }`(共享分支的 ring 副本由 dispatchUserMessage 内部处理,响应对象无需换)。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -293,12 +383,12 @@ git commit -m "session-manager: ring-entry size gate on user turns; SDK keeps th
 ### Task 3: 磁盘/pump 读路径同闸(`trimLargeToolResults` 扩臂)
 
 **Files:**
-- Modify: `server/history-utils.ts`(`trimLargeToolResults :341-362`)
+- Modify: `server/history-utils.ts`(`trimLargeToolResults :341-362`;新增 `capSeedFrame` 导出)、`server/session-manager.ts`(spawn 种子循环 `:2164-2169`)
 - Test: `server/history-utils.test.ts`
 
 **Interfaces:**
 - Consumes: Task 1 的 `capUserPromptContent`(同文件)。
-- Produces: 无新导出;行为变更 = `history-reader.ts:304`(`resume` 种子/翻页/搜索)与 `session-pump.ts:823` 的既有调用自动获得用户顶层块的裁剪(存量中毒会话自愈路径)。
+- Produces: 行为变更 = `history-reader.ts:304`(`resume` 种子/翻页/搜索)与 `session-pump.ts:823` 的既有调用自动获得用户顶层块的裁剪(存量中毒会话自愈路径);**`export function capSeedFrame(m: SDKMessage): SDKMessage`**(COW 的单帧闸,spawn 种子循环保留父 ring 对象引用时用)。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -324,7 +414,31 @@ describe('trimLargeToolResults — top-level user content (spec① §3.2)', () =
     expect((msg as { message: { content: string } }).message.content).toContain('chars omitted')
   })
 })
+
+describe('capSeedFrame (I2c: fork/discard ring-seed gate)', () => {
+  it('caps oversized user image blocks WITHOUT mutating the shared parent-ring object', () => {
+    const block = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(2_500_000) } }
+    const frame = { type: 'user', uuid: 'u1', message: { role: 'user', content: [block] } } as never
+    const capped = capSeedFrame(frame) as { message: { content: Array<Record<string, unknown>> } }
+    expect(capped).not.toBe(frame)
+    expect(capped.message.content[0]).toEqual({ type: 'text', text: '[image omitted — too large to sync]' })
+    // The PARENT's objects are untouched (COW): parent keeps its own array
+    // with the ORIGINAL block reference and full base64 on it.
+    expect((frame as { message: { content: unknown[] } }).message.content).not.toBe(capped.message.content)
+    expect((frame as { message: { content: unknown[] } }).message.content[0]).toBe(block)
+    expect(block.source.data.length).toBe(2_500_000)
+  })
+
+  it('returns non-user and within-budget frames as the SAME reference', () => {
+    const assistant = { type: 'assistant', message: { content: [] } } as never
+    expect(capSeedFrame(assistant)).toBe(assistant)
+    const small = { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'ok' }] } } as never
+    expect(capSeedFrame(small)).toBe(small)
+  })
+})
 ```
+
+(测试文件顶部 import 扩为 `import { capSeedFrame, capUserPromptContent, removeFromHistory, trimLargeToolResults } from './history-utils.js'`。)
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -358,6 +472,46 @@ Expected: 两条 FAIL(content 原样)。
 
 函数头注释(`:334-340`)补一句:「AND caps top-level user image/text blocks (spec① §3.2) so disk-restored oversized pastes can never re-livelock a WS replay」。函数名不改(YAGNI,改名是 churn;文档与 CLAUDE.md 记语义)。
 
+同文件追加种子闸(测试文件已引用):
+
+```ts
+/** Copy-on-write application of the user-prompt size gate to a single frame.
+ *  Returns the SAME reference when nothing exceeds budget. Used by spawn's
+ *  historySeed loop: fork/discard seeds share frame objects with the PARENT
+ *  session's live ring (session-manager.ts:1773-1779 → :2216 insertion), so
+ *  neither the disk trim (in-place) nor any ad-hoc mutation may touch them —
+ *  trimming a shared object would rewrite what the parent still displays and
+ *  what its WeakMap frame cache already serialized (spec① §3.2 v3, review I2c). */
+export function capSeedFrame(m: SDKMessage): SDKMessage {
+  const frame = m as { type?: string; message?: { content?: unknown } }
+  if (frame.type !== 'user') return m
+  const content = frame.message?.content
+  if (content === undefined) return m
+  const gate = capUserPromptContent(content)
+  if (!gate.changed) return m
+  return {
+    ...(m as object),
+    message: { ...(m as { message: object }).message, content: gate.content },
+  } as SDKMessage
+}
+```
+
+`session-manager.ts` spawn 种子循环(`:2164` 附近,现为 `for (const m of historySeed ?? []) { stampReceivedAt(m); ...push(m) }`)改为:
+
+```ts
+    for (const m0 of historySeed ?? []) {
+      // Ring-share gate (spec① §3.2 v3): live-ring seeds (discard/fork) may
+      // carry oversized user frames transplanted from the parent BEFORE any
+      // disk trim exists. capSeedFrame is COW — parent objects stay intact.
+      const m = capSeedFrame(m0)
+      stampReceivedAt(m)
+      if (getParentToolUseId(m) != null) seedSub.push(m)
+      else seedMain.push(m)
+    }
+```
+
+import 行补 `capSeedFrame`(并入既有 `from './history-utils.js'` 组)。
+
 - [ ] **Step 4: 跑测试确认通过**
 
 Run: `npx vitest run server/history-utils.test.ts server/history-reader.test.ts` → 全 PASS(history-reader 既有 143-205 段的透传测试不回归:磁盘 user 帧此前无顶层图用例)。
@@ -376,7 +530,7 @@ git commit -m "history-utils: disk/pump user frames get the same top-level size 
 ### Task 4: 订阅溢出判别 `end(reason)` → 驱动关闭 socket(ws.ts:539-547, 602-608;async-subscription.ts:55-70;session-manager.ts:4784-4806)
 
 **Files:**
-- Modify: `server/async-subscription.ts`、`server/session-manager.ts:4784-4806`、`server/ws.ts`(WsWriteQueue 增 `forceClose`;msg-done 分支)
+- Modify: `server/async-subscription.ts`、`server/session-manager.ts:4784-4806`、`server/session-types.ts:702-706`(`SessionBroadcaster.subscribe` 返回形状——ws.ts 的 `sm` 按此接口标注(:229-231),漏了这一行 = `msg.isOverflowed()` TS2339,`npm run typecheck` 直接红;评审 C1)、`server/ws.ts`(WsWriteQueue 增 `forceClose`;msg-done 分支)
 - Test: `server/async-subscription.test.ts`(新建)、`server/ws.test.ts`(追加)
 
 **Interfaces:**
@@ -467,6 +621,17 @@ describe('createAsyncSubscription end-reason discrimination (spec① §3.4)', ()
 
 (`unsubscribe` 走 `sub.end()` **不带 reason**——合法退订不判溢出。)
 
+`server/session-types.ts:702-706`(`SessionBroadcaster`——ws.ts 拿到的 `sm` 声明为此接口,**这一行不加,Task 5 之后 ws.ts 消费 `isOverflowed()` 就是编译错**):
+
+```ts
+  subscribe(sessionId: string): {
+    iterable: AsyncIterable<SDKMessage>
+    history: SDKMessage[]
+    unsubscribe: () => void
+    isOverflowed: () => boolean
+  }
+```
+
 `ws.ts` WsWriteQueue 类(`stop()` 附近)新增:
 
 ```ts
@@ -555,7 +720,7 @@ Expected: 全 PASS(第 1 条在改动前必红:close 永不发生 → 超时)。
 - [ ] **Step 6: 提交**
 
 ```bash
-git add server/async-subscription.ts server/async-subscription.test.ts server/session-manager.ts server/ws.ts server/ws.test.ts
+git add server/async-subscription.ts server/async-subscription.test.ts server/session-manager.ts server/session-types.ts server/ws.ts server/ws.test.ts
 git commit -m "ws: discriminate subscriber overflow from legit teardown; close socket to trigger replay recovery"
 ```
 
@@ -564,7 +729,7 @@ git commit -m "ws: discriminate subscriber overflow from legit teardown; close s
 ### Task 5: replay 字节预算切块 + chunk 间让出(ws.ts:467-498)
 
 **Files:**
-- Modify: `server/ws.ts`(`shouldBroadcastMessage` 过滤之后的 chunk 块整体替换)
+- Modify: `server/ws.ts`(`shouldBroadcastMessage` 过滤之后的 chunk 块整体替换)、`shared/ws-protocol.ts`(`:144-146` 注释:`chunked replay (>50 messages)` → `(>50 messages or >2M chars)`,仅注释)
 - Test: `server/ws.test.ts`
 
 **Interfaces:**
@@ -655,7 +820,7 @@ it('splits a large replay into byte-budgeted chunks and reassembles in order (sp
 - [ ] **Step 5: 提交**
 
 ```bash
-git add server/ws.ts server/ws.test.ts
+git add server/ws.ts server/ws.test.ts shared/ws-protocol.ts
 git commit -m "ws: byte-budgeted replay chunking with event-loop yields between chunks"
 ```
 
@@ -671,10 +836,10 @@ git commit -m "ws: byte-budgeted replay chunking with event-loop yields between 
 - Consumes: 无。
 - Produces: `export const DOWNSCALE_TRIGGER_BYTES = 1_500_000`;`export async function downscaleImage(file: File, maxBytes?: number): Promise<File>`——超阈值则 canvas 压缩到 ≤maxBytes 的 JPEG,任何失败**回退原文件**(服务端闸兜底,永不丢图)。
 
-- [ ] **Step 1: 写失败测试**(新建 `src/utils/image-downscale.test.ts`;vitest client 项目 jsdom——**无 canvas 实现**,恰好天然覆盖回退臂)
+- [ ] **Step 1: 写失败测试**(新建 `src/utils/image-downscale.test.ts`;环境事实(vitest.config.ts:135,first-match-wins):`src/utils/**/*.test.ts` 跑在 **node** 环境而非 jsdom——`createImageBitmap`/`document` 在 Node 同样不存在,回退臂天然覆盖;**成功臂用 `vi.stubGlobal` 桩覆盖**,不依赖任何 DOM)
 
 ```ts
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DOWNSCALE_TRIGGER_BYTES, downscaleImage } from './image-downscale'
 
 function fakeFile(size: number, type = 'image/png'): File {
@@ -682,21 +847,41 @@ function fakeFile(size: number, type = 'image/png'): File {
 }
 
 describe('downscaleImage', () => {
-  it('returns small files untouched, same reference (no canvas path)', async () => {
+  it('returns small files untouched, same reference (no pipeline)', async () => {
     const f = fakeFile(1024)
     expect(await downscaleImage(f)).toBe(f)
   })
 
   it('falls back to the original when the bitmap pipeline is unavailable', async () => {
-    // jsdom has no createImageBitmap → the try/catch arm must degrade to
-    // "return the original" (the server ring gate remains the backstop).
+    // node env: no createImageBitmap → ReferenceError inside try → the catch
+    // arm must return the ORIGINAL (server ring gate remains the backstop).
     const big = fakeFile(DOWNSCALE_TRIGGER_BYTES + 1)
     expect(await downscaleImage(big)).toBe(big)
   })
 
-  it('leaves non-image types to the caller type check (passes small through)', async () => {
-    const f = fakeFile(64, 'image/tiff')
-    expect(await downscaleImage(f)).toBe(f)
+  it('respects an explicit maxBytes budget (multi-image coordination, I4)', async () => {
+    // Under the caller-passed budget → untouched (same reference, no pipeline).
+    const f = fakeFile(100_000)
+    expect(await downscaleImage(f, 200_000)).toBe(f)
+  })
+
+  it('compresses to JPEG when the pipeline works (stubbed bitmap/canvas)', async () => {
+    const out = new Blob(['jpeg-bytes'], { type: 'image/jpeg' })
+    vi.stubGlobal('createImageBitmap', async () => ({ width: 4000, height: 3000 }))
+    vi.stubGlobal('document', {
+      createElement: () => ({
+        width: 0, height: 0,
+        getContext: () => ({ drawImage: () => {} }),
+        toBlob: (cb: (b: Blob | null) => void) => cb(out),
+      }),
+    })
+    try {
+      const result = await downscaleImage(fakeFile(9_000_000))
+      expect(result.type).toBe('image/jpeg')
+      expect(result.size).toBeLessThanOrEqual(DOWNSCALE_TRIGGER_BYTES)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 ```
@@ -743,18 +928,20 @@ export async function downscaleImage(file: File, maxBytes = DOWNSCALE_TRIGGER_BY
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过** Run: `npx vitest run src/utils/image-downscale.test.ts` → 3 PASS。
+- [ ] **Step 4: 跑测试确认通过** Run: `npx vitest run src/utils/image-downscale.test.ts` → 4 PASS。
 
 - [ ] **Step 5: 接入 hook**(`src/hooks/usePastedImages.ts`)
 
-import 补 `import { downscaleImage } from '../utils/image-downscale'`;`addImage` 内、`ALLOWED_TYPES` 检查之后插入(置于 `MAX_PER_IMAGE` 与总预算两道闸**之前**——压缩后尺寸可能救活原本会被拒的图):
+import 补 `import { downscaleImage, DOWNSCALE_TRIGGER_BYTES } from '../utils/image-downscale'`;`addImage` 内、`ALLOWED_TYPES` 检查之后插入(置于 `MAX_PER_IMAGE` 与总预算两道闸**之前**——压缩后尺寸可能救活原本会被拒的图)。**per-image 预算随已有张数摊薄**(spec ① §3.5 v3 / 评审 I4:3 张各 1.5MB = 6M base64 仍超服务端 4M 消息总预算,第 3 张会被静默 marker 化):
 
 ```ts
     // Oversized pastes get canvas-compressed first (spec① §3.5) so they
     // ride the ring budget and stay visible in the sender's own transcript.
-    // On any failure the ORIGINAL is returned and the existing size gates
-    // do their usual job.
-    file = await downscaleImage(file)
+    // Per-image target scales with the pending count so N images fit the
+    // server's 4M-base64 message budget (≈3MB binary total). On any failure
+    // the ORIGINAL is returned and the existing size gates do their usual job.
+    const perImageMax = Math.min(DOWNSCALE_TRIGGER_BYTES, Math.floor(3_000_000 / (imagesRef.current.length + 1)))
+    file = await downscaleImage(file, perImageMax)
 ```
 
 (`addImage` 的形参改名为 `let file: File` 并在体首重赋值:仓库 eslint 用非 type-aware recommended 集(eslint.config.js:15-16),不含 `no-param-reassign`,参数重赋值合法;若 review 有异议,再改为局部 `const past = await downscaleImage(file)` 并顺延其后三处 `file` 引用。)
@@ -811,6 +998,17 @@ git commit -m "ws-recovery: comment sweep after size-gate landing"   # 仅在产
 
 ## Self-Review 记录(计划完成后自检)
 
-1. **Spec 覆盖**:§3.1→T1+T2;§3.2→T3;§3.3(含 v2 修订)→T5;§3.4→T4;§3.5→T6;§3.6→T3/T4/T5/T7 内联;§5 测试计划 → T1-T6 步骤 + T7 runbook;§6 PR 分组 → File Structure 注。**无缺口**。
+1. **Spec 覆盖**:§3.1→T1+T2;§3.2→T3(含 v3 的 capSeedFrame 种子闸);§3.3(含 v2 修订)→T5;§3.4→T4;§3.5→T6;§3.6→T3/T4/T5/T7 内联;§5 测试计划 → T1-T6 步骤 + T7 runbook;§6 PR 分组 → File Structure 注。**无缺口**。
 2. **占位符扫描**:无 TBD/「similar to Task N」;所有测试与实现为可粘贴实码。
-3. **类型一致性**:`capUserPromptContent` 签名 T1 定义、T2/T3 消费一致;`isOverflowed()` 在 T4 的 manager 返回、驱动消费、测试 fake 三处同名同形;`SUBSCRIBER_QUEUE_CAP` 仅 T4 使用;marker 文案与 Global Constraints 逐字一致;预算常量数值三处(T1 实现、T5 测试断言、约束)一致。T4 Step 5 测试里 `createAsyncSubscription<never>` + `push(i as never)` 是有意为之(驱动只关心 done/reason;内容不参与本断言)。
+3. **类型一致性**:`capUserPromptContent` 签名 T1 定义、T2/T3 消费一致;`isOverflowed()` 在 async-subscription 实现、manager 透出、**session-types.ts 接口(T4,评审 C1 补)**、驱动消费、测试 fake 五处同名同形;`SUBSCRIBER_QUEUE_CAP` 仅 T4 使用;marker 文案与 Global Constraints 逐字一致;预算常量数值(T1 实现、T5 断言、约束)一致。T4 Step 5 测试里 `createAsyncSubscription<never>` 的 cast 是有意为之(驱动只关心 done/reason)。
+
+### 独立评审轮(requesting-code-review,新鲜上下文 reviewer,b2c5388 上执行)
+
+- **C1(已修)**:Task 4 漏 `session-types.ts:702-706` 的 `SessionBroadcaster.subscribe` 接口行 → typecheck 必红;Files 与步骤已补。
+- **I2a/b/c(已修,spec ① v3 + 本计划)**:总预算 6M(5×1.9M 文本块拼帧洞)、`execInSession` 本地 `!` 分支直连 pushToSession 的入口洞、discard/fork **live-ring 种子按引用移植毒帧**(新增 `capSeedFrame`,COW)。Task 1/2/3 代码与测试同步更新。
+- **I3(spec ②,已修)**:修 A 对 idle 直传序无效且那是**主流序**——A′(stamp-at-insert)并入,决策记录 D2e 已改。
+- **I4(已修)**:客户端 per-image 预算按张数摊薄(3MB÷n)。
+- **I5(已修)**:`src/utils/**` 测试实为 **node** 环境(vitest.config.ts:135 first-match,jsdom 说法作废);成功臂补 `vi.stubGlobal` 桩测试。
+- **I6(已注记)**:T2 首测的 sibling-ref 断言在改动前亦绿(红由 marker 断言承载),不作双重红保声明。
+- Minor ×6 全部落文:§1.3 close 措辞、§3.4 blast-radius 声明、§3.3 停滞边界认领、`ws-protocol.ts:144` 注释(T5 文件清单)、PNG→JPEG alpha 取舍注记、spec ② §3.1 孤儿前提(采枚举证明、**拒绝防御剪枝**——「已消费未回显」窗口两条件同为 0 会错杀)。
+- 审计事实面:claim audit table 24 项,除上列 3 WRONG 外全部 CONFIRMED。
