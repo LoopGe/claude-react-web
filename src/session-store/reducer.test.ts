@@ -3458,3 +3458,48 @@ describe('reducer: SESSION_STATE', () => {
     expect(state.mirror.items).toHaveLength(0)
   })
 })
+
+describe('reducer: TASKS_SNAPSHOT is the single authority for isAsync (D1/D2)', () => {
+  const agentToolUse = (id: string, uuid: string, input: Record<string, unknown> = {}): SdkMessage => ({
+    type: 'assistant', uuid, receivedAt: 0,
+    message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Agent', input: { description: 'do work', ...input } }] },
+  }) as unknown as SdkMessage
+  const task = (overrides: Partial<TaskRecordUi> = {}): TaskRecordUi => ({
+    taskId: 't-1', description: 'work', status: 'running', updatedAt: 0, ...overrides,
+  })
+  const snap = (state: SessionState, tasks: TaskRecordUi[]) => reduceSessionState(state, { type: 'TASKS_SNAPSHOT', tasks })
+
+  it('writes isAsync=false from a foreground task record (overrides an existing wrong true)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1', { run_in_background: true }) })
+    // 旧值先被 snapshot(后台)置 true……
+    state = snap(state, [task({ toolUseId: 'tu_a', isBackgrounded: true })])
+    expect(state.mirror.activeSubagents.get('tu_a')?.isAsync).toBe(true)
+    // ……再被 server 权威的 false 覆盖(前台)
+    state = snap(state, [task({ toolUseId: 'tu_a', isBackgrounded: false })])
+    expect(state.mirror.activeSubagents.get('tu_a')?.isAsync).toBe(false)
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('background') // 已被翻过的状态不因 false 而回退
+  })
+
+  it('writes isAsync from a TERMINAL task record (replay recovery replaces the notification stamp)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    state = snap(state, [task({ toolUseId: 'tu_a', status: 'completed', isBackgrounded: true })])
+    expect(state.mirror.activeSubagents.get('tu_a')).toMatchObject({ status: 'running', isAsync: true })
+  })
+
+  it('does NOT flip to background for a foreground (isBackgrounded:false) live record', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    state = snap(state, [task({ toolUseId: 'tu_a', isBackgrounded: false, status: 'running' })])
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('running')
+    expect(state.mirror.activeSubagents.get('tu_a')?.isAsync).toBe(false)
+  })
+
+  it('writes isAsync=false from a TERMINAL foreground record (no-flag sync, replay)', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    state = snap(state, [task({ toolUseId: 'tu_a', status: 'completed', isBackgrounded: false })])
+    expect(state.mirror.activeSubagents.get('tu_a')?.isAsync).toBe(false)
+  })
+})
