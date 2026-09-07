@@ -277,9 +277,6 @@
   font-size: 12px;
   text-align: left;
 }
-.git-file-row-toggle:hover {
-  background: var(--btn-hover-bg);
-}
 @keyframes git-file-row-in {
   from { opacity: 0; transform: translateY(var(--motion-distance-sm)); }
   to   { opacity: 1; transform: translateY(0); }
@@ -464,10 +461,10 @@
 /* ─────────────────────────────────────────────────────────────────
    PR2 additions — write-operation UI
    ─────────────────────────────────────────────────────────────────
-   Hover-revealed file action buttons, section bulk-action buttons,
-   commit form, branches & stashes lists, banner abort buttons. All
-   colours go through CSS variables and reuse the existing .btn /
-   .btn-primary / .btn-danger family for dialog buttons.
+   File-row action buttons, section bulk-action buttons, commit form,
+   branches & stashes lists, banner abort buttons. All colours go through
+   CSS variables and reuse the existing .btn / .btn-primary / .btn-danger
+   family for dialog buttons.
    */
 
 /* (Git op error toasts are now rendered by the global ToastHost; see
@@ -520,16 +517,42 @@
   background: color-mix(in srgb, var(--danger) 15%, transparent);
 }
 
-/* File row layout: button (toggles diff) + actions (stage/unstage/discard).
-   The actions are hidden until row hover, and slide in via opacity. */
+/* File row layout: button (toggles diff) + always-visible actions
+   (stage/unstage/discard). Row hover/selection backdrops are painted on a
+   ::before layer so the highlight can be inset a few px from the panel's
+   left/right edges instead of running edge-to-edge. */
 .git-file-row-line {
+  position: relative;
+  /* Keep the z-index:-1 backdrop inside this row rather than letting it
+     sink behind the panel background. */
+  isolation: isolate;
   display: flex;
   align-items: center;
 }
+.git-file-row-line::before {
+  content: '';
+  position: absolute;
+  z-index: -1; /* paints behind the toggle/actions, above the panel bg */
+  inset: 0 var(--space-1-5);
+  border-radius: var(--radius-sm);
+  background: var(--btn-hover-bg);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
+}
+/* Row hover — one unbroken bar under the toggle AND the action buttons
+   (previously that action strip stayed un-highlighted and visually "cut"
+   the hover). */
+.git-file-row-line:hover::before {
+  opacity: 1;
+}
 /* Keyboard-selection highlight (↑↓/click moves this between file rows).
    A soft accent tint + faint ring reads as a gentle highlight instead of a
-   hard full-strength accent outline. */
-.git-file-row.selected .git-file-row-line {
+   hard full-strength accent outline. Selected outranks hover, so a
+   selected row keeps its accent even while hovered. Untracked rows share
+   the same .git-file-row-line, so all three lists highlight identically. */
+.git-file-row.selected .git-file-row-line::before {
+  opacity: 1;
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
 }
@@ -574,6 +597,30 @@
 }
 .git-action-btn.danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--danger) 15%, transparent);
+  /* Keep the destructive colour readable instead of letting the generic
+     hover rule wash it to --fg. */
+  color: var(--danger);
+}
+/* Inside a file row the .git-file-row-line::before already paints the
+   hover/selection backdrop, so the row's own action buttons switch on a
+   colour-only hover instead of stacking a second box on the same grey.
+   Outside a row-line (e.g. the Stashes Pop/Drop buttons) .git-action-btn
+   keeps its box hover above. filter is inert on non-danger buttons, so one
+   shared transition list covers both variants. */
+.git-file-row-line .git-action-btn {
+  transition:
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    filter var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.git-file-row-line .git-action-btn:hover:not(:disabled) {
+  background: transparent;
+  color: var(--fg);
+}
+.git-file-row-line .git-action-btn.danger:hover:not(:disabled) {
+  /* Brighten the red rather than re-painting the resting --danger, so the
+     row's destructive control still reads as hoverable (colour-only). */
+  color: var(--danger);
+  filter: brightness(1.3);
 }
 
 /* The untracked row uses a static span instead of a button so it
