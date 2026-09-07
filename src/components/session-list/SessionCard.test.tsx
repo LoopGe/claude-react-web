@@ -217,25 +217,49 @@ describe('SessionCard', () => {
     expect(c2.querySelector('.drop-after')).not.toBeNull()
   })
 
-  it('renders the standalone unread dot for an open session', () => {
-    // Unread is always the standalone 8px dot; the slot badge keeps its
-    // normal look (no `unread` modifier).
+  it('replaces the status chip with an unread dot for an open session', () => {
+    // B design: unread collapses the right-hand status chip to a lone accent
+    // dot — no "live/working" text. The slot badge keeps its normal look.
     const { container } = render(
       <SessionCard {...baseProps} isOpen hasUnread slotIdx={1} />,
     )
     const slot = container.querySelector('.session-item-slot')
     expect(slot?.textContent).toBe('2') // slotIdx + 1
     expect(slot?.classList.contains('unread')).toBe(false)
-    const dot = container.querySelector('.session-item-unread')
-    expect(dot).not.toBeNull()
-    expect(dot?.getAttribute('aria-label')).toBe('unread')
+    // The leading inline dot is gone; the chip now carries status-unread.
+    expect(container.querySelector('.session-item-unread')).toBeNull()
+    const badge = container.querySelector('.session-item-badge')
+    expect(badge?.classList.contains('status-unread')).toBe(true)
+    expect(badge?.classList.contains('status-live')).toBe(false)
+    // Status text is hidden while unread; aria still names the state. The
+    // badge is role="img" so the aria-label reaches assistive tech (a bare
+    // span's generic role would ignore it).
+    expect(container.textContent).not.toContain('live')
+    expect(badge?.getAttribute('role')).toBe('img')
+    expect(badge?.getAttribute('aria-label')).toBe('Unread, live')
   })
 
-  it('renders the standalone unread dot for a closed session', () => {
-    // A closed session has no slot badge, but still gets the same unread dot.
-    const { container } = render(<SessionCard {...baseProps} hasUnread />)
+  it('replaces the dormant status chip with an unread dot for a closed session', () => {
+    const session = makeSession({ running: false }) // dormant
+    const { container } = render(<SessionCard {...baseProps} session={session} hasUnread />)
     expect(container.querySelector('.session-item-slot')).toBeNull()
-    expect(container.querySelector('.session-item-unread')).not.toBeNull()
+    expect(container.querySelector('.session-item-unread')).toBeNull()
+    const badge = container.querySelector('.session-item-badge')
+    expect(badge?.classList.contains('status-unread')).toBe(true)
+    expect(badge?.classList.contains('status-dormant')).toBe(false)
+    expect(container.textContent).not.toContain('dormant')
+    expect(badge?.getAttribute('aria-label')).toBe('Unread, dormant')
+  })
+
+  it('keeps the status explanation reachable on the unread badge', () => {
+    // A waiting (background-subagent) session that is also unread: the visible
+    // chip is just the dot, but hover/AT still surface the amber state.
+    const session = makeSession({ running: true, working: false, backgroundSubagentCount: 1 })
+    const { container } = render(<SessionCard {...baseProps} session={session} hasUnread />)
+    const badge = container.querySelector('.session-item-badge')
+    expect(badge?.classList.contains('status-unread')).toBe(true)
+    expect(badge?.getAttribute('title')).toContain('background subagent')
+    expect(badge?.getAttribute('aria-label')).toBe('Unread, waiting on background subagent')
   })
 
   it('renders slot number when isOpen', () => {
@@ -283,10 +307,10 @@ describe('SessionCard', () => {
     expect(container.querySelector('.session-item-slot')).toBeNull()
   })
 
-  it('folds pending into the open slot badge while the unread dot stays independent', () => {
-    // Open + pending + unread: the slot badge carries the pending state
-    // (amber), and unread remains its own standalone dot — both signals
-    // coexist, matching the pre-consolidation behaviour.
+  it('folds pending into the slot badge while unread collapses the status chip', () => {
+    // Open + pending + unread: pending rides the slot badge (amber); unread
+    // collapses the right-hand status chip to the lone accent dot. The two
+    // signals live on opposite sides of the title row and don't collide.
     const { container } = render(
       <SessionCard
         {...baseProps}
@@ -300,7 +324,8 @@ describe('SessionCard', () => {
     expect(slot?.classList.contains('pending')).toBe(true)
     expect(slot?.classList.contains('unread')).toBe(false)
     expect(container.querySelector('.session-item-perm-badge')).toBeNull()
-    expect(container.querySelector('.session-item-unread')).not.toBeNull()
+    expect(container.querySelector('.session-item-unread')).toBeNull()
+    expect(container.querySelector('.session-item-badge.status-unread')).not.toBeNull()
   })
 
   it('keeps the pending amber styling even when the focused slot also has pending', () => {

@@ -384,8 +384,8 @@ body.resizing-col .app {
   color: var(--on-accent);
 }
 /* Unread dot on a non-focused open panel's header. Sits between the slot
-   badge and the title — matches the sidebar's .session-item-unread treatment
-   so the two indicators feel consistent. */
+   badge and the title — an 8px accent dot with a bg ring. (The sidebar card
+   shows its own unread in the status slot at the row's right end.) */
 .chat-panel-unread {
   display: inline-block;
   width: 8px;

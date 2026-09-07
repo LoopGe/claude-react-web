@@ -1161,19 +1161,6 @@
 }
 /* Unread cards brighten their title via this rule. */
 .session-item.unread strong { color: var(--fg); }
-/* Unread dot — a standalone 8px accent dot to the left of the title, shown
-   for every unread session (open and closed). The `--bg` ring keeps it
-   legible over the card background. */
-.session-item-unread {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-circle);
-  background: var(--accent);
-  margin-right: 6px;
-  vertical-align: middle;
-  box-shadow: 0 0 0 2px var(--bg);
-}
 /* Pending-permission count badge — appears next to the title when the
    session has tool permission / AskUserQuestion requests waiting on the
    user. Pulses gently so dormant tabs don't get missed. Uses --warn
@@ -1317,6 +1304,14 @@
 }
 /* ended = terminated → small solid muted dot (already the default bg) */
 .session-status-dot.status-ended { background: var(--fg-muted); }
+/* unread = the status chip collapses to a lone accent dot (no state text).
+   Slightly larger than the sibling 7px state dots so it reads as a badge on
+   its own at the row's right edge. */
+.session-status-dot.status-unread {
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+}
 @media (prefers-reduced-motion: reduce) {
   .session-status-dot.status-working { animation: none; }
   .session-status-dot { transition: none; }

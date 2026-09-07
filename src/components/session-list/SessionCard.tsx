@@ -148,6 +148,19 @@ export const SessionCard = memo(function SessionCard({
     live: 'live',
     dormant: 'dormant',
   }
+  // Status-chip hover text: only meaningful when there's something to explain
+  // (an error, a background subagent still in flight, or a terminated reason).
+  // While unread the chip collapses to a lone dot, but this explanation is
+  // still surfaced via the dot's title/aria so no state info is lost.
+  const statusTitle = s.error
+    ?? (waiting
+      // A finished parent turn with a background subagent still in flight:
+      // explain the amber dot on hover ("Waiting for a background subagent")
+      // instead of leaving the title empty.
+      ? statusLabel(s)
+      : s.terminated && s.terminatedReason
+        ? statusLabel(s)
+        : '')
   const permissionMode = s.permissionMode ?? 'default'
 
   return (
@@ -163,9 +176,10 @@ export const SessionCard = memo(function SessionCard({
         s.terminated ? 'terminated' : '',
         dormant ? 'dormant' : '',
         isResuming ? 'resuming' : '',
-        // Unread is always the standalone 8px dot (rendered below); the
-        // `unread` class brightens the title (.session-item.unread strong)
-        // so the card reads at a glance.
+        // Unread collapses the status chip to a lone accent dot in the title
+        // row's status slot (rendered below); the `unread` class additionally
+        // brightens the title (.session-item.unread strong) so the card reads
+        // at a glance.
         hasUnread ? 'unread' : '',
         isDragging ? 'dragging' : '',
         isDeleting ? 'deleting' : '',
@@ -291,11 +305,6 @@ export const SessionCard = memo(function SessionCard({
               </Tooltip>
             )
           )}
-          {/* Unread is always the standalone 8px dot, next to the title —
-              open sessions get it alongside the slot badge, closed sessions
-              alongside the (optional) pending pill. role="img" exposes the
-              aria-label to AT (a bare span's generic role ignores it). */}
-          {hasUnread && <span className="session-item-unread" role="img" aria-label="unread" />}
           <Tooltip label={permissionModeLabel(permissionMode)} placement="right">
             <span
               className={`session-item-mode-badge mode-${permissionMode}`}
@@ -315,26 +324,33 @@ export const SessionCard = memo(function SessionCard({
             </span>
         </strong>
         <span
-          className={`session-item-badge status-${status}`}
+          className={`session-item-badge ${hasUnread ? 'status-unread' : `status-${status}`}`}
+          // A bare span's generic role ignores aria-label (see the removed
+          // leading-dot comment), so while unread — when the chip has no text
+          // content and only an aria-hidden dot — the badge needs role="img"
+          // for AT to announce the name.
+          role={hasUnread ? 'img' : undefined}
           title={
-            s.error
-            ?? (waiting
-              // A finished parent turn with a background subagent still in
-              // flight: explain the amber dot on hover ("Waiting for a
-              // background subagent") instead of leaving the title empty.
-              ? statusLabel(s)
-              : s.terminated && s.terminatedReason
-                ? statusLabel(s)
-                : '')
+            hasUnread
+              ? (statusTitle ? `Unread · ${statusTitle}` : 'Unread')
+              : statusTitle
           }
-          aria-label={`Status: ${statusAria[status]}`}
+          aria-label={
+            hasUnread
+              ? `Unread, ${statusAria[status]}`
+              : `Status: ${statusAria[status]}`
+          }
         >
-          {status === 'resuming' ? (
+          {hasUnread ? (
+            // Unread collapses the chip to a lone accent dot — no state text.
+            // The underlying state stays reachable via title/aria above.
+            <span className="session-status-dot status-unread" aria-hidden />
+          ) : status === 'resuming' ? (
             <span className="session-resuming-spinner" aria-hidden />
           ) : (
             <span className={`session-status-dot status-${status}`} aria-hidden />
           )}
-          <span className="session-status-label">{statusText[status]}</span>
+          {!hasUnread && <span className="session-status-label">{statusText[status]}</span>}
         </span>
       </div>
       )}
