@@ -1300,6 +1300,29 @@ describe('applyTaskEvent', () => {
     expect(rec.skipTranscript).toBeUndefined()
   })
 
+  it('task_started folds is_backgrounded (true for async, false for foreground)', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', {
+      task_id: 't-bg', tool_use_id: 'tu-bg', description: 'bg agent',
+      task_type: 'local_agent', is_backgrounded: true, receivedAt: 1,
+    }))
+    expect(session.tasks.get('t-bg')).toMatchObject({ taskId: 't-bg', isBackgrounded: true })
+
+    applyTaskEvent(session, sysFrame('task_started', {
+      task_id: 't-fg', tool_use_id: 'tu-fg', description: 'fg agent',
+      task_type: 'local_agent', is_backgrounded: false, receivedAt: 2,
+    }))
+    expect(session.tasks.get('t-fg')).toMatchObject({ taskId: 't-fg', isBackgrounded: false })
+  })
+
+  it('task_started leaves isBackgrounded undefined when the frame omits it (older CLIs)', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', {
+      task_id: 't-x', description: 'plain', receivedAt: 3,
+    }))
+    expect(session.tasks.get('t-x')?.isBackgrounded).toBeUndefined()
+  })
+
   it('ignores non-system frames, non-task subtypes, and frames without a task_id', () => {
     const { session } = makeTaskSession()
     applyTaskEvent(session, { type: 'assistant' } as unknown as SDKMessage)
