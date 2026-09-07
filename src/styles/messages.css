@@ -2495,6 +2495,10 @@ details.plan-card-collapsible > summary > .plan-card-header {
   text-transform: none;
   letter-spacing: 0;
   font-size: 11px;
+  /* Header chips come straight from the model and can be path-like mono
+     tokens; without a wrap rule a long chip refuses to shrink as a flex
+     item (min-width: auto) and stretches the whole .question-header row. */
+  overflow-wrap: anywhere;
 }
 .question-index {
   font-family: var(--mono);
@@ -2507,6 +2511,10 @@ details.plan-card-collapsible > summary > .plan-card-header {
   color: var(--fg);
   line-height: 1.45;
   font-weight: 500;
+  /* Question/option text routinely carries paths, URLs and code tokens with
+     no break opportunities. `anywhere` (not `break-word`) also shrinks the
+     min-content size so flex headers (.question-header chip) can shrink. */
+  overflow-wrap: anywhere;
 }
 .question-options {
   display: flex;
@@ -2556,11 +2564,13 @@ details.plan-card-collapsible > summary > .plan-card-header {
 .question-option-label {
   font-weight: 500;
   font-size: var(--fs-base);
+  overflow-wrap: anywhere;
 }
 .question-option-desc {
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 .question-option-preview {
   margin-top: 4px;
@@ -2613,6 +2623,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   border-radius: var(--radius-xs);
   font-size: 13px;
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 
 /* --- MCP elicitation dialog (ElicitationDialog) -----------------------
@@ -2917,11 +2928,13 @@ details.plan-card-minimized {
 .question-inline-option-label {
   font-weight: 500;
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 .question-inline-option-desc {
   font-size: var(--fs-xs);
   color: var(--fg-muted);
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 .question-inline-option-custom-tag {
   font-size: var(--fs-2xs);
