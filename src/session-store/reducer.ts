@@ -1705,16 +1705,18 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     }
   }
 
-  // Task-notification completion for async/background subagents. The Agent
-  // tool_result was a launch ack (status flipped to 'background' above); the
-  // real completion arrives as EITHER a harness `<task-notification>` user-
-  // role XML injection OR an SDK `system`/`task_notification` frame — both
-  // carry the originating Agent tool_use_id (the XML path always, the system
-  // frame optionally). Match it back to the background record and flip to
-  // 'done' ('interrupted' on failed/stopped), stamping endedAt to the
-  // notification's receivedAt (the true completion moment, ≥ the last child
-  // frame the async-detector branch advanced endedAt to). Mirrors the
-  // synchronous result-merge so SubagentCard merges the output inline.
+  // Task-notification completion signal for ALL subagent tasks (async AND
+  // sync/foreground). The real completion arrives as EITHER a harness
+  // `<task-notification>` user-role XML injection OR an SDK `system`/
+  // `task_notification` frame — both carry the originating Agent tool_use_id
+  // (the XML path always, the system frame optionally). Match it back to the
+  // record and flip to 'done' ('interrupted' on failed/stopped), stamping
+  // endedAt to the notification's receivedAt (the true completion moment, ≥
+  // the last child frame the async-detector branch advanced endedAt to).
+  // Mirrors the synchronous result-merge so SubagentCard merges the output
+  // inline. `isAsync` is NOT touched here — it is the sole authority of
+  // TASKS_SNAPSHOT (the `isBackgrounded` field), so a pure-foreground sync
+  // subagent that receives a notification stays isAsync:false.
   //
   // `result` is only filled when no child text frame already captured it:
   // the async subagent's real output streamed as child assistant text
@@ -1774,10 +1776,6 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         ...existing,
         status: isError ? 'interrupted' : 'done',
         endedAt: stamp,
-        // A task-notification only ever targets an async subagent, so stamp
-        // isAsync definitively (the ack may have been lost, leaving isAsync
-        // unset if no child frame arrived to trip the async-detector).
-        isAsync: true,
         // Don't clobber an existing (child-text-captured) result, AND don't
         // set a result when the notification carries no content (notably a
         // synthesized `stopped` from the watcher backstop, whose summary is

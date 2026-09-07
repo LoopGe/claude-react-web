@@ -497,6 +497,13 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     expect(state.mirror.activeSubagents.get('tu_lost')?.status).toBe('running')
+    // Feed a TASKS_SNAPSHOT with isBackgrounded:true to set isAsync (the
+    // notification no longer stamps isAsync — the snapshot is the authority).
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-1', toolUseId: 'tu_lost', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
+    expect(state.mirror.activeSubagents.get('tu_lost')?.isAsync).toBe(true)
 
     state = reduceSessionState(state, { type: 'MESSAGE', message: notification })
     const record = state.mirror.activeSubagents.get('tu_lost')
@@ -635,6 +642,13 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // Feed a TASKS_SNAPSHOT with isBackgrounded:true so the snapshot (not the
+    // notification) sets isAsync — the notification no longer stamps isAsync.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-late', toolUseId: 'tu_late', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
+    expect(state.mirror.activeSubagents.get('tu_late')?.isAsync).toBe(true)
     state = reduceSessionState(state, { type: 'MESSAGE', message: result })
     expect(state.mirror.activeSubagents.get('tu_late')?.status).toBe('pending')
     // The completion signal arrives well after the parent turn ended.
@@ -3501,5 +3515,34 @@ describe('reducer: TASKS_SNAPSHOT is the single authority for isAsync (D1/D2)', 
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
     state = snap(state, [task({ toolUseId: 'tu_a', status: 'completed', isBackgrounded: false })])
     expect(state.mirror.activeSubagents.get('tu_a')?.isAsync).toBe(false)
+  })
+})
+
+describe('reducer: a pure foreground (sync) subagent that also gets a task_notification stays sync (D1/D2 regression)', () => {
+  const agentToolUse = (id: string, uuid: string, input: Record<string, unknown> = {}): SdkMessage => ({
+    type: 'assistant', uuid, receivedAt: 0,
+    message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Agent', input: { description: 'sync work', ...input } }] },
+  }) as unknown as SdkMessage
+  const task = (overrides: Partial<TaskRecordUi> = {}): TaskRecordUi => ({
+    taskId: 't-1', description: 'work', status: 'running', updatedAt: 0, ...overrides,
+  })
+  const notification = (toolUseId: string, at: number): SdkMessage => ({
+    type: 'system', subtype: 'task_notification', uuid: `n-${toolUseId}`, task_id: 't-1',
+    tool_use_id: toolUseId, status: 'completed', summary: 'SYNCPROBE_DONE', output_file: '/tmp/x', receivedAt: at,
+  }) as unknown as SdkMessage
+
+  it('keeps isAsync=false when a foreground sync subagent receives its completion notification', () => {
+    let state = createInitialSessionState('s1')
+    // Wire sequence: tool_use(run_in_background:false) -> snapshot(isBackgrounded:false) -> real output tool_result -> task_notification
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_sync', 'a1', { run_in_background: false }) })
+    state = reduceSessionState(state, { type: 'TASKS_SNAPSHOT', tasks: [task({ toolUseId: 'tu_sync', isBackgrounded: false })] })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'user', uuid: 'u1', receivedAt: 10, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_sync', content: 'SYNCPROBE_DONE', is_error: false }] } } as unknown as SdkMessage,
+    })
+    expect(state.mirror.activeSubagents.get('tu_sync')).toMatchObject({ status: 'done', isAsync: false })
+    // task_notification should only complete — must NOT flip sync to async
+    state = reduceSessionState(state, { type: 'MESSAGE', message: notification('tu_sync', 20) })
+    expect(state.mirror.activeSubagents.get('tu_sync')).toMatchObject({ status: 'done', isAsync: false })
   })
 })
