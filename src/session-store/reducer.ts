@@ -33,7 +33,7 @@ import {
   getQuestionToolUseIds,
   parseQuestionAnswersMessage,
 } from '../utils/question-answers'
-import { toolDebug, toolDebugEnabled } from './debug'
+import { toolDebug, toolDebugEnabled, subagentDebug, subagentDebugEnabled } from './debug'
 import { parseWorkflowOutput } from './workflow-meta'
 import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
 
@@ -194,6 +194,18 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         // A record flipped to 'background' IS async work — stamp isAsync so
         // the SubagentCard mode badge agrees (an isBackgrounded task was
         // detached, never run synchronously).
+        // TEMP DEBUG (subagent async/sync)
+        if (subagentDebugEnabled()) {
+          subagentDebug('tasks-snapshot join', {
+            toolUseId: task.toolUseId,
+            taskId: task.taskId,
+            taskStatus: task.status,
+            taskIsBackgrounded: task.isBackgrounded,
+            recordStatus: record.status,
+            rescueSettled,
+            flipToBackground,
+          })
+        }
         activeSubagents.set(task.toolUseId, {
           ...record,
           taskId: task.taskId,
@@ -1531,6 +1543,10 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
     for (const subagent of starts) {
       const existing = activeSubagents.get(subagent.toolUseId)
+      // TEMP DEBUG (subagent async/sync)
+      if (subagentDebugEnabled()) {
+        subagentDebug('seed from tool_use', { toolUseId: subagent.toolUseId, label: subagent.label, seedIsAsync: subagent.isAsync, existingIsAsync: existing?.isAsync })
+      }
       activeSubagents.set(subagent.toolUseId, {
         ...subagent,
         startedAt: existing?.startedAt ?? subagent.startedAt ?? stamp,
@@ -1598,6 +1614,17 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         existing.isAsync === true ||
         (typeof ackText === 'string' && /^async agent launched successfully/i.test(ackText))
       )
+      // TEMP DEBUG (subagent async/sync)
+      if (subagentDebugEnabled()) {
+        subagentDebug('tool_result merge', {
+          toolUseId,
+          existingIsAsync: existing.isAsync,
+          isError,
+          ackTextHead: (typeof ackText === 'string' ? ackText : '').slice(0, 120),
+          isAck,
+          next: isAck ? 'background' : (isError ? 'interrupted' : 'done'),
+        })
+      }
       if (isAck) {
         activeSubagents.set(toolUseId, { ...existing, status: 'background' })
       } else {
@@ -1657,6 +1684,10 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
           : existing.status === 'background' || existing.status === 'pending'
         const endedAtChanged = existing.endedAt == null || stamp > existing.endedAt
         const asyncChanged = existing.isAsync !== nowAsync && nowAsync
+        // TEMP DEBUG (subagent async/sync)
+        if (asyncChanged && subagentDebugEnabled()) {
+          subagentDebug('child-frame → async (child after result/ack)', { parentId, status: existing.status, prevIsAsync: existing.isAsync })
+        }
         if (endedAtChanged || asyncChanged) {
           if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
           activeSubagents.set(parentId, {
@@ -1783,6 +1814,16 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
       // ack text: overwrite it. Every other status keeps the
       // child-text-preserving guard below.
       const overwriteResult = existing.status === 'done' || !existing.result
+      // TEMP DEBUG (subagent async/sync)
+      if (subagentDebugEnabled()) {
+        subagentDebug('task_notification completion', {
+          toolUseId: taskNotification.toolUseId,
+          fromStatus: existing.status,
+          prevIsAsync: existing.isAsync,
+          notifStatus: taskNotification.status,
+          next: isError ? 'interrupted' : 'done',
+        })
+      }
       activeSubagents.set(taskNotification.toolUseId, {
         ...existing,
         status: isError ? 'interrupted' : 'done',
