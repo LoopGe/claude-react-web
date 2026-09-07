@@ -36,8 +36,8 @@ const STEP_PCT = 1
  *  clean (no intermediate pin POST). */
 const DRAG_SLOP_PX = 3
 /** The percentage-cells show bare numbers (25% · 84% · 70%) by default; the
- *  "used / compact / until" word labels are revealed on hover and revert to
- *  numbers-only this many ms after the pointer leaves the bar. */
+ *  "used · compact · until" word labels are revealed on hover and revert to
+ *  numbers-only this many ms after the pointer leaves the readout. */
 const REVEAL_DELAY_MS = 3000
 
 function snapPct(p: number): number {
@@ -85,9 +85,11 @@ export const ContextBar = memo(function ContextBar({
   const keyboardDraftRef = useRef<number | null>(null)
 
   // ── hover-reveal of the used/compact/until word labels ────────────────
-  // Resting state shows bare percentages; hovering the bar reveals the words.
-  // On pointer-leave a 3s timer hides them again (and is cancelled if the
-  // pointer re-enters first). State stays holdable for the whole bar.
+  // Resting state shows bare percentages; hovering the natural-width
+  // percentage readout (`.ctx-bar-stats-hit`) reveals the words. On
+  // pointer-leave a 3s timer hides them again (and is cancelled if the pointer
+  // re-enters first). State stays holdable while the pointer is over that
+  // readout — the flex:1 wrapper around it is deliberately excluded.
   const [revealed, setRevealed] = useState(false)
   const revealTimerRef = useRef<number | null>(null)
   useEffect(
@@ -309,27 +311,33 @@ export const ContextBar = memo(function ContextBar({
     (editable ? ' ctx-bar-marker-interactive' : '')
 
   return (
-    <div
-      className={`ctx-bar ctx-bar-${barLevel}${revealed ? ' ctx-bar-revealed' : ''}`}
-      onPointerEnter={revealLabels}
-      onPointerLeave={hideLabelsAfterDelay}
-    >
+    <div className={`ctx-bar ctx-bar-${barLevel}${revealed ? ' ctx-bar-revealed' : ''}`}>
       <div className="ctx-bar-label">
         <span className="ctx-bar-stats">
-          {stat('used', 'used', bounded)}
-          <span className="ctx-bar-sep" aria-hidden>
-            /
+          {/* The pointer handlers live on this natural-width readout, NOT the
+              flex:1 .ctx-bar-stats wrapper — that wrapper stretches across the
+              whole row, so scoping hover to it would reveal the labels even
+              when the pointer is far to the right of the text. */}
+          <span
+            className="ctx-bar-stats-hit"
+            onPointerEnter={revealLabels}
+            onPointerLeave={hideLabelsAfterDelay}
+          >
+            {stat('used', 'used', bounded)}
+            <span className="ctx-bar-sep" aria-hidden>
+              {' '}·{' '}
+            </span>
+            {stat('compact', 'compact', displayPct)}
+            <span className="ctx-bar-sep" aria-hidden>
+              {' '}·{' '}
+            </span>
+            {stat(
+              'until',
+              'until',
+              percentLeft,
+              untilLevel === 'warn' || untilLevel === 'danger' ? untilLevel : undefined,
+            )}
           </span>
-          {stat('compact', 'compact', displayPct)}
-          <span className="ctx-bar-sep" aria-hidden>
-            /
-          </span>
-          {stat(
-            'until',
-            'until',
-            percentLeft,
-            untilLevel === 'warn' || untilLevel === 'danger' ? untilLevel : undefined,
-          )}
         </span>
         <span className="ctx-bar-nums">
           {hasData ? `${formatTokens(usedTokens!)} / ${formatTokens(max!)}` : '— / —'}

@@ -535,18 +535,23 @@
 .ctx-bar-nums { letter-spacing: 0.02em; flex-shrink: 0; }
 .ctx-bar-out { color: var(--fg-muted); }
 .ctx-bar-cache { color: var(--fg-muted); }
-/* The three always-on percentages (used / compact / until), each a label +
-   value pair. Positioning is stable whether or not a value exists yet. */
+/* The three always-on percentages (used · compact · until), each a label +
+   value pair. Positioning is stable whether or not a value exists yet.
+   `.ctx-bar-stats` is the flex buffer: flex:1 + min-width:0 lets the nowrap
+   cells shrink and clip first, so the always-on token nums on the right never
+   get pushed off a narrow panel. It stretches across the whole row, so it is
+   deliberately NOT the hover target — the natural-width readout inside it is. */
 .ctx-bar-stats {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 12px;
-  /* flex:1 + min-width:0 lets the three nowrap cells shrink and clip first,
-     so the always-on token nums on the right never get pushed off a narrow
-     panel. */
   flex: 1;
   min-width: 0;
   overflow: hidden;
+}
+/* Natural-width readout (three cells + · separators). This is the hover hit
+   area: it wraps only the visible text, so hovering the empty stretch of the
+   flex buffer to its right does not reveal the labels. */
+.ctx-bar-stats-hit {
+  display: inline-flex;
+  align-items: baseline;
 }
 .ctx-bar-stat {
   white-space: nowrap;
@@ -577,9 +582,12 @@
   opacity: 1;
   margin-right: 3px;
 }
+/* Same " · " as the right-side token annotations: the spaces live in the sep's
+   text (white-space: pre keeps them from being collapsed at the flex-item line
+   edges), and the dot is the same muted fg-muted as the right readout. */
 .ctx-bar-sep {
   color: var(--fg-muted);
-  opacity: 0.5;
+  white-space: pre;
 }
 .ctx-bar-stat-warn { color: var(--warn); }
 .ctx-bar-stat-danger { color: var(--danger); }

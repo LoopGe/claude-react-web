@@ -171,12 +171,13 @@ describe('ContextBar', () => {
     const { container } = render(<ContextBar usage={usage} />)
     const bar = container.querySelector('.ctx-bar')!
     const stats = container.querySelector('.ctx-bar-stats')!
+    const readout = container.querySelector('.ctx-bar-stats-hit')!
 
-    // Resting: values + "/" separators visible; the word labels are collapsed
+    // Resting: values + "·" separators visible; the word labels are collapsed
     // (driven by the absence of .ctx-bar-revealed, which gates the CSS
     // max-width/opacity transition). aria-label always carries full meaning.
     expect(stats.textContent).toContain('25%')
-    expect(stats.textContent).toContain('/')
+    expect(stats.textContent).toContain('·')
     expect(bar.classList.contains('ctx-bar-revealed')).toBe(false)
     expect(container.querySelector('.ctx-bar-stat-used')?.getAttribute('aria-label')).toBe(
       'used 25%',
@@ -189,8 +190,8 @@ describe('ContextBar', () => {
       'until 70%',
     )
 
-    // Hovering the bar reveals the words.
-    fireEvent.pointerEnter(bar)
+    // Hovering the three-cell percentage readout reveals the words.
+    fireEvent.pointerEnter(readout)
     expect(bar.classList.contains('ctx-bar-revealed')).toBe(true)
 
     // No stray "· pct" in the token nums anymore; out/cache still render.
@@ -199,15 +200,35 @@ describe('ContextBar', () => {
     expect(nums?.textContent).not.toContain('%')
   })
 
+  it('does not reveal when hovering the stretched stats wrapper (only the readout)', () => {
+    const { container } = render(<ContextBar usage={usage} />)
+    const bar = container.querySelector('.ctx-bar')!
+    const stats = container.querySelector('.ctx-bar-stats')!
+    const readout = container.querySelector('.ctx-bar-stats-hit')!
+    expect(readout).not.toBeNull()
+
+    // .ctx-bar-stats is the flex:1 buffer that stretches across the whole row;
+    // the pointer handlers live on the natural-width .ctx-bar-stats-hit inside
+    // it. Hovering the empty stretch (e.g. far right of the three percentages)
+    // targets the wrapper, which has no handler → nothing reveals.
+    fireEvent.pointerEnter(stats)
+    expect(bar.classList.contains('ctx-bar-revealed')).toBe(false)
+
+    // The readout itself still reveals.
+    fireEvent.pointerEnter(readout)
+    expect(bar.classList.contains('ctx-bar-revealed')).toBe(true)
+  })
+
   it('reverts the labels to bare percentages 3s after pointer leaves', () => {
     vi.useFakeTimers()
     const { container } = render(<ContextBar usage={usage} />)
     const bar = container.querySelector('.ctx-bar')!
+    const readout = container.querySelector('.ctx-bar-stats-hit')!
 
-    fireEvent.pointerEnter(bar)
+    fireEvent.pointerEnter(readout)
     expect(bar.classList.contains('ctx-bar-revealed')).toBe(true)
     // Leaving starts a 3s grace window — labels stay revealed during it.
-    fireEvent.pointerLeave(bar)
+    fireEvent.pointerLeave(readout)
     expect(bar.classList.contains('ctx-bar-revealed')).toBe(true)
     act(() => vi.advanceTimersByTime(2900))
     expect(bar.classList.contains('ctx-bar-revealed')).toBe(true)
@@ -221,11 +242,12 @@ describe('ContextBar', () => {
     vi.useFakeTimers()
     const { container } = render(<ContextBar usage={usage} />)
     const bar = container.querySelector('.ctx-bar')!
+    const readout = container.querySelector('.ctx-bar-stats-hit')!
 
-    fireEvent.pointerEnter(bar)
-    fireEvent.pointerLeave(bar)
+    fireEvent.pointerEnter(readout)
+    fireEvent.pointerLeave(readout)
     act(() => vi.advanceTimersByTime(1000))
-    fireEvent.pointerEnter(bar) // re-enter cancels the pending hide
+    fireEvent.pointerEnter(readout) // re-enter cancels the pending hide
     act(() => vi.advanceTimersByTime(3000))
     expect(bar.classList.contains('ctx-bar-revealed')).toBe(true)
     vi.useRealTimers()
