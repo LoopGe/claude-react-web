@@ -1615,7 +1615,7 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         // launch ack, not the completion (sync subagents' tool_result lands
         // LAST). Flip isAsync on the first such frame — it stays true after.
         // Use `status === 'background' || 'pending'` (set ONLY by the
-        // result-merge / sweep branches — 'background' for an ack, 'pending'
+        // result-merge / sweep branches — 'background' from TASKS_SNAPSHOT, 'pending'
         // for an ack whose parent turn then ended) rather than `result !=
         // null`: the toolCount branch below also writes `result` from child
         // text, so a sync subagent with 2+ text-bearing child frames would
@@ -1719,7 +1719,7 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
   const taskNotification = activeSubagents.size > 0 ? parseTaskNotification(message) : null
   if (taskNotification) {
     const existing = activeSubagents.get(taskNotification.toolUseId)
-    // Accept 'background' (normal: ack seen, still in the dispatch turn) AND
+    // Accept 'background' (normal: TASKS_SNAPSHOT flipped, still in the dispatch turn) AND
     // 'running' (the launch-ack tool_result was lost — a WS gap / replay hole
     // — so the record never flipped to 'background'; the completion signal is
     // still authoritative and must flip it to 'done') AND 'pending' (the
