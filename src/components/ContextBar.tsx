@@ -89,7 +89,7 @@ export const ContextBar = memo(function ContextBar({
   // percentage readout (`.ctx-bar-stats-hit`) reveals the words. On
   // pointer-leave a 3s timer hides them again (and is cancelled if the pointer
   // re-enters first). State stays holdable while the pointer is over that
-  // readout — the flex:1 wrapper around it is deliberately excluded.
+  // readout — the wrapper around it is deliberately excluded.
   const [revealed, setRevealed] = useState(false)
   const revealTimerRef = useRef<number | null>(null)
   useEffect(
@@ -315,9 +315,9 @@ export const ContextBar = memo(function ContextBar({
       <div className="ctx-bar-label">
         <span className="ctx-bar-stats">
           {/* The pointer handlers live on this natural-width readout, NOT the
-              flex:1 .ctx-bar-stats wrapper — that wrapper stretches across the
-              whole row, so scoping hover to it would reveal the labels even
-              when the pointer is far to the right of the text. */}
+              .ctx-bar-stats wrapper — the wrapper is sized to the readout, so
+              hovering the empty stretch of the label row to its right must not
+              reveal the labels. */}
           <span
             className="ctx-bar-stats-hit"
             onPointerEnter={revealLabels}

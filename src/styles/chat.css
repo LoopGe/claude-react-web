@@ -532,23 +532,36 @@
   color: var(--fg-muted);
   font-family: var(--mono);
 }
-.ctx-bar-nums { letter-spacing: 0.02em; flex-shrink: 0; }
+.ctx-bar-nums {
+  letter-spacing: 0.02em;
+  /* Yields to the percentage readout when the row is too narrow: it can
+     shrink (with an ellipsis) so the readout's values — and on hover its
+     revealed labels — are never clipped. At rest on a wide row nothing
+     shrinks; only when readout + nums cannot both fit does the token count
+     trim its tail instead of the readout losing its rightmost cell. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .ctx-bar-out { color: var(--fg-muted); }
 .ctx-bar-cache { color: var(--fg-muted); }
 /* The three always-on percentages (used · compact · until), each a label +
    value pair. Positioning is stable whether or not a value exists yet.
-   `.ctx-bar-stats` is the flex buffer: flex:1 + min-width:0 lets the nowrap
-   cells shrink and clip first, so the always-on token nums on the right never
-   get pushed off a narrow panel. It stretches across the whole row, so it is
-   deliberately NOT the hover target — the natural-width readout inside it is. */
+   `.ctx-bar-stats` wraps the natural-width readout and is sized to it
+   (flex: 0 0 auto, never shrinks): the values and the hover-revealed labels
+   therefore always fit, and when the row is too narrow the token numbers to
+   the right ellipsize instead of the readout being clipped. It is deliberately
+   NOT the hover target — the natural-width readout inside it is. */
 .ctx-bar-stats {
-  flex: 1;
+  flex: 0 0 auto;
   min-width: 0;
   overflow: hidden;
 }
 /* Natural-width readout (three cells + · separators). This is the hover hit
    area: it wraps only the visible text, so hovering the empty stretch of the
-   flex buffer to its right does not reveal the labels. */
+   label row to its right does not reveal the labels. */
 .ctx-bar-stats-hit {
   display: inline-flex;
   align-items: baseline;

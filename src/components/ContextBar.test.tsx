@@ -207,10 +207,10 @@ describe('ContextBar', () => {
     const readout = container.querySelector('.ctx-bar-stats-hit')!
     expect(readout).not.toBeNull()
 
-    // .ctx-bar-stats is the flex:1 buffer that stretches across the whole row;
-    // the pointer handlers live on the natural-width .ctx-bar-stats-hit inside
-    // it. Hovering the empty stretch (e.g. far right of the three percentages)
-    // targets the wrapper, which has no handler → nothing reveals.
+    // The pointer handlers live on the natural-width .ctx-bar-stats-hit, NOT
+    // on the .ctx-bar-stats wrapper. Hovering the wrapper (which is sized to
+    // the readout, so this also represents the empty stretch of the label row
+    // to the right) has no handler → nothing reveals.
     fireEvent.pointerEnter(stats)
     expect(bar.classList.contains('ctx-bar-revealed')).toBe(false)
 
