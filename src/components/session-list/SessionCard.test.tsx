@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent } from '@testing-library/react'
+import { act, render, fireEvent } from '@testing-library/react'
 import { SessionCard, type SessionCardProps } from './SessionCard'
 import type { SessionInfo } from '../../types'
 
@@ -268,6 +268,49 @@ describe('SessionCard', () => {
     )
     const slot = container.querySelector('.session-item-slot')
     expect(slot?.textContent).toBe('2') // slotIdx + 1
+  })
+
+  it('plays the slot entrance only on a closed → open transition', () => {
+    const { container, rerender } = render(
+      <SessionCard {...baseProps} isOpen={false} slotIdx={0} />,
+    )
+    expect(container.querySelector('.session-item-slot')).toBeNull()
+
+    rerender(<SessionCard {...baseProps} isOpen slotIdx={0} />)
+    const slot = container.querySelector('.session-item-slot')
+    expect(slot?.textContent).toBe('1')
+    expect(slot?.classList.contains('slot-in')).toBe(true)
+  })
+
+  it('does not replay the slot entrance when the card mounts already open (scroll remount / first load)', () => {
+    // Virtuoso unmounts off-screen cards and remounts them on scroll; a plain
+    // CSS mount animation would replay every time a card scrolls back into
+    // view. Only a genuine false→true isOpen transition should pop.
+    const { container } = render(
+      <SessionCard {...baseProps} isOpen slotIdx={1} />,
+    )
+    const slot = container.querySelector('.session-item-slot')
+    expect(slot).not.toBeNull()
+    expect(slot?.classList.contains('slot-in')).toBe(false)
+  })
+
+  it('drops the slot entrance class shortly after the pop', () => {
+    // `.slot-in` is cleared on a timer so a pending session's infinite amber
+    // breathing cue resumes right after the ~180ms entrance (and the fill-mode
+    // tail can't linger over later re-renders or suppress the pulse).
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(
+        <SessionCard {...baseProps} isOpen={false} slotIdx={0} />,
+      )
+      rerender(<SessionCard {...baseProps} isOpen slotIdx={0} />)
+      const slot = container.querySelector('.session-item-slot')
+      expect(slot?.classList.contains('slot-in')).toBe(true)
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(slot?.classList.contains('slot-in')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('folds pending responses into the slot badge when open (no separate count badge)', () => {

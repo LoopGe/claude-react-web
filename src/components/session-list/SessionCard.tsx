@@ -3,7 +3,7 @@
 // when only a single card's props change (e.g. a session's `working` flag
 // flips during streaming).
 
-import { memo, useEffect, useRef } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../../hooks/useDragPayload'
 import { useIsMobile } from '../../hooks/useIsMobile'
@@ -112,6 +112,32 @@ export const SessionCard = memo(function SessionCard({
       renameInputRef.current.select()
     }
   }, [isRenaming])
+
+  // Slot-pill entrance: pop the slot number when a session transitions
+  // closed → open. Gated on the false→true EDGE (via wasOpenRef), never on
+  // mount — Virtuoso unmounts off-screen cards and remounts them on scroll,
+  // so a plain CSS mount animation would replay every time an already-open
+  // card scrolled back into view. useLayoutEffect (not useEffect) so the
+  // class is applied before first paint and there's no one-frame flash.
+  // The class is dropped on a short timer (not on mount) so a pending
+  // session's infinite amber breathing cue — whose `animation` shorthand
+  // `.slot-in` would otherwise override — resumes right after the pop.
+  const wasOpenRef = useRef(isOpen)
+  const [slotIn, setSlotIn] = useState(false)
+  useLayoutEffect(() => {
+    const opened = isOpen && !wasOpenRef.current
+    wasOpenRef.current = isOpen
+    if (!opened) {
+      // Reset on close so a later reopen in this same mounted card pops again.
+      if (!isOpen) setSlotIn(false)
+      return
+    }
+    setSlotIn(true)
+    // Slightly longer than the CSS pop (--motion-duration-base: 180ms) so the
+    // fill-mode tail isn't cut by a timer that fires early.
+    const t = setTimeout(() => setSlotIn(false), 240)
+    return () => clearTimeout(t)
+  }, [isOpen])
 
   const dormant = !s.running && !s.terminated
   const working = s.running && s.working
@@ -277,7 +303,7 @@ export const SessionCard = memo(function SessionCard({
               placement="right"
             >
               <span
-                className={`session-item-slot ${isFocused ? 'focused' : ''}${pendingCount > 0 ? ' pending' : ''}`}
+                className={`session-item-slot ${isFocused ? 'focused' : ''}${pendingCount > 0 ? ' pending' : ''}${slotIn ? ' slot-in' : ''}`}
                 aria-label={
                   (isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`)
                   + (pendingCount > 0

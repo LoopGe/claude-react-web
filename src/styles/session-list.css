@@ -1145,6 +1145,17 @@
   color: var(--bg);
   animation: session-await-pulse 1.2s ease-in-out infinite;
 }
+/* Slot-pill entrance: a session opening into a slot pops its number in
+   (fade + slight scale). The `.slot-in` class is applied by SessionCard only
+   on a genuine closed→open edge — never on a scroll remount of an
+   already-open card — so the animation can't replay while scrolling. */
+@keyframes session-slot-in {
+  from { opacity: 0; transform: scale(0.6); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.session-item-slot.slot-in {
+  animation: session-slot-in var(--motion-duration-base) var(--motion-ease-enter) both;
+}
 /* Numeric badges in the title row are wrapped in a Tooltip `.tt-wrap`
    (inline-flex, default baseline). A badge's 10px digit gives that
    wrapper a low baseline, so baseline alignment pushes the pill below
@@ -1199,7 +1210,8 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .session-item-perm-badge,
-  .session-item-slot.pending { animation: none; }
+  .session-item-slot.pending,
+  .session-item-slot.slot-in { animation: none; }
 }
 @keyframes session-working-pulse {
   0%, 100% { opacity: 0.4; transform: scale(0.85); }
