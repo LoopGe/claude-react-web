@@ -469,7 +469,10 @@ describe('SessionStore projection (persist-only capping)', () => {
     // This test does ~300 × 8KB localStorage writes — measured 4.0s isolated,
     // up to ~5.7s under full-suite parallel load, which exceeds vitest's 5s
     // default and flakes the whole verify gate. Raise the per-test timeout.
-  }, 10_000)
+    // It still flaked at 10s on the 4-vCPU CI runner when maxWorkers
+    // oversubscribed the box (8 workers / 4 cores); maxWorkers is now capped to
+    // the machine's parallelism, but keep a generous margin for slow CI hosts.
+  }, 30_000)
 })
 
 describe('SessionStore.clearPersisted', () => {

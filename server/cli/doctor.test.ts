@@ -32,7 +32,15 @@ describe('doctor', () => {
   it('passes (exit 0) when authToken is configured', async () => {
     seedConfig(dir, 'sk-ant-test1234')
     await loadConfig(dir)
-    const parsed = parseArgs([])
+    // Make the test hermetic: doctor's `ok` aggregates the claude-binary
+    // check, which resolves via a PATH lookup and FAILs on machines without
+    // the claude CLI installed (e.g. CI runners). Point it at an existing
+    // executable so this test exercises the authToken behaviour it names,
+    // independent of what is installed on PATH.
+    const parsed = parseArgs(
+      ['--claude-binary', process.execPath],
+      doctorGroup.default!.parseSpec,
+    )
     const data = await doctorGroup.default!.run({ stateDir: dir }, parsed)
     expect((data as { ok: boolean }).ok).toBe(true)
     expect(doctorGroup.default!.exitCode!(data)).toBe(0)

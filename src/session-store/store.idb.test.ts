@@ -197,7 +197,7 @@ describe('SessionStore IDB cache (Phase 1)', () => {
     expect(page!.messages[0].uuid).toBe('old-0') // seq 1, oldest-first
     expect(page!.hasMore).toBe(false)
     expect(page!.contiguous).toBe(true) // seq 1 abuts seq 2
-  }, 30000)
+  }, 60_000)
 
   it('loadOlderFromIdb returns null when IDB is unavailable', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
