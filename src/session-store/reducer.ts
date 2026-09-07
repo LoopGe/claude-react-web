@@ -169,40 +169,27 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         const isTerminal =
           task.status === 'completed' || task.status === 'failed' ||
           task.status === 'killed' || task.status === 'stopped'
-        // The SDK backgrounds a foreground task via is_backgrounded —
-        // flip the chip to `background` so it stays visible (same
-        // semantics as a run_in_background launch ack).
-        //
-        // The flip must also RESCUE a record the backgrounding ack just
-        // mis-settled: backgrounding makes the blocking tool call return
-        // immediately with a "running in the background" result, and when
-        // that tool_result lands BEFORE this snapshot the result-merge
-        // branch stamps 'done'/'interrupted' with the ack text as the
-        // record's result (a synchronous subagent's ack doesn't match the
-        // async launch-ack signature). A task record that is still live
-        // (non-terminal) + backgrounded contradicts that terminal state —
-        // a genuinely settled subagent's task record is terminal — so undo
-        // the bogus endedAt/result and flip to 'background'. The real
-        // completion arrives later via task_notification, which accepts
-        // 'background' records.
+        // ★ 权威写入:server 给了布尔就覆盖(双向;live 与 terminal 都写)。
+        const nextIsAsync = typeof task.isBackgrounded === 'boolean'
+          ? task.isBackgrounded
+          : record.isAsync
+        // rescue:Ctrl+B detach ack(非 launch 签名)把记录误结算成 done/带假 result。
         const rescueSettled =
-          task.isBackgrounded && !isTerminal &&
+          task.isBackgrounded === true && !isTerminal &&
           (record.status === 'done' || record.status === 'interrupted')
         const flipToBackground =
-          task.isBackgrounded && !isTerminal &&
+          task.isBackgrounded === true && !isTerminal &&
           (record.status === 'running' || rescueSettled)
-        // A record flipped to 'background' IS async work — stamp isAsync so
-        // the SubagentCard mode badge agrees (an isBackgrounded task was
-        // detached, never run synchronously).
         activeSubagents.set(task.toolUseId, {
           ...record,
           taskId: task.taskId,
           progressSummary: isTerminal ? undefined : task.progressSummary ?? record.progressSummary,
           lastToolName: isTerminal ? undefined : task.lastToolName ?? record.lastToolName,
+          isAsync: nextIsAsync,
           ...(flipToBackground
             ? rescueSettled
-              ? { status: 'background' as const, endedAt: undefined, result: undefined, isAsync: true }
-              : { status: 'background' as const, isAsync: true }
+              ? { status: 'background' as const, endedAt: undefined, result: undefined }
+              : { status: 'background' as const }
             : {}),
         })
       }
@@ -1063,12 +1050,25 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
     toolDebug('SWEEP running→error at turn end', { ids: swept })
   }
 
+  // D2-B 保险:ack 不再翻 background,a snapshot 先到/seed 后到的 live 后台
+  // 任务记录仍可能是 'running';turn-end 不得把它当 sync 孤儿 interrupt。
+  const liveBgToolUseIds = new Set<string>()
+  for (const t of mirror.tasks) {
+    if (!t.toolUseId) continue
+    const term = t.status === 'completed' || t.status === 'failed' ||
+      t.status === 'killed' || t.status === 'stopped'
+    if (!term && t.isBackgrounded === true) liveBgToolUseIds.add(t.toolUseId)
+  }
+
   // subagents: running (sync orphan) → interrupted; background (async,
   // still working) → pending. Completed records survive.
   for (const [id, sub] of activeSubagents) {
     if (sub.status === 'running') {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
-      activeSubagents.set(id, { ...sub, status: 'interrupted', endedAt: sub.endedAt ?? sub.startedAt })
+      const next = liveBgToolUseIds.has(id)
+        ? { ...sub, status: 'pending' as const, endedAt: sub.endedAt ?? sub.startedAt }
+        : { ...sub, status: 'interrupted' as const, endedAt: sub.endedAt ?? sub.startedAt }
+      activeSubagents.set(id, next)
     } else if (sub.status === 'background') {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
       activeSubagents.set(id, { ...sub, status: 'pending', endedAt: sub.endedAt ?? sub.startedAt })
@@ -1537,8 +1537,8 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         endedAt: existing?.endedAt,
         status: existing?.status ?? 'running',
         toolCount: existing?.toolCount ?? 0,
-        // Frame-timing detection (child after result) overrides the input
-        // flag, so preserve an existing value across replay re-encounters.
+        // TASKS_SNAPSHOT is the sole isAsync authority, so preserve any
+        // existing value across replay re-encounters.
         isAsync: existing?.isAsync ?? subagent.isAsync,
       })
     }
@@ -1558,9 +1558,9 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     // chip row automatically.
     //
     // EXCEPTION — async/background launch ack: an async subagent's Agent
-    // tool_result is a launch acknowledgement, not completion. Flip to
-    // 'background' instead (no endedAt/result) and let the
-    // task-notification completion branch below finish the lifecycle.
+    // tool_result is a launch acknowledgement, not completion. Skip it
+    // entirely (record stays 'running'); TASKS_SNAPSHOT flips it to
+    // 'background', task-notification finishes the lifecycle.
     //
     // Most turns include tool_results unrelated to subagents, so defer
     // the Map clone until we actually have a matching id — otherwise
@@ -1574,40 +1574,25 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     for (const { toolUseId, content, isError } of subagentResultEntries) {
       const existing = activeSubagents.get(toolUseId)
       if (!existing || existing.status !== 'running') continue
+      // D2-B launch-ack guard (pure regex, no seed immunity): an ack
+      // tool_result is NOT real output — skip it entirely so the record
+      // stays 'running'. TASKS_SNAPSHOT (isBackgrounded) is the sole
+      // authority for flipping running→background; task_notification is
+      // the sole authority for completion.
+      const ackText = typeof content === 'string' ? content : resultContentToText(content)
+      const isAck = !isError && typeof ackText === 'string' &&
+        /^async agent launched successfully/i.test(ackText)
+      if (isAck) continue
       if (!touched) {
         if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
         touched = true
       }
-      // Async/background launch ack: the Agent tool_result is just a launch
-      // acknowledgement ("Async agent launched successfully … agentId"),
-      // NOT the subagent's completion — the real output streams later as
-      // child frames and the completion lands as a <task-notification>.
-      // Flip to 'background' (still shown in the WorkingBubble chip row) and
-      // deliberately DO NOT set endedAt/result: the ack time isn't the real
-      // completion time and the ack text isn't the real output. Detected via
-      // the run_in_background input flag (most reliable, when the SDK stamped
-      // one) or, when absent, by sniffing the ack text — a synchronous
-      // subagent's real tool_result never matches the ack signature.
-      const ackText = typeof content === 'string' ? content : resultContentToText(content)
-      // An explicit `run_in_background: false` opts out of ack-sniffing
-      // entirely (a synchronous subagent's real tool_result must not be
-      // mistaken for a launch ack even if its text happens to contain the
-      // signature). Sniff only when isAsync is true (definitive) or
-      // undefined (no flag — fall back to the ack signature).
-      const isAck = !isError && existing.isAsync !== false && (
-        existing.isAsync === true ||
-        (typeof ackText === 'string' && /^async agent launched successfully/i.test(ackText))
-      )
-      if (isAck) {
-        activeSubagents.set(toolUseId, { ...existing, status: 'background' })
-      } else {
-        activeSubagents.set(toolUseId, {
-          ...existing,
-          status: isError ? 'interrupted' : 'done',
-          endedAt: stamp,
-          result: { content, isError },
-        })
-      }
+      activeSubagents.set(toolUseId, {
+        ...existing,
+        status: isError ? 'interrupted' : 'done',
+        endedAt: stamp,
+        result: { content, isError },
+      })
     }
     changed = changed || touched
   }
@@ -1617,53 +1602,34 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
   // For an async/background subagent the Agent tool_result is just a launch
   // ack ("Async agent launched successfully … agentId") that arrives within
   // ms of the tool_use — well before the subagent's real work streams as
-  // child frames (parent_tool_use_id === subagent id). The result-merge
-  // branch above flips the record to 'background' WITHOUT setting endedAt
-  // (the ack time isn't the real run time), so without this extension the
-  // card shows no elapsed at all until completion. Keep advancing endedAt to
-  // each child frame so the chip/card timer reflects real work. The subagent
-  // emits no dedicated end frame of its own, so the last child frame before
-  // the <task-notification> is the de-facto completion signal. For a
-  // synchronous subagent the tool_result already lands last, so
-  // this is a no-op (stamp ≤ existing.endedAt). Fires for any child frame
+  // child frames (parent_tool_use_id === subagent id). TASKS_SNAPSHOT flips
+  // the record to 'background' and sets isAsync (the sole authority), but
+  // does NOT set endedAt (the ack time isn't the real run time). Without
+  // this extension the card shows no elapsed at all until completion. Keep
+  // advancing endedAt to each child frame so the chip/card timer reflects
+  // real work. The subagent emits no dedicated end frame of its own, so the
+  // last child frame before the <task-notification> is the de-facto completion
+  // signal. For a synchronous subagent the tool_result already lands last, so
+  // this is a no-op (stamp <= existing.endedAt). Fires for any child frame
   // (assistant text, tool_use, internal tool_result) — the latest wins.
+  //
+  // isAsync is NOT touched here — TASKS_SNAPSHOT is the sole authority for
+  // that field. Child frames only advance timing and capture tool counts /
+  // result text (handled separately below).
   if (activeSubagents.size > 0) {
     const parentId = typeof message.parent_tool_use_id === 'string' ? message.parent_tool_use_id : ''
     if (parentId) {
       const existing = activeSubagents.get(parentId)
-      // Only advance endedAt/isAsync for LIVE records (running/background/
-      // pending). A dismissed/interrupted/done/rejected record is settled —
-      // a late child frame (an async subagent still streaming after the user
-      // dismissed it or after completion) must NOT advance its endedAt, or the
-      // card's frozen elapsed display would jump forward.
+      // Only advance endedAt for LIVE records (running/background/pending).
+      // A dismissed/interrupted/done/rejected record is settled — a late
+      // child frame (an async subagent still streaming after the user
+      // dismissed it or after completion) must NOT advance its endedAt, or
+      // the card's frozen elapsed display would jump forward.
       if (existing && (existing.status === 'running' || existing.status === 'background' || existing.status === 'pending')) {
         const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
-        // A child frame arriving AFTER the Agent tool_result is the
-        // signature of an async/background subagent: the tool_result was a
-        // launch ack, not the completion (sync subagents' tool_result lands
-        // LAST). Flip isAsync on the first such frame — it stays true after.
-        // Use `status === 'background' || 'pending'` (set ONLY by the
-        // result-merge / sweep branches — 'background' for an ack, 'pending'
-        // for an ack whose parent turn then ended) rather than `result !=
-        // null`: the toolCount branch below also writes `result` from child
-        // text, so a sync subagent with 2+ text-bearing child frames would
-        // otherwise mislabel as async on the second frame. Status itself is
-        // NOT touched here — a 'background'/'pending' record stays as-is
-        // (still working) and just gets its endedAt advanced. 'pending' is
-        // included because a background subagent's child frames can keep
-        // streaming after the parent turn ended (the sweep moved it to
-        // 'pending'); they're still proof of async.
-        const nowAsync = existing.isAsync === true ? true
-          : existing.status === 'background' || existing.status === 'pending'
-        const endedAtChanged = existing.endedAt == null || stamp > existing.endedAt
-        const asyncChanged = existing.isAsync !== nowAsync && nowAsync
-        if (endedAtChanged || asyncChanged) {
+        if (existing.endedAt == null || stamp > existing.endedAt) {
           if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
-          activeSubagents.set(parentId, {
-            ...existing,
-            ...(endedAtChanged ? { endedAt: stamp } : {}),
-            ...(asyncChanged ? { isAsync: true } : {}),
-          })
+          activeSubagents.set(parentId, { ...existing, endedAt: stamp })
           changed = true
         }
       }
@@ -1687,7 +1653,7 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     const parentId = message.parent_tool_use_id
     if (typeof parentId === 'string') {
       const existing = activeSubagents.get(parentId)
-      // Same non-live guard as the async-detector above: don't mutate settled
+      // Same non-live guard as the endedAt-advancement block above: don't mutate settled
       // (done/interrupted/dismissed/rejected) records — late child frames
       // from an async subagent that completed or was dismissed must not
       // advance toolCount/result or churn the Map identity.
@@ -1718,16 +1684,18 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     }
   }
 
-  // Task-notification completion for async/background subagents. The Agent
-  // tool_result was a launch ack (status flipped to 'background' above); the
-  // real completion arrives as EITHER a harness `<task-notification>` user-
-  // role XML injection OR an SDK `system`/`task_notification` frame — both
-  // carry the originating Agent tool_use_id (the XML path always, the system
-  // frame optionally). Match it back to the background record and flip to
-  // 'done' ('interrupted' on failed/stopped), stamping endedAt to the
-  // notification's receivedAt (the true completion moment, ≥ the last child
-  // frame the async-detector branch advanced endedAt to). Mirrors the
-  // synchronous result-merge so SubagentCard merges the output inline.
+  // Task-notification completion signal for ALL subagent tasks (async AND
+  // sync/foreground). The real completion arrives as EITHER a harness
+  // `<task-notification>` user-role XML injection OR an SDK `system`/
+  // `task_notification` frame — both carry the originating Agent tool_use_id
+  // (the XML path always, the system frame optionally). Match it back to the
+  // record and flip to 'done' ('interrupted' on failed/stopped), stamping
+  // endedAt to the notification's receivedAt (the true completion moment, ≥
+  // the last child frame the endedAt-advancement block above advanced endedAt to).
+  // Mirrors the synchronous result-merge so SubagentCard merges the output
+  // inline. `isAsync` is NOT touched here — it is the sole authority of
+  // TASKS_SNAPSHOT (the `isBackgrounded` field), so a pure-foreground sync
+  // subagent that receives a notification stays isAsync:false.
   //
   // `result` is only filled when no child text frame already captured it:
   // the async subagent's real output streamed as child assistant text
@@ -1745,7 +1713,7 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
   const taskNotification = activeSubagents.size > 0 ? parseTaskNotification(message) : null
   if (taskNotification) {
     const existing = activeSubagents.get(taskNotification.toolUseId)
-    // Accept 'background' (normal: ack seen, still in the dispatch turn) AND
+    // Accept 'background' (normal: TASKS_SNAPSHOT flipped, still in the dispatch turn) AND
     // 'running' (the launch-ack tool_result was lost — a WS gap / replay hole
     // — so the record never flipped to 'background'; the completion signal is
     // still authoritative and must flip it to 'done') AND 'pending' (the
@@ -1759,16 +1727,16 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     // the record permanently — see server/subagent-watcher.ts). A real user
     // interrupt can also leave 'interrupted', but a task-notification only
     // arrives when the subagent actually settled, so overriding is correct in
-    // both cases. A synchronous subagent never receives a task-notification,
-    // so accepting 'running'/'interrupted' can't mis-flip a sync record.
+    // both cases. A synchronous subagent that receives a task-notification
+    // gets its record completed (status -> 'done') like any other task, but
+    // isAsync is not touched — it stays whatever the snapshot authority set
+    // it to (false or undefined).
     // AND 'done' (the replay-ordering hole: on replay the detach ack
     // tool_result — which doesn't match the launch-ack signature — mis-settles
     // the record 'done' with the ack text as its result, and the terminal
     // tasks-snapshot arrives AFTER this frame so rescueSettled can't re-open
     // it; the notification is the only frame carrying the real result, so it
-    // must overwrite the bogus ack). A 'done' record reached here can only be
-    // that mis-settle — a genuine sync completion never emits a
-    // task-notification. 'dismissed' stays excluded: an explicit user dismiss
+    // must overwrite the bogus ack). 'dismissed' stays excluded: an explicit user dismiss
     // is a deliberate terminal state a late notification must not revive.
     if (existing && (existing.status === 'background' || existing.status === 'running' || existing.status === 'pending' || existing.status === 'interrupted' || existing.status === 'done')) {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
@@ -1787,10 +1755,6 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
         ...existing,
         status: isError ? 'interrupted' : 'done',
         endedAt: stamp,
-        // A task-notification only ever targets an async subagent, so stamp
-        // isAsync definitively (the ack may have been lost, leaving isAsync
-        // unset if no child frame arrived to trip the async-detector).
-        isAsync: true,
         // Don't clobber an existing (child-text-captured) result, AND don't
         // set a result when the notification carries no content (notably a
         // synthesized `stopped` from the watcher backstop, whose summary is

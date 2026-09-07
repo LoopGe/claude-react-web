@@ -182,6 +182,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
     workflow_name?: unknown
     skip_transcript?: unknown
     ambient?: unknown
+    is_backgrounded?: unknown
     patch?: unknown
     summary?: unknown
     last_tool_name?: unknown
@@ -217,6 +218,9 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
       status: 'running',
       skipTranscript: raw.skip_transcript === true ? true : existing?.skipTranscript,
       ambient: raw.ambient === true ? true : existing?.ambient,
+      isBackgrounded: typeof raw.is_backgrounded === 'boolean'
+        ? raw.is_backgrounded
+        : existing?.isBackgrounded,
       startedAt: frameTime ?? existing?.startedAt,
       endedAt: undefined,
       updatedAt: now,
