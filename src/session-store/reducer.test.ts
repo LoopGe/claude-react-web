@@ -1409,8 +1409,8 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
 
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: syncToolUse })
-    // Seeded false from the explicit run_in_background: false flag.
-    expect(state.mirror.activeSubagents.get('tu_sync')?.isAsync).toBe(false)
+    // isAsync starts undefined — only TASKS_SNAPSHOT can set it.
+    expect(state.mirror.activeSubagents.get('tu_sync')?.isAsync).toBeUndefined()
     state = reduceSessionState(state, { type: 'MESSAGE', message: childFrame })
     // Child text captured mid-flight.
     expect(state.mirror.activeSubagents.get('tu_sync')?.result?.content)
@@ -1420,9 +1420,9 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentResult })
     expect(state.mirror.activeSubagents.get('tu_sync')?.result?.content).toBe('final summary')
     expect(state.mirror.activeSubagents.get('tu_sync')?.status).toBe('done')
-    // Sync: isAsync stays false — TASKS_SNAPSHOT is the sole authority
-    // and none was fed (run_in_background: false).
-    expect(state.mirror.activeSubagents.get('tu_sync')?.isAsync).toBe(false)
+    // Sync: isAsync stays undefined — TASKS_SNAPSHOT is the sole authority
+    // and none was fed.
+    expect(state.mirror.activeSubagents.get('tu_sync')?.isAsync).toBeUndefined()
   })
 
   it('TASKS_SNAPSHOT sets isAsync while child frames advance endedAt', () => {
