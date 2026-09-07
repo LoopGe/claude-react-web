@@ -301,13 +301,10 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(after?.status).toBe('interrupted')
   })
 
-  it('flips an async-ack subagent to background (not done) and advances endedAt to the last child frame', () => {
-    // Async/background subagent: the Agent tool_result is a launch ack that
-    // arrives within ms of the tool_use, well before the subagent's real
-    // output streams as child frames (parent_tool_use_id === subagent id).
-    // The ack must NOT flip status to 'done' — it flips to 'background' so
-    // the chip stays in the WorkingBubble row, with NO endedAt (the ack time
-    // isn't the real run time). endedAt then tracks the last child frame.
+  it('launch-ack tool_result is skipped entirely (D2-B): record stays running, TASKS_SNAPSHOT flips to background', () => {
+    // D2-B: the launch-ack tool_result is skipped (record stays 'running');
+    // TASKS_SNAPSHOT (isBackgrounded:true) is the sole authority for
+    // flipping running→background. Child frames then advance endedAt.
     const ackAt = 1_000
     const childAt = 6_000 // 5s later — the subagent's real run time
     const childFrame: SdkMessage = {
@@ -324,7 +321,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
       receivedAt: ackAt,
       message: {
         role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: 'tu_agent', content: 'Async agent launched successfully' }],
+        content: [{ type: 'tool_result', tool_use_id: 'tu_agent', content: 'Async agent launched successfully. (internal metadata.)\nagentId: ace1f1c484c82bcdf', is_error: false }],
       },
     } as unknown as SdkMessage
     const toolUse: SdkMessage = {
@@ -340,12 +337,19 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ackResult })
-    // Ack landed → 'background' (still working, chip stays visible). No
-    // endedAt, no result — the ack is internal metadata, not completion.
+    // D2-B: ack skipped — record stays 'running', no isAsync, no result.
     const afterAck = state.mirror.activeSubagents.get('tu_agent')
-    expect(afterAck?.status).toBe('background')
-    expect(afterAck?.endedAt).toBeUndefined()
+    expect(afterAck?.status).toBe('running')
+    expect(afterAck?.isAsync).toBeUndefined()
     expect(afterAck?.result).toBeUndefined()
+
+    // TASKS_SNAPSHOT flips running→background + isAsync:true.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-1', toolUseId: 'tu_agent', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
+    expect(state.mirror.activeSubagents.get('tu_agent')?.status).toBe('background')
+    expect(state.mirror.activeSubagents.get('tu_agent')?.isAsync).toBe(true)
 
     // The subagent's real output arrives 5s later as a child frame.
     state = reduceSessionState(state, { type: 'MESSAGE', message: childFrame })
@@ -406,6 +410,11 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-1', toolUseId: 'tu_async', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
     state = reduceSessionState(state, { type: 'MESSAGE', message: child })
     expect(state.mirror.activeSubagents.get('tu_async')?.status).toBe('background')
 
@@ -457,6 +466,11 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-1', toolUseId: 'tu_sys', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
     expect(state.mirror.activeSubagents.get('tu_sys')?.status).toBe('background')
 
     state = reduceSessionState(state, { type: 'MESSAGE', message: sysFrame })
@@ -588,6 +602,11 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-1', toolUseId: 'tu_bg', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
     expect(state.mirror.activeSubagents.get('tu_bg')?.status).toBe('background')
     state = reduceSessionState(state, { type: 'MESSAGE', message: result })
     // Swept to 'pending' (out of the running set, but NOT interrupted).
@@ -771,6 +790,11 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-seq', toolUseId: 'tu_seq', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
     expect(state.mirror.activeSubagents.get('tu_seq')?.status).toBe('background')
     state = reduceSessionState(state, { type: 'MESSAGE', message: completion })
     const record = state.mirror.activeSubagents.get('tu_seq')
@@ -826,6 +850,11 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-dis', toolUseId: 'tu_dis', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
     state = reduceSessionState(state, { type: 'MESSAGE', message: result })
     expect(state.mirror.activeSubagents.get('tu_dis')?.status).toBe('pending')
     // Dismiss -> 'dismissed' (a distinct status, NOT 'interrupted', so the
@@ -886,9 +915,14 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_sync' })
     expect(state.mirror.activeSubagents.get('tu_sync')?.status).toBe('dismissed')
 
-    // Async subagent: background (ack landed).
+    // Async subagent: background (TASKS_SNAPSHOT flips running→background).
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse2 })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-async', toolUseId: 'tu_async', description: 'async work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
     expect(state.mirror.activeSubagents.get('tu_async')?.status).toBe('background')
     state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_async' })
     expect(state.mirror.activeSubagents.get('tu_async')?.status).toBe('dismissed')
@@ -923,7 +957,14 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     const result: SdkMessage = { type: 'result', subtype: 'success', uuid: 'r-1', receivedAt: 2_000 } as unknown as SdkMessage
 
     let state = createInitialSessionState('s1')
-    for (const m of [toolUse, ack, result]) state = reduceSessionState(state, { type: 'MESSAGE', message: m })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-1', toolUseId: 'tu_dis', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result })
     expect(state.mirror.activeSubagents.get('tu_dis')?.status).toBe('pending')
 
     state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_dis' })
@@ -1003,12 +1044,13 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(twice).toBe(once)
   })
 
-  it('REPLAY re-applies the turn-end sweep (background -> pending) on hydration', () => {
-    // Regression: rebuildIndexesFromMessages (the replay/hydration path)
-    // must apply the same turn-end sweep as the live path. Otherwise a WS
-    // reconnect re-derives a swept-to-pending background subagent back as
-    // 'background' (the result frame's sweep never re-ran), which breaks the
-    // Waiting bubble across reconnects — waiting is derived from 'pending'.
+  it('REPLAY re-applies the turn-end sweep (running -> interrupted) on hydration (D2-B)', () => {
+    // D2-B: the launch-ack tool_result is skipped, so the record stays
+    // 'running' during replay. The result frame's sweep flips running→
+    // interrupted. A post-replay TASKS_SNAPSHOT with isBackgrounded:true
+    // flips it back to 'background' (rescue: interrupted is accepted).
+    // The old test expected 'pending' (ack→background→sweep→pending); now
+    // the ack no longer flips, so the sweep produces 'interrupted'.
     const toolUse: SdkMessage = {
       type: 'assistant',
       uuid: 'a-1',
@@ -1036,22 +1078,26 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     } as unknown as SdkMessage
 
     // Hydrate straight from a replay of the full turn (no live applyMessage).
-    const state = reduceSessionState(createInitialSessionState('s1'), {
+    const state0 = reduceSessionState(createInitialSessionState('s1'), {
       type: 'REPLAY_REPLACE',
       messages: [toolUse, ack, result],
       permissions: [],
     })
-    // The result frame's sweep must have run during rebuild -> 'pending',
-    // NOT 'background' (the old replay-gap bug).
-    expect(state.mirror.activeSubagents.get('tu_replay')?.status).toBe('pending')
+    // D2-B: ack skipped → 'running'; sweep flips to 'interrupted'.
+    expect(state0.mirror.activeSubagents.get('tu_replay')?.status).toBe('interrupted')
+    // TASKS_SNAPSHOT (isBackgrounded) rescues interrupted → background.
+    const state = reduceSessionState(state0, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-1', toolUseId: 'tu_replay', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
+    expect(state.mirror.activeSubagents.get('tu_replay')?.status).toBe('background')
   })
 
-  it('post-replay sweep flips background→pending even WITHOUT result frames (disk replay)', () => {
-    // The CLI transcript has no `result` frames — the per-turn sweep in
-    // applyMessage never fires during a disk-loaded replay. The post-replay
-    // sweepAtTurnEnd call in replayReplace catches the unswept 'background'
-    // record and flips it to 'pending', so the Waiting bubble shows correctly
-    // after a server restart + client refresh.
+  it('post-replay sweep flips running→interrupted; TASKS_SNAPSHOT rescues to background', () => {
+    // D2-B: the launch-ack tool_result is skipped, so the record stays
+    // 'running'. The post-replay sweep flips running→interrupted.
+    // A post-replay TASKS_SNAPSHOT (isBackgrounded) rescues 'interrupted'
+    // → 'background' via the rescueSettled path.
     const toolUse: SdkMessage = {
       type: 'assistant',
       uuid: 'a-1',
@@ -1072,13 +1118,22 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
       },
     } as unknown as SdkMessage
     // NO result frame — simulates a disk-loaded replay.
-    const state = reduceSessionState(createInitialSessionState('s1'), {
+    const state0 = reduceSessionState(createInitialSessionState('s1'), {
       type: 'REPLAY_REPLACE',
       messages: [toolUse, ack],
       permissions: [],
     })
-    // Post-replay sweep must have flipped background → pending.
-    expect(state.mirror.activeSubagents.get('tu_nores')?.status).toBe('pending')
+    // D2-B: ack skipped, record stays 'running'; post-replay sweep flips
+    // running → interrupted (no TASKS_SNAPSHOT in the bare replay).
+    expect(state0.mirror.activeSubagents.get('tu_nores')?.status).toBe('interrupted')
+
+    // TASKS_SNAPSHOT (isBackgrounded) rescues interrupted → background
+    // via the rescueSettled path in TASKS_SNAPSHOT handling.
+    const state = reduceSessionState(state0, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-1', toolUseId: 'tu_nores', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
+    expect(state.mirror.activeSubagents.get('tu_nores')?.status).toBe('background')
   })
 
   it('does not sweep a live-memory replay while a sync subagent is still running', () => {
@@ -1182,6 +1237,11 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-stale', toolUseId: 'tu_stale', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
     state = reduceSessionState(state, { type: 'MESSAGE', message: result })
     // After the result frame: background → pending (sweep). The record's
     // lastActivity (endedAt) is `stale` (31 min ago), so the safety net then
@@ -1216,6 +1276,11 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     } as unknown as SdkMessage
     state = reduceSessionState(state, { type: 'MESSAGE', message: freshToolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: freshAck })
+    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-fresh', toolUseId: 'tu_fresh', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
     state = reduceSessionState(state, { type: 'MESSAGE', message: freshResult })
     expect(state.mirror.activeSubagents.get('tu_fresh')?.status).toBe('pending')
   })
@@ -1299,6 +1364,11 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-1', toolUseId: 'tu_done', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
     state = reduceSessionState(state, { type: 'MESSAGE', message: notification })
     expect(state.mirror.activeSubagents.get('tu_done')?.status).toBe('done')
     state = reduceSessionState(state, { type: 'MESSAGE', message: result })
@@ -1390,8 +1460,12 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     expect(state.mirror.activeSubagents.get('tu_async')?.isAsync).toBeUndefined()
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
-    // Ack landed but no child yet — still unknown.
-    expect(state.mirror.activeSubagents.get('tu_async')?.isAsync).toBeUndefined()
+    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background + isAsync.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-async', toolUseId: 'tu_async', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
+    expect(state.mirror.activeSubagents.get('tu_async')?.status).toBe('background')
     state = reduceSessionState(state, { type: 'MESSAGE', message: child })
     // Child after ack → async.
     expect(state.mirror.activeSubagents.get('tu_async')?.isAsync).toBe(true)
@@ -3021,6 +3095,14 @@ describe('reducer: a task_notification for ONE async agent leaves the OTHER back
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentAck('tu_a', 'u1') })
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_b', 'a2') })
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentAck('tu_b', 'u2') })
+    // D2-B: acks skipped; TASKS_SNAPSHOT flips both running→background.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [
+        { taskId: 't-a', toolUseId: 'tu_a', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi,
+        { taskId: 't-b', toolUseId: 'tu_b', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi,
+      ],
+    })
     expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('background')
     expect(state.mirror.activeSubagents.get('tu_b')?.status).toBe('background')
 

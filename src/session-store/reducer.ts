@@ -1545,9 +1545,9 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     // chip row automatically.
     //
     // EXCEPTION — async/background launch ack: an async subagent's Agent
-    // tool_result is a launch acknowledgement, not completion. Flip to
-    // 'background' instead (no endedAt/result) and let the
-    // task-notification completion branch below finish the lifecycle.
+    // tool_result is a launch acknowledgement, not completion. Skip it
+    // entirely (record stays 'running'); TASKS_SNAPSHOT flips it to
+    // 'background', task-notification finishes the lifecycle.
     //
     // Most turns include tool_results unrelated to subagents, so defer
     // the Map clone until we actually have a matching id — otherwise
@@ -1561,40 +1561,25 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     for (const { toolUseId, content, isError } of subagentResultEntries) {
       const existing = activeSubagents.get(toolUseId)
       if (!existing || existing.status !== 'running') continue
+      // D2-B launch-ack guard (pure regex, no seed immunity): an ack
+      // tool_result is NOT real output — skip it entirely so the record
+      // stays 'running'. TASKS_SNAPSHOT (isBackgrounded) is the sole
+      // authority for flipping running→background; task_notification is
+      // the sole authority for completion.
+      const ackText = typeof content === 'string' ? content : resultContentToText(content)
+      const isAck = !isError && typeof ackText === 'string' &&
+        /^async agent launched successfully/i.test(ackText)
+      if (isAck) continue
       if (!touched) {
         if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
         touched = true
       }
-      // Async/background launch ack: the Agent tool_result is just a launch
-      // acknowledgement ("Async agent launched successfully … agentId"),
-      // NOT the subagent's completion — the real output streams later as
-      // child frames and the completion lands as a <task-notification>.
-      // Flip to 'background' (still shown in the WorkingBubble chip row) and
-      // deliberately DO NOT set endedAt/result: the ack time isn't the real
-      // completion time and the ack text isn't the real output. Detected via
-      // the run_in_background input flag (most reliable, when the SDK stamped
-      // one) or, when absent, by sniffing the ack text — a synchronous
-      // subagent's real tool_result never matches the ack signature.
-      const ackText = typeof content === 'string' ? content : resultContentToText(content)
-      // An explicit `run_in_background: false` opts out of ack-sniffing
-      // entirely (a synchronous subagent's real tool_result must not be
-      // mistaken for a launch ack even if its text happens to contain the
-      // signature). Sniff only when isAsync is true (definitive) or
-      // undefined (no flag — fall back to the ack signature).
-      const isAck = !isError && existing.isAsync !== false && (
-        existing.isAsync === true ||
-        (typeof ackText === 'string' && /^async agent launched successfully/i.test(ackText))
-      )
-      if (isAck) {
-        activeSubagents.set(toolUseId, { ...existing, status: 'background' })
-      } else {
-        activeSubagents.set(toolUseId, {
-          ...existing,
-          status: isError ? 'interrupted' : 'done',
-          endedAt: stamp,
-          result: { content, isError },
-        })
-      }
+      activeSubagents.set(toolUseId, {
+        ...existing,
+        status: isError ? 'interrupted' : 'done',
+        endedAt: stamp,
+        result: { content, isError },
+      })
     }
     changed = changed || touched
   }
