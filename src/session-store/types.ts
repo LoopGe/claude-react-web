@@ -85,12 +85,12 @@ export interface ActiveSubagent {
    *  the SDK already echoes the prompt as a child user frame). */
   prompt?: string
   /** Whether this subagent runs async/background (true) or synchronous
-   *  (false). Seeded from the tool_use input's `run_in_background` flag
-   *  when present, and confirmed/overridden by frame timing: if a child
-   *  frame arrives AFTER the Agent tool_result, the result was an async
-   *  launch ack (not the subagent's completion), so this flips to true.
-   *  Undefined only when neither signal has fired yet (just spawned, no
-   *  ack and no children). SubagentCard surfaces it as an async/sync chip. */
+   *  (false). Written ONLY by the `TASKS_SNAPSHOT` reducer action, from the
+   *  server's `TaskRecordUi.isBackgrounded` (the single authority — the input
+   *  `run_in_background` flag and ack/frame-timing no longer seed it).
+   *  Undefined until the first snapshot for this task arrives, and lost after
+   *  a reload once the terminal task record is evicted (server cap 50).
+   *  SubagentCard surfaces it as an async/sync chip. */
   isAsync?: boolean
   /** Captured tool_result payload of the subagent call itself (the Agent/
    *  Task/Explore result that lands on the MAIN thread). Set when the
