@@ -6,7 +6,7 @@
 // with inline action buttons, two-click confirm for destructive operations,
 // and lazy-loaded detail (plugin list per marketplace).
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import type { MpListItem, MpPluginInfo, MpParseWarning, MpUpdateStatus } from '../types'
 import { IconX, IconChevronDown, IconChevronRight, IconAlertTriangle } from './icons/ToolIcons'
@@ -42,6 +42,10 @@ interface MarketplaceTabProps {
 
 export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   const [items, setItems] = useState<MpListItem[]>([])
+  // Live mirror of `items` for async callbacks (fetchUpdates) that must read
+  // the current list without being re-created when it changes.
+  const itemsRef = useRef<MpListItem[]>(items)
+  useEffect(() => { itemsRef.current = items }, [items])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [warningsById, setWarningsById] = useState<Record<string, MpParseWarning[]>>({})
@@ -83,6 +87,30 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   const [newRef, setNewRef] = useState('')
   const [addState, setAddState] = useState<AddState>({ phase: 'idle' })
 
+  // A check-updates response is a server-side snapshot taken when the request
+  // was handled. If the user pulls (Refresh) or adds a marketplace while a
+  // check is still in flight, the late response's entry for that marketplace is
+  // stale (pre-pull) and must not overwrite the newer local "not behind" state.
+  // `localPullEpoch` is a monotonic counter bumped on every successful local
+  // pull; `lastLocalPullByMp` records the epoch at which each marketplace was
+  // last pulled. fetchUpdates snapshots the epoch when the request starts and
+  // skips any response entry whose marketplace was pulled after that snapshot.
+  const localPullEpoch = useRef(0)
+  const lastLocalPullByMp = useRef<Record<string, number>>({})
+  // Record a successful local pull (Refresh / Add / bulk Update all) and
+  // re-evaluate the whole-request check error. The whole-request error is only
+  // resolved once EVERY listed marketplace has a known, non-error status — a
+  // single pull must not let the status line over-claim "All marketplaces up to
+  // date" for siblings that were never re-checked after the failed batch check.
+  const noteLocalPull = useCallback((id: string) => {
+    localPullEpoch.current += 1
+    lastLocalPullByMp.current[id] = localPullEpoch.current
+    const allKnown = items.every(
+      (mp) => mp.id === id || (updateById[mp.id] != null && !updateById[mp.id]?.error),
+    )
+    if (allKnown) setUpdateCheckError(null)
+  }, [items, updateById])
+
   // Fetch helper that doesn't touch React state directly. Used both by
   // the initial-load effect (where setState within the effect body is
   // forbidden by react-hooks/set-state-in-effect) and by the post-mutation
@@ -104,6 +132,9 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   // updateCheckError with a Retry affordance rather than left silent.
   const fetchUpdates = useCallback(async (signal?: AbortSignal): Promise<void> => {
     setChecking(true)
+    // Snapshot the pull epoch so a response that lands after a concurrent
+    // Refresh/Add can't resurrect the badge that pull just cleared.
+    const startEpoch = localPullEpoch.current
     try {
       // The server awaits Promise.allSettled of N concurrent `git ls-remote`
       // calls, each capped at 60s — so its worst-case response is ~60s (the
@@ -112,16 +143,34 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
       // abort the whole batch and blank every badge. Give it headroom past
       // the server's per-call ceiling.
       const r = await api.post<CheckUpdatesResponse>('/mp/marketplaces/check-updates', {}, { signal, timeoutMs: 90_000 })
-      const byId: Record<string, MpUpdateStatus> = {}
-      for (const u of r.updates) byId[u.id] = u
-      setUpdateById(byId)
+      // Merge, not replace: skip entries for marketplaces pulled after this
+      // check began (the local pull is newer), and overwrite every other
+      // entry (clearing old errors/badges). A wholesale replace would drop
+      // the just-refreshed "not behind" state in favour of the stale snapshot.
+      setUpdateById((prev) => {
+        const next = { ...prev }
+        for (const u of r.updates) {
+          if ((lastLocalPullByMp.current[u.id] ?? 0) > startEpoch) continue
+          next[u.id] = u
+        }
+        return next
+      })
       setUpdateCheckError(null)
     } catch (e) {
       if ((e as Error).name === 'AbortError') return
       // Whole-request failure (network / timeout). Surface it rather than
       // pretending everything is current; per-marketplace errors already
       // arrive inside a 200 body and are shown on the individual card.
-      setUpdateCheckError((e as Error).message)
+      //
+      // Skip the error when every listed marketplace was individually pulled
+      // AFTER this check began — those pulls supersede the failed batch, so a
+      // stale pre-pull failure must not flash a banner beside marketplaces the
+      // user just verified (a pull that succeeded after this request started
+      // proves the server/upstream path is reachable again).
+      const known = itemsRef.current
+      const allPulledAfterStart =
+        known.length > 0 && known.every((mp) => (lastLocalPullByMp.current[mp.id] ?? -1) > startEpoch)
+      if (!allPulledAfterStart) setUpdateCheckError((e as Error).message)
     } finally {
       setChecking(false)
     }
@@ -168,6 +217,11 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
     setWarningsById((w) => ({ ...w, [id]: r.warnings }))
     // A refresh pulled local up to upstream HEAD — clear the update badge.
     setUpdateById((prev) => ({ ...prev, [id]: { id, hasUpdate: false } }))
+    // Record the pull (supersedes any in-flight check snapshot for this
+    // marketplace) and resolve the whole-request error only once every listed
+    // marketplace has a known status — never on a lone pull with unverified
+    // siblings, which would over-claim "All marketplaces up to date".
+    noteLocalPull(id)
     // Invalidate cached plugin list so a re-expand re-fetches.
     setPlugins((prev) => {
       const next = { ...prev }
@@ -177,7 +231,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
     if (expandedId === id) {
       await fetchPlugins(id)
     }
-  }, [expandedId, fetchPlugins])
+  }, [expandedId, fetchPlugins, noteLocalPull])
 
   const handleAdd = async () => {
     const url = newUrl.trim()
@@ -199,6 +253,10 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
       // A freshly-added marketplace was just cloned at upstream HEAD, so it
       // can't be behind yet — seed an explicit "not behind" so no badge shows.
       setUpdateById((prev) => ({ ...prev, [r.entry.id]: { id: r.entry.id, hasUpdate: false } }))
+      // Record the clone (supersedes any in-flight check snapshot of this
+      // marketplace) and resolve the whole-request error only once every
+      // marketplace has a known status.
+      noteLocalPull(r.entry.id)
       setNewUrl('')
       setNewRef('')
     } catch (e) {
@@ -276,6 +334,17 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
         delete next[id]
         return next
       })
+      // Drop its update status too — fetchUpdates now merges (not replaces),
+      // so a removed marketplace's stale entry would otherwise linger.
+      setUpdateById((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+      // Tombstone the pull epoch (rather than deleting it) so an in-flight
+      // check that started before this removal can't merge a stale entry for a
+      // marketplace that no longer exists.
+      lastLocalPullByMp.current[id] = localPullEpoch.current
       if (expandedId === id) setExpandedId(null)
     } catch (e) {
       setError((e as Error).message)
@@ -409,18 +478,26 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
             </button>
           ) : checking ? (
             <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Checking for updates…</span>
-          ) : updateCheckError ? (
+          ) : updateCheckError || anyCheckError ? (
             <>
+              {/* Whole-request failure (network/timeout) and per-marketplace
+                  check errors (server reachable, upstreams down) both land
+                  here with a Retry. Per-marketplace errors otherwise render a
+                  blank status line with no in-mount way back to a re-check. */}
               <span
-                title={`Couldn't check for updates: ${updateCheckError}`}
-                aria-label={`Couldn't check for updates: ${updateCheckError}`}
+                title={updateCheckError
+                  ? `Couldn't check for updates: ${updateCheckError}`
+                  : 'Some marketplaces could not be checked against their upstream'}
+                aria-label={updateCheckError
+                  ? `Couldn't check for updates: ${updateCheckError}`
+                  : 'Some marketplaces could not be checked against their upstream'}
                 style={{
                   fontSize: 12, color: 'var(--warn, var(--fg-muted))',
                   display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'help',
                 }}
               >
                 <IconAlertTriangle size={12} />
-                Couldn't check for updates
+                {updateCheckError ? "Couldn't check for updates" : "Some marketplaces couldn't be checked"}
               </span>
               <button
                 className="btn"
@@ -431,7 +508,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
                 Retry
               </button>
             </>
-          ) : anyCheckError ? null : (
+          ) : (
             <span style={{ fontSize: 12, color: 'var(--ok)' }}>All marketplaces up to date</span>
           )}
           {bulkResult && (

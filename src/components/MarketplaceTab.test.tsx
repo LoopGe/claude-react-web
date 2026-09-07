@@ -259,4 +259,166 @@ describe('MarketplaceTab update-check states', () => {
     await waitFor(() => expect(container.textContent).toContain('Update all (1)'))
     expect(container.textContent).not.toContain("Couldn't check for updates")
   })
+
+  it('surfaces per-marketplace check errors with a Retry instead of a blank line', async () => {
+    let upstreamsDown = true
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/marketplaces') {
+        return Promise.resolve({ marketplaces: [mkItem('mp1', 'MP One')] })
+      }
+      return Promise.resolve({})
+    })
+    ;(api.post as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/marketplaces/check-updates') {
+        // HTTP 200 with per-marketplace errors (server up, upstreams down) —
+        // the case that used to render a blank status line with no Retry.
+        return Promise.resolve(upstreamsDown
+          ? { ok: true, updates: [{ id: 'mp1', hasUpdate: false, error: 'upstream unreachable' }] }
+          : { ok: true, updates: [{ id: 'mp1', hasUpdate: false }] })
+      }
+      return Promise.resolve({})
+    })
+
+    const { container } = render(<MarketplaceTab />)
+    await waitFor(() => expect(container.textContent).toContain("Some marketplaces couldn't be checked"))
+    expect(container.textContent).not.toContain('All marketplaces up to date')
+
+    // Once upstreams recover, Retry re-runs the check and reaches the clean state.
+    upstreamsDown = false
+    const retry = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Retry')!
+    fireEvent.click(retry)
+    await waitFor(() => expect(container.textContent).toContain('All marketplaces up to date'))
+    expect(container.textContent).not.toContain("Some marketplaces couldn't be checked")
+  })
+
+  it('a successful per-card refresh clears a stale whole-check error', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/marketplaces') {
+        return Promise.resolve({ marketplaces: [mkItem('mp1', 'MP One')] })
+      }
+      return Promise.resolve({})
+    })
+    ;(api.post as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/marketplaces/check-updates') {
+        return Promise.reject(new Error('network down'))
+      }
+      if (url === '/mp/marketplaces/mp1/refresh') {
+        return Promise.resolve({ ok: true, entry: mkItem('mp1', 'MP One'), updated: true, warnings: [] })
+      }
+      return Promise.resolve({})
+    })
+
+    const { container } = render(<MarketplaceTab />)
+    await waitFor(() => expect(container.textContent).toContain("Couldn't check for updates"))
+
+    // The per-card Refresh proves upstream is reachable and pulls mp1 to HEAD,
+    // so the stale whole-check banner must clear rather than linger.
+    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Refresh')!
+    fireEvent.click(refresh)
+    await waitFor(() => expect(container.textContent).not.toContain("Couldn't check for updates"))
+    await waitFor(() => expect(container.textContent).toContain('All marketplaces up to date'))
+  })
+
+  it('a slow check resolving after a per-card refresh does not resurrect the cleared badge', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/marketplaces') {
+        return Promise.resolve({ marketplaces: [mkItem('mp1', 'MP One')] })
+      }
+      return Promise.resolve({})
+    })
+    // Both the mount check and the refresh are gated so we control ordering:
+    // the refresh (which clears the badge) must land BEFORE the stale check
+    // snapshot (hasUpdate:true, captured pre-pull) resolves.
+    let resolveCheck!: (v: { ok: true; updates: { id: string; hasUpdate: boolean }[] }) => void
+    const checkGate = new Promise<{ ok: true; updates: { id: string; hasUpdate: boolean }[] }>((res) => {
+      resolveCheck = res
+    })
+    let resolveRefresh!: (v: { ok: true; entry: MpListItem; updated: boolean; warnings: unknown[] }) => void
+    const refreshGate = new Promise<{ ok: true; entry: MpListItem; updated: boolean; warnings: unknown[] }>((res) => {
+      resolveRefresh = res
+    })
+    ;(api.post as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/marketplaces/check-updates') return checkGate
+      if (url === '/mp/marketplaces/mp1/refresh') return refreshGate
+      return Promise.resolve({})
+    })
+
+    const { container } = render(<MarketplaceTab />)
+    // List loaded; the mount check is still in flight.
+    await waitFor(() => expect(container.textContent).toContain('Checking for updates…'))
+
+    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Refresh')!
+    fireEvent.click(refresh)
+    // Let the refresh land first — mp1 is now provably at HEAD.
+    await act(async () => { resolveRefresh({ ok: true, entry: mkItem('mp1', 'MP One'), updated: true, warnings: [] }) })
+
+    // Now the stale check resolves, still reporting the PRE-pull state.
+    await act(async () => { resolveCheck({ ok: true, updates: [{ id: 'mp1', hasUpdate: true }] }) })
+
+    // The badge must NOT resurrect: mp1 stays "not behind", no "Update all".
+    await waitFor(() => expect(container.textContent).toContain('All marketplaces up to date'))
+    expect(container.textContent).not.toContain('Update all (')
+  })
+
+  it('does not clear a whole-check error after refreshing only one of several marketplaces', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/marketplaces') {
+        return Promise.resolve({ marketplaces: [mkItem('mp1', 'MP One'), mkItem('mp2', 'MP Two')] })
+      }
+      return Promise.resolve({})
+    })
+    ;(api.post as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/marketplaces/check-updates') {
+        return Promise.reject(new Error('network down'))
+      }
+      if (url === '/mp/marketplaces/mp1/refresh') {
+        return Promise.resolve({ ok: true, entry: mkItem('mp1', 'MP One'), updated: true, warnings: [] })
+      }
+      return Promise.resolve({})
+    })
+
+    const { container } = render(<MarketplaceTab />)
+    await waitFor(() => expect(container.textContent).toContain("Couldn't check for updates"))
+
+    // Refreshing mp1 verifies only mp1 — mp2 was never re-checked after the
+    // whole-request failure, so the error + Retry must stay (no over-claim).
+    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Refresh')!
+    fireEvent.click(refresh)
+    await waitFor(() => expect(refreshCalls()).toEqual(['/mp/marketplaces/mp1/refresh']))
+    expect(container.textContent).toContain("Couldn't check for updates")
+    expect(container.textContent).not.toContain('All marketplaces up to date')
+  })
+
+  it('does not surface a whole-check error that fails after the only marketplace was refreshed', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/marketplaces') {
+        return Promise.resolve({ marketplaces: [mkItem('mp1', 'MP One')] })
+      }
+      return Promise.resolve({})
+    })
+    // The mount check is gated and will reject; the per-card refresh succeeds
+    // first, proving mp1 is at HEAD.
+    let rejectCheck!: (e: Error) => void
+    const checkGate = new Promise<never>((_, rej) => { rejectCheck = rej })
+    ;(api.post as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/marketplaces/check-updates') return checkGate
+      if (url === '/mp/marketplaces/mp1/refresh') {
+        return Promise.resolve({ ok: true, entry: mkItem('mp1', 'MP One'), updated: true, warnings: [] })
+      }
+      return Promise.resolve({})
+    })
+
+    const { container } = render(<MarketplaceTab />)
+    await waitFor(() => expect(container.textContent).toContain('Checking for updates…'))
+
+    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Refresh')!
+    fireEvent.click(refresh)
+    await act(async () => { /* let the refresh land */ })
+
+    // The stale batch check fails AFTER the pull — it must be suppressed, not
+    // surface a "Couldn't check for updates" banner beside a verified mp.
+    await act(async () => { rejectCheck(new Error('late network blip')) })
+    await waitFor(() => expect(container.textContent).not.toContain("Couldn't check for updates"))
+    await waitFor(() => expect(container.textContent).toContain('All marketplaces up to date'))
+  })
 })
