@@ -60,6 +60,17 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   // `undefined` = not checked yet (no badge); an entry with hasUpdate=true
   // shows the "Update available" pill. Checked once on tab open.
   const [updateById, setUpdateById] = useState<Record<string, MpUpdateStatus>>({})
+  // True while a check-updates request is in flight (the initial mount
+  // check, a Retry after a whole-request failure, or the post-bulk
+  // re-probe). The status line shows a neutral "Checking for updates…"
+  // while this is set, instead of prematurely claiming everything is
+  // current while updateById is still empty.
+  const [checking, setChecking] = useState(false)
+  // Set when the WHOLE check-updates request fails (network / timeout), as
+  // opposed to a per-marketplace error which arrives inside a successful
+  // response and is surfaced on the individual card. Lets the status line
+  // distinguish "check failed" from "checked, all current".
+  const [updateCheckError, setUpdateCheckError] = useState<string | null>(null)
   // Bulk "Update all" — one click refreshes every marketplace currently
   // badged as having an update. `bulkProgress` drives the button label;
   // `bulkResult` is the completion summary shown beside it.
@@ -88,9 +99,11 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   }, [])
 
   // Fire one batch update check. Runs in the background after the list
-  // loads — failures are swallowed (the server isolates per-marketplace
-  // errors into the response, so a network blip just means no badge).
+  // loads. Per-marketplace errors are isolated into the response by the
+  // server; a whole-request failure (network / timeout) is surfaced via
+  // updateCheckError with a Retry affordance rather than left silent.
   const fetchUpdates = useCallback(async (signal?: AbortSignal): Promise<void> => {
+    setChecking(true)
     try {
       // The server awaits Promise.allSettled of N concurrent `git ls-remote`
       // calls, each capped at 60s — so its worst-case response is ~60s (the
@@ -102,10 +115,15 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
       const byId: Record<string, MpUpdateStatus> = {}
       for (const u of r.updates) byId[u.id] = u
       setUpdateById(byId)
+      setUpdateCheckError(null)
     } catch (e) {
       if ((e as Error).name === 'AbortError') return
-      // Non-fatal: leave updateById empty (no badges). Don't clobber the
-      // list error surface with a secondary failure.
+      // Whole-request failure (network / timeout). Surface it rather than
+      // pretending everything is current; per-marketplace errors already
+      // arrive inside a 200 body and are shown on the individual card.
+      setUpdateCheckError((e as Error).message)
+    } finally {
+      setChecking(false)
     }
   }, [])
 
@@ -202,6 +220,11 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
     }
   }
 
+  // Re-run the update check after a whole-request failure. The "Update all"
+  // button is hidden while nothing is badged, so this is the only in-mount
+  // way back to a successful check once the banner is showing.
+  const handleRetryCheck = useCallback(() => { void fetchUpdates() }, [fetchUpdates])
+
   const handleUpdateAll = async () => {
     const targets = items.filter((it) => updateById[it.id]?.hasUpdate)
     if (targets.length === 0) return
@@ -218,6 +241,11 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
           failed.push(`${targets[i].displayName}: ${(e as Error).message}`)
         }
       }
+      // The loop is done — land the progress label on a terminal frame
+      // (successes of targets) so the button doesn't sit at a stale
+      // "Updating N-1/N…" during the re-probe, nor overstate when some
+      // refreshes failed.
+      setBulkProgress({ done: targets.length - failed.length, total: targets.length })
       // Re-probe so badges reflect the freshly-pulled state.
       await fetchUpdates()
     } finally {
@@ -362,20 +390,50 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
 
       {!loading && items.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          {updateableCount > 0 ? (
+          {/* The button stays mounted mid-bulk-update even while badges clear,
+              so it can show its progress label instead of flashing the
+              "up to date" note between the last refresh and the re-probe.
+              Badges also outrank the whole-check error note below: when any
+              marketplace still reports an update, the Update-all button is
+              the actionable recovery even if a re-probe just failed. */}
+          {bulkBusy || updateableCount > 0 ? (
             <button
               className="btn btn-primary"
               onClick={() => void handleUpdateAll()}
               disabled={bulkBusy}
               title="Refresh every marketplace that has an update available"
             >
-              {bulkBusy && bulkProgress
-                ? `Updating ${bulkProgress.done}/${bulkProgress.total}…`
+              {bulkBusy
+                ? (bulkProgress ? `Updating ${bulkProgress.done}/${bulkProgress.total}…` : 'Updating…')
                 : `Update all (${updateableCount})`}
             </button>
-          ) : !anyCheckError ? (
+          ) : checking ? (
+            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Checking for updates…</span>
+          ) : updateCheckError ? (
+            <>
+              <span
+                title={`Couldn't check for updates: ${updateCheckError}`}
+                aria-label={`Couldn't check for updates: ${updateCheckError}`}
+                style={{
+                  fontSize: 12, color: 'var(--warn, var(--fg-muted))',
+                  display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'help',
+                }}
+              >
+                <IconAlertTriangle size={12} />
+                Couldn't check for updates
+              </span>
+              <button
+                className="btn"
+                style={{ padding: '1px 8px', fontSize: 11 }}
+                onClick={() => void handleRetryCheck()}
+                title="Retry the update check"
+              >
+                Retry
+              </button>
+            </>
+          ) : anyCheckError ? null : (
             <span style={{ fontSize: 12, color: 'var(--ok)' }}>All marketplaces up to date</span>
-          ) : null}
+          )}
           {bulkResult && (
             <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{bulkResult}</span>
           )}
