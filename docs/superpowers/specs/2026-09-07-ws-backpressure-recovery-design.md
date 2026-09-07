@@ -63,7 +63,7 @@ marker 文案:`'[image omitted — too large to sync]'` 复用现文案与现论
 `server/ws.ts` replay 路径(`:469-498`):chunk 边界从「每 50 条」改为「每 50 条 **或** 累计序列化长度 ≤ `REPLAY_CHUNK_CHARS = 2_000_000`,先到为准」;单条超预算者独立成帧(3.1/3.2 后理论不存在,保留此臂作为非队列生产者兜底)。长度以 `JSON.stringify(msg).length` 累加估算(+分隔符常数;估算与真实帧长偏差 <5%,2M « 8M 余量足够)。
 - 客户端零改动:多帧 `replay` 累积到 `replay-done` 才提交(`useChatStream.ts:277-318`),顺序由单 TCP + FIFO 写队列保证——已核实。
 - permissions/elicitations/dialogs 快照仍走「首帧或 replay-done」两条既有臂,协议文档(`shared/ws-protocol.ts:127-154`)同步语义不变。
-- `BACKPRESSURE_HIGH=1M`(`ws.ts:61`)与 2M chunk 的配合:drain 在 chunk 间可穿插,不会积压;若整场 replay 仍病态地大(理论上限 ring 500×4.5M),`MAX_QUEUE_CHARS` 强关 + 游标在**第一条未送达 chunk 之前** → 会活锁。故补一条纪律:**每连接每次 replay 的累计 enqueue 字节超过 `MAX_QUEUE_CHARS/2` 时,log.warn 并停止本轮 replay(截断,`replay-done` 照常发)**——丢中段好于死循环,且 3.1/3.2 后此臂不应触发。
+- `BACKPRESSURE_HIGH=1M`(`ws.ts:61`)与 2M chunk 的配合:drain 在 chunk 间可穿插,不会积压。配套纪律(spec 修订 v2,原「累计 4M 截断」条款作废——它会误杀 gate 后仍合法的多 MB 级长回放):切块循环每 enqueue 一帧 `await setImmediate` **让出事件循环**,让 `WsWriteQueue.drain` 得以回收 `totalChars`;真正慢/停滞的客户端仍由 `MAX_QUEUE_CHARS=8M` 强关兜底(3.1/3.2 后游标可推进,重连即自愈,不再构成活锁)。
 
 ### 3.4 订阅溢出判别(D1a 已批:`end(reason)`,服务端最小管线)
 
