@@ -3,10 +3,11 @@
 // when only a single card's props change (e.g. a session's `working` flag
 // flips during streaming).
 
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { isInAppDrag, readDragPayload, setDragPayload } from '../../hooks/useDragPayload'
 import { useIsMobile } from '../../hooks/useIsMobile'
+import { usePresenceValue } from '../../hooks/useExitPresence'
 import { shortenPath } from '../../utils/paths'
 import { statusLabel } from '../../utils/session-status'
 import type { SessionInfo } from '../../types'
@@ -113,31 +114,38 @@ export const SessionCard = memo(function SessionCard({
     }
   }, [isRenaming])
 
-  // Slot-pill entrance: pop the slot number when a session transitions
-  // closed → open. Gated on the false→true EDGE (via wasOpenRef), never on
-  // mount — Virtuoso unmounts off-screen cards and remounts them on scroll,
-  // so a plain CSS mount animation would replay every time an already-open
-  // card scrolled back into view. useLayoutEffect (not useEffect) so the
-  // class is applied before first paint and there's no one-frame flash.
-  // The class is dropped on a short timer (not on mount) so a pending
-  // session's infinite amber breathing cue — whose `animation` shorthand
-  // `.slot-in` would otherwise override — resumes right after the pop.
-  const wasOpenRef = useRef(isOpen)
+  // Slot-pill open/close animation. The pill is the title row's leading
+  // in-flow badge: when a session opens, `.slot-in` expands its width 0→18px
+  // (plus margin) so the mode badge + title text glide right with the reveal;
+  // when it closes, the standard `usePresenceValue` keeps the pill mounted for
+  // one exit cycle (`.slot-out`, width 18→0) so the title glides back, then it
+  // unmounts. The hook retains the slot number through the exit, cancels the
+  // exit on a reopen, and probes prefers-reduced-motion fresh on each close.
+  //
+  // The `.slot-in` entrance is gated on a genuine closed→open edge via
+  // `prevOpen`, adjusted during render so it's in place in the same commit. A
+  // scroll remount that mounts already-open initialises prevOpen===isOpen and
+  // renders the pill static (no entrance replay).
+  const presence = usePresenceValue(isOpen ? slotIdx + 1 : null, 260)
+  const [prevOpen, setPrevOpen] = useState(isOpen)
   const [slotIn, setSlotIn] = useState(false)
-  useLayoutEffect(() => {
-    const opened = isOpen && !wasOpenRef.current
-    wasOpenRef.current = isOpen
-    if (!opened) {
-      // Reset on close so a later reopen in this same mounted card pops again.
-      if (!isOpen) setSlotIn(false)
-      return
-    }
-    setSlotIn(true)
-    // Slightly longer than the CSS pop (--motion-duration-base: 180ms) so the
-    // fill-mode tail isn't cut by a timer that fires early.
-    const t = setTimeout(() => setSlotIn(false), 240)
+  // Snapshot of the pill's style modifiers from the last open frame, so the
+  // exit clone doesn't restyle (filled↔hollow / amber) the instant it starts
+  // contracting. Populated by an effect below (never during render).
+  const lastModsRef = useRef('')
+  if (prevOpen !== isOpen) {
+    setPrevOpen(isOpen)
+    // Entrance on a genuine open edge; on close, drop any in-flight entrance
+    // so the exit clone never carries a stale `.slot-in`.
+    setSlotIn(isOpen)
+  }
+  useEffect(() => {
+    if (!slotIn) return
+    const t = setTimeout(() => setSlotIn(false), 260)
     return () => clearTimeout(t)
-  }, [isOpen])
+  }, [slotIn])
+
+  const showSlot = presence.value != null
 
   const dormant = !s.running && !s.terminated
   const working = s.running && s.working
@@ -148,6 +156,15 @@ export const SessionCard = memo(function SessionCard({
   // plain green 'live' so the sidebar doesn't imply the session is idle.
   const waiting = s.running && !s.working && (s.backgroundSubagentCount ?? 0) > 0
   const pendingCount = s.pendingPermissionCount ?? 0
+  // Slot-pill modifiers shared by the open pill and its exit clone, so the
+  // pill doesn't restyle (filled↔hollow, amber) the instant it starts exiting.
+  const slotMods = `${isFocused ? ' focused' : ''}${pendingCount > 0 ? ' pending' : ''}`
+  // Snapshot the modifiers of the last OPEN frame (the close frame's props
+  // have already moved focus/closed-state away), then the exit clone reuses
+  // them via lastModsRef.
+  useEffect(() => {
+    if (isOpen) lastModsRef.current = slotMods
+  }, [isOpen, slotMods])
   // Single source of truth for the status chip — drives the dot colour,
   // the short label, and the aria-label. A dormant session (!running &&
   // !terminated) shows 'dormant' even when it carries a stale error (e.g. a
@@ -282,38 +299,49 @@ export const SessionCard = memo(function SessionCard({
       ) : (
       <div className="session-item-row">
         <strong className="session-item-title">
-          {isOpen ? (
-            // Open session → the slot badge is the leading numeric badge. When
-            // it also has pending responses, fold the pending signal INTO the
-            // slot badge (amber fill + breathing, via the `pending` modifier)
-            // instead of rendering a second, visually duplicate square. The
-            // slot number stays — it still drives Ctrl+N focus; the pending
-            // count/label moves to the tooltip/aria (it mixes tool-permission
-            // requests and AskUserQuestion questions, so "awaiting your
-            // response" reads correctly for both).
-            <Tooltip
-              label={
-                (isFocused
-                  ? `Focused (slot ${slotIdx + 1}) · Ctrl+${slotIdx + 1} to refocus`
-                  : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`)
-                + (pendingCount > 0
-                  ? ` · ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
-                  : '')
-              }
-              placement="right"
-            >
-              <span
-                className={`session-item-slot ${isFocused ? 'focused' : ''}${pendingCount > 0 ? ' pending' : ''}${slotIn ? ' slot-in' : ''}`}
-                aria-label={
-                  (isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`)
+          {showSlot ? (
+            // A slot-number pill is on screen (open, or the exit frame right
+            // after closing). Open → the slot badge is the leading numeric
+            // badge. When it also has pending responses, fold the pending
+            // signal INTO the slot badge (amber fill + breathing, via the
+            // `pending` modifier) instead of rendering a second, visually
+            // duplicate square. The slot number stays — it still drives Ctrl+N
+            // focus; the pending count/label moves to the tooltip/aria (it
+            // mixes tool-permission requests and AskUserQuestion questions, so
+            // "awaiting your response" reads correctly for both).
+            isOpen ? (
+              <Tooltip
+                label={
+                  (isFocused
+                    ? `Focused (slot ${slotIdx + 1}) · Ctrl+${slotIdx + 1} to refocus`
+                    : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`)
                   + (pendingCount > 0
-                    ? `, ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
+                    ? ` · ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
                     : '')
                 }
+                placement="right"
               >
-                {slotIdx + 1}
+                <span
+                  className={`session-item-slot${slotMods}${slotIn ? ' slot-in' : ''}`}
+                  aria-label={
+                    (isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`)
+                    + (pendingCount > 0
+                      ? `, ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
+                      : '')
+                  }
+                >
+                  {slotIdx + 1}
+                </span>
+              </Tooltip>
+            ) : (
+              // Closing: keep the slot number mounted (usePresenceValue retains
+              // it) for the exit cycle so it contracts (`.slot-out`) and pulls
+              // the title back instead of vanishing. Uses the last OPEN frame's
+              // modifiers so it doesn't restyle mid-exit. Decorative.
+              <span className={`session-item-slot${lastModsRef.current} slot-out`} aria-hidden>
+                {presence.value}
               </span>
-            </Tooltip>
+            )
           ) : (
             // Closed session has no slot badge to carry a pending signal, so
             // keep the standalone count badge as the attention cue.

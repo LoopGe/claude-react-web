@@ -3,6 +3,20 @@ import { act, render, fireEvent } from '@testing-library/react'
 import { SessionCard, type SessionCardProps } from './SessionCard'
 import type { SessionInfo } from '../../types'
 
+// jsdom doesn't implement window.matchMedia; usePresenceValue probes it on
+// each exit. Report "no reduced motion" so the animate-exit path is exercised
+// (matches the stub in SettingsPanel.test.tsx).
+vi.stubGlobal('matchMedia', () => ({
+  matches: false,
+  media: '',
+  onchange: null,
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  addListener: () => {},
+  removeListener: () => {},
+  dispatchEvent: () => false,
+}))
+
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
     id: 'abc12345-xxxx',
@@ -308,6 +322,49 @@ describe('SessionCard', () => {
       expect(slot?.classList.contains('slot-in')).toBe(true)
       act(() => { vi.advanceTimersByTime(300) })
       expect(slot?.classList.contains('slot-in')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the slot pill mounted through the exit, then unmounts it', () => {
+    // Closing runs the reverse animation (`.slot-out`) so the pill contracts
+    // and pulls the title back instead of vanishing in place; it unmounts
+    // only after the exit cycle.
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(
+        <SessionCard {...baseProps} isOpen slotIdx={0} />,
+      )
+      expect(container.querySelector('.session-item-slot')).not.toBeNull()
+
+      rerender(<SessionCard {...baseProps} isOpen={false} slotIdx={0} />)
+      const exiting = container.querySelector('.session-item-slot')
+      expect(exiting).not.toBeNull()
+      expect(exiting?.classList.contains('slot-out')).toBe(true)
+      expect(exiting?.classList.contains('slot-in')).toBe(false)
+
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(container.querySelector('.session-item-slot')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the last real slot number during the exit', () => {
+    // slotIdx drops to -1 the instant the session closes; the exit clone must
+    // keep showing the number it had while open, not "0".
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(
+        <SessionCard {...baseProps} isOpen slotIdx={1} />,
+      )
+      expect(container.querySelector('.session-item-slot')?.textContent).toBe('2')
+
+      rerender(<SessionCard {...baseProps} isOpen={false} slotIdx={-1} />)
+      const exiting = container.querySelector('.session-item-slot')
+      expect(exiting?.classList.contains('slot-out')).toBe(true)
+      expect(exiting?.textContent).toBe('2')
     } finally {
       vi.useRealTimers()
     }
