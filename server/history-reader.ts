@@ -285,6 +285,13 @@ function normalize(o: RawLine, sessionId: string, trim: boolean): unknown {
         'api_refusal_explanation', 'refused_user_message_uuid', 'content',
       ])
       : {}),
+    // plugin_install carries its lifecycle state at the TOP LEVEL
+    // (status/name/error, per SDKPluginInstallMessage). Without carrying them
+    // through, a disk-loaded frame (resume / scroll-up) reaches the client with
+    // only `message`, so a persistent PluginInstall card would render empty.
+    ...(o.type === 'system' && o.subtype === 'plugin_install'
+      ? pickTopLevel(o, ['status', 'name', 'error'])
+      : {}),
     // The refusal-fallback supersede list on assistant frames: evict-on-arrival
     // uuids for the refused leg. Needed so a disk-replayed transcript applies
     // the same eviction the live path does (evictMessages is idempotent).

@@ -176,6 +176,21 @@ describe('paginateJsonl — normalization', () => {
     })
   })
 
+  it('passes top-level payloads through for plugin_install lines', () => {
+    const raw = jsonl([
+      {
+        type: 'system', subtype: 'plugin_install', uuid: 'pi1',
+        status: 'failed', name: 'acme-tool', error: 'registry unreachable',
+      },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect(page.messages).toHaveLength(1)
+    expect(page.messages[0]).toMatchObject({
+      type: 'system', subtype: 'plugin_install',
+      status: 'failed', name: 'acme-tool', error: 'registry unreachable',
+    })
+  })
+
   it('drops malformed top-level payload values (wrong shape) instead of passing them through', () => {
     const raw = jsonl([
       {

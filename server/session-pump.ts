@@ -881,6 +881,15 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           }
           continue
         }
+        // `active_goal`: the current /goal Stop-hook condition (iterations, set_at,
+        // last_reason; the CLI reports `value: null` to clear it). Turn-scoped
+        // and re-emitted on each goal re-check — NOT transcript content (a
+        // persistent card would flood history with per-recheck rows). Drop it
+        // entirely (never the ring, never a broadcast): the app has no goal
+        // indicator to consume it, and mirroring a frame the server never
+        // re-serves into shared state would be dead plumbing. Cast the type
+        // check because `active_goal` isn't in the bundled SDKMessage union.
+        if ((msg as { type?: string }).type === 'active_goal') continue
         // `tool_progress` is a high-frequency per-tool liveness ping
         // (elapsed seconds for the running tool call). Nothing renders it —
         // the ToolCards already show their own elapsed state — so drop it

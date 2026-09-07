@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { removeFromHistory } from './history-utils.js'
+import { removeFromHistory, shouldBroadcastMessage } from './history-utils.js'
 
 /** Minimal ring entry — removeFromHistory only reads `uuid`. */
 function msg(uuid?: string): { uuid?: string } {
@@ -34,5 +34,19 @@ describe('removeFromHistory', () => {
     const removed = removeFromHistory(history, new Set(['a']))
     expect(removed).toBe(1)
     expect(history).toEqual([msg(), msg()])
+  })
+})
+
+describe('shouldBroadcastMessage', () => {
+  it('broadcasts all non-system messages', () => {
+    expect(shouldBroadcastMessage({ type: 'assistant' })).toBe(true)
+    expect(shouldBroadcastMessage({ type: 'user' })).toBe(true)
+  })
+
+  it('broadcasts allowlisted system subtypes (plugin_install) and hides others', () => {
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'plugin_install' })).toBe(true)
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'error' })).toBe(true)
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'init' })).toBe(false)
+    expect(shouldBroadcastMessage({ type: 'system', subtype: 'status' })).toBe(false)
   })
 })

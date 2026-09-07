@@ -241,6 +241,12 @@ describe('shouldHideByDefault', () => {
     ).toBe(false)
   })
 
+  it('keeps plugin_install system frames visible (install status card)', () => {
+    expect(
+      shouldHideByDefault({ type: 'system', subtype: 'plugin_install', status: 'failed' } as unknown as SdkMessage),
+    ).toBe(false)
+  })
+
   it('keeps assistant messages visible', () => {
     expect(shouldHideByDefault({ type: 'assistant', uuid: 'a1' } as unknown as SdkMessage)).toBe(false)
   })

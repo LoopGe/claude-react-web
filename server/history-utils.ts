@@ -119,6 +119,7 @@ export const BROADCAST_SYSTEM_SUBTYPES = new Set([
   'error',
   'compact_boundary',
   'api_retry',
+  'plugin_install',
   'task_notification',
   // SDK signal that an MCP URL-mode elicitation completed (the user
   // finished auth in the browser). Surfacing it lets the transcript show

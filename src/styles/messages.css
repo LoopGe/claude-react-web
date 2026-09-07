@@ -230,6 +230,32 @@
 }
 .msg.informational.informational--warning .result-mark { color: var(--warn); }
 
+/* system/plugin_install: plugin install lifecycle card. The `status` drives
+   the left accent — installed(ok) / failed(danger) / started+completed(muted). */
+.msg.plugin-install {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fg-muted);
+  border-radius: var(--radius-2xs);
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+}
+.msg.plugin-install .msg-header { gap: 8px; display: flex; align-items: baseline; min-width: 0; }
+.msg.plugin-install .plugin-install-name {
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg.plugin-install--installed { border-left-color: var(--ok); }
+.msg.plugin-install--failed { border-left-color: var(--danger); }
+.msg.plugin-install .plugin-install-error { color: var(--danger); font-size: var(--fs-sm); }
+
 /* system/model_refusal_fallback: the primary model refused, the turn was
    retried once on the fallback model. Card treatment — this frame is the
    canonical record of the swap (the refused leg's messages are evicted). */

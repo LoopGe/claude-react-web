@@ -2401,6 +2401,10 @@ const MessageView = memo(function MessageView({
     return <ModelRefusalNoFallbackView msg={msg} />
   }
 
+  if (type === 'system' && msg.subtype === 'plugin_install') {
+    return <PluginInstallView msg={msg} />
+  }
+
   // `tool_use_summary` is a top-level type: a compact "what just happened"
   // one-liner the CLI emits after a tool cascade. Rendered as a subdued
   // summary line — the detailed tool cards above it stay untouched.
@@ -2911,6 +2915,36 @@ function ModelRefusalNoFallbackView({ msg }: { msg: SdkMessage }) {
       {body && <div className="refusal-fallback-body">{body}</div>}
       {explanation && (
         <div className="refusal-fallback-detail" title={explanation}>{explanation}</div>
+      )}
+    </div>
+  )
+}
+
+const PLUGIN_INSTALL_STATUSES = new Set(['started', 'installed', 'failed', 'completed'])
+
+/** Renders `system/plugin_install` — the CLI's plugin install lifecycle signal
+ *  (status: started → installed/completed, or failed). Rendered as a small
+ *  status card so installs/failures surface in the transcript; the `status`
+ *  drives the accent. `name`/`error` are optional per the SDK shape, so all
+ *  fields are read defensively. */
+function PluginInstallView({ msg }: { msg: SdkMessage }) {
+  const m = msg as { status?: unknown; name?: unknown; error?: unknown }
+  const status = typeof m.status === 'string' && PLUGIN_INSTALL_STATUSES.has(m.status) ? m.status : 'started'
+  const name = typeof m.name === 'string' && m.name ? m.name : undefined
+  const error = typeof m.error === 'string' && m.error ? m.error : undefined
+  const label =
+    (status === 'installed' && 'plugin installed') ||
+    (status === 'completed' && 'plugin install complete') ||
+    (status === 'failed' && 'plugin install failed') ||
+    'plugin installing'
+  return (
+    <div className={`msg plugin-install plugin-install--${status}`} aria-label={`plugin install ${status}`}>
+      <div className="msg-header">
+        <span>{label}</span>
+        {name && <span className="plugin-install-name">{name}</span>}
+      </div>
+      {error && (
+        <div className="plugin-install-error" title={error}>{error}</div>
       )}
     </div>
   )

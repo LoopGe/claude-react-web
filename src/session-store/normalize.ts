@@ -44,7 +44,10 @@ export function shouldHideByDefault(msg: SdkMessage): boolean {
     msg.subtype !== 'model_refusal_fallback' &&
     // Primary model refused and NO retry ran (no fallback configured /
     // per-category routing declined). Renders as a refusal notice card.
-    msg.subtype !== 'model_refusal_no_fallback'
+    msg.subtype !== 'model_refusal_no_fallback' &&
+    // Plugin install lifecycle (started/installed/failed/completed) — renders
+    // as an install status card in the transcript.
+    msg.subtype !== 'plugin_install'
   ) return true
   if (msg.type === 'user' && isLocalCommandLogUserMessage(msg)) return true
   // `command_lifecycle` is a top-level lifecycle marker the `claude` CLI emits
