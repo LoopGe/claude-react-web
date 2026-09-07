@@ -1050,12 +1050,25 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
     toolDebug('SWEEP running→error at turn end', { ids: swept })
   }
 
+  // D2-B 保险:ack 不再翻 background,a snapshot 先到/seed 后到的 live 后台
+  // 任务记录仍可能是 'running';turn-end 不得把它当 sync 孤儿 interrupt。
+  const liveBgToolUseIds = new Set<string>()
+  for (const t of mirror.tasks) {
+    if (!t.toolUseId) continue
+    const term = t.status === 'completed' || t.status === 'failed' ||
+      t.status === 'killed' || t.status === 'stopped'
+    if (!term && t.isBackgrounded === true) liveBgToolUseIds.add(t.toolUseId)
+  }
+
   // subagents: running (sync orphan) → interrupted; background (async,
   // still working) → pending. Completed records survive.
   for (const [id, sub] of activeSubagents) {
     if (sub.status === 'running') {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
-      activeSubagents.set(id, { ...sub, status: 'interrupted', endedAt: sub.endedAt ?? sub.startedAt })
+      const next = liveBgToolUseIds.has(id)
+        ? { ...sub, status: 'pending' as const, endedAt: sub.endedAt ?? sub.startedAt }
+        : { ...sub, status: 'interrupted' as const, endedAt: sub.endedAt ?? sub.startedAt }
+      activeSubagents.set(id, next)
     } else if (sub.status === 'background') {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
       activeSubagents.set(id, { ...sub, status: 'pending', endedAt: sub.endedAt ?? sub.startedAt })

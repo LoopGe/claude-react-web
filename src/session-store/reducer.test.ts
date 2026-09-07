@@ -3149,6 +3149,27 @@ describe('reducer: TASKS_SNAPSHOT', () => {
     ...overrides,
   })
 
+  const result = (uuid: string): SdkMessage =>
+    ({ type: 'result', subtype: 'success', uuid, receivedAt: 2_000 }) as unknown as SdkMessage
+
+  it('sweep keeps a running record pending when the server tracks it as a live background task', () => {
+    let state = createInitialSessionState('s1')
+    // snapshot 先到(mirror.tasks 有任务),seed 后到(记录 running)
+    state = reduceSessionState(state, { type: 'TASKS_SNAPSHOT', tasks: [task({ toolUseId: 'tu_a', isBackgrounded: true, status: 'running' })] })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('running')
+    // result 帧 → turn-end sweep
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result('r1') })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('pending')
+  })
+
+  it('sweep still interrupts a running record with no live background task', () => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result('r1') })
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('interrupted')
+  })
+
   it('sets mirror.tasks and enriches a matching running subagent to background (isBackgrounded)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
