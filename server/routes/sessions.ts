@@ -13,10 +13,9 @@ import { coerceThinkingSetting } from '../../shared/session-info.js'
 import { validateSandboxSetting } from '../../shared/sandbox.js'
 import { coerceToolProfile } from '../../shared/tool-profile.js'
 import { createLogger } from '../log.js'
+import { validateSendBody } from '../send-body.js'
 
 const log = createLogger('http')
-
-const VALID_IMG_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 
 /** Validate an optional string-array field (e.g. `enabledMcpServers`,
  *  `enabledPlugins`). Returns an error string if present-but-malformed, or
@@ -413,38 +412,19 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
   // Send user message — text or content array (multimodal).
   app.post('/sessions/:id/messages', async (c) => {
     const id = c.req.param('id')
-    const body = await safeJson<{ text?: string; content?: unknown[] }>(c.req)
-
-    if (Array.isArray(body.content) && body.content.length > 0) {
-      let totalBase64 = 0
-      for (const block of body.content) {
-        const b = block as Record<string, unknown>
-        if (b.type === 'image') {
-          const source = b.source as Record<string, unknown> | undefined
-          if (!source || source.type !== 'base64' || typeof source.data !== 'string' || typeof source.media_type !== 'string') {
-            return c.json({ error: 'invalid image block: missing base64 source' }, 400)
-          }
-          if (!VALID_IMG_TYPES.has(source.media_type as string)) {
-            return c.json({ error: `unsupported image type: ${source.media_type}` }, 400)
-          }
-          totalBase64 += (source.data as string).length
-        } else if (b.type !== 'text') {
-          return c.json({ error: `unsupported content block type: ${b.type}` }, 400)
-        }
-      }
-      if (totalBase64 > 28_000_000) {
-        return c.json({ error: 'total image payload too large' }, 413)
-      }
-      log.info(`POST /sessions/${id}/messages — content array with ${body.content.length} blocks`)
-      const accepted = sm.sendContent(id, body.content as Array<{ type: string; [k: string]: unknown }>)
-      return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
-    } else {
-      const text = typeof body.text === 'string' ? body.text : ''
-      if (!text.trim()) return c.json({ error: 'text is required' }, 400)
-      log.info(`POST /sessions/${id}/messages — ${text.length} chars`)
-      const accepted = sm.send(id, text)
+    const body = await safeJson<{ text?: unknown; content?: unknown }>(c.req)
+    const v = validateSendBody(body)
+    if (!v.ok) return c.json({ error: v.error }, v.status)
+    if ('content' in v.body) {
+      log.info(`POST /sessions/${id}/messages — content array with ${v.body.content.length} blocks`)
+      // sm.sendContent wants the SDK content shape; the original handler cast
+      // it, and the typed blocks are not guaranteed assignable — keep the cast.
+      const accepted = sm.sendContent(id, v.body.content as unknown as Array<{ type: string; [k: string]: unknown }>)
       return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
     }
+    log.info(`POST /sessions/${id}/messages — ${v.body.text.length} chars`)
+    const accepted = sm.send(id, v.body.text)
+    return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
   })
 
   // Paginated history (lazy-load older messages from disk).
