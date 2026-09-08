@@ -13,19 +13,19 @@ const PRESET_REL = [
 
 /** Next occurrence of `hour:minute` local — today if still ahead, else
  *  tomorrow. Presets must never resolve to a past instant. */
-function nextAt(hour: number, minute: number): { fireAt: number; today: boolean } {
+function nextAt(hour: number, minute: number, nowMs: number): { fireAt: number; today: boolean } {
   const d = new Date()
   d.setHours(hour, minute, 0, 0)
   const today = d.getTime()
-  if (today > Date.now()) return { fireAt: today, today: true }
+  if (today > nowMs) return { fireAt: today, today: true }
   d.setDate(d.getDate() + 1)
   return { fireAt: d.getTime(), today: false }
 }
 
 /** Clamp to a time strictly in the future with a few seconds of slack so a
  *  preset landing inside MIN_DELAY_MS (server-enforced, 5s) still creates. */
-function futureFloor(ms: number): number {
-  return Math.max(ms, Date.now() + 5_000)
+function futureFloor(ms: number, nowMs: number): number {
+  return Math.max(ms, nowMs + 5_000)
 }
 
 interface Props {
@@ -35,6 +35,7 @@ interface Props {
 }
 
 export function SchedulePicker({ anchorRect, onPick, onClose }: Props) {
+  const [nowMs] = useState(() => Date.now())
   const [custom, setCustom] = useState('')
 
   useEffect(() => {
@@ -44,18 +45,17 @@ export function SchedulePicker({ anchorRect, onPick, onClose }: Props) {
   }, [onClose])
 
   const presets = useMemo(() => {
-    const now = Date.now()
-    const tonight = nextAt(18, 0)
-    const morning = nextAt(9, 0)
+    const tonight = nextAt(18, 0, nowMs)
+    const morning = nextAt(9, 0, nowMs)
     return [
-      ...PRESET_REL.map((p) => ({ label: p.label, fireAt: futureFloor(now + p.ms) })),
-      { label: tonight.today ? 'Tonight 18:00' : 'Tomorrow 18:00', fireAt: futureFloor(tonight.fireAt) },
-      { label: morning.today ? 'Today 9:00' : 'Tomorrow 9:00', fireAt: futureFloor(morning.fireAt) },
+      ...PRESET_REL.map((p) => ({ label: p.label, fireAt: futureFloor(nowMs + p.ms, nowMs) })),
+      { label: tonight.today ? 'Tonight 18:00' : 'Tomorrow 18:00', fireAt: futureFloor(tonight.fireAt, nowMs) },
+      { label: morning.today ? 'Today 9:00' : 'Tomorrow 9:00', fireAt: futureFloor(morning.fireAt, nowMs) },
     ]
-  }, [])
+  }, [nowMs])
 
   const customMs = custom ? new Date(custom).getTime() : Number.NaN
-  const validCustom = Number.isFinite(customMs) && customMs > Date.now()
+  const validCustom = Number.isFinite(customMs) && customMs > nowMs
   const confirmDisabled = !validCustom
 
   const style = {
