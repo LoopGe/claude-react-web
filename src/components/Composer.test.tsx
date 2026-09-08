@@ -561,4 +561,69 @@ describe('Composer', () => {
       expect(e.defaultPrevented).toBe(false)
     })
   })
+
+  describe('scheduled send', () => {
+    const stubScheduled = {
+      schedules: [
+        { id: 'sch1', sessionId: 's1', fireAt: Date.now() + 60_000, body: { text: 'later' }, status: 'pending' as const, createdAt: Date.now() },
+      ],
+      now: Date.now(),
+      cancel: noopAsync,
+      dismiss: noopAsync,
+    }
+
+    it('disables the schedule button when there is nothing to send', () => {
+      const { container } = render(<Composer {...defaultProps} input="" scheduled={stubScheduled} onSendScheduled={noop} />)
+      const btn = container.querySelector('[aria-label="Schedule send"]')
+      expect(btn).not.toBeNull()
+      expect((btn as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    it('shows the schedule button when there is content', () => {
+      const { container } = render(<Composer {...defaultProps} input="hello" scheduled={stubScheduled} onSendScheduled={noop} />)
+      expect(container.querySelector('[aria-label="Schedule send"]')).not.toBeNull()
+    })
+
+    it('opens the picker and forwards a picked time to onSendScheduled', () => {
+      const onSendScheduled = vi.fn()
+      const { container } = render(
+        <Composer {...defaultProps} input="hello" scheduled={stubScheduled} onSendScheduled={onSendScheduled} />,
+      )
+      fireEvent.click(container.querySelector('[aria-label="Schedule send"]')!)
+      expect(container.querySelector('[role="dialog"]')).not.toBeNull()
+      // Pick the "In 10 minutes" preset.
+      const preset = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('10 minutes'))!
+      fireEvent.click(preset)
+      expect(onSendScheduled).toHaveBeenCalledOnce()
+      expect(typeof onSendScheduled.mock.calls[0][0]).toBe('number')
+    })
+
+    it('renders a pending scheduled chip with cancel', () => {
+      const cancel = vi.fn()
+      const { container } = render(
+        <Composer
+          {...defaultProps}
+          scheduled={{ ...stubScheduled, cancel }}
+        />,
+      )
+      expect(container.querySelector('.scheduled-chip')).not.toBeNull()
+      fireEvent.click(container.querySelector('.scheduled-chip-cancel')!)
+      expect(cancel).toHaveBeenCalledWith('sch1')
+    })
+
+    it('renders a failed chip with dismiss', () => {
+      const dismiss = vi.fn()
+      const failed = {
+        ...stubScheduled,
+        schedules: [{
+          id: 'sch2', sessionId: 's1', fireAt: 0, body: { text: 'x' }, status: 'failed' as const,
+          createdAt: 0, error: 'session s1 is terminated',
+        }],
+      }
+      const { container } = render(<Composer {...defaultProps} scheduled={{ ...failed, dismiss }} />)
+      expect(container.querySelector('.scheduled-chip-failed')).not.toBeNull()
+      fireEvent.click(container.querySelector('.scheduled-chip-dismiss')!)
+      expect(dismiss).toHaveBeenCalledWith('sch2')
+    })
+  })
 })
