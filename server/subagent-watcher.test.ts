@@ -273,5 +273,102 @@ describe('subagent-watcher', () => {
       expect(result.status).toBe('stopped')
       expect(result.summary).toBe('')
     })
+
+    it('polls at the fast cadence during the fast phase (short subagents settle quickly)', async () => {
+      // A short subagent finishes within the fast phase. With a tiny
+      // fastIntervalMs and a huge steady intervalMs, completion is only picked
+      // up promptly if the fast interval governs early polling — if the steady
+      // interval were used from the start, this would time out the test.
+      const cwd = '/proj'
+      const sessionId = 'sess-fast'
+      const agentId = 'agent-fast'
+      const f = subagentTranscriptPath(cwd, sessionId, agentId)
+      mkdirSync(path.dirname(f), { recursive: true })
+      setTimeout(() => {
+        writeFileSync(
+          f,
+          JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'quick done' }], stop_reason: 'end_turn' } }) + '\n',
+        )
+      }, 20)
+
+      const start = Date.now()
+      const result = await new Promise<SubagentCompletion>((resolve) => {
+        watchBackgroundSubagent({
+          cwd,
+          sessionId,
+          agentId,
+          toolUseId: 'tu_fast',
+          onCompleted: resolve,
+          fastIntervalMs: 5,
+          fastPhaseMs: 5_000,
+          intervalMs: 10_000, // steady interval that must NOT govern the fast phase
+          maxMs: 60_000,
+        })
+      })
+      const elapsed = Date.now() - start
+      expect(result.status).toBe('completed')
+      expect(result.summary).toBe('quick done')
+      // Picked up on a fast tick (well under the 10 s steady interval), proving
+      // the fast cadence governed early polling.
+      expect(elapsed).toBeLessThan(1_000)
+    })
+
+    it('relaxes to the steady interval after the fast phase elapses', async () => {
+      // After fastPhaseMs the watcher must switch from fastIntervalMs to
+      // intervalMs. A completion-only assertion can't prove this (a watcher
+      // stuck at the fast cadence forever would also eventually detect the
+      // transcript), so we observe the ACTUAL scheduled delays via the onPoll
+      // seam and assert that (a) early polls use the fast cadence and (b) at
+      // least one poll after the boundary uses the steady cadence — a delayMs
+      // of intervalMs is ONLY schedulable once Date.now()-startMs >= fastPhaseMs.
+      const cwd = '/proj'
+      const sessionId = 'sess-relax'
+      const agentId = 'agent-relax'
+      const f = subagentTranscriptPath(cwd, sessionId, agentId)
+      mkdirSync(path.dirname(f), { recursive: true })
+
+      const fastIntervalMs = 5
+      const intervalMs = 40
+      const delays: number[] = []
+      // Write the transcript only after we've observed a steady-cadence poll,
+      // so the watcher is guaranteed to have crossed the boundary before it
+      // completes (otherwise a fast completion could end it pre-relaxation and
+      // the steady delay would never be scheduled).
+      let relaxed = false
+
+      const result = await new Promise<SubagentCompletion>((resolve) => {
+        watchBackgroundSubagent({
+          cwd,
+          sessionId,
+          agentId,
+          toolUseId: 'tu_relax',
+          onCompleted: resolve,
+          fastIntervalMs,
+          fastPhaseMs: 20,
+          intervalMs,
+          maxMs: 5_000,
+          onPoll: ({ delayMs }) => {
+            delays.push(delayMs)
+            if (delayMs === intervalMs && !relaxed) {
+              relaxed = true
+              writeFileSync(
+                f,
+                JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'late tail done' }], stop_reason: 'end_turn' } }) + '\n',
+              )
+            }
+          },
+        })
+      })
+
+      expect(result.status).toBe('completed')
+      expect(result.summary).toBe('late tail done')
+      // Cadence actually relaxed: the first poll used the fast interval, and a
+      // later poll used the steady interval (only reachable past fastPhaseMs).
+      expect(delays[0]).toBe(fastIntervalMs)
+      expect(delays).toContain(intervalMs)
+      // And the fast cadence genuinely preceded the steady one (no out-of-order
+      // scheduling): the first steady tick comes after at least one fast tick.
+      expect(delays.indexOf(intervalMs)).toBeGreaterThan(0)
+    })
   })
 })

@@ -4486,6 +4486,185 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(sm.get(info.id).terminatedReason).toBe('process_exited')
       expect(mockHandles).toHaveLength(1) // no respawn on give-up
     })
+
+    it('settles a still-polling background subagent as stopped when the CLI subprocess crashes', async () => {
+      // A background subagent runs INSIDE the CLI subprocess. When that process
+      // crashes it can never write another transcript line, so the watcher must
+      // NOT wait out its 2 h maxMs backstop — the crash is the certain
+      // completion signal. handleProcessExit settles it to `stopped` (no
+      // terminal frame on disk), dropping backgroundSubagentCount to 0 at once.
+      sm = new SessionManager({ store }) // recovery disabled → terminate on crash
+      const info = sm.create({ cwd: '/tmp/workspace' })
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        // Arm a watcher via the launch-ack path. No transcript on disk, so it
+        // stays polling (would otherwise resolve on the immediate first poll).
+        mockHandles.at(-1)!.emit({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: 'tu_crash',
+              content: 'Async agent launched successfully.\nagentId: agent-crash\n',
+            }],
+          },
+        })
+        await tick()
+        expect(sm.get(info.id).backgroundSubagentCount).toBe(1)
+
+        // Crash the subprocess. The settle runs before termination while the
+        // session is still live, so the synthesized `stopped` frame lands and
+        // the watcher count drops immediately (not after 2 h).
+        fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+        await waitFor(() => sm.get(info.id).terminated === true)
+
+        // Watcher settled — no lingering poller, no 2 h strand.
+        const settled = (sm as unknown as {
+          backgroundWatchers: { count(id: string): number }
+        }).backgroundWatchers.count(info.id)
+        expect(settled).toBe(0)
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+    })
+
+    it('honours a real terminal frame written just before the crash (completed, not stopped)', async () => {
+      // If the subagent finished (terminal stop_reason on disk) moments before
+      // the host crashed, the settle prefers its real output over a synthesized
+      // `stopped`. The synthesized task_notification then carries status
+      // `completed` with the subagent's final text.
+      sm = new SessionManager({ store })
+      const info = sm.create({ cwd: '/tmp/workspace' })
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        // Subscribe so we can observe the synthesized frame on the message
+        // channel. Drain the replay first.
+        const sub = sm.subscribe(info.id)
+        const seen: Array<{ subtype?: string; status?: string; summary?: string }> = []
+        ;(async () => {
+          for await (const m of sub.iterable) seen.push(m as typeof seen[number])
+        })()
+
+        mockHandles.at(-1)!.emit({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: 'tu_done',
+              content: 'Async agent launched successfully.\nagentId: agent-done\n',
+            }],
+          },
+        })
+        await tick()
+
+        // Pre-write a terminal frame the settle will read instead of stopping.
+        const txnPath = subagentTranscriptPath('/tmp/workspace', info.id, 'agent-done')
+        mkdirSync(dirname(txnPath), { recursive: true })
+        writeFileSync(
+          txnPath,
+          JSON.stringify({
+            type: 'assistant',
+            message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'finished just in time' }] },
+          }) + '\n',
+        )
+
+        fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+        await waitFor(() => sm.get(info.id).terminated === true)
+
+        const notif = seen.find((m) => m.subtype === 'task_notification')
+        expect(notif).toBeDefined()
+        expect(notif!.status).toBe('completed')
+        expect(notif!.summary).toBe('finished just in time')
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+    })
+
+    it('re-arms cleanly when in-place crash recovery replays the launch ack after a settle', async () => {
+      // The scenario settleAllOnProcessExit's doc-comment defends: crash settles
+      // the watcher (count → 0, synthesized `stopped`), then the recovery ladder
+      // resumes in place and the SDK replays the launch-ack tool_result, which
+      // re-arms a FRESH watcher. This must NOT strand a poller or permanently
+      // double-count — count cycles 1 → 0 (settle) → 1 (re-arm) → 0 (re-settle),
+      // and the per-toolUseId dedup means exactly one watcher is armed at a time.
+      sm = new SessionManager({ store, crashRecovery: true })
+      const info = sm.create({ cwd: '/tmp/workspace' })
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        const h0 = mockHandles.at(-1)!
+        // Complete a turn so recovery has a resume anchor, then arm a watcher.
+        sm.send(info.id, 'hi')
+        h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+        await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+        h0.emit({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'tu_rearm', content: 'Async agent launched successfully.\nagentId: agent-rearm\n' }],
+          },
+        })
+        await tick()
+        const count = () => (sm as unknown as { backgroundWatchers: { count(id: string): number } }).backgroundWatchers.count(info.id)
+        expect(count()).toBe(1)
+
+        // Crash: settle deletes the watcher map entry synchronously inside
+        // handleProcessExit (before the recovery ladder runs), so the count is
+        // 0 the instant the crash is handled — assert it before yielding to the
+        // async recovery window (which may re-arm and race the assertion).
+        fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+        expect(count()).toBe(0) // settled by the crash, synchronously
+
+        await waitFor(() => mockHandles.length >= 2)
+        expect(sm.get(info.id).terminated).toBe(false) // recovered in place
+
+        // The SDK's resume replay re-emits the launch ack on the NEW handle —
+        // this re-arms exactly one fresh watcher (the settle deleted the map
+        // entry, so the dedup no longer blocks it). Guard against a double-arm:
+        // the count must never exceed 1.
+        const h1 = mockHandles.at(-1)!
+        h1.emit({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: 'tu_rearm', content: 'Async agent launched successfully.\nagentId: agent-rearm\n' }],
+          },
+        })
+        await tick()
+        expect(count()).toBe(1) // re-armed, not doubled
+
+        // The re-armed watcher completes for real → count returns to 0 with no
+        // stranded poller. The re-arm went through the production start() with
+        // default intervals (500ms fast phase), so poll on wall-clock rather
+        // than macrotask ticks — waitFor's setImmediate loop can't span 500ms.
+        const txnPath = subagentTranscriptPath('/tmp/workspace', info.id, 'agent-rearm')
+        mkdirSync(dirname(txnPath), { recursive: true })
+        writeFileSync(
+          txnPath,
+          JSON.stringify({ type: 'assistant', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'rearm done' }] } }) + '\n',
+        )
+        const settledToZero = await new Promise<boolean>((resolve) => {
+          const deadline = Date.now() + 3_000
+          const poll = () => {
+            if (count() === 0) return resolve(true)
+            if (Date.now() > deadline) return resolve(false)
+            setTimeout(poll, 50)
+          }
+          poll()
+        })
+        expect(settledToZero).toBe(true)
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+    })
   })
 
   describe('interrupt with cancelQueued', () => {

@@ -1237,15 +1237,23 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
     state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
-    // D2-B: ack skipped; TASKS_SNAPSHOT flips running→background.
+    // D2-B: ack flips running→background via a TASKS_SNAPSHOT. This scenario
+    // models a LOST watcher, so the live task record is then cleared (an empty
+    // snapshot) — tasks are in-memory only server-side, so a server restart /
+    // dropped watcher leaves NO live task record for this toolUseId. Only with
+    // the record gone does the stale-pending net fire (a still-present record
+    // means the watcher is alive and the net must defer to it — see the
+    // companion "server-watcher-alive guard" test).
     state = reduceSessionState(state, {
       type: 'TASKS_SNAPSHOT',
       tasks: [{ taskId: 't-stale', toolUseId: 'tu_stale', description: 'do work', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
     })
+    state = reduceSessionState(state, { type: 'TASKS_SNAPSHOT', tasks: [] })
     state = reduceSessionState(state, { type: 'MESSAGE', message: result })
     // After the result frame: background → pending (sweep). The record's
-    // lastActivity (endedAt) is `stale` (31 min ago), so the safety net then
-    // flips pending → interrupted on the SAME sweep.
+    // lastActivity (endedAt) is `stale` (31 min ago) AND no live task record
+    // guards it, so the safety net flips pending → interrupted on the SAME
+    // sweep.
     expect(state.mirror.activeSubagents.get('tu_stale')?.status).toBe('interrupted')
 
     // A fresh (recent) pending record is NOT false-stopped.
@@ -1283,6 +1291,57 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     })
     state = reduceSessionState(state, { type: 'MESSAGE', message: freshResult })
     expect(state.mirror.activeSubagents.get('tu_fresh')?.status).toBe('pending')
+  })
+
+  it('server-watcher-alive guard: a STALE pending record is NOT swept while a live background task still tracks it', () => {
+    // The 30-min stale-pending net exists only for a LOST server watcher. If a
+    // live (non-terminal, backgrounded) task record still carries the
+    // subagent's toolUseId, the server watcher is provably still polling its
+    // transcript, so the net must defer to it — otherwise a legitimately long
+    // (>30 min) background subagent flaps pending→interrupted and then flips
+    // back to done when the watcher's real completion lands, a visible bounce.
+    const recent = Date.now()
+    const stale = recent - 45 * 60 * 1000 // 45 min ago — well past the 30-min net
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: stale - 2_000,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_long', name: 'Agent', input: { description: 'long job', run_in_background: true } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: stale - 1_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_long', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+    const result: SdkMessage = {
+      type: 'result',
+      subtype: 'success',
+      uuid: 'r-1',
+      receivedAt: stale,
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // The server watcher is ALIVE: it keeps a running, backgrounded task
+    // record for the subagent's whole lifetime, and that flows into
+    // mirror.tasks. Even though the record's lastActivity is 45 min stale,
+    // the live task record must protect it from the net.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-long', toolUseId: 'tu_long', description: 'long job', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result })
+    // Guarded: stays pending (waiting on the live watcher), NOT interrupted.
+    expect(state.mirror.activeSubagents.get('tu_long')?.status).toBe('pending')
   })
 
   it('PREPEND_MESSAGES does NOT sweep live in-flight tools via historical result frames', () => {

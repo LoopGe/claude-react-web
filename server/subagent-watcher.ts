@@ -184,7 +184,23 @@ export interface WatchOptions {
   agentId: string
   toolUseId: string
   onCompleted: (completion: SubagentCompletion) => void
+  /** Steady-state poll interval, in ms (default 2000). Used after the fast
+   *  phase (see fastPhaseMs) elapses — long-running subagents settle into this
+   *  cadence, keeping GC/read churn low over a multi-hour backstop window. */
   intervalMs?: number
+  /** Fast-phase poll interval, in ms (default 500). Applied for the first
+   *  `fastPhaseMs` after launch, when a SHORT subagent (the common case) is
+   *  most likely to finish. Tightening the early cadence cuts perceived
+   *  completion latency from up to `intervalMs` (2 s) down to this — the
+   *  extra reads are bounded to the fast phase, so they can't accumulate over
+   *  a long run. */
+  fastIntervalMs?: number
+  /** How long the fast phase lasts, in ms (default 30000). After this much
+   *  wall-clock time the watcher drops to `intervalMs`. Chosen so the vast
+   *  majority of short subagents (which finish within seconds) get the tight
+   *  cadence, while genuinely long ones pay the denser polling for only their
+   *  first 30 s. */
+  fastPhaseMs?: number
   /** Absolute backstop, in ms (default 2 h). If the watcher reaches this
    *  without detecting a terminal `stop_reason`, it synthesizes a `stopped`
    *  completion so the record can never strand indefinitely. High by design:
@@ -194,6 +210,14 @@ export interface WatchOptions {
    *  terminal frame (the CLI died / ended via a non-standard path); a real
    *  `completed` always wins first. */
   maxMs?: number
+  /** Test-only observability seam. Called immediately after each non-terminal
+   *  poll arms the next timer, with the tick index (1-based) and the delay
+   *  that was just chosen for the NEXT poll. Lets tests assert the adaptive
+   *  cadence actually crossed the fast→steady boundary (a delay === intervalMs
+   *  can only be scheduled after fastPhaseMs elapsed), which a completion-only
+   *  assertion cannot distinguish from a watcher stuck at the fast cadence.
+   *  Never set in production. */
+  onPoll?: (info: { pollCount: number; delayMs: number }) => void
 }
 
 /** Poll a background subagent's transcript until it reaches completion, then
@@ -229,17 +253,28 @@ export interface WatchOptions {
  *  can't fire into a dead session). */
 export function watchBackgroundSubagent(opts: WatchOptions): () => void {
   const intervalMs = opts.intervalMs ?? 2000
+  const fastIntervalMs = opts.fastIntervalMs ?? 500
+  const fastPhaseMs = opts.fastPhaseMs ?? 30_000
   const maxMs = opts.maxMs ?? 2 * 60 * 60 * 1000
   const filePath = subagentTranscriptPath(opts.cwd, opts.sessionId, opts.agentId)
   // Wall-clock for the backstop (not an `elapsed += intervalMs` counter, which
   // undercounts real time when the event loop delays ticks).
   const startMs = Date.now()
   let done = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let pollCount = 0
+
+  // Adaptive cadence: poll densely (fastIntervalMs) for the first fastPhaseMs
+  // — short subagents (the common case) finish here and settle within ~½ s
+  // instead of up to 2 s — then relax to intervalMs for the long tail, so a
+  // multi-hour backstop window doesn't pay dense-poll read/GC churn.
+  const nextDelay = (): number =>
+    Date.now() - startMs < fastPhaseMs ? fastIntervalMs : intervalMs
 
   const finish = (completion: SubagentCompletion, level: 'info' | 'warn', reason: string) => {
     if (done) return
     done = true
-    clearInterval(timer)
+    if (timer) clearTimeout(timer)
     log[level](
       `[${opts.sessionId}] background subagent agentId=${opts.agentId} ` +
       `toolUseId=${opts.toolUseId} ${reason} (status=${completion.status})`,
@@ -264,23 +299,32 @@ export function watchBackgroundSubagent(opts: WatchOptions): () => void {
       )
       return
     }
+    // Not done — reschedule at the current adaptive cadence. A
+    // self-rescheduling setTimeout (rather than a fixed setInterval) is what
+    // lets the delay shrink/grow across the fast-phase boundary, and it also
+    // guarantees no re-entrancy: the next poll is only armed after this one
+    // returns, so a slow readSubagentCompletion can't stack overlapping ticks.
+    const delayMs = nextDelay()
+    pollCount += 1
+    timer = setTimeout(tick, delayMs)
+    opts.onPoll?.({ pollCount, delayMs })
   }
-  const timer = setInterval(tick, intervalMs)
   // The subagent may have already finished by the time the ack reaches us —
   // check once immediately rather than waiting a full interval. Deferred to
   // a microtask so onCompleted can NEVER fire synchronously before the caller
   // has registered the watcher entry: startBackgroundSubagentWatcher sets the
   // map entry AFTER watchBackgroundSubagent returns, and a synchronous
   // completion would delete a not-yet-present entry and then re-add a stale
-  // one behind it (its interval is already cleared, so nothing would ever
-  // clean it up — backgroundSubagentCount would stick at 1 forever). A
-  // microtask runs after the current synchronous stack, so the entry is
-  // guaranteed present when the first poll fires; the `done` flag still lets
-  // stop() (session unload) cancel the poll before it runs.
+  // one behind it (its timer is already cleared, so nothing would ever clean
+  // it up — backgroundSubagentCount would stick at 1 forever). A microtask
+  // runs after the current synchronous stack, so the entry is guaranteed
+  // present when the first poll fires; the `done` flag still lets stop()
+  // (session unload) cancel the poll before it runs. The first tick also arms
+  // the recurring timer via its own reschedule tail.
   queueMicrotask(tick)
   return () => {
     done = true
-    clearInterval(timer)
+    if (timer) clearTimeout(timer)
   }
 }
 
@@ -318,11 +362,19 @@ export interface BackgroundWatcherRegistryDeps {
   isLive(sessionId: string): boolean
 }
 
+/** One armed watcher's runtime handle. `stop()` cancels its poller; `agentId`
+ *  is retained so a settle-on-process-exit can locate the subagent's on-disk
+ *  transcript (the transcript path is keyed by agentId, not toolUseId). */
+interface WatcherEntry {
+  stop: () => void
+  agentId: string
+}
+
 export class BackgroundWatcherRegistry {
-  /** sessionId -> toolUseId -> stop(). One watcher per (session, toolUseId);
-   *  a duplicate launch ack (replay, re-broadcast) must not stack a second
-   *  poller on the same transcript. */
-  private watchers = new Map<string, Map<string, () => void>>()
+  /** sessionId -> toolUseId -> WatcherEntry. One watcher per (session,
+   *  toolUseId); a duplicate launch ack (replay, re-broadcast) must not stack
+   *  a second poller on the same transcript. */
+  private watchers = new Map<string, Map<string, WatcherEntry>>()
 
   constructor(private deps: BackgroundWatcherRegistryDeps) {}
 
@@ -371,7 +423,7 @@ export class BackgroundWatcherRegistry {
         this.broadcastSynthesizedTaskNotification(session, toolUseId, agentId, completion)
       },
     })
-    perSession.set(toolUseId, stop)
+    perSession.set(toolUseId, { stop, agentId })
     // Seed a TaskRecord for this watcher-tracked subagent. CLI versions that
     // emit no task_* frames for background Agent dispatches (the watcher's
     // reason to exist) would otherwise never surface in session.tasks /
@@ -416,9 +468,9 @@ export class BackgroundWatcherRegistry {
    *  behaviour. */
   cancel(sessionId: string, toolUseId: string, session: Session | undefined): void {
     const perSession = this.watchers.get(sessionId)
-    const stop = perSession?.get(toolUseId)
-    if (!stop) return
-    try { stop() } catch { /* ignore */ }
+    const entry = perSession?.get(toolUseId)
+    if (!entry) return
+    try { entry.stop() } catch { /* ignore */ }
     perSession!.delete(toolUseId)
     // The pump folds the REAL notification (keyed by its task_id) BEFORE
     // calling this. Nothing ties that task_id to the agentId the launch ack
@@ -493,10 +545,62 @@ export class BackgroundWatcherRegistry {
   stopAll(sessionId: string): void {
     const perSession = this.watchers.get(sessionId)
     if (!perSession) return
-    for (const stop of perSession.values()) {
-      try { stop() } catch { /* ignore */ }
+    for (const entry of perSession.values()) {
+      try { entry.stop() } catch { /* ignore */ }
     }
     perSession.clear()
     this.watchers.delete(sessionId)
+  }
+
+  /** Settle every armed watcher for a session because its CLI subprocess just
+   *  exited (crash / kill / unexpected exit — detected by ProcessMonitor in
+   *  ms). This is the CERTAIN completion signal the transcript-poll fallback
+   *  otherwise lacks: a background subagent runs INSIDE the parent CLI
+   *  subprocess, so once that process is gone the subagent can never write
+   *  another transcript line — waiting out the 2 h maxMs backstop would strand
+   *  its chip for hours. We resolve each watcher immediately instead:
+   *
+   *    1. If the subagent's transcript already holds a terminal `stop_reason`
+   *       (it finished right before the crash), honour it — status `completed`
+   *       with the real final text.
+   *    2. Otherwise synthesize `stopped` (the subagent died mid-work with the
+   *       host process).
+   *
+   *  Both funnel through the same broadcast path as a normal completion, so
+   *  the client reducer flips the `background`/`pending` record to done /
+   *  interrupted. Called BEFORE the crash-recovery ladder or termination runs,
+   *  while the session is still live in the map, so the synthesized frame
+   *  reaches subscribers. A subsequent in-place recovery that re-sees the
+   *  launch ack simply re-arms a fresh watcher (per-toolUseId dedup makes that
+   *  safe), and a late real completion still overrides an over-eager `stopped`
+   *  (the reducer accepts a later terminal frame). No-op when the session has
+   *  no armed watchers. */
+  settleAllOnProcessExit(session: Session): void {
+    const perSession = this.watchers.get(session.id)
+    if (!perSession || perSession.size === 0) return
+    // Snapshot entries first: broadcastSynthesizedTaskNotification →
+    // applyTaskEvent mutates session.tasks, and we delete from perSession as
+    // we go, so iterate a copy to avoid mutating-while-iterating.
+    const entries = Array.from(perSession.entries())
+    for (const [toolUseId, entry] of entries) {
+      try { entry.stop() } catch { /* ignore */ }
+      perSession.delete(toolUseId)
+      // Path 1: the subagent may have finished a terminal frame just before
+      // the crash — prefer its real output over a synthesized `stopped`.
+      const completion: SubagentCompletion = (session.cwd
+        ? readSubagentCompletion(subagentTranscriptPath(session.cwd, session.id, entry.agentId))
+        : null) ?? { status: 'stopped', summary: '' }
+      log.info(
+        `[${session.id}] settling background subagent agentId=${entry.agentId} ` +
+        `toolUseId=${toolUseId} on process exit (status=${completion.status})`,
+      )
+      this.broadcastSynthesizedTaskNotification(session, toolUseId, entry.agentId, completion)
+    }
+    // The map for this session is now empty; drop it so count() reads 0.
+    this.watchers.delete(session.id)
+    // Refresh the sidebar dot (waiting → whatever the exit path lands on).
+    if (this.deps.isLive(session.id)) {
+      this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(session) })
+    }
   }
 }

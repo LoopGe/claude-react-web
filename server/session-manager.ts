@@ -618,6 +618,19 @@ export class SessionManager {
       return
     }
 
+    // Non-clean exit (crash / kill / spawn failure): the CLI subprocess is
+    // gone for real. Any background subagent was running INSIDE it and can
+    // never write another transcript line, so settle its watcher now rather
+    // than stranding the chip until the 2 h maxMs backstop. This runs while
+    // the session is still live in the map (before the recovery ladder /
+    // termination below), so the synthesized frame reaches subscribers. A
+    // subsequent in-place recovery that re-sees the launch ack re-arms a
+    // fresh watcher; a late real completion still overrides an over-eager
+    // `stopped`. Deliberately NOT done on the clean-exit path above (idle
+    // timeout → auto-resume commonly re-arms the same watcher, and a settle
+    // there would flap stopped→done).
+    this.settleBackgroundWatchersOnProcessExit(s)
+
     // Determine reason / message. spawnError takes priority — it's a
     // structured failure from ProcessMonitor's 'error' event and carries
     // the actual errno (ENOENT for "binary missing", EACCES for
@@ -745,6 +758,14 @@ export class SessionManager {
    *  so a late completion can't broadcast into a dead session). */
   private stopBackgroundSubagentWatchers(sessionId: string): void {
     this.backgroundWatchers.stopAll(sessionId)
+  }
+
+  /** Settle all background-subagent watchers for a session because its CLI
+   *  subprocess exited — see BackgroundWatcherRegistry.settleAllOnProcessExit.
+   *  Uses the process-exit as the certain completion signal instead of waiting
+   *  out the watcher's 2 h backstop. */
+  private settleBackgroundWatchersOnProcessExit(session: Session): void {
+    this.backgroundWatchers.settleAllOnProcessExit(session)
   }
 
   /** Unload a spawn-failed session to dormant (resumable) state with the

@@ -1089,6 +1089,19 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
   const EPOCH_PLAUSIBILITY_FLOOR = 1_000_000_000_000
   for (const [id, sub] of activeSubagents) {
     if (sub.status !== 'pending') continue
+    // Server-watcher-alive guard: if a live (non-terminal, backgrounded) task
+    // record still carries this subagent's toolUseId, the SERVER watcher is
+    // still polling its transcript (BackgroundWatcherRegistry.start seeds a
+    // running `isBackgrounded: true` TaskRecord for the watcher's whole
+    // lifetime, and it flows into `mirror.tasks`). The 30-min net exists ONLY
+    // for the case where that watcher was LOST (server restart, launch-ack not
+    // replayed, transcript path drift) — so while it's provably alive we must
+    // NOT pre-empt it. Firing here anyway makes the chip flap
+    // pending→interrupted, then the watcher's real task_notification flips it
+    // back to done: a visible interrupted↔done bounce for any legitimately
+    // long (>30 min) background subagent. `liveBgToolUseIds` is the same set
+    // the sync-orphan branch above uses, so the two decisions stay consistent.
+    if (liveBgToolUseIds.has(id)) continue
     const lastActivity = sub.endedAt ?? sub.startedAt
     if (typeof lastActivity !== 'number' || lastActivity < EPOCH_PLAUSIBILITY_FLOOR) continue
     if (now - lastActivity <= PENDING_TIMEOUT_MS) continue
