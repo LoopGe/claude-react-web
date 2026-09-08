@@ -1557,6 +1557,15 @@
   padding: 8px 10px; background: var(--bg); overflow-x: auto;
   border-top: 1px solid var(--border); margin: 0; white-space: pre-wrap; word-break: break-all;
 }
+.hooks-activity-input {
+  margin: 6px 0 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 /* JSON editor toggle */
 .hooks-json-toggle { margin-top: 8px; }

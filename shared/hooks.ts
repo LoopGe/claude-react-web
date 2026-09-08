@@ -92,6 +92,8 @@ export interface HookRunRecord {
   stderr?: string
   output?: string
   exitCode?: number
+  /** Structured input summary from in-process read+react hooks. Not present on external settings-hook frames. */
+  hookInput?: string
 }
 
 export type HookRuntimeEvent =

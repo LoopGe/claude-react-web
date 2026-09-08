@@ -6,6 +6,7 @@ import type { SessionMemorySettings, ThinkingSetting } from '../../shared/sessio
 import type { ProviderProfile } from '../config.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../shared/structured.js'
 import type { SandboxSetting } from '../../shared/sandbox.js'
+import type { InProcessHookForward } from './claude/inprocess-hooks.js'
 
 export interface CreateSessionOptions {
   id: string
@@ -46,6 +47,9 @@ export interface CreateSessionOptions {
   enabledPlugins?: string[]
   includePartialMessages?: boolean
   includeHookEvents?: boolean
+  /** Forward in-process read+react hook callbacks' structured input into the
+   *  session's hook run-log channel (see inprocess-hooks.ts). */
+  inProcessHookForward?: InProcessHookForward
   /** Forward subagent text/thinking blocks as assistant/user frames with
    *  parent_tool_use_id set (SDK Options.forwardSubagentText). Resolved by
    *  the session-manager from config and passed explicitly on every spawn /

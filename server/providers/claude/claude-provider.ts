@@ -32,6 +32,7 @@ import { createPushable } from '../../pushable.js'
 import { ProcessMonitor, type ProcessExitInfo } from '../../process-monitor.js'
 import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities } from '../types.js'
 import { ClaudeSessionHandle } from './claude-session.js'
+import { buildInProcessHooks } from './inprocess-hooks.js'
 import type { AgentUserMessage } from '../../agent-message.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../../shared/structured.js'
 import type { ResumableSession } from '../../session-types.js'
@@ -295,6 +296,9 @@ export class ClaudeProvider implements AgentProvider {
     if (opts.mcpServers !== undefined) sdkOptions.mcpServers = opts.mcpServers as Options['mcpServers']
     if (opts.includePartialMessages !== undefined) sdkOptions.includePartialMessages = opts.includePartialMessages
     if (opts.includeHookEvents !== undefined) sdkOptions.includeHookEvents = opts.includeHookEvents
+    if (opts.inProcessHookForward) {
+      sdkOptions.hooks = buildInProcessHooks(opts.inProcessHookForward) as Options['hooks']
+    }
     if (opts.forwardSubagentText !== undefined) sdkOptions.forwardSubagentText = opts.forwardSubagentText
     if (opts.effortLevel !== undefined) sdkOptions.effort = opts.effortLevel as Options['effort']
     // Extended thinking is a first-class spawn-time option (unlike fastMode /

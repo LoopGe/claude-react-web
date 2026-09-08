@@ -440,6 +440,11 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
                   {run.output || run.stdout || run.stderr}
                 </pre>
               )}
+              {run.hookInput && (
+                <pre className="hooks-activity-input" title="in-process hook input">
+                  {run.hookInput}
+                </pre>
+              )}
             </div>
           )
         })}

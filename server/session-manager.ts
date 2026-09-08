@@ -2307,6 +2307,7 @@ export class SessionManager {
       enabledPlugins: (fullOpts as { enabledPlugins?: string[] }).enabledPlugins ?? existingMeta?.enabledPlugins,
       includePartialMessages: fullOpts.includePartialMessages,
       includeHookEvents: true,
+      inProcessHookForward: (_sid, event) => this.recordHookRun(id, event),
       // Forward subagent text/thinking frames so SubagentOverlay can render
       // the nested transcript. Spawn-time SDK Options key (config-gated;
       // not runtime-switchable — it's not a Settings key).
@@ -5313,6 +5314,7 @@ export class SessionManager {
       memory: session.memory,
       enabledPlugins: session.enabledPlugins,
       includeHookEvents: true,
+      inProcessHookForward: (_sid, event) => this.recordHookRun(session.id, event),
       forwardSubagentText: this.forwardSubagentText,
       resume: session.id,
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
