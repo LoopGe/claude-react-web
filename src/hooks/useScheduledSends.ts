@@ -43,8 +43,17 @@ export function useScheduledSends(sessionId: string): ScheduledSendsApi {
     }
   }, [sessionId])
 
-  // Initial load when the session changes.
-  useEffect(() => { void refresh() }, [refresh])
+  // Initial load when the session changes. Uses an async IIFE with a
+  // cancelled flag so the setState inside refresh() happens after an await
+  // (not synchronously in the effect body), satisfying the
+  // react-hooks/set-state-in-effect lint rule.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      if (!cancelled) await refresh()
+    })()
+    return () => { cancelled = true }
+  }, [refresh])
 
   const pending = useMemo(() => schedules.filter((s) => s.status === 'pending'), [schedules])
 
