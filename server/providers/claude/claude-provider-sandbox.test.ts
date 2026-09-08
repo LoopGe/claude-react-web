@@ -55,4 +55,28 @@ describe('ClaudeProvider.createSession sandbox', () => {
 
     expect(q.applyFlagSettings).not.toHaveBeenCalledWith({ sandbox: expect.anything() })
   })
+
+  it('injects in-process hooks into sdkOptions when inProcessHookForward is provided', async () => {
+    const q = fakeQuery()
+    queryMock.mockReturnValue(q)
+
+    makeProvider().createSession({ id: 's3', inProcessHookForward: vi.fn() })
+    await flush()
+
+    const options = queryMock.mock.calls[0]?.[0]?.options as { hooks?: unknown }
+    expect(options?.hooks).toBeDefined()
+    expect((options?.hooks as Record<string, unknown>).SessionEnd).toBeDefined()
+    expect((options?.hooks as Record<string, unknown>).Notification).toBeDefined()
+  })
+
+  it('does not inject hooks when inProcessHookForward is absent', async () => {
+    const q = fakeQuery()
+    queryMock.mockReturnValue(q)
+
+    makeProvider().createSession({ id: 's4' })
+    await flush()
+
+    const options = queryMock.mock.calls[0]?.[0]?.options as { hooks?: unknown }
+    expect(options?.hooks).toBeUndefined()
+  })
 })
