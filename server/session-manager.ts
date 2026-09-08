@@ -46,6 +46,7 @@ import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
 import { fallbackAliasesFor, resolveGroup } from './model-groups.js'
+import { isSdkForwardedMode } from './permission-modes.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { pump as pumpSession, getParentToolUseId, applyTaskEvent, reapplyAutoCompactWindow, type PumpDeps } from './session-pump.js'
 import {
@@ -1990,12 +1991,11 @@ export class SessionManager {
     const fullOpts: Options & { provider?: string; modelGroupId?: string } = { ...opts, provider: providerName }
     const requestedMode = fullOpts.permissionMode
 
-    // Forward only `plan` to the SDK (see sdkForwardMode): plan needs
-    // SDK-level read-only model steering that canUseTool can't replicate. All
-    // other modes are enforced by our own canUseTool, so they map to undefined
-    // (no SDK-side mode). The session's own `permissionMode` field (set below)
-    // stays the source of truth for canUseTool and the UI.
-    fullOpts.permissionMode = requestedMode
+    // NOTE: the spawn-time mode filter (which of plan/auto/… actually reaches
+    // the SDK) lives in claude-provider's sdkForwardMode — there is nothing to
+    // do with permissionMode here. `requestedMode` is read only for
+    // snapshotMeta / logging below; the session's own `permissionMode` field
+    // (set below) stays the source of truth for canUseTool and the UI.
 
     // The app's default is the 1M-context beta — the New Session dialog sends
     // it on every create. Fill the same default on every OTHER spawn path here
@@ -3332,30 +3332,58 @@ export class SessionManager {
     // Local state is updated FIRST and unconditionally — it is the source of
     // truth for canUseTool and the UI, and guarantees the switch never fails
     // (including — bypassPermissions, which the SDK refuses mid-session).
+    const previousMode = s.permissionMode
     s.permissionMode = mode
     s.lastActivityAt = Date.now()
-    // Forward to the SDK so its read-only `plan` steering engages / disengages.
-    //   - switching INTO plan  — forward 'plan'
-    //   - switching OUT of plan (forwarded === undefined) — forward 'default'
-    //     to explicitly release the SDK's plan lock. Sending nothing would
-    //     leave the model stuck in read-only mode.
-    // All non-plan modes (acceptEdits/bypass/default/auto/dontAsk) resolve to
-    // 'default' here and are enforced by canUseTool instead. Any SDK error is
-    // swallowed: local state already took effect, so the switch never fails.
-    const forwarded = mode === 'plan' ? 'plan' : 'default'
-    try {
-      await this.requireHandleMethod<(mode: string) => Promise<void>>(
+    // Forward SDK-side modes so the CLI's plan steering / native auto-mode
+    // classifier engage and disengage; anything else resolves to 'default' to
+    // explicitly release a previously-forwarded CLI-side mode. Which modes
+    // forward, and why, lives on SDK_FORWARDED_PERMISSION_MODES — this site
+    // and the spawn path must stay in the same set.
+    // Any SDK error is swallowed: local state already took effect, so the
+    // switch never fails.
+    const forwarded: PermissionMode = isSdkForwardedMode(mode) ? mode : 'default'
+    // Lazy resolution keeps the sync 501/capability throw inside the awaited
+    // try below, so a provider without this method still can't fail the switch.
+    const setSdkMode = () =>
+      this.requireHandleMethod<(mode: string) => Promise<void>>(
         s,
         'setPermissionMode',
         'permission mode switching',
         'supportsFineGrainedPermissions',
-      )(forwarded)
-    } catch (err) {
-      log.warn(
-        `[session ${id}] SDK setPermissionMode(${forwarded ?? 'default'}) failed; ` +
-        `mode kept locally and enforced via canUseTool:`,
-        err,
       )
+    try {
+      await setSdkMode()(forwarded)
+    } catch (err) {
+      // The only CLI-side lock that silently bricks the session is plan
+      // steering (the broker has no app-side plan enforcement — the model
+      // would keep refusing to emit mutating tools while the UI shows the new
+      // mode). So release it when the CLI refused a new mode while holding
+      // plan. A previously-held 'auto' is left alone: the broker pipeline
+      // enforces it locally, and releasing on an ambiguous error (e.g. a
+      // control-request timeout after the CLI already applied the new mode)
+      // would strip a mode that actually engaged.
+      if (forwarded === 'default' || previousMode !== 'plan') {
+        log.warn(
+          `[session ${id}] SDK setPermissionMode(${forwarded}) failed; ` +
+          `mode kept locally and enforced via canUseTool:`,
+          err,
+        )
+      } else {
+        try {
+          await setSdkMode()('default')
+          log.info(
+            `[session ${id}] SDK rejected setPermissionMode(${forwarded}); ` +
+            `released plan steering with 'default' — canUseTool broker enforces the mode locally`,
+          )
+        } catch (releaseErr) {
+          log.warn(
+            `[session ${id}] SDK setPermissionMode(${forwarded}) failed and the ` +
+            `'default' release also failed; mode kept locally and enforced via canUseTool:`,
+            releaseErr,
+          )
+        }
+      }
     }
     this.persist(s)
     return this.info(s)

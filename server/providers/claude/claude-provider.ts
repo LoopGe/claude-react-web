@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { config as defaultConfig, DEFAULT_PROFILE } from '../../config.js'
 import type { ModelGroupConfig, ProviderProfile } from '../../config.js'
 import { profileDefaultModel, resolveActiveProfile } from '../../profiles.js'
+import { isSdkForwardedMode } from '../../permission-modes.js'
 import {
   capabilitiesForTier,
   fallbackAliasesFor,
@@ -619,8 +620,27 @@ export class ClaudeProvider implements AgentProvider {
     }
   }
 
+  /** Spawn-time permission-mode filter: the only modes forwarded to the SDK's
+   *  Options.permissionMode (see SDK_FORWARDED_PERMISSION_MODES in
+   *  permission-modes.ts for the set and both forward sites). Everything else
+   *  resolves to undefined (no SDK-side mode) and is enforced by our
+   *  canUseTool broker instead — see permission-broker.ts.
+   *   - 'plan' → the SDK's read-only plan steering, which canUseTool cannot
+   *     replicate (the model must not emit mutating tools at all).
+   *   - 'auto' → the CLI's native auto-mode classifier. Best-effort: verified
+   *     against CLI 2.1.239, where the CLI's classifier decides BEFORE the
+   *     host's canUseTool is consulted (interactive tools like
+   *     AskUserQuestion still escalate to the host), so in this mode the
+   *     broker's own auto pipeline only sees the residual asks the CLI still
+   *     escalates. If an older/custom CLI ignores or rejects the mode, the
+   *     broker pipeline remains the enforcement layer — app-side guarantees
+   *     degrade, they don't disappear.
+   *  acceptEdits/bypassPermissions/dontAsk stay app-side: with a canUseTool
+   *  callback present the SDK routes every tool through us, so forwarding
+   *  them would be dead weight (and bypass is unreliable mid-session — see
+   *  permission-broker.ts). */
   private sdkForwardMode(mode?: PermissionMode): PermissionMode | undefined {
-    return mode === 'plan' ? 'plan' : undefined
+    return mode && isSdkForwardedMode(mode) ? mode : undefined
   }
 
   private applyStandardQueryOpts(

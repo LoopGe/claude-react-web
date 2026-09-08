@@ -994,9 +994,12 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             ))}
           </select>
           <span className="hint">
-            Enforced by the server's own <code>canUseTool</code> callback, so
-            switches take effect on the very next tool call without needing
-            to restart the session.
+            Switches take effect on the very next tool call without needing to
+            restart the session. Plan and Autonomous are forwarded to the
+            Claude CLI for enforcement (older CLI versions fall back to the
+            server's own <code>canUseTool</code> callback); the remaining
+            modes are always enforced by the server's own{' '}
+            <code>canUseTool</code> callback.
           </span>
         </div>
 

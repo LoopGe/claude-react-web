@@ -2815,8 +2815,9 @@ describe('SessionManager', () => {
     const info = sm.create({ permissionMode: 'default' })
     await sm.setPermissionMode(info.id, 'acceptEdits')
     expect(sm.get(info.id).permissionMode).toBe('acceptEdits')
-    // Only `plan` forwards a real mode; every other mode forwards 'default'
-    // so the SDK has no read-only lock and canUseTool stays authoritative.
+    // Only SDK-forwarded modes (plan/auto — see SDK_FORWARDED_PERMISSION_MODES)
+    // forward a real mode; every other mode forwards 'default' so the SDK has
+    // no CLI-side mode and canUseTool stays authoritative.
     expect(mockHandles[0].setPermissionMode).toHaveBeenCalledWith('default')
   })
 
@@ -2835,6 +2836,38 @@ describe('SessionManager', () => {
     expect(mockHandles[0].setPermissionMode).toHaveBeenCalledWith('default')
   })
 
+  it('setPermissionMode() to auto forwards "auto" to the SDK (native CLI classifier)', async () => {
+    const info = sm.create({ permissionMode: 'default' })
+    await sm.setPermissionMode(info.id, 'auto')
+    expect(sm.get(info.id).permissionMode).toBe('auto')
+    expect(mockHandles[0].setPermissionMode).toHaveBeenCalledWith('auto')
+  })
+
+  it('setPermissionMode() plan -> auto on a CLI that rejects auto falls back to a "default" release', async () => {
+    // Old --claude-binary binaries predating 'auto' reject the mode. Without
+    // the fallback the CLI would keep the plan lock engaged while the UI
+    // shows Autonomous (model stuck read-only).
+    const info = sm.create({ permissionMode: 'plan' })
+    mockHandles[0].setPermissionMode.mockRejectedValueOnce(new Error('unknown mode auto'))
+    const updated = await sm.setPermissionMode(info.id, 'auto')
+    expect(updated.permissionMode).toBe('auto')
+    expect(mockHandles[0].setPermissionMode).toHaveBeenCalledTimes(2)
+    expect(mockHandles[0].setPermissionMode).toHaveBeenNthCalledWith(1, 'auto')
+    expect(mockHandles[0].setPermissionMode).toHaveBeenNthCalledWith(2, 'default')
+  })
+
+  it('setPermissionMode() default -> auto on a CLI that rejects auto does NOT release (no CLI-side lock held)', async () => {
+    // Only a previously-held plan lock needs releasing; the broker enforces
+    // 'auto' locally when the CLI refuses it, and a release round-trip after
+    // an ambiguous failure (e.g. timeout) could strip a mode that engaged.
+    const info = sm.create({ permissionMode: 'default' })
+    mockHandles[0].setPermissionMode.mockRejectedValueOnce(new Error('unknown mode auto'))
+    const updated = await sm.setPermissionMode(info.id, 'auto')
+    expect(updated.permissionMode).toBe('auto')
+    expect(mockHandles[0].setPermissionMode).toHaveBeenCalledTimes(1)
+    expect(mockHandles[0].setPermissionMode).toHaveBeenCalledWith('auto')
+  })
+
   it('setPermissionMode() never fails even if the SDK control request throws', async () => {
     const info = sm.create({ permissionMode: 'default' })
     mockHandles[0].setPermissionMode.mockRejectedValueOnce(new Error('SDK boom'))
@@ -2843,12 +2876,15 @@ describe('SessionManager', () => {
     expect(sm.get(info.id).permissionMode).toBe('bypassPermissions')
   })
 
-  it('spawn forwards only plan to the SDK options; other modes map to undefined', () => {
+  it('spawn forwards only SDK-forwarded modes (plan/auto) to the SDK options; other modes map to undefined', () => {
     sm.create({ permissionMode: 'acceptEdits' })
     expect(mockHandles[0].options.permissionMode).toBeUndefined()
 
     sm.create({ permissionMode: 'plan' })
     expect(mockHandles[1].options.permissionMode).toBe('plan')
+
+    sm.create({ permissionMode: 'auto' })
+    expect(mockHandles[2].options.permissionMode).toBe('auto')
   })
 
   it('fork() spawns a new session with resume=sourceId + forkSession=true', async () => {
