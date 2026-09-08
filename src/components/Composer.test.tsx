@@ -1,11 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { render as rtlRender, fireEvent } from '@testing-library/react'
+import { render as rtlRender, cleanup, fireEvent } from '@testing-library/react'
 import { Composer } from './Composer'
 import { ToastProvider } from './ToastProvider'
 import type { SlashCommand } from '../types'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
+
+// vitest.config.ts sets globals:false, so @testing-library's auto-cleanup never
+// registers — every render stays mounted unless we unmount it. That used to be
+// invisible (all queries were container-scoped). The slash picker now portals
+// to <body> and these tests query it document-wide, so a picker left open by one
+// test would answer the next test's assertions from stale DOM — same explicit
+// cleanup as CommandPicker/ContextMenu/ModelPicker tests.
+afterEach(() => cleanup())
 
 // Composer calls useToast() for clipboard-fail hints, so every test
 // render needs a ToastProvider in scope. Wrapping at the test-helper
@@ -152,11 +160,14 @@ describe('Composer', () => {
       const ta = container.querySelector('textarea')!
       // Type '/' — the change handler opens the slash command picker.
       fireEvent.change(ta, { target: { value: '/he' } })
-      expect(container.querySelector('[role="listbox"]')).not.toBeNull()
+      // The picker portals to <body>, so query it document-wide (and by class,
+      // not by role — a scoped `[role="listbox"]` would read as "absent" here
+      // for the wrong reason).
+      expect(document.querySelector('.cmd-picker')).not.toBeNull()
 
       // Escape: picker closes…
       fireEvent.keyDown(ta, { key: 'Escape' })
-      expect(container.querySelector('[role="listbox"]')).toBeNull()
+      expect(document.querySelector('.cmd-picker')).toBeNull()
       // …and the keydown never reached window-level bubble listeners.
       expect(windowKeydown).not.toHaveBeenCalled()
     } finally {
@@ -185,12 +196,12 @@ describe('Composer', () => {
     const ta = container.querySelector('textarea')!
 
     fireEvent.change(ta, { target: { value: '/', selectionStart: 1, selectionEnd: 1 } })
-    expect(container.querySelector('[role="listbox"]')).not.toBeNull()
+    expect(document.querySelector('.cmd-picker')).not.toBeNull()
 
     // Pick the second rendered item. Rendered order is [research, clear,
     // usage] (plugin group first), so index 1 = "clear".
     fireEvent.keyDown(ta, { key: 'ArrowDown' })
-    const active = container.querySelector<HTMLButtonElement>('.cmd-picker-item.active')
+    const active = document.querySelector<HTMLButtonElement>('.cmd-picker-item.active')
     expect(active?.textContent).toContain('clear')
 
     fireEvent.keyDown(ta, { key: 'Enter' })
@@ -216,9 +227,9 @@ describe('Composer', () => {
     const ta = container.querySelector('textarea')!
 
     fireEvent.change(ta, { target: { value: '/', selectionStart: 1, selectionEnd: 1 } })
-    expect(container.querySelector('[role="listbox"]')).not.toBeNull()
+    expect(document.querySelector('.cmd-picker')).not.toBeNull()
 
-    const active = () => container.querySelector<HTMLButtonElement>('.cmd-picker-item.active')
+    const active = () => document.querySelector<HTMLButtonElement>('.cmd-picker-item.active')
     // Freshly opened picker starts on the first candidate.
     expect(active()?.textContent).toContain('clear')
 

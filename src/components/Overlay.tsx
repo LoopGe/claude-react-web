@@ -1,5 +1,6 @@
 import { useRef, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { PORTAL_MARKER } from '../theme'
 import { motion } from 'motion/react'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { useFocusTrap } from '../hooks/useFocusTrap'
@@ -52,6 +53,25 @@ const VARIANT_CLASSES = {
 
 export type OverlayVariant = keyof typeof VARIANT_CLASSES
 
+/** Variants whose backdrop is `position: fixed` in CSS — i.e. full-viewport
+ *  surfaces. These are portalled to <body> by default, because a panel or the
+ *  sidebar silently becomes the containing block of any fixed DESCENDANT as
+ *  soon as it carries `backdrop-filter` (wallpaper on) or a transform (the
+ *  `.chat-panel.entering` animation), and an inset:0 backdrop then resolves
+ *  against that box instead of the viewport — measured: the New Session dialog
+ *  rendered 279x1009 at (0,0), i.e. squeezed into the sidebar. Canonical
+ *  statement: the CONTAINING-BLOCK HAZARD note in layout.css.
+ *
+ *  The remaining variants (perm / panel / settings / git / tasks / subagent /
+ *  workflow) are `position: absolute` and panel-scoped BY DESIGN — portalling
+ *  them would move them out of the panel they belong to. */
+const FIXED_BACKDROP_VARIANTS: readonly OverlayVariant[] = [
+  'modal',
+  'globalSettings',
+  'palette',
+  'marketplace',
+]
+
 /** Div props used by both the css-mode <div> and motion-mode <motion.div>
  *  branches. React's HTMLAttributes types onDrag as DragEventHandler, which
  *  collides with motion's pan/gesture onDrag signature — the props are Omit-ed
@@ -81,7 +101,10 @@ export interface OverlayProps {
   cardStyle?: CSSProperties
   /** Extra class(es) on the backdrop element. */
   backdropClassName?: string
-  /** Render into a portal on document.body (McpInstaller, marketplace). */
+  /** Force the portal decision. Omit it to get the variant default: variants
+   *  whose backdrop is `position: fixed` always render into a portal on
+   *  document.body (see FIXED_BACKDROP_VARIANTS), the panel-scoped absolute
+   *  variants never do unless you ask. */
   portal?: boolean
   /** When false, children ARE the card (settings/git/subagent/workflow panels
    *  carry their own card class). Default: true unless the variant has no card
@@ -140,7 +163,7 @@ export function Overlay(props: OverlayProps) {
     cardClassName,
     cardStyle,
     backdropClassName,
-    portal = false,
+    portal,
     renderCard,
     keepMounted = false,
     motion: motionMode = 'css',
@@ -218,10 +241,18 @@ export function Overlay(props: OverlayProps) {
   const dataState = open ? 'open' : isExiting ? 'closing' : 'closed'
   const hidden = keepMounted && !shouldRender
   const modal = open ? classes.ariaModal : 'false'
+  // An explicit `portal` wins; otherwise the fixed-viewport variants are always
+  // portalled so the backdrop can never be captured by a panel's containing
+  // block. See FIXED_BACKDROP_VARIANTS.
+  const usePortal = portal ?? FIXED_BACKDROP_VARIANTS.includes(variant)
 
   const backdropProps: OverlayDivProps<(node: HTMLDivElement | null) => void> = {
     className: `${classes.backdrop}${backdropClassName ? ' ' + backdropClassName : ''}${hidden ? ' hidden' : ''}`,
     ...(cssMode ? { 'data-state': dataState } : {}),
+    // The portal forfeits the container's custom properties, so the surface
+    // declares itself portalled and lets the compensations hang off it —
+    // see PORTAL_MARKER (src/theme.ts) and the body.has-bg block in layout.css.
+    ...(usePortal ? { [PORTAL_MARKER]: '' } : {}),
     ref: mergedBackdropRef,
     ...(backdropDismiss
       ? {
@@ -255,7 +286,7 @@ export function Overlay(props: OverlayProps) {
     </MotionShell>
   )
 
-  return portal ? createPortal(element, document.body) : element
+  return usePortal ? createPortal(element, document.body) : element
 }
 
 /** motion-mode shell. Split so useOverlayMotion (which reads the reduced-motion

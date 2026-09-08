@@ -1629,16 +1629,52 @@ body.resizing-col .app {
      raw reference would resolve to the value being declared here (self-
      reference), and the chrome's own fills would pick the aliases up for the
      same reason.
-     Scope caveat: custom properties follow the DOM tree, so this reaches every
-     descendant — that is the point — but it also reaches position:fixed
-     descendants that are NOT portalled (.ctx-menu, .model-picker,
-     .cmd-picker), and any rule that already mixes one of these tokens with
-     `transparent` (modal scrims, composer fades, pinned-message veils) gets
-     multiplied by the same number. Layers rendered outside these containers
-     (the Overlay-based dialogs, toasts, the Appearance popover) are unaffected. */
+     Scope: custom properties follow the DOM tree, so this reaches every
+     descendant — that is the point — and any rule that already mixes one of
+     these tokens with `transparent` (modal scrims, composer fades,
+     pinned-message veils) gets multiplied by the same number. What it does NOT
+     reach is a surface that had to leave the container's subtree, so those
+     re-declare the same remap on themselves through [data-portaled] — the one
+     attribute stamped by whoever performs the portal (see PORTAL_MARKER in
+     src/theme.ts). Deliberately a marker rather than a roster of class names: a
+     surface gets the compensation by portalling, not by being listed here.
+     KNOWN GAP, stated rather than implied: three surfaces that portal on their
+     own — .effort-slider, .appearance-panel, .accent-popover — predate the
+     marker and never stamp it, so they keep opaque fills under a wallpaper
+     today. Making them follow the Content slider is a deliberate visual change
+     for surfaces nobody has reported, so it is not swept in here; add
+     `markPortaledSurface` at those three call sites if it should change.
+     What the re-declaration actually buys was measured, not assumed: a portalled
+     surface's own base fill reads --glass-surface-bg, which <html> had already
+     resolved against the root token, so that fill tracked the Content slider
+     neither before nor after portalling. What depends on the remap reaching them
+     is the INHERITED stuff inside — picker rows (--bg-elev-2 on
+     .cmd-picker-item.active / .ctx-menu-item:hover /
+     .model-picker-item.selected) and a dialog's form fields (.input reads
+     --bg-elev) — which would sit opaque while the panel behind them dimmed.
+     Note the panel-scoped Overlay variants (perm / panel / settings / git /
+     tasks / subagent / workflow) stay INSIDE their panel on purpose: they are
+     `position: absolute`, so they are reached by this block like any other
+     descendant and need no marker.
+
+     CONTAINING-BLOCK HAZARD — the rule this note exists to enforce: the
+     `backdrop-filter` below makes .sidebar / .main-header / .chat-panel the
+     containing block for every `position: fixed` DESCENDANT. A fixed surface
+     that derives left/top from getBoundingClientRect() (i.e. viewport
+     coordinates) is then displaced by that container's own viewport offset and
+     becomes subject to its overflow:hidden clipping. The same applies to any
+     filter / transform / perspective / will-change on an ancestor — including
+     the `.chat-panel.entering` animation, which does it with no wallpaper
+     involved. So: every `position: fixed` floating surface must be portalled to
+     <body> (Overlay does it for its fixed variants; anchored popovers call
+     createPortal directly), which is what makes their viewport coordinates mean
+     what they say. Portalling forfeits the container's custom properties in
+     exchange, hence [data-portaled] below plus `applyPortaledThemeVars` in
+     src/theme.ts for the per-session accent triple. */
   body.has-bg .sidebar,
   body.has-bg .main-header,
-  body.has-bg .chat-panel {
+  body.has-bg .chat-panel,
+  body.has-bg [data-portaled] {
     --bg: color-mix(in srgb, var(--bg-solid) var(--app-surface-alpha), transparent);
     --bg-elev: color-mix(in srgb, var(--bg-elev-solid) var(--app-surface-alpha), transparent);
     --bg-elev-1: color-mix(in srgb, var(--bg-elev-1-solid) var(--app-surface-alpha), transparent);

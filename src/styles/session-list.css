@@ -657,7 +657,9 @@
   cursor: default;
 }
 
-/* Custom right-click menu. Positioned absolutely by the parent. */
+/* Custom right-click menu. `position: fixed` at the cursor, portalled to
+   <body> by ContextMenu.tsx (viewport coordinates + containing-block hazard —
+   see the note in layout.css). */
 .ctx-menu {
   position: fixed;
   min-width: 180px;

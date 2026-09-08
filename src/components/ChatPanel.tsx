@@ -352,8 +352,11 @@ export const ChatPanel = memo(function ChatPanel({
   const recapOpen =
     !!session.recap &&
     (recapDismissedAt === null || session.recap.generatedAt !== recapDismissedAt)
-  /** Anchor for the model picker dropdown. Non-null = picker visible. */
-  const [modelMenu, setModelMenu] = useState<{ x: number; y: number } | null>(null)
+  /** Anchor for the model picker dropdown. Non-null = picker visible. `source`
+   *  is the chip itself, which the portalled picker needs to find this panel's
+   *  theme vars (see `applyPortaledThemeVars`); required so no caller can drop
+   *  the accent carry by accident. */
+  const [modelMenu, setModelMenu] = useState<{ x: number; y: number; source: Element | null } | null>(null)
   /** Anchor for the permission-mode menu. Non-null = menu visible. A
    *  custom menu (rather than a native <select>) gives us full control
    *  over dark-theme styling; the native control's dropdown surface
@@ -971,7 +974,9 @@ export const ChatPanel = memo(function ChatPanel({
                 // mousedown listener fires before this click and has
                 // already closed it, so toggling would just reopen.
                 const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
-                setModelMenu({ x: rect.left, y: rect.bottom + 4 })
+                // `source` lets the portalled picker find this panel's theme
+                // vars (it is no longer a DOM descendant of the panel).
+                setModelMenu({ x: rect.left, y: rect.bottom + 4, source: e.currentTarget })
               }}
             >
               <IconSparkles size={13} aria-hidden />

@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Overlay } from './Overlay'
+import { PORTAL_MARKER } from '../theme'
+import { expectPortaledToBody } from './portal-test-utils'
 import { __resetForTests, getEscapeStackCount, useEscapeStack } from '../hooks/useEscapeStack'
 
 // Conventions follow PanelOverlay.test.tsx: backdrop clicks are exercised via a
@@ -284,5 +286,34 @@ describe('Overlay', () => {
     )
     expect(container.querySelector('.modal-backdrop')).toBeNull()
     expect(document.body.querySelector('.modal-backdrop')).not.toBeNull()
+  })
+
+  it('the fixed-viewport variants portal by default and carry the marker', () => {
+    // Regression this exists for: NewSessionDialog (variant="modal", rendered
+    // inside .sidebar) left its backdrop inline, so a wallpaper's
+    // backdrop-filter made the sidebar its containing block and the full-screen
+    // dialog rendered 279x1009 at (0,0) — squeezed into the sidebar. The marker
+    // is the other half: the body.has-bg fill remap, the accent thumb and
+    // click-attribution all hang off it (PORTAL_MARKER in src/theme.ts).
+    const { container } = render(
+      <Overlay variant="modal" open onClose={() => {}} ariaLabel="Default portal">
+        <button>inside</button>
+      </Overlay>,
+    )
+    expectPortaledToBody(container, '.modal-backdrop')
+  })
+
+  it('leaves a panel-scoped variant inline and unmarked', () => {
+    // The absolute variants are panel-scoped by design — portalling one would
+    // move it out of the panel it belongs to, and a stray marker would pull the
+    // container compensations onto a surface that never left its container.
+    const { container } = render(
+      <Overlay variant="panel" open onClose={() => {}} ariaLabel="Inline">
+        <button>inside</button>
+      </Overlay>,
+    )
+    const inline = container.querySelector('.panel-overlay')
+    expect(inline).not.toBeNull()
+    expect(inline!.hasAttribute(PORTAL_MARKER)).toBe(false)
   })
 })

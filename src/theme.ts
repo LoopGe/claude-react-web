@@ -99,6 +99,18 @@ export function onAccentFor(hex: string): string {
   return lum > ON_ACCENT_LIGHT_LUM_THRESHOLD ? ON_ACCENT_DARK : ON_ACCENT_LIGHT
 }
 
+/** The custom properties a themed chrome container can override per session,
+ *  each paired with how its value derives from the session's hex. ONE source for
+ *  both sides of the portal boundary: `buildSessionAccentMap` iterates it to
+ *  write, `applyPortaledThemeVars` iterates it to copy — so a fourth per-session
+ *  property appears on both sides automatically, and reordering cannot land a
+ *  value on the wrong property (which positional indexing would allow). */
+const ACCENT_VARS = {
+  '--accent': (hex: string) => hex,
+  '--accent-strong': (hex: string) => accentStrongFor(hex),
+  '--on-accent': (hex: string) => onAccentFor(hex),
+} as const satisfies Record<string, (hex: string) => string>
+
 /** Build a `sessionId → CSSProperties` map for per-session accent overrides.
  *  Used by App.tsx (driving ChatPanel) and SessionList.tsx (driving
  *  SessionCard). Each style sets `--accent` and `--accent-strong` so a
@@ -117,13 +129,92 @@ export function buildSessionAccentMap(
   const map = new Map<string, CSSProperties>()
   if (!sessionColors || isAccentLocked(skin)) return map
   for (const [id, hex] of Object.entries(sessionColors)) {
-    map.set(id, {
-      '--accent': hex,
-      '--accent-strong': accentStrongFor(hex),
-      '--on-accent': onAccentFor(hex),
-    } as CSSProperties)
+    const style: Record<string, string> = {}
+    for (const [name, derive] of Object.entries(ACCENT_VARS)) style[name] = derive(hex)
+    map.set(id, style as CSSProperties)
   }
   return map
+}
+
+/** Attribute stamped on the root of every surface that had to be portalled out
+ *  of its themed container. ONE seam for all three compensations portalling
+ *  forces, so a new floating surface never has to be added to a list of class
+ *  names:
+ *    * `body.has-bg [data-portaled]` re-declares the wallpaper fill remap
+ *      (layout.css) that it left behind with its container,
+ *    * `[data-portaled] .os-thumb` keeps the accent-tinted overlay scrollbar
+ *      (overlay-scrollbar.css), whose rules were ancestor-scoped,
+ *    * and its VALUE is the owning panel's `data-panel-id` ('' when the surface
+ *      belongs to the app rather than one panel), which is what lets
+ *      `EasterEggGame` tell "clicked a popover of THIS panel" apart from
+ *      "clicked out of the panel" — a question DOM ancestry can no longer answer.
+ *  Set by `markPortaledSurface` / `applyPortaledThemeVars` (pickers) and by
+ *  Overlay's portal branch (dialogs). Canonical hazard statement: layout.css. */
+export const PORTAL_MARKER = 'data-portaled'
+
+/** The containers whose subtree a portalled surface leaves, and which may
+ *  override the accent triple inline: the frosted chrome (`.chat-panel` /
+ *  `.sidebar` / `.main-header` — the same three layout.css re-declares the remap
+ *  on) plus `.session-item`, which carries its own `style={accentStyle}` inside
+ *  the sidebar. `closest()` takes the nearest, so a card-anchored surface picks
+ *  the card's tint rather than the sidebar's absence of one. */
+const THEME_CONTAINER_SELECTOR = '.chat-panel, .sidebar, .main-header, .session-item'
+
+/** The panel a surface was opened from, if any — the marker's ownership value. */
+const PANEL_SELECTOR = '.chat-panel'
+
+/** Declare `el` as a portalled surface so the `[data-portaled]` compensations
+ *  apply, recording which panel owns it (`owner`'s `data-panel-id`, or '' when
+ *  the surface is app-level). Called by `applyPortaledThemeVars`, so surfaces
+ *  that also override the accent don't have to remember this separately.
+ *  When no owner is passed and a value is already stamped, it is PRESERVED: a
+ *  picker whose anchor element went detached mid-lifetime (a header chip
+ *  re-created by a re-render) would otherwise wipe its ownership — and with it
+ *  the EasterEgg "same panel" exemption — back to ''. */
+export function markPortaledSurface(el: HTMLElement, owner?: Element | null): void {
+  if (owner) {
+    el.setAttribute(PORTAL_MARKER, owner.getAttribute('data-panel-id') ?? '')
+    return
+  }
+  if (!el.hasAttribute(PORTAL_MARKER)) el.setAttribute(PORTAL_MARKER, '')
+}
+
+/**
+ * Carry the container's per-session accent onto a surface portalled out of it.
+ *
+ * Portalling is not optional for these: they are `position: fixed` with
+ * viewport-derived coordinates, and a container's `backdrop-filter` (wallpaper
+ * on) or its `entering` transform hijacks the containing block those numbers
+ * are read against — see the canonical note in layout.css. The cost is that CSS
+ * inheritance follows the DOM tree, so the surface also stops seeing the
+ * container's inline `--accent` triple, and a tinted session's popover silently
+ * reverts to the global accent.
+ *
+ * Deliberately reads the container's OWN inline declarations rather than
+ * `getComputedStyle`: all three properties are also declared on `:root`
+ * (tokens.css), so a computed read never comes back empty — it would snapshot
+ * `:root`'s value onto every un-tinted popover too, freezing it at open time
+ * where the cascade would have kept tracking theme / accent changes. Inline is
+ * exactly "what this container overrides", so an un-tinted container carries
+ * nothing and inheritance keeps working on its own.
+ *
+ * Known limit, accepted for a surface that lives for seconds: the copy is a
+ * snapshot taken whenever the calling effect runs (open, and each re-layout),
+ * so a session recolor that lands *while* the popover is open shows up on the
+ * next re-layout rather than instantly. Re-observing the container would mean a
+ * MutationObserver per popover for a transient surface.
+ */
+export function applyPortaledThemeVars(el: HTMLElement, fromElement: Element | null): void {
+  const container = fromElement?.closest<HTMLElement>(THEME_CONTAINER_SELECTOR) ?? null
+  // Ownership comes from the panel specifically, not from whichever themed
+  // container happened to be nearest (a card's inline tint doesn't make the
+  // sidebar the popover's owner).
+  markPortaledSurface(el, fromElement?.closest(PANEL_SELECTOR) ?? null)
+  if (!container) return
+  for (const name of Object.keys(ACCENT_VARS)) {
+    const value = container.style.getPropertyValue(name).trim()
+    if (value) el.style.setProperty(name, value)
+  }
 }
 
 // ── Global background image (default/glow skins only) ──────────────────

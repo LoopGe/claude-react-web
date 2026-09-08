@@ -1,15 +1,17 @@
 // Minimal custom context menu used by SessionList cards.
 //
-// Positioned absolutely at the cursor on `contextmenu`. The parent owns
-// visibility state (so it knows which session the menu targets); this
-// component only handles the rendering, outside-click / Esc dismissal,
+// `position: fixed` at the cursor on `contextmenu`, portalled to <body>. The
+// parent owns visibility state (so it knows which session the menu targets);
+// this component only handles the rendering, outside-click / Esc dismissal,
 // and a small nudge to stay within the viewport.
 
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import { usePopoverMotion } from '../utils/transitions'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { markPortaledSurface } from '../theme'
 
 export interface ContextMenuItem {
   /** Shown in the menu. Falsy = render a separator instead. */
@@ -46,6 +48,9 @@ export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: P
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
+    // No accent to carry (nothing in .ctx-menu reads --accent), but the
+    // wallpaper fill remap must still reach the hover/active rows.
+    markPortaledSurface(el)
     const rect = el.getBoundingClientRect()
     const vw = window.innerWidth
     const vh = window.innerHeight
@@ -79,7 +84,7 @@ export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: P
     getContainer: () => ref.current,
   })
 
-  return (
+  return createPortal(
     <motion.div
       ref={ref}
       className="ctx-menu"
@@ -138,6 +143,11 @@ export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: P
           )
         })
       })()}
-    </motion.div>
+    </motion.div>,
+    // Portal to <body>: `pos` above is in VIEWPORT coordinates, and any
+    // ancestor carrying filter / transform / backdrop-filter would take over as
+    // this element's containing block instead. Canonical statement: the
+    // body.has-bg note in layout.css. Pinned by ContextMenu.test.tsx.
+    document.body,
   )
 })

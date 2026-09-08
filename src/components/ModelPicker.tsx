@@ -13,17 +13,23 @@
 // arbitrary id — important for proxy models the SDK doesn't advertise.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import type { ModelOptions } from '../hooks/useModelOptions'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { applyPortaledThemeVars } from '../theme'
 import { useMergedRef } from '../utils/mergedRef'
 import { usePopoverMotion } from '../utils/transitions'
 import { IconCheck, IconSearch } from './icons/ToolIcons'
 
 interface Props {
-  /** Client-coordinate anchor (typically the chip's bottom-left). */
-  anchor: { x: number; y: number }
+  /** Client-coordinate anchor (typically the chip's bottom-left). `source` is
+   *  required, not optional: the picker portals to <body> and needs the clicked
+   *  chip to find the container whose accent to carry (see
+   *  `applyPortaledThemeVars`) — an omitted source is a silent color regression
+   *  on a tinted session, so it is a type error instead. */
+  anchor: { x: number; y: number; source: Element | null }
   /** Currently selected model id. Undefined/empty means the session has
    *  no explicit model — the first model in the list is treated as the
    *  effective default and marked selected. */
@@ -174,15 +180,19 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
     const nx = Math.min(anchor.x, vw - rect.width - 4)
     const ny = Math.min(anchor.y, vh - rect.height - 4)
     setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
-  }, [anchor.x, anchor.y, rows.length])
+    // The picker is a <body> child, so it sits outside the panel that carries
+    // this session's accent — copy it back off the clicked chip's container.
+    applyPortaledThemeVars(el, anchor.source)
+  }, [anchor.x, anchor.y, anchor.source, rows.length])
 
   // Esc closes via the shared escape stack, so it wins over the chat panel's
   // handlers and never closes the panel beneath this popover. Must be called
-  // BEFORE the autofocus layout effect below: the search box is portaled to
-  // body (not a descendant of any parent trap), so unless this entry is
-  // registered first, a parent trap's focusin re-guard sees isFocusInside-
-  // OtherOverlay() false and steals focus back — and the Escape dispatch then
-  // resolves by containment to the parent layer instead of this popover.
+  // BEFORE the autofocus layout effect below: this popover renders via
+  // createPortal on body (see the return below), so it is not a DOM descendant
+  // of any parent trap, and unless this entry is registered first a parent
+  // trap's focusin re-guard sees isFocusInsideOtherOverlay=false and steals
+  // focus back — and the Escape dispatch then resolves by containment to the
+  // parent layer instead of this popover.
   useEscapeStack({
     active: true,
     onEscape: onClose,
@@ -224,7 +234,7 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
     }
   }
 
-  return (
+  return createPortal(
     <motion.div
       ref={ref}
       className="model-picker"
@@ -283,6 +293,12 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
           </div>
         ))}
       </div>
-    </motion.div>
+    </motion.div>,
+    // Portal to <body>: `anchor` arrives in VIEWPORT coordinates and the clamp
+    // above compares them against the window, so a panel carrying
+    // backdrop-filter (wallpaper on) would take over as the containing block
+    // and displace the whole list. Canonical statement: the body.has-bg note in
+    // layout.css. Pinned by ModelPicker.test.tsx.
+    document.body,
   )
 }

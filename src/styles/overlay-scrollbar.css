@@ -90,9 +90,41 @@
   background: var(--accent);
 }
 
+/* Portalled floating surfaces: they are <body> children, so no container
+   ancestor selector above can reach them and their thumbs fall back to the
+   neutral grey. [data-portaled] is the marker for exactly that case — see
+   PORTAL_MARKER in src/theme.ts and the CONTAINING-BLOCK HAZARD note in
+   layout.css.
+   Two honest limits on "same treatment as before":
+     * The newly portalled pickers carry the owning panel's accent
+       (applyPortaledThemeVars), so theirs is a faithful reproduction. Surfaces
+       that were portalled LONG before (McpInstaller, FileViewer, the
+       marketplace overlay) stamp the marker too, so their thumbs change from
+       neutral grey to the GLOBAL accent — Overlay has no anchor to carry a
+       session tint from. Deliberate: one rule for one structural fact beats a
+       roster, and a global-accent thumb matches how the chrome already reads.
+     * Scope limit before adding a rule for a specific surface:
+       attachOverlayScrollbar appends the track to the SCROLLER'S PARENT, so this
+       reaches only surfaces whose scroller is INSIDE the portalled root (the
+       model picker's .model-picker-list). A surface that is itself the scroller
+       can never be matched by an ancestor selector — .cmd-picker is exactly that
+       (an overflow-y: auto root hidden by the .os-hidden recipe below), and
+       .ctx-menu does not scroll at all. So don't add `.cmd-picker .os-thumb` as
+       "insurance"; it can never fire. */
+[data-portaled] .os-thumb {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+[data-portaled] .os-thumb:hover {
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+[data-portaled] .os-thumb:active {
+  background: var(--accent);
+}
+
 /* glow skin: faint accent halo on the thumb. Mirrors tokens.css:725-728. */
 [data-skin="glow"] .chat-panel .os-thumb,
-[data-skin="glow"] .sidebar .os-thumb {
+[data-skin="glow"] .sidebar .os-thumb,
+[data-skin="glow"] [data-portaled] .os-thumb {
   box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
 }
 

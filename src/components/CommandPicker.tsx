@@ -1,9 +1,14 @@
 // Popup that appears when the user types "/" in the composer, showing
 // available slash commands with keyboard navigation and fuzzy filtering.
+//
+// Rendered through a portal on <body> — see the `createPortal` call below for
+// why that is load-bearing, not cosmetic.
 
 import { useLayoutEffect, useMemo, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import type { SlashCommand } from '../types'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { applyPortaledThemeVars } from '../theme'
 import { pluginTagOf } from '../utils/text'
 
 interface Props {
@@ -71,8 +76,13 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   // --- Positioning: fixed, above the textarea, clamped to viewport ---
   useLayoutEffect(() => {
     const el = rootRef.current
+    if (!el) return
     const anchor = anchorRef.current
-    if (!el || !anchor) return
+    // Portal compensation first: declare the surface portalled and carry the
+    // panel's per-session accent (both no-ops when there is no anchor to read
+    // from, and geometry doesn't depend on the anchor being there yet).
+    applyPortaledThemeVars(el, anchor)
+    if (!anchor) return
 
     const rect = anchor.getBoundingClientRect()
     const pickerH = el.offsetHeight
@@ -130,45 +140,48 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
     activeRef.current?.scrollIntoView({ block: 'nearest' })
   }, [idx])
 
-  if (filtered.length === 0) {
-    return (
-      <div className="cmd-picker os-hidden" ref={rootRef} role="listbox">
-        <div className="cmd-picker-empty">No matching commands</div>
-      </div>
-    )
-  }
-
   // Flatten groups for keyboard navigation index mapping.
   let flatIdx = 0
 
-  return (
+  // Portal to <body>, like the app's other floating surfaces. Load-bearing: the
+  // layout effect above writes VIEWPORT coordinates into left/top, and a panel
+  // takes over as this element's containing block whenever it carries
+  // backdrop-filter (wallpaper on) or an entering transform — the canonical
+  // statement is the body.has-bg note in layout.css. Pinned by
+  // CommandPicker.test.tsx.
+  return createPortal(
     <div className="cmd-picker os-hidden" ref={rootRef} role="listbox">
-      {groups.map((group) => (
-        <div key={group.plugin ?? '__builtin__'}>
-          {group.plugin && <div className="cmd-picker-group-header">{group.plugin}</div>}
-          {group.commands.map((cmd) => {
-            const i = flatIdx++
-            const isActive = i === idx
-            return (
-              <button
-                key={cmd.name}
-                ref={isActive ? activeRef : undefined}
-                className={`cmd-picker-item${isActive ? ' active' : ''}`}
-                role="option"
-                aria-selected={isActive}
-                onMouseDown={(e) => {
-                  e.preventDefault()
-                  onSelect(cmd)
-                }}
-              >
-                <span className="cmd-picker-name">/{cmd.name}</span>
-                {cmd.argumentHint && <span className="cmd-picker-args">{cmd.argumentHint}</span>}
-                {cmd.description && <span className="cmd-picker-desc">{cmd.description}</span>}
-              </button>
-            )
-          })}
-        </div>
-      ))}
-    </div>
+      {filtered.length === 0 ? (
+        <div className="cmd-picker-empty">No matching commands</div>
+      ) : (
+        groups.map((group) => (
+          <div key={group.plugin ?? '__builtin__'}>
+            {group.plugin && <div className="cmd-picker-group-header">{group.plugin}</div>}
+            {group.commands.map((cmd) => {
+              const i = flatIdx++
+              const isActive = i === idx
+              return (
+                <button
+                  key={cmd.name}
+                  ref={isActive ? activeRef : undefined}
+                  className={`cmd-picker-item${isActive ? ' active' : ''}`}
+                  role="option"
+                  aria-selected={isActive}
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    onSelect(cmd)
+                  }}
+                >
+                  <span className="cmd-picker-name">/{cmd.name}</span>
+                  {cmd.argumentHint && <span className="cmd-picker-args">{cmd.argumentHint}</span>}
+                  {cmd.description && <span className="cmd-picker-desc">{cmd.description}</span>}
+                </button>
+              )
+            })}
+          </div>
+        ))
+      )}
+    </div>,
+    document.body,
   )
 }

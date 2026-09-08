@@ -7,6 +7,7 @@ import {
   type Status, type GameState, type ThemeColors,
 } from './easter-egg-game/engine'
 import { IconVolume2, IconVolumeX, IconX } from './icons/ToolIcons'
+import { PORTAL_MARKER } from '../theme'
 
 // Hidden easter-egg mini-game: a Chrome-offline-dino-style endless runner
 // themed after this app. The player is the same sparkle glyph used in the
@@ -197,11 +198,22 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
   }, [])
 
   // auto-pause when the user clicks outside this panel or the window loses focus
+  //
+  // DOM ancestry alone can't answer that any more: this panel's own floating
+  // surfaces (slash picker, model picker) render through a portal on <body>, so a
+  // mousedown on one of them is not "left the panel". The marker's VALUE is the
+  // owning panel's id, so a sibling panel's popover — or an app-level surface,
+  // which stamps an empty value — still pauses the game. See PORTAL_MARKER in
+  // src/theme.ts.
   useEffect(() => {
     const root = canvasRef.current
     const panel = root?.closest('.chat-panel')
+    const panelId = panel?.getAttribute('data-panel-id') ?? ''
     const onMouseDown = (e: MouseEvent) => {
       if (stateRef.current.status !== 'running') return
+      const target = e.target as Element | null
+      const owner = target?.closest(`[${PORTAL_MARKER}]`)?.getAttribute(PORTAL_MARKER)
+      if (owner && panelId && owner === panelId) return
       if (panel && !panel.contains(e.target as Node)) {
         stateRef.current.status = 'paused'
       }

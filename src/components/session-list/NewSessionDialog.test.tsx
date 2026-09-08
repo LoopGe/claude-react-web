@@ -1,7 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { NewSessionDialog } from './NewSessionDialog'
 import type { NewSessionForm } from '../../types'
+
+// vitest.config.ts sets globals:false, so @testing-library's auto-cleanup never
+// registers. The dialog portals to <body> and these tests assert against
+// document.body, so a dialog left mounted by one test would satisfy the next
+// one's `.not.toContain(...)` — explicit cleanup is load-bearing here.
+afterEach(() => cleanup())
 
 vi.mock('../../hooks/useApi', () => ({
   api: {
@@ -53,11 +59,11 @@ describe('NewSessionDialog plugin picker', () => {
 
   it('renders all enabled plugins pre-checked and omits enabledPlugins when all checked', async () => {
     const onSubmit = vi.fn()
-    const { container } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
-    await waitFor(() => expect(container.textContent).toContain('plugA'))
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
 
     // Find and click the "Create" button
-    const buttons = container.querySelectorAll('button')
+    const buttons = baseElement.querySelectorAll('button')
     const createBtn = Array.from(buttons).find((b) => b.textContent?.trim() === 'Create')!
     fireEvent.click(createBtn)
     await waitFor(() => expect(onSubmit).toHaveBeenCalled())
@@ -67,16 +73,16 @@ describe('NewSessionDialog plugin picker', () => {
 
   it('sends enabledPlugins subset when a plugin is unchecked', async () => {
     const onSubmit = vi.fn()
-    const { container } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
-    await waitFor(() => expect(container.textContent).toContain('plugA'))
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
 
     // Uncheck plugB by clicking its checkbox
-    const labels = container.querySelectorAll('label')
+    const labels = baseElement.querySelectorAll('label')
     const plugBLabel = Array.from(labels).find((l) => l.textContent?.includes('plugB'))!
     const plugBCheckbox = plugBLabel.querySelector('input[type="checkbox"]') as HTMLInputElement
     fireEvent.click(plugBCheckbox)
 
-    const buttons = container.querySelectorAll('button')
+    const buttons = baseElement.querySelectorAll('button')
     const createBtn = Array.from(buttons).find((b) => b.textContent?.trim() === 'Create')!
     fireEvent.click(createBtn)
     await waitFor(() => expect(onSubmit).toHaveBeenCalled())
@@ -86,12 +92,13 @@ describe('NewSessionDialog plugin picker', () => {
 
   it('does not close the form when Esc dismisses the nested MCP installer', async () => {
     const onCancel = vi.fn()
-    const { container } = render(<NewSessionDialog {...baseProps} onCancel={onCancel} />)
-    await waitFor(() => expect(container.textContent).toContain('plugA'))
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onCancel={onCancel} />)
+    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
 
-    // Open the MCP installer — a modal-on-top-of-modal. It is portaled to
-    // <body>, so assert against document.body, not the dialog container.
-    const addBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+    // Open the MCP installer — a modal-on-top-of-modal. Both it and this dialog
+    // render through a portal on <body> (Overlay's fixed-backdrop variants), so
+    // the assertions below read document.body.
+    const addBtn = Array.from(baseElement.querySelectorAll('button')).find((b) =>
       b.textContent?.includes('Add server'),
     )!
     fireEvent.click(addBtn)
@@ -105,17 +112,17 @@ describe('NewSessionDialog plugin picker', () => {
 
   it('sends enabledPlugins: [] when all unchecked', async () => {
     const onSubmit = vi.fn()
-    const { container } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
-    await waitFor(() => expect(container.textContent).toContain('plugA'))
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
 
     // Uncheck both plugins
-    const labels = container.querySelectorAll('label')
+    const labels = baseElement.querySelectorAll('label')
     const plugALabel = Array.from(labels).find((l) => l.textContent?.includes('plugA') && !l.textContent?.includes('plugB'))!
     const plugBLabel = Array.from(labels).find((l) => l.textContent?.includes('plugB'))!
     fireEvent.click(plugALabel.querySelector('input[type="checkbox"]')!)
     fireEvent.click(plugBLabel.querySelector('input[type="checkbox"]')!)
 
-    const buttons = container.querySelectorAll('button')
+    const buttons = baseElement.querySelectorAll('button')
     const createBtn = Array.from(buttons).find((b) => b.textContent?.trim() === 'Create')!
     fireEvent.click(createBtn)
     await waitFor(() => expect(onSubmit).toHaveBeenCalled())
@@ -134,8 +141,10 @@ describe('NewSessionDialog first-party tools picker', () => {
     })
   })
 
-  const findFirstPartyRow = (container: HTMLElement, name: string) => {
-    const label = Array.from(container.querySelectorAll('label')).find((l) =>
+  // Both helpers take the element to search from — the dialog portals to
+  // <body>, so callers pass RTL's baseElement rather than a scoped container.
+  const findFirstPartyRow = (root: HTMLElement, name: string) => {
+    const label = Array.from(root.querySelectorAll('label')).find((l) =>
       l.textContent?.includes(name) && l.querySelector('input[type="checkbox"]'),
     )
     expect(label, `first-party row for ${name}`).toBeDefined()
@@ -145,8 +154,8 @@ describe('NewSessionDialog first-party tools picker', () => {
     }
   }
 
-  const clickCreate = async (container: HTMLElement, onSubmit: ReturnType<typeof vi.fn>) => {
-    const createBtn = Array.from(container.querySelectorAll('button')).find(
+  const clickCreate = async (root: HTMLElement, onSubmit: ReturnType<typeof vi.fn>) => {
+    const createBtn = Array.from(root.querySelectorAll('button')).find(
       (b) => b.textContent?.trim() === 'Create',
     )!
     fireEvent.click(createBtn)
@@ -156,47 +165,47 @@ describe('NewSessionDialog first-party tools picker', () => {
 
   it('pre-checks rows from the global defaults and omits the field when unchanged', async () => {
     const onSubmit = vi.fn()
-    const { container } = render(
+    const { baseElement } = render(
       <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ apptools: { enabled: true } }} />,
     )
-    await waitFor(() => expect(container.textContent).toContain('apptools'))
-    expect(findFirstPartyRow(container, 'apptools').checkbox.checked).toBe(true)
+    await waitFor(() => expect(baseElement.textContent).toContain('apptools'))
+    expect(findFirstPartyRow(baseElement, 'apptools').checkbox.checked).toBe(true)
 
-    const form = await clickCreate(container, onSubmit)
+    const form = await clickCreate(baseElement, onSubmit)
     // Unchanged from the global default → no override (the session inherits).
     expect(form.firstPartyTools).toBeUndefined()
   })
 
   it('sends an explicit OFF override when a globally-enabled tool is unchecked', async () => {
     const onSubmit = vi.fn()
-    const { container } = render(
+    const { baseElement } = render(
       <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ apptools: { enabled: true } }} />,
     )
-    await waitFor(() => expect(container.textContent).toContain('apptools'))
-    fireEvent.click(findFirstPartyRow(container, 'apptools').checkbox)
+    await waitFor(() => expect(baseElement.textContent).toContain('apptools'))
+    fireEvent.click(findFirstPartyRow(baseElement, 'apptools').checkbox)
 
-    const form = await clickCreate(container, onSubmit)
+    const form = await clickCreate(baseElement, onSubmit)
     expect(form.firstPartyTools).toEqual({ apptools: false })
   })
 
   it('sends an explicit ON override when a globally-disabled tool is checked', async () => {
     const onSubmit = vi.fn()
-    const { container } = render(
+    const { baseElement } = render(
       <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ apptools: { enabled: false } }} />,
     )
-    await waitFor(() => expect(container.textContent).toContain('apptools'))
-    expect(findFirstPartyRow(container, 'apptools').checkbox.checked).toBe(false)
-    fireEvent.click(findFirstPartyRow(container, 'apptools').checkbox)
+    await waitFor(() => expect(baseElement.textContent).toContain('apptools'))
+    expect(findFirstPartyRow(baseElement, 'apptools').checkbox.checked).toBe(false)
+    fireEvent.click(findFirstPartyRow(baseElement, 'apptools').checkbox)
 
-    const form = await clickCreate(container, onSubmit)
+    const form = await clickCreate(baseElement, onSubmit)
     expect(form.firstPartyTools).toEqual({ apptools: true })
   })
 
   it('hides the cluster when the defaults map is empty', async () => {
     const onSubmit = vi.fn()
-    const { container } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{}} />)
-    await waitFor(() => expect(container.textContent).not.toContain('plugA'))
-    expect(container.textContent).not.toContain('First-party tools')
-    await clickCreate(container, onSubmit)
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{}} />)
+    await waitFor(() => expect(baseElement.textContent).not.toContain('plugA'))
+    expect(baseElement.textContent).not.toContain('First-party tools')
+    await clickCreate(baseElement, onSubmit)
   })
 })

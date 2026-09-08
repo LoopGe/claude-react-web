@@ -56,20 +56,21 @@ describe('GlobalSettingsModal first-party tools section', () => {
 
   const openMcpTab = async (config: Record<string, unknown>, fpServers?: unknown[]) => {
     mockGet(config, fpServers)
-    const { container } = render(
+    render(
       <ToastProvider>
         <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />
       </ToastProvider>,
     )
     await waitFor(() => expect(screen.getByText('MCP Servers')).toBeTruthy())
     fireEvent.click(screen.getByText('MCP Servers'))
-    return container
   }
 
-  /** The apptools card + its staged ON/OFF toggle, once the section renders. */
-  const apptoolsCard = async (container: HTMLElement) => {
-    await waitFor(() => expect(container.textContent).toContain('First-party tools'))
-    const card = container.querySelector('.settings-first-party-card')
+  /** The apptools card + its staged ON/OFF toggle, once the section renders.
+   *  Queried through `screen` / document because the modal portals to body
+   *  (Overlay's fixed-backdrop variants always portal — see Overlay.tsx). */
+  const apptoolsCard = async () => {
+    await waitFor(() => expect(screen.getByText('First-party tools')).toBeTruthy())
+    const card = document.querySelector('.settings-first-party-card')
     expect(card, 'first-party card').toBeDefined()
     const toggle = card!.querySelector('.settings-first-party-toggle') as HTMLButtonElement
     expect(toggle, 'first-party ON/OFF toggle').toBeDefined()
@@ -77,15 +78,15 @@ describe('GlobalSettingsModal first-party tools section', () => {
   }
 
   it('renders one card per first-party server from the config map', async () => {
-    const container = await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
-    const { toggle } = await apptoolsCard(container)
-    expect(container.textContent).toContain('apptools')
+    await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
+    const { toggle } = await apptoolsCard()
+    expect(screen.getByText('apptools')).toBeTruthy()
     expect(toggle.textContent).toBe('ON')
   })
 
   it('stages toggles locally and saves the structured key on Save', async () => {
-    const container = await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
-    const { toggle } = await apptoolsCard(container)
+    await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
+    const { toggle } = await apptoolsCard()
 
     fireEvent.click(toggle)
     // Staged — nothing hits the network until Save.
@@ -101,23 +102,23 @@ describe('GlobalSettingsModal first-party tools section', () => {
   })
 
   it('expands the static tool listing on "List tools" (read-only badge on git_status)', async () => {
-    const container = await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
-    const { card } = await apptoolsCard(container)
-    expect(container.textContent).not.toContain('git_status')
+    await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
+    const { card } = await apptoolsCard()
+    expect(screen.queryByText('git_status')).toBeNull()
 
     const listBtn = [...card.querySelectorAll('button')].find((b) => b.textContent === 'List tools')
     expect(listBtn, 'List tools button').toBeDefined()
     fireEvent.click(listBtn!)
 
-    await waitFor(() => expect(container.textContent).toContain('git_status'))
-    expect(container.textContent).toContain('git_stage')
+    await waitFor(() => expect(screen.getByText('git_status')).toBeTruthy())
+    expect(screen.getByText('git_stage')).toBeTruthy()
     expect(card.querySelector('.settings-tag.readonly')).toBeDefined()
   })
 
   it('hides the section when the global map is empty', async () => {
-    const container = await openMcpTab({ firstPartyTools: {} })
+    await openMcpTab({ firstPartyTools: {} })
     await waitFor(() => expect(screen.getByText('MCP Servers')).toBeTruthy())
-    expect(container.textContent).not.toContain('First-party tools')
+    expect(screen.queryByText('First-party tools')).toBeNull()
   })
 })
 
