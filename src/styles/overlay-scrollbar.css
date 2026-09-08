@@ -5,11 +5,13 @@
    absolute/relative parents). Colors mirror the legacy ::-webkit-scrollbar
    thumb in tokens.css so the overlay reads as the same control. */
 
-/* Hide the native scrollbar on instrumented scrollers. Both engines: */
-.os-native-hidden {
+/* Hide the native scrollbar on instrumented scrollers. Both engines. A data
+   attribute (not a class) so React's className rewrites can't clobber it —
+   rationale at src/utils/overlay-scrollbar.ts attach. */
+[data-os-native-hidden] {
   scrollbar-width: none; /* Firefox */
 }
-.os-native-hidden::-webkit-scrollbar {
+[data-os-native-hidden]::-webkit-scrollbar {
   width: 0;
   height: 0;
   display: none; /* WebKit / Chromium / Safari */

@@ -173,7 +173,7 @@ describe('PermissionDialog overlay scrollbar', () => {
     // attaches to — this is the contract that replaces the native 10px bar
     // with the project's self-built overlay thumb (matches the StreamingFooter
     // scrollbar test in transcript-chrome.test.tsx).
-    expect(section!.classList.contains('os-native-hidden')).toBe(true)
+    expect(section!.hasAttribute('data-os-native-hidden')).toBe(true)
     // And it appends an overlay track as a sibling of the scroller inside the
     // .perm-card, floating the thumb over the plan card body.
     const card = container.querySelector('.perm-card')

@@ -49,7 +49,12 @@ export interface OverlayScrollbarController {
   destroy: () => void
 }
 
-const NATIVE_HIDDEN_CLASS = 'os-native-hidden'
+// Presence-only marker that hides `el`'s native scrollbar (CSS selector in
+// overlay-scrollbar.css). Always set with an empty value and read via
+// hasAttribute, never via dataset ('' is falsy). Owned exclusively by this
+// module: destroy() removes it unconditionally, so two live controllers on one
+// element are unsupported.
+const NATIVE_HIDDEN_ATTR = 'data-os-native-hidden'
 
 interface Axis {
   track: HTMLDivElement
@@ -89,7 +94,14 @@ export function attachOverlayScrollbar(
   if (vertical) parent.appendChild(vertical.track)
   if (horizontal) parent.appendChild(horizontal.track)
 
-  el.classList.add(NATIVE_HIDDEN_CLASS)
+  // Hide the native scrollbar via a data attribute, NOT a className. The host
+  // usually owns `el`'s className (React re-writes it from its own template on
+  // render), so an imperative class would be clobbered the next time that
+  // template output changes (e.g. the sidebar's entrance class dropping) —
+  // leaving the native scrollbar visible next to the overlay thumb (double
+  // scrollbar). React only reconciles attributes its JSX names, so a data-*
+  // attribute the host never writes survives className rewrites untouched.
+  el.setAttribute(NATIVE_HIDDEN_ATTR, '')
 
   // Promote a static parent to a positioning context for the absolute thumb.
   // Never overrides an existing absolute/relative/sticky/fixed — that would
@@ -352,7 +364,7 @@ export function attachOverlayScrollbar(
     roContent?.disconnect()
     mo.disconnect()
     unsubs.forEach((u) => u())
-    el.classList.remove(NATIVE_HIDDEN_CLASS)
+    el.removeAttribute(NATIVE_HIDDEN_ATTR)
     vertical?.track.remove()
     horizontal?.track.remove()
     if (savedParentPosition !== null) parent.style.position = savedParentPosition
