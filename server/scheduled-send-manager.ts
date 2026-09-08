@@ -42,9 +42,7 @@ export class ScheduledSendManager {
           for await (const ev of sub.iterable) {
             if (ev.kind === 'removed' && typeof ev.id === 'string') this.cancelAll(ev.id)
           }
-        } catch {
-          /* global channel ended (e.g. shutdown) — ignore */
-        }
+        } catch { /* intentionally empty */ }
       })()
     }
   }
