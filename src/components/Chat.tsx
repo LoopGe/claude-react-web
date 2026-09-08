@@ -33,7 +33,7 @@ const InputHistoryPanel = lazy(() =>
 import { RecapWindow } from './RecapWindow'
 import { PinnedUserMessage } from './PinnedUserMessage'
 import { api } from '../hooks/useApi'
-import { useAttachments } from '../hooks/useAttachments'
+import { useAttachments, type Attachment } from '../hooks/useAttachments'
 import { useChatStream } from '../hooks/useChatStream'
 import { usePastedImages } from '../hooks/usePastedImages'
 import { useInputHistory } from '../hooks/useInputHistory'
@@ -65,6 +65,7 @@ import { TodoChecklist } from './TodoChecklist'
 import { MonitorBar } from './MonitorBar'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
+import { useScheduledSends } from '../hooks/useScheduledSends'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { useSessionTaskCounts } from '../session-store/selectors'
@@ -85,9 +86,10 @@ import { Overlay } from './Overlay'
 import { useWsHub } from '../hooks/useWsHub'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
-import type { AgentInfo, PermissionRequest, RewindFilesResult, SessionInfo, SlashCommand } from '../types'
+import type { AgentInfo, PastedImage, PermissionRequest, RewindFilesResult, SessionInfo, SlashCommand } from '../types'
 import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
+import type { ScheduledSendBody, ScheduledSendContentBlock } from '../../shared/scheduled-send'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { SettingsTabName } from '../local-commands'
@@ -121,6 +123,37 @@ function writeDraft(sessionId: string, draft: string): void {
   } catch {
     /* quota or SecurityError ?drafts are best-effort */
   }
+}
+
+/** Build the exact POST /messages body for the current composer state —
+ *  mirrors the inline construction in send() so scheduling captures the
+ *  same text-preamble + image blocks an immediate send would ship. Keep
+ *  the two in sync. Returns null when there is nothing to send. */
+function buildScheduledBody(
+  input: string,
+  attachments: Attachment[],
+  pastedImages: PastedImage[],
+): ScheduledSendBody | null {
+  const text = input.trim()
+  // KEEP IN SYNC: preamble shape mirrors send() lines 1420-1426.
+  const preamble =
+    attachments.length > 0
+      ? `Attached file${attachments.length === 1 ? '' : 's'} (absolute path${attachments.length === 1 ? '' : 's'} — use the Read tool to open):\n` +
+        attachments.map((a) => `- ${a.path}`).join('\n') +
+        '\n\n'
+      : ''
+  const full = preamble + text
+  if (!full.trim() && pastedImages.length === 0) return null
+  // KEEP IN SYNC: content block shape mirrors send() lines 1467-1479.
+  if (pastedImages.length > 0) {
+    const content: ScheduledSendContentBlock[] = []
+    if (full.trim()) content.push({ type: 'text', text: full })
+    for (const img of pastedImages) {
+      content.push({ type: 'image', source: { type: 'base64', data: img.data, media_type: img.mediaType } })
+    }
+    return { content }
+  }
+  return { text: full }
 }
 
 interface Props {
@@ -1240,6 +1273,8 @@ export const Chat = memo(function Chat({
   // window at the top of the chat area (see <RecapWindow> below).
   const recap = useSessionRecap(session, effectiveAutoRecap)
 
+  const scheduled = useScheduledSends(session.id)
+
   // Composer snippets are a single GLOBAL instance owned by App and passed
   // down via props (`snippets`, `onOpenSnippetsManager`,
   // `onSaveCurrentAsSnippet`). The manager + save dialogs render once at
@@ -1655,6 +1690,21 @@ export const Chat = memo(function Chat({
 
   // Stable wrappers so Composer's React.memo isn't defeated by inline arrows.
   const handleSend = useCallback(() => void send(), [send])
+  /** Schedule the current draft for a future time. Shares send()'s body
+   *  construction; on success clears the composer exactly like a send. */
+  const handleSendScheduled = useCallback(async (fireAtMs: number) => {
+    const built = buildScheduledBody(input, attachmentList, pastedImages.images)
+    if (!built) return
+    try {
+      await scheduled.schedule(fireAtMs, built)
+      setInput('')
+      clearAttachments()
+      pastedImages.clear()
+      setComposerFocusSignal((n) => n + 1)
+    } catch (e) {
+      setLocalError((e as Error).message)
+    }
+  }, [input, attachmentList, scheduled, setInput, clearAttachments, pastedImages, setComposerFocusSignal, setLocalError])
   const handleInterrupt = useCallback(() => void interrupt(), [interrupt])
   // Alt+B-only entry: the Composer's shared control no longer morphs into
   // Background (phase-keyed morph flickered on every phase transition), so
@@ -2144,6 +2194,13 @@ export const Chat = memo(function Chat({
       snippets={snippets}
       onOpenSnippetsManager={onOpenSnippetsManager}
       onSaveCurrentAsSnippet={onSaveCurrentAsSnippet}
+      scheduled={{
+        schedules: scheduled.schedules,
+        now: scheduled.now,
+        cancel: scheduled.cancel,
+        dismiss: scheduled.dismiss,
+      }}
+      onSendScheduled={handleSendScheduled}
       />
 
       {/* Pending permission dialogs. The question dialog closes
