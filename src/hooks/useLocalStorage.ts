@@ -16,18 +16,27 @@
 //     emitter above covers that case).
 //
 // Schema validation:
-//   - Optional `validate` predicate is invoked on the parsed JSON before
-//     we trust the value. Anything that fails validation falls back to
-//     `initial` — protects against shape drift, browser-extension edits,
-//     and old-version data after schema bumps. Without this, a bad value
-//     would round-trip into React state and crash the first consumer
-//     that called `.map()` / iterated it.
+//   - Optional `validate` predicate guards the value at BOTH boundaries:
+//   - READ (the initial load, and a storage event from another tab): a value
+//     that fails validation is untrusted data, so the load collapses to
+//     `initial` / an incoming bad write is ignored rather than adopted.
+//   - WRITE (`update`): the resolved value is validated before it is applied.
+//     A rejected write is DROPPED with a console warning — the current value
+//     and the stored copy are left exactly as they were.
+//
+// The write gate is deliberate. Validation used to live only on the same-tab
+// echo, where a rejected write fell back to `initial` — which silently turned
+// "one field of my setting was bad" into "the whole setting is gone", and then
+// persisted that loss to disk (and, via the storage event, into every other
+// tab). A caller whose validator is stricter than its TypeScript type hit that
+// with a plain click: the click undone and no trace of why.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 interface Options<T> {
-  /** Optional type-guard run on parsed JSON. Returns true if the value
-   *  matches the expected shape; false → use `initial` instead. */
+  /** Optional type-guard, applied at two boundaries: the READ boundary (a stored
+   *  value that fails it collapses to `initial`) and the WRITE boundary
+   *  (`update` drops a value that fails it and keeps the current one). */
   validate?: (value: unknown) => value is T
 }
 
@@ -51,15 +60,13 @@ export function useLocalStorage<T>(
   initial: T,
   options?: Options<T>,
 ): [T, (value: T | ((prev: T) => T)) => void] {
-  // Stash the validator + initial in refs so the subscribe effect's
-  // identity doesn't change every render (which would re-register the
-  // window 'storage' listener constantly). We capture the first-render
-  // values and never reassign — same semantics as React's lazy useState
-  // initializer, which also only ever sees the first call's argument.
-  // Callers passing different validators / initials across renders should
-  // not expect the hook to track those changes.
+  // Stash the validator in a ref so the subscribe effect's identity doesn't
+  // change every render (which would re-register the window 'storage' listener
+  // constantly). We capture the first-render value and never reassign — same
+  // semantics as React's lazy useState initializer, which also only ever sees
+  // the first call's argument. Callers passing a different validator across
+  // renders should not expect the hook to track that change.
   const validateRef = useRef(options?.validate)
-  const initialRef = useRef(initial)
 
   const [value, setValue] = useState<T>(() => {
     // null key → pure in-memory state: no read from localStorage.
@@ -83,16 +90,13 @@ export function useLocalStorage<T>(
     // null key → no cross-instance / cross-tab subscription.
     if (typeof window === 'undefined' || key == null) return
 
-    const onSync: Listener<unknown> = (next) => {
-      const validate = validateRef.current
-      if (validate && !validate(next)) {
-        // Sender wrote a bad value — fall back to initial rather than
-        // accept an invalid shape into React state.
-        setValue(initialRef.current)
-        return
-      }
-      setValue(next as T)
-    }
+    // Adopt whatever a same-key co-tenant holds, unverified. Writes through
+    // `update` are gated before they can be broadcast, but a co-tenant's
+    // mount-time persist can still emit its own `initial` (which this hook does
+    // not validate) — the point here is that instances agree, not that they
+    // police each other. Re-validating at this boundary is what used to undo
+    // the writer's own click; see the write gate in `update`.
+    const onSync: Listener<unknown> = (next) => setValue(next as T)
     let set = listenersByKey.get(key)
     if (!set) {
       set = new Set()
@@ -109,7 +113,12 @@ export function useLocalStorage<T>(
         const parsed: unknown = JSON.parse(e.newValue)
         const validate = validateRef.current
         if (validate && !validate(parsed)) {
-          setValue(initialRef.current)
+          // Another tab (often an older build) put something we can't use on
+          // disk. Ignore it: adopting it, or "recovering" to `initial`, would
+          // both destroy this tab's good value and re-persist the loss.
+          console.warn(
+            `[useLocalStorage] ignoring invalid "${key}" written by another tab; keeping current value`,
+          )
           return
         }
         setValue(parsed as T)
@@ -160,9 +169,19 @@ export function useLocalStorage<T>(
 
   const update = useCallback(
     (next: T | ((prev: T) => T)) => {
-      setValue((prev) => (typeof next === 'function' ? (next as (p: T) => T)(prev) : next))
+      setValue((prev) => {
+        const resolved = typeof next === 'function' ? (next as (p: T) => T)(prev) : next
+        const validate = validateRef.current
+        if (validate && !validate(resolved)) {
+          // Drop the write, keep the value: the caller's state and the stored
+          // copy stay untouched, and the reason says so out loud.
+          console.warn(`[useLocalStorage] rejected write to "${key}" — it failed validation; keeping the current value`)
+          return prev
+        }
+        return resolved
+      })
     },
-    [],
+    [key],
   )
 
   return [value, update]

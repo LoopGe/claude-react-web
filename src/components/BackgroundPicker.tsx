@@ -1,12 +1,23 @@
 // Background section body for the Appearance popover (default/glow skins).
 // Lets the user pick None or a Custom image — via a remote http(s) URL or a
-// local file uploaded to /api/background — and adjust the frosted opacity.
+// local file uploaded to /api/background — and tune how the chrome sits over
+// it (fill opacity + frost strength).
 
 import { useState } from 'react'
 import {
   BACKGROUND_OPACITY_MIN,
   BACKGROUND_OPACITY_MAX,
-  type BackgroundPref,
+  BACKGROUND_OPACITY_STEP,
+  BACKGROUND_BLUR_MIN,
+  BACKGROUND_BLUR_MAX,
+  BACKGROUND_BLUR_STEP,
+  BACKGROUND_DEFAULT_BLUR,
+  BACKGROUND_SURFACE_MIN,
+  BACKGROUND_SURFACE_MAX,
+  BACKGROUND_SURFACE_STEP,
+  BACKGROUND_DEFAULT_SURFACE,
+  isBackgroundSrc,
+  isBackgroundUpload,
   type BackgroundSetting,
 } from '../theme'
 
@@ -15,39 +26,76 @@ interface Props {
   onChange: (next: BackgroundSetting) => void
 }
 
-function isUploadedUrl(src: string): boolean {
-  return src.startsWith('/api/background/files/')
-}
-
 export function BackgroundPicker({ setting, onChange }: Props) {
   // Internal mode state so the UI responds immediately to clicks even when
   // the parent hasn't re-rendered with the new setting prop yet.
   const [mode, setMode] = useState<'none' | 'custom'>(setting.pref.kind === 'custom' ? 'custom' : 'none')
-  // Sync mode when setting changes externally (reset-to-defaults, preset load,
-  // fork/resume) so the toggle never goes stale. React's "adjust state during
-  // render" pattern instead of an effect, which would trigger cascading renders.
-  const [prevKind, setPrevKind] = useState(setting.pref.kind)
-  if (prevKind !== setting.pref.kind) {
-    setPrevKind(setting.pref.kind)
-    setMode(setting.pref.kind === 'custom' ? 'custom' : 'none')
+  const [urlText, setUrlText] = useState(setting.pref.kind === 'custom' ? setting.pref.src : '')
+  const [applied, setApplied] = useState(false)
+  // Re-sync with any external change (another tab, reset-to-defaults, restore).
+  // React's "adjust state during render" pattern instead of an effect, which
+  // would trigger cascading renders. Tracking the *src* and not just the kind
+  // matters: a same-kind src change would otherwise leave urlText holding the
+  // previous image, and committing that stale draft would roll the other
+  // writer back — and DELETE the file it had just uploaded.
+  const committed = setting.pref.kind === 'custom' ? setting.pref.src : null
+  const [prevCommitted, setPrevCommitted] = useState(committed)
+  if (prevCommitted !== committed) {
+    setPrevCommitted(committed)
+    setMode(committed !== null ? 'custom' : 'none')
+    setUrlText(committed ?? '')
   }
   const isCustom = mode === 'custom'
-  const [urlText, setUrlText] = useState(isCustom && setting.pref.kind === 'custom' ? setting.pref.src : '')
-  const [applied, setApplied] = useState(false)
 
-  const selectCustom = (src: string) => onChange({ ...setting, pref: { kind: 'custom', src } })
+  const deleteIfUploaded = (src: string) => {
+    if (isBackgroundUpload(src)) {
+      fetch(src, { method: 'DELETE' }).catch(() => {})
+    }
+  }
+
+  /** The single funnel that commits a real image. Returns whether it stuck.
+   *  Checks the src FIRST: the delete below is irreversible, so it must never
+   *  run for a write the store would go on to drop. `lastSrc` is the copy a
+   *  later switch to None keeps, so re-selecting "Custom image" restores the
+   *  wallpaper; whatever upload this replaces — live or stashed — loses its
+   *  last reference, so it goes with it. */
+  const selectCustom = (src: string): boolean => {
+    if (!isBackgroundSrc(src)) {
+      console.warn('[background] refused an image reference it cannot apply')
+      return false
+    }
+    const replaced = setting.pref.kind === 'custom' ? setting.pref.src : setting.lastSrc
+    if (replaced && replaced !== src) deleteIfUploaded(replaced)
+    onChange({ ...setting, pref: { kind: 'custom', src }, lastSrc: src })
+    return true
+  }
+
+  /** Switch to Custom. Restores the remembered image if there is one; with
+   *  nothing to restore this is UI-only — the pref is written by the first
+   *  Use URL / upload, never as `{custom, src: ''}`. Re-clicking mid-gesture is
+   *  not inert: an image can arrive from another tab in the meantime. */
+  const pickCustom = () => {
+    setMode('custom')
+    if (setting.pref.kind === 'custom') return
+    const remembered = setting.lastSrc
+    setUrlText(remembered ?? '')
+    if (remembered) onChange({ ...setting, pref: { kind: 'custom', src: remembered } })
+  }
+
+  /** Switch off without forgetting: stash the current image in `lastSrc`. */
+  const pickNone = () => {
+    setMode('none')
+    setApplied(false)
+    const remembered = setting.pref.kind === 'custom' ? setting.pref.src : setting.lastSrc
+    onChange({ ...setting, pref: { kind: 'none' }, lastSrc: remembered })
+  }
 
   const applyUrl = () => {
     const trimmed = urlText.trim()
-    if (!/^https?:\/\/.+/i.test(trimmed)) return
-    setApplied(true)
-    selectCustom(trimmed)
-  }
-
-  const deleteIfUploaded = (src: string) => {
-    if (isUploadedUrl(src)) {
-      fetch(src, { method: 'DELETE' }).catch(() => {})
-    }
+    // selectCustom enforces isBackgroundSrc — the same predicate the store
+    // validates with. Keeping one gate means the picker can never offer a src
+    // the owner would drop (which used to revert the entire setting).
+    setApplied(selectCustom(trimmed))
   }
 
   const handleUpload = async (file: File) => {
@@ -57,9 +105,8 @@ export function BackgroundPicker({ setting, onChange }: Props) {
       const res = await fetch('/api/background/upload', { method: 'POST', body: form })
       const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string }
       if (!res.ok || !body.url) throw new Error(body.error || `upload failed (HTTP ${res.status})`)
-      if (setting.pref.kind === 'custom') deleteIfUploaded(setting.pref.src)
-      setApplied(true)
-      selectCustom(body.url)
+      // A server path the picker can't apply must not report success.
+      setApplied(selectCustom(body.url))
     } catch (e) {
       // Surface transiently; the picker remains usable.
       setApplied(false)
@@ -67,15 +114,13 @@ export function BackgroundPicker({ setting, onChange }: Props) {
     }
   }
 
-  const clear = () => {
-    if (setting.pref.kind === 'custom') deleteIfUploaded(setting.pref.src)
-    setApplied(false)
-    setMode('none')
-    onChange({ pref: { kind: 'none' }, opacity: setting.opacity })
-  }
-
-  const pref: BackgroundPref = isCustom ? setting.pref : { kind: 'none' as const }
-  const prefSrc = pref.kind === 'custom' ? pref.src : undefined
+  // `custom` always carries an applicable src (isBackgroundSrc gates every write
+  // and every load), so a live image is exactly a custom pref.
+  const prefSrc = setting.pref.kind === 'custom' ? setting.pref.src : undefined
+  // A pref saved before the Blur slider existed carries no value; show the
+  // default rather than 0 (which would read as "the setting is off").
+  const blurValue = setting.blur ?? BACKGROUND_DEFAULT_BLUR
+  const surfaceValue = setting.surface ?? BACKGROUND_DEFAULT_SURFACE
 
   return (
     <div className="appearance-bg">
@@ -83,7 +128,7 @@ export function BackgroundPicker({ setting, onChange }: Props) {
         <button
           type="button"
           className={`appearance-mode-btn${!isCustom ? ' active' : ''}`}
-          onClick={() => { setMode('none'); setApplied(false); onChange({ ...setting, pref: { kind: 'none' } }) }}
+          onClick={pickNone}
           role="radio"
           aria-checked={!isCustom}
         >
@@ -92,7 +137,7 @@ export function BackgroundPicker({ setting, onChange }: Props) {
         <button
           type="button"
           className={`appearance-mode-btn${isCustom ? ' active' : ''}`}
-          onClick={() => { if (!isCustom) { setMode('custom'); setUrlText(''); onChange({ ...setting, pref: { kind: 'custom', src: '' } }) } }}
+          onClick={pickCustom}
           role="radio"
           aria-checked={isCustom}
         >
@@ -130,33 +175,65 @@ export function BackgroundPicker({ setting, onChange }: Props) {
             </label>
             {applied && <span className="appearance-bg-hint">Applied</span>}
           </div>
-          {pref.kind === 'custom' && pref.src && (
+          {prefSrc && (
             <div className="appearance-bg-current">
-              <span className="appearance-bg-hint">{isUploadedUrl(pref.src) ? 'Uploaded image' : 'Remote image'}</span>
+              <span className="appearance-bg-hint">{isBackgroundUpload(prefSrc) ? 'Uploaded image' : 'Remote image'}</span>
             </div>
           )}
         </div>
       )}
 
-      <div className="appearance-bg-opacity">
-        <label className="appearance-bg-label" htmlFor="appearance-bg-opacity">
-          Opacity <span className="appearance-bg-hint">{Math.round(setting.opacity * 100)}%</span>
-        </label>
-        <input
-          id="appearance-bg-opacity"
-          className="appearance-bg-slider"
-          type="range"
-          min={BACKGROUND_OPACITY_MIN}
-          max={BACKGROUND_OPACITY_MAX}
-          step={0.05}
-          value={setting.opacity}
-          disabled={!isCustom || !prefSrc}
-          onChange={(e) => onChange({ ...setting, opacity: Number(e.target.value) })}
-        />
-      </div>
-
-      {isCustom && prefSrc && (
-        <button type="button" className="appearance-bg-clear" onClick={clear}>Clear</button>
+      {isCustom && (
+        <>
+          <div className="appearance-bg-opacity">
+            <label className="appearance-bg-label" htmlFor="appearance-bg-opacity">
+              Opacity <span className="appearance-bg-hint">{Math.round(setting.opacity * 100)}%</span>
+            </label>
+            <input
+              id="appearance-bg-opacity"
+              className="appearance-bg-slider"
+              type="range"
+              min={BACKGROUND_OPACITY_MIN}
+              max={BACKGROUND_OPACITY_MAX}
+              step={BACKGROUND_OPACITY_STEP}
+              value={setting.opacity}
+              disabled={!prefSrc}
+              onChange={(e) => onChange({ ...setting, opacity: Number(e.target.value) })}
+            />
+          </div>
+          <div className="appearance-bg-blur">
+            <label className="appearance-bg-label" htmlFor="appearance-bg-blur">
+              Blur <span className="appearance-bg-hint">{blurValue}px</span>
+            </label>
+            <input
+              id="appearance-bg-blur"
+              className="appearance-bg-slider"
+              type="range"
+              min={BACKGROUND_BLUR_MIN}
+              max={BACKGROUND_BLUR_MAX}
+              step={BACKGROUND_BLUR_STEP}
+              value={blurValue}
+              disabled={!prefSrc}
+              onChange={(e) => onChange({ ...setting, blur: Number(e.target.value) })}
+            />
+          </div>
+          <div className="appearance-bg-surface">
+            <label className="appearance-bg-label" htmlFor="appearance-bg-surface">
+              Content <span className="appearance-bg-hint">{Math.round(surfaceValue * 100)}%</span>
+            </label>
+            <input
+              id="appearance-bg-surface"
+              className="appearance-bg-slider"
+              type="range"
+              min={BACKGROUND_SURFACE_MIN}
+              max={BACKGROUND_SURFACE_MAX}
+              step={BACKGROUND_SURFACE_STEP}
+              value={surfaceValue}
+              disabled={!prefSrc}
+              onChange={(e) => onChange({ ...setting, surface: Number(e.target.value) })}
+            />
+          </div>
+        </>
       )}
     </div>
   )

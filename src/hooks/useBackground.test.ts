@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useBackground } from './useBackground'
+import { BACKGROUND_DEFAULT_BLUR, BACKGROUND_DEFAULT_SURFACE } from '../theme'
 
 function cssVar(name: string): string {
   return document.documentElement.style.getPropertyValue(name)
@@ -11,6 +12,8 @@ describe('useBackground', () => {
     window.localStorage.clear()
     document.documentElement.style.removeProperty('--app-bg-image')
     document.documentElement.style.removeProperty('--app-chrome-alpha')
+    document.documentElement.style.removeProperty('--app-chrome-blur')
+    document.documentElement.style.removeProperty('--app-surface-alpha')
     document.body.classList.remove('has-bg')
   })
   afterEach(() => {
@@ -39,6 +42,24 @@ describe('useBackground', () => {
     expect(cssVar('--app-bg-image')).toBe('url("https://ex.com/bg.png")')
     expect(cssVar('--app-chrome-alpha')).toBe('70%')
     expect(document.body.classList.contains('has-bg')).toBe(true)
+  })
+
+  it('applies the chrome blur, defaulting a stored setting that predates it', () => {
+    const { result } = renderHook(() => useBackground('default'))
+    act(() => result.current.setSetting({ pref: { kind: 'custom', src: 'https://ex.com/bg.png' }, opacity: 0.7 }))
+    expect(cssVar('--app-chrome-blur')).toBe(`${BACKGROUND_DEFAULT_BLUR}px`)
+
+    act(() => result.current.setSetting({ ...result.current.setting, blur: 3 }))
+    expect(cssVar('--app-chrome-blur')).toBe('3px')
+  })
+
+  it('applies the content-surface alpha, defaulting a pref that predates it', () => {
+    const { result } = renderHook(() => useBackground('default'))
+    act(() => result.current.setSetting({ pref: { kind: 'custom', src: 'https://ex.com/bg.png' }, opacity: 0.7 }))
+    expect(cssVar('--app-surface-alpha')).toBe(`${Math.round(BACKGROUND_DEFAULT_SURFACE * 100)}%`)
+
+    act(() => result.current.setSetting({ ...result.current.setting, surface: 0.5 }))
+    expect(cssVar('--app-surface-alpha')).toBe('50%')
   })
 
   it('suppresses the effect under a locked skin but keeps the pref', () => {

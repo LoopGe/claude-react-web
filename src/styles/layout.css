@@ -1613,20 +1613,53 @@ body.resizing-col .app {
 /* ── Frosted chrome when a background image is active ───────────────────
    Toggled by useBackground (body.has-bg). Each surface keeps its own base
    fill token (sidebar/header = --bg-elev, chat-panel = --bg) so opacity
-   100% resolves to exactly today's look. Guarded by @supports so browsers
-   without backdrop-filter keep fully-opaque fills. */
+   100% resolves to exactly today's look. Both the fill alpha and the frost
+   strength are written by JS (--app-chrome-alpha / --app-chrome-blur), so
+   the Appearance panel's Opacity and Blur sliders control them
+   independently. Guarded by @supports so browsers without backdrop-filter
+   keep fully-opaque fills. */
 @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
-  body.has-bg {
-    --app-chrome-blur: 24px;
+  /* Two independent knobs, deliberately kept from multiplying:
+       --app-chrome-alpha  → the chrome's own fill   (Opacity slider)
+       --app-surface-alpha → everything inside it    (Content slider)
+     The remap below redeclares the fill tokens on the chrome containers, so the
+     ~156 selectors that paint message cards, the composer, tool cards and code
+     blocks with them follow one number — no per-surface opt-in to remember.
+     Each mix reads the *opaque* alias from tokens.css, never the raw token: a
+     raw reference would resolve to the value being declared here (self-
+     reference), and the chrome's own fills would pick the aliases up for the
+     same reason.
+     Scope caveat: custom properties follow the DOM tree, so this reaches every
+     descendant — that is the point — but it also reaches position:fixed
+     descendants that are NOT portalled (.ctx-menu, .model-picker,
+     .cmd-picker), and any rule that already mixes one of these tokens with
+     `transparent` (modal scrims, composer fades, pinned-message veils) gets
+     multiplied by the same number. Layers rendered outside these containers
+     (the Overlay-based dialogs, toasts, the Appearance popover) are unaffected. */
+  body.has-bg .sidebar,
+  body.has-bg .main-header,
+  body.has-bg .chat-panel {
+    --bg: color-mix(in srgb, var(--bg-solid) var(--app-surface-alpha), transparent);
+    --bg-elev: color-mix(in srgb, var(--bg-elev-solid) var(--app-surface-alpha), transparent);
+    --bg-elev-1: color-mix(in srgb, var(--bg-elev-1-solid) var(--app-surface-alpha), transparent);
+    --bg-elev-2: color-mix(in srgb, var(--bg-elev-2-solid) var(--app-surface-alpha), transparent);
+    --code-bg: color-mix(in srgb, var(--code-bg-solid) var(--app-surface-alpha), transparent);
+    --code-bar-bg: color-mix(in srgb, var(--code-bar-bg-solid) var(--app-surface-alpha), transparent);
+    --bg-elev-3: color-mix(in srgb, var(--bg-elev-3-solid) var(--app-surface-alpha), transparent);
+    --msg-tool-bg: color-mix(in srgb, var(--msg-tool-bg-solid) var(--app-surface-alpha), transparent);
+    --msg-tool-result-bg: color-mix(in srgb, var(--msg-tool-result-bg-solid) var(--app-surface-alpha), transparent);
+    --msg-system-bg: color-mix(in srgb, var(--msg-system-bg-solid) var(--app-surface-alpha), transparent);
+    --msg-error-bg: color-mix(in srgb, var(--msg-error-bg-solid) var(--app-surface-alpha), transparent);
   }
+
   body.has-bg .sidebar,
   body.has-bg .main-header {
-    background-color: color-mix(in srgb, var(--bg-elev) var(--app-chrome-alpha), transparent);
+    background-color: color-mix(in srgb, var(--bg-elev-solid) var(--app-chrome-alpha), transparent);
     backdrop-filter: blur(var(--app-chrome-blur));
     -webkit-backdrop-filter: blur(var(--app-chrome-blur));
   }
   body.has-bg .chat-panel {
-    background-color: color-mix(in srgb, var(--bg) var(--app-chrome-alpha), transparent);
+    background-color: color-mix(in srgb, var(--bg-solid) var(--app-chrome-alpha), transparent);
     backdrop-filter: blur(var(--app-chrome-blur));
     -webkit-backdrop-filter: blur(var(--app-chrome-blur));
   }

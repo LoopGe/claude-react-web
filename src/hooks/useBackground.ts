@@ -11,6 +11,8 @@ import { useLocalStorage } from './useLocalStorage'
 import {
   BACKGROUND_KEY,
   BACKGROUND_DEFAULT_OPACITY,
+  BACKGROUND_DEFAULT_BLUR,
+  BACKGROUND_DEFAULT_SURFACE,
   BACKGROUND_OPACITY_MAX,
   type BackgroundSetting,
   isBackgroundSetting,
@@ -40,7 +42,12 @@ export function useBackground(skin: Skin): UseBackgroundResult {
 
   const setSetting = useCallback((next: BackgroundSetting) => {
     setStored((prev) => {
-      const picking = prev.pref.kind === 'none' && next.pref.kind !== 'none'
+      // Committing an image while chrome is fully opaque would show nothing at
+      // all, so step a first pick down to the default. Re-enabling an image the
+      // setting already remembers is not a pick — honour the stored opacity.
+      const picking = next.pref.kind === 'custom'
+        && prev.pref.kind === 'none'
+        && next.pref.src !== prev.lastSrc
       return picking && next.opacity >= BACKGROUND_OPACITY_MAX
         ? { ...next, opacity: BACKGROUND_DEFAULT_OPACITY }
         : next
@@ -49,14 +56,16 @@ export function useBackground(skin: Skin): UseBackgroundResult {
 
   useEffect(() => {
     const root = document.documentElement.style
-    // An active image requires a non-empty src for `custom` — selecting
-    // "Custom image" before a URL/upload lands must not frost the chrome.
+    // A `custom` pref is only ever committed with a real src, but defend the
+    // invariant here too: an empty src must not frost the chrome.
     const hasImage =
       setting.pref.kind === 'custom' ? setting.pref.src.length > 0 : setting.pref.kind !== 'none'
     const active = hasImage && !isBackgroundLocked(skin)
     if (!active) {
       root.setProperty('--app-bg-image', 'none')
       root.setProperty('--app-chrome-alpha', '100%')
+      root.setProperty('--app-chrome-blur', `${BACKGROUND_DEFAULT_BLUR}px`)
+      root.setProperty('--app-surface-alpha', '100%')
       document.body.classList.remove('has-bg')
       return
     }
@@ -67,6 +76,8 @@ export function useBackground(skin: Skin): UseBackgroundResult {
       root.setProperty('--app-bg-image', 'none')
     }
     root.setProperty('--app-chrome-alpha', `${Math.round(setting.opacity * 100)}%`)
+    root.setProperty('--app-chrome-blur', `${setting.blur ?? BACKGROUND_DEFAULT_BLUR}px`)
+    root.setProperty('--app-surface-alpha', `${Math.round((setting.surface ?? BACKGROUND_DEFAULT_SURFACE) * 100)}%`)
     document.body.classList.add('has-bg')
   }, [setting, skin])
 

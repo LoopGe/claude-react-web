@@ -1374,7 +1374,9 @@
   gap: 8px;
 }
 .appearance-bg-body,
-.appearance-bg-opacity {
+.appearance-bg-opacity,
+.appearance-bg-blur,
+.appearance-bg-surface {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1411,17 +1413,4 @@
 .appearance-bg-slider {
   width: 100%;
   accent-color: var(--accent);
-}
-.appearance-bg-clear {
-  align-self: flex-start;
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
-  background: none;
-  border: none;
-  padding: 2px 4px;
-  cursor: pointer;
-}
-.appearance-bg-clear:hover {
-  color: var(--fg);
-  text-decoration: underline;
 }

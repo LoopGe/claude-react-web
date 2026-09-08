@@ -140,25 +140,101 @@ export type BackgroundPref =
 
 export interface BackgroundSetting {
   pref: BackgroundPref
-  /** Chrome-surface translucency, 0.55..1 — lower = more of the image shows. */
+  /** Chrome-surface translucency, 0..1 — lower = more of the image shows. */
   opacity: number
+  /** Chrome frost, 0..BACKGROUND_BLUR_MAX px — how blurred the wallpaper looks
+   *  through those surfaces. Optional: prefs saved before this control existed
+   *  carry no key and resolve to BACKGROUND_DEFAULT_BLUR. */
+  blur?: number
+  /** Fill strength of the surfaces *inside* the chrome (message cards, the
+   *  composer, code blocks) — 0..1, applied as `--app-surface-alpha`. Separate
+   *  from `opacity`, which is the chrome's own fill: one knob for the frame,
+   *  one for the content panels. Optional, same pre-feature reasoning as blur. */
+  surface?: number
+  /** The most recent real `src`, kept across a switch to `none` so that
+   *  re-selecting "Custom image" restores the wallpaper instead of dropping it.
+   *  A convenience copy only — `pref` remains the sole source of truth for what
+   *  is applied, and never holds an empty `src`. */
+  lastSrc?: string
 }
 
 export const BACKGROUND_KEY = 'claude-react-web:background'
 export const BACKGROUND_DEFAULT_OPACITY = 0.85
-export const BACKGROUND_OPACITY_MIN = 0.55
+export const BACKGROUND_OPACITY_MIN = 0
 export const BACKGROUND_OPACITY_MAX = 1
+export const BACKGROUND_OPACITY_STEP = 0.05
+
+/** Chrome frost strength. The default sits well below the top of the range:
+ *  a heavy blur turns the wallpaper into an unreadable smear, so "how frosted"
+ *  is a choice the user makes rather than a fixed cost of enabling a backdrop. */
+export const BACKGROUND_DEFAULT_BLUR = 12
+export const BACKGROUND_BLUR_MIN = 0
+export const BACKGROUND_BLUR_MAX = 24
+export const BACKGROUND_BLUR_STEP = 1
+
+/** Content-surface fill. The default is deliberately below 1: the whole point
+ *  of the knob is that fully opaque cards look pasted onto a wallpaper. Only
+ *  takes effect under body.has-bg, so with no wallpaper nothing changes.
+ *  Must stay on BACKGROUND_SURFACE_STEP's grid — browsers sanitize an
+ *  off-grid range value, which would misreport the applied fill and make the
+ *  default unreachable from the slider (pinned by theme.test.ts). */
+export const BACKGROUND_DEFAULT_SURFACE = 0.9
+export const BACKGROUND_SURFACE_MIN = 0
+export const BACKGROUND_SURFACE_MAX = 1
+export const BACKGROUND_SURFACE_STEP = 0.05
+
+/** Upper bound on a persisted image reference: the src is injected into an
+ *  inline `--app-bg-image: url("…")` on <html>, so it must not be unbounded. */
+export const BACKGROUND_SRC_MAX = 4096
+
+/** Server-assigned upload name: `<uuid>.<raster ext>` under this path
+ *  (see server/background-routes.ts, which generates it with randomUUID()). */
+const BACKGROUND_UPLOAD_NAME
+  = /^\/api\/background\/files\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:jpe?g|png|webp)$/i
+
+/** Is `src` one of OUR uploaded background files? Also the guard on
+ *  BackgroundPicker's delete-on-replace fetch: a loose prefix test would let a
+ *  dot-segment path through, and the browser normalizes it before the request
+ *  leaves — turning a persisted string into an arbitrary same-origin DELETE. */
+export function isBackgroundUpload(src: string): boolean {
+  return BACKGROUND_UPLOAD_NAME.test(src)
+}
+
+/** Is `v` an image reference the background can actually apply — a remote
+ *  http(s) URL or one of our own uploads, bounded in length?
+ *
+ *  This is the single rule for both `pref.src` and `lastSrc`, and the picker's
+ *  commit gate enforces the same predicate it persists with. That symmetry is
+ *  load-bearing: a value offered to useLocalStorage that its validator rejects
+ *  is dropped (see useLocalStorage), so a weaker gate would mean a click that
+ *  silently does nothing. */
+export function isBackgroundSrc(v: unknown): v is string {
+  if (typeof v !== 'string' || v.length === 0 || v.length > BACKGROUND_SRC_MAX) return false
+  return /^https?:\/\//i.test(v) || isBackgroundUpload(v)
+}
 
 /** Type-guard for useLocalStorage's `validate` — rejects corrupt /
- *  hand-edited values so a bad localStorage entry collapses to the default. */
+ *  hand-edited values so a bad localStorage entry collapses to the default.
+ *
+ *  `custom` always means *has an applicable image* (see isBackgroundSrc).
+ *  BackgroundPicker's "Custom image selected, URL not yet supplied" is UI state
+ *  held in the component, never a persisted one — a durable half-selection would
+ *  outlive the gesture and render a checked radio with nothing behind it. */
 export function isBackgroundSetting(v: unknown): v is BackgroundSetting {
   if (!v || typeof v !== 'object') return false
-  const s = v as { pref?: unknown; opacity?: unknown }
+  const s = v as { pref?: unknown; opacity?: unknown; blur?: unknown; surface?: unknown; lastSrc?: unknown }
   if (typeof s.opacity !== 'number' || Number.isNaN(s.opacity)) return false
   if (s.opacity < BACKGROUND_OPACITY_MIN || s.opacity > BACKGROUND_OPACITY_MAX) return false
+  // Optional numeric fields: absent is legitimate (a pref saved before the
+  // field existed), present must be in range.
+  const absentOrInRange = (x: unknown, min: number, max: number) =>
+    x === undefined || (typeof x === 'number' && !Number.isNaN(x) && x >= min && x <= max)
+  if (!absentOrInRange(s.blur, BACKGROUND_BLUR_MIN, BACKGROUND_BLUR_MAX)) return false
+  if (!absentOrInRange(s.surface, BACKGROUND_SURFACE_MIN, BACKGROUND_SURFACE_MAX)) return false
+  if (s.lastSrc !== undefined && !isBackgroundSrc(s.lastSrc)) return false
   const p = s.pref as { kind?: unknown; src?: unknown } | null
   if (!p || typeof p !== 'object') return false
   if (p.kind === 'none') return true
-  if (p.kind === 'custom') return typeof p.src === 'string' && p.src.length > 0 && p.src.length <= 4096
+  if (p.kind === 'custom') return isBackgroundSrc(p.src)
   return false
 }

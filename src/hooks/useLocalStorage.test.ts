@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useLocalStorage } from './useLocalStorage'
 
@@ -147,27 +147,6 @@ describe('useLocalStorage', () => {
     expect(result.current[0]).toEqual(['from-other-tab'])
   })
 
-  it('cross-tab storage events are gated by the validator', () => {
-    const isStringArray = (v: unknown): v is string[] =>
-      Array.isArray(v) && v.every((x) => typeof x === 'string')
-    const { result } = renderHook(() =>
-      useLocalStorage<string[]>('xtab-validated', ['initial'], { validate: isStringArray }),
-    )
-
-    // Another tab wrote garbage. Our hook should reject it and fall back
-    // to `initial` rather than poison its React state.
-    act(() => {
-      window.dispatchEvent(
-        new StorageEvent('storage', {
-          key: 'xtab-validated',
-          newValue: JSON.stringify({ not: 'an array' }),
-        }),
-      )
-    })
-
-    expect(result.current[0]).toEqual(['initial'])
-  })
-
   it('ignores storage events for unrelated keys', () => {
     const { result } = renderHook(() => useLocalStorage<string>('our-key', 'a'))
     act(() => {
@@ -179,5 +158,50 @@ describe('useLocalStorage', () => {
       )
     })
     expect(result.current[0]).toBe('a')
+  })
+
+  it('drops a write that fails validation instead of reverting the whole value', () => {
+    // One rejected field used to fall back to `initial`, taking the good fields
+    // with it — a background image, its opacity and its remembered src all lost
+    // because a single value didn't validate. The write is dropped now, loudly.
+    const isStringArray = (v: unknown): v is string[] =>
+      Array.isArray(v) && v.every((x) => typeof x === 'string')
+    localStorage.setItem('gated', JSON.stringify(['keep', 'me']))
+    const { result } = renderHook(() =>
+      useLocalStorage<string[]>('gated', ['FACTORY'], { validate: isStringArray }),
+    )
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    act(() => result.current[1]('not-an-array' as unknown as string[]))
+
+    expect(result.current[0]).toEqual(['keep', 'me'])
+    expect(localStorage.getItem('gated')).toBe('["keep","me"]')
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('keeps a good local value when another tab writes garbage', () => {
+    const isStringArray = (v: unknown): v is string[] =>
+      Array.isArray(v) && v.every((x) => typeof x === 'string')
+    localStorage.setItem('xtab-gate', JSON.stringify(['local', 'good']))
+    const { result } = renderHook(() =>
+      useLocalStorage<string[]>('xtab-gate', ['FACTORY'], { validate: isStringArray }),
+    )
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'xtab-gate',
+          newValue: JSON.stringify({ not: 'an array' }),
+        }),
+      )
+    })
+
+    expect(result.current[0]).toEqual(['local', 'good'])
+    // And it must not re-persist: writing its fallback back would clobber the
+    // shared key for every other tab.
+    expect(localStorage.getItem('xtab-gate')).toBe('["local","good"]')
+    warn.mockRestore()
   })
 })
