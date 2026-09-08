@@ -39,7 +39,7 @@ import {
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
 import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
-import { tryCaptureGitHead, invalidateStatusCache } from './git.js'
+import { tryCaptureGitHead } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
@@ -48,7 +48,6 @@ import { findProfile, profileDefaultModel, resolveActiveProfile } from './profil
 import { fallbackAliasesFor, resolveGroup } from './model-groups.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { pump as pumpSession, getParentToolUseId, applyTaskEvent, reapplyAutoCompactWindow, type PumpDeps } from './session-pump.js'
-import { isTerminalTaskStatus } from '../shared/tasks.js'
 import {
   type Subscriber,
   type PermissionEvent,
@@ -79,18 +78,19 @@ import { coerceStructuredOutput, type StructuredRunRequest, type StructuredRunRe
 import { coerceReadFileOutput, type FileReadResult } from '../shared/read-file.js'
 import type { FirstPartyToolDef } from '../shared/first-party.js'
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
-import { firstPartyRegistry } from './sdk-tools/registry.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
+import { SessionMcpManager } from './session-manager-mcp.js'
+import { SessionEventBroadcaster } from './session-broadcaster.js'
+import { BackgroundWatcherRegistry } from './subagent-watcher.js'
+import { SessionSkillManager } from './session-manager-skills.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory } from './history-utils.js'
-import { watchBackgroundSubagent, type SubagentCompletion } from './subagent-watcher.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
 import { deleteTranscriptFile } from './history-reader.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
-import { createPushable, type Pushable } from './pushable.js'
 import { createDefaultProviders } from './providers/default-providers.js'
 import type { ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle } from './providers/types.js'
 import { countMatches, findRanges } from '../shared/search/match.js'
@@ -107,13 +107,11 @@ import {
   type SessionHooksConfig,
 } from '../shared/hooks.js'
 import {
-  policyToDynamicSkillOverrides,
   policyToInitialSkillsOption,
   resolveEffectiveSkillPolicy,
   type EffectiveSkillPolicy,
   type SessionSkillOverride,
 } from '../shared/skills.js'
-import { listSkills } from './skills.js'
 import { SUPPORTED_DIALOG_KINDS } from '../shared/user-dialog.js'
 import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
 
@@ -462,6 +460,18 @@ export class SessionManager {
    *  the route is the only HTTP surface for recap, and proxying through
    *  SessionManager would just re-export the same throw semantics. */
   recapManager: RecapManager
+  /** Owns dynamic MCP server management (add/remove on a live session,
+   *  first-party in-process server injection, global+session config
+   *  merge). See session-manager-mcp.ts for the full responsibility list. */
+  private mcp: SessionMcpManager
+  /** Owns per-session subscription + signal-broadcast plumbing (context
+   *  usage, tasks, git status, message status, recap, commands, hook runs,
+   *  session-cleared). See session-broadcaster.ts for the full list. */
+  private broadcaster: SessionEventBroadcaster
+  /** Owns skill-policy + tool-profile management (reload, per-session
+   *  override pin/clear, dynamic flag-layer re-application, global-policy
+   *  fan-out). See session-manager-skills.ts for the full list. */
+  private skills: SessionSkillManager
   /** Cached result of buildAnthropicEnv(). Invalidated when config.authToken
    *  or config.baseUrl change (detected lazily on each call). */
   /** Cached PumpDeps — all fields reference stable `this` members,
@@ -517,6 +527,44 @@ export class SessionManager {
         s.recap = recap
       },
       broadcastRecap: (id, recap) => this.broadcastSessionRecap(id, recap),
+    })
+
+    this.mcp = new SessionMcpManager({
+      requireLive: (id) => this.requireLive(id),
+      require: (id) => this.require(id),
+      requireHandleMethod: (s, method, action, capability) =>
+        this.requireHandleMethod(s, method, action, capability),
+      writeStore: (s) => this.writeStore(s),
+      broadcastGlobal: (ev) => this.broadcastGlobal(ev),
+      info: (s) => this.info(s),
+      persist: (s) => this.persist(s),
+      timeSdkControl: (id, label, fn) => this.timeSdkControl(id, label, fn),
+      mcpStore: this.mcpStore,
+    })
+
+    // Sessions map is passed by reference — the broadcaster reads/mutates
+    // subscriber sets directly on Session objects, so it needs no other
+    // wiring back to SessionManager (see session-broadcaster.ts header).
+    this.broadcaster = new SessionEventBroadcaster(this.sessions)
+
+    this.backgroundWatchers = new BackgroundWatcherRegistry({
+      applyTaskEvent: (s, msg) => applyTaskEvent(s, msg),
+      broadcastGlobal: (ev) => this.broadcastGlobal(ev),
+      info: (s) => this.info(s),
+      historyCap: this.historyCap,
+      isLive: (id) => this.sessions.has(id),
+    })
+
+    this.skills = new SessionSkillManager({
+      requireLive: (id) => this.requireLive(id),
+      requireHandleMethod: (s, method, action, capability) =>
+        this.requireHandleMethod(s, method, action, capability),
+      timeSdkControl: (id, label, fn) => this.timeSdkControl(id, label, fn),
+      broadcastCommandsChanged: (id, commands) => this.broadcastCommandsChanged(id, commands),
+      persist: (s) => this.persist(s),
+      info: (s) => this.info(s),
+      sessions: this.sessions,
+      effectiveSkillPolicyFor: (override) => effectiveSkillPolicyFor(override),
     })
 
     log.info(
@@ -678,169 +726,25 @@ export class SessionManager {
   }
 
   /** Begin polling a background subagent's own transcript for completion.
-   *  Called by the pump when it sees an async launch ack. On completion,
-   *  synthesizes a `system`/`task_notification` frame (the CLI doesn't emit
-   *  one reliably) and feeds it back through the normal broadcast path so
-   *  the client reducer's completion branch flips the `background` record to
-   *  `done` with the subagent's real output. */
+   *  See BackgroundWatcherRegistry.start (subagent-watcher.ts) for the
+   *  implementation. */
   private startBackgroundSubagentWatcher(sessionId: string, toolUseId: string, agentId: string): void {
     const session = this.sessions.get(sessionId)
     if (!session) return
-    // One watcher per (session, toolUseId). A duplicate launch ack (replay,
-    // re-broadcast) must not stack a second poller on the same transcript.
-    let perSession = this.backgroundWatchers.get(sessionId)
-    if (!perSession) {
-      perSession = new Map()
-      this.backgroundWatchers.set(sessionId, perSession)
-    }
-    if (perSession.has(toolUseId)) return
-    if (!session.cwd) return // without a cwd the subagent transcript path can't be computed
-    const stop = watchBackgroundSubagent({
-      cwd: session.cwd,
-      sessionId,
-      agentId,
-      toolUseId,
-      onCompleted: (completion) => {
-        // Remove the watcher entry before broadcasting so the unload guard
-        // can't race a concurrent stop. onCompleted fires on EVERY resolution
-        // path (real completion / staleness / maxMs backstop), so the entry is
-        // always cleared here — a later re-arm (e.g. an autoResume re-seeing
-        // the launch ack) is never blocked by a stale entry.
-        perSession!.delete(toolUseId)
-        // The sidebar reads `backgroundSubagentCount` for its status dot;
-        // broadcast the updated info so it flips out of 'waiting' the moment
-        // the subagent settles (skip when the session was unloaded mid-poll).
-        if (this.sessions.has(session.id)) {
-          this.broadcastGlobal({ kind: 'update', session: this.info(session) })
-        }
-        this.broadcastSynthesizedTaskNotification(session, toolUseId, agentId, completion)
-      },
-    })
-    perSession.set(toolUseId, stop)
-    // Seed a TaskRecord for this watcher-tracked subagent. CLI versions that
-    // emit no task_* frames for background Agent dispatches (the watcher's
-    // reason to exist) would otherwise never surface in session.tasks /
-    // the TasksPanel. A real task_started arriving later overwrites the seed
-    // via applyTaskEvent's upsert; the watcher's own synthesized completion
-    // settles it otherwise.
-    const now = Date.now()
-    const seeded = session.tasks.get(agentId)
-    if (!seeded) {
-      session.tasks.set(agentId, {
-        taskId: agentId,
-        toolUseId,
-        description: 'Background subagent',
-        taskType: 'subagent',
-        status: 'running',
-        isBackgrounded: true,
-        startedAt: now,
-        updatedAt: now,
-      })
-      const snapshot = Array.from(session.tasks.values())
-      for (const sub of session.taskSubscribers) {
-        try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
-      }
-    }
-    // A new background subagent just launched — broadcast the updated count
-    // so the sidebar can switch this session away from a plain 'live' dot
-    // (the parent turn is still running right now; the `result` frame that
-    // ends it re-broadcasts info via persist(), carrying the same count).
-    if (this.sessions.has(session.id)) {
-      this.broadcastGlobal({ kind: 'update', session: this.info(session) })
-    }
+    this.backgroundWatchers.start(session, toolUseId, agentId)
   }
 
   /** Cancel the subagent watcher for a (session, toolUseId) when a REAL SDK
-   *  task_notification arrives for the same tool call — the true completion
-   *  already carries the result, so the watcher's synthesized notification
-   *  would be a duplicate (and its maxMs backstop could later flip a
-   *  legitimately-done record back to 'stopped'). No-op when no watcher is
-   *  armed. */
+   *  task_notification arrives for the same tool call. See
+   *  BackgroundWatcherRegistry.cancel. */
   private cancelBackgroundWatcher(sessionId: string, toolUseId: string): void {
-    const perSession = this.backgroundWatchers.get(sessionId)
-    const stop = perSession?.get(toolUseId)
-    if (!stop) return
-    try { stop() } catch { /* ignore */ }
-    perSession!.delete(toolUseId)
-    const session = this.sessions.get(sessionId)
-    // The pump folds the REAL notification (keyed by its task_id) BEFORE
-    // calling this. Nothing ties that task_id to the agentId the launch ack
-    // carried, so when they differ the watcher's seed record is a duplicate
-    // still stuck on 'running' — the real record under the frame's task_id is
-    // the authoritative one, so drop the seed (a matched task_id means the
-    // fold already settled the seed itself and it is left intact).
-    if (session) {
-      let removed = false
-      for (const [taskId, rec] of session.tasks) {
-        if (rec.toolUseId === toolUseId && !isTerminalTaskStatus(rec.status)) {
-          session.tasks.delete(taskId)
-          removed = true
-        }
-      }
-      if (removed) {
-        const snapshot = Array.from(session.tasks.values())
-        for (const sub of session.taskSubscribers) {
-          try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
-        }
-      }
-      // The watcher count feeds the sidebar's 'waiting' dot; re-broadcast so
-      // it reflects the cancelled watcher immediately.
-      this.broadcastGlobal({ kind: 'update', session: this.info(session) })
-    }
-    log.info(`[session ${sessionId}] real task_notification for toolUseId=${toolUseId} — watcher cancelled`)
-  }
-
-  /** Synthesize a `system`/`task_notification` frame for a completed
-   *  background subagent and feed it through the SAME path real messages
-   *  take (history ring + live subscribers), so it survives replay and
-   *  reaches the client reducer's completion branch. The reducer matches by
-   *  `tool_use_id` and flips the `background` record to `done` (or
-   *  `interrupted` for a non-completed status), capturing the subagent's
-   *  final text as the merged result. */
-  private broadcastSynthesizedTaskNotification(
-    session: Session,
-    toolUseId: string,
-    agentId: string,
-    completion: SubagentCompletion,
-  ): void {
-    // Drop the watcher if the session was unloaded between dispatch and
-    // completion — no subscribers to push to, and persisting would race
-    // unload's terminal write.
-    if (!this.sessions.has(session.id)) return
-    const msg: SDKMessage = {
-      type: 'system',
-      subtype: 'task_notification',
-      task_id: agentId,
-      tool_use_id: toolUseId,
-      status: completion.status,
-      summary: completion.summary,
-      output_file: '',
-      uuid: randomUUID(),
-      session_id: session.id,
-      receivedAt: Date.now(),
-    } as unknown as SDKMessage
-    stampReceivedAt(msg)
-    pushBounded(session.history, msg, this.historyCap)
-    for (const sub of session.subscribers.values()) {
-      try { sub.push(msg) } catch { /* subscriber dead — skip */ }
-    }
-    // Fold the same notification into the task-state cache so the seeded
-    // watcher record settles to a terminal status in the TasksPanel. The
-    // synthesized frame never passes through the pump (it bypasses the SDK
-    // stream), so the normal fold path doesn't see it — fold it here.
-    applyTaskEvent(session, msg)
+    this.backgroundWatchers.cancel(sessionId, toolUseId, this.sessions.get(sessionId))
   }
 
   /** Stop all background-subagent watchers for a session (called on unload
    *  so a late completion can't broadcast into a dead session). */
   private stopBackgroundSubagentWatchers(sessionId: string): void {
-    const perSession = this.backgroundWatchers.get(sessionId)
-    if (!perSession) return
-    for (const stop of perSession.values()) {
-      try { stop() } catch { /* ignore */ }
-    }
-    perSession.clear()
-    this.backgroundWatchers.delete(sessionId)
+    this.backgroundWatchers.stopAll(sessionId)
   }
 
   /** Unload a spawn-failed session to dormant (resumable) state with the
@@ -1265,14 +1169,10 @@ export class SessionManager {
     // resume-after-/clear persisted the short id and the NEXT /clear spawned
     // a fresh session the gateway rejected with `400 Unsupported model`.
     const resolvedModel = resolveConfiguredModel(meta.model ?? firstAssistantModel(historySeed))
-    const resumeOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number } = {
+    const resumeOpts = this.baseSpawnOptions({
       provider,
-      resume: id,
       cwd: meta.cwd,
       model: resolvedModel,
-      // Carry the start-as agent forward only while its def still exists and
-      // is enabled; otherwise resume drops it (logged) to a normal session.
-      agent: this.effectiveStartAsAgent(meta, 'resume', id),
       modelGroupId: meta.modelGroupId,
       // Use the persisted permissionMode if available (sessions we created).
       // For CLI sessions adopted from disk (no permissionMode in meta), fall
@@ -1280,31 +1180,20 @@ export class SessionManager {
       // "resume in whatever mode I'm currently in" works as expected.
       permissionMode: meta.permissionMode ?? opts?.permissionMode,
       title: meta.title,
-      // Carry the effort level forward so a resumed session keeps its
-      // reasoning depth instead of falling back to the SDK default.
-      effort: meta.effortLevel,
-      // Same for the extended-thinking config.
+      effortLevel: meta.effortLevel,
       thinking: meta.thinking,
-      // Same for the auto-compact window: a pinned threshold survives resume.
       autoCompactWindow: meta.autoCompactWindow,
-      // Carry beta flags forward — without this, a 1M-context session
-      // silently downgrades to the model's default window on resume.
-      // Cast: SDK types this as a literal-string union of known flags,
-      // but we store the user-supplied list as plain `string[]` so a
-      // newer flag the SDK type hasn't learned about yet still survives.
-      betas: meta.betas as Options['betas'],
-      settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
+      betas: meta.betas,
+      hooks: meta.hooks,
       enabledPlugins: meta.enabledPlugins,
-    }
+    })
+    resumeOpts.resume = id
+    // Carry the start-as agent forward only while its def still exists and
+    // is enabled; otherwise resume drops it (logged) to a normal session.
+    resumeOpts.agent = this.effectiveStartAsAgent(meta, 'resume', id)
     // Re-apply globally configured MCP servers so a resumed session picks up
-    // the same tools it had before the restart.  Refresh OAuth tokens for
-    // any remote servers BEFORE snapshotting the config so the SDK receives
-    // fresh access tokens.
-    const allGlobalMcpNames = Object.keys(this.mcpStore?.toSdkConfig() ?? {})
-    if (allGlobalMcpNames.length > 0) {
-      await this.mcpStore?.refreshOAuthTokens(allGlobalMcpNames)
-      resumeOpts.mcpServers = this.mcpStore?.toSdkConfig()
-    }
+    // the same tools it had before the restart.
+    await this.applyGlobalMcpServers(resumeOpts)
     // uuid bridge: load the server-minted prompt uuids recorded for this
     // session and rewrite the disk-seed's top-level prompt uuids (SDK V →
     // server U) so the client's uuid-anchored replay overlap detection works
@@ -1344,32 +1233,26 @@ export class SessionManager {
    *  spawn()-doesn't-carry-parentId review. */
   private async respawnFresh(id: string, meta: SessionMeta): Promise<SessionInfo> {
     const provider = meta.provider ?? this.defaultProvider
-    const freshOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number } = {
+    // Re-inject the persisted plugin subset so a turn-less session that goes
+    // dormant keeps its picker selection on respawn (same as resume/fork/
+    // clear). Without this, snapshotMeta would capture undefined and
+    // writeStore would clobber the persisted subset.
+    const freshOpts = this.baseSpawnOptions({
       provider,
       cwd: meta.cwd,
       model: meta.model,
       modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
       title: meta.title,
-      effort: meta.effortLevel,
+      effortLevel: meta.effortLevel,
       thinking: meta.thinking,
       autoCompactWindow: meta.autoCompactWindow,
-      betas: meta.betas as Options['betas'],
-      settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
-      // Re-inject the persisted plugin subset so a turn-less session that
-      // goes dormant keeps its picker selection on respawn (same as
-      // resume/fork/clear). Without this, snapshotMeta would capture
-      // undefined and writeStore would clobber the persisted subset.
+      betas: meta.betas,
+      hooks: meta.hooks,
       enabledPlugins: meta.enabledPlugins,
-    }
+    })
     // Re-apply globally configured MCP servers (same as resume / clear).
-    // Refresh OAuth tokens for remote servers BEFORE snapshotting the config
-    // so the fresh Query receives live access tokens.
-    const allGlobalMcpNames = Object.keys(this.mcpStore?.toSdkConfig() ?? {})
-    if (allGlobalMcpNames.length > 0) {
-      await this.mcpStore?.refreshOAuthTokens(allGlobalMcpNames)
-      freshOpts.mcpServers = this.mcpStore?.toSdkConfig()
-    }
+    await this.applyGlobalMcpServers(freshOpts)
     log.info(
       `[session ${id}] respawnFresh: no transcript + no completed turn — ` +
       `starting a fresh conversation on the same id`,
@@ -1596,50 +1479,46 @@ export class SessionManager {
     // same name, not a renamed fork.
     const title = opts?.inheritIdentity ? meta.title : (meta.title ? `${meta.title} (fork)` : undefined)
     const sourceProvider = meta.provider ?? this.defaultProvider
-    const forkOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting } = {
+    const forkOpts = this.baseSpawnOptions({
       provider: sourceProvider,
-      resume: id,
-      forkSession: true,
       cwd: meta.cwd,
       model: meta.model,
-      // Carry the start-as agent forward only while its def still exists and
-      // is enabled; otherwise the fork drops it (logged) to a normal session.
-      agent: this.effectiveStartAsAgent(meta, 'fork', id),
       modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
       title,
-      // When branching from a specific point (the "Fork from last completed
-      // turn" button / explicit resumeSessionAt), truncate the fork's loaded
-      // history to this assistant uuid. Only honored because forkSession is
-      // set (see method-header note).
-      resumeSessionAt,
-      // Carry effort + thinking + beta flags forward so the fork matches
-      // the source. Thinking is a spawn-time Options key, so unlike fastMode
-      // (re-applied post-spawn below) it rides the opts directly.
-      effort: meta.effortLevel,
+      // Carry effort + thinking forward so the fork matches the source.
+      // Thinking is a spawn-time Options key, so unlike fastMode (re-applied
+      // post-spawn below) it rides the opts directly.
+      effortLevel: meta.effortLevel,
       thinking: meta.thinking,
       // Same for the auto-compact window (re-applied post-spawn via
       // applyFlagSettings, like fastMode — snapshotMeta captures it from here).
       autoCompactWindow: meta.autoCompactWindow,
-      // Same as resume: preserve `context-1m-...` etc. so the fork has
-      // the same effective window as the source. See resume() for the cast rationale.
-      betas: meta.betas as Options['betas'],
-      settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
+      // Same as resume: preserve `context-1m-...` etc. so the fork has the
+      // same effective window as the source. See resume() for the cast rationale.
+      betas: meta.betas,
+      hooks: meta.hooks,
       enabledPlugins: meta.enabledPlugins,
-      // Carry the auto-memory intent onto the new id (fork has no
-      // existingMeta — snapshotMeta captures it from here). meta already
-      // prefers the live session over the persisted store entry.
-      memory: coerceMemory(meta.memory),
-      // Carry the sandbox intent onto the new id (fork has no existingMeta —
-      // snapshotMeta captures it from here).
-      sandbox: meta.sandbox,
-    }
+    }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting }
+    forkOpts.resume = id
+    forkOpts.forkSession = true
+    // Carry the start-as agent forward only while its def still exists and
+    // is enabled; otherwise the fork drops it (logged) to a normal session.
+    forkOpts.agent = this.effectiveStartAsAgent(meta, 'fork', id)
+    // When branching from a specific point (the "Fork from last completed
+    // turn" button / explicit resumeSessionAt), truncate the fork's loaded
+    // history to this assistant uuid. Only honored because forkSession is
+    // set (see method-header note).
+    forkOpts.resumeSessionAt = resumeSessionAt
+    // Carry the auto-memory intent onto the new id (fork has no existingMeta
+    // — snapshotMeta captures it from here). meta already prefers the live
+    // session over the persisted store entry.
+    forkOpts.memory = coerceMemory(meta.memory)
+    // Carry the sandbox intent onto the new id (fork has no existingMeta —
+    // snapshotMeta captures it from here).
+    forkOpts.sandbox = meta.sandbox
     // Re-apply globally configured MCP servers (same as resume).
-    const allGlobalMcpNames = Object.keys(this.mcpStore?.toSdkConfig() ?? {})
-    if (allGlobalMcpNames.length > 0) {
-      await this.mcpStore?.refreshOAuthTokens(allGlobalMcpNames)
-      forkOpts.mcpServers = this.mcpStore?.toSdkConfig()
-    }
+    await this.applyGlobalMcpServers(forkOpts)
     // Inherit the parent's session-level skill override when the source is
     // currently live (override is RAM-only — dormant sources have nothing to
     // copy and the fork falls back to the global policy, same as resume).
@@ -2023,11 +1902,7 @@ export class SessionManager {
       },
     }
     // Re-apply globally configured MCP servers (same as fork).
-    const allGlobalMcpNames = Object.keys(this.mcpStore?.toSdkConfig() ?? {})
-    if (allGlobalMcpNames.length > 0) {
-      await this.mcpStore?.refreshOAuthTokens(allGlobalMcpNames)
-      sideChatOpts.mcpServers = this.mcpStore?.toSdkConfig()
-    }
+    await this.applyGlobalMcpServers(sideChatOpts)
     return this.spawn(randomUUID(), sideChatOpts)
   }
 
@@ -2389,7 +2264,7 @@ export class SessionManager {
     // injection without dropping the user's servers.
     session.dynamicMcpServers = fullOpts.mcpServers as Record<string, unknown> | undefined
     session.firstPartyErrors = undefined
-    fullOpts.mcpServers = this.injectAll(fullOpts.mcpServers as Record<string, unknown> | undefined, session) as Options['mcpServers'] | undefined
+    fullOpts.mcpServers = this.mcp.injectAll(fullOpts.mcpServers as Record<string, unknown> | undefined, session) as Options['mcpServers'] | undefined
     const handle = provider.createSession({
       id,
       provider: providerName,
@@ -3012,38 +2887,34 @@ export class SessionManager {
       // spawn() persists Y, broadcasts `created`, and starts its pump. Side
       // Chat sessions re-inject SIDE_DEVELOPER_INSTRUCTIONS so the boundary
       // survives — same logic as the old respawn.
-      const freshOpts: Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting } = {
+      const freshOpts = this.baseSpawnOptions({
         provider: settings.provider,
         cwd: settings.cwd,
         model: settings.model,
         modelGroupId: settings.modelGroupId,
         permissionMode: settings.permissionMode,
         title: settings.title,
-        effort: settings.effortLevel,
+        effortLevel: settings.effortLevel,
         thinking: settings.thinking,
         autoCompactWindow: settings.autoCompactWindow,
-        betas: settings.betas as Options['betas'],
-        settings: settings.hooks ? ({ hooks: toSdkHooksSettings(settings.hooks) } as Settings) : undefined,
+        betas: settings.betas,
+        hooks: settings.hooks,
         enabledPlugins: settings.enabledPlugins,
-        // Carry the auto-memory intent onto the fresh session (new id —
-        // snapshotMeta captures it from here, same as fork).
-        memory: settings.memory,
-        // Carry the sandbox intent likewise.
-        sandbox: settings.sandbox,
-      }
+      }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting; parentId?: string }
+      // Carry the auto-memory intent onto the fresh session (new id —
+      // snapshotMeta captures it from here, same as fork).
+      freshOpts.memory = settings.memory
+      // Carry the sandbox intent likewise.
+      freshOpts.sandbox = settings.sandbox
       if (settings.parentId) {
         freshOpts.systemPrompt = {
           type: 'preset',
           preset: 'claude_code',
           append: SIDE_DEVELOPER_INSTRUCTIONS,
         }
-        ;(freshOpts as Options & { parentId?: string }).parentId = settings.parentId
+        freshOpts.parentId = settings.parentId
       }
-      const allGlobalMcpNames = Object.keys(this.mcpStore?.toSdkConfig() ?? {})
-      if (allGlobalMcpNames.length > 0) {
-        await this.mcpStore?.refreshOAuthTokens(allGlobalMcpNames)
-        freshOpts.mcpServers = this.mcpStore?.toSdkConfig()
-      }
+      await this.applyGlobalMcpServers(freshOpts)
       // spawn() builds a fresh canUseTool for Y (permBroker.buildCanUseTool),
       // so we do NOT reuse X's canUseTool closure — Y gets its own permission
       // tracker. spawn() also applies the skill policy to sdkOptions.
@@ -3256,7 +3127,7 @@ export class SessionManager {
     if (this.phaseOf(s) !== 'idle') {
       // The parent turn may have already finished while a background
       // subagent is still running — blame the real blocker, not the turn.
-      const hasBackgroundSubagent = (this.backgroundWatchers.get(s.id)?.size ?? 0) > 0
+      const hasBackgroundSubagent = this.backgroundWatchers.count(s.id) > 0
       throw new HttpError(
         409,
         hasBackgroundSubagent
@@ -3470,7 +3341,6 @@ export class SessionManager {
   }
 
   async applySettings(id: string, settings: Settings): Promise<SessionInfo> {
-    const s = this.requireLive(id)
     const forwarded = settings && typeof settings === 'object' && !Array.isArray(settings)
       ? { ...(settings as Record<string, unknown>) }
       : {}
@@ -3485,27 +3355,21 @@ export class SessionManager {
       normalizedHooks = emptyHooksConfig(hooksResult.value) ? {} : hooksResult.value
       forwarded.hooks = toSdkHooksSettings(normalizedHooks)
     }
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
-      'flag settings',
-    )(forwarded)
-    if (normalizedHooks) s.hooks = normalizedHooks
-    // Keep the session's persisted auto-compact window in sync when the
-    // generic /settings route forwards it directly (the dedicated
-    // setAutoCompactWindow route is the primary path). `autoCompactEnabled`
-    // alone (no window) is a plain toggle and doesn't pin a window — only
-    // `autoCompactWindow` writes the intent.
-    if ('autoCompactWindow' in forwarded) {
-      const w = forwarded.autoCompactWindow
-      s.autoCompactWindow = typeof w === 'number' && Number.isFinite(w) && w > 0 ? Math.round(w) : undefined
-      // Same immediate refresh as the dedicated setAutoCompactWindow path —
-      // the generic /settings route also moves the effective threshold.
-      reapplyAutoCompactWindow(s, s.autoCompactWindow)
-    }
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    return this.applyFlagSettingAndPersist(id, forwarded, 'flag settings', (s) => {
+      if (normalizedHooks) s.hooks = normalizedHooks
+      // Keep the session's persisted auto-compact window in sync when the
+      // generic /settings route forwards it directly (the dedicated
+      // setAutoCompactWindow route is the primary path). `autoCompactEnabled`
+      // alone (no window) is a plain toggle and doesn't pin a window — only
+      // `autoCompactWindow` writes the intent.
+      if ('autoCompactWindow' in forwarded) {
+        const w = forwarded.autoCompactWindow
+        s.autoCompactWindow = typeof w === 'number' && Number.isFinite(w) && w > 0 ? Math.round(w) : undefined
+        // Same immediate refresh as the dedicated setAutoCompactWindow path —
+        // the generic /settings route also moves the effective threshold.
+        reapplyAutoCompactWindow(s, s.autoCompactWindow)
+      }
+    })
   }
 
   getHooks(id: string): { hooks: SessionHooksConfig; runs: HookRunRecord[] } {
@@ -3517,17 +3381,44 @@ export class SessionManager {
   }
 
   async applyHooks(id: string, hooks: SessionHooksConfig): Promise<{ session: SessionInfo; hooks: SessionHooksConfig }> {
-    const s = this.requireLive(id)
     const normalized = emptyHooksConfig(hooks) ? {} : hooks
+    const session = await this.applyFlagSettingAndPersist(
+      id,
+      { hooks: toSdkHooksSettings(normalized) },
+      'hooks',
+      (s) => { s.hooks = normalized },
+    )
+    return { session, hooks: normalized }
+  }
+
+  /** Shared implementation for the "forward a flag to the SDK via
+   *  applyFlagSettings, then record the intent locally" pattern shared by
+   *  ~10 session setters (setFastMode, setEffortLevel, setAutoCompactWindow,
+   *  setSandbox, setMemorySettings, togglePlugin, applyHooks, applySettings).
+   *  Each setter differs only in: which flags to send, the action label
+   *  (for capability gating + error messages), an optional capability, and
+   *  what to mutate on the Session once the SDK call succeeds. Centralizing
+   *  this collapsed ~10 near-identical 15-25 line methods to a few lines
+   *  each and removes the risk of one of them drifting (e.g. forgetting
+   *  `lastActivityAt` or `persist`). */
+  private async applyFlagSettingAndPersist(
+    id: string,
+    flags: Record<string, unknown>,
+    action: string,
+    mutate: (s: Session) => void,
+    capability?: keyof ProviderCapabilities,
+  ): Promise<SessionInfo> {
+    const s = this.requireLive(id)
     await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
       s,
       'applyFlagSettings',
-      'hooks',
-    )({ hooks: toSdkHooksSettings(normalized) })
-    s.hooks = normalized
+      action,
+      capability,
+    )(flags)
+    mutate(s)
     s.lastActivityAt = Date.now()
     this.persist(s)
-    return { session: this.info(s), hooks: normalized }
+    return this.info(s)
   }
 
   /** Toggle fast mode for a session. Forwards the intent to the SDK via
@@ -3537,17 +3428,13 @@ export class SessionManager {
    *  parses into s.fastModeState — so we do NOT optimistically set the
    *  runtime state here. */
   async setFastMode(id: string, enabled: boolean): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
+    return this.applyFlagSettingAndPersist(
+      id,
+      { fastMode: enabled },
       'fast mode',
+      (s) => { s.fastMode = enabled },
       'supportsFastMode',
-    )({ fastMode: enabled })
-    s.fastMode = enabled
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    )
   }
 
   /** Set per-session auto-memory settings (enable / directory / auto-dream).
@@ -3562,7 +3449,6 @@ export class SessionManager {
     id: string,
     partial: { autoMemoryEnabled?: boolean | null; autoMemoryDirectory?: string | null; autoDreamEnabled?: boolean | null },
   ): Promise<SessionInfo> {
-    const s = this.requireLive(id)
     const flags: Record<string, boolean | string | null> = {}
     if ('autoMemoryEnabled' in partial) flags.autoMemoryEnabled = partial.autoMemoryEnabled ?? null
     if ('autoDreamEnabled' in partial) flags.autoDreamEnabled = partial.autoDreamEnabled ?? null
@@ -3572,23 +3458,17 @@ export class SessionManager {
     if ('autoMemoryDirectory' in partial) {
       flags.autoMemoryDirectory = (partial.autoMemoryDirectory ?? '').trim() || null
     }
-    if (Object.keys(flags).length === 0) return this.info(s)
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
-      'memory settings',
-    )(flags)
-    const next: SessionMemorySettings = { ...(s.memory ?? {}) }
-    for (const [key, value] of Object.entries(partial)) {
-      const k = key as keyof SessionMemorySettings
-      if (value == null || (k === 'autoMemoryDirectory' && !String(value).trim())) delete next[k]
-      else if (k === 'autoMemoryDirectory') next[k] = String(value).trim()
-      else next[k] = value as boolean
-    }
-    s.memory = Object.keys(next).length > 0 ? next : undefined
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    if (Object.keys(flags).length === 0) return this.info(this.requireLive(id))
+    return this.applyFlagSettingAndPersist(id, flags, 'memory settings', (s) => {
+      const next: SessionMemorySettings = { ...(s.memory ?? {}) }
+      for (const [key, value] of Object.entries(partial)) {
+        const k = key as keyof SessionMemorySettings
+        if (value == null || (k === 'autoMemoryDirectory' && !String(value).trim())) delete next[k]
+        else if (k === 'autoMemoryDirectory') next[k] = String(value).trim()
+        else next[k] = value as boolean
+      }
+      s.memory = Object.keys(next).length > 0 ? next : undefined
+    })
   }
 
   /** Set the per-session sandbox config. `setting` is a validated
@@ -3601,21 +3481,14 @@ export class SessionManager {
    *  capability gate — the applyFlagSettings handle method is the only
    *  prerequisite, same as setMemorySettings. */
   async setSandbox(id: string, setting: SandboxSetting | null): Promise<SessionInfo> {
-    const s = this.requireLive(id)
     // A present sandbox object is meaningful only as "ON" — normalise so both
     // `null` and a raw `{enabled:false}` clear the setting (apply null; store
     // undefined), never leaving a truthy-but-off config in the session record.
     const on = setting != null && setting.enabled === true
     const flags = on ? { sandbox: setting } : { sandbox: null }
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
-      'sandbox',
-    )(flags)
-    s.sandbox = on ? setting : undefined
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    return this.applyFlagSettingAndPersist(id, flags, 'sandbox', (s) => {
+      s.sandbox = on ? setting : undefined
+    })
   }
 
   /** Set per-session UI prefs (pinned-header + auto-recap overrides).
@@ -3654,17 +3527,13 @@ export class SessionManager {
    *  Settings.effortLevel typedef omits 'max', so we cast through to keep all
    *  5 levels (the API and supportedEffortLevels both list 'max'). */
   async setEffortLevel(id: string, level: EffortLevel): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
+    return this.applyFlagSettingAndPersist(
+      id,
+      { effortLevel: level as 'low' | 'medium' | 'high' | 'xhigh' },
       'effort level',
+      (s) => { s.effortLevel = level },
       'supportsEffortLevel',
-    )({ effortLevel: level as 'low' | 'medium' | 'high' | 'xhigh' })
-    s.effortLevel = level
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    )
   }
 
   /** Pin the auto-compact window for a session. `tokens > 0` sets an
@@ -3676,26 +3545,19 @@ export class SessionManager {
    *  applyFlagSettings handle method is the only prerequisite, same as
    *  setMemorySettings. */
   async setAutoCompactWindow(id: string, tokens: number | null): Promise<SessionInfo> {
-    const s = this.requireLive(id)
     const window = tokens && tokens > 0 ? Math.round(tokens) : undefined
     const flags: Record<string, unknown> = window
       ? { autoCompactWindow: window, autoCompactEnabled: true }
       : { autoCompactWindow: null, autoCompactEnabled: null }
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
-      'auto-compact window',
-    )(flags)
-    s.autoCompactWindow = window
-    // Refresh the cached context-usage snapshot NOW so every live ContextBar
-    // jumps to the new threshold immediately — the threshold otherwise only
-    // derives from the next turn's `result`, leaving the bar (and the
-    // "Compact at X%" label) stuck on the stale auto position, which reads
-    // as a failed commit.
-    reapplyAutoCompactWindow(s, window)
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    return this.applyFlagSettingAndPersist(id, flags, 'auto-compact window', (s) => {
+      s.autoCompactWindow = window
+      // Refresh the cached context-usage snapshot NOW so every live ContextBar
+      // jumps to the new threshold immediately — the threshold otherwise only
+      // derives from the next turn's `result`, leaving the bar (and the
+      // "Compact at X%" label) stuck on the stale auto position, which reads
+      // as a failed commit.
+      reapplyAutoCompactWindow(s, window)
+    })
   }
 
   /** Change extended thinking on a LIVE session. Unlike effort (a Settings
@@ -3743,16 +3605,13 @@ export class SessionManager {
   }
 
   async togglePlugin(id: string, pluginName: string, enabled: boolean): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
+    return this.applyFlagSettingAndPersist(
+      id,
+      { enabledPlugins: { [pluginName]: enabled } },
       'plugins',
+      () => {},
       'supportsPlugins',
-    )({ enabledPlugins: { [pluginName]: enabled } })
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    )
   }
 
   /** Run a delegated SDK control request and log how long it took.
@@ -3828,217 +3687,56 @@ export class SessionManager {
     return this.timeSdkControl(id, 'supportedAgents', fn)
   }
 
+  // --- MCP server management — delegated to SessionMcpManager. Thin
+  // proxies so routes and other callers see no change (session-manager-mcp.ts
+  // owns the implementations). ---
+
   async mcpServerStatus(id: string) {
-    const s = this.requireLive(id)
-    const fn = this.requireHandleMethod<() => Promise<unknown>>(
-      s,
-      'mcpServerStatus',
-      'MCP status',
-      'supportsMcp',
-    )
-    return this.timeSdkControl(id, 'mcpServerStatus', fn)
+    return this.mcp.mcpServerStatus(id)
   }
 
   async reconnectMcpServer(id: string, serverName: string): Promise<void> {
-    const s = this.requireLive(id)
-    await this.requireHandleMethod<(name: string) => Promise<void>>(
-      s,
-      'reconnectMcpServer',
-      'MCP reconnect',
-      'supportsMcp',
-    )(serverName)
+    return this.mcp.reconnectMcpServer(id, serverName)
   }
 
   async toggleMcpServer(id: string, serverName: string, enabled: boolean): Promise<void> {
-    const s = this.requireLive(id)
-    await this.requireHandleMethod<(name: string, enabled: boolean) => Promise<void>>(
-      s,
-      'toggleMcpServer',
-      'MCP toggle',
-      'supportsMcp',
-    )(serverName, enabled)
+    return this.mcp.toggleMcpServer(id, serverName, enabled)
   }
 
   /** Add/remove MCP servers on a live session via the SDK's setMcpServers API. */
   async setMcpServers(id: string, servers: Record<string, unknown>) {
-    const s = this.requireLive(id)
-    // Inject first-party servers so a live setMcpServers (replace semantics)
-    // doesn't drop what spawn installed — same single code path as the spawn
-    // injection, so on/off is consistent between spawn and live.
-    const injected = this.injectAll(servers, s)
-    const result = await this.requireHandleMethod<(servers: Record<string, unknown>) => Promise<unknown>>(
-      s,
-      'setMcpServers',
-      'dynamic MCP servers',
-      'supportsMcp',
-    )(injected ?? servers)
-
-    // Update the tracked MCP server names + the runtime dynamic map so the
-    // client's "available" computation stays in sync and an immediate
-    // first-party toggle can re-run injection. Both keep the user-configured
-    // set (pre-injection) — first-party servers are surfaced separately.
-    s.mcpServerNames = Object.keys(servers)
-    s.dynamicMcpServers = servers
-    this.writeStore(s)
-    this.broadcastGlobal({ kind: 'update', session: this.info(s) })
-
-    return result
+    return this.mcp.setMcpServers(id, servers)
   }
 
   /** Pin (or clear, mode:null) a per-MCP-server permission-mode override on a
-   *  live session (SDK Query.setMcpPermissionModeOverride — tighten-only:
-   *  'default' | 'auto' | null). Resolves `{ warning? }`; the warning is
-   *  informational (server-name typo detection) and is forwarded to the client.
-   *  NOTE: the override is per-process and the SDK does not report the pinned
-   *  value back, so it is NOT persisted — a resume/reconnect starts clean. */
+   *  live session. See SessionMcpManager.setMcpPermissionModeOverride. */
   async setMcpPermissionModeOverride(
     id: string,
     serverName: string,
     mode: 'default' | 'auto' | null,
   ): Promise<{ warning?: string }> {
-    const s = this.requireLive(id)
-    return this.requireHandleMethod<(n: string, m: 'default' | 'auto' | null) => Promise<{ warning?: string }>>(
-      s,
-      'setMcpPermissionModeOverride',
-      'MCP permission mode',
-      'supportsMcp',
-    )(serverName, mode)
+    return this.mcp.setMcpPermissionModeOverride(id, serverName, mode)
   }
 
-  /** Effective first-party server enabled state: per-session override (null =
-   *  inherit), legacy session `appToolsGit`, global structured config, legacy
-   *  global `appToolsGit`, then the server's own default. */
-  private firstPartyEnabled(s: Session, name: string): boolean {
-    const so = s.firstPartyTools?.[name]
-    if (so !== undefined && so !== null) return so
-    if (name === APP_TOOLS_SERVER_NAME && s.appToolsGit !== undefined) return s.appToolsGit
-    const go = defaultConfig.firstPartyTools?.[name]?.enabled
-    if (go !== undefined) return go
-    if (name === APP_TOOLS_SERVER_NAME && defaultConfig.appToolsGit !== undefined) return defaultConfig.appToolsGit
-    return firstPartyRegistry.get(name)?.defaultEnabled ?? false
-  }
-
-  /** Append the enabled first-party in-process MCP servers to an mcpServers
-   *  map (per-session cwd-bound). Returns the input unchanged when nothing is
-   *  injected; first-party servers override same-named user servers. Per-server
-   *  build failures are recorded on the session for toolServerStatus. */
-  private injectAll(
-    servers: Record<string, unknown> | undefined,
-    s: Session,
-  ): Record<string, unknown> | undefined {
-    const injected = firstPartyRegistry.injectAll(
-      s.cwd ?? null,
-      (name) => this.firstPartyEnabled(s, name),
-      (name, message) => {
-        s.firstPartyErrors = { ...(s.firstPartyErrors ?? {}), [name]: message }
-        log.error(`[session ${s.id}] first-party server ${name} build failed: ${message}`)
-      },
-    )
-    if (!injected) return servers
-    return { ...(servers ?? {}), ...injected }
-  }
-
-  /** Status of each registered first-party server for a session (independent
-   *  of the SDK's mcpServerStatus, which is unreliable for in-process
-   *  servers). `injected` = would be injected under the current effective
-   *  state; `error` = last build/registration failure. Each entry also
-   *  embeds the server's static tool definitions (the registry's listToolDefs
-   *  output for that server) so one fetch paints status AND the tool list. */
+  /** Status of each registered first-party server for a session. See
+   *  SessionMcpManager.toolServerStatus. */
   toolServerStatus(id: string): Array<{ name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; tools: FirstPartyToolDef[]; error?: string }> {
-    const s = this.require(id)
-    const toolDefs = new Map(firstPartyRegistry.listToolDefs().map((info) => [info.name, info]))
-    const out: Array<{ name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; tools: FirstPartyToolDef[]; error?: string }> = []
-    for (const server of firstPartyRegistry.list()) {
-      const enabled = this.firstPartyEnabled(s, server.name)
-      const hasCwd = !!s.cwd
-      const injected = enabled && (!server.requiresCwd || hasCwd)
-      out.push({
-        name: server.name,
-        description: server.description,
-        enabled,
-        injected,
-        requiresCwd: server.requiresCwd,
-        hasCwd,
-        tools: toolDefs.get(server.name)?.tools ?? [],
-        error: s.firstPartyErrors?.[server.name],
-      })
-    }
-    return out
+    return this.mcp.toolServerStatus(id)
   }
 
-  /** Set a per-session first-party tool server override. `enabled: null`
-   *  clears the override so the session re-inherits the global default.
-   *  IMMEDIATE on live sessions: after persisting the override, re-runs the
-   *  injection path (setMcpServers with the stored user map) so the SDK picks
-   *  up the change now, not at the next spawn. If the re-injection's SDK call
-   *  fails, the override is reverted and the error rethrown (never leave the
-   *  UI showing a state the session isn't actually in). Dormant sessions just
-   *  persist the override — it applies at the next spawn. */
+  /** Set a per-session first-party tool server override. See
+   *  SessionMcpManager.setFirstPartyTool. */
   async setFirstPartyTool(id: string, name: string, enabled: boolean | null): Promise<SessionInfo> {
-    const s = this.require(id)
-    const prev = s.firstPartyTools?.[name] ?? null
-    const next: Record<string, boolean | null> = { ...(s.firstPartyTools ?? {}) }
-    if (enabled === null) delete next[name]
-    else next[name] = enabled
-    s.firstPartyTools = Object.keys(next).length > 0 ? next : undefined
-    // Keep the legacy appToolsGit surface coherent for the apptools entry.
-    if (name === APP_TOOLS_SERVER_NAME) s.appToolsGit = enabled ?? undefined
-    s.lastActivityAt = Date.now()
-
-    if (s.running) {
-      try {
-        await this.setMcpServers(id, s.dynamicMcpServers ?? {})
-      } catch (err) {
-        // Revert the override so UI (server-backed session info) and reality
-        // stay consistent.
-        const revert: Record<string, boolean | null> = { ...(s.firstPartyTools ?? {}) }
-        if (prev === null) delete revert[name]
-        else revert[name] = prev
-        s.firstPartyTools = Object.keys(revert).length > 0 ? revert : undefined
-        if (name === APP_TOOLS_SERVER_NAME) s.appToolsGit = prev ?? undefined
-        throw err
-      }
-    } else {
-      this.persist(s)
-    }
-    return this.info(s)
+    return this.mcp.setFirstPartyTool(id, name, enabled)
   }
 
-  /** Merge global MCP configs with session-specific overrides.
-   *  enabledGlobal: names of global servers the user selected.
-   *  sessionMcp: session-specific overrides (win on name collision).
-   *  Returns undefined if the merged result is empty. */
+  /** Merge global MCP configs with session-specific overrides. See
+   *  SessionMcpManager.mergeMcpServers. */
   mergeMcpServers(
     enabledGlobal?: string[],
     sessionMcp?: Record<string, unknown>,
   ): Record<string, unknown> | undefined {
-    const global = this.mcpStore?.toSdkConfig() ?? {}
-    const result: Record<string, unknown> = {}
-
-    // Add explicitly-requested global servers. The parameter is typed
-    // `string[]` and the HTTP routes validate it via `validateStringArray`
-    // before calling, so no runtime Array.isArray / typeof guard is needed
-    // here — the type system is the single boundary.
-    //
-    // An explicit request overrides the global `enabled` flag: a globally
-    // disabled server is "off by default" (not pre-checked in the new-session
-    // dialog) but the user can still opt into it per session by checking its
-    // box. `toSdkConfig` skips disabled servers, so for names not present
-    // there we fall back to `getSdkServerConfig`, which ignores `enabled`.
-    // Unknown names resolve to nothing and are silently dropped.
-    if (enabledGlobal) {
-      for (const name of enabledGlobal) {
-        const cfg = global[name] ?? this.mcpStore?.getSdkServerConfig(name)
-        if (cfg) result[name] = cfg
-      }
-    }
-
-    // Session overrides replace or add
-    if (sessionMcp) {
-      Object.assign(result, sessionMcp)
-    }
-
-    return Object.keys(result).length > 0 ? result : undefined
+    return this.mcp.mergeMcpServers(enabledGlobal, sessionMcp)
   }
 
   /** Async merge path for HTTP routes: refresh remote OAuth tokens first. */
@@ -4046,141 +3744,55 @@ export class SessionManager {
     enabledGlobal?: string[],
     sessionMcp?: Record<string, unknown>,
   ): Promise<Record<string, unknown> | undefined> {
-    if (this.mcpStore && enabledGlobal) {
-      await this.mcpStore.refreshOAuthTokens(enabledGlobal)
-    }
-    return this.mergeMcpServers(enabledGlobal, sessionMcp)
+    return this.mcp.mergeMcpServersAsync(enabledGlobal, sessionMcp)
   }
 
 
+  // --- Skill policy + tool-profile management — delegated to
+  // SessionSkillManager. Thin proxies so routes and other callers see no
+  // change (session-manager-skills.ts owns the implementations). ---
+
   async reloadSkills(id: string) {
-    const s = this.requireLive(id)
-    const fn = this.requireHandleMethod<() => Promise<unknown>>(s, 'reloadSkills', 'skill reload')
-    const result = await this.timeSdkControl(id, 'reloadSkills', fn)
-    const skills = (result && typeof result === 'object' && Array.isArray((result as { skills?: unknown }).skills))
-      ? (result as { skills: unknown[] }).skills
-      : []
-    if (skills.length > 0) this.broadcastCommandsChanged(id, skills)
-    return result
+    return this.skills.reloadSkills(id)
   }
 
   async reloadSkillsForCwd(cwd?: string): Promise<{ reloaded: string[]; failed: { id: string; error: string }[] }> {
-    const target = cwd ? cwd.toLowerCase() : undefined
-    const reloaded: string[] = []
-    const failed: { id: string; error: string }[] = []
-    for (const s of this.sessions.values()) {
-      if (!s.running || s.terminated) continue
-      if (target && (s.cwd ?? '').toLowerCase() !== target) continue
-      if (!s.handle.reloadSkills) continue
-      try {
-        await this.reloadSkills(s.id)
-        reloaded.push(s.id)
-      } catch (err) {
-        failed.push({ id: s.id, error: err instanceof Error ? err.message : String(err) })
-      }
-    }
-    return { reloaded, failed }
+    return this.skills.reloadSkillsForCwd(cwd)
   }
 
-  /** Pin a session's skill policy override. Forwards the effective policy to
-   *  the SDK as a per-skill `applyFlagSettings({skillOverrides})` map so the
-   *  switch takes effect on the next assistant turn — no spawn/respawn.
-   *
-   *  override semantics (see shared/skills.ts):
-   *    - undefined / {kind:'inherit'} : follow the global config; flag layer
-   *      is cleared (sent as `{}`) so user/project-level settings can win.
-   *    - {kind:'mode', mode, allowlist}: pin a specific load mode at the
-   *      session scope.
-   *    - {kind:'disabled'}            : every skill forced 'off'.
-   *
-   *  RAM-only by design — see Session.skillOverride for the full reasoning. */
+  /** Pin a session's skill policy override. See
+   *  SessionSkillManager.setSkillOverride. */
   async setSkillOverride(id: string, override: SessionSkillOverride | undefined): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    const next: SessionSkillOverride | undefined =
-      !override || override.kind === 'inherit' ? undefined : override
-    s.skillOverride = next
-    await this.applyDynamicSkillOverrides(s)
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    return this.skills.setSkillOverride(id, override)
   }
 
-  /** Read the session's current RAM tool-surface profile. Undefined = inherit
-   *  the SDK's / global defaults (create-body passthrough already applied). */
+  /** Read the session's current RAM tool-surface profile. See
+   *  SessionSkillManager.getToolProfile. */
   getToolProfile(id: string): SessionToolProfile | undefined {
-    return this.requireLive(id).toolProfile
+    return this.skills.getToolProfile(id)
   }
 
-  /** Pin (or clear, with undefined) the session's tool-surface profile. Tool
-   *  surface is spawn-time-only (not a Settings key), so the change takes
-   *  effect on the next clear() or fork() respawn — which carry the profile —
-   *  not mid-turn. RAM-only like skillOverride: dropped when the live query is
-   *  unloaded and a session is resumed from disk. */
+  /** Pin (or clear, with undefined) the session's tool-surface profile. See
+   *  SessionSkillManager.setToolProfile. */
   async setToolProfile(id: string, profile: SessionToolProfile | undefined): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    s.toolProfile = profile
-    s.lastActivityAt = Date.now()
-    log.info(`[session ${id}] tool profile set:`, profile)
-    return this.info(s)
+    return this.skills.setToolProfile(id, profile)
   }
 
-  /** Send the session's currently-effective skill policy to the SDK via
-   *  applyFlagSettings({ skillOverrides: <map> }). The map is built from the
-   *  set of skills actually available to this cwd (user + project), so the
-   *  flag layer covers every skill explicitly — no ambiguity about which
-   *  layer wins for a given skill.
-   *
-   *  For 'default' mode we deliberately send an empty `{}` rather than
-   *  omitting the field: that *replaces* any prior flag-layer overrides
-   *  with an empty map (clearing them) so the lower priority layers
-   *  (user / project / policy) take effect again. Sending undefined would
-   *  leave a previous flag-layer pin in place. */
+  /** Send the session's currently-effective skill policy to the SDK. See
+   *  SessionSkillManager.applyDynamicSkillOverrides. Called directly by
+   *  fork() (re-applying a parent's skillOverride onto the new live fork). */
   async applyDynamicSkillOverrides(s: Session): Promise<void> {
-    const policy = effectiveSkillPolicyFor(s.skillOverride)
-    let availableSkills: string[]
-    try {
-      const list = await listSkills(s.cwd)
-      availableSkills = list.skills.map((skill) => skill.name)
-    } catch (err) {
-      log.warn(`[session ${s.id}] applyDynamicSkillOverrides: listSkills failed:`, err)
-      availableSkills = []
-    }
-    const map = policyToDynamicSkillOverrides(policy, availableSkills)
-    const skillOverrides = map ?? {}
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
-      'skill overrides',
-    )({ skillOverrides })
+    return this.skills.applyDynamicSkillOverrides(s)
   }
 
   /** Re-broadcast the global skill policy to every live session that's
-   *  currently inheriting it. Called from the /api/config save path so a
-   *  user toggling the global mode in Settings sees it land in every open
-   *  session immediately, without requiring a restart. Sessions that opted
-   *  into a session-level override are deliberately unaffected — their
-   *  override is "stickier" than the global toggle, that's the whole point.
-   *
-   *  Errors are collected per-session so one wedged subprocess can't block
-   *  the others; the caller (route layer) returns a summary. */
+   *  currently inheriting it. See
+   *  SessionSkillManager.reapplyGlobalSkillsToInheritingSessions. */
   async reapplyGlobalSkillsToInheritingSessions(): Promise<{
     applied: string[]
     failed: { id: string; error: string }[]
   }> {
-    const applied: string[] = []
-    const failed: { id: string; error: string }[] = []
-    for (const s of this.sessions.values()) {
-      if (!s.running || s.terminated) continue
-      if (s.skillOverride && s.skillOverride.kind !== 'inherit') continue
-      if (typeof s.handle.applyFlagSettings !== 'function') continue
-      try {
-        await this.applyDynamicSkillOverrides(s)
-        applied.push(s.id)
-      } catch (err) {
-        failed.push({ id: s.id, error: err instanceof Error ? err.message : String(err) })
-      }
-    }
-    return { applied, failed }
+    return this.skills.reapplyGlobalSkillsToInheritingSessions()
   }
 
   async reloadPlugins(id: string) {
@@ -4514,102 +4126,45 @@ export class SessionManager {
     return this.dialogBroker.subscribeDialog(this.require(id))
   }
 
-  /** AsyncIterable of context-usage snapshots for one session.
-   *  Returns null if the session doesn't exist (caller should treat
-   *  as "no context data available").
-   *  Each subscriber gets its own pushable to avoid waiter overwrite
-   *  when multiple tabs are connected to the same session. */
+  // --- Per-session subscription + signal broadcast — delegated to
+  // SessionEventBroadcaster. Thin proxies (same names) so `this` still
+  // satisfies the `SessionBroadcaster` structural interface used by
+  // ws.ts / git-broadcast.ts / PumpDeps.broadcaster, and so
+  // `vi.spyOn(sm, 'broadcastGitStatusChanged')` in tests keeps working. ---
+
   subscribeContextUsage(id: string): { iterable: AsyncIterable<unknown>; snapshot?: import('./session-pump.js').LiteContextUsage | undefined; unsubscribe: () => void } | null {
-    const s = this.sessions.get(id)
-    if (!s) return null
-    const sub = this.subscribePushableSet(s, s.contextUsageSubscribers, 'ctx', 50)
-    return { iterable: sub.iterable, snapshot: s.lastContextUsage, unsubscribe: sub.unsubscribe }
+    return this.broadcaster.subscribeContextUsage(id)
   }
 
-  /** AsyncIterable of prompt-suggestion strings for one session.
-   *  Mirrors subscribeContextUsage. Returns null when the session is
-   *  unknown. Each subscriber gets its own pushable. */
   subscribePromptSuggestion(id: string): { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null {
-    const s = this.sessions.get(id)
-    if (!s) return null
-    const sub = this.subscribePushableSet(s, s.promptSuggestionSubscribers, 'psug', 10)
-    return { iterable: sub.iterable, snapshot: s.lastPromptSuggestion, unsubscribe: sub.unsubscribe }
+    return this.broadcaster.subscribePromptSuggestion(id)
   }
 
-  /** AsyncIterable of full task-list snapshots for one session. Mirrors
-   *  subscribeContextUsage. The snapshot is ALWAYS present (empty array
-   *  when no tasks) so a freshly subscribed tab can initialize its
-   *  TasksPanel unconditionally. Returns null when the session is
-   *  unknown. */
   subscribeTasks(id: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null {
-    const s = this.sessions.get(id)
-    if (!s) return null
-    const sub = this.subscribePushableSet(s, s.taskSubscribers, 'tasks', 20)
-    return { iterable: sub.iterable, snapshot: Array.from(s.tasks.values()), unsubscribe: sub.unsubscribe }
+    return this.broadcaster.subscribeTasks(id)
   }
 
-  /** AsyncIterable of `git-status-changed` signal frames for one session.
-   *  Mirrors subscribeContextUsage; returns null when the session is
-   *  unknown so callers can short-circuit gracefully. */
   subscribeGitStatus(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
-    const s = this.sessions.get(id)
-    if (!s) return null
-    return this.subscribePushableSet(s, s.gitStatusSubscribers, 'git', 20)
+    return this.broadcaster.subscribeGitStatus(id)
   }
 
-  /** AsyncIterable of `message-consumed` / `messages-withdrawn` signal
-   *  frames for one session. Mirrors subscribeGitStatus. A `message-consumed`
-   *  frame carries the uuid + consumedAt of a user message the SDK has just
-   *  read off the input queue, so the client can flip its bubble from
-   *  "queued" to "consumed"; a `messages-withdrawn` frame lists the queued
-   *  turns an interrupt with cancelQueued removed. A small maxDepth is fine
-   *  for consumed frames: the durable truth lives on the message object's
-   *  `consumedAt` (replayed on reconnect), so a dropped live frame self-
-   *  heals on the next replay. Withdrawals have no such replay mirror — the
-   *  messages are GONE from the ring — so every new subscriber is seeded
-   *  with the recorded withdrawal window instead. */
   subscribeMessageStatus(id: string): {
     iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn>
     unsubscribe: () => void
   } | null {
-    const s = this.sessions.get(id)
-    if (!s) return null
-    return this.subscribePushableSet(s, s.messageStatusSubscribers, 'msgstat', 50, () =>
-      s.withdrawnUuids.length > 0
-        ? [{ kind: 'messages-withdrawn' as const, sessionId: id, uuids: [...s.withdrawnUuids] }]
-        : [],
-    )
+    return this.broadcaster.subscribeMessageStatus(id)
   }
 
-  /** AsyncIterable of recap-update events for one session. Returns the
-   *  current recap snapshot alongside the iterable so a freshly-attached
-   *  tab sees existing state without having to wait for the next
-   *  transition. Null when the session is unknown. */
   subscribeSessionRecap(id: string): {
     iterable: AsyncIterable<unknown>
     snapshot: SessionRecap | undefined
     unsubscribe: () => void
   } | null {
-    const s = this.sessions.get(id)
-    if (!s) return null
-    const sub = this.subscribePushableSet(s, s.recapSubscribers, 'recap', 20)
-    return {
-      iterable: sub.iterable,
-      snapshot: s.recap,
-      unsubscribe: sub.unsubscribe,
-    }
+    return this.broadcaster.subscribeSessionRecap(id)
   }
 
-  /** AsyncIterable of `session-cleared` signal frames for one session.
-   *  Mirrors subscribeGitStatus; returns null when the session is unknown.
-   *  Small maxDepth — a clear is a rare, idempotent event and the durable
-   *  truth (the truncated history ring) is replayed on reconnect, so a
-   *  dropped live frame self-heals. */
-
   subscribeCommandChanges(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
-    const s = this.sessions.get(id)
-    if (!s) return null
-    return this.subscribePushableSet(s, s.commandSubscribers, 'cmds', 20)
+    return this.broadcaster.subscribeCommandChanges(id)
   }
 
   subscribeHookRuns(id: string): {
@@ -4617,99 +4172,31 @@ export class SessionManager {
     snapshot: HookRunRecord[]
     unsubscribe: () => void
   } | null {
-    const s = this.sessions.get(id)
-    if (!s) return null
-    const sub = this.subscribePushableSet<HookRuntimeEvent>(s, s.hookRunSubscribers, 'hooks', 100)
-    return { iterable: sub.iterable, snapshot: s.hookRuns.slice(), unsubscribe: sub.unsubscribe }
+    return this.broadcaster.subscribeHookRuns(id)
   }
 
   recordHookRun(id: string, event: HookRuntimeEvent): void {
-    const s = this.sessions.get(id)
-    if (!s) return
-    const idx = s.hookRuns.findIndex((run) => run.id === event.run.id)
-    if (idx >= 0) s.hookRuns[idx] = event.run
-    else s.hookRuns.push(event.run)
-    while (s.hookRuns.length > 100) s.hookRuns.shift()
-    for (const sub of s.hookRunSubscribers) {
-      try { sub.push(event) } catch { /* subscriber dead - skip */ }
-    }
+    this.broadcaster.recordHookRun(id, event)
   }
 
   broadcastCommandsChanged(id: string, commands: unknown[]): void {
-    const s = this.sessions.get(id)
-    if (!s || s.commandSubscribers.size === 0) return
-    const payload = { commands }
-    for (const sub of s.commandSubscribers) {
-      try { sub.push(payload) } catch { /* subscriber dead - skip */ }
-    }
+    this.broadcaster.broadcastCommandsChanged(id, commands)
   }
+
   subscribeSessionCleared(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
-    const s = this.sessions.get(id)
-    if (!s) return null
-    return this.subscribePushableSet(s, s.sessionClearedSubscribers, 'cleared', 10)
+    return this.broadcaster.subscribeSessionCleared(id)
   }
 
   /** Broadcast a `session-cleared` signal to every subscriber of the given
-   *  session. No-op when the session is unknown or has no subscribers.
-   *  Signal-only (bare sessionId) — the client resets its transcript store
-   *  and drops its local cache in response. Called by the pump after a
-   *  `/clear`-triggered context reset is confirmed (and the history ring
-   *  has already been truncated). */
+   *  session. See SessionEventBroadcaster.broadcastSessionCleared. */
   broadcastSessionCleared(id: string): void {
-    const s = this.sessions.get(id)
-    if (!s) return
-    if (s.sessionClearedSubscribers.size === 0) return
-    const frame = { kind: 'session-cleared' as const, sessionId: id }
-    for (const sub of s.sessionClearedSubscribers) {
-      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
-    }
-  }
-
-
-  /** Shared implementation for subscribeContextUsage / subscribeGitStatus.
-   *  Creates a per-subscriber pushable, registers it in the given set, and
-   *  returns the iterable + cleanup function. */
-  private subscribePushableSet<T = unknown>(
-    s: Session,
-    set: Set<Pushable<T>>,
-    label: string,
-    maxSize: number,
-    /** Optional catch-up seed: frames pushed into the fresh pushable before
-     *  the subscriber has a chance to iterate, so state that exists only
-     *  server-side (no replay mirror) still reaches a freshly-attached
-     *  client. Empty = nothing. */
-    seed?: () => Iterable<T>,
-  ): { iterable: AsyncIterable<T>; unsubscribe: () => void } {
-    const pushable = createPushable<T>(`${label}-${s.id.slice(0, 8)}`, maxSize)
-    if (seed) {
-      for (const frame of seed()) pushable.push(frame)
-    }
-    set.add(pushable)
-    return {
-      iterable: pushable.iterable,
-      unsubscribe: () => {
-        set.delete(pushable)
-        pushable.end()
-      },
-    }
+    this.broadcaster.broadcastSessionCleared(id)
   }
 
   /** Broadcast a `git-status-changed` signal to every subscriber of the
-   *  given session. No-op when the session is unknown or has no
-   *  subscribers. The payload is bare (signal-only) — the client side
-   *  responds by re-fetching its useGitStatus endpoint. */
+   *  given session. See SessionEventBroadcaster.broadcastGitStatusChanged. */
   broadcastGitStatusChanged(id: string): void {
-    const s = this.sessions.get(id)
-    if (!s) return
-    // Drop any cached read-route status for this cwd so the refetch the
-    // clients are about to issue recomputes from ground truth (the cache
-    // only exists to coalesce that refetch herd, never to hide a change).
-    if (s.cwd) invalidateStatusCache(s.cwd)
-    if (s.gitStatusSubscribers.size === 0) return
-    const frame = { kind: 'git-status-changed' as const, sessionId: id }
-    for (const sub of s.gitStatusSubscribers) {
-      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
-    }
+    this.broadcaster.broadcastGitStatusChanged(id)
   }
 
   /** Consume hook wired into each session's input pushable (see spawn /
@@ -5288,59 +4775,106 @@ export class SessionManager {
     return effectiveProfileFor(profileId).name
   }
 
+  /** Fields present with IDENTICAL names/types/semantics on both `Session`
+   *  (the live in-memory state) and `SessionMeta` (the persisted-to-disk
+   *  projection) — confirmed by writeStore() copying this same field set
+   *  1:1 from Session to SessionMeta on every persist. `info()` and
+   *  `infoFromMeta()` project the SAME live-vs-persisted Session shape into
+   *  SessionInfo, so this base was previously duplicated verbatim between
+   *  them (including the `canRetryResume`/`profileName` derivations).
+   *  Centralizing it here means the two projections can only differ in the
+   *  fields that are GENUINELY live-only (fastModeState, compacting,
+   *  effortLevels, thinkingSupported, recovering, skillOverride, betas,
+   *  sandbox — dormant sessions have no live Query to report these from)
+   *  or computed differently (running/working/phase/recap/counts). */
+  private projectSharedSessionFields(x: {
+    id: string
+    provider?: string
+    createdAt: number
+    lastActivityAt: number
+    cwd?: string
+    model?: string
+    modelGroupId?: string
+    profileId?: string
+    permissionMode?: PermissionMode
+    title?: string
+    fastMode?: boolean
+    memory?: SessionMemorySettings
+    effortLevel?: EffortLevel
+    thinking?: ThinkingSetting
+    autoCompactWindow?: number
+    terminated: boolean
+    terminatedReason?: string
+    error?: string
+    lastTurnAt?: number
+    gitStartSha?: string
+    parentId?: string
+    mcpServerNames?: string[]
+    enabledPlugins?: string[]
+    showPinnedUserMessage?: boolean
+    autoRecap?: boolean
+    appToolsGit?: boolean
+    firstPartyTools?: Record<string, boolean | null>
+    slept?: boolean
+  }) {
+    return {
+      id: x.id,
+      provider: x.provider,
+      createdAt: x.createdAt,
+      lastActivityAt: x.lastActivityAt,
+      cwd: x.cwd,
+      model: x.model,
+      modelGroupId: x.modelGroupId,
+      profileId: x.profileId,
+      profileName: this.profileNameFor(x.profileId),
+      permissionMode: x.permissionMode,
+      title: x.title,
+      fastMode: x.fastMode,
+      memory: x.memory,
+      effortLevel: x.effortLevel,
+      thinking: x.thinking,
+      autoCompactWindow: x.autoCompactWindow,
+      terminated: x.terminated,
+      terminatedReason: x.terminatedReason,
+      canRetryResume: x.terminated && isTransientTerminatedReason(x.terminatedReason),
+      error: x.error,
+      lastTurnAt: x.lastTurnAt,
+      gitStartSha: x.gitStartSha,
+      parentId: x.parentId,
+      mcpServerNames: x.mcpServerNames,
+      enabledPlugins: x.enabledPlugins,
+      showPinnedUserMessage: x.showPinnedUserMessage,
+      autoRecap: x.autoRecap,
+      appToolsGit: x.appToolsGit,
+      firstPartyTools: x.firstPartyTools,
+      slept: x.slept,
+    }
+  }
+
   private info(s: Session): SessionInfo {
     const isWorking = s.running && s.pendingTurns > 0
     return {
-      id: s.id,
-      provider: s.provider,
-      createdAt: s.createdAt,
-      lastActivityAt: s.lastActivityAt,
+      ...this.projectSharedSessionFields(s),
       subscribers: s.subscribers.size,
       messageCount: s.history.length + s.subagentHistory.length,
-      cwd: s.cwd,
-      model: s.model,
-      modelGroupId: s.modelGroupId,
-      profileId: s.profileId,
-      profileName: this.profileNameFor(s.profileId),
-      permissionMode: s.permissionMode,
-      title: s.title,
       betas: s.betas,
-      fastMode: s.fastMode,
-      memory: s.memory,
       sandbox: s.sandbox,
       fastModeState: s.fastModeState,
       compacting: s.compacting,
-      effortLevel: s.effortLevel,
       effortLevels: s.effortLevels,
-      thinking: s.thinking,
       thinkingSupported: s.thinkingSupported,
-      autoCompactWindow: s.autoCompactWindow,
       running: s.running,
       recovering: s.recovering,
-      terminated: s.terminated,
-      terminatedReason: s.terminatedReason,
-      canRetryResume: s.terminated && isTransientTerminatedReason(s.terminatedReason),
-      error: s.error,
       working: isWorking,
       workingSince: isWorking ? s.workingSince : undefined,
       // Background (async) subagents still in flight. The parent turn may
       // have completed (working=false) while these keep running; the sidebar
       // uses the count to show a 'waiting' state instead of plain 'live'.
-      backgroundSubagentCount: this.backgroundWatchers.get(s.id)?.size ?? 0,
-      lastTurnAt: s.lastTurnAt,
-      gitStartSha: s.gitStartSha,
+      backgroundSubagentCount: this.backgroundWatchers.count(s.id),
       pendingPermissionCount: s.pending.size,
       phase: this.phaseOf(s),
       recap: s.recap,
-      parentId: s.parentId,
-      mcpServerNames: s.mcpServerNames,
-      enabledPlugins: s.enabledPlugins,
       skillOverride: s.skillOverride,
-      showPinnedUserMessage: s.showPinnedUserMessage,
-      autoRecap: s.autoRecap,
-      appToolsGit: s.appToolsGit,
-      firstPartyTools: s.firstPartyTools,
-      slept: s.slept,
     }
   }
 
@@ -5361,7 +4895,7 @@ export class SessionManager {
     if (s.pendingTurns > 0) return 'working'
     if (s.handle.queueDepth > 0) return 'working'
     if (s.pending.size > 0) return 'working'
-    if ((this.backgroundWatchers.get(s.id)?.size ?? 0) > 0) return 'working'
+    if (this.backgroundWatchers.count(s.id) > 0) return 'working'
     return 'idle'
   }
 
@@ -5370,37 +4904,17 @@ export class SessionManager {
    *  known value from before the Query was unloaded. */
   private infoFromMeta(meta: SessionMeta): SessionInfo {
     return {
-      id: meta.id,
-      provider: meta.provider ?? 'claude',
-      createdAt: meta.createdAt,
-      lastActivityAt: meta.lastActivityAt,
+      ...this.projectSharedSessionFields({ ...meta, provider: meta.provider ?? 'claude' }),
       subscribers: 0,
       messageCount: meta.messageCount,
-      cwd: meta.cwd,
-      model: meta.model,
-      modelGroupId: meta.modelGroupId,
-      profileId: meta.profileId,
-      profileName: this.profileNameFor(meta.profileId),
-      permissionMode: meta.permissionMode,
-      title: meta.title,
-      fastMode: meta.fastMode,
-      memory: meta.memory,
-      effortLevel: meta.effortLevel,
-      thinking: meta.thinking,
-      autoCompactWindow: meta.autoCompactWindow,
       // Dormant: no live Query, so the SDK isn't reporting a runtime state.
-      // Leave fastModeState undefined — the UI hides the chip until resume.
+      // Leave betas/sandbox/fastModeState/etc undefined — the UI hides
+      // those chips until resume re-populates them from the live Session.
       running: false,
-      terminated: meta.terminated,
-      terminatedReason: meta.terminatedReason,
-      canRetryResume: meta.terminated && isTransientTerminatedReason(meta.terminatedReason),
-      error: meta.error,
       working: false,
       workingSince: undefined,
       // A dormant session has no live Query, so no subagent watchers.
       backgroundSubagentCount: undefined,
-      lastTurnAt: meta.lastTurnAt,
-      gitStartSha: meta.gitStartSha,
       // A dormant Query holds no canUseTool callbacks; pending is always 0.
       pendingPermissionCount: 0,
       // Terminated stays terminated; everything else is dormant. Recap
@@ -5409,14 +4923,9 @@ export class SessionManager {
       // and the recapManager rebuilds it.
       phase: meta.terminated ? 'terminated' : 'dormant',
       recap: undefined,
-      parentId: meta.parentId,
-      mcpServerNames: meta.mcpServerNames,
-      enabledPlugins: meta.enabledPlugins,
-      showPinnedUserMessage: meta.showPinnedUserMessage,
-      autoRecap: meta.autoRecap,
-      appToolsGit: meta.appToolsGit,
-      firstPartyTools: meta.firstPartyTools,
-      slept: meta.slept,
+      // Overrides are RAM-only (live Session field, never persisted to
+      // SessionMeta) — a dormant projection always shows "inherit".
+      skillOverride: undefined,
     }
   }
 
@@ -5515,8 +5024,9 @@ export class SessionManager {
    *  for completion (the CLI doesn't reliably emit task_notification for
    *  Agent-launched background subagents) and synthesizes a
    *  system/task_notification frame when it settles. Stopped on unload so a
-   *  watcher can't fire into a dead session. */
-  private backgroundWatchers = new Map<string, Map<string, () => void>>()
+   *  watcher can't fire into a dead session. Initialized in the constructor
+   *  (needs `this.sessions` to exist first for the isLive dep). */
+  private backgroundWatchers!: BackgroundWatcherRegistry
 
   /** Per-session in-flight resume() promises. resume() awaits disk/transcript
    *  probes before spawning, so two racing /resume calls (parallel browser
@@ -5601,6 +5111,67 @@ export class SessionManager {
     return true
   }
 
+  /** Re-apply the globally configured MCP servers onto a spawn/resume Options
+   *  object. Refreshes OAuth tokens for any configured remote servers BEFORE
+   *  snapshotting the config so the SDK receives fresh access tokens. No-op
+   *  when no global servers are configured. This exact block was previously
+   *  duplicated verbatim across doResume/respawnFresh/fork/clear/
+   *  buildResumeOpts — centralized here so none of the five re-spawn paths
+   *  can drift on MCP re-application semantics. */
+  private async applyGlobalMcpServers<T extends { mcpServers?: Options['mcpServers'] }>(opts: T): Promise<T> {
+    const allGlobalMcpNames = Object.keys(this.mcpStore?.toSdkConfig() ?? {})
+    if (allGlobalMcpNames.length > 0) {
+      await this.mcpStore?.refreshOAuthTokens(allGlobalMcpNames)
+      opts.mcpServers = this.mcpStore?.toSdkConfig()
+    }
+    return opts
+  }
+
+  /** Base Options fields shared by every "spawn a Query carrying forward
+   *  this session's settings" builder: doResume, respawnFresh, fork, clear.
+   *  Each call site still explicitly sets its own purpose-specific extras on
+   *  top of this (agent, `resume`/`forkSession`/`resumeSessionAt`, `memory`/
+   *  `sandbox`, the Side Chat systemPrompt) — which of those apply genuinely
+   *  differs per path (e.g. respawnFresh/clear never carry `agent`; only
+   *  fork/clear carry `memory`/`sandbox`), so folding them in here would
+   *  hide at each call site which fields it actually carries forward.
+   *  Centralizing just the truly-identical base fields removes the ~10-line
+   *  duplicate block from each of the four builders without obscuring the
+   *  real per-path differences. NOT used by buildResumeOpts below, which
+   *  builds a narrower `providerExtras.sdkOptions` payload for a different
+   *  sub-system (respawnInPlace calls provider.createSession() directly,
+   *  bypassing spawn() and reading model/modelGroupId/enabledPlugins/etc.
+   *  straight off the live Session instead of through this Options object). */
+  private baseSpawnOptions(source: {
+    provider?: string
+    cwd?: string
+    model?: string
+    modelGroupId?: string
+    permissionMode?: PermissionMode
+    title?: string
+    effortLevel?: EffortLevel
+    thinking?: ThinkingSetting
+    autoCompactWindow?: number
+    betas?: string[]
+    hooks?: SessionHooksConfig
+    enabledPlugins?: string[]
+  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number } {
+    return {
+      provider: source.provider,
+      cwd: source.cwd,
+      model: source.model,
+      modelGroupId: source.modelGroupId,
+      permissionMode: source.permissionMode,
+      title: source.title,
+      effort: source.effortLevel,
+      thinking: source.thinking,
+      autoCompactWindow: source.autoCompactWindow,
+      betas: source.betas as Options['betas'],
+      settings: source.hooks ? ({ hooks: toSdkHooksSettings(source.hooks) } as Settings) : undefined,
+      enabledPlugins: source.enabledPlugins,
+    }
+  }
+
   /** Build the SDK resume Options shared by autoResume (clean idle-exit)
    *  and crash-recovery Step 1 (in-place resume after a crash). Centralized
    *  so the two re-spawn paths can't drift on resume semantics — MCP
@@ -5632,11 +5203,7 @@ export class SessionManager {
       }
     }
     // Re-apply globally configured MCP servers (same as resume/fork).
-    const allGlobalMcpNames = Object.keys(this.mcpStore?.toSdkConfig() ?? {})
-    if (allGlobalMcpNames.length > 0) {
-      await this.mcpStore?.refreshOAuthTokens(allGlobalMcpNames)
-      resumeOpts.mcpServers = this.mcpStore?.toSdkConfig()
-    }
+    await this.applyGlobalMcpServers(resumeOpts)
     if (session.canUseTool) resumeOpts.canUseTool = session.canUseTool
     // Re-apply the elicitation callback too — without it the resumed Query
     // auto-declines every MCP elicitation (OAuth auth prompts included).

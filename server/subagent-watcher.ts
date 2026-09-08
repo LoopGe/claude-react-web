@@ -29,7 +29,12 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { randomUUID } from 'node:crypto'
 import { createLogger } from './log.js'
+import type { Session, GlobalSessionEvent, SessionInfo } from './session-types.js'
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { pushBounded, stampReceivedAt } from './history-utils.js'
+import { isTerminalTaskStatus } from '../shared/tasks.js'
 
 const log = createLogger('subagent-watcher')
 
@@ -276,5 +281,222 @@ export function watchBackgroundSubagent(opts: WatchOptions): () => void {
   return () => {
     done = true
     clearInterval(timer)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BackgroundWatcherRegistry — per-session orchestration of the pollers above.
+//
+// Extracted from session-manager.ts for modularity: the polling itself
+// (watchBackgroundSubagent) already lived here, but the Map<sessionId,
+// Map<toolUseId, stop>> bookkeeping, TaskRecord seeding, and synthesized
+// task_notification broadcast were still inline SessionManager methods. This
+// class owns that orchestration; SessionManager keeps thin proxy methods
+// (startBackgroundSubagentWatcher / cancelBackgroundWatcher /
+// stopBackgroundSubagentWatchers / backgroundSubagentCount) so callers see
+// no change.
+//
+// `applyTaskEvent` is injected (not imported) because it lives in
+// session-pump.ts, which itself imports from this module (parseAckAgentId) —
+// a direct import here would create a cycle.
+
+export interface BackgroundWatcherRegistryDeps {
+  /** Fold a synthesized system/task_notification frame into the session's
+   *  task-state cache (session-pump.ts's applyTaskEvent). Injected to avoid
+   *  a circular import (session-pump.ts imports from this module). */
+  applyTaskEvent(session: Session, msg: SDKMessage): void
+  /** Broadcast a global session-info update (sidebar status dot). */
+  broadcastGlobal(ev: GlobalSessionEvent): void
+  /** Project a live session into its public SessionInfo shape. */
+  info(s: Session): SessionInfo
+  /** History ring cap, used when pushing the synthesized frame into
+   *  session.history (mirrors every other history-ring write). */
+  historyCap: number
+  /** Live sessions map — used to detect a session unloaded between watcher
+   *  dispatch and completion, so a late completion never broadcasts into a
+   *  dead session. */
+  isLive(sessionId: string): boolean
+}
+
+export class BackgroundWatcherRegistry {
+  /** sessionId -> toolUseId -> stop(). One watcher per (session, toolUseId);
+   *  a duplicate launch ack (replay, re-broadcast) must not stack a second
+   *  poller on the same transcript. */
+  private watchers = new Map<string, Map<string, () => void>>()
+
+  constructor(private deps: BackgroundWatcherRegistryDeps) {}
+
+  /** Number of background subagents currently being watched for a session.
+   *  Feeds `SessionInfo.backgroundSubagentCount` (sidebar 'waiting' dot) and
+   *  `phaseOf`'s working-vs-idle check. */
+  count(sessionId: string): number {
+    return this.watchers.get(sessionId)?.size ?? 0
+  }
+
+  /** Begin polling a background subagent's own transcript for completion.
+   *  Called by the pump when it sees an async launch ack. On completion,
+   *  synthesizes a `system`/`task_notification` frame (the CLI doesn't emit
+   *  one reliably) and feeds it back through the normal broadcast path so
+   *  the client reducer's completion branch flips the `background` record to
+   *  `done` with the subagent's real output. */
+  start(session: Session, toolUseId: string, agentId: string): void {
+    const sessionId = session.id
+    // One watcher per (session, toolUseId). A duplicate launch ack (replay,
+    // re-broadcast) must not stack a second poller on the same transcript.
+    let perSession = this.watchers.get(sessionId)
+    if (!perSession) {
+      perSession = new Map()
+      this.watchers.set(sessionId, perSession)
+    }
+    if (perSession.has(toolUseId)) return
+    if (!session.cwd) return // without a cwd the subagent transcript path can't be computed
+    const stop = watchBackgroundSubagent({
+      cwd: session.cwd,
+      sessionId,
+      agentId,
+      toolUseId,
+      onCompleted: (completion) => {
+        // Remove the watcher entry before broadcasting so the unload guard
+        // can't race a concurrent stop. onCompleted fires on EVERY resolution
+        // path (real completion / staleness / maxMs backstop), so the entry is
+        // always cleared here — a later re-arm (e.g. an autoResume re-seeing
+        // the launch ack) is never blocked by a stale entry.
+        perSession!.delete(toolUseId)
+        // The sidebar reads `backgroundSubagentCount` for its status dot;
+        // broadcast the updated info so it flips out of 'waiting' the moment
+        // the subagent settles (skip when the session was unloaded mid-poll).
+        if (this.deps.isLive(session.id)) {
+          this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(session) })
+        }
+        this.broadcastSynthesizedTaskNotification(session, toolUseId, agentId, completion)
+      },
+    })
+    perSession.set(toolUseId, stop)
+    // Seed a TaskRecord for this watcher-tracked subagent. CLI versions that
+    // emit no task_* frames for background Agent dispatches (the watcher's
+    // reason to exist) would otherwise never surface in session.tasks /
+    // the TasksPanel. A real task_started arriving later overwrites the seed
+    // via applyTaskEvent's upsert; the watcher's own synthesized completion
+    // settles it otherwise.
+    const now = Date.now()
+    const seeded = session.tasks.get(agentId)
+    if (!seeded) {
+      session.tasks.set(agentId, {
+        taskId: agentId,
+        toolUseId,
+        description: 'Background subagent',
+        taskType: 'subagent',
+        status: 'running',
+        isBackgrounded: true,
+        startedAt: now,
+        updatedAt: now,
+      })
+      const snapshot = Array.from(session.tasks.values())
+      for (const sub of session.taskSubscribers) {
+        try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
+      }
+    }
+    // A new background subagent just launched — broadcast the updated count
+    // so the sidebar can switch this session away from a plain 'live' dot
+    // (the parent turn is still running right now; the `result` frame that
+    // ends it re-broadcasts info via persist(), carrying the same count).
+    if (this.deps.isLive(session.id)) {
+      this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(session) })
+    }
+  }
+
+  /** Cancel the subagent watcher for a (session, toolUseId) when a REAL SDK
+   *  task_notification arrives for the same tool call — the true completion
+   *  already carries the result, so the watcher's synthesized notification
+   *  would be a duplicate (and its maxMs backstop could later flip a
+   *  legitimately-done record back to 'stopped'). No-op when no watcher is
+   *  armed. `session` may be undefined (the pump's caller looks it up by id
+   *  and may find it already unloaded) — the stop() still fires, but task-
+   *  cleanup and the re-broadcast are skipped, mirroring the pre-extraction
+   *  behaviour. */
+  cancel(sessionId: string, toolUseId: string, session: Session | undefined): void {
+    const perSession = this.watchers.get(sessionId)
+    const stop = perSession?.get(toolUseId)
+    if (!stop) return
+    try { stop() } catch { /* ignore */ }
+    perSession!.delete(toolUseId)
+    // The pump folds the REAL notification (keyed by its task_id) BEFORE
+    // calling this. Nothing ties that task_id to the agentId the launch ack
+    // carried, so when they differ the watcher's seed record is a duplicate
+    // still stuck on 'running' — the real record under the frame's task_id is
+    // the authoritative one, so drop the seed (a matched task_id means the
+    // fold already settled the seed itself and it is left intact).
+    if (session) {
+      let removed = false
+      for (const [taskId, rec] of session.tasks) {
+        if (rec.toolUseId === toolUseId && !isTerminalTaskStatus(rec.status)) {
+          session.tasks.delete(taskId)
+          removed = true
+        }
+      }
+      if (removed) {
+        const snapshot = Array.from(session.tasks.values())
+        for (const sub of session.taskSubscribers) {
+          try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
+        }
+      }
+      // The watcher count feeds the sidebar's 'waiting' dot; re-broadcast so
+      // it reflects the cancelled watcher immediately.
+      this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(session) })
+    }
+    log.info(`[session ${sessionId}] real task_notification for toolUseId=${toolUseId} — watcher cancelled`)
+  }
+
+  /** Synthesize a `system`/`task_notification` frame for a completed
+   *  background subagent and feed it through the SAME path real messages
+   *  take (history ring + live subscribers), so it survives replay and
+   *  reaches the client reducer's completion branch. The reducer matches by
+   *  `tool_use_id` and flips the `background` record to `done` (or
+   *  `interrupted` for a non-completed status), capturing the subagent's
+   *  final text as the merged result. */
+  private broadcastSynthesizedTaskNotification(
+    session: Session,
+    toolUseId: string,
+    agentId: string,
+    completion: SubagentCompletion,
+  ): void {
+    // Drop the watcher if the session was unloaded between dispatch and
+    // completion — no subscribers to push to, and persisting would race
+    // unload's terminal write.
+    if (!this.deps.isLive(session.id)) return
+    const msg: SDKMessage = {
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: agentId,
+      tool_use_id: toolUseId,
+      status: completion.status,
+      summary: completion.summary,
+      output_file: '',
+      uuid: randomUUID(),
+      session_id: session.id,
+      receivedAt: Date.now(),
+    } as unknown as SDKMessage
+    stampReceivedAt(msg)
+    pushBounded(session.history, msg, this.deps.historyCap)
+    for (const sub of session.subscribers.values()) {
+      try { sub.push(msg) } catch { /* subscriber dead — skip */ }
+    }
+    // Fold the same notification into the task-state cache so the seeded
+    // watcher record settles to a terminal status in the TasksPanel. The
+    // synthesized frame never passes through the pump (it bypasses the SDK
+    // stream), so the normal fold path doesn't see it — fold it here.
+    this.deps.applyTaskEvent(session, msg)
+  }
+
+  /** Stop all background-subagent watchers for a session (called on unload
+   *  so a late completion can't broadcast into a dead session). */
+  stopAll(sessionId: string): void {
+    const perSession = this.watchers.get(sessionId)
+    if (!perSession) return
+    for (const stop of perSession.values()) {
+      try { stop() } catch { /* ignore */ }
+    }
+    perSession.clear()
+    this.watchers.delete(sessionId)
   }
 }
