@@ -65,8 +65,7 @@ describe('ClaudeProvider.createSession sandbox', () => {
 
     const options = queryMock.mock.calls[0]?.[0]?.options as { hooks?: unknown }
     expect(options?.hooks).toBeDefined()
-    expect((options?.hooks as Record<string, unknown>).SessionEnd).toBeDefined()
-    expect((options?.hooks as Record<string, unknown>).Notification).toBeDefined()
+    expect((options?.hooks as Record<string, unknown>).Stop).toBeDefined()
   })
 
   it('does not inject hooks when inProcessHookForward is absent', async () => {

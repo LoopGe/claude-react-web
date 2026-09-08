@@ -28,40 +28,19 @@ function defensiveHook(fn: (input: unknown) => void): (input: unknown, toolUseID
   }
 }
 
-function buildSessionEnd(forward?: InProcessHookForward): (input: unknown) => void {
+function buildStop(forward?: InProcessHookForward): (input: unknown) => void {
   return (input) => {
-    const obj = (input ?? {}) as { session_id?: unknown; reason?: unknown; transcript_path?: unknown }
+    const obj = (input ?? {}) as { session_id?: unknown; transcript_path?: unknown; reason?: unknown }
     if (typeof obj.session_id !== 'string' || !forward) return
     const detail: Record<string, unknown> = {}
-    if (typeof obj.reason === 'string') detail.reason = obj.reason
     if (typeof obj.transcript_path === 'string') detail.transcript_path = obj.transcript_path
+    if (typeof obj.reason === 'string') detail.reason = obj.reason
     const id = randomUUID()
     const run = {
       id,
       hookId: id,
-      hookName: 'inproc:SessionEnd',
-      event: 'SessionEnd',
-      status: 'success' as const,
-      startedAt: Date.now(),
-      updatedAt: Date.now(),
-      ...(Object.keys(detail).length > 0 ? { hookInput: capHookInput(JSON.stringify(detail)) } : {}),
-    }
-    forward(obj.session_id, { kind: 'completed', run })
-  }
-}
-
-function buildNotification(forward?: InProcessHookForward): (input: unknown) => void {
-  return (input) => {
-    const obj = (input ?? {}) as { session_id?: unknown; message?: unknown }
-    if (typeof obj.session_id !== 'string' || !forward) return
-    const detail: Record<string, unknown> = {}
-    if (typeof obj.message === 'string') detail.message = obj.message
-    const id = randomUUID()
-    const run = {
-      id,
-      hookId: id,
-      hookName: 'inproc:Notification',
-      event: 'Notification',
+      hookName: 'inproc:Stop',
+      event: 'Stop',
       status: 'success' as const,
       startedAt: Date.now(),
       updatedAt: Date.now(),
@@ -72,10 +51,11 @@ function buildNotification(forward?: InProcessHookForward): (input: unknown) => 
 }
 
 /** Build the in-process read+react hooks object the provider injects into
- *  `Options.hooks`. Tool governance is intentionally absent (probe-disproven). */
+ *  `Options.hooks`. Only the `Stop` event carries a `transcript_path` in this
+ *  SDK/CLI/Ark stack (probe-verified); SessionEnd/Notification do not fire.
+ *  Tool governance is intentionally absent (probe-disproven). */
 export function buildInProcessHooks(forward?: InProcessHookForward): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
   return {
-    SessionEnd: [{ hooks: [defensiveHook(buildSessionEnd(forward))] }],
-    Notification: [{ hooks: [defensiveHook(buildNotification(forward))] }],
+    Stop: [{ hooks: [defensiveHook(buildStop(forward))] }],
   } as Partial<Record<HookEvent, HookCallbackMatcher[]>>
 }
