@@ -25,10 +25,9 @@
 // status badge from running → success/error when the matching tool_result
 // lands. Without it, the badge would be permanently stuck on "running".
 //
-// The concrete per-tool views live under ./tool-views/ (grouped by family:
-// shared infra, mode-transition markers, PlanCard, QuestionCard, the shared
-// diff-rendering engine, Edit/Write/NotebookEdit, Bash/PowerShell, the
-// lightweight search-family views, and the agent/task-ecosystem views).
+// The concrete per-tool views live under ./tool-views/ — one file per view,
+// except EditToolView/WriteToolView/NotebookEditToolView (EditWriteViews.tsx,
+// grouped because they share the diff-rendering engine in diff-shared.tsx).
 // New tools: add the view under ./tool-views/, then add an entry to
 // TOOL_VIEWS below.
 
@@ -51,8 +50,16 @@ import { PlanCard } from './tool-views/PlanCard'
 import { QuestionCard } from './tool-views/QuestionCard'
 import { EditToolView, WriteToolView, NotebookEditToolView } from './tool-views/EditWriteViews'
 import { BashToolView } from './tool-views/BashToolView'
-import { ReadToolView, GrepToolView, GlobToolView, WebFetchToolView, WebSearchToolView } from './tool-views/SearchToolViews'
-import { SkillToolView, SendMessageToolView, TaskOutputToolView, TaskMutationView, TodoWriteView } from './tool-views/AgentToolViews'
+import { ReadToolView } from './tool-views/ReadToolView'
+import { GrepToolView } from './tool-views/GrepToolView'
+import { GlobToolView } from './tool-views/GlobToolView'
+import { WebFetchToolView } from './tool-views/WebFetchToolView'
+import { WebSearchToolView } from './tool-views/WebSearchToolView'
+import { SkillToolView } from './tool-views/SkillToolView'
+import { SendMessageToolView } from './tool-views/SendMessageToolView'
+import { TaskOutputToolView } from './tool-views/TaskOutputToolView'
+import { TaskMutationView } from './tool-views/TaskMutationView'
+import { TodoWriteView } from './tool-views/TodoWriteView'
 
 type ToolInputView = ComponentType<ToolViewProps>
 
