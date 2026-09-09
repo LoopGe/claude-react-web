@@ -17,6 +17,21 @@ import { MAX_PREVIEW_LINES } from './shared'
 // search indexer (extract.ts) so the del/add lines counted as "the modifications"
 // are exactly the ones rendered here.
 
+/** Count added/deleted lines for an edit's old→new text using the SAME
+ *  line-level LCS the renderer uses, so a collapsed "view changes" stat
+ *  (+N −M) always matches the diff shown when expanded. */
+export function countDiffDelta(oldText: string, newText: string): { add: number; del: number } {
+  const oldLines = oldText === '' ? [] : oldText.split('\n')
+  const newLines = newText === '' ? [] : newText.split('\n')
+  let add = 0
+  let del = 0
+  for (const op of lineDiff(oldLines, newLines)) {
+    if (op.type === 'add') add++
+    else if (op.type === 'del') del++
+  }
+  return { add, del }
+}
+
 /** Pure helpers that locate the active search match within a diff. Given a
  *  sequence of text segments (del/add lines, or per-edit chunks) in render
  *  order and a target match index (0-based across all segments), return which

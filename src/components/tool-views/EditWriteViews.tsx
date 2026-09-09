@@ -7,13 +7,14 @@
 import { memo, useMemo } from 'react'
 import { useSessionCwd } from '../../hooks/useSessionCwd'
 import { useEditDiffInfo, type EditAnchor } from '../../hooks/useEditDiffInfo'
+import { AnimatedDetails } from '../AnimatedCollapse'
 import { ToolCard } from '../ToolCard'
 import { IconAlertCircle, IconFileCode, IconFileText, IconNotebook } from '../icons/ToolIcons'
 import { formatJson } from '../../utils/format'
 import { extractToolUseDiffText } from '../../search'
 import type { ToolViewProps } from './shared'
 import { FilePathTitle } from './shared'
-import { DiffChunk, ExpandableDiff, locateActiveSegment } from './diff-shared'
+import { countDiffDelta, DiffChunk, ExpandableDiff, locateActiveSegment } from './diff-shared'
 
 // ---------------------------------------------------------------------------
 // Edit / MultiEdit
@@ -81,6 +82,19 @@ export const EditToolView = memo(function EditToolView({ input, toolUseId, searc
     [editList, qq, diffActiveMatchIdx],
   )
 
+  // Aggregate +N −M across every edit so the collapsed summary matches the
+  // diff that expands. Memoised on editList (already stable per input).
+  const delta = useMemo(() => {
+    let add = 0
+    let del = 0
+    for (const e of editList) {
+      const d = countDiffDelta(e.old, e.new)
+      add += d.add
+      del += d.del
+    }
+    return { add, del }
+  }, [editList])
+
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>
   }
@@ -108,6 +122,10 @@ export const EditToolView = memo(function EditToolView({ input, toolUseId, searc
     <span className="tool-chip">{edits.length} edits</span>
   ) : null
 
+  // Default-collapsed: the card header (file path) plus a quiet +N −M stat
+  // row is the resting state; click to unfold the diff. Searching force-
+  // expands so highlights stay reachable (same rule as ToolResultDetails).
+  const hasSearch = Boolean(searchQuery?.trim())
   return (
     <ToolCard
       icon={<IconFileCode />}
@@ -120,20 +138,35 @@ export const EditToolView = memo(function EditToolView({ input, toolUseId, searc
       searchQuery={searchQuery}
       activeMatchIdx={activeMatchIdx}
     >
-      <div className="diff-block-inner">
-        {editList.map((e, i) => (
-          <DiffChunk
-            key={i}
-            oldText={e.old}
-            newText={e.new}
-            filePath={filePath ?? undefined}
-            label={editList.length > 1 ? `edit ${i + 1}` : undefined}
-            info={diffInfos[i]}
-            searchQuery={searchQuery}
-            activeMatchIdx={i === activeEdit?.segment ? activeEdit.local : undefined}
-          />
-        ))}
-      </div>
+      <AnimatedDetails
+        className="edit-diff-details"
+        summaryClassName="edit-diff-summary"
+        open={hasSearch ? true : undefined}
+        summary={(
+          <span className="edit-diff-stats">
+            <span className="diff-stat diff-stat-del">−{delta.del}</span>
+            <span className="diff-stat diff-stat-add">+{delta.add}</span>
+            <span className="diff-stat-hint">
+              {delta.del + delta.add > 0 ? 'view changes' : 'no change'}
+            </span>
+          </span>
+        )}
+      >
+        <div className="diff-block-inner">
+          {editList.map((e, i) => (
+            <DiffChunk
+              key={i}
+              oldText={e.old}
+              newText={e.new}
+              filePath={filePath ?? undefined}
+              label={editList.length > 1 ? `edit ${i + 1}` : undefined}
+              info={diffInfos[i]}
+              searchQuery={searchQuery}
+              activeMatchIdx={i === activeEdit?.segment ? activeEdit.local : undefined}
+            />
+          ))}
+        </div>
+      </AnimatedDetails>
     </ToolCard>
   )
 })

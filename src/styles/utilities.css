@@ -723,6 +723,50 @@
   white-space: pre-wrap;
 }
 
+/* Edit / MultiEdit diff card — collapsed by default to a +N −M stat row.
+ * Header (file path) stays visible; the body unfolds on click. */
+.edit-diff-details {
+  border-top: 1px solid var(--border);
+}
+.edit-diff-summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.edit-diff-summary::-webkit-details-marker {
+  display: none;
+}
+.edit-diff-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.edit-diff-summary:hover .edit-diff-stats {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.diff-stat {
+  font-weight: 600;
+  min-width: 0;
+}
+.diff-stat-del {
+  color: var(--danger);
+}
+.diff-stat-add {
+  color: var(--ok);
+}
+.diff-stat-hint {
+  margin-left: auto;
+  opacity: 0.7;
+}
+.edit-diff-details[data-state="open"] > .edit-diff-summary > .edit-diff-stats {
+  border-bottom: 1px solid var(--border);
+}
+
 /* SendMessage — inter-agent message card.
  *   header  : "→ recipient" (mono pill) + optional summary chip
  *   body    : collapsible <details> — one-line preview → full Markdown
