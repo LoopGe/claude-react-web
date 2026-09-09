@@ -603,8 +603,14 @@ export function useTranscriptScroll({
       if (!scroller) return
       if (!shouldFollowRef.current || scrollAnimatingRef.current) return
       const contentH = contentHeightOf(scroller)
-      if (contentH <= lastContentHeight) return
+      if (Math.abs(contentH - lastContentHeight) < 1) return
       lastContentHeight = contentH
+      // Re-pin on shrink as well as growth while following. A group folding
+      // ABOVE the viewport reduces scrollHeight; with the viewport pinned to
+      // the old bottom, no scroll event fires to correct it (the browser only
+      // clamps when scrollTop exceeds the new max), so growth-only tracking
+      // would leave the viewport short of the new bottom and the appended
+      // boundary/new message below it un-scrolled-to.
       pinToBottom(scroller)
     })
     const attach = () => {
@@ -689,7 +695,14 @@ export function useTranscriptScroll({
       // guard when it lands (or aborts on user scroll-up).
       if (scrollAnimatingRef.current) return
       const isScrollingUp = el.scrollTop < prevScrollTop
-      syncBottomGeometry(el, isScrollingUp ? 'disable-now' : 'preserve')
+      // A genuine user push-away leaves the viewport OFF the bottom (dist>ε).
+      // But an animated group FOLD collapses content above and the browser
+      // clamps scrollTop DOWN to the shrinking bottom — that decreasing
+      // scrollTop keeps dist ≈ 0 (still glued to the current bottom), so it
+      // must not be read as a user leave, or following turns OFF exactly when
+      // a boundary/new message below needs to be followed.
+      const isUserLeave = isScrollingUp && getDistanceFromBottom(el) > BOTTOM_EPSILON_PX
+      syncBottomGeometry(el, isUserLeave ? 'disable-now' : 'preserve')
     }
     syncBottomGeometry(el, 'confirm-away')
     el.addEventListener('scroll', handler, { passive: true })

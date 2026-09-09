@@ -24,6 +24,10 @@ interface AnimatedCollapseProps {
   appear?: boolean
   durationMs?: number
   onExitComplete?: () => void
+  /** id applied to the animated content box, so a sibling control can target
+   *  it via aria-controls (the body stays mounted even when folded when
+   *  unmountOnExit=false, so the target is always reachable). */
+  id?: string
   /** Animate intrinsic content-size changes while open (default: snap).
    *  When true, a ResizeObserver-driven height change tweens instead of
    *  jumping, so e.g. a task row appending to an open TaskList grows the
@@ -41,6 +45,7 @@ export function AnimatedCollapse({
   appear = false,
   durationMs = DEFAULT_DURATION_MS,
   onExitComplete,
+  id,
   animateResize = false,
 }: AnimatedCollapseProps) {
   const [mounted, setMounted] = useState(open || !unmountOnExit)
@@ -249,7 +254,11 @@ export function AnimatedCollapse({
       className={`animated-collapse${className ? ` ${className}` : ''}`}
       aria-hidden={!open}
     >
-      <div ref={contentRef} className={`animated-collapse-content${contentClassName ? ` ${contentClassName}` : ''}`}>
+      <div
+        ref={contentRef}
+        id={id}
+        className={`animated-collapse-content${contentClassName ? ` ${contentClassName}` : ''}`}
+      >
         {children}
       </div>
     </div>

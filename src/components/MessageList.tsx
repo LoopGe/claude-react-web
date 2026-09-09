@@ -803,6 +803,11 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
             memberItemIndices={item.toolGroup.memberItemIndices}
             searchQuery={searchQuery}
             working={working}
+            // A group is closed the moment a non-foldable row follows it:
+            // nextItemTypeMap holds an entry for every folded row that is NOT
+            // the last one (consecutive eligible rows were folded into the
+            // same group), so its presence here means a boundary row landed.
+            closed={nextItemTypeMap.has(item.id)}
             activeMemberItemIndex={
               searchActiveMsgIdx != null &&
               searchActiveMsgIdx >= 0 &&

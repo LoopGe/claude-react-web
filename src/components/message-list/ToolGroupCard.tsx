@@ -10,7 +10,7 @@
 // Collapsed header still surfaces running / waiting / failed so a failure
 // or blocked turn is never hidden.
 
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState, useId, useRef } from 'react'
 import { AnimatedCollapse } from '../AnimatedCollapse'
 import { BlockView } from './blocks'
 import { usePlanStatusMap, useToolStatuses } from '../../hooks/usePlanStatus'
@@ -20,7 +20,6 @@ import {
   IconAlertCircle,
   IconChevronDown,
   IconChevronRight,
-  IconLayers,
   IconLoader,
   IconMessageQuestion,
 } from '../icons/ToolIcons'
@@ -38,6 +37,7 @@ export const ToolGroupCard = memo(function ToolGroupCard({
   activeMatchInItem,
   searchQuery,
   working,
+  closed = false,
 }: {
   members: SdkMessage[]
   memberItemIndices: number[]
@@ -46,11 +46,24 @@ export const ToolGroupCard = memo(function ToolGroupCard({
   searchQuery?: string
   /** Session turn-in-flight flag from MessageList. A group that was live
    *  stays expanded for the whole turn (tool gaps included); only after
-   *  the turn ends does the settle-hold collapse fire. */
+   *  the turn ends does the settle-hold collapse fire — UNLESS `closed` is
+   *  true (see below). */
   working?: boolean
+  /** True when a non-foldable row (assistant text / thinking / a user message
+   *  / AskUserQuestion) follows this group. The row model folds ALL
+   *  consecutive tool-only rows into one group, so once a boundary row lands
+   *  the group's membership is FINAL — future tool-only rows start a NEW
+   *  group. Under that signal a settled group folds mid-turn instead of
+   *  staying pinned open until the whole turn ends. Last row (nothing
+   *  follows) is `false`, so live growth is still held open. */
+  closed?: boolean
 }) {
   const toolStatuses = useToolStatuses()
   const planStatuses = usePlanStatusMap()
+
+  // Stable, page-unique id for the folded body, so the header button can point
+  // aria-controls at it (multiple group cards can coexist in one transcript).
+  const bodyId = useId()
 
   const toolBlocks = useMemo(
     () =>
@@ -70,13 +83,24 @@ export const ToolGroupCard = memo(function ToolGroupCard({
     [toolBlocks, searchQuery],
   )
   const live = summary.anyRunning || summary.anyPendingInteractive
-  // Latch: once this mount has seen the group live, keep it "participating"
-  // in the current turn even between sequential tools (result already
-  // landed, next tool_use not yet emitted). History mounts start false.
+  // Latch: once the group is seen live, keep it "participating" in the
+  // current turn even between sequential tools (result landed, next tool_use
+  // not yet emitted). History mounts start false.
+  //
+  // The latch must reset at a turn boundary: `wasLive` persists across lines
+  // of the SAME turn (gaps included), but if the user sends a NEW turn while
+  // the group is still the visible tail row, a stale latch would flash the
+  // previous turn's group back open. A working false→true transition starts a
+  // fresh turn — drop the latch and let `live` re-latch it if it participates.
   const [wasLive, setWasLive] = useState(live)
   useEffect(() => {
     if (live) setWasLive(true)
   }, [live])
+  const prevWorkingRef = useRef(working)
+  useEffect(() => {
+    if (working && !prevWorkingRef.current) setWasLive(false)
+    prevWorkingRef.current = working
+  }, [working])
 
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const [settleHold, setSettleHold] = useState(false)
@@ -97,14 +121,20 @@ export const ToolGroupCard = memo(function ToolGroupCard({
 
   // open when:
   //  - live (running / pending) or search hit  — force
-  //  - was live this turn and the turn is still working — no mid-turn fold
+  //  - was live this turn, the turn is still working, and the group is NOT
+  //    closed — no mid-turn fold while it may still grow
   //  - post-turn settle hold
   //  - user's last toggle on a fully settled group
   const open =
     hasSearchHit ||
     live ||
-    (wasLive && turnActive) ||
-    settleHold ||
+    (wasLive && turnActive && !closed) ||
+    // The turn-end settle hold only applies to the still-open tail group; a
+    // group already folded by boundary closure must NOT be reopened for it
+    // (that would flash it open again 2.2s after the turn ends). Once the
+    // user toggles (userOpen != null), their explicit choice wins over the
+    // hold — a click to fold inside the grace window takes effect immediately.
+    (userOpen == null && settleHold && !closed) ||
     (userOpen ?? false)
 
   const badge = summary.anyRunning ? (
@@ -141,6 +171,9 @@ export const ToolGroupCard = memo(function ToolGroupCard({
         role="button"
         tabIndex={0}
         aria-expanded={open}
+        aria-controls={bodyId}
+        aria-label={`${summary.count} tool call${summary.count === 1 ? '' : 's'}${summary.nameSummary ? `: ${summary.nameSummary}` : ''}`}
+        title={summary.nameSummary}
         onClick={() => setUserOpen(!open)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -152,18 +185,10 @@ export const ToolGroupCard = memo(function ToolGroupCard({
         <span className="tool-group-chevron" aria-hidden>
           {open ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
         </span>
-        <span className="tool-group-icon" aria-hidden>
-          <IconLayers size={14} />
-        </span>
         <span className="tool-group-count" aria-hidden>
           {summary.count}
         </span>
-        <span className="tool-group-label">
-          {summary.count === 1 ? 'tool call' : 'tool calls'}
-        </span>
-        <span className="tool-group-names" title={summary.nameSummary}>
-          {summary.nameSummary}
-        </span>
+        <span className="tool-group-names">{summary.nameSummary}</span>
         <span className="tool-card-spacer" />
         {badge}
       </div>
@@ -174,6 +199,7 @@ export const ToolGroupCard = memo(function ToolGroupCard({
         unmountOnExit={false}
         className="tool-group-collapse"
         contentClassName="tool-group-body"
+        id={bodyId}
       >
         {members.map((m, mi) => {
           const isActive =

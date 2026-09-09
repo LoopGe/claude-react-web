@@ -939,14 +939,10 @@
   color: var(--fg-muted);
   line-height: 0;
 }
-.tool-group-icon {
-  display: inline-flex;
-  flex-shrink: 0;
-  color: var(--fg-muted);
-  line-height: 0;
-}
 /* Count chip — a small accent-tinted tally that reads like a stat badge,
-   matching the app's pill vocabulary (plan status, permission chips). */
+   matching the app's pill vocabulary (plan status, permission chips). It is
+   the single count signal in the header; no separate noun label accompanies
+   it (that read as duplication). */
 .tool-group-count {
   flex-shrink: 0;
   min-width: 20px;
@@ -962,14 +958,6 @@
   font-size: 11px;
   font-weight: 600;
   line-height: 1;
-}
-/* "tool calls" descriptor next to the tally. */
-.tool-group-label {
-  flex-shrink: 0;
-  font-size: 12px;
-  color: var(--fg);
-  font-weight: 500;
-  letter-spacing: 0.01em;
 }
 .tool-group-names {
   min-width: 0;
