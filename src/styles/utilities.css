@@ -897,10 +897,18 @@
   .panel-overlay[data-state="closing"],
   .panel-overlay[data-state="open"] > .panel-overlay-card,
   .panel-overlay[data-state="closing"] > .panel-overlay-card,
-  .subagent-overlay,
+  /* The scrim carries the backdrop fade (it used to be on .subagent-overlay
+     itself; the filter had to move off the panel's ancestor chain — see the
+     compositing contract in chat.css). WorkflowOverlay is the same shape and
+     was missing from this list entirely. `onExited` waits on the scrim's
+     animationend, so leaving it out here also made closing wait a full
+     --motion-duration-base for opt-out users. */
+  .subagent-overlay-scrim,
   .subagent-overlay-panel,
   .subagent-overlay-body-forward,
   .subagent-overlay-body-back,
+  .workflow-overlay-scrim,
+  .workflow-overlay-panel,
   .palette-backdrop[data-state="open"],
   .palette-backdrop[data-state="closing"],
   .palette-backdrop[data-state="open"] > .palette,

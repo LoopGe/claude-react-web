@@ -4,15 +4,13 @@
 // covers this column. ESC or backdrop click closes; the breadcrumb
 // supports nested drill-down (a Task spawned inside an Agent etc.).
 
-import { memo, useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import { MessageList } from './MessageList'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useFocusTrap } from '../hooks/useFocusTrap'
-import { formatElapsed } from '../utils/format'
+import { ElapsedTimer } from './ElapsedTimer'
 import { IconX, IconArrowLeft } from './icons/ToolIcons'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
-import { userMessageHasToolResult } from '../session-store/normalize'
-import type { SdkMessage } from '../types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 
 interface Props {
@@ -75,113 +73,10 @@ export const SubagentOverlay = memo(function SubagentOverlay({
 }: Props) {
   const currentId = stack[stack.length - 1]
   const current = currentId ? index.get(currentId) : undefined
-
-  // The subagent's input prompt, as a synthetic leading message.
-  //
-  // The SDK does NOT echo an async/background subagent's prompt back as a
-  // child frame, so the overlay's parent_tool_use_id filter hides it —
-  // leaving the subagent's reply with no question for context. We inject
-  // the prompt via `leadingItems` (bypasses the filter) so it shows once
-  // at the top of the inner conversation.
-  //
-  // Two details that make this match the synchronous display:
-  //  1. Skip when the SDK already echoed the prompt as a child user frame
-  //     (synchronous subagents). Otherwise the prompt would render twice
-  //     — the echo AND this synthetic — which is the repeat the sync
-  //     overlay used to show.
-  //  2. Carry parent_tool_use_id = currentId so MessageList renders it via
-  //     the subagent-internal branch (label "subagent"), identical to the
-  //     sync echo. A null parent would label it "you", which misrepresents
-  //     the message — it's the parent agent's input to the subagent, not a
-  //     human user's message.
-  // Memoised so the array identity is stable (MessageList's renderableItems
-  // useMemo depends on it).
-  const promptLeading = useMemo<TranscriptItem[] | undefined>(() => {
-    if (!currentId || !current?.prompt) return undefined
-    // Synchronous subagent: the SDK echoes the prompt as a child user frame
-    // (parent_tool_use_id === currentId, type 'user', with text). Detect it
-    // so we don't duplicate.
-    const sdkEchoedPrompt = items.some(
-      (it) =>
-        it.msg.parent_tool_use_id === currentId &&
-        it.msg.type === 'user' &&
-        // Exclude tool_result-bearing child frames: a subagent's internal
-        // tool_results (e.g. a Read result) are child user frames whose
-        // plainText is the tool output, which would otherwise trip this echo
-        // detector and wrongly suppress the prompt injection — leaving the
-        // overlay with no input bubble for any async subagent that uses tools.
-        !userMessageHasToolResult(it.msg) &&
-        typeof it.plainText === 'string' &&
-        it.plainText.length > 0 &&
-        !it.isCompactSummary,
-    )
-    if (sdkEchoedPrompt) return undefined
-    const prompt = current.prompt
-    const msg = {
-      type: 'user',
-      uuid: `${currentId}:prompt`,
-      parent_tool_use_id: currentId,
-      receivedAt: current.startedAt,
-      message: { role: 'user', content: [{ type: 'text', text: prompt }] },
-    } as unknown as SdkMessage
-    return [{
-      id: `${currentId}:prompt`,
-      msg,
-      plainText: prompt,
-      isCompactSummary: false,
-      hiddenByDefault: false,
-      receivedAt: current.startedAt,
-    }]
-  }, [currentId, current?.prompt, current?.startedAt, items])
-
-  // A synchronous subagent's reply lands as the Agent tool_result on the
-  // MAIN thread (parent_tool_use_id = null), so the overlay's parent filter
-  // hides it — the overlay would show only the prompt echo with no reply.
-  // Append `record.result` as a synthetic trailing assistant message so the
-  // subagent's output is visible. Skipped for async subagents: their reply
-  // streams as a child assistant frame (parent = currentId) and is already
-  // in the filtered list, so appending would duplicate it.
-  const resultTrailing = useMemo<TranscriptItem[] | undefined>(() => {
-    if (!currentId || !current) return undefined
-    if (current.isAsync === true) return undefined
-    const result = current.result
-    if (!result) return undefined
-    // Normalise result.content (string | block[]) into a text array + a
-    // plain-text view so MessageList's assistant renderer and search both
-    // have something to show.
-    const content = result.content
-    let text: string
-    let blocks: Array<{ type: 'text'; text: string }>
-    if (typeof content === 'string') {
-      text = content
-      blocks = [{ type: 'text', text }]
-    } else if (Array.isArray(content)) {
-      const parts: string[] = []
-      for (const b of content as Array<Record<string, unknown>>) {
-        if (b?.type === 'text' && typeof b.text === 'string') parts.push(b.text)
-      }
-      text = parts.join('\n\n')
-      blocks = parts.length > 0 ? parts.map((t) => ({ type: 'text' as const, text: t })) : [{ type: 'text' as const, text: '' }]
-    } else {
-      return undefined
-    }
-    if (!text.trim()) return undefined
-    const msg = {
-      type: 'assistant',
-      uuid: `${currentId}:result`,
-      parent_tool_use_id: currentId,
-      receivedAt: current.endedAt ?? current.startedAt,
-      message: { role: 'assistant', content: blocks },
-    } as unknown as SdkMessage
-    return [{
-      id: `${currentId}:result`,
-      msg,
-      plainText: text,
-      isCompactSummary: false,
-      hiddenByDefault: false,
-      receivedAt: current.endedAt ?? current.startedAt,
-    }]
-  }, [currentId, current])
+  // The synthetic prompt / result rows the parent filter can't reach are
+  // derived inside MessageList from the `subagent` prop — see
+  // message-list/useSubagentSyntheticRows.ts for why they must be built
+  // there (referential stability) rather than assembled here.
 
   // ESC closes (or pops one level if nested). Registered in the escape stack
   // (window CAPTURE + stopPropagation) so the keypress is consumed here and
@@ -237,7 +132,12 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   // on the parent (Chat) re-rendering — good enough at second granularity.
   const startedAt = current.startedAt
   const endedAt = current.endedAt
-  const elapsedMs = startedAt ? (endedAt ?? Date.now()) - startedAt : null
+  // In-flight statuses keep counting; settled ones freeze at endedAt. Before
+  // this the header computed Date.now() once per render, so an open overlay on
+  // a running subagent showed a frozen elapsed until some unrelated state
+  // change happened to re-render it.
+  const elapsedLive =
+    current.status === 'running' || current.status === 'background' || current.status === 'pending'
 
   const statusText =
     current.status === 'running' ? 'running'
@@ -257,15 +157,32 @@ export const SubagentOverlay = memo(function SubagentOverlay({
       aria-label="Subagent details"
       onMouseDown={(e) => {
         if (isExiting) return
-        if (e.target === e.currentTarget) onClose()
+        // Click-outside-to-close. The scrim is what actually covers the region
+        // outside the panel now (see the compositing contract in chat.css), so
+        // accept it as well as the container itself.
+        const target = e.target as HTMLElement
+        if (target === e.currentTarget || target.classList.contains('subagent-overlay-scrim')) {
+          onClose()
+        }
       }}
       data-state={isExiting ? 'closing' : 'open'}
       onAnimationEnd={(e) => {
-        if (e.target === e.currentTarget && isExiting && e.animationName === 'overlay-backdrop-out') {
+        // The exit fade runs on the scrim, so this arrives via bubbling rather
+        // than on the container itself. Match on BOTH the source element and
+        // the animation name: `overlay-backdrop-out` is shared by every overlay
+        // in the app, so a name-only check would let a nested overlay's exit
+        // fade close this one.
+        if (!isExiting) return
+        const target = e.target as HTMLElement
+        if (target.classList.contains('subagent-overlay-scrim') && e.animationName === 'overlay-backdrop-out') {
           onExited?.()
         }
       }}
     >
+      {/* Scrim: background + backdrop-filter live here, NOT on the container,
+          so the panel's virtualised transcript isn't inside a
+          backdrop-filtered render surface. See chat.css. */}
+      <div className="subagent-overlay-scrim" aria-hidden />
       <div className="subagent-overlay-panel">
         <div className="subagent-overlay-header">
           <button
@@ -290,7 +207,8 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             <span className="subagent-overlay-current-label">{current.label}</span>
             <span className={`subagent-overlay-status status-${current.status}`}>
               {statusText}
-              {elapsedMs != null && ` · ${formatElapsed(elapsedMs)}`}
+              {startedAt != null && ' · '}
+              <ElapsedTimer startedAt={startedAt} endedAt={endedAt} live={elapsedLive} />
             </span>
             {/* Live progress summary (agentProgressSummaries) — shown only
                 while the subagent is in flight; cleared on terminal. */}
@@ -327,8 +245,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
           <MessageList
             items={items}
             parentToolUseIdFilter={currentId}
-            leadingItems={promptLeading}
-            trailingItems={resultTrailing}
+            subagent={current}
             transcriptRevealKey={`subagent:${currentId}`}
             toolStatus={toolStatus}
             toolResults={toolResults}

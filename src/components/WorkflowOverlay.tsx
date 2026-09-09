@@ -22,7 +22,7 @@ import { memo, useMemo, useRef, useState } from 'react'
 import { MessageList } from './MessageList'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useFocusTrap } from '../hooks/useFocusTrap'
-import { formatElapsed } from '../utils/format'
+import { ElapsedTimer } from './ElapsedTimer'
 import { IconX, IconWorkflow, IconChevronRight } from './icons/ToolIcons'
 import { AnimatedDetails } from './AnimatedCollapse'
 import type {
@@ -104,7 +104,9 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
 
   const startedAt = record.startedAt
   const endedAt = record.endedAt
-  const elapsedMs = startedAt ? (endedAt ?? Date.now()) - startedAt : null
+  // Same fix as SubagentOverlay: the header used to compute Date.now() once
+  // per render, freezing the elapsed while the workflow was still running.
+  const elapsedLive = record.status === 'running'
   const statusText =
     record.status === 'running' ? 'running'
     : record.status === 'done' ? 'done'
@@ -152,15 +154,29 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
       aria-label="Workflow details"
       onMouseDown={(e) => {
         if (isExiting) return
-        if (e.target === e.currentTarget) onClose()
+        // Click-outside-to-close. The scrim covers the region outside the panel
+        // now (see the compositing contract in chat.css), so accept it too.
+        const target = e.target as HTMLElement
+        if (target === e.currentTarget || target.classList.contains('workflow-overlay-scrim')) {
+          onClose()
+        }
       }}
       data-state={isExiting ? 'closing' : 'open'}
       onAnimationEnd={(e) => {
-        if (e.target === e.currentTarget && isExiting && e.animationName === 'overlay-backdrop-out') {
+        // The exit fade runs on the scrim, so this arrives via bubbling. Match
+        // on BOTH the source element and the animation name —
+        // `overlay-backdrop-out` is shared by every overlay in the app.
+        if (!isExiting) return
+        const target = e.target as HTMLElement
+        if (target.classList.contains('workflow-overlay-scrim') && e.animationName === 'overlay-backdrop-out') {
           onExited?.()
         }
       }}
     >
+      {/* Scrim: background + backdrop-filter live here, NOT on the container,
+          so the right column's virtualised transcript isn't inside a
+          backdrop-filtered render surface. See chat.css. */}
+      <div className="workflow-overlay-scrim" aria-hidden />
       <div className="workflow-overlay-panel">
         <div className="workflow-overlay-header">
           <span className="workflow-overlay-icon" aria-hidden><IconWorkflow size={15} /></span>
@@ -168,7 +184,8 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
             <span className="workflow-overlay-current-label">{record.label}</span>
             <span className={`workflow-overlay-status status-${record.status}`}>
               {statusText}
-              {elapsedMs != null && ` · ${formatElapsed(elapsedMs)}`}
+              {startedAt != null && ' · '}
+              <ElapsedTimer startedAt={startedAt} endedAt={endedAt} live={elapsedLive} />
             </span>
           </div>
           <button

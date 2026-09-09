@@ -47,6 +47,13 @@ const VARIANT_CLASSES = {
   palette: { backdrop: 'palette-backdrop', card: 'palette', roleOn: 'card', ariaModal: 'true' },
   marketplace: { backdrop: 'marketplace-overlay', card: 'marketplace-card', roleOn: 'card', ariaModal: 'true' },
   globalSettings: { backdrop: 'modal-backdrop', card: 'global-settings-modal', roleOn: 'card', ariaModal: 'true' },
+  // NOTE: these two are currently declared but unused — SubagentOverlay and
+  // WorkflowOverlay hand-roll their markup, because their scrim (background +
+  // backdrop-filter) has to be a SEPARATE child so it isn't an ancestor of the
+  // virtualised transcript they host (see the compositing contract on
+  // .subagent-overlay in chat.css). A caller routing through <Overlay> with
+  // these variants would get a transparent backdrop; add the scrim element
+  // first if you ever need that path.
   subagent: { backdrop: 'subagent-overlay', card: null, roleOn: 'backdrop', ariaModal: 'false' },
   workflow: { backdrop: 'workflow-overlay', card: null, roleOn: 'backdrop', ariaModal: 'false' },
 } as const

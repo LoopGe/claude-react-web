@@ -64,6 +64,14 @@ const virtuosoMockState = vi.hoisted(() => ({
   // followOutput). Lets tests assert the follow behavior ('auto' vs 'smooth'
   // vs false) without a real Virtuoso measurement engine.
   lastFollowOutput: undefined as string | false | undefined,
+  // Last `increaseViewportBy` prop seen. The mock renders every row, so
+  // overscan can't be observed behaviourally here — this is a config lock so
+  // the upward pre-render (which is what keeps a scroll-up from painting
+  // blank) can't silently regress to 0.
+  lastIncreaseViewportBy: undefined as { top: number; bottom: number } | number | undefined,
+  // Captures the `rangeChanged` prop so a test can drive it the way real
+  // Virtuoso does when its RENDERED window shifts.
+  rangeChanged: undefined as ((range: { startIndex: number; endIndex: number }) => void) | undefined,
 }))
 
 // Mock Virtuoso to render all items directly — Virtuoso needs real
@@ -81,6 +89,9 @@ vi.mock('react-virtuoso', async () => {
       scrollerRef,
       atBottomStateChange,
       followOutput,
+      computeItemKey,
+      increaseViewportBy,
+      rangeChanged,
     }: {
       data: unknown[]
       itemContent: (index: number, item: unknown) => React.ReactNode
@@ -89,7 +100,12 @@ vi.mock('react-virtuoso', async () => {
       scrollerRef?: (ref: HTMLElement | Window | null) => void
       atBottomStateChange?: (atBottom: boolean) => void
       followOutput?: (atBottom: boolean) => 'smooth' | 'auto' | false
+      computeItemKey?: (index: number, item: unknown) => React.Key
+      increaseViewportBy?: { top: number; bottom: number } | number
+      rangeChanged?: (range: { startIndex: number; endIndex: number }) => void
     }) => {
+      virtuosoMockState.lastIncreaseViewportBy = increaseViewportBy
+      virtuosoMockState.rangeChanged = rangeChanged
       const mockScrollerRef = React.useRef<HTMLDivElement | null>(null)
       // Mirror real Virtuoso: it calls followOutput when the data array
       // grows at the tail. Capture the return so tests can assert on it.
@@ -134,7 +150,21 @@ vi.mock('react-virtuoso', async () => {
         <div ref={mockScrollerRef} data-testid="virtuoso-mock">
           <div data-testid="virtuoso-item-list">
             {data.map((item, i) => (
-              <div key={i}>{itemContent(i + firstItemIndex, item)}</div>
+              // Honour computeItemKey exactly like real Virtuoso does
+              // (`computeItemKey(originalIndex + firstItemIndex, data)`), and
+              // fall back to the index when it isn't supplied — which is also
+              // Virtuoso's own default. This is what makes the row-identity
+              // test below meaningful instead of tautological.
+              // `data-item-index` mirrors real Virtuoso: every rendered row
+              // carries its OFFSET-space index. useTranscriptScroll resolves
+              // the visible-top row through it, so the mock has to stamp it or
+              // that path can't be exercised.
+              <div
+                key={computeItemKey ? computeItemKey(i + firstItemIndex, item) : i}
+                data-item-index={i + firstItemIndex}
+              >
+                {itemContent(i + firstItemIndex, item)}
+              </div>
             ))}
           </div>
           {virtuosoMockState.streamingSpacerHeight > 0 && (
@@ -158,6 +188,19 @@ import type { ActiveSubagent } from '../session-store/types'
 
 function makeMsg(type: string, overrides: Record<string, unknown> = {}): SdkMessage {
   return { type, message: { content: [] }, ...overrides } as SdkMessage
+}
+
+function subagentRecord(
+  toolUseId: string,
+  over: Partial<ActiveSubagent> = {},
+): ActiveSubagent {
+  return {
+    toolUseId,
+    label: `subagent ${toolUseId}`,
+    status: 'running',
+    toolCount: 0,
+    ...over,
+  }
 }
 
 function toItems(msgs: SdkMessage[]): TranscriptItem[] {
@@ -415,22 +458,10 @@ describe('MessageList', () => {
     expect(messages?.classList.contains('chat-messages-reveal-pending')).toBe(false)
   })
 
-  it('renders leadingItems above the filtered children (bypasses parent filter)', () => {
-    // SubagentOverlay passes the subagent's input prompt via leadingItems
-    // so it shows even though the SDK doesn't echo it as a child frame.
-    // The leading item carries parent_tool_use_id = the subagent id (so it
-    // labels "subagent", matching the sync echo) — but it must still render
-    // even though it's not in the filtered `items` list.
-    const promptItem: TranscriptItem = {
-      id: 'agent-1:prompt',
-      msg: makeMsg('user', {
-        parent_tool_use_id: 'agent-1',
-        message: { content: [{ type: 'text', text: 'Investigate the scroll structure' }] },
-      }) as SdkMessage,
-      plainText: 'Investigate the scroll structure',
-      isCompactSummary: false,
-      hiddenByDefault: false,
-    }
+  it('injects the subagent prompt above the filtered children (bypasses parent filter)', () => {
+    // The SDK doesn't echo an ASYNC subagent's input prompt as a child frame,
+    // so the parent_tool_use_id filter would leave the reply with no question.
+    // The row model synthesises it from the `subagent` record.
     const msgs = [
       makeMsg('assistant', {
         parent_tool_use_id: 'agent-1',
@@ -442,31 +473,43 @@ describe('MessageList', () => {
       <MessageList
         items={toItems(msgs as SdkMessage[])}
         parentToolUseIdFilter="agent-1"
-        leadingItems={[promptItem]}
+        subagent={subagentRecord('agent-1', { prompt: 'Investigate the scroll structure' })}
       />,
     )
 
-    // Both the prompt and the child reply are visible — the leading item
-    // bypassed the parent_tool_use_id filter.
     expect(container.textContent).toContain('Investigate the scroll structure')
     expect(container.textContent).toContain('Subagent reply')
   })
 
-  it('renders trailingItems below the filtered children (bypasses parent filter)', () => {
-    // A synchronous subagent's reply lands as the Agent tool_result on the
-    // main thread (parent_tool_use_id = null), so the overlay's parent
-    // filter hides it. SubagentOverlay appends it via trailingItems so the
-    // subagent's output is visible at the bottom of the inner conversation.
-    const resultItem: TranscriptItem = {
-      id: 'agent-1:result',
-      msg: makeMsg('assistant', {
+  it('suppresses the synthetic prompt when the SDK already echoed it as a child frame', () => {
+    // Synchronous subagents DO get a child user echo. Injecting anyway would
+    // show the prompt twice.
+    const msgs = [
+      makeMsg('user', {
         parent_tool_use_id: 'agent-1',
-        message: { content: [{ type: 'text', text: 'Subagent final output' }] },
-      }) as SdkMessage,
-      plainText: 'Subagent final output',
-      isCompactSummary: false,
-      hiddenByDefault: false,
-    }
+        message: { content: [{ type: 'text', text: 'Investigate the scroll structure' }] },
+      }),
+    ]
+    const items = toItems(msgs as SdkMessage[]).map((it) => ({
+      ...it,
+      plainText: 'Investigate the scroll structure',
+    }))
+
+    const { container } = render(
+      <MessageList
+        items={items}
+        parentToolUseIdFilter="agent-1"
+        subagent={subagentRecord('agent-1', { prompt: 'Investigate the scroll structure' })}
+      />,
+    )
+
+    const occurrences = container.querySelectorAll('[data-message-id]')
+    expect(occurrences.length).toBe(1)
+  })
+
+  it('appends a synchronous subagent result below the filtered children', () => {
+    // A sync subagent's reply lands as the Agent tool_result on the MAIN
+    // thread (parent_tool_use_id = null), so the parent filter hides it.
     const msgs = [
       makeMsg('user', {
         parent_tool_use_id: 'agent-1',
@@ -478,12 +521,151 @@ describe('MessageList', () => {
       <MessageList
         items={toItems(msgs as SdkMessage[])}
         parentToolUseIdFilter="agent-1"
-        trailingItems={[resultItem]}
+        subagent={subagentRecord('agent-1', {
+          isAsync: false,
+          result: { content: 'Subagent final output', isError: false },
+        })}
       />,
     )
 
     expect(container.textContent).toContain('Prompt echo')
     expect(container.textContent).toContain('Subagent final output')
+  })
+
+  it('does NOT append the result row for an async subagent (already streamed as a child)', () => {
+    const { container } = render(
+      <MessageList
+        items={toItems([
+          makeMsg('assistant', {
+            parent_tool_use_id: 'agent-1',
+            message: { content: [{ type: 'text', text: 'Streamed child reply' }] },
+          }),
+        ] as SdkMessage[])}
+        parentToolUseIdFilter="agent-1"
+        subagent={subagentRecord('agent-1', {
+          isAsync: true,
+          result: { content: 'Would duplicate', isError: false },
+        })}
+      />,
+    )
+
+    expect(container.textContent).toContain('Streamed child reply')
+    expect(container.textContent).not.toContain('Would duplicate')
+  })
+
+  it('keeps each row on its own DOM node when a row is removed from the MIDDLE of the list', () => {
+    // Regression guard for the "scrolling shows a blank screen" class of bug.
+    //
+    // `renderableItems` is not append-only: `willRenderEmpty(…,
+    // isResultConsumed)` drops rows whose tool_result has since been merged
+    // into the owning tool card, so a row that already rendered can vanish
+    // from the middle. With Virtuoso's default index keys, React then re-maps
+    // every following row one slot up — row N's DOM node (and its measured
+    // height / mounted subtree state) is handed to row N+1, and Virtuoso's
+    // index-keyed size cache is wrong for everything past the removal point.
+    //
+    // `computeItemKey` by message id is what prevents that. Assert it
+    // structurally: the surviving rows must keep their own element instances.
+    const msgs = [0, 1, 2, 3, 4].map((i) =>
+      makeMsg('assistant', {
+        uuid: `m-${i}`,
+        message: { content: [{ type: 'text', text: `message ${i}` }] },
+      }),
+    )
+    const items = toItems(msgs as SdkMessage[])
+
+    const nodeFor = (container: HTMLElement, id: string) =>
+      container.querySelector(`[data-message-id="${id}"]`)
+
+    const { container, rerender } = render(<MessageList items={items} />)
+    const before = new Map(
+      items.map((it) => [it.id, nodeFor(container, it.id)] as const),
+    )
+    // Every row got its own node to begin with.
+    for (const [id, node] of before) expect(node, `initial node for ${id}`).not.toBeNull()
+
+    // Drop the middle row, exactly as an isResultConsumed flip would.
+    const withoutMiddle = items.filter((it) => it.id !== items[2].id)
+    rerender(<MessageList items={withoutMiddle} />)
+
+    expect(nodeFor(container, items[2].id)).toBeNull()
+    for (const it of withoutMiddle) {
+      expect(nodeFor(container, it.id), `row ${it.id} kept its node`).toBe(before.get(it.id))
+    }
+  })
+
+  it('reports the GEOMETRIC visible top, not the rendered range start', () => {
+    // Regression guard for a bug the upward-overscan fix introduced:
+    // `increaseViewportBy.top` makes Virtuoso render ~600px ABOVE the fold, so
+    // `rangeChanged.startIndex` is no longer the row the user is looking at.
+    // Three consumers read it as if it were — the pinned "current question"
+    // header, search's nearest-match, and prev/next user-message navigation —
+    // so the header would stay stuck on an older question.
+    const msgs = [
+      makeMsg('user', { uuid: 'q-0', message: { content: [{ type: 'text', text: 'first question' }] } }),
+      makeMsg('assistant', { uuid: 'a-0', message: { content: [{ type: 'text', text: 'first answer' }] } }),
+      makeMsg('user', { uuid: 'q-1', message: { content: [{ type: 'text', text: 'second question' }] } }),
+      makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'second answer' }] } }),
+      makeMsg('assistant', { uuid: 'a-2', message: { content: [{ type: 'text', text: 'tail' }] } }),
+    ]
+    const onPinned = vi.fn()
+    const onVisibleRange = vi.fn()
+    const { container } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        onPinnedUserMessageChange={onPinned}
+        onVisibleRangeChange={onVisibleRange}
+      />,
+    )
+
+    // Lay the rows out: the scroller viewport starts at y=1000, and rows 0-2
+    // sit entirely above it (they're only rendered because of the overscan).
+    // Row 3 is the first one actually visible.
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    Object.defineProperty(scroller, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 1000, bottom: 1600, left: 0, right: 800, height: 600, width: 800 }),
+    })
+    const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-item-index]'))
+    expect(rows).toHaveLength(5)
+    rows.forEach((row, i) => {
+      const top = 700 + i * 100
+      Object.defineProperty(row, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ top, bottom: top + 100, left: 0, right: 800, height: 100, width: 800 }),
+      })
+    })
+
+    onPinned.mockClear()
+    onVisibleRange.mockClear()
+    // Real Virtuoso would report startIndex = 0 here (row 0 IS rendered).
+    act(() => {
+      virtuosoMockState.rangeChanged?.({ startIndex: 0, endIndex: 4 })
+    })
+
+    // Data-space index 3, resolved from geometry — not 0 from the range.
+    expect(onVisibleRange).toHaveBeenCalledWith(3)
+    // …so the pinned question is the SECOND one (index 2 < 3), not the first.
+    expect(onPinned).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'second question' }),
+    )
+  })
+
+  it('pre-renders rows above the fold (upward overscan is non-zero)', () => {
+    // Config lock: the mock renders every row, so this can't be asserted
+    // behaviourally. Upward overscan is what gives an expensive transcript
+    // row (Markdown / tool output / DiffView) time to mount and measure
+    // before it enters the viewport; at 0 a scroll-up paints an empty band.
+    render(
+      <MessageList
+        items={toItems([
+          makeMsg('assistant', { uuid: 'm-0', message: { content: [{ type: 'text', text: 'hi' }] } }),
+        ] as SdkMessage[])}
+      />,
+    )
+    const overscan = virtuosoMockState.lastIncreaseViewportBy
+    expect(typeof overscan).toBe('object')
+    expect((overscan as { top: number }).top).toBeGreaterThan(0)
   })
 
   it('reveals filtered subagent transcripts when keyed', async () => {

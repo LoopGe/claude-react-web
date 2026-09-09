@@ -2312,7 +2312,16 @@
 /* Subagent overlay — same per-panel pattern as .settings-overlay but
    pinned to the right half of the column instead of centred. Backdrop
    covers the rest of the column so the user can click outside the
-   panel to close. */
+   panel to close.
+
+   COMPOSITING CONTRACT (shared with .workflow-overlay): the scrim's
+   `backdrop-filter` lives on a dedicated absolutely-positioned SIBLING of the
+   panel, never on this container. An element with a backdrop-filter groups its
+   entire subtree into a separate render surface; with the filter on the
+   container, the panel — and therefore the virtualised transcript scrolling
+   inside it — lived in that surface, so every scroll frame had to re-rasterise
+   the group and re-run the filter instead of taking the cheap scroll path.
+   Keep the filter off any ancestor of a scroll container. */
 .subagent-overlay {
   position: absolute;
   inset: 0;
@@ -2323,30 +2332,51 @@
      a new sibling overlay; either pick a different z-index or co-locate with
      the existing block so the order is intentional. */
   z-index: 6;
-  background: color-mix(in srgb, var(--bg) 55%, transparent);
-  backdrop-filter: var(--glass-blur);
   display: flex;
   justify-content: flex-end;
-  /* (#1/#2) Backdrop fades in; the drawer slides from the right edge
-     (directional continuity ?it lives on the right of the column). */
-  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
 }
-.subagent-overlay[data-state="closing"] {
-  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
+/* (#1/#2) Backdrop fades in; the drawer slides from the right edge
+   (directional continuity — it lives on the right of the column). */
+.subagent-overlay-scrim {
+  position: absolute;
+  inset: 0;
+  /* Explicit z-index so paint order against the in-flow panel is stated rather
+     than inherited from the painting-order rules (a positioned child with
+     `z-index: auto` paints ABOVE static siblings, which would cover the
+     panel). */
+  z-index: 0;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) backwards;
+}
+.subagent-overlay[data-state="closing"] .subagent-overlay-scrim {
+  /* `forwards` on the way out: the scrim must stay faded once the animation
+     ends, until React unmounts the overlay. */
+  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
 }
 .subagent-overlay-panel {
   width: min(50%, 640px);
   min-width: 320px;
   height: 100%;
+  position: relative;
+  z-index: 1;
   background: var(--bg);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   box-shadow: var(--drawer-shadow);
-  animation: subagent-drawer-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  /* `backwards`, NOT `both`: the from-state has to apply before the first
+     animation frame (otherwise the panel flashes once at its final position),
+     but a `forwards` fill would leave `transform: translateX(0)` applied
+     permanently after the animation finishes — which keeps the panel a
+     composited layer / containing block for the whole time the overlay is
+     open, dragging the transcript scroller into it. Same reason the body
+     transitions below use `backwards`. */
+  animation: subagent-drawer-in var(--motion-duration-base) var(--motion-ease-enter) backwards;
 }
 .subagent-overlay[data-state="closing"] .subagent-overlay-panel {
-  animation: subagent-drawer-out var(--motion-duration-base) var(--motion-ease-exit) both;
+  animation: subagent-drawer-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
 }
 @keyframes subagent-drawer-in {
   from { opacity: 0; transform: translateX(24px); }
@@ -2430,11 +2460,17 @@
   flex-direction: column;
   overflow: hidden;
 }
+/* `backwards` fill, not `both`. These classes are driven by the drill-down
+   direction and stay on the element for as long as the overlay is open, so a
+   `forwards` fill left `transform: translateX(0)` applied indefinitely — a
+   permanent composited layer wrapped directly around the transcript scroller.
+   With `backwards` the transform only exists while the transition actually
+   runs. */
 .subagent-overlay-body-forward {
-  animation: subagent-body-forward-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  animation: subagent-body-forward-in var(--motion-duration-base) var(--motion-ease-enter) backwards;
 }
 .subagent-overlay-body-back {
-  animation: subagent-body-back-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  animation: subagent-body-back-in var(--motion-duration-base) var(--motion-ease-enter) backwards;
 }
 @keyframes subagent-body-forward-in {
   from { opacity: 0; transform: translateX(var(--motion-distance-lg)); }
@@ -2566,32 +2602,44 @@
 /* Two-column layout: phase-tree sidebar (left) + message stream (right).
    Wider than the single-column SubagentOverlay (min(75%, 900px)) so both
    columns stay readable. */
+/* Scrim on a sibling, `backwards` fills on the entrances — see the compositing
+   contract on .subagent-overlay. This panel hosts a MessageList in its right
+   column, so it has exactly the same stake in keeping the scroller out of a
+   backdrop-filtered / permanently-transformed subtree. */
 .workflow-overlay {
   position: absolute;
   inset: 0;
   z-index: 6;
-  background: color-mix(in srgb, var(--bg) 55%, transparent);
-  backdrop-filter: var(--glass-blur);
   display: flex;
   justify-content: flex-end;
-  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
 }
-.workflow-overlay[data-state="closing"] {
-  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) both;
+.workflow-overlay-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) backwards;
+}
+.workflow-overlay[data-state="closing"] .workflow-overlay-scrim {
+  animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
 }
 .workflow-overlay-panel {
   width: min(75%, 900px);
   min-width: 480px;
   height: 100%;
+  position: relative;
+  z-index: 1;
   background: var(--bg);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   box-shadow: var(--drawer-shadow);
-  animation: workflow-drawer-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  animation: workflow-drawer-in var(--motion-duration-base) var(--motion-ease-enter) backwards;
 }
 .workflow-overlay[data-state="closing"] .workflow-overlay-panel {
-  animation: workflow-drawer-out var(--motion-duration-base) var(--motion-ease-exit) both;
+  animation: workflow-drawer-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
 }
 @keyframes workflow-drawer-in {
   from { opacity: 0; transform: translateX(24px); }
