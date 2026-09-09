@@ -40,6 +40,39 @@ export interface TranscriptItem {
 
 export type SubagentStatus = 'running' | 'background' | 'pending' | 'dismissed' | 'done' | 'rejected' | 'interrupted'
 
+/** Lifecycle status of a single tool call a subagent ran internally. Simpler
+ *  than SubagentStatus (a raw tool has no async/pending/dismissed states):
+ *  'running' until its tool_result lands, then 'success' / 'error'. Mirrors
+ *  the generic `ToolStatus` values so SubagentCard's child rows can reuse the
+ *  same status styling. */
+export type SubagentChildStatus = 'running' | 'success' | 'error'
+
+/** One tool call executed INSIDE a subagent (Bash / Read / Grep / Edit / …),
+ *  indexed per-parent so SubagentCard can render a structured child-call list
+ *  without re-scanning the transcript. The subagent analogue of a single row
+ *  in WorkflowRecord.childAgents, but for the subagent's OWN internal tool
+ *  calls rather than nested sub-subagents.
+ *
+ *  Populated incrementally in the reducer (updateIndexesMirror): the tool_use
+ *  block in a child frame (parent_tool_use_id === the subagent id) seeds a
+ *  `running` row; the matching tool_result flips it to success/error and
+ *  captures the result payload. The turn-end sweep flips any still-`running`
+ *  row to `error` (the parent turn ended without a result). */
+export interface SubagentChildCall {
+  toolUseId: string
+  /** Tool name, e.g. 'Bash', 'Read', 'Grep'. Shown mono in the row. */
+  toolName: string
+  /** Short one-line argument preview (command / file path / pattern),
+   *  derived from the tool_use input. Empty when no sensible summary exists. */
+  argSummary: string
+  status: SubagentChildStatus
+  startedAt?: number
+  endedAt?: number
+  /** Captured tool_result payload — lets a row expand to show the result
+   *  inline. Set when the matching tool_result lands. */
+  result?: ToolResultEntry
+}
+
 export interface ActiveSubagent {
   toolUseId: string
   label: string
@@ -109,6 +142,15 @@ export interface ActiveSubagent {
   /** Name of the tool the subagent most recently ran (task_progress.
    *  last_tool_name). Rendered as hover context on the WorkingBubble chip. */
   lastToolName?: string
+  /** Structured list of the tool calls this subagent ran internally, in
+   *  arrival order. Drives SubagentCard's expandable child-call list (方案B)
+   *  so the card can show "which tools ran, each with its status + result"
+   *  without re-scanning the transcript. Empty until the first child tool_use
+   *  frame arrives. Indexed the same way WorkflowRecord.childAgents is, but
+   *  keyed to this subagent's own internal tools. Optional so pre-existing
+   *  ActiveSubagent literals (tests, older serialized state) stay valid; the
+   *  reducer always writes an array and readers default to []. */
+  childToolCalls?: SubagentChildCall[]
 }
 
 /** Lifecycle status for a Workflow orchestration. Mirrors SubagentStatus —

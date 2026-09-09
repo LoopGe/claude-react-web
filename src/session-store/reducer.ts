@@ -2,11 +2,13 @@ import type { PermissionRequest, SdkMessage } from '../types'
 import {
   createInitialClientIntent,
   createInitialServerMirror,
+  type ActiveSubagent,
   type ClientIntent,
   type LiveTurnState,
   type ServerMirror,
   type SessionAction,
   type SessionState,
+  type SubagentChildStatus,
   type TranscriptItem,
   type WorkflowStatus,
   withIntent,
@@ -16,6 +18,7 @@ import {
   extractPlanContent,
   getPlanResultDecisions,
   getPlanToolUseIds,
+  getSubagentChildStarts,
   getSubagentStarts,
   getToolResultEntries,
   getToolResultIds,
@@ -1062,12 +1065,30 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
 
   // subagents: running (sync orphan) → interrupted; background (async,
   // still working) → pending. Completed records survive.
+  //
+  // Child-call sweep: a subagent record that SETTLES this turn (running →
+  // interrupted, the sync-orphan case) may still carry `running` child tool
+  // calls whose tool_result never landed — flip those to `error` so the
+  // card doesn't show a perpetual spinner on a dead subagent. A record that
+  // moves to `pending`/`background` is still live (its async work continues),
+  // so its running children are left alone — a later child tool_result still
+  // flips them. Mirrors the Workflow sweep flipping still-running children.
+  const sweepChildCalls = (sub: ActiveSubagent): ActiveSubagent['childToolCalls'] => {
+    const calls = sub.childToolCalls
+    if (!calls || !calls.some((c) => c.status === 'running')) return calls
+    return calls.map((c) =>
+      c.status === 'running'
+        ? { ...c, status: 'error' as const, endedAt: c.endedAt ?? c.startedAt }
+        : c,
+    )
+  }
   for (const [id, sub] of activeSubagents) {
     if (sub.status === 'running') {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
       const next = liveBgToolUseIds.has(id)
         ? { ...sub, status: 'pending' as const, endedAt: sub.endedAt ?? sub.startedAt }
-        : { ...sub, status: 'interrupted' as const, endedAt: sub.endedAt ?? sub.startedAt }
+        // Sync orphan settles → sweep its still-running child calls to error.
+        : { ...sub, status: 'interrupted' as const, endedAt: sub.endedAt ?? sub.startedAt, childToolCalls: sweepChildCalls(sub) }
       activeSubagents.set(id, next)
     } else if (sub.status === 'background') {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
@@ -1106,7 +1127,10 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
     if (typeof lastActivity !== 'number' || lastActivity < EPOCH_PLAUSIBILITY_FLOOR) continue
     if (now - lastActivity <= PENDING_TIMEOUT_MS) continue
     if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
-    activeSubagents.set(id, { ...sub, status: 'interrupted' })
+    // Settle any still-running child rows too — this record is now terminal,
+    // so a `running` row would otherwise keep rendering as in-flight work on a
+    // dead subagent (same reason the sync-orphan branch above sweeps them).
+    activeSubagents.set(id, { ...sub, status: 'interrupted', childToolCalls: sweepChildCalls(sub) })
   }
 
   // workflows: running → interrupted; flip still-running children too.
@@ -1681,15 +1705,84 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
               textBlocks.push({ type: 'text', text: b.text })
             }
           }
-          if (newTools > 0 || textBlocks.length > 0) {
+          // Structured child-call index (方案B): fold the frame's tool_use
+          // blocks into childToolCalls so SubagentCard can list them without
+          // re-scanning the transcript. Dedup by toolUseId (a replay may
+          // re-deliver the same frame) preserving each row's existing
+          // status/result — only new rows are appended, mirroring the
+          // Workflow child-index byId merge. `newTools` (the raw count above)
+          // stays the authority for toolCount so the header number is
+          // unaffected even if childToolCalls dedup drops a re-delivery.
+          const childStarts = getSubagentChildStarts(message)
+          const prevChildCalls = existing.childToolCalls ?? []
+          let nextChildCalls = prevChildCalls
+          if (childStarts.children.length > 0) {
+            const byId = new Map(prevChildCalls.map((c) => [c.toolUseId, c]))
+            let added = false
+            const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
+            for (const child of childStarts.children) {
+              if (byId.has(child.toolUseId)) continue // preserve existing row (status/result)
+              byId.set(child.toolUseId, { ...child, startedAt: stamp })
+              added = true
+            }
+            if (added) nextChildCalls = Array.from(byId.values())
+          }
+          const childCallsChanged = nextChildCalls !== prevChildCalls
+          if (newTools > 0 || textBlocks.length > 0 || childCallsChanged) {
             if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
             activeSubagents.set(parentId, {
               ...existing,
               toolCount: existing.toolCount + newTools,
+              ...(childCallsChanged ? { childToolCalls: nextChildCalls } : {}),
               ...(textBlocks.length > 0
                 ? { result: { content: textBlocks, isError: false } }
                 : {}),
             })
+            changed = true
+          }
+        }
+      }
+    }
+  }
+
+  // Flip a subagent child tool call's status when its tool_result lands. A
+  // subagent's internal tool_result is a tool_result block inside a `user`
+  // frame whose parent_tool_use_id === the subagent id (the SDK threads the
+  // sidechain that way). Match the result's tool_use_id against the parent's
+  // childToolCalls and flip running → success/error, capturing the payload so
+  // the row can expand to show it. Mirrors the Workflow per-child result-flip.
+  //
+  // DELIBERATELY has no live-status guard, unlike the two blocks above (which
+  // skip settled records so a late child frame can't advance a frozen elapsed
+  // time). A child tool_result carries no timing that could corrupt the parent
+  // — only the row's own status/result — and it routinely lands AFTER the
+  // parent settled (an async subagent completing, or a record the
+  // pending-timeout / dismiss path already terminated). Accepting it there is
+  // what lets a stranded `running` row still resolve to its real outcome.
+  if (message.type === 'user' && activeSubagents.size > 0) {
+    const parentId = typeof message.parent_tool_use_id === 'string' ? message.parent_tool_use_id : ''
+    if (parentId) {
+      const existing = activeSubagents.get(parentId)
+      if (existing && (existing.childToolCalls?.length ?? 0) > 0) {
+        const childResults = getToolResultEntries(message)
+        if (childResults.length > 0) {
+          const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
+          let childChanged = false
+          const updated = existing.childToolCalls!.map((c) => {
+            if (c.status !== 'running') return c
+            const match = childResults.find((r) => r.toolUseId === c.toolUseId)
+            if (!match) return c
+            childChanged = true
+            return {
+              ...c,
+              status: (match.isError ? 'error' : 'success') as SubagentChildStatus,
+              endedAt: stamp,
+              result: { content: match.content, isError: match.isError },
+            }
+          })
+          if (childChanged) {
+            if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
+            activeSubagents.set(parentId, { ...existing, childToolCalls: updated })
             changed = true
           }
         }

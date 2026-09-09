@@ -1576,6 +1576,149 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
   })
 })
 
+describe('reducer: subagent childToolCalls index (方案B)', () => {
+  // Seed a live subagent, then drive its internal tool_use / tool_result
+  // child frames (parent_tool_use_id === the subagent id) and assert the
+  // structured childToolCalls list SubagentCard renders from.
+  const seedSubagent = (): SessionState => {
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-sa',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_sa', name: 'Explore', input: { description: 'analyze auth' } }],
+      },
+    } as unknown as SdkMessage
+    return reduceSessionState(createInitialSessionState('s1'), { type: 'MESSAGE', message: toolUse })
+  }
+
+  // A child assistant frame INSIDE the subagent (parent = the subagent id)
+  // carrying two internal tool_use blocks.
+  const childToolUse: SdkMessage = {
+    type: 'assistant',
+    uuid: 'a-child',
+    parent_tool_use_id: 'tu_sa',
+    receivedAt: 2_000,
+    message: {
+      role: 'assistant',
+      content: [
+        { type: 'tool_use', id: 'tu_bash', name: 'Bash', input: { command: 'ls server/auth' } },
+        { type: 'tool_use', id: 'tu_read', name: 'Read', input: { file_path: 'server/auth/middleware.ts' } },
+      ],
+    },
+  } as unknown as SdkMessage
+
+  it('appends internal tool_use blocks as running childToolCalls with an arg summary', () => {
+    let state = seedSubagent()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childToolUse })
+    const calls = state.mirror.activeSubagents.get('tu_sa')?.childToolCalls
+    expect(calls).toHaveLength(2)
+    expect(calls?.[0]).toMatchObject({ toolUseId: 'tu_bash', toolName: 'Bash', argSummary: 'ls server/auth', status: 'running' })
+    // Path args are shortened to their last two segments for the row preview.
+    expect(calls?.[1]).toMatchObject({ toolUseId: 'tu_read', toolName: 'Read', argSummary: 'auth/middleware.ts', status: 'running' })
+    // toolCount (the header number) still counts both.
+    expect(state.mirror.activeSubagents.get('tu_sa')?.toolCount).toBe(2)
+  })
+
+  it('flips a child call to success + captures its result when the tool_result lands', () => {
+    let state = seedSubagent()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childToolUse })
+    // The Bash tool_result — a user frame whose parent is the subagent id.
+    const childResult: SdkMessage = {
+      type: 'user',
+      uuid: 'u-child',
+      parent_tool_use_id: 'tu_sa',
+      receivedAt: 3_000,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_bash', content: 'middleware.ts  session.ts' }],
+      },
+    } as unknown as SdkMessage
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childResult })
+    const calls = state.mirror.activeSubagents.get('tu_sa')?.childToolCalls
+    const bash = calls?.find((c) => c.toolUseId === 'tu_bash')
+    const read = calls?.find((c) => c.toolUseId === 'tu_read')
+    expect(bash?.status).toBe('success')
+    expect(bash?.result?.content).toBe('middleware.ts  session.ts')
+    expect(bash?.endedAt).toBe(3_000)
+    // The unmatched Read call stays running.
+    expect(read?.status).toBe('running')
+  })
+
+  it('flips a child call to error when its tool_result carries is_error', () => {
+    let state = seedSubagent()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childToolUse })
+    const errResult: SdkMessage = {
+      type: 'user',
+      uuid: 'u-err',
+      parent_tool_use_id: 'tu_sa',
+      receivedAt: 3_500,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_read', content: 'ENOENT', is_error: true }],
+      },
+    } as unknown as SdkMessage
+    state = reduceSessionState(state, { type: 'MESSAGE', message: errResult })
+    const read = state.mirror.activeSubagents.get('tu_sa')?.childToolCalls?.find((c) => c.toolUseId === 'tu_read')
+    expect(read?.status).toBe('error')
+    expect(read?.result?.isError).toBe(true)
+  })
+
+  it('dedups a re-delivered child tool_use (replay) — no duplicate rows, existing status preserved', () => {
+    let state = seedSubagent()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childToolUse })
+    // Settle the Bash call.
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'user', uuid: 'u-x', parent_tool_use_id: 'tu_sa', receivedAt: 3_000,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_bash', content: 'ok' }] },
+      } as unknown as SdkMessage,
+    })
+    // Re-deliver the SAME child tool_use frame (a replay / re-broadcast).
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childToolUse })
+    const calls = state.mirror.activeSubagents.get('tu_sa')?.childToolCalls
+    expect(calls).toHaveLength(2) // not 4 — deduped by toolUseId
+    // The settled Bash row keeps its success status, not reset to running.
+    expect(calls?.find((c) => c.toolUseId === 'tu_bash')?.status).toBe('success')
+  })
+
+  it('turn-end sweep flips a still-running child call to error when a sync-orphan subagent settles', () => {
+    let state = seedSubagent()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childToolUse })
+    // No tool_results land; the parent turn's result frame arrives → the sync
+    // subagent is an orphan (running → interrupted), and its still-running
+    // child calls must flip to error so the card doesn't spin forever.
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'result', subtype: 'success', uuid: 'r-sa' } as unknown as SdkMessage,
+    })
+    const record = state.mirror.activeSubagents.get('tu_sa')
+    expect(record?.status).toBe('interrupted')
+    expect(record?.childToolCalls?.every((c) => c.status === 'error')).toBe(true)
+  })
+
+  it('does NOT sweep child calls of a still-live background subagent at turn end', () => {
+    let state = seedSubagent()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childToolUse })
+    // Mark the subagent backgrounded (still live after the turn) via a live
+    // task snapshot — the sweep must move it to pending, NOT interrupt it, and
+    // must leave its running child calls alone (a later tool_result flips them).
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{ taskId: 't-sa', toolUseId: 'tu_sa', description: 'analyze auth', status: 'running', isBackgrounded: true, updatedAt: 0 } as TaskRecordUi],
+    })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'result', subtype: 'success', uuid: 'r-sa2' } as unknown as SdkMessage,
+    })
+    const record = state.mirror.activeSubagents.get('tu_sa')
+    expect(record?.status).toBe('pending')
+    // Children left running — the async subagent is still working.
+    expect(record?.childToolCalls?.every((c) => c.status === 'running')).toBe(true)
+  })
+})
+
 describe('reducer: Workflow indexing', () => {
   // A Workflow tool_use on the MAIN thread. Realistic input shape: the SDK
   // WorkflowInput has no `meta` field — meta lives INSIDE the `script`

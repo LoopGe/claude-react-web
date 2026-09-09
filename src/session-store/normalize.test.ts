@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription, recentMessagesDescription, countQueuedUserTurns, getActiveWorktree } from './normalize'
+import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription, recentMessagesDescription, countQueuedUserTurns, getActiveWorktree, subagentChildArgSummary, getSubagentChildStarts } from './normalize'
 import type { SdkMessage } from '../types'
 
 /** Build a top-level `user` message with the given text content (string or
@@ -365,5 +365,98 @@ describe('getActiveWorktree', () => {
       asstTools([enterWorktree({ name: 'feature-auth' })], 'a-enter'),
       userMsgBlocks('interrupt note'),
     ])).toEqual({ name: 'feature-auth', enterMsgId: 'a-enter' })
+  })
+})
+
+describe('subagentChildArgSummary', () => {
+  it('prefers command for Bash-shaped input', () => {
+    expect(subagentChildArgSummary({ command: 'ls server/auth' })).toBe('ls server/auth')
+  })
+
+  it('prefers file_path for Read/Write/Edit-shaped input, shortened to the last two segments', () => {
+    // An absolute repo path is mostly redundant prefix; keeping the last two
+    // segments leaves the informative tail visible inside the row's ellipsis.
+    expect(subagentChildArgSummary({ file_path: 'server/auth/middleware.ts' })).toBe('auth/middleware.ts')
+  })
+
+  it('shortens a long absolute path (and normalises Windows separators)', () => {
+    expect(subagentChildArgSummary({ file_path: 'D:\\codes\\claude-react-web\\src\\hooks\\useScheduledSends.ts' }))
+      .toBe('hooks/useScheduledSends.ts')
+    expect(subagentChildArgSummary({ path: '/home/u/proj/src/session-store/reducer.ts' }))
+      .toBe('session-store/reducer.ts')
+  })
+
+  it('keeps a path that is already two segments or fewer', () => {
+    expect(subagentChildArgSummary({ file_path: 'src/index.ts' })).toBe('src/index.ts')
+    expect(subagentChildArgSummary({ file_path: 'README.md' })).toBe('README.md')
+  })
+
+  it('does NOT shorten a command that merely contains a path (spaces mean prose/shell)', () => {
+    expect(subagentChildArgSummary({ command: 'ls src/hooks/nested/deep' })).toBe('ls src/hooks/nested/deep')
+  })
+
+  it('uses pattern for Grep/Glob and url for WebFetch', () => {
+    expect(subagentChildArgSummary({ pattern: 'skipAuth|bypass' })).toBe('skipAuth|bypass')
+    expect(subagentChildArgSummary({ url: 'https://example.com' })).toBe('https://example.com')
+  })
+
+  it('collapses whitespace and truncates a long value', () => {
+    // Input carries genuine runs of whitespace (newlines + double spaces) so
+    // the collapse is actually exercised — a single-spaced input would pass
+    // even with the collapse removed.
+    const out = subagentChildArgSummary({ command: 'echo one\n\n   two\t\tthree' })
+    expect(out).toBe('echo one two three')
+    const long = subagentChildArgSummary({ command: 'echo ' + 'x'.repeat(200) })
+    expect(long.length).toBeLessThanOrEqual(81) // 80 + ellipsis
+  })
+
+  it('keeps a URL intact (host + path are both meaningful)', () => {
+    expect(subagentChildArgSummary({ url: 'https://example.com/a/b/c' }))
+      .toBe('https://example.com/a/b/c')
+  })
+
+  it('keeps a slash-bearing Grep pattern intact', () => {
+    expect(subagentChildArgSummary({ pattern: 'src/.*\\.tsx' })).toBe('src/.*\\.tsx')
+  })
+
+  it('prefers description over prompt so a nested Agent row matches its card label', () => {
+    // getSubagentStarts labels the card from `description`; the row preview
+    // must pick the same field or the two render different strings.
+    expect(subagentChildArgSummary({ description: 'analyze auth', prompt: 'a much longer prompt body' }))
+      .toBe('analyze auth')
+  })
+
+  it('falls back to the first stringy value, then empty string', () => {
+    expect(subagentChildArgSummary({ weird_key: 'some value' })).toBe('some value')
+    expect(subagentChildArgSummary({ n: 5, flag: true })).toBe('')
+    expect(subagentChildArgSummary(undefined)).toBe('')
+    expect(subagentChildArgSummary(null)).toBe('')
+  })
+})
+
+describe('getSubagentChildStarts', () => {
+  const childFrame = (blocks: unknown[], parent: string | null = 'tu_sa'): SdkMessage =>
+    ({ type: 'assistant', uuid: 'a-c', parent_tool_use_id: parent, message: { role: 'assistant', content: blocks } }) as unknown as SdkMessage
+
+  it('returns every tool_use block (generic tools) with parentId = the message parent', () => {
+    const { parentId, children } = getSubagentChildStarts(childFrame([
+      { type: 'tool_use', id: 'tu_bash', name: 'Bash', input: { command: 'ls' } },
+      { type: 'text', text: 'thinking' },
+      { type: 'tool_use', id: 'tu_read', name: 'Read', input: { file_path: 'a.ts' } },
+    ]))
+    expect(parentId).toBe('tu_sa')
+    expect(children.map((c) => c.toolName)).toEqual(['Bash', 'Read'])
+    expect(children.every((c) => c.status === 'running')).toBe(true)
+    expect(children[0].argSummary).toBe('ls')
+  })
+
+  it('returns empty when the frame has no parent_tool_use_id (a main-thread frame)', () => {
+    expect(getSubagentChildStarts(childFrame([{ type: 'tool_use', id: 't', name: 'Bash', input: {} }], null)))
+      .toEqual({ parentId: '', children: [] })
+  })
+
+  it('returns empty for a non-assistant message', () => {
+    expect(getSubagentChildStarts({ type: 'user', uuid: 'u', parent_tool_use_id: 'tu_sa', message: { role: 'user', content: 'hi' } } as unknown as SdkMessage))
+      .toEqual({ parentId: '', children: [] })
   })
 })

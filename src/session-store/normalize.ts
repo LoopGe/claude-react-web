@@ -2,6 +2,7 @@ import type { Block, SdkMessage } from '../types'
 import type {
   ActiveSubagent,
   PlanStatus,
+  SubagentChildCall,
   TranscriptItem,
   WorkflowChildAgent,
   WorkflowPhaseMeta,
@@ -547,9 +548,115 @@ export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
       (typeof input?.prompt === 'string' && truncate(input.prompt, 80)) ||
       'Subagent'
     const prompt = typeof input?.prompt === 'string' ? input.prompt : undefined
-    out.push({ toolUseId: id, label, prompt, status: 'running', toolCount: 0 })
+    out.push({ toolUseId: id, label, prompt, status: 'running', toolCount: 0, childToolCalls: [] })
   }
   return out
+}
+
+/** Shorten a filesystem path for a one-line preview: keep the last two
+ *  segments so the row reads `hooks/useScheduledSends.ts` instead of the full
+ *  `D:\codes\claude-react-web\src\hooks\useScheduledSends.ts`. Two segments
+ *  (not just the basename) keep same-named files distinguishable — `hooks/
+ *  index.ts` vs `routes/index.ts`. Paths already short enough are returned
+ *  unchanged, and separators are normalised to `/` so Windows paths read the
+ *  same as POSIX ones. */
+function shortenPathForPreview(raw: string): string {
+  const normalised = raw.replace(/\\/g, '/')
+  const segments = normalised.split('/').filter(Boolean)
+  if (segments.length <= 2) return normalised
+  return segments.slice(-2).join('/')
+}
+
+/** True when a picked value looks like a filesystem path rather than prose or
+ *  a shell command — used to decide whether to shorten it. Requires a
+ *  separator and no whitespace (a command like `ls src/hooks` has spaces and
+ *  must keep its full form). */
+function looksLikePath(value: string): boolean {
+  return !/\s/.test(value) && /[/\\]/.test(value)
+}
+
+/** Build a short one-line argument preview for a subagent's internal tool
+ *  call, so SubagentCard's child row can show "Bash · ls server/auth" rather
+ *  than just the tool name. Best-effort per tool shape (command / file_path /
+ *  pattern / url / query), falling back to the first stringy input value, then
+ *  ''. Defensive because the SDK input schema varies per tool.
+ *
+ *  Path-valued args (file_path / path / notebook_path, or any bare path-shaped
+ *  fallback) are shortened to their last two segments — an absolute repo path
+ *  is mostly redundant prefix and pushed the informative tail out of the row's
+ *  ellipsis. Commands, patterns, URLs and prose keep their full text (trimmed
+ *  to the length cap). */
+export function subagentChildArgSummary(input: unknown): string {
+  const obj = (input && typeof input === 'object') ? input as Record<string, unknown> : undefined
+  if (!obj) return ''
+  const pick = (...keys: string[]): string | undefined => {
+    for (const k of keys) {
+      const v = obj[k]
+      if (typeof v === 'string' && v.trim()) return v.trim()
+    }
+    return undefined
+  }
+  // Path-shaped args are shortened; everything else keeps its full text.
+  const pathArg = pick('file_path', 'path', 'notebook_path')
+  if (pathArg) return truncate(shortenPathForPreview(pathArg), 80)
+  // Known non-path shapes keep their full text: a URL's host and a Grep
+  // pattern's leading segments are meaningful, so path-shortening them
+  // ("https://example.com/a/b/c" → "b/c", "src/.*\.tsx" → ".*\.tsx") destroys
+  // the informative part. `description` precedes `prompt` to match the label
+  // ladder in getSubagentStarts, so a nested Agent row and its own card read
+  // the same string instead of diverging.
+  const literal =
+    pick('command', 'cmd') ||          // Bash
+    pick('pattern') ||                 // Grep / Glob
+    pick('url') ||                     // WebFetch
+    pick('query', 'description', 'prompt') // WebSearch / Task / Agent
+  if (literal) return truncate(literal.replace(/\s+/g, ' '), 80)
+  // Last resort: first stringy value on an unknown key. Only THIS path gets
+  // the path sniff — an unrecognised key holding a bare path benefits from
+  // shortening, and we have no shape information to say otherwise.
+  let fallback: string | undefined
+  for (const v of Object.values(obj)) {
+    if (typeof v === 'string' && v.trim()) { fallback = v.trim(); break }
+  }
+  if (!fallback) return ''
+  const collapsed = fallback.replace(/\s+/g, ' ')
+  return truncate(looksLikePath(collapsed) ? shortenPathForPreview(collapsed) : collapsed, 80)
+}
+
+/** Extract the GENERIC internal tool_use calls a subagent ran, from an
+ *  assistant frame whose `parent_tool_use_id` is the subagent's id. Unlike
+ *  `getWorkflowChildStarts` (which returns only subagent-shaped children for
+ *  the phase tree), this returns EVERY tool_use block (Bash/Read/Grep/Edit/…)
+ *  — the subagent's actual work — so SubagentCard can list it.
+ *
+ *  Returns `{ parentId, children }`; `parentId` is the message's own
+ *  `parent_tool_use_id` (the subagent id), empty when the frame isn't a
+ *  subagent child. Each child seeds a `running` SubagentChildCall; the reducer
+ *  flips it on the matching tool_result. */
+export function getSubagentChildStarts(
+  msg: SdkMessage,
+): { parentId: string; children: SubagentChildCall[] } {
+  if (msg.type !== 'assistant') return { parentId: '', children: [] }
+  const parentId = typeof msg.parent_tool_use_id === 'string' ? msg.parent_tool_use_id : ''
+  if (!parentId) return { parentId: '', children: [] }
+  const children: SubagentChildCall[] = []
+  for (const block of getBlocks(msg)) {
+    if (block.type !== 'tool_use') continue
+    const name = block.name
+    if (!name) continue
+    const id = extractToolUseId(block)
+    if (!id) continue
+    children.push({
+      toolUseId: id,
+      toolName: name,
+      argSummary: subagentChildArgSummary(block.input),
+      status: 'running',
+      startedAt: undefined,
+      endedAt: undefined,
+      result: undefined,
+    })
+  }
+  return { parentId, children }
 }
 
 /** The agent is currently isolating work in a worktree opened by
