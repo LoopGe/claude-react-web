@@ -16,6 +16,7 @@
  * After filtering, consecutive tool-only assistant rows are folded into one
  * group row (see `foldToolGroupRows`) so the UI can collapse historical tool
  * cascades. Length-1 runs stay unwrapped.
+ *
  * The invariants the virtualization layer depends on:
  *
  *  I1  `row.id` is stable and unique within a build. It is the React/Virtuoso
