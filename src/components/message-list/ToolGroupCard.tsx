@@ -10,7 +10,8 @@
 // Collapsed header still surfaces running / waiting / failed so a failure
 // or blocked turn is never hidden.
 
-import { memo, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
+import { AnimatedCollapse } from '../AnimatedCollapse'
 import { BlockView } from './blocks'
 import { usePlanStatusMap, useToolStatuses } from '../../hooks/usePlanStatus'
 import { useQuestionAnswersMap } from '../../hooks/useQuestionAnswers'
@@ -20,11 +21,15 @@ import {
   IconAlertCircle,
   IconChevronDown,
   IconChevronRight,
-  IconLayers,
   IconLoader,
   IconMessageQuestion,
 } from '../icons/ToolIcons'
 import type { SdkMessage } from '../../types'
+
+/** Grace period after the whole turn ends before a live group auto-folds,
+ *  so results stay readable. Mid-turn tool gaps never collapse (see
+ *  `wasLive && working` below). */
+const SETTLE_HOLD_MS = 2200
 
 export const ToolGroupCard = memo(function ToolGroupCard({
   members,
@@ -32,12 +37,17 @@ export const ToolGroupCard = memo(function ToolGroupCard({
   activeMemberItemIndex,
   activeMatchInItem,
   searchQuery,
+  working,
 }: {
   members: SdkMessage[]
   memberItemIndices: number[]
   activeMemberItemIndex?: number
   activeMatchInItem?: number
   searchQuery?: string
+  /** Session turn-in-flight flag from MessageList. A group that was live
+   *  stays expanded for the whole turn (tool gaps included); only after
+   *  the turn ends does the settle-hold collapse fire. */
+  working?: boolean
 }) {
   const toolStatuses = useToolStatuses()
   const planStatuses = usePlanStatusMap()
@@ -60,9 +70,43 @@ export const ToolGroupCard = memo(function ToolGroupCard({
     () => groupMayMatchSearch(toolBlocks, searchQuery),
     [toolBlocks, searchQuery],
   )
-  const autoOpen = summary.anyRunning || summary.anyPendingInteractive
+  const live = summary.anyRunning || summary.anyPendingInteractive
+  // Latch: once this mount has seen the group live, keep it "participating"
+  // in the current turn even between sequential tools (result already
+  // landed, next tool_use not yet emitted). History mounts start false.
+  const [wasLive, setWasLive] = useState(live)
+  useEffect(() => {
+    if (live) setWasLive(true)
+  }, [live])
+
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
-  const open = hasSearchHit || (userOpen ?? autoOpen)
+  const [settleHold, setSettleHold] = useState(false)
+
+  // Post-turn grace: only when the session is no longer working AND this
+  // group is no longer live AND it participated in the turn.
+  const turnActive = working === true
+  useEffect(() => {
+    if (live || turnActive) {
+      setSettleHold(false)
+      return
+    }
+    if (!wasLive) return
+    setSettleHold(true)
+    const t = window.setTimeout(() => setSettleHold(false), SETTLE_HOLD_MS)
+    return () => window.clearTimeout(t)
+  }, [live, turnActive, wasLive])
+
+  // open when:
+  //  - live (running / pending) or search hit  — force
+  //  - was live this turn and the turn is still working — no mid-turn fold
+  //  - post-turn settle hold
+  //  - user's last toggle on a fully settled group
+  const open =
+    hasSearchHit ||
+    live ||
+    (wasLive && turnActive) ||
+    settleHold ||
+    (userOpen ?? false)
 
   const badge = summary.anyRunning ? (
     <span className="tool-status tool-status-running" title="A tool in this group is still running.">
@@ -109,19 +153,23 @@ export const ToolGroupCard = memo(function ToolGroupCard({
         <span className="tool-group-chevron" aria-hidden>
           {open ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
         </span>
-        <span className="tool-group-icon" aria-hidden>
-          <IconLayers size={13} />
-        </span>
-        <span className="tool-group-count">{summary.count} tools</span>
-        <span className="tool-group-names" title={summary.nameSummary}>
+        <span
+          className="tool-group-names"
+          title={`${summary.count} tool${summary.count === 1 ? '' : 's'} · ${summary.nameSummary}`}
+        >
           {summary.nameSummary}
         </span>
         <span className="tool-card-spacer" />
         {badge}
       </div>
-      {/* Keep children mounted when collapsed so nested ToolCard / PlanCard
-          / permission state survives a fold (hidden, not unmounted). */}
-      <div className="tool-group-body" hidden={!open}>
+      {/* Animated height fold. unmountOnExit=false keeps children mounted so
+          nested ToolCard / PlanCard / permission state survives a fold. */}
+      <AnimatedCollapse
+        open={open}
+        unmountOnExit={false}
+        className="tool-group-collapse"
+        contentClassName="tool-group-body"
+      >
         {members.map((m, mi) => {
           const isActive =
             activeMemberItemIndex != null && memberItemIndices[mi] === activeMemberItemIndex
@@ -137,7 +185,7 @@ export const ToolGroupCard = memo(function ToolGroupCard({
               />
             ))
         })}
-      </div>
+      </AnimatedCollapse>
     </div>
   )
 })

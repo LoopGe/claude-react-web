@@ -315,13 +315,13 @@ describe('buildTranscriptRows: tool-group fold', () => {
     expect(g.msg.uuid).toBe('t1')
   })
 
-  it('leaves a lone tool-only row unwrapped', () => {
+  it('wraps a lone tool-only row in a length-1 group (chrome still collapsible)', () => {
     const { rows } = buildTranscriptRows({
       items: [toolOnlyAssistant('t1', 'Read'), assistant('a1', 'ok')],
       isResultConsumed: () => true,
     })
     expect(ids(rows)).toEqual(['t1', 'a1'])
-    expect(rows[0]!.toolGroup).toBeUndefined()
+    expect(rows[0]!.toolGroup!.memberIds).toEqual(['t1'])
   })
 
   it('treats thinking / text / user as run boundaries', () => {
@@ -346,7 +346,7 @@ describe('buildTranscriptRows: tool-group fold', () => {
       isResultConsumed: () => true,
     })
     expect(ids(one.rows)).toEqual(['t1'])
-    expect(one.rows[0]!.toolGroup).toBeUndefined()
+    expect(one.rows[0]!.toolGroup!.memberIds).toEqual(['t1'])
 
     const two = buildTranscriptRows({
       items: [toolOnlyAssistant('t1', 'Read'), toolOnlyAssistant('t2', 'Grep')],
@@ -366,7 +366,8 @@ describe('buildTranscriptRows: tool-group fold', () => {
       isResultConsumed: () => false,
     })
     expect(ids(rows)).toEqual(['t1', 'r1', 't2'])
-    expect(rows[0]!.toolGroup).toBeUndefined()
-    expect(rows[2]!.toolGroup).toBeUndefined()
+    // Each still gets its own length-1 group (orphan breaks the run).
+    expect(rows[0]!.toolGroup!.memberIds).toEqual(['t1'])
+    expect(rows[2]!.toolGroup!.memberIds).toEqual(['t2'])
   })
 })

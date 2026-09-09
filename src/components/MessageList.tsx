@@ -802,6 +802,7 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
             members={item.toolGroup.members}
             memberItemIndices={item.toolGroup.memberItemIndices}
             searchQuery={searchQuery}
+            working={working}
             activeMemberItemIndex={
               searchActiveMsgIdx != null &&
               searchActiveMsgIdx >= 0 &&

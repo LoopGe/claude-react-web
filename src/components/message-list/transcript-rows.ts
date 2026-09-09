@@ -175,8 +175,10 @@ export function isToolGroupEligible(row: TranscriptRow): boolean {
   return hasToolUse
 }
 
-/** Fold consecutive eligible runs of length >=2 into one group row. Length-1
- *  runs stay untouched so a lone tool keeps today's appearance. */
+/** Fold consecutive eligible runs — including length-1 — into one group
+ *  row. A lone tool still gets the collapsible chrome so settled history
+ *  stays scannable; live 1→2 growth keeps the first row's id (same-key
+ *  height change + mid-list removal of the second). */
 export function foldToolGroupRows(rows: readonly TranscriptRow[]): TranscriptRow[] {
   const out: TranscriptRow[] = []
   let i = 0
@@ -188,20 +190,16 @@ export function foldToolGroupRows(rows: readonly TranscriptRow[]): TranscriptRow
     }
     let j = i + 1
     while (j < rows.length && isToolGroupEligible(rows[j]!)) j += 1
-    if (j - i === 1) {
-      out.push(rows[i]!)
-    } else {
-      const members = rows.slice(i, j)
-      const first = members[0]!
-      out.push({
-        ...first,
-        toolGroup: {
-          members: members.map((m) => m.msg),
-          memberItemIndices: members.map((m) => m.itemIndex),
-          memberIds: members.map((m) => m.id),
-        },
-      })
-    }
+    const members = rows.slice(i, j)
+    const first = members[0]!
+    out.push({
+      ...first,
+      toolGroup: {
+        members: members.map((m) => m.msg),
+        memberItemIndices: members.map((m) => m.itemIndex),
+        memberIds: members.map((m) => m.id),
+      },
+    })
     i = j
   }
   return out

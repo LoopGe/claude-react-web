@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { render, cleanup, fireEvent } from '@testing-library/react'
+import { useState } from 'react'
+import { render, cleanup, fireEvent, act } from '@testing-library/react'
 import { ToolGroupCard } from './ToolGroupCard'
 import { ToolStatusProvider, ToolResultProvider, PlanStatusProvider } from '../../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../../hooks/useQuestionAnswers'
@@ -14,7 +15,10 @@ beforeEach(() => {
     removeEventListener() {},
   }))
 })
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 function toolMsg(id: string, name = 'Read', input: Record<string, unknown> = {}): SdkMessage {
   return {
@@ -35,6 +39,7 @@ function renderGroup({
   searchQuery,
   activeMemberItemIndex,
   activeMatchInItem,
+  working,
 }: {
   members: SdkMessage[]
   toolStatus: Map<string, ToolStatus>
@@ -43,6 +48,7 @@ function renderGroup({
   searchQuery?: string
   activeMemberItemIndex?: number
   activeMatchInItem?: number
+  working?: boolean
 }) {
   return render(
     <ToolStatusProvider value={toolStatus}>
@@ -56,6 +62,7 @@ function renderGroup({
                 searchQuery={searchQuery}
                 activeMemberItemIndex={activeMemberItemIndex}
                 activeMatchInItem={activeMatchInItem}
+                working={working}
               />
             </BackgroundToolProvider>
           </QuestionAnswersProvider>
@@ -79,7 +86,7 @@ describe('ToolGroupCard', () => {
       ]),
     })
     expect(isOpen(container)).toBe(false)
-    expect(container.textContent).toContain('2 tools')
+    expect(container.textContent).toContain('Read')
   })
 
   it('defaults expanded while any tool is still running', () => {
@@ -94,6 +101,80 @@ describe('ToolGroupCard', () => {
     expect(container.querySelector('.tool-status-running')).not.toBeNull()
   })
 
+  it('keeps a running group open even after a manual close', () => {
+    const { container } = renderGroup({
+      members: [toolMsg('t1'), toolMsg('t2')],
+      toolStatus: new Map<string, ToolStatus>([
+        ['t1-tu', 'success'],
+        ['t2-tu', 'running'],
+      ]),
+    })
+    expect(isOpen(container)).toBe(true)
+    fireEvent.click(container.querySelector('.tool-group-summary-inner')!)
+    // forceOpen (running) wins over userOpen=false
+    expect(isOpen(container)).toBe(true)
+  })
+
+  it('stays open mid-turn when tools settle between calls, then folds after the turn ends', () => {
+    vi.useFakeTimers()
+    function Harness() {
+      const [status, setStatus] = useState<Map<string, ToolStatus>>(
+        new Map([
+          ['t1-tu', 'success' as const],
+          ['t2-tu', 'running' as const],
+        ]),
+      )
+      const [working, setWorking] = useState(true)
+      const members = [toolMsg('t1'), toolMsg('t2')]
+      return (
+        <>
+          <button
+            type="button"
+            data-testid="settle"
+            onClick={() =>
+              setStatus(
+                new Map([
+                  ['t1-tu', 'success' as const],
+                  ['t2-tu', 'success' as const],
+                ]),
+              )
+            }
+          />
+          <button type="button" data-testid="turn-end" onClick={() => setWorking(false)} />
+          <ToolStatusProvider value={status}>
+            <ToolResultProvider value={new Map()}>
+              <PlanStatusProvider value={new Map()}>
+                <QuestionAnswersProvider value={new Map() as never}>
+                  <BackgroundToolProvider value={undefined}>
+                    <ToolGroupCard
+                      members={members}
+                      memberItemIndices={members.map((_, i) => i)}
+                      working={working}
+                    />
+                  </BackgroundToolProvider>
+                </QuestionAnswersProvider>
+              </PlanStatusProvider>
+            </ToolResultProvider>
+          </ToolStatusProvider>
+        </>
+      )
+    }
+    const { container, getByTestId } = render(<Harness />)
+    expect(isOpen(container)).toBe(true)
+
+    // Tools settle mid-turn (gap before the next tool_use) — must stay open
+    fireEvent.click(getByTestId('settle'))
+    expect(isOpen(container)).toBe(true)
+
+    // Turn ends → settle hold, then auto-collapse
+    fireEvent.click(getByTestId('turn-end'))
+    expect(isOpen(container)).toBe(true)
+    act(() => {
+      vi.advanceTimersByTime(2300)
+    })
+    expect(isOpen(container)).toBe(false)
+  })
+
   it('shows failed badge when collapsed and a tool errored', () => {
     const { container } = renderGroup({
       members: [toolMsg('t1'), toolMsg('t2')],
@@ -106,14 +187,16 @@ describe('ToolGroupCard', () => {
     expect(container.querySelector('.tool-status-error')).not.toBeNull()
   })
 
-  it('shows waiting badge when a pending plan is folded away', () => {
+  it('keeps a pending-plan group open (and shows waiting) even after a manual close', () => {
     const { container } = renderGroup({
       members: [toolMsg('t1'), toolMsg('p1', 'ExitPlanMode')],
       toolStatus: new Map<string, ToolStatus>([['t1-tu', 'success']]),
       planStatus: new Map([['p1-tu', 'pending' as const]]),
     })
+    expect(isOpen(container)).toBe(true)
     fireEvent.click(container.querySelector('.tool-group-summary-inner')!)
-    expect(isOpen(container)).toBe(false)
+    // pending interactive also force-opens — a folded plan would stall the turn
+    expect(isOpen(container)).toBe(true)
     expect(container.textContent).toContain('waiting')
     expect(container.querySelector('.tool-group-has-pending')).not.toBeNull()
   })
