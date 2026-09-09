@@ -1,23 +1,26 @@
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
+import {
+  USER_SELECTABLE_PERMISSION_MODES as SHARED_USER_SELECTABLE_PERMISSION_MODES,
+  isUserSelectablePermissionMode,
+  permissionModeList,
+} from '../shared/permission-modes.js'
 
-export const USER_SELECTABLE_PERMISSION_MODES = [
-  'default',
-  'acceptEdits',
-  'plan',
-  'bypassPermissions',
-  'dontAsk',
-  'auto',
-] as const satisfies readonly PermissionMode[]
+// Re-export the shared vocabulary so existing `server/permission-modes.js`
+// import sites keep working. The list itself lives in shared/ with a
+// compile-time `satisfies readonly PermissionMode[]` lockstep to the SDK.
+export {
+  isUserSelectablePermissionMode,
+  permissionModeList,
+}
+export const USER_SELECTABLE_PERMISSION_MODES = SHARED_USER_SELECTABLE_PERMISSION_MODES
 
+/** Plan approval can only exit into these execution modes (never back into
+ *  plan, and never into a lockdown mode the user didn't opt into). */
 export const PLAN_APPROVAL_TARGET_MODES = [
   'default',
   'acceptEdits',
   'bypassPermissions',
 ] as const satisfies readonly PermissionMode[]
-
-export function isUserSelectablePermissionMode(value: unknown): value is PermissionMode {
-  return typeof value === 'string' && (USER_SELECTABLE_PERMISSION_MODES as readonly string[]).includes(value)
-}
 
 export function isPlanApprovalTargetMode(value: unknown): value is PermissionMode {
   return typeof value === 'string' && (PLAN_APPROVAL_TARGET_MODES as readonly string[]).includes(value)
@@ -38,8 +41,4 @@ export const SDK_FORWARDED_PERMISSION_MODES = ['plan', 'auto'] as const satisfie
 
 export function isSdkForwardedMode(mode: PermissionMode): boolean {
   return (SDK_FORWARDED_PERMISSION_MODES as readonly string[]).includes(mode)
-}
-
-export function permissionModeList(modes: readonly PermissionMode[] = USER_SELECTABLE_PERMISSION_MODES): string {
-  return modes.join(', ')
 }

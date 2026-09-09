@@ -3,18 +3,17 @@
 // renders defensively.
 
 import type { SessionInfoBase } from '../shared/session-info'
+import {
+  USER_SELECTABLE_PERMISSION_MODES,
+  type SdkAgentPermissionMode,
+} from '../shared/permission-modes'
 
-export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'
+/** Permission modes this host accepts. Derived from the shared list (which
+ *  is locked to the SDK at compile time) so the client union cannot drift. */
+export type PermissionMode = SdkAgentPermissionMode
 
 // User-selectable permission modes (dropdowns/chip menus).
-export const PERMISSION_MODES: PermissionMode[] = [
-  'default',
-  'acceptEdits',
-  'plan',
-  'bypassPermissions',
-  'dontAsk',
-  'auto',
-]
+export const PERMISSION_MODES: readonly PermissionMode[] = USER_SELECTABLE_PERMISSION_MODES
 
 // Keyboard cycle mirrors the interactive Claude Code flow as closely as this
 // backend can support: `auto` is unavailable here and `dontAsk` is deliberately

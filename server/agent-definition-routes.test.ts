@@ -58,4 +58,61 @@ describe('agent-definition routes', () => {
     expect(res.status).toBe(204)
     expect(store.has('reviewer')).toBe(false)
   })
+
+  it('accepts SDK permission modes including dontAsk and auto', async () => {
+    const { app } = makeApp()
+    for (const pm of ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto']) {
+      const res = await app.request(BASE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ data: { ...def(`a-${pm}`), permissionMode: pm } }),
+      })
+      expect(res.status, `permissionMode=${pm}`).toBe(201)
+      const body = await res.json() as { agent: { permissionMode?: string } }
+      expect(body.agent.permissionMode).toBe(pm)
+    }
+  })
+
+  it('400s the legacy non-SDK permissionMode disabled', async () => {
+    const { app, store } = makeApp()
+    const res = await app.request(BASE, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ data: { ...def('reviewer'), permissionMode: 'disabled' } }),
+    })
+    expect(res.status).toBe(400)
+    expect(store.has('reviewer')).toBe(false)
+    const text = await res.text()
+    expect(text).toContain('dontAsk')
+    expect(text).toContain('auto')
+  })
+
+  it('400s when the client sends an invalid optional field rather than silently stripping', async () => {
+    const { app, store } = makeApp()
+    for (const bad of [
+      { memory: 'nope' },
+      { effort: 'ultra' },
+      { maxTurns: Number.NaN },
+      { background: 'yes' },
+    ]) {
+      const res = await app.request(BASE, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ data: { ...def(`bad-${Object.keys(bad)[0]}`), ...bad } }),
+      })
+      expect(res.status, JSON.stringify(bad)).toBe(400)
+    }
+    expect(store.list()).toHaveLength(0)
+  })
+
+  it('drops unknown keys on write so they cannot round-trip through disk', async () => {
+    const { app, store } = makeApp()
+    const res = await app.request(BASE, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ data: { ...def('reviewer'), injected: 'x' } }),
+    })
+    expect(res.status).toBe(201)
+    expect(store.get('reviewer')).not.toHaveProperty('injected')
+  })
 })

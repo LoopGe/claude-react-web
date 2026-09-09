@@ -1,5 +1,9 @@
 import { promises as fs } from 'node:fs'
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk'
+import {
+  LEGACY_INVALID_PERMISSION_MODE,
+  isSdkAgentPermissionMode,
+} from '../shared/agent-definitions.js'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
 import { createLogger } from './log.js'
@@ -72,8 +76,22 @@ export class AgentDefinitionStore extends JsonFileStore<StoredAgentDefinition> {
 const STRING_OPTIONAL: readonly string[] = ['model', 'initialPrompt', 'observer', 'observerMessage', 'criticalSystemReminder_EXPERIMENTAL']
 const STRING_ARRAY_OPTIONAL: readonly string[] = ['tools', 'disallowedTools', 'mcpServers', 'skills']
 const MEMORY_VALUES = ['user', 'project', 'local']
+const EFFORT_VALUES = ['low', 'medium', 'high', 'xhigh', 'max']
 
-/** Defensive parse of one stored definition; malformed → null (dropped). */
+/** App bookkeeping keys that ride alongside AGENT_FIELDS on a stored def. */
+const BOOKKEEPING_FIELDS = ['name', 'enabled', 'createdAt', 'updatedAt'] as const
+const KNOWN_KEYS = new Set<string>([...BOOKKEEPING_FIELDS, ...AGENT_FIELDS])
+
+/** Defensive parse of one stored definition; structurally malformed → null
+ *  (dropped). Illegal *values* on optional enum fields are STRIPPED rather
+ *  than rejecting the whole agent — dropping the entry here used to silently
+ *  delete the agent from disk the next time the store rewrote its file (load
+ *  filters it out of memory, then any later upsert serializes the in-memory
+ *  list only). Write edges that want a hard 400 must validate those fields
+ *  separately — see `agent-definition-routes.ts`.
+ *
+ *  Unknown keys are dropped so hand-edited / client-injected fields cannot
+ *  round-trip through disk (AGENT_FIELDS + bookkeeping is the closed set). */
 export function coerceStoredAgentDefinition(raw: unknown): StoredAgentDefinition | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
   const d = raw as Record<string, unknown>
@@ -82,18 +100,58 @@ export function coerceStoredAgentDefinition(raw: unknown): StoredAgentDefinition
   if (typeof d.prompt !== 'string' || !d.prompt.trim()) return null
   if (typeof d.enabled !== 'boolean') return null
   if (typeof d.createdAt !== 'number' || typeof d.updatedAt !== 'number') return null
-  for (const s of STRING_OPTIONAL) if (d[s] !== undefined && (typeof d[s] !== 'string' || !d[s].trim())) return null
-  for (const a of STRING_ARRAY_OPTIONAL) {
-    if (d[a] === undefined) continue
-    if (!Array.isArray(d[a]) || d[a].some((v) => typeof v !== 'string' || !v.trim())) return null
+
+  // Closed field set — never mutate the caller's object.
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(d)) {
+    if (KNOWN_KEYS.has(k)) out[k] = v
   }
-  if (d.memory !== undefined && !MEMORY_VALUES.includes(d.memory as string)) return null
-  const effort = d.effort
-  if (effort !== undefined && typeof effort !== 'number' && !['low', 'medium', 'high', 'xhigh', 'max'].includes(effort as string)) return null
-  if (effort !== undefined && typeof effort === 'number' && !Number.isFinite(effort)) return null
-  const pm = d.permissionMode
-  if (pm !== undefined && !['default', 'acceptEdits', 'bypassPermissions', 'plan', 'disabled'].includes(pm as string)) return null
-  if (d.maxTurns !== undefined && (typeof d.maxTurns !== 'number' || !Number.isFinite(d.maxTurns))) return null
-  if (d.background !== undefined && typeof d.background !== 'boolean') return null
-  return d as unknown as StoredAgentDefinition
+  const name = out.name as string
+  const strip = (field: string, why: string) => {
+    log.warn(`agent "${name}": dropping invalid ${field} ${JSON.stringify(out[field])} — ${why}`)
+    delete out[field]
+  }
+
+  for (const s of STRING_OPTIONAL) {
+    if (out[s] !== undefined && (typeof out[s] !== 'string' || !(out[s] as string).trim())) return null
+  }
+  for (const a of STRING_ARRAY_OPTIONAL) {
+    if (out[a] === undefined) continue
+    if (!Array.isArray(out[a]) || (out[a] as unknown[]).some((v) => typeof v !== 'string' || !v.trim())) return null
+  }
+  if (out.memory !== undefined && !MEMORY_VALUES.includes(out.memory as string)) {
+    strip('memory', `must be one of ${MEMORY_VALUES.join(', ')}`)
+  }
+  const effort = out.effort
+  if (effort !== undefined) {
+    const ok =
+      typeof effort === 'number'
+        ? Number.isFinite(effort)
+        : typeof effort === 'string' && EFFORT_VALUES.includes(effort)
+    if (!ok) strip('effort', `must be a finite number or one of ${EFFORT_VALUES.join(', ')}`)
+  }
+  const pm = out.permissionMode
+  if (pm !== undefined && !isSdkAgentPermissionMode(pm)) {
+    if (pm === LEGACY_INVALID_PERMISSION_MODE) {
+      // Historical UI offered a fake 'disabled' permission mode. Users who
+      // picked it meant the agent should not run — preserve that intent by
+      // turning the agent off rather than silently enabling it with the
+      // session default mode.
+      log.warn(
+        `agent "${name}": legacy permissionMode 'disabled' was never an SDK mode — ` +
+          `disabling the agent (enabled: false) to preserve inert intent; re-enable and pick a real mode if you want it to run`,
+      )
+      delete out.permissionMode
+      out.enabled = false
+    } else {
+      strip('permissionMode', 'must be an SDK PermissionMode')
+    }
+  }
+  if (out.maxTurns !== undefined && (typeof out.maxTurns !== 'number' || !Number.isFinite(out.maxTurns))) {
+    strip('maxTurns', 'must be a finite number')
+  }
+  if (out.background !== undefined && typeof out.background !== 'boolean') {
+    strip('background', 'must be a boolean')
+  }
+  return out as unknown as StoredAgentDefinition
 }

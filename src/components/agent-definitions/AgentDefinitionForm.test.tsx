@@ -55,4 +55,23 @@ describe('AgentDefinitionForm', () => {
     expect(data.effort).toBe(0.5)
     expect(typeof data.effort).toBe('number')
   })
+
+  it('validateAgentDefinition rejects the legacy non-SDK mode disabled and accepts dontAsk/auto', () => {
+    const base = { name: 'a', description: 'd', prompt: 'p' }
+    expect(validateAgentDefinition({ ...base, permissionMode: 'disabled' })).toMatch(/permissionMode/)
+    expect(validateAgentDefinition({ ...base, permissionMode: 'everything' })).toMatch(/permissionMode/)
+    expect(validateAgentDefinition({ ...base, permissionMode: 'dontAsk' })).toBeNull()
+    expect(validateAgentDefinition({ ...base, permissionMode: 'auto' })).toBeNull()
+  })
+
+  it('permission-mode select offers SDK modes only (no disabled)', () => {
+    render(<AgentDefinitionForm onSaved={() => {}} onCancel={() => {}} />)
+    const select = screen.getByLabelText(/permission mode/i)
+    const values = Array.from(select.querySelectorAll('option')).map((o) => o.value)
+    expect(values).toContain('dontAsk')
+    expect(values).toContain('auto')
+    expect(values).not.toContain('disabled')
+    // Empty option is the "Default" sentinel the form omits from the payload.
+    expect(values).toContain('')
+  })
 })

@@ -6,6 +6,7 @@
 // routes are the write edge that keeps garbage out of the store.
 
 import { Hono } from 'hono'
+import { isSdkAgentPermissionMode, permissionModeList } from '../shared/agent-definitions.js'
 import { AgentDefinitionStore, coerceStoredAgentDefinition, type StoredAgentDefinition } from './agent-definition-store.js'
 import { HttpError, createErrorHandler } from './errors.js'
 import { safeJson } from './routes/index.js'
@@ -27,11 +28,27 @@ function applyUpdate(base: StoredAgentDefinition, patch: Record<string, unknown>
 
 /** Validate a candidate definition at the write edge so garbage never reaches
  *  disk (mirrors how load() would otherwise drop it on read). Throws 400 on
- *  any shape violation so the client gets immediate feedback. */
+ *  any shape violation so the client gets immediate feedback.
+ *
+ *  Optional enum fields (permissionMode / memory / effort / …) are stripped on
+ *  load to preserve the agent; the write path must tell the client instead of
+ *  silently saving a definition without the field they sent. */
 function coerceDef(def: StoredAgentDefinition): StoredAgentDefinition {
+  if (def.permissionMode !== undefined && !isSdkAgentPermissionMode(def.permissionMode)) {
+    throw new HttpError(400, `permissionMode must be one of ${permissionModeList()}`)
+  }
+  // Persist the coerced result (closed field set, sanitized values), not the
+  // raw input — otherwise disk accumulates shapes the read path would strip.
   const ok = coerceStoredAgentDefinition(def)
   if (!ok) throw new HttpError(400, 'invalid agent definition shape')
-  return def
+  // If the client explicitly sent a value coerce had to strip, reject — a
+  // silent drop would make GET report a definition that differs from the PUT.
+  for (const field of ['memory', 'effort', 'maxTurns', 'background'] as const) {
+    if (def[field] !== undefined && !(field in ok)) {
+      throw new HttpError(400, `${field} value ${JSON.stringify(def[field])} is invalid`)
+    }
+  }
+  return ok
 }
 
 export function buildAgentDefinitionsRouter(store: AgentDefinitionStore): Hono {

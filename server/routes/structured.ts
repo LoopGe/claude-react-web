@@ -11,6 +11,7 @@ import { Hono } from 'hono'
 import { SessionManager } from '../session-manager.js'
 import { HttpError } from '../errors.js'
 import { createLogger } from '../log.js'
+import { permissionModeList } from '../permission-modes.js'
 import { safeJson } from './index.js'
 import type { StructuredPermissionMode, StructuredRunRequest } from '../../shared/structured.js'
 
@@ -60,7 +61,10 @@ function validateBody(body: unknown): StructuredRunRequest {
   }
   if (b.permissionMode !== undefined) {
     if (typeof b.permissionMode !== 'string' || !PERMISSION_MODES.has(b.permissionMode as StructuredPermissionMode)) {
-      throw new HttpError(400, `permissionMode must be one of: ${[...PERMISSION_MODES].join(', ')}`)
+      // Narrower than USER_SELECTABLE (no plan/auto — headless runs would
+      // block on ExitPlanMode / the auto classifier). Error wording reuses
+      // the shared formatter so all permissionMode 400s read the same.
+      throw new HttpError(400, `permissionMode must be one of: ${permissionModeList([...PERMISSION_MODES])}`)
     }
     out.permissionMode = b.permissionMode as StructuredPermissionMode
   }

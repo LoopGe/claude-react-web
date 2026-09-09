@@ -1,9 +1,13 @@
 import { useState } from 'react'
+import {
+  SDK_AGENT_PERMISSION_MODES,
+  isSdkAgentPermissionMode,
+  permissionModeList,
+} from '../../../shared/agent-definitions'
 import { api } from '../../hooks/useApi'
 import type { StoredAgentDefinition } from '../../types'
 
 const EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
-const PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions', 'plan', 'disabled'] as const
 const MEMORY_OPTIONS = ['user', 'project', 'local'] as const
 
 const OPTIONAL_STRINGS = ['model', 'initialPrompt', 'observer', 'observerMessage', 'criticalSystemReminder_EXPERIMENTAL'] as const
@@ -36,7 +40,9 @@ export function validateAgentDefinition(partial: Record<string, unknown>): strin
   }
   if (effort !== undefined && typeof effort === 'number' && !Number.isFinite(effort)) return 'effort must be a finite number'
   const pm = partial.permissionMode
-  if (pm !== undefined && !PERMISSION_MODES.includes(pm as (typeof PERMISSION_MODES)[number])) return 'permissionMode is invalid'
+  if (pm !== undefined && !isSdkAgentPermissionMode(pm)) {
+    return `permissionMode must be one of ${permissionModeList()}`
+  }
   if (partial.maxTurns !== undefined && (typeof partial.maxTurns !== 'number' || !Number.isFinite(partial.maxTurns))) {
     return 'maxTurns must be a finite number'
   }
@@ -312,7 +318,7 @@ export function AgentDefinitionForm({ initial, onSaved, onCancel }: AgentDefinit
           <span>Permission mode</span>
           <select value={form.permissionMode} onChange={(e) => set('permissionMode', e.target.value)}>
             <option value="">Default</option>
-            {PERMISSION_MODES.map((o) => (
+            {SDK_AGENT_PERMISSION_MODES.map((o) => (
               <option key={o} value={o}>{o}</option>
             ))}
           </select>
