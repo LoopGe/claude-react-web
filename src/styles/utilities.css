@@ -1036,6 +1036,42 @@
 .tt-bottom:focus-within > .tt-bubble {
   transform: translate(-50%, 0);
 }
+/* Align-start/end (top/bottom): anchor one edge of the bubble to the
+   trigger's matching edge so it grows inward. For triggers pinned near a
+   container's edge (e.g. the chat-panel header chips), the default
+   centered anchor pushes the bubble past the container and it gets
+   hard-clipped by the panel's overflow:hidden — cutting text off the
+   widest line. "end" grows leftward (right-edge triggers), "start"
+   grows rightward (left-edge triggers). The two-class selector
+   outranks the single-class placement rules above. */
+.tt-top.tt-align-end > .tt-bubble,
+.tt-bottom.tt-align-end > .tt-bubble {
+  left: auto;
+  right: 0;
+}
+.tt-top.tt-align-start > .tt-bubble,
+.tt-bottom.tt-align-start > .tt-bubble {
+  left: 0;
+  right: auto;
+}
+.tt-top.tt-align-start > .tt-bubble,
+.tt-top.tt-align-end > .tt-bubble {
+  transform: translateY(var(--motion-distance-xs));
+}
+.tt-bottom.tt-align-start > .tt-bubble,
+.tt-bottom.tt-align-end > .tt-bubble {
+  transform: translateY(calc(-1 * var(--motion-distance-xs)));
+}
+.tt-top.tt-align-start:hover > .tt-bubble,
+.tt-top.tt-align-end:hover > .tt-bubble,
+.tt-top.tt-align-start:focus-within > .tt-bubble,
+.tt-top.tt-align-end:focus-within > .tt-bubble,
+.tt-bottom.tt-align-start:hover > .tt-bubble,
+.tt-bottom.tt-align-end:hover > .tt-bubble,
+.tt-bottom.tt-align-start:focus-within > .tt-bubble,
+.tt-bottom.tt-align-end:focus-within > .tt-bubble {
+  transform: translateY(0);
+}
 /* Placement: left */
 .tt-left > .tt-bubble {
   right: calc(100% + 6px);

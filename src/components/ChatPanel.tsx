@@ -781,7 +781,7 @@ export const ChatPanel = memo(function ChatPanel({
         }}
       >
         <div className="chat-panel-header-row1">
-        <Tooltip label={`Slot ${slot} · Ctrl/Cmd+${slot} to focus`} placement="bottom">
+        <Tooltip label={`Slot ${slot} · Ctrl/Cmd+${slot} to focus`} placement="bottom" align="start">
           <span
             className={`chat-panel-slot ${focused ? 'focused' : ''} ${showSlotHints ? 'key-hint' : ''}`}
             aria-label={`slot ${slot}`}
@@ -790,7 +790,7 @@ export const ChatPanel = memo(function ChatPanel({
           </span>
         </Tooltip>
         {hasUnread && !focused && (
-          <Tooltip label="New turn completed while this panel wasn't focused" placement="bottom">
+          <Tooltip label="New turn completed while this panel wasn't focused" placement="bottom" align="start">
             <span
               className="chat-panel-unread"
               role="img"
@@ -803,6 +803,7 @@ export const ChatPanel = memo(function ChatPanel({
             ? `Click title to regenerate${session.cwd ? ` · ${session.cwd}` : ''}`
             : (session.cwd ?? '')}
           placement="bottom"
+          align="start"
           disabled={!session.cwd && !canRegenerateTitle}
         >
           <span
@@ -965,7 +966,7 @@ export const ChatPanel = memo(function ChatPanel({
           </Tooltip>
         )}
         <div className="chat-panel-meta">
-          <Tooltip label={`Model: ${session.model ?? 'default'} · click to change`} placement="bottom">
+          <Tooltip label={`Model: ${session.model ?? 'default'} · click to change`} placement="bottom" align="end">
             <button
               type="button"
               className={`chat-panel-model-badge${modelMenu ? ' open' : ''}`}
@@ -1117,7 +1118,7 @@ export const ChatPanel = memo(function ChatPanel({
         {(session.cwd || gitStatus.data?.isRepo === true) && (
           <div className="chat-panel-header-row2">
             {session.cwd && (
-              <Tooltip label={session.cwd} placement="bottom">
+              <Tooltip label={session.cwd} placement="bottom" align="start">
                 <span className="chat-panel-cwd">
                   <IconFolder size={12} />
                   {shortenPath(session.cwd)}
@@ -1130,7 +1131,7 @@ export const ChatPanel = memo(function ChatPanel({
                 cwd isn't a git repo or while the status fetch is still
                 settling (no data yet). */}
             {gitStatus.data && gitStatus.data.isRepo === true && (
-              <Tooltip label={gitChipTitle(gitStatus.data)} placement="bottom">
+              <Tooltip label={gitChipTitle(gitStatus.data)} placement="bottom" align="end">
                 <button
                   type="button"
                   className={[
@@ -1156,7 +1157,7 @@ export const ChatPanel = memo(function ChatPanel({
                 opens the Worktree-changes overlay — its own view of what
                 the isolated worktree did, distinct from the git panel. */}
             {activeWorktree && (
-              <Tooltip label={worktreeChipTitle(activeWorktreeMatch)} placement="bottom">
+              <Tooltip label={worktreeChipTitle(activeWorktreeMatch)} placement="bottom" align="end">
                 <button
                   type="button"
                   className={[

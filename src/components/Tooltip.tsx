@@ -32,6 +32,15 @@ interface TooltipProps {
   label?: ReactNode
   /** Side of the trigger to place the bubble on. Default "top". */
   placement?: TooltipPlacement
+  /** Horizontal alignment of the bubble relative to the trigger.
+   *  "center" (default) anchors the bubble's midpoint under/over the
+   *  trigger; "end" anchors its RIGHT edge to the trigger's right edge so
+   *  the bubble grows leftward; "start" anchors its LEFT edge and grows
+   *  rightward. Use "start"/"end" for triggers pinned near a container
+   *  edge (e.g. the chat-panel header chips), where the centered bubble
+   *  would overflow the container and be hard-clipped by its
+   *  overflow:hidden. Only meaningful for top/bottom placements. */
+  align?: 'start' | 'center' | 'end'
   /** Single trigger element. Must be a React element (not a string)
    *  because we forward `aria-describedby` to it. */
   children: ReactElement<{ 'aria-describedby'?: string }>
@@ -39,7 +48,7 @@ interface TooltipProps {
   disabled?: boolean
 }
 
-export function Tooltip({ label, placement = 'top', children, disabled }: TooltipProps) {
+export function Tooltip({ label, placement = 'top', align = 'center', children, disabled }: TooltipProps) {
   const id = useId()
   const child = Children.only(children)
 
@@ -57,7 +66,7 @@ export function Tooltip({ label, placement = 'top', children, disabled }: Toolti
       : child
 
   return (
-    <span className={`tt-wrap tt-${placement}`}>
+    <span className={`tt-wrap tt-${placement}${align !== 'center' ? ` tt-align-${align}` : ''}`}>
       {describedChild}
       <span
         id={id}
