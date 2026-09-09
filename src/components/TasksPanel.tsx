@@ -16,12 +16,13 @@
 //     SDK emits a terminal task_notification which flips the row via the
 //     normal snapshot path; no optimistic state here.
 
-import { memo, useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useState } from 'react'
 import { useSessionField } from '../session-store/selectors'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useCountUp } from '../hooks/useCountUp'
+import { ElapsedTimer } from './ElapsedTimer'
 import { formatElapsed } from '../utils/format'
 import type { TaskRecordUi } from '../types'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
@@ -50,21 +51,18 @@ function TypeIcon({ task }: { task: TaskRecordUi }) {
   return <IconListTodo size={13} aria-hidden />
 }
 
-/** Self-ticking elapsed span for one task row — same isolation pattern as
- *  MessageList's ElapsedTimer (only this tiny node re-renders each second).
- *  When `endedAt` is present the elapsed value freezes and the interval
- *  never starts (terminal rows render the static delta). */
+/** Elapsed span for one task row. A row with no `endedAt` is still running and
+ *  ticks; a terminal row freezes at its recorded delta. The shared
+ *  <ElapsedTimer> owns the isolation (only its own text node re-renders). */
 const RowTimer = memo(function RowTimer({ startedAt, endedAt }: { startedAt?: number; endedAt?: number }) {
-  const [now, setNow] = useState(() => Date.now())
-  const live = endedAt == null
-  useEffect(() => {
-    if (!live) return
-    const id = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(id)
-  }, [live])
-  if (startedAt == null) return null
-  const end = endedAt ?? now
-  return <span className="tasks-row-timer">{formatElapsed(Math.max(0, end - startedAt))}</span>
+  return (
+    <ElapsedTimer
+      startedAt={startedAt}
+      endedAt={endedAt}
+      live={endedAt == null}
+      className="tasks-row-timer"
+    />
+  )
 })
 
 export const TasksPanel = memo(function TasksPanel({

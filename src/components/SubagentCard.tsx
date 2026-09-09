@@ -10,7 +10,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useBackgroundTool } from '../hooks/useBackgroundTool'
 import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
-import { formatElapsed } from '../utils/format'
+import { ElapsedTimer } from './ElapsedTimer'
 import { BackgroundToolButton, ToolResultSection } from './ToolCard'
 import { GridClipEnter } from './GridClipEnter'
 import { AnimatedDetails } from './AnimatedCollapse'
@@ -59,23 +59,12 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
   const actionsEntering = useEnterOnArrival(showActions ? record : null)
   const progressEntering = useEnterOnArrival(showProgress ? record?.progressSummary : null)
 
-  // Tick once a second while running so the elapsed display stays fresh.
-  // Stops once the record is no longer live (pending/done/interrupted/
-  // rejected) — completed/waiting cards don't need re-renders. A 'background'
-  // record is still live (the async subagent is still working) even though
-  // the async-detector advances endedAt to the latest child frame, so the
-  // timer must keep ticking and elapsedMs uses `now` (not endedAt) while
-  // isRunning.
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!isRunning) return
-    const id = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(id)
-  }, [isRunning])
-
-  const elapsedMs = startedAt
-    ? (isRunning ? now : (endedAt ?? now)) - startedAt
-    : null
+  // The elapsed display self-ticks inside <ElapsedTimer> (a memoized leaf), so
+  // a running subagent no longer re-renders this whole card — and its child
+  // tool-call list — once per second inside the virtualized transcript.
+  // `live={isRunning}` carries the async nuance: a 'background' record is still
+  // working even though the reducer advances its endedAt to the latest child
+  // frame, so it must keep counting from `now` rather than freeze at endedAt.
 
   // Pre-computed in the reducer's updateIndexes — no message scanning needed.
   const toolCount = record?.toolCount ?? 0
@@ -119,9 +108,12 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
               {isAsync ? 'async' : 'sync'}
             </span>
           )}
-          {elapsedMs != null && (
-            <span className="subagent-card-elapsed">{formatElapsed(elapsedMs)}</span>
-          )}
+          <ElapsedTimer
+            startedAt={startedAt}
+            endedAt={endedAt}
+            live={isRunning}
+            className="subagent-card-elapsed"
+          />
           {toolCount > 0 && (
             <span className="subagent-card-tools">
               {toolCount} {toolCount === 1 ? 'tool' : 'tools'}

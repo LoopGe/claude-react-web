@@ -10,10 +10,10 @@
 // lands the record is KEPT (status flips to done/interrupted) so the overlay
 // stays reopenable — same keep-on-complete discipline as SubagentCard.
 
-import { memo, useEffect, useState } from 'react'
+import { memo } from 'react'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
 import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
-import { formatElapsed } from '../utils/format'
+import { ElapsedTimer } from './ElapsedTimer'
 import { ToolResultSection } from './ToolCard'
 import {
   IconCheck,
@@ -49,16 +49,9 @@ export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabe
   const remote = record?.remote === true
   const sessionUrl = record?.sessionUrl
 
-  // Tick once a second while running so the elapsed display stays fresh.
-  // Stops once endedAt is set — completed cards don't need re-renders.
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!isRunning) return
-    const id = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(id)
-  }, [isRunning])
-
-  const elapsedMs = startedAt ? (endedAt ?? now) - startedAt : null
+  // The elapsed display self-ticks inside <ElapsedTimer> (a memoized leaf), so
+  // a running workflow no longer re-renders this whole card once per second
+  // inside the virtualized transcript.
 
   const statusIcon =
     status === 'running' ? <IconCircleDot size={12} />
@@ -102,9 +95,12 @@ export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabe
           <span className="workflow-card-status" aria-label={status}>
             {statusIcon}
           </span>
-          {elapsedMs != null && (
-            <span className="workflow-card-elapsed">{formatElapsed(elapsedMs)}</span>
-          )}
+          <ElapsedTimer
+            startedAt={startedAt}
+            endedAt={endedAt}
+            live={isRunning}
+            className="workflow-card-elapsed"
+          />
           <span className="workflow-card-open" aria-hidden><IconExternalLink size={12} /></span>
         </span>
       </button>
