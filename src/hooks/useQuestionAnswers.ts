@@ -40,3 +40,9 @@ export function useQuestionAnswers(toolUseId: string | undefined): QuestionAnswe
   if (!toolUseId) return undefined
   return map.get(toolUseId)
 }
+
+/** Read the full question-answers map from context. Used by ToolGroupCard
+ *  to detect pending AskUserQuestion calls inside a folded group. */
+export function useQuestionAnswersMap(): AnswersMap {
+  return useContext(Ctx)
+}
