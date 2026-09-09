@@ -86,6 +86,26 @@ describe('ContextBar', () => {
     expect(onSetWindow).toHaveBeenCalledWith(133000)
   })
 
+  it('never pins a window larger than the model can hold', () => {
+    // Dragging to the top of the track asks for a threshold at 100% of the
+    // window; the inverse adds the 33k output+buffer headroom back on, which
+    // would POST 233000 for a 200k model. The CLI resolves that back down to
+    // its real limit, so the request must be clamped rather than describing a
+    // threshold ("compacts at 100%") that can never be reached.
+    const onSetWindow = vi.fn()
+    const { container } = render(
+      <ContextBar usage={usage} editable custom onSetWindow={onSetWindow} />,
+    )
+    stubTrackRect(container)
+    const wrap = container.querySelector('.ctx-bar-track-wrap')!
+
+    fireEvent.pointerDown(wrap, { pointerId: 1, button: 0, clientX: 0 })
+    fireEvent.pointerMove(wrap, { pointerId: 1, clientX: 200 }) // 100% of 200px
+    fireEvent.pointerUp(wrap, { pointerId: 1 })
+
+    expect(onSetWindow).toHaveBeenCalledWith(200000)
+  })
+
   it('does not commit on a plain click (no movement)', () => {
     const onSetWindow = vi.fn()
     const { container } = render(

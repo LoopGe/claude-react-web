@@ -985,8 +985,9 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         if (msg.type === 'result') {
           // Pass the session's pinned auto-compact window (undefined = auto)
           // so the derived threshold reflects a user override, not just the
-          // model's raw context window.
-          const usage = liteContextUsageFromResult(msg, session.autoCompactWindow)
+          // model's raw context window — plus any authoritative threshold the
+          // CLI already told us, which wins over our local replica.
+          const usage = liteContextUsageFromResult(msg, session.autoCompactWindow, session.lastSdkAutoCompact)
           // Cold-start instrumentation: log once on the FIRST REAL result —
           // the user-visible end of the first turn. The spawn/restart
           // `result` warm-up carries an ALL-ZERO usage payload (liteContext
@@ -1265,6 +1266,123 @@ function computeAutoCompactThreshold(
   return Math.max(0, contextWindow - outputHeadroom - AUTOCOMPACT_BUFFER_TOKENS)
 }
 
+/** Authoritative auto-compact facts read from the SDK's `getContextUsage()`
+ *  control response — the CLI's OWN numbers, as opposed to the local replica
+ *  `computeAutoCompactThreshold()` derives above.
+ *
+ *  Why this exists: pinning `Settings.autoCompactWindow` genuinely reaches the
+ *  CLI (applyFlagSettings → flag-settings layer), but the THRESHOLD we render
+ *  on the ContextBar was a hardcoded copy of a CLI-INTERNAL formula (window −
+ *  output headroom − 13000 buffer) with nothing verifying it. The SDK exposes
+ *  `autoCompactThreshold` / `isAutoCompactEnabled` / `rawMaxTokens` directly on
+ *  the getContextUsage response, so whenever we make that call we keep the
+ *  answer, prefer it over the replica, and warn when the two disagree — which
+ *  is the drift alarm the copied formula never had.
+ *
+ *  Opportunistic by design. getContextUsage() is a BLOCKING control request
+ *  with no SDK-side timeout (see SessionManager.timeSdkControl), so nothing
+ *  here puts one on the per-turn hot path. Facts arrive from the calls the app
+ *  already makes: the REST `/sessions/:id/context-usage` endpoint (SettingsPanel
+ *  breakdown) and one background probe after a pin/clear. Sessions that never
+ *  trigger either keep the formula fallback, exactly as before. */
+export interface SdkAutoCompactFacts {
+  /** Main-loop model the CLI computed these for. The facts are only trusted
+   *  while the live snapshot's model still matches — a model switch (explicit
+   *  or a CLI-side fallback) changes the window and invalidates them. */
+  model: string
+  /** Token count at which the CLI actually triggers auto-compact. Absent when
+   *  the CLI reported none (auto-compact off / unsupported backend). */
+  threshold?: number
+  /** The CLI's RESOLVED auto-compact window (the model's believed limit, or a
+   *  smaller compaction-policy window). Recorded for diagnostics — it is
+   *  deliberately NOT used as the bar's denominator, which stays the model's
+   *  advertised window (see liteContextUsageFromResult). */
+  rawMaxTokens?: number
+  /** Whether auto-compact is on at all, per the CLI. */
+  enabled?: boolean
+}
+
+/** Pick the auto-compact facts out of a raw getContextUsage response. Returns
+ *  null when the payload isn't a usable response (non-object, or no model to
+ *  gate the facts on) so callers can simply skip. Every field is validated
+ *  independently — a backend that omits `autoCompactThreshold` still gives us
+ *  a usable `model` + `enabled` pair. */
+export function parseSdkAutoCompactFacts(raw: unknown): SdkAutoCompactFacts | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as {
+    model?: unknown
+    autoCompactThreshold?: unknown
+    rawMaxTokens?: unknown
+    isAutoCompactEnabled?: unknown
+  }
+  if (typeof r.model !== 'string' || r.model.length === 0) return null
+  const facts: SdkAutoCompactFacts = { model: r.model }
+  if (typeof r.autoCompactThreshold === 'number' && Number.isFinite(r.autoCompactThreshold) && r.autoCompactThreshold > 0) {
+    facts.threshold = Math.round(r.autoCompactThreshold)
+  }
+  if (typeof r.rawMaxTokens === 'number' && Number.isFinite(r.rawMaxTokens) && r.rawMaxTokens > 0) {
+    facts.rawMaxTokens = Math.round(r.rawMaxTokens)
+  }
+  if (typeof r.isAutoCompactEnabled === 'boolean') facts.enabled = r.isAutoCompactEnabled
+  return facts
+}
+
+/** How far the local replica may drift from the CLI's reported threshold
+ *  before we log about it. A few hundred tokens is rounding; a kilotoken means
+ *  the copied buffer/headroom constants no longer match the CLI. */
+const AUTOCOMPACT_DRIFT_TOLERANCE = 1000
+
+/** The threshold to render: the CLI's own number when we have a trustworthy
+ *  one, else the local formula.
+ *
+ *  `facts` are only trusted when their model matches the snapshot's — the CLI
+ *  computed them for a specific window, and a model switch (or a CLI-side
+ *  fallback to another model mid-session) makes them describe a window that is
+ *  no longer in play.
+ *
+ *  `logDrift` is off on the per-turn path (a mismatch would warn on every
+ *  result) and on for the rare paths that just fetched fresh facts. */
+function resolveAutoCompactThreshold(
+  facts: SdkAutoCompactFacts | undefined,
+  model: string,
+  effectiveWindow: number,
+  maxOutputTokens?: number,
+  logDrift = false,
+): number | undefined {
+  const derived = computeAutoCompactThreshold(effectiveWindow, maxOutputTokens)
+  if (!facts || facts.model !== model || facts.threshold === undefined) return derived
+  if (logDrift && derived !== undefined && Math.abs(derived - facts.threshold) > AUTOCOMPACT_DRIFT_TOLERANCE) {
+    log.warn(
+      `[context-usage] auto-compact threshold drift: CLI reports ${facts.threshold}, ` +
+      `local formula derived ${derived} ` +
+      `(model=${model}, effectiveWindow=${effectiveWindow}, ` +
+      `maxOutputTokens=${maxOutputTokens ?? 'n/a'}) — using the CLI value. ` +
+      `If this persists, shared/auto-compact.ts's constants no longer match the CLI.`,
+    )
+  }
+  return facts.threshold
+}
+
+/** Record authoritative facts on the session and fold the CLI's threshold into
+ *  the cached snapshot, re-broadcasting so every live ContextBar switches from
+ *  the replica to the real number without waiting for another turn.
+ *
+ *  Same shape as reapplyAutoCompactWindow below: mutate the cached snapshot's
+ *  threshold only, no-op when nothing moved. */
+export function applySdkAutoCompactFacts(session: Session, facts: SdkAutoCompactFacts): void {
+  session.lastSdkAutoCompact = facts
+  const last = session.lastContextUsage
+  if (!last) return
+  const pinned = session.autoCompactWindow
+  const effectiveWindow = pinned && pinned > 0 ? pinned : last.maxTokens
+  const next = resolveAutoCompactThreshold(facts, last.model, effectiveWindow, last.maxOutputTokens, true)
+  if (next === last.autoCompactThreshold) return
+  const updated: LiteContextUsage = { ...last }
+  if (typeof next === 'number') updated.autoCompactThreshold = next
+  else delete updated.autoCompactThreshold
+  applyContextUsage(session, updated)
+}
+
 /** Shared assembly for both `result`- and `assistant`-derived snapshots.
  *  Sums the three input buckets (the true prompt size per Anthropic docs),
  *  defensively clamps against an impossible >100% reading, computes the
@@ -1434,6 +1552,11 @@ function applyContextUsage(session: Session, usage: LiteContextUsage): void {
  *  empty regardless, and the next `result` derives the threshold fresh), or
  *  when the recomputed threshold is unchanged (no pointless broadcast). */
 export function reapplyAutoCompactWindow(session: Session, windowOverride?: number): void {
+  // The pin just moved, so any CLI-reported threshold we cached describes the
+  // PREVIOUS window and would pin the marker to a stale position. Drop it and
+  // fall back to the local formula for immediate optimistic feedback; the
+  // caller's background probe re-establishes the authoritative value shortly.
+  session.lastSdkAutoCompact = undefined
   const last = session.lastContextUsage
   if (!last) return
   const effectiveWindow = windowOverride && windowOverride > 0 ? windowOverride : last.maxTokens
@@ -1455,11 +1578,17 @@ export function reapplyAutoCompactWindow(session: Session, windowOverride?: numb
  *  threshold derivation — so a 1M model with a user-pinned 200k window warns
  *  at 200k, not 1M. It does NOT change the bar's maxTokens/percentage, which
  *  continue to reflect the model's real window.
+ *
+ *  `facts` are the CLI's own auto-compact numbers when a previous
+ *  getContextUsage() supplied them (see SdkAutoCompactFacts). They win over
+ *  the locally-derived threshold whenever their model still matches this
+ *  turn's; otherwise the formula is the fallback, as it always was.
  *  @internal — exported only for unit tests; not part of the module's
  *              public API. */
 export function liteContextUsageFromResult(
   msg: SDKMessage,
   windowOverride?: number,
+  facts?: SdkAutoCompactFacts,
 ): LiteContextUsage | null {
   if (msg.type !== 'result') return null
   // The result message's `usage` and `modelUsage` shapes are SDK-specific
@@ -1550,8 +1679,9 @@ export function liteContextUsageFromResult(
   }
   // Surface the cache buckets of the picked iteration so the UI can show
   // cache hit rate, plus its output_tokens for the throughput readout, and
-  // derive the auto-compact threshold from the model's context window — or
-  // from the session's pinned window when one is set (windowOverride).
+  // resolve the auto-compact threshold — the CLI's own value when we have a
+  // matching one cached, else derived from the model's context window (or from
+  // the session's pinned window when one is set via windowOverride).
   const effectiveWindow =
     windowOverride && windowOverride > 0 ? windowOverride : contextWindow
   return assembleLiteUsage({
@@ -1561,7 +1691,7 @@ export function liteContextUsageFromResult(
     outputTokens: source.output_tokens,
     contextWindow,
     model,
-    autoCompactThreshold: computeAutoCompactThreshold(effectiveWindow, maxOutputTokens),
+    autoCompactThreshold: resolveAutoCompactThreshold(facts, model, effectiveWindow, maxOutputTokens),
     maxOutputTokens,
     source: 'result',
   })

@@ -119,10 +119,19 @@ export const ContextBar = memo(function ContextBar({
   // % of the model window → absolute Settings.autoCompactWindow tokens such
   // that the derived threshold lands exactly at pct% (inverse of the pump's
   // computeAutoCompactThreshold). Uses the same maxOutputTokens the pump used.
+  //
+  // Clamped to the model's own window: the inverse ADDS the output+buffer
+  // headroom back on, so the top of the track (MAX_PCT = 100) would otherwise
+  // ask for `max + 33000` — a window larger than the model can hold. The CLI
+  // resolves that back down to its real limit, so we'd be POSTing an
+  // impossible number and then rendering "auto-compact fires at 100%", which
+  // can never happen. Clamping keeps the request honest; the marker then
+  // settles at the highest threshold the model actually allows.
   const pctToWindow = useCallback(
     (pct: number) => {
       if (typeof max !== 'number' || max <= 0) return 0
-      return Math.round(windowForAutoCompactThreshold((pct / 100) * max, usage?.maxOutputTokens))
+      const want = windowForAutoCompactThreshold((pct / 100) * max, usage?.maxOutputTokens)
+      return Math.round(Math.min(want, max))
     },
     [max, usage?.maxOutputTokens],
   )

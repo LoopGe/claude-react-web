@@ -11,12 +11,14 @@ import {
   liteContextUsageFromAssistant,
   liteContextUsageFromResult,
   pump,
+  applySdkAutoCompactFacts,
+  parseSdkAutoCompactFacts,
   reapplyAutoCompactWindow,
   toolResultIds,
   userMessageHasToolResult,
   type PumpDeps,
 } from './session-pump.js'
-import type { LiteContextUsage } from './session-pump.js'
+import type { LiteContextUsage, SdkAutoCompactFacts } from './session-pump.js'
 import type { Session } from './session-types.js'
 import type { TaskRecordUi } from '../shared/tasks.js'
 import { isTranscriptMessage, shouldBroadcastMessage, trimLargeToolResults } from './history-utils.js'
@@ -2002,6 +2004,210 @@ describe('reapplyAutoCompactWindow', () => {
     reapplyAutoCompactWindow(session, undefined)
     expect(session.lastContextUsage!.autoCompactThreshold).toBeUndefined()
     expect('autoCompactThreshold' in session.lastContextUsage!).toBe(false)
+  })
+
+  it('drops cached CLI facts, since the pin they described no longer applies', () => {
+    const { session } = makePumpSession([])
+    session.lastContextUsage = baseSnapshot()
+    session.lastSdkAutoCompact = { model: 'deepseek/deepseek-v4-flash', threshold: 167000 }
+
+    reapplyAutoCompactWindow(session, 113000)
+
+    // Without the invalidation the stale CLI threshold would win over the
+    // freshly-derived one and the marker would not move at all.
+    expect(session.lastSdkAutoCompact).toBeUndefined()
+    expect(session.lastContextUsage!.autoCompactThreshold).toBe(80000)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Authoritative auto-compact facts (SdkAutoCompactFacts)
+//
+// The threshold the ContextBar renders used to be a local replica of a
+// CLI-INTERNAL formula (window − min(maxOutput, 20000) − 13000) with nothing
+// verifying it: if the CLI changed its buffer, the marker silently lied. The
+// SDK does expose the real numbers on getContextUsage()'s response
+// (autoCompactThreshold / isAutoCompactEnabled / rawMaxTokens), so we harvest
+// them whenever that call happens and prefer them over the replica. These
+// tests pin the parse, the model gating, and the fold-into-snapshot path.
+// ---------------------------------------------------------------------------
+
+describe('parseSdkAutoCompactFacts', () => {
+  it('picks model / threshold / rawMaxTokens / enabled out of a response', () => {
+    const facts = parseSdkAutoCompactFacts({
+      model: 'claude-opus-4-7',
+      totalTokens: 50000,
+      maxTokens: 187000,
+      rawMaxTokens: 200000,
+      autoCompactThreshold: 164500,
+      isAutoCompactEnabled: true,
+      categories: [],
+    })
+    expect(facts).toEqual({
+      model: 'claude-opus-4-7',
+      threshold: 164500,
+      rawMaxTokens: 200000,
+      enabled: true,
+    })
+  })
+
+  it('returns null without a usable model to gate the facts on', () => {
+    expect(parseSdkAutoCompactFacts(null)).toBeNull()
+    expect(parseSdkAutoCompactFacts('nope')).toBeNull()
+    expect(parseSdkAutoCompactFacts({})).toBeNull()
+    expect(parseSdkAutoCompactFacts({ model: '' })).toBeNull()
+  })
+
+  it('keeps the model when the optional numbers are missing or malformed', () => {
+    // A backend that reports no threshold still gives us a usable
+    // model + enabled pair; the threshold simply falls back to the formula.
+    expect(parseSdkAutoCompactFacts({ model: 'm', isAutoCompactEnabled: false })).toEqual({
+      model: 'm',
+      enabled: false,
+    })
+    expect(
+      parseSdkAutoCompactFacts({
+        model: 'm',
+        autoCompactThreshold: 0,
+        rawMaxTokens: -1,
+        isAutoCompactEnabled: 'yes',
+      }),
+    ).toEqual({ model: 'm' })
+  })
+
+  it('rounds fractional token counts', () => {
+    expect(parseSdkAutoCompactFacts({ model: 'm', autoCompactThreshold: 164500.6, rawMaxTokens: 200000.4 })).toEqual({
+      model: 'm',
+      threshold: 164501,
+      rawMaxTokens: 200000,
+    })
+  })
+})
+
+describe('liteContextUsageFromResult with authoritative facts', () => {
+  const result = () =>
+    makeResult({
+      usage: { input_tokens: 50000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000, maxOutputTokens: 32000 } },
+    })
+
+  it("prefers the CLI's threshold over the locally derived one", () => {
+    // Formula would say 200000 − 20000 − 13000 = 167000; the CLI says 164500.
+    const facts: SdkAutoCompactFacts = { model: 'claude-opus-4-7', threshold: 164500 }
+    const out = liteContextUsageFromResult(result(), undefined, facts)
+    expect(out!.autoCompactThreshold).toBe(164500)
+  })
+
+  it('falls back to the formula when no facts are cached', () => {
+    expect(liteContextUsageFromResult(result())!.autoCompactThreshold).toBe(167000)
+  })
+
+  it('ignores facts computed for a different model', () => {
+    // A model switch (or a CLI-side fallback) changes the window, so the
+    // cached number describes something that is no longer in play.
+    const facts: SdkAutoCompactFacts = { model: 'claude-haiku-4-7', threshold: 90000 }
+    expect(liteContextUsageFromResult(result(), undefined, facts)!.autoCompactThreshold).toBe(167000)
+  })
+
+  it('ignores facts that carry no threshold', () => {
+    const facts: SdkAutoCompactFacts = { model: 'claude-opus-4-7', enabled: true }
+    expect(liteContextUsageFromResult(result(), undefined, facts)!.autoCompactThreshold).toBe(167000)
+  })
+
+  it("lets the CLI's threshold win over a pinned window's derived one", () => {
+    // Pin 113000 → formula derives 80000. The CLI is the authority on what it
+    // actually did with that pin, so its answer is what the marker shows.
+    const facts: SdkAutoCompactFacts = { model: 'claude-opus-4-7', threshold: 78000 }
+    expect(liteContextUsageFromResult(result(), 113000, facts)!.autoCompactThreshold).toBe(78000)
+    expect(liteContextUsageFromResult(result(), 113000)!.autoCompactThreshold).toBe(80000)
+  })
+
+  it('leaves the bar denominator on the model window, not the resolved one', () => {
+    // rawMaxTokens is recorded for diagnostics only: switching the bar's
+    // reference frame to the CLI's resolved window would silently change every
+    // percentage the user reads, so maxTokens/rawMaxTokens stay the model's.
+    const facts: SdkAutoCompactFacts = { model: 'claude-opus-4-7', threshold: 164500, rawMaxTokens: 120000 }
+    const out = liteContextUsageFromResult(result(), undefined, facts)
+    expect(out!.maxTokens).toBe(200000)
+    expect(out!.rawMaxTokens).toBe(200000)
+  })
+})
+
+describe('applySdkAutoCompactFacts', () => {
+  const snapshot = (): LiteContextUsage => ({
+    totalTokens: 50000,
+    maxTokens: 200000,
+    rawMaxTokens: 200000,
+    percentage: 25,
+    model: 'claude-opus-4-7',
+    autoCompactThreshold: 167000,
+    maxOutputTokens: 32000,
+  })
+
+  it('folds the CLI threshold into the cached snapshot and rebroadcasts', () => {
+    const { session } = makePumpSession([])
+    session.lastContextUsage = snapshot()
+    const pushes: LiteContextUsage[] = []
+    addContextSubscriber(session, pushes)
+
+    applySdkAutoCompactFacts(session, { model: 'claude-opus-4-7', threshold: 164500, enabled: true })
+
+    expect(session.lastContextUsage!.autoCompactThreshold).toBe(164500)
+    expect(pushes).toHaveLength(1)
+    expect(pushes[0].autoCompactThreshold).toBe(164500)
+    // Nothing else in the snapshot is disturbed.
+    expect(pushes[0].totalTokens).toBe(50000)
+    expect(pushes[0].maxTokens).toBe(200000)
+  })
+
+  it('caches the facts even with no snapshot yet, so the next turn uses them', () => {
+    const { session } = makePumpSession([])
+    const pushes: LiteContextUsage[] = []
+    addContextSubscriber(session, pushes)
+
+    applySdkAutoCompactFacts(session, { model: 'claude-opus-4-7', threshold: 164500 })
+
+    expect(session.lastSdkAutoCompact).toEqual({ model: 'claude-opus-4-7', threshold: 164500 })
+    expect(pushes).toHaveLength(0)
+  })
+
+  it('does not broadcast when the CLI agrees with what we already show', () => {
+    const { session } = makePumpSession([])
+    session.lastContextUsage = snapshot()
+    const pushes: LiteContextUsage[] = []
+    addContextSubscriber(session, pushes)
+
+    applySdkAutoCompactFacts(session, { model: 'claude-opus-4-7', threshold: 167000 })
+
+    expect(pushes).toHaveLength(0)
+  })
+
+  it('caches but does not apply facts for a different model', () => {
+    const { session } = makePumpSession([])
+    session.lastContextUsage = snapshot()
+    const pushes: LiteContextUsage[] = []
+    addContextSubscriber(session, pushes)
+
+    applySdkAutoCompactFacts(session, { model: 'claude-haiku-4-7', threshold: 90000 })
+
+    expect(session.lastContextUsage!.autoCompactThreshold).toBe(167000)
+    expect(pushes).toHaveLength(0)
+  })
+
+  it('re-derives against the pinned window when one is set', () => {
+    // The CLI's threshold still wins; this pins that the pinned window is what
+    // the FALLBACK would have used, so a factless response can't resurrect the
+    // unpinned 167000.
+    const { session } = makePumpSession([])
+    session.lastContextUsage = { ...snapshot(), autoCompactThreshold: 80000 }
+    session.autoCompactWindow = 113000
+    const pushes: LiteContextUsage[] = []
+    addContextSubscriber(session, pushes)
+
+    applySdkAutoCompactFacts(session, { model: 'claude-opus-4-7', enabled: true })
+
+    expect(session.lastContextUsage!.autoCompactThreshold).toBe(80000)
+    expect(pushes).toHaveLength(0)
   })
 })
 

@@ -2282,6 +2282,142 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.autoCompactWindow).toBe(100000)
   })
 
+  // --- authoritative auto-compact facts (the CLI's own threshold) ---------
+  //
+  // The pinned window genuinely reaches the CLI, but the THRESHOLD the
+  // ContextBar renders was a local replica of a CLI-internal formula with no
+  // way to tell it had drifted. getContextUsage() is the one place the SDK
+  // reports the real numbers, so every call to it is harvested, and a pin
+  // additionally fires one background probe so the marker settles on the
+  // CLI's answer instead of our approximation.
+
+  /** Reach the live Session to seed / inspect the cached usage + facts. */
+  const usageStateOf = (id: string) =>
+    (sm as unknown as {
+      sessions: Map<string, {
+        lastContextUsage?: Record<string, unknown>
+        lastSdkAutoCompact?: { model: string; threshold?: number }
+      }>
+    }).sessions.get(id)!
+
+  const seedSnapshot = (id: string) => {
+    usageStateOf(id).lastContextUsage = {
+      totalTokens: 50000,
+      maxTokens: 200000,
+      rawMaxTokens: 200000,
+      percentage: 25,
+      model: 'claude-opus-4-7',
+      autoCompactThreshold: 167000,
+      maxOutputTokens: 32000,
+    }
+  }
+
+  it('contextUsage() harvests the CLI threshold and folds it into the live snapshot', async () => {
+    const info = sm.create({})
+    seedSnapshot(info.id)
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      model: 'claude-opus-4-7',
+      rawMaxTokens: 200000,
+      autoCompactThreshold: 164500,
+      isAutoCompactEnabled: true,
+      categories: [],
+    })
+
+    await sm.contextUsage(info.id)
+
+    expect(usageStateOf(info.id).lastSdkAutoCompact).toMatchObject({
+      model: 'claude-opus-4-7',
+      threshold: 164500,
+    })
+    // The bar switches off the derived 167000 without waiting for a turn.
+    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(164500)
+  })
+
+  it('contextUsage() still returns the raw response it harvested from', async () => {
+    const info = sm.create({})
+    const raw = { model: 'm', autoCompactThreshold: 1000, isAutoCompactEnabled: true, categories: [] }
+    mockHandles[0].getContextUsage.mockResolvedValueOnce(raw)
+    await expect(sm.contextUsage(info.id)).resolves.toBe(raw)
+  })
+
+  it('contextUsage() tolerates a response with no auto-compact fields', async () => {
+    const info = sm.create({})
+    seedSnapshot(info.id)
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({ categories: [] })
+
+    await sm.contextUsage(info.id)
+
+    expect(usageStateOf(info.id).lastSdkAutoCompact).toBeUndefined()
+    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(167000)
+  })
+
+  it('setAutoCompactWindow() probes the CLI in the background and lands its threshold', async () => {
+    const info = sm.create({})
+    seedSnapshot(info.id)
+    // Hold the probe open: getContextUsage has no SDK-side timeout, so the pin
+    // response must not be waiting on it.
+    let resolveProbe: (v: unknown) => void = () => {}
+    mockHandles[0].getContextUsage.mockReturnValueOnce(new Promise((res) => { resolveProbe = res }))
+
+    await sm.setAutoCompactWindow(info.id, 113000)
+    expect(mockHandles[0].getContextUsage).toHaveBeenCalled()
+    // Pin already committed, with our derived approximation on the bar.
+    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(80000)
+
+    // The CLI answers 78000 — its number replaces the approximation, with no
+    // turn needed in between.
+    resolveProbe({
+      model: 'claude-opus-4-7',
+      autoCompactThreshold: 78000,
+      isAutoCompactEnabled: true,
+      categories: [],
+    })
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.autoCompactThreshold !== 78000; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(78000)
+  })
+
+  it('a failing background probe leaves the derived threshold in place', async () => {
+    const info = sm.create({})
+    seedSnapshot(info.id)
+    mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('subprocess busy'))
+
+    await sm.setAutoCompactWindow(info.id, 113000)
+    for (let i = 0; i < 5; i++) await tick()
+
+    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(80000)
+  })
+
+  it('setAutoCompactWindow() skips the probe mid-turn (a busy subprocess stalls control requests)', async () => {
+    const info = sm.create({})
+    seedSnapshot(info.id)
+    const s = usageStateOf(info.id) as unknown as { pendingTurns: number }
+    s.pendingTurns = 1
+    mockHandles[0].getContextUsage.mockClear()
+
+    await sm.setAutoCompactWindow(info.id, 113000)
+    for (let i = 0; i < 5; i++) await tick()
+
+    expect(mockHandles[0].getContextUsage).not.toHaveBeenCalled()
+    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(80000)
+  })
+
+  it('setModel() drops facts computed for the previous model', async () => {
+    const info = sm.create({})
+    seedSnapshot(info.id)
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      model: 'claude-opus-4-7',
+      autoCompactThreshold: 164500,
+      isAutoCompactEnabled: true,
+      categories: [],
+    })
+    await sm.contextUsage(info.id)
+    expect(usageStateOf(info.id).lastSdkAutoCompact).toBeDefined()
+
+    await sm.setModel(info.id, 'claude-haiku-4-7')
+
+    expect(usageStateOf(info.id).lastSdkAutoCompact).toBeUndefined()
+  })
+
   // --- thinking config (Options.thinking at spawn + setMaxThinkingTokens live) ---
 
   it("setThinking() maps adaptive → null and forwards setMaxThinkingTokens(null, undefined) — absent display keeps the current mode", async () => {

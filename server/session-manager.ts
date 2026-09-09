@@ -48,7 +48,15 @@ import { findProfile, profileDefaultModel, resolveActiveProfile } from './profil
 import { fallbackAliasesFor, resolveGroup } from './model-groups.js'
 import { isSdkForwardedMode } from './permission-modes.js'
 import { createAsyncSubscription } from './async-subscription.js'
-import { pump as pumpSession, getParentToolUseId, applyTaskEvent, reapplyAutoCompactWindow, type PumpDeps } from './session-pump.js'
+import {
+  pump as pumpSession,
+  getParentToolUseId,
+  applyTaskEvent,
+  reapplyAutoCompactWindow,
+  applySdkAutoCompactFacts,
+  parseSdkAutoCompactFacts,
+  type PumpDeps,
+} from './session-pump.js'
 import {
   type Subscriber,
   type PermissionEvent,
@@ -2134,6 +2142,7 @@ export class SessionManager {
       subagentHistory: seedSub.slice(-this.subagentHistoryCap),
       contextUsageSubscribers: new Set(),
       lastContextUsage: undefined,
+      lastSdkAutoCompact: undefined,
       promptSuggestionSubscribers: new Set(),
       lastPromptSuggestion: undefined,
       tasks: new Map(),
@@ -3234,6 +3243,11 @@ export class SessionManager {
     s.effortLevels = effortLevelsForModel(s.model)
     // Thinking capability tracks the model family too — recompute on switch.
     s.thinkingSupported = supportsThinkingForModel(s.model)
+    // The CLI's cached auto-compact threshold was computed for the OLD model's
+    // window. resolveAutoCompactThreshold gates on the model name so a stale
+    // entry can't leak into the bar, but drop it eagerly so the next turn
+    // doesn't carry a dead object around.
+    s.lastSdkAutoCompact = undefined
     this.persist(s)
     return this.info(s)
   }
@@ -3451,8 +3465,17 @@ export class SessionManager {
         const w = forwarded.autoCompactWindow
         s.autoCompactWindow = typeof w === 'number' && Number.isFinite(w) && w > 0 ? Math.round(w) : undefined
         // Same immediate refresh as the dedicated setAutoCompactWindow path —
-        // the generic /settings route also moves the effective threshold.
+        // the generic /settings route also moves the effective threshold —
+        // followed by the same background probe for the CLI's real answer.
         reapplyAutoCompactWindow(s, s.autoCompactWindow)
+        this.probeAutoCompactFacts(s)
+      }
+      // `autoCompactEnabled` on its own doesn't pin a window, but it does
+      // decide whether the CLI compacts at all, so anything we cached about
+      // its threshold is no longer trustworthy.
+      else if ('autoCompactEnabled' in forwarded) {
+        s.lastSdkAutoCompact = undefined
+        this.probeAutoCompactFacts(s)
       }
     })
   }
@@ -3640,8 +3663,13 @@ export class SessionManager {
       // jumps to the new threshold immediately — the threshold otherwise only
       // derives from the next turn's `result`, leaving the bar (and the
       // "Compact at X%" label) stuck on the stale auto position, which reads
-      // as a failed commit.
+      // as a failed commit. This is the DERIVED (approximate) threshold, and
+      // it also drops any now-stale CLI-reported one.
       reapplyAutoCompactWindow(s, window)
+      // Then ask the CLI what it actually decided, in the background, and
+      // re-broadcast if its answer differs from our approximation. This is
+      // what makes a pin verifiable rather than merely optimistic.
+      this.probeAutoCompactFacts(s)
     })
   }
 
@@ -3913,7 +3941,54 @@ export class SessionManager {
       'context usage',
       'supportsContextUsage',
     )
-    return this.timeSdkControl(id, 'getContextUsage', fn)
+    const raw = await this.timeSdkControl(id, 'getContextUsage', fn)
+    // Harvest the CLI's own auto-compact numbers on the way past. This response
+    // is the only place the SDK exposes them, and the ContextBar otherwise
+    // renders a local replica of a CLI-internal formula. Caching them here
+    // means every caller of this endpoint (SettingsPanel's breakdown, the
+    // post-pin probe) silently upgrades the live bar to the real threshold.
+    const facts = parseSdkAutoCompactFacts(raw)
+    if (facts) applySdkAutoCompactFacts(s, facts)
+    return raw
+  }
+
+  /** Fire-and-forget getContextUsage() purely to learn the CLI's real
+   *  auto-compact threshold after the pinned window changed, so the ContextBar
+   *  marker settles on the truth instead of our derived approximation.
+   *
+   *  Deliberately background: this control request has no SDK-side timeout, so
+   *  awaiting it would let a wedged subprocess hang the pin response. Skipped
+   *  mid-turn (a busy subprocess delays control_response) and while another
+   *  probe is in flight, and every failure is swallowed to debug — the derived
+   *  threshold reapplyAutoCompactWindow already broadcast stays as the
+   *  fallback, which is the pre-existing behaviour. */
+  private probeAutoCompactFacts(s: Session): void {
+    if (!s.running || s.terminated || s.pendingTurns > 0) return
+    if (s.autoCompactProbeInFlight) return
+    const fn = s.handle.getContextUsage
+    if (typeof fn !== 'function') return
+    s.autoCompactProbeInFlight = true
+    // try/catch as well as .catch(): a handle that throws SYNCHRONOUSLY (closed
+    // transport) would otherwise propagate out of a setter whose SDK write
+    // already succeeded — turning a cosmetic probe into a failed pin — and
+    // leave the in-flight flag stuck on, blocking every later probe.
+    try {
+      void fn
+        .call(s.handle)
+        .then((raw) => {
+          const facts = parseSdkAutoCompactFacts(raw)
+          if (facts) applySdkAutoCompactFacts(s, facts)
+        })
+        .catch((err) => {
+          log.debug(`[session ${s.id}] auto-compact fact probe failed:`, err)
+        })
+        .finally(() => {
+          s.autoCompactProbeInFlight = false
+        })
+    } catch (err) {
+      s.autoCompactProbeInFlight = false
+      log.debug(`[session ${s.id}] auto-compact fact probe threw synchronously:`, err)
+    }
   }
 
   /** Structured /usage data for one session: cost/usage totals plus

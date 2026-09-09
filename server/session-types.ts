@@ -401,6 +401,17 @@ export interface Session {
    *  waiting for the next `result`. Cleared on /clear. Not persisted —
    *  re-derived from the next result after resume. */
   lastContextUsage?: import('./session-pump.js').LiteContextUsage
+  /** Authoritative auto-compact numbers last reported by the CLI itself (from
+   *  a getContextUsage control response). Preferred over the locally-derived
+   *  replica when rendering the ContextBar threshold, and invalidated whenever
+   *  the pinned window or the model changes. Undefined until some code path
+   *  happens to call getContextUsage — see SdkAutoCompactFacts for why this is
+   *  opportunistic rather than fetched per turn. Not persisted. */
+  lastSdkAutoCompact?: import('./session-pump.js').SdkAutoCompactFacts
+  /** True while a background getContextUsage() probe for the above is in
+   *  flight. The control request has no SDK-side timeout, so this keeps a
+   *  wedged subprocess from accumulating one hung promise per pin drag. */
+  autoCompactProbeInFlight?: boolean
   /** Per-subscriber pushables for prompt_suggestion events — separate from
    *  message history (suggestions are ephemeral, not conversation content).
    *  Same shape as contextUsageSubscribers. */
