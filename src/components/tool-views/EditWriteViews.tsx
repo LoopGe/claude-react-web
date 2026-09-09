@@ -14,7 +14,7 @@ import { formatJson } from '../../utils/format'
 import { extractToolUseDiffText } from '../../search'
 import type { ToolViewProps } from './shared'
 import { FilePathTitle } from './shared'
-import { countDiffDelta, DiffChunk, ExpandableDiff, locateActiveSegment } from './diff-shared'
+import { countDiffDelta, countHunkDelta, DiffChunk, ExpandableDiff, locateActiveSegment } from './diff-shared'
 
 // ---------------------------------------------------------------------------
 // Edit / MultiEdit
@@ -83,17 +83,26 @@ export const EditToolView = memo(function EditToolView({ input, toolUseId, searc
   )
 
   // Aggregate +N −M across every edit so the collapsed summary matches the
-  // diff that expands. Memoised on editList (already stable per input).
+  // diff that expands. When the server's hunks are available we count THOSE
+  // (countHunkDelta — the same rows DiffChunk renders), so an EOF trailing-
+  // newline edit that countDiffDelta miscounts can't make the stat disagree
+  // with the expanded diff. Missing/unlocatable hunks fall back to the local
+  // lineDiff count, which matches the lineDiff fallback render. Memoised on
+  // editList + diffInfos (both already stable per input).
   const delta = useMemo(() => {
     let add = 0
     let del = 0
-    for (const e of editList) {
-      const d = countDiffDelta(e.old, e.new)
+    for (let i = 0; i < editList.length; i++) {
+      const hunks = diffInfos[i]?.hunks
+      const d =
+        hunks && hunks.length > 0
+          ? countHunkDelta(hunks)
+          : countDiffDelta(editList[i].old, editList[i].new)
       add += d.add
       del += d.del
     }
     return { add, del }
-  }, [editList])
+  }, [editList, diffInfos])
 
   if (!input || typeof input !== 'object') {
     return <div className="tool-input">{formatJson(input)}</div>

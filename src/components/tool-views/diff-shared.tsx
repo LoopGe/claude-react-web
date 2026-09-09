@@ -7,7 +7,7 @@
 
 import { memo, useMemo, type ReactNode } from 'react'
 import { AnimatedDetails } from '../AnimatedCollapse'
-import type { EditDiffInfo } from '../../hooks/useEditDiffInfo'
+import type { EditDiffHunk, EditDiffInfo } from '../../hooks/useEditDiffInfo'
 import { detectLanguage } from '../../utils/file-display'
 import { highlightLineHast } from '../../utils/diff-highlight'
 import { lineDiff, countMatches } from '../../search'
@@ -28,6 +28,34 @@ export function countDiffDelta(oldText: string, newText: string): { add: number;
   for (const op of lineDiff(oldLines, newLines)) {
     if (op.type === 'add') add++
     else if (op.type === 'del') del++
+  }
+  return { add, del }
+}
+
+/** Count added/deleted lines from server-produced unified-diff hunks, i.e. the
+ *  SAME `-`/`+` rows DiffChunk renders when hunks are available. Use this for
+ *  the collapsed stat so it always matches the expanded diff.
+ *
+ *  Why not countDiffDelta for everything: the renderer and the stat can come
+ *  from two different diff engines. When /api/edit-locate succeeds, DiffChunk
+ *  renders structuredPatch hunks; countDiffDelta falls back to the local
+ *  lineDiff LCS only when hunks are null. They diverge on an EOF
+ *  trailing-newline edit — e.g. 'foo\nbar\n' → 'foo\nbar': lineDiff splits a
+ *  phantom trailing '' element and counts a lone deletion, while
+ *  structuredPatch materializes the newline change as -bar/+bar (the
+ *  `\ No newline` marker the renderer skips). Counting the hunks makes the
+ *  stat follow the renderer in that case. The no-hunks fallback still uses
+ *  countDiffDelta, which agrees with the lineDiff fallback render. */
+export function countHunkDelta(hunks: readonly EditDiffHunk[]): { add: number; del: number } {
+  let add = 0
+  let del = 0
+  for (const h of hunks) {
+    for (const line of h.lines) {
+      const prefix = line[0]
+      if (prefix === '-') del++
+      else if (prefix === '+') add++
+      // ' ' (context) and '\ No newline' markers are skipped by the renderer.
+    }
   }
   return { add, del }
 }
