@@ -34,6 +34,7 @@ export function buildScheduledSendRouter(
 
   app.delete('/sessions/:id/schedules/:scheduleId', async (c) => {
     const id = c.req.param('id')
+    sm.get(id) // throws 404 for unknown sessions
     const scheduleId = c.req.param('scheduleId')
     manager.remove(id, scheduleId) // throws 404 for unknown ids
     return c.body(null, 204)

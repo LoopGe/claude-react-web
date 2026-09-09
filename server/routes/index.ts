@@ -60,7 +60,7 @@ export function buildApiRouter(
         'content' in body
           ? sm.sendContent(sessionId, body.content as Array<{ type: string; [k: string]: unknown }>)
           : sm.send(sessionId, body.text)
-      return { uuid: sent.uuid ?? '' }
+      return { uuid: sent.uuid }
     },
     subscribeGlobal: () => sm.subscribeGlobal(),
   })

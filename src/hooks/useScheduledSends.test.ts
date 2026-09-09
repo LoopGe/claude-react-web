@@ -73,6 +73,41 @@ describe('useScheduledSends', () => {
     expect(mockDelete).toHaveBeenCalledWith('/sessions/s1/schedules/a')
   })
 
+  it('session switch: new session fetches its own data, old session late response does not clobber', async () => {
+    // Return manually-resolvable promises so we control resolution order.
+    let resolveOld: (v: unknown) => void
+    let resolveNew: (v: unknown) => void
+    mockGet
+      .mockImplementationOnce(() => new Promise((r) => { resolveOld = r }))
+      .mockImplementationOnce(() => new Promise((r) => { resolveNew = r }))
+
+    const { result, rerender } = renderHook(
+      ({ sid }) => useScheduledSends(sid),
+      { initialProps: { sid: 's1' } },
+    )
+    // s1 GET is in flight (refreshingRef.current === 's1').
+
+    // Switch to s2 while s1's GET is still pending.
+    rerender({ sid: 's2' })
+    // s2's refresh sees refreshingRef.current === 's1' !== 's2', so it
+    // proceeds — the string-keyed guard only blocks same-session overlap.
+
+    // Now resolve s1's response (late) — should NOT clobber s2's state.
+    await act(async () => {
+      resolveOld!({ schedules: [pending('old', 1_060_000)] })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.schedules).toHaveLength(0) // s1 data rejected
+
+    // Resolve s2's response.
+    await act(async () => {
+      resolveNew!({ schedules: [pending('new', 1_060_000)] })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.schedules).toHaveLength(1)
+    expect(result.current.schedules[0].id).toBe('new')
+  })
+
   it('refetches when a pending fireAt passes (authoritative sent/failed flip)', async () => {
     // Fire time 2s in the future (1_002_000): the crossing effect must
     // reconcile BEFORE the 3s poll, so the second GET is the reconcile.

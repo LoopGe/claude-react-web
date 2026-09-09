@@ -10,7 +10,7 @@ import {
 import type { ScheduledSendBody } from '../shared/scheduled-send.js'
 
 /** Build a manager with a controllable clock + fake send. Does NOT start
- *  timers (tickMs: Infinity keeps the interval inert); tests drive tick()
+ *  timers (tickMs keeps the interval inert at 24 h); tests drive tick()
  *  directly. */
 function make(deps?: Partial<ScheduledSendDeps>) {
   let now = 1_000_000
@@ -18,7 +18,7 @@ function make(deps?: Partial<ScheduledSendDeps>) {
   const m = new ScheduledSendManager({
     send,
     now: () => now,
-    tickMs: Infinity,
+    tickMs: 86_400_000,
     ...deps,
   })
   return { m, send, setNow: (n: number) => { now = n } }

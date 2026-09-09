@@ -24,23 +24,41 @@ const POLL_MS = 3_000
 export function useScheduledSends(sessionId: string): ScheduledSendsApi {
   const [schedules, setSchedules] = useState<ScheduledSend[]>([])
   const [now, setNow] = useState(() => Date.now())
-  const refreshingRef = useRef(false)
+  /** Stores the sessionId currently mid-refresh (or null). Using the
+   *  sessionId as the guard value means a new session is never blocked by an
+   *  old session's in-flight request — only same-session overlap is
+   *  prevented. */
+  const refreshingRef = useRef<string | null>(null)
+  /** Tracks the current sessionId so a stale in-flight response from a
+   *  previous session cannot clobber the new session's state. Updated in the
+   *  initial-load effect (not the render body) to satisfy the
+   *  react-hooks/refs lint rule. */
+  const sessionRef = useRef(sessionId)
   /** Earliest pending fireAt we already reconciled past — guards the
    *  crossing effect so it fires once per distinct fire time, not on every
    *  one-second tick while a late-firing schedule lingers. */
   const reconciledRef = useRef<number>(Infinity)
 
   const refresh = useCallback(async () => {
-    if (refreshingRef.current) return
-    refreshingRef.current = true
+    if (refreshingRef.current === sessionId) return
+    refreshingRef.current = sessionId
+    const capturedSession = sessionId
     try {
-      const res = await api.get<{ schedules: ScheduledSend[] }>(`/sessions/${sessionId}/schedules`)
-      setSchedules(res.schedules)
+      const res = await api.get<{ schedules: ScheduledSend[] }>(`/sessions/${capturedSession}/schedules`)
+      if (sessionRef.current === capturedSession) setSchedules(res.schedules)
     } catch {
       // session gone / network — leave last known list; poll stops naturally
     } finally {
-      refreshingRef.current = false
+      // Only clear the guard if this request still owns it — a different
+      // session's refresh may have taken over.
+      if (refreshingRef.current === capturedSession) refreshingRef.current = null
     }
+  }, [sessionId])
+
+  /** Optimistic-remove + server DELETE, shared by cancel and dismiss. */
+  const removeSchedule = useCallback(async (id: string) => {
+    setSchedules((prev) => prev.filter((s) => s.id !== id))
+    try { await api.delete(`/sessions/${sessionId}/schedules/${id}`) } catch { /* reconcile later */ }
   }, [sessionId])
 
   // Initial load when the session changes. Uses an async IIFE with a
@@ -48,12 +66,13 @@ export function useScheduledSends(sessionId: string): ScheduledSendsApi {
   // (not synchronously in the effect body), satisfying the
   // react-hooks/set-state-in-effect lint rule.
   useEffect(() => {
+    sessionRef.current = sessionId
     let cancelled = false
     void (async () => {
       if (!cancelled) await refresh()
     })()
     return () => { cancelled = true }
-  }, [refresh])
+  }, [sessionId, refresh])
 
   const pending = useMemo(() => schedules.filter((s) => s.status === 'pending'), [schedules])
 
@@ -89,15 +108,8 @@ export function useScheduledSends(sessionId: string): ScheduledSendsApi {
     await refresh()
   }, [sessionId, refresh])
 
-  const cancel = useCallback(async (id: string) => {
-    setSchedules((prev) => prev.filter((s) => s.id !== id))
-    try { await api.delete(`/sessions/${sessionId}/schedules/${id}`) } catch { /* reconcile later */ }
-  }, [sessionId])
-
-  const dismiss = useCallback(async (id: string) => {
-    setSchedules((prev) => prev.filter((s) => s.id !== id))
-    try { await api.delete(`/sessions/${sessionId}/schedules/${id}`) } catch { /* reconcile later */ }
-  }, [sessionId])
+  const cancel = useCallback((id: string) => removeSchedule(id), [removeSchedule])
+  const dismiss = useCallback((id: string) => removeSchedule(id), [removeSchedule])
 
   return {
     schedules,

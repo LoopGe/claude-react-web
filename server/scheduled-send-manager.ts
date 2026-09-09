@@ -12,7 +12,7 @@ export const MAX_PENDING_PER_SESSION = 20
 export const TERMINAL_KEEP = 10
 
 export interface ScheduledSendDeps {
-  send(sessionId: string, body: ScheduledSendBody): { uuid: string } | Promise<{ uuid: string }>
+  send(sessionId: string, body: ScheduledSendBody): { uuid?: string } | Promise<{ uuid?: string }>
   /** Session-removed feed (sm.subscribeGlobal). Each `removed` drops that
    *  session's schedules so deleted sessions can't leave garbage. */
   subscribeGlobal?(): { iterable: AsyncIterable<{ kind: string; id?: string }>; unsubscribe(): void }

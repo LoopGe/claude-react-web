@@ -10,7 +10,7 @@ function make() {
   }
   const send = vi.fn(async (_id: string, _b: ScheduledSendBody) => ({ uuid: 'u' }))
   let now = 1_000_000
-  const manager = new ScheduledSendManager({ send, now: () => now, tickMs: Infinity })
+  const manager = new ScheduledSendManager({ send, now: () => now, tickMs: 86_400_000 })
   const app = buildScheduledSendRouter(sm as never, manager)
   app.onError(createErrorHandler('[test]'))
   return { app, sm, manager, send, setNow: (n: number) => { now = n } }
@@ -39,6 +39,7 @@ describe('scheduled-send routes', () => {
       body: JSON.stringify({ text: 'x' }),
     })
     expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toBe('fireAt is required (epoch ms)')
   })
 
   it('POST rejects an invalid body the same way messages does', async () => {
@@ -75,6 +76,13 @@ describe('scheduled-send routes', () => {
   it('DELETE is 404 for an unknown schedule', async () => {
     const { app } = make()
     const res = await app.request('/sessions/s1/schedules/zzz', { method: 'DELETE' })
+    expect(res.status).toBe(404)
+  })
+
+  it('DELETE is 404 for an unknown session', async () => {
+    const { app, sm } = make()
+    sm.get.mockImplementationOnce(() => { throw new HttpError(404, 'session nope not found') })
+    const res = await app.request('/sessions/nope/schedules/zzz', { method: 'DELETE' })
     expect(res.status).toBe(404)
   })
 
