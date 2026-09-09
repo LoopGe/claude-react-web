@@ -769,43 +769,44 @@ mark.search-hl.search-hl-active {
 }
 
 /* ── Global toast host ─────────────────────────────────────────────
-   Fixed-position column anchored to the bottom-right. New toasts append
-   to the bottom (visually stacking up from the corner). Each toast has
-   a slide-in animation and an explicit ✕ button. Stickies (durationMs
-   === 0 in useToast) have no auto-dismiss, so the ✕ is always present.
-   Colours go through CSS variables so the light theme picks them up
-   without overrides. The host itself is `pointer-events: none` so an
-   empty stack never blocks clicks; individual toasts re-enable pointer
-   events for their own buttons. */
+   Fixed-position PILE anchored top-center. Toasts render newest-first
+   (index 0 = front); each shell is absolutely positioned at a `top`
+   computed in ToastHost from measured card heights (`topFor`/STACK_PEEK)
+   with a descending z-index, so the newest card face-covers the older
+   ones and each older card only peeks out a sliver below the front
+   card's bottom edge — a taller front card never buries a shorter one.
+   Stickies (durationMs === 0 in useToast) have no auto-dismiss, so the
+   ✕ is always present. Colours go through CSS variables so the light
+   theme picks them up without overrides. The host itself is
+   `pointer-events: none` so an empty stack never blocks clicks;
+   individual toasts re-enable pointer events for their own buttons. */
 
 .toast-host {
+  /* Local design tokens for the toast skin. The stack offset lives in
+     ToastHost's STACK_PEEK (the inline `top` is computed from measured
+     card heights), so there is no CSS copy of the offset here. */
+  --toast-slide-distance: 12px;
+  --toast-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --toast-move: 220ms var(--toast-ease);
+
   position: fixed;
   top: 16px;
   left: 50%;
   transform: translateX(-50%);
   z-index: var(--z-toast);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0;
   width: min(380px, calc(100vw - 32px));
   pointer-events: none;
 }
 
 .toast-shell {
-  display: grid;
-  grid-template-rows: 1fr;
+  /* Positioned in the pile by `top` + `z-index` (inline from React). The
+     `top` transition slides the stack when the list changes — new toasts
+     push older cards down one sliver, dismissing the front pulls them up. */
+  position: absolute;
+  left: 0;
   width: 100%;
-  padding-bottom: 8px;
-  overflow: hidden;
-  transition:
-    grid-template-rows var(--motion-duration-base) var(--motion-ease-exit),
-    padding-bottom var(--motion-duration-base) var(--motion-ease-exit);
-}
-
-.toast-shell-exiting {
-  grid-template-rows: 0fr;
-  padding-bottom: 0;
+  transition: top var(--toast-move);
+  pointer-events: auto;
 }
 
 .toast {
@@ -813,20 +814,30 @@ mark.search-hl.search-hl-active {
   min-height: 0;
   overflow: hidden;
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  /* The body column is the tallest item, so centering the cross-axis puts
+     the icon badge and the dismiss ✕ in the vertical middle of the card —
+     for both single-line and title+body toasts. */
+  align-items: center;
+  gap: 10px;
   width: 100%;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
+  padding: 11px 12px 12px;
+  border-radius: 10px;
   font-size: 13px;
   line-height: 1.4;
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 22%, var(--border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--kind-tint, var(--accent)) 9%, var(--bg-elev-2)),
+    color-mix(in srgb, var(--kind-tint, var(--accent)) 4%, var(--bg-elev-2))
+  );
   color: var(--fg);
+  /* Elevation via the theme-token shadow. The glass skins chain the iOS
+     meniscus + kind-tint glow on top in glass.css, so the toast keeps a
+     theme-aware shadow in every skin without hardcoded rgba here. */
   box-shadow: var(--toast-shadow);
   pointer-events: auto;
   /* slide in from the top; respects prefers-reduced-motion below */
-  animation: toast-slide-in var(--motion-duration-base) var(--motion-ease-enter);
+  animation: toast-slide-in var(--toast-move);
 }
 
 .toast-exiting {
@@ -838,68 +849,92 @@ mark.search-hl.search-hl-active {
   animation-play-state: paused;
 }
 
-/* Countdown progress bar pinned to the toast's bottom edge. Scales from
-   full width down to 0 over the toast's lifetime; colour follows the
-   kind. Pauses in lockstep with the JS dismiss timer on hover. */
+/* Full-card countdown wash. A translucent kind-tinted gradient covers the
+   WHOLE card and drains rightward (scaleX 1 → 0) over the toast's
+   lifetime, instead of a thin bar along the bottom edge. Sticky toasts
+   don't render it at all. Pauses in lockstep with the JS dismiss timer
+   on hover. Content sits above it via `.toast > *:not(.toast-progress)`. */
 .toast-progress {
   position: absolute;
-  left: 0;
-  bottom: 0;
-  height: 3px;
+  inset: 0;
   width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    120deg,
+    color-mix(in srgb, var(--kind-tint, var(--accent)) 22%, transparent),
+    color-mix(in srgb, var(--kind-tint, var(--accent)) 10%, transparent)
+  );
   transform-origin: left;
-  background: var(--accent);
-  opacity: 0.8;
   animation: toast-progress linear forwards;
 }
-.toast-error .toast-progress { background: var(--danger); }
-.toast-success .toast-progress { background: var(--ok); }
-.toast-info .toast-progress { background: var(--accent); }
+.toast > *:not(.toast-progress) { position: relative; z-index: 1; }
 .toast:hover .toast-progress { animation-play-state: paused; }
 
-.toast-error {
-  background: color-mix(in srgb, var(--danger) 14%, var(--bg-elev-2));
-  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
-  color: var(--fg);
-}
+.toast-error { --kind-tint: var(--danger); }
+.toast-success { --kind-tint: var(--ok); }
+.toast-info { --kind-tint: var(--accent); }
 .toast-error .toast-icon { color: var(--danger); }
-
-.toast-success {
-  background: color-mix(in srgb, var(--ok) 14%, var(--bg-elev-2));
-  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
-  color: var(--fg);
-}
 .toast-success .toast-icon { color: var(--ok); }
-
-.toast-info {
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev-2));
-  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-  color: var(--fg);
-}
 .toast-info .toast-icon { color: var(--accent); }
 
+/* Kind-coloured circular badge behind the icon, so the severity reads at
+   a glance instead of a bare glyph. */
 .toast-icon {
+  width: 22px;
+  height: 22px;
   flex-shrink: 0;
-  font-size: 14px;
-  line-height: 1.4;
-  font-weight: 600;
+  border-radius: 50%;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  background: color-mix(in srgb, var(--kind-tint, var(--accent)) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--kind-tint, var(--accent)) 30%, transparent);
 }
 
+/* Body column carries the title/body hierarchy. */
+.toast-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.toast-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--fg);
+  /* Break long unbroken titles (filenames / URLs / session ids) instead
+     of hard-clipping inside .toast's overflow:hidden. */
+  word-break: break-word;
+}
 .toast-message {
-  flex: 1;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted);
   word-break: break-word;
 }
+/* Single-line toasts (no title) read at the title weight, not muted, so
+   a bare "Settings applied" isn't demoted to a caption. */
+.toast-message-main {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+}
 
-/* Whole-message click target (used when onClick is set without
-   actionLabel). Inherits the parent's text colour so the toast still
-   reads as a notification, not a hyperlink — but adds an underline on
-   hover/focus to signal interactivity, plus a focus ring for keyboard
-   users. */
-.toast-message-button {
+/* Whole-body click target (used when onClick is set without actionLabel).
+   Resets the native button so the title/message inherit the toast's text
+   rendering; focus ring signals the keyboard affordance. */
+.toast-body-button {
   flex: 1;
-  word-break: break-word;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   background: none;
   border: none;
   padding: 0;
@@ -909,27 +944,27 @@ mark.search-hl.search-hl-active {
   text-align: left;
   cursor: pointer;
 }
-.toast-message-button:hover,
-.toast-message-button:focus-visible {
-  text-decoration: underline;
-}
-.toast-message-button:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+.toast-body-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 70%, transparent);
   outline-offset: 2px;
   border-radius: var(--radius-2xs);
+}
+.toast-body-button:hover .toast-message {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 /* Dedicated action button (used when both onClick and actionLabel are
    set). Tints with the toast's kind colour so an "Open" button on a
-   success toast picks up green, on an error picks up red, etc. — the
-   --kind-tint variable is set per-kind below. */
+   success toast picks up green, on an error picks up red, etc. */
 .toast-action {
   flex-shrink: 0;
-  padding: 4px 10px;
-  border-radius: var(--radius-xs);
-  border: 1px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 50%, var(--border));
-  background: color-mix(in srgb, var(--kind-tint, var(--accent)) 18%, transparent);
-  color: var(--fg);
+  align-self: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 45%, transparent);
+  background: color-mix(in srgb, var(--kind-tint, var(--accent)) 22%, transparent);
+  color: color-mix(in srgb, var(--kind-tint, var(--accent)) 70%, var(--fg));
   font: inherit;
   font-size: 12px;
   font-weight: 500;
@@ -937,19 +972,13 @@ mark.search-hl.search-hl-active {
   white-space: nowrap;
 }
 .toast-action:hover {
-  background: color-mix(in srgb, var(--kind-tint, var(--accent)) 30%, transparent);
-  border-color: color-mix(in srgb, var(--kind-tint, var(--accent)) 70%, var(--border));
+  background: color-mix(in srgb, var(--kind-tint, var(--accent)) 32%, transparent);
+  border-color: color-mix(in srgb, var(--kind-tint, var(--accent)) 65%, transparent);
 }
 .toast-action:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 70%, transparent);
   outline-offset: 1px;
 }
-
-/* Per-kind tint propagation for .toast-action. Keeps the action button's
-   colour in sync with the surrounding toast variant. */
-.toast-error { --kind-tint: var(--danger); }
-.toast-success { --kind-tint: var(--ok); }
-.toast-info { --kind-tint: var(--accent); }
 
 .toast-dismiss {
   flex-shrink: 0;
@@ -965,7 +994,7 @@ mark.search-hl.search-hl-active {
   position: relative;
 }
 /* Extend the ~18px ✕ to the WCAG 2.5.8 24px floor. The horizontal 4px
-   expansion is safe because .toast's 8px flex gap to the action button
+   expansion is safe because .toast's 10px flex gap to the action button
    (when present) absorbs it — don't widen this inset beyond the gap. */
 .toast-dismiss::after {
   content: '';
@@ -980,11 +1009,11 @@ mark.search-hl.search-hl-active {
 @keyframes toast-slide-in {
   from {
     opacity: 0;
-    transform: translateY(calc(-1 * var(--motion-distance-md)));
+    transform: translateY(calc(-1 * var(--toast-slide-distance))) scale(0.97);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
   }
 }
 
@@ -995,7 +1024,7 @@ mark.search-hl.search-hl-active {
   }
   to {
     opacity: 0;
-    transform: translateY(calc(-1 * var(--motion-distance-md))) scale(var(--motion-scale-enter));
+    transform: translateY(calc(-1 * var(--toast-slide-distance))) scale(0.98);
   }
 }
 
@@ -1015,10 +1044,11 @@ mark.search-hl.search-hl-active {
   .toast {
     animation: none;
   }
-  /* Keep the bar visible as a static full-width rule rather than
-     animating it shrink; the JS timer still auto-dismisses on time. */
+  /* Hide the countdown wash rather than freeze it full-width — a static
+     full-tint card would misread as "still fresh"; the JS timer still
+     auto-dismisses on time. */
   .toast-progress {
-    animation: none;
+    display: none;
   }
 }
 

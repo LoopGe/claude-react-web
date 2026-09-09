@@ -71,7 +71,11 @@
 .accent-popover    { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
 .appearance-panel  { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
 .tt-bubble         { box-shadow: var(--glass-edge-highlight), var(--tooltip-shadow); }
-.toast             { box-shadow: var(--glass-edge-highlight), var(--toast-shadow); }
+/* Toasts additionally carry a soft kind-tint glow so success/error/info
+   read at a glance even in glass skins (the base overlays.css `.toast`
+   shadow is `var(--toast-shadow)` only; this chains the meniscus, the
+   theme token, and the glow). */
+.toast { box-shadow: var(--glass-edge-highlight), var(--toast-shadow), 0 0 18px color-mix(in srgb, var(--kind-tint, var(--accent)) 12%, transparent); }
 
 /* Glow skin already chains its own accent-tinted glow into .toast's
    box-shadow (see tokens.css `[data-skin="glow"] .toast`). Re-chain it

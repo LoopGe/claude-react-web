@@ -8,6 +8,10 @@ export type Toast = {
   id: string
   kind: ToastKind
   message: string
+  /** Optional headline. When present, the toast renders as a two-line
+   *  card: `title` (bold) above `message` (muted body). When omitted the
+   *  toast is a single-line `message`. */
+  title?: string
   /** 0 = sticky, no auto-dismiss. Otherwise milliseconds before auto-clear. */
   durationMs: number
   /** True while the toast is playing its exit animation. It remains in
@@ -25,6 +29,8 @@ export type Toast = {
 }
 
 export type PushOptions = {
+  /** Optional headline rendered above `message`. See Toast.title. */
+  title?: string
   /** Override the kind's default lifetime. Pass `0` for sticky. */
   durationMs?: number
   /** Make the toast clickable — see Toast.onClick for behaviour. */

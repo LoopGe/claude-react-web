@@ -83,7 +83,9 @@ describe('useSessionNotifications — three-state dispatch', () => {
       expect(notify).not.toHaveBeenCalled()
       expect(toastInfo).toHaveBeenCalledTimes(1)
       const [msg, opts] = toastInfo.mock.calls[0]
-      expect(msg).toContain('Session One')
+      // Structured toast: session name is the title, completion is the body.
+      expect(opts.title).toContain('Session One')
+      expect(msg).toBe('Turn complete')
       // onClick should jump to the session.
       opts.onClick()
       expect(handleSelect).toHaveBeenCalledWith('s1')
@@ -96,6 +98,9 @@ describe('useSessionNotifications — three-state dispatch', () => {
       api.maybeNotify(makeSession({ working: false, error: 'boom' } as Partial<SessionInfo>))
       expect(toastError).toHaveBeenCalledTimes(1)
       expect(toastInfo).not.toHaveBeenCalled()
+      const [msg, opts] = toastError.mock.calls[0]
+      expect(msg).toBe('boom')
+      expect(opts.title).toContain('Session One')
     })
 
     it('falls back to a desktop notification when the window is not focused', () => {
@@ -125,7 +130,9 @@ describe('useSessionNotifications — three-state dispatch', () => {
       expect(notify).not.toHaveBeenCalled()
       expect(toastInfo).toHaveBeenCalledTimes(1)
       const [msg, opts] = toastInfo.mock.calls[0]
-      expect(msg).toContain('needs permission')
+      // Structured: "needs permission" is the title, the tool is the body.
+      expect(opts.title).toContain('needs permission')
+      expect(msg).toBe('Approve or deny: Bash')
       expect(opts.durationMs).toBe(0)
       opts.onClick()
       expect(handleSelect).toHaveBeenCalledWith('s1')
@@ -137,9 +144,10 @@ describe('useSessionNotifications — three-state dispatch', () => {
       api.maybePermissionNotify('s1', 'a question', 'question')
       expect(toastInfo).toHaveBeenCalledTimes(1)
       const [msg, opts] = toastInfo.mock.calls[0]
-      expect(msg).toContain('is asking a question')
-      expect(msg).not.toContain('needs permission')
+      expect(opts.title).toContain('is asking a question')
+      expect(opts.title).not.toContain('needs permission')
       expect(opts.actionLabel).toBe('Answer')
+      expect(msg).toBe('Open to answer')
     })
 
     it('uses question wording in the desktop fallback too', () => {
@@ -189,7 +197,9 @@ describe('useSessionNotifications — three-state dispatch', () => {
       expect(notify).not.toHaveBeenCalled()
       expect(toastInfo).toHaveBeenCalledTimes(1)
       const [msg, opts] = toastInfo.mock.calls[0]
-      expect(msg).toContain('waiting for your input')
+      // Structured: session name is the title, the CLI text is the body.
+      expect(opts.title).toContain('Session One')
+      expect(msg).toBe('Claude is waiting for your input')
       // NOT sticky like permission toasts — default 8s, no durationMs:0.
       expect(opts.durationMs).toBe(8000)
       opts.onClick()

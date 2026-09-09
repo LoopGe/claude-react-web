@@ -110,12 +110,16 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const show = useCallback(
     (kind: ToastKind, message: string, opts?: PushOptions): string => {
       const id = makeId()
+      const title = opts?.title
       const durationMs = opts?.durationMs ?? DEFAULT_DURATIONS[kind]
       const onClick = opts?.onClick
       const actionLabel = opts?.actionLabel
       const active = toastsRef.current.filter((t) => !t.exiting)
       const overflow = Math.max(0, active.length + 1 - MAX_TOASTS)
-      const evictedIds = new Set(active.slice(0, overflow).map((t) => t.id))
+      // Newest-first stack: the freshest toast is the FRONT of the array.
+      // When over the cap, evict from the TAIL (the oldest / backmost),
+      // leaving the newest toasts visible in front.
+      const evictedIds = new Set(active.slice(active.length - overflow).map((t) => t.id))
       for (const droppedId of evictedIds) {
         const entry = timersRef.current.get(droppedId)
         if (entry) {
@@ -124,8 +128,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         }
       }
       commitToasts([
+        { id, kind, message, title, durationMs, onClick, actionLabel },
         ...toastsRef.current.map((t) => (evictedIds.has(t.id) ? { ...t, exiting: true } : t)),
-        { id, kind, message, durationMs, onClick, actionLabel },
       ])
       for (const droppedId of evictedIds) {
         if (removalTimersRef.current.has(droppedId)) continue

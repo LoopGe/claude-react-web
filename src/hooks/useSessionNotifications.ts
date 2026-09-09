@@ -189,7 +189,14 @@ export function useSessionNotifications({
         const existingId = permToastIdsRef.current.get(sessionId)
         if (existingId) toastRef.current.dismiss(existingId)
 
-        const toastId = toastRef.current.info(headline, {
+        // Structured toast: the headline is the title, the actionable
+        // detail the muted body. (Toast title omits the ⚠/❓ emoji the
+        // desktop fallback keeps — the in-app kind icon already signals it.)
+        const toastTitle = isQuestion
+          ? `${title} is asking a question`
+          : `${title} needs permission`
+        const toastId = toastRef.current.info(isQuestion ? 'Open to answer' : `Approve or deny: ${toolLabel}`, {
+          title: toastTitle,
           durationMs: 0,
           actionLabel: isQuestion ? 'Answer' : 'Open',
           onClick: () => handleSelectRef.current?.(sessionId),
@@ -248,7 +255,8 @@ export function useSessionNotifications({
       const quiet = n.priority === 'low' || n.priority === 'medium'
 
       if (mode === 'toast') {
-        toastRef.current.info(`🔔 ${title} · ${n.text}`, {
+        toastRef.current.info(n.text, {
+          title,
           durationMs,
           onClick: () => { handleSelectRef.current?.(sessionId) },
         })
@@ -287,9 +295,9 @@ export function useSessionNotifications({
         // desktop notification below).
         const onClick = () => handleSelectRef.current?.(s.id)
         if (s.error) {
-          toastRef.current.error(`✗ ${title} · ${s.error}`, { onClick })
+          toastRef.current.error(s.error, { title, onClick })
         } else {
-          toastRef.current.info(`✓ ${title} · Turn complete`, { onClick })
+          toastRef.current.info('Turn complete', { title, onClick })
         }
         return
       }
