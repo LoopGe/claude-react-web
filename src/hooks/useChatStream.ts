@@ -260,6 +260,12 @@ export function useChatStream(
     let replayMessages: SdkMessage[] = []
     let replayPermissions: PermissionRequest[] = []
     let replaying = false
+    // True once the server's `error` frame has landed on this listener.
+    // The startSession error path on the server enqueues `error` +
+    // `replay-done` with NO replay frame between them, so this flag keeps
+    // the replay-done diagnostic below from misattributing that expected
+    // sequence to the discarded-buffer race.
+    let errored = false
     // Phase 2 of the layered-state refactor removed the `pendingLive` buffer.
     // Previously, live frames arriving between `replay` and `replay-done` had
     // to be parked because REPLAY_REPLACE's fresh-state branch rebuilt the
@@ -299,6 +305,28 @@ export function useChatStream(
           break
         }
         case 'replay-done': {
+          // Key diagnostic: on the success path the server ALWAYS sends ≥1
+          // replay frame before replay-done (even an empty one — ws.ts
+          // enqueues `replay` with messages:[] before `replay-done`). The
+          // startSession ERROR path is the exception: it enqueues `error` +
+          // `replay-done` with no replay frame, and `errored` tracks that so
+          // we don't misattribute it to the race. Otherwise, reaching
+          // replay-done with replaying===false means this listener instance
+          // never saw the replay frames — they landed on a previous effect
+          // instance that was torn down mid-replay (deps: running /
+          // hydrateReady / store), discarding the buffer. This is the
+          // "blank transcript after resume" race: REPLAY_REPLACE then runs
+          // with [] and a cold store has nothing to fall back on. Correlates
+          // with the server-side "subscribe … ignored — channel already
+          // live" debug line (the resubscribe after the re-run is swallowed,
+          // so no re-replay).
+          if (!replaying && replayMessages.length === 0 && !errored) {
+            console.warn(
+              `[useChatStream] replay-done for ${sessionId} arrived with NO preceding ` +
+              `replay frame on this listener — replay frames were likely discarded by an ` +
+              `effect re-run (running=${running}); transcript may render blank`,
+            )
+          }
           if (frame.permissions?.length) {
             replayPermissions.push(...frame.permissions)
             for (const req of frame.permissions) permsRef.current.onRequest(req)
@@ -447,6 +475,7 @@ export function useChatStream(
           // replayReady=true so the skeleton clears and the error becomes
           // visible. Clear all replay buffers so a stale replay-done that
           // arrives later can't overwrite the error with error:null.
+          errored = true
           if (!store.getSnapshot().replayReady) {
             replayMessages = []
             replayPermissions = []
@@ -502,6 +531,21 @@ export function useChatStream(
       hub.resubscribe(sessionId, getSessionLastMessageUuid(sessionId) ?? undefined)
     }
     return () => {
+      // Key diagnostic: tearing down mid-replay discards the buffered
+      // chunks (they live in this closure). The replacement effect starts
+      // a fresh buffer, and the server's idempotent-subscribe guard means
+      // the frames already sent are never re-sent — if replay-done lands
+      // on the new instance without its replay frames, REPLAY_REPLACE
+      // runs empty (see the replay-done warn). This warn fires at the
+      // moment the race window opens.
+      if (replaying && replayMessages.length > 0) {
+        console.warn(
+          `[useChatStream] effect re-run for ${sessionId} DISCARDED in-flight replay ` +
+          `buffer (${replayMessages.length} msgs, replaying=${replaying}) — ` +
+          `deps change mid-replay; if replay-done lands on the next instance ` +
+          `the transcript may render blank`,
+        )
+      }
       off()
       release()
     }

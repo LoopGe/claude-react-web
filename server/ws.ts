@@ -345,9 +345,18 @@ export function attachWebSocket(
     const startSession = async (sessionId: string, sinceUuid?: string) => {
       // Idempotent: re-subscribing is a no-op. The client can safely
       // emit duplicate subscribe frames (e.g. after a tab refresh sees a
-      // panel already open).
-      if (subs.has(sessionId)) return
-      if (starting.has(sessionId)) return
+      // panel already open). Debug-logged so a client that resubscribes
+      // expecting a FRESH replay (e.g. its useChatStream effect re-ran
+      // mid-replay and discarded its buffer) can be diagnosed: the
+      // swallowed frame means no replay will be re-sent on this socket.
+      if (subs.has(sessionId)) {
+        log.debug(`subscribe for ${sessionId} ignored — channel already live on this connection`)
+        return
+      }
+      if (starting.has(sessionId)) {
+        log.debug(`subscribe for ${sessionId} ignored — startSession already in flight`)
+        return
+      }
       starting.add(sessionId)
       let msgSub: { unsubscribe: () => void } | null = null
       let permSub: { unsubscribe: () => void } | null = null
@@ -395,7 +404,17 @@ export function attachWebSocket(
         // user's back by a reconnecting subscriber — only an explicit
         // resume should wake it. It falls through to the error path
         // below, same as any other not-loaded session.
-        if (!known.running && !known.slept) await sm.resume(sessionId)
+        if (!known.running && !known.slept) {
+          // Key diagnostic: this auto-resume runs BEFORE the replay is
+          // built (the ring only exists after spawn seeds it). A slow
+          // resume here delays replay-done, which widens the client-side
+          // effect-rerun window that can discard an in-flight replay.
+          const resumeStartedAt = Date.now()
+          await sm.resume(sessionId)
+          log.info(
+            `subscribe auto-resumed dormant ${sessionId} in ${Date.now() - resumeStartedAt}ms`,
+          )
+        }
         // The socket may have closed while the spawn was in flight; don't
         // wire subscriptions onto a dead connection.
         if (closed) return
@@ -467,6 +486,14 @@ export function attachWebSocket(
           (m) => shouldBroadcastMessage(m as { type?: string; subtype?: string }),
         )
         const REPLAY_CHUNK_SIZE = 50
+        // Key diagnostic: pairs with the client's replay-done handling.
+        // If the server logs a non-zero count here but the client renders
+        // blank, the loss is client-side (effect re-run discarded the
+        // buffer, or REPLAY_REPLACE merge dropped everything).
+        log.info(
+          `replay for ${sessionId}: sending ${replayHistory.length} msgs ` +
+          `(ring=${msg.history.length}, sinceUuid=${sinceUuid ?? 'none'})`,
+        )
         if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
           queue.enqueue({
             kind: 'replay',

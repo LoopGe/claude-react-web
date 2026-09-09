@@ -1181,9 +1181,30 @@ export class SessionManager {
         // re-seeding the ring on resume doesn't paint the parent's history.
         ...(meta.forkBoundaryUuid ? { afterUuid: meta.forkBoundaryUuid } : {}),
       })
-      if (page.messages.length > 0) historySeed = page.messages as SDKMessage[]
-    } catch {
-      /* disk read failed — fall back to an empty ring (pre-fix behaviour) */
+      // Key diagnostic: an empty seed means the ring spawns empty, so the
+      // first subscribe replays 0 msgs — a blank transcript on the client
+      // (with no localStorage cache). Distinguishes "seed failed" from
+      // "replay lost in transit" when diagnosing blank-after-resume.
+      if (page.messages.length > 0) {
+        historySeed = page.messages as SDKMessage[]
+        log.info(
+          `[session ${id}] resume historySeed: ${page.messages.length} msgs ` +
+          `(disk total=${page.totalCount})`,
+        )
+      } else {
+        log.warn(
+          `[session ${id}] resume historySeed EMPTY (disk total=${page.totalCount}) — ` +
+          `ring will spawn empty, first replay delivers 0 msgs`,
+        )
+      }
+    } catch (err) {
+      // Previously silent — a disk-read failure here is a prime suspect for
+      // "blank message list after resume": the ring spawns empty and the
+      // client has nothing to replay.
+      log.warn(
+        `[session ${id}] resume historySeed read FAILED, ring will spawn empty:`,
+        err,
+      )
     }
     // resolveConfiguredModel maps a bare SHORT model id (what the CLI records
     // in the transcript, e.g. `deepseek-v4-flash`) back to the configured
