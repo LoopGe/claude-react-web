@@ -488,7 +488,14 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   const itemToVirtIdx = useMemo(() => {
     const map = new Map<number, number>()
     for (let vi = 0; vi < renderableItems.length; vi++) {
-      map.set(renderableItems[vi].itemIndex, vi)
+      const row = renderableItems[vi]
+      if (row.toolGroup) {
+        // Every member's items[] index must resolve to the group row so
+        // search seek-to-match lands on the folded card.
+        for (const ii of row.toolGroup.memberItemIndices) map.set(ii, vi)
+      } else {
+        map.set(row.itemIndex, vi)
+      }
     }
     return map
   }, [renderableItems])
