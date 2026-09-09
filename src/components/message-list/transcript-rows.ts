@@ -13,6 +13,10 @@
  * identity?** It is pure and synchronous so it can be unit-tested without a
  * DOM, and so the answer is the same for every caller.
  *
+ * After filtering, consecutive tool-only assistant rows are folded into one
+ * group row (see `foldToolGroupRows`) so the UI can collapse historical tool
+ * cascades. Length-1 runs stay unwrapped.
+ *
  * The invariants the virtualization layer depends on:
  *
  *  I1  `row.id` is stable and unique within a build. It is the React/Virtuoso
@@ -36,7 +40,7 @@
  */
 import type { SdkMessage } from '../../types'
 import type { ActiveSubagent, TranscriptItem } from '../../session-store/types'
-import { userMessageHasToolResult } from '../../session-store/normalize'
+import { getBlocks, userMessageHasToolResult } from '../../session-store/normalize'
 import { willRenderEmpty } from './rendering'
 
 /**
@@ -68,6 +72,14 @@ export interface TranscriptRow {
    *  the entrance-animation gate can tell a live arrival (timestamp present)
    *  from disk-restored history (undefined). */
   receivedAt?: number
+  /** Present only on a folded group of >=2 consecutive tool-only assistant
+   *  rows. `id` stays the FIRST member's uuid so live 1->2 growth is a
+   *  same-key height change + mid-list removal of the second row (I3). */
+  toolGroup?: {
+    members: SdkMessage[]
+    memberItemIndices: number[]
+    memberIds: string[]
+  }
 }
 
 export interface BuildTranscriptRowsInput {
@@ -140,6 +152,61 @@ function pushRow(
   })
 }
 
+/** A row eligible for tool-group folding: a root assistant message whose
+ *  only visible content is one or more tool_use blocks. Thinking, text,
+ *  and anything else break the run (SDK emits those as separate messages). */
+export function isToolGroupEligible(row: TranscriptRow): boolean {
+  if (row.msg.type !== 'assistant') return false
+  if (row.isCompactSummary) return false
+  if (row.msg.parent_tool_use_id != null) return false
+  const blocks = getBlocks(row.msg)
+  let hasToolUse = false
+  for (const b of blocks) {
+    if (b == null) return false
+    if (b.type === 'tool_use') {
+      hasToolUse = true
+      continue
+    }
+    if (b.type === 'text' && typeof b.text === 'string' && b.text.trim().length > 0) return false
+    if (b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim().length > 0) return false
+    // image / unknown / empty text / empty thinking -> not a pure tool row
+    return false
+  }
+  return hasToolUse
+}
+
+/** Fold consecutive eligible runs of length >=2 into one group row. Length-1
+ *  runs stay untouched so a lone tool keeps today's appearance. */
+export function foldToolGroupRows(rows: readonly TranscriptRow[]): TranscriptRow[] {
+  const out: TranscriptRow[] = []
+  let i = 0
+  while (i < rows.length) {
+    if (!isToolGroupEligible(rows[i]!)) {
+      out.push(rows[i]!)
+      i += 1
+      continue
+    }
+    let j = i + 1
+    while (j < rows.length && isToolGroupEligible(rows[j]!)) j += 1
+    if (j - i === 1) {
+      out.push(rows[i]!)
+    } else {
+      const members = rows.slice(i, j)
+      const first = members[0]!
+      out.push({
+        ...first,
+        toolGroup: {
+          members: members.map((m) => m.msg),
+          memberItemIndices: members.map((m) => m.itemIndex),
+          memberIds: members.map((m) => m.id),
+        },
+      })
+    }
+    i = j
+  }
+  return out
+}
+
 export function buildTranscriptRows({
   items,
   parentToolUseIdFilter,
@@ -188,9 +255,13 @@ export function buildTranscriptRows({
     })
   }
 
+  // Fold tool-only assistant runs. Must run before nextItemTypeMap so the
+  // map keys on the surviving (group) ids.
+  const folded = foldToolGroupRows(out)
+
   const nextItemTypeMap = new Map<string, string>()
-  for (let i = 0; i < out.length - 1; i++) {
-    nextItemTypeMap.set(out[i].id, out[i + 1].msg.type)
+  for (let i = 0; i < folded.length - 1; i++) {
+    nextItemTypeMap.set(folded[i]!.id, folded[i + 1]!.msg.type)
   }
 
   // I1 is load-bearing now that rows are keyed by id: a duplicate would give
@@ -199,9 +270,9 @@ export function buildTranscriptRows({
   // prevent, but silent. `nextItemTypeMap` is also keyed by id, so a duplicate
   // corrupts the last-row detection too. Dev-only: Vite tree-shakes it out of
   // the shipped bundle (same pattern as the store's debug dump).
-  if (import.meta.env.DEV && nextItemTypeMap.size < out.length - 1) {
+  if (import.meta.env.DEV && nextItemTypeMap.size < folded.length - 1) {
     const seen = new Set<string>()
-    const dupes = out.map((r) => r.id).filter((id) => !seen.add(id))
+    const dupes = folded.map((r) => r.id).filter((id) => !seen.add(id))
     console.error(
       '[transcript-rows] duplicate row ids break virtualization (invariant I1):',
       Array.from(new Set(dupes)),
@@ -209,9 +280,9 @@ export function buildTranscriptRows({
   }
 
   return {
-    rows: out,
-    firstItemId: out[0]?.id,
-    lastItemId: out[out.length - 1]?.id,
+    rows: folded,
+    firstItemId: folded[0]?.id,
+    lastItemId: folded[folded.length - 1]?.id,
     nextItemTypeMap,
   }
 }

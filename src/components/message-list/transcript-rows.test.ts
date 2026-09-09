@@ -42,6 +42,42 @@ function user(id: string, text: string, parent: string | null = null): Transcrip
   } as TranscriptItem
 }
 
+function toolOnlyAssistant(id: string, toolName: string, parent: string | null = null): TranscriptItem {
+  return {
+    id,
+    msg: {
+      type: 'assistant',
+      uuid: id,
+      parent_tool_use_id: parent,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: `${id}-tu`, name: toolName, input: {} }],
+      },
+    } as unknown as SdkMessage,
+    plainText: '',
+    isCompactSummary: false,
+    hiddenByDefault: false,
+  } as TranscriptItem
+}
+
+function thinkingAssistant(id: string, parent: string | null = null): TranscriptItem {
+  return {
+    id,
+    msg: {
+      type: 'assistant',
+      uuid: id,
+      parent_tool_use_id: parent,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'thinking', thinking: 'hmm', signature: 's' }],
+      },
+    } as unknown as SdkMessage,
+    plainText: '',
+    isCompactSummary: false,
+    hiddenByDefault: false,
+  } as TranscriptItem
+}
+
 /** A child user frame carrying only a tool_result — rendered as a standalone
  *  "orphan" bubble while the result is unconsumed, dropped once the owning
  *  card has merged it. This is the mid-list removal that makes row identity
@@ -255,5 +291,82 @@ describe('advanceRowAnchor', () => {
     expect(anchor.index).toBe(base - 1)
     anchor = advanceRowAnchor(anchor, rowsFor(['c']))
     expect(anchor.index).toBe(base)
+  })
+})
+
+describe('buildTranscriptRows: tool-group fold', () => {
+  it('folds ≥2 consecutive tool-only assistant rows into one group keyed by the first id', () => {
+    const { rows } = buildTranscriptRows({
+      items: [
+        user('u1', 'go'),
+        toolOnlyAssistant('t1', 'Read'),
+        toolOnlyAssistant('t2', 'Grep'),
+        toolOnlyAssistant('t3', 'Glob'),
+        assistant('a1', 'done'),
+      ],
+      isResultConsumed: () => true,
+    })
+    expect(ids(rows)).toEqual(['u1', 't1', 'a1'])
+    const g = rows[1]!
+    expect(g.toolGroup).toBeDefined()
+    expect(g.toolGroup!.memberIds).toEqual(['t1', 't2', 't3'])
+    expect(g.toolGroup!.memberItemIndices).toEqual([1, 2, 3])
+    expect(g.toolGroup!.members).toHaveLength(3)
+    expect(g.msg.uuid).toBe('t1')
+  })
+
+  it('leaves a lone tool-only row unwrapped', () => {
+    const { rows } = buildTranscriptRows({
+      items: [toolOnlyAssistant('t1', 'Read'), assistant('a1', 'ok')],
+      isResultConsumed: () => true,
+    })
+    expect(ids(rows)).toEqual(['t1', 'a1'])
+    expect(rows[0]!.toolGroup).toBeUndefined()
+  })
+
+  it('treats thinking / text / user as run boundaries', () => {
+    const { rows } = buildTranscriptRows({
+      items: [
+        toolOnlyAssistant('t1', 'Read'),
+        toolOnlyAssistant('t2', 'Grep'),
+        thinkingAssistant('th'),
+        toolOnlyAssistant('t3', 'Glob'),
+        toolOnlyAssistant('t4', 'Read'),
+      ],
+      isResultConsumed: () => true,
+    })
+    expect(ids(rows)).toEqual(['t1', 'th', 't3'])
+    expect(rows[0]!.toolGroup!.memberIds).toEqual(['t1', 't2'])
+    expect(rows[2]!.toolGroup!.memberIds).toEqual(['t3', 't4'])
+  })
+
+  it('1→2 growth keeps the first row id and drops the second', () => {
+    const one = buildTranscriptRows({
+      items: [toolOnlyAssistant('t1', 'Read')],
+      isResultConsumed: () => true,
+    })
+    expect(ids(one.rows)).toEqual(['t1'])
+    expect(one.rows[0]!.toolGroup).toBeUndefined()
+
+    const two = buildTranscriptRows({
+      items: [toolOnlyAssistant('t1', 'Read'), toolOnlyAssistant('t2', 'Grep')],
+      isResultConsumed: () => true,
+    })
+    expect(ids(two.rows)).toEqual(['t1'])
+    expect(two.rows[0]!.toolGroup!.memberIds).toEqual(['t1', 't2'])
+  })
+
+  it('does not fold across a visible orphan tool_result row', () => {
+    const { rows } = buildTranscriptRows({
+      items: [
+        toolOnlyAssistant('t1', 'Read'),
+        toolResultFrame('r1', 't1-tu'), // not consumed → still a row
+        toolOnlyAssistant('t2', 'Grep'),
+      ],
+      isResultConsumed: () => false,
+    })
+    expect(ids(rows)).toEqual(['t1', 'r1', 't2'])
+    expect(rows[0]!.toolGroup).toBeUndefined()
+    expect(rows[2]!.toolGroup).toBeUndefined()
   })
 })

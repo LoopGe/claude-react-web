@@ -29,6 +29,7 @@ import { EasterEggGame } from './EasterEggGame'
 import { ResultConsumedCtx } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed } from './message-list/rendering'
 import { MessageView } from './message-list/MessageView'
+import { ToolGroupCard } from './message-list/ToolGroupCard'
 import { StreamingOverlaySpacer } from './message-list/views/frame-views'
 import {
   advanceRowAnchor,
@@ -488,7 +489,14 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
   const itemToVirtIdx = useMemo(() => {
     const map = new Map<number, number>()
     for (let vi = 0; vi < renderableItems.length; vi++) {
-      map.set(renderableItems[vi].itemIndex, vi)
+      const row = renderableItems[vi]
+      if (row.toolGroup) {
+        // Every member's items[] index must resolve to the group row so
+        // search seek-to-match lands on the folded card.
+        for (const ii of row.toolGroup.memberItemIndices) map.set(ii, vi)
+      } else {
+        map.set(row.itemIndex, vi)
+      }
     }
     return map
   }, [renderableItems])
@@ -789,18 +797,40 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         ref={isEntering ? enterNodeRef : undefined}
         onAnimationEnd={isEntering ? handleEnterAnimationEnd : undefined}
       >
-        <MessageView
-          msg={item.msg}
-          isCompactSummary={item.isCompactSummary}
-          searchQuery={searchQuery}
-          activeMatchInItem={activeMatchInItem}
-          sending={item.sending}
-          deliveryStatus={item.deliveryStatus}
-          working={working}
-          nextItemType={nextItemTypeMap.get(item.id)}
-          onSwitchModel={onSwitchModel}
-          onAbortBash={onAbortBash}
-        />
+        {item.toolGroup ? (
+          <ToolGroupCard
+            members={item.toolGroup.members}
+            memberItemIndices={item.toolGroup.memberItemIndices}
+            searchQuery={searchQuery}
+            activeMemberItemIndex={
+              searchActiveMsgIdx != null &&
+              searchActiveMsgIdx >= 0 &&
+              item.toolGroup.memberItemIndices.includes(searchActiveMsgIdx)
+                ? searchActiveMsgIdx
+                : undefined
+            }
+            activeMatchInItem={
+              searchActiveMsgIdx != null &&
+              searchActiveMsgIdx >= 0 &&
+              item.toolGroup.memberItemIndices.includes(searchActiveMsgIdx)
+                ? searchActiveMatchInItem
+                : undefined
+            }
+          />
+        ) : (
+          <MessageView
+            msg={item.msg}
+            isCompactSummary={item.isCompactSummary}
+            searchQuery={searchQuery}
+            activeMatchInItem={activeMatchInItem}
+            sending={item.sending}
+            deliveryStatus={item.deliveryStatus}
+            working={working}
+            nextItemType={nextItemTypeMap.get(item.id)}
+            onSwitchModel={onSwitchModel}
+            onAbortBash={onAbortBash}
+          />
+        )}
       </div>
     )
   }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, enterNodeRef, working, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash])
