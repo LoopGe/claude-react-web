@@ -28,6 +28,13 @@ const WHEEL_STEP_PX = 80 // accumulated px (deltaMode-normalized) to step once
 const WHEEL_STEP_MS = 120 // min ms between history steps
 const WHEEL_ACCUM_TTL = WHEEL_STEP_MS * 4 // a pause longer than this discards stale accumulated delta
 
+/** Scheduled-send UI is hidden pending a UI redesign (spec:
+ *  docs/superpowers/specs/2026-09-07-scheduled-send-design.md). Flip to true
+ *  to re-enable the composer's clock button + pending chips + time picker.
+ *  The server routes, the useScheduledSends hook, and Chat wiring stay
+ *  active either way, so re-enabling is a one-constant change. */
+const SCHEDULE_SEND_ENABLED = false
+
 interface Props {
   input: string
   setInput: (v: string) => void
@@ -591,7 +598,7 @@ export const Composer = memo(function Composer({
             {uploading && <span className="attachment-chip attachment-chip-ghost">uploading…</span>}
           </div>
         )}
-        {(pendingScheduled.length > 0 || failedScheduled.length > 0) && scheduled && (
+        {SCHEDULE_SEND_ENABLED && (pendingScheduled.length > 0 || failedScheduled.length > 0) && scheduled && (
           <div className="scheduled-sends">
             {pendingScheduled.map((s) => (
               <span key={s.id} className="scheduled-chip" title={formatScheduledExact(s.fireAt)}>
@@ -920,7 +927,7 @@ export const Composer = memo(function Composer({
         >
           <IconPaperclip size={18} />
         </button>
-        {onSendScheduled && scheduled && (
+        {SCHEDULE_SEND_ENABLED && onSendScheduled && scheduled && (
           <button
             className="btn btn-icon"
             type="button"
@@ -987,7 +994,7 @@ export const Composer = memo(function Composer({
         <ContextMenu x={menuPos.x} y={menuPos.y} items={menuItems} onClose={closeMenu} />
       )}
 
-      {scheduleAnchor && (
+      {SCHEDULE_SEND_ENABLED && scheduleAnchor && (
         <SchedulePicker anchorRect={scheduleAnchor} onPick={confirmScheduled} onClose={() => setScheduleAnchor(null)} />
       )}
 
