@@ -984,6 +984,17 @@
   visibility: visible;
   transform: translateY(0);
 }
+/* Inline value highlight inside a bubble (e.g. the branch name in the git
+   chip tooltip): a small tinted pill that separates the value from its
+   label. Mono font so refs/hashes/paths read as identifiers. Colours go
+   through theme vars only, so light/dark both work with no extra rule. */
+.tt-hl {
+  padding: 0 4px;
+  border-radius: var(--radius-3xs);
+  background: var(--bg-elev-2);
+  color: var(--accent);
+  font-family: var(--mono);
+}
 /* Hover tooltips delay ~150ms so rapid mouse traversal doesn't flash
    bubbles; keyboard focus (focus-within) shows them instantly. Source order
    matters: :focus-within is after :hover so a focused-and-hovered trigger
@@ -999,6 +1010,13 @@
 .tt-top > .tt-bubble {
   bottom: calc(100% + 6px);
   left: 50%;
+  /* Same shrink-to-fit collapse as `.tt-left`/`.tt-right` below: anchoring
+     on `left` only leaves available width ≈ half the (often tiny) trigger,
+     so `width: auto` collapses the bubble to its longest-word min-content
+     width and multi-line labels (e.g. the git chip tooltip) shred into a
+     tall narrow column. `max-content` sizes to the widest line; the base
+     rule's max-width still caps runaway text. */
+  width: max-content;
   transform: translate(-50%, var(--motion-distance-xs));
 }
 .tt-top:hover > .tt-bubble,
@@ -1009,6 +1027,9 @@
 .tt-bottom > .tt-bubble {
   top: calc(100% + 6px);
   left: 50%;
+  /* Same shrink-to-fit guard as `.tt-top` — keeps multi-line labels on
+     one line each instead of collapsing to longest-word width. */
+  width: max-content;
   transform: translate(-50%, calc(-1 * var(--motion-distance-xs)));
 }
 .tt-bottom:hover > .tt-bubble,

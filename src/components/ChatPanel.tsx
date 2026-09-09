@@ -39,15 +39,23 @@ import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 /** Chip tooltip — verbose form for users who hover before clicking.
  *  Returns a ReactNode (one <div> per line) rather than a `\n`-joined
  *  string: newlines inside HTML text collapse to spaces, so the multi-
- *  line intent was previously lost in the Tooltip bubble. */
+ *  line intent was previously lost in the Tooltip bubble. Values are
+ *  wrapped in `.tt-hl` (utilities.css) — a tinted mono pill that makes
+ *  refs/identifiers pop out of the label text. */
 function gitChipTitle(s: GitStatus): ReactNode {
+  const hl = (text: string) => <span className="tt-hl">{text}</span>
   const lines = [
-    `Branch: ${s.detached ? 'detached HEAD' : (s.branch ?? 'unknown')}`,
-    s.upstream ? `Upstream: ${s.upstream}` : 'No upstream configured',
+    <>Branch: {hl(s.detached ? 'detached HEAD' : (s.branch ?? 'unknown'))}</>,
+    s.upstream ? <>Upstream: {hl(s.upstream)}</> : 'No upstream configured',
   ]
-  if (s.ahead > 0 || s.behind > 0) lines.push(`Sync: ${s.ahead} ahead, ${s.behind} behind`)
-  lines.push(`State: ${s.state}`)
-  lines.push(`Staged: ${s.staged.length} · Unstaged: ${s.unstaged.length} · Untracked: ${s.untracked.length}`)
+  if (s.ahead > 0 || s.behind > 0) lines.push(<>Sync: {hl(`${s.ahead} ahead, ${s.behind} behind`)}</>)
+  lines.push(<>State: {hl(s.state)}</>)
+  lines.push(
+    <>
+      Staged: {hl(String(s.staged.length))} · Unstaged: {hl(String(s.unstaged.length))} · Untracked:{' '}
+      {hl(String(s.untracked.length))}
+    </>,
+  )
   lines.push('Click to open Git panel')
   return lines.map((line, i) => <div key={i}>{line}</div>)
 }
