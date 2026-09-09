@@ -78,6 +78,31 @@ function thinkingAssistant(id: string, parent: string | null = null): Transcript
   } as TranscriptItem
 }
 
+function questionAssistant(id: string, parent: string | null = null): TranscriptItem {
+  return {
+    id,
+    msg: {
+      type: 'assistant',
+      uuid: id,
+      parent_tool_use_id: parent,
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: `${id}-tu`,
+            name: 'AskUserQuestion',
+            input: { questions: [] },
+          },
+        ],
+      },
+    } as unknown as SdkMessage,
+    plainText: '',
+    isCompactSummary: false,
+    hiddenByDefault: false,
+  } as TranscriptItem
+}
+
 /** A child user frame carrying only a tool_result — rendered as a standalone
  *  "orphan" bubble while the result is unconsumed, dropped once the owning
  *  card has merged it. This is the mid-list removal that makes row identity
@@ -369,5 +394,23 @@ describe('buildTranscriptRows: tool-group fold', () => {
     // Each still gets its own length-1 group (orphan breaks the run).
     expect(rows[0]!.toolGroup!.memberIds).toEqual(['t1'])
     expect(rows[2]!.toolGroup!.memberIds).toEqual(['t2'])
+  })
+
+  it('treats AskUserQuestion as a run boundary like thinking', () => {
+    const { rows } = buildTranscriptRows({
+      items: [
+        toolOnlyAssistant('t1', 'Read'),
+        toolOnlyAssistant('t2', 'Grep'),
+        questionAssistant('q1'),
+        toolOnlyAssistant('t3', 'Glob'),
+        toolOnlyAssistant('t4', 'Read'),
+      ],
+      isResultConsumed: () => true,
+    })
+    expect(ids(rows)).toEqual(['t1', 'q1', 't3'])
+    expect(rows[0]!.toolGroup!.memberIds).toEqual(['t1', 't2'])
+    // Question row is NOT a group — it stays a plain MessageView / QuestionCard
+    expect(rows[1]!.toolGroup).toBeUndefined()
+    expect(rows[2]!.toolGroup!.memberIds).toEqual(['t3', 't4'])
   })
 })

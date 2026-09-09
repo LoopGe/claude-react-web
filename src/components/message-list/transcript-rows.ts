@@ -41,6 +41,7 @@
 import type { SdkMessage } from '../../types'
 import type { ActiveSubagent, TranscriptItem } from '../../session-store/types'
 import { getBlocks, userMessageHasToolResult } from '../../session-store/normalize'
+import { QUESTION_TOOL_NAME } from '../../utils/question-answers'
 import { willRenderEmpty } from './rendering'
 
 /**
@@ -154,7 +155,10 @@ function pushRow(
 
 /** A row eligible for tool-group folding: a root assistant message whose
  *  only visible content is one or more tool_use blocks. Thinking, text,
- *  and anything else break the run (SDK emits those as separate messages). */
+ *  and anything else break the run (SDK emits those as separate messages).
+ *
+ *  AskUserQuestion is also a boundary — like thinking, it always renders
+ *  as its own QuestionCard so the prompt is never buried in a fold. */
 export function isToolGroupEligible(row: TranscriptRow): boolean {
   if (row.msg.type !== 'assistant') return false
   if (row.isCompactSummary) return false
@@ -164,6 +168,7 @@ export function isToolGroupEligible(row: TranscriptRow): boolean {
   for (const b of blocks) {
     if (b == null) return false
     if (b.type === 'tool_use') {
+      if (b.name === QUESTION_TOOL_NAME) return false
       hasToolUse = true
       continue
     }

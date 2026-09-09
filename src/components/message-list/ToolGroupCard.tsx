@@ -14,13 +14,13 @@ import { memo, useEffect, useMemo, useState } from 'react'
 import { AnimatedCollapse } from '../AnimatedCollapse'
 import { BlockView } from './blocks'
 import { usePlanStatusMap, useToolStatuses } from '../../hooks/usePlanStatus'
-import { useQuestionAnswersMap } from '../../hooks/useQuestionAnswers'
 import { groupMayMatchSearch, summarizeToolGroup } from './tool-grouping'
 import { extractToolUseId, getBlocks } from '../../session-store/normalize'
 import {
   IconAlertCircle,
   IconChevronDown,
   IconChevronRight,
+  IconLayers,
   IconLoader,
   IconMessageQuestion,
 } from '../icons/ToolIcons'
@@ -51,7 +51,6 @@ export const ToolGroupCard = memo(function ToolGroupCard({
 }) {
   const toolStatuses = useToolStatuses()
   const planStatuses = usePlanStatusMap()
-  const questionAnswers = useQuestionAnswersMap()
 
   const toolBlocks = useMemo(
     () =>
@@ -62,8 +61,8 @@ export const ToolGroupCard = memo(function ToolGroupCard({
   )
 
   const summary = useMemo(
-    () => summarizeToolGroup(toolBlocks, toolStatuses, planStatuses, questionAnswers),
-    [toolBlocks, toolStatuses, planStatuses, questionAnswers],
+    () => summarizeToolGroup(toolBlocks, toolStatuses, planStatuses),
+    [toolBlocks, toolStatuses, planStatuses],
   )
 
   const hasSearchHit = useMemo(
@@ -151,12 +150,18 @@ export const ToolGroupCard = memo(function ToolGroupCard({
         }}
       >
         <span className="tool-group-chevron" aria-hidden>
-          {open ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+          {open ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
         </span>
-        <span
-          className="tool-group-names"
-          title={`${summary.count} tool${summary.count === 1 ? '' : 's'} · ${summary.nameSummary}`}
-        >
+        <span className="tool-group-icon" aria-hidden>
+          <IconLayers size={14} />
+        </span>
+        <span className="tool-group-count" aria-hidden>
+          {summary.count}
+        </span>
+        <span className="tool-group-label">
+          {summary.count === 1 ? 'tool call' : 'tool calls'}
+        </span>
+        <span className="tool-group-names" title={summary.nameSummary}>
           {summary.nameSummary}
         </span>
         <span className="tool-card-spacer" />

@@ -870,9 +870,9 @@
 .tool-group-summary-inner {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   padding: 6px 10px;
-  min-height: 32px;
+  min-height: 36px;
   background: var(--bg-elev-2);
   color: var(--fg-muted);
   min-width: 0;
@@ -893,8 +893,39 @@
   display: inline-flex;
   flex-shrink: 0;
   color: var(--fg-muted);
-  /* Align the glyph with the 12px mono names baseline. */
   line-height: 0;
+}
+.tool-group-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+  line-height: 0;
+}
+/* Count chip — a small accent-tinted tally that reads like a stat badge,
+   matching the app's pill vocabulary (plan status, permission chips). */
+.tool-group-count {
+  flex-shrink: 0;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+/* "tool calls" descriptor next to the tally. */
+.tool-group-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--fg);
+  font-weight: 500;
+  letter-spacing: 0.01em;
 }
 .tool-group-names {
   min-width: 0;
@@ -904,20 +935,25 @@
   font-family: var(--mono);
   font-size: 12px;
   color: var(--fg-muted);
+  font-weight: 400;
 }
 .tool-group-body {
   background: var(--bg);
-  /* Symmetric inset so the first card sits 6px under the header and the
-     last card 6px above the rounded bottom — matches the 6px gap between
-     sibling .tool-cards. */
-  padding: 6px;
+  /* Side inset 10px matches .tool-group-summary-inner's horizontal padding,
+     so the first inner card's box aligns with the header text/badges above
+     it. Vertical padding supplies the uniform 8px rhythm; the sibling rule
+     below zeroes the base .tool-card margin-top so nothing double-stacks. */
+  padding: 8px 10px;
 }
-/* Sibling tool-cards already carry margin-top: 6px; only zero the first
-   so body padding (not a doubled margin) owns the header gap. */
-.tool-group-body > .tool-card:first-child,
-.tool-group-body > .tool-group-card:first-child {
+.tool-group-body > * {
   margin-top: 0;
 }
+.tool-group-body > * + * {
+  margin-top: 8px;
+}
+/* The group's own card sits inside a .virtuoso-item-wrapper that owns the
+   14px inter-row rhythm — the same rhythm a lone tool-card message used. */
+
 /* Plan-card-style left accent: quieter than a header box-shadow and
    still visible when the group is collapsed. */
 .tool-group-has-error {

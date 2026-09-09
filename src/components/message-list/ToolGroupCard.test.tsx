@@ -3,7 +3,6 @@ import { useState } from 'react'
 import { render, cleanup, fireEvent, act } from '@testing-library/react'
 import { ToolGroupCard } from './ToolGroupCard'
 import { ToolStatusProvider, ToolResultProvider, PlanStatusProvider } from '../../hooks/usePlanStatus'
-import { QuestionAnswersProvider } from '../../hooks/useQuestionAnswers'
 import { BackgroundToolProvider } from '../../hooks/useBackgroundTool'
 import type { ToolStatus } from '../../session-store/types'
 import type { SdkMessage } from '../../types'
@@ -35,7 +34,6 @@ function renderGroup({
   members,
   toolStatus,
   planStatus = new Map(),
-  questionAnswers = new Map(),
   searchQuery,
   activeMemberItemIndex,
   activeMatchInItem,
@@ -44,7 +42,6 @@ function renderGroup({
   members: SdkMessage[]
   toolStatus: Map<string, ToolStatus>
   planStatus?: Map<string, 'approved' | 'rejected' | 'pending'>
-  questionAnswers?: Map<string, unknown[]>
   searchQuery?: string
   activeMemberItemIndex?: number
   activeMatchInItem?: number
@@ -54,18 +51,16 @@ function renderGroup({
     <ToolStatusProvider value={toolStatus}>
       <ToolResultProvider value={new Map()}>
         <PlanStatusProvider value={planStatus}>
-          <QuestionAnswersProvider value={questionAnswers as never}>
-            <BackgroundToolProvider value={undefined}>
-              <ToolGroupCard
-                members={members}
-                memberItemIndices={members.map((_, i) => i)}
-                searchQuery={searchQuery}
-                activeMemberItemIndex={activeMemberItemIndex}
-                activeMatchInItem={activeMatchInItem}
-                working={working}
-              />
-            </BackgroundToolProvider>
-          </QuestionAnswersProvider>
+          <BackgroundToolProvider value={undefined}>
+            <ToolGroupCard
+              members={members}
+              memberItemIndices={members.map((_, i) => i)}
+              searchQuery={searchQuery}
+              activeMemberItemIndex={activeMemberItemIndex}
+              activeMatchInItem={activeMatchInItem}
+              working={working}
+            />
+          </BackgroundToolProvider>
         </PlanStatusProvider>
       </ToolResultProvider>
     </ToolStatusProvider>,
@@ -144,15 +139,13 @@ describe('ToolGroupCard', () => {
           <ToolStatusProvider value={status}>
             <ToolResultProvider value={new Map()}>
               <PlanStatusProvider value={new Map()}>
-                <QuestionAnswersProvider value={new Map() as never}>
-                  <BackgroundToolProvider value={undefined}>
-                    <ToolGroupCard
-                      members={members}
-                      memberItemIndices={members.map((_, i) => i)}
-                      working={working}
-                    />
-                  </BackgroundToolProvider>
-                </QuestionAnswersProvider>
+                <BackgroundToolProvider value={undefined}>
+                  <ToolGroupCard
+                    members={members}
+                    memberItemIndices={members.map((_, i) => i)}
+                    working={working}
+                  />
+                </BackgroundToolProvider>
               </PlanStatusProvider>
             </ToolResultProvider>
           </ToolStatusProvider>

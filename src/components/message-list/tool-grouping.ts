@@ -5,16 +5,16 @@
 import type { Block } from '../../types'
 import type { ToolStatus } from '../../session-store/types'
 import type { PlanStatusMap } from '../../utils/plan-status'
-import type { QuestionAnswerEntry } from '../../utils/question-answers'
 import { extractToolUseId } from '../../session-store/normalize'
 import { PLAN_TOOL_NAMES } from '../../constants/toolNames'
-import { QUESTION_TOOL_NAME } from '../../utils/question-answers'
 
 export interface ToolGroupSummary {
   count: number
   nameSummary: string
   anyRunning: boolean
   anyError: boolean
+  /** Pending ExitPlanMode. AskUserQuestion never enters a group (see
+   *  isToolGroupEligible) — it is a run boundary like thinking. */
   anyPendingInteractive: boolean
 }
 
@@ -27,7 +27,6 @@ export function summarizeToolGroup(
   toolBlocks: Block[],
   toolStatuses: ReadonlyMap<string, ToolStatus>,
   planStatuses: PlanStatusMap,
-  questionAnswers: ReadonlyMap<string, QuestionAnswerEntry[]>,
 ): ToolGroupSummary {
   const names: string[] = []
   let anyRunning = false
@@ -45,15 +44,10 @@ export function summarizeToolGroup(
       continue
     }
 
-    // Interactive tools (plan / question) use their own status maps.
+    // Plan uses its own status map; a pending plan force-opens the group.
     if (name && PLAN_TOOL_NAMES.has(name)) {
       const ps = planStatuses.get(id)
       if (!ps || ps === 'pending') anyPendingInteractive = true
-      continue
-    }
-    if (name === QUESTION_TOOL_NAME) {
-      const answers = questionAnswers.get(id)
-      if (!answers || answers.length === 0) anyPendingInteractive = true
       continue
     }
 
@@ -62,9 +56,12 @@ export function summarizeToolGroup(
     else if (status === 'error') anyError = true
   }
 
-  // Deduplicate names for the summary line.
-  const unique = [...new Set(names)]
-  const nameSummary = unique.join(', ')
+  // Per-tool counts in first-seen order: "Read×2 · Grep · Edit"
+  const counts = new Map<string, number>()
+  for (const n of names) counts.set(n, (counts.get(n) ?? 0) + 1)
+  const nameSummary = Array.from(counts.entries())
+    .map(([n, c]) => (c > 1 ? `${n}×${c}` : n))
+    .join(' · ')
 
   return {
     count: toolBlocks.length,
