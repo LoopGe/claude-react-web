@@ -13,7 +13,7 @@ import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
 import { formatElapsed } from '../utils/format'
 import { BackgroundToolButton, ToolResultSection } from './ToolCard'
 import { GridClipEnter } from './GridClipEnter'
-import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
+import { AnimatedDetails } from './AnimatedCollapse'
 import type { SubagentChildCall } from '../session-store/types'
 import { IconCheck, IconCircleDot, IconAlertTriangle, IconChevronRight, IconExternalLink } from './icons/ToolIcons'
 
@@ -183,11 +183,19 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
   )
 })
 
-/** Expandable list of a subagent's internal tool calls. The running call (if
- *  any) is surfaced as a highlighted line at the top; completed calls are
- *  rows that expand to reveal their result. The whole section opens while the
- *  subagent is live and collapses when it settles (via AnimatedDetails'
- *  `open` prop), but stays user-toggleable. */
+/** Expandable list of a subagent's internal tool calls.
+ *
+ *  ONE list, in place: every call is a row from the moment its tool_use
+ *  lands. A running row pulses; when the tool_result arrives the SAME row
+ *  flips its status dot and becomes expandable. Previously running and
+ *  settled lived in two DOM regions, so a fast tool flickered (live
+ *  highlight mounts → 160ms collapse → 240ms row reveal). Merging them
+ *  removes the rebuild; entrance animation fires only when a new
+ *  toolUseId first appears.
+ *
+ *  The whole section opens while the subagent is live and collapses when
+ *  it settles (via AnimatedDetails' `open` prop), but stays
+ *  user-toggleable. */
 const SubagentChildList = memo(function SubagentChildList({
   calls,
   live,
@@ -204,58 +212,53 @@ const SubagentChildList = memo(function SubagentChildList({
     if (!userToggled) setOpen(live)
   }, [live, userToggled])
 
-  // ALL in-flight calls, not just the first: a subagent routinely issues
-  // several tool_use blocks in one frame, and taking only `find()` while the
-  // row list excludes every running call made the others unreachable anywhere
-  // on the card until their results landed.
-  const runningCalls = useMemo(() => calls.filter((c) => c.status === 'running'), [calls])
-  // Rows list ONLY settled calls: in-flight ones are surfaced by the highlight
-  // block above, and rendering them in both places showed the same tool twice.
-  // Once a result lands the call flips to success/error and joins the rows.
-  const settled = useMemo(() => calls.filter((c) => c.status !== 'running'), [calls])
-  const doneCount = settled.length
+  const doneCount = useMemo(
+    () => calls.reduce((n, c) => n + (c.status === 'running' ? 0 : 1), 0),
+    [calls],
+  )
+  const hasRunning = doneCount < calls.length
 
   // Arrival gate for the row list: track which child ids we've already
-  // rendered AS ROWS so a genuinely new row plays the grid-clip entrance,
-  // while rows present at first mount (a card scrolled back into view, a
-  // replay rebuild) do NOT replay it. Mirrors the useEnterOnArrival pattern
-  // the card already uses for its actions/progress rows — the gate lives in
-  // this persistent parent, never in the conditionally-mounted GridClipEnter.
+  // rendered so a genuinely new row plays the grid-clip entrance, while
+  // rows present at first mount (a card scrolled back into view, a replay
+  // rebuild) do NOT replay it. Mirrors the useEnterOnArrival pattern the
+  // card already uses for its actions/progress rows — the gate lives in
+  // this persistent parent, never in the conditionally-mounted
+  // GridClipEnter.
   //
-  // Keyed on `settled` (not `calls`): a call is born `running` — surfaced by
-  // the highlight line, not as a row — and only becomes a row once it settles.
-  // Marking it seen while it was still running would consume its arrival, so
-  // the row would pop in with no animation at the moment it actually appears.
-  //
-  // The set is SEEDED during the first render (not in the post-commit effect):
-  // otherwise every row present at mount counts as an arrival and GridClipEnter
-  // — which seeds `revealing` from `entering` — replays the reveal. SubagentCard
-  // lives in the virtualized transcript, so that re-animated the whole list on
-  // every scroll-back. Seeding mirrors how useEnterOnArrival captures its
-  // initial value into prevRef.
+  // Keyed on `calls` (the moment a tool_use lands), NOT on settle: a row
+  // now mounts as `running` and stays mounted through the status flip, so
+  // the entrance must fire once at first appearance. Seeding during the
+  // first render — not in the post-commit effect — keeps scroll-back
+  // remounts from replaying the reveal (GridClipEnter seeds `revealing`
+  // from `entering`). SubagentCard lives in the virtualized transcript,
+  // so an unseeded gate re-animated the whole list on every scroll
+  // through the card. Mirrors how useEnterOnArrival captures its initial
+  // value into prevRef.
   const seenRef = useRef<Set<string> | null>(null)
   const firstRender = seenRef.current === null
   if (seenRef.current === null) {
-    seenRef.current = new Set(settled.map((c) => c.toolUseId))
+    seenRef.current = new Set(calls.map((c) => c.toolUseId))
   }
   const seen = seenRef.current
   const enteringIds = new Set<string>()
   if (!firstRender) {
-    for (const c of settled) {
+    for (const c of calls) {
       if (!seen.has(c.toolUseId)) enteringIds.add(c.toolUseId)
     }
   }
   useEffect(() => {
-    for (const c of settled) seen.add(c.toolUseId)
-  }, [settled, seen])
+    for (const c of calls) seen.add(c.toolUseId)
+  }, [calls, seen])
 
   // Only a LIVE record may advertise in-flight work. The reducer's turn-end
   // sweep settles running child calls on the sync-orphan path, but three other
   // transitions to a terminal status (dismiss, the pending-timeout sweep,
   // task-notification completion) can leave a `running` row behind — without
   // this guard a finished subagent rendered pulsing dots and an accent
-  // "· running" count forever.
-  const showLive = live && runningCalls.length > 0
+  // "· running" count forever. The stranded row stays visible (so the tool
+  // isn't hidden) but its pulse is suppressed via `pulse={showLive}`.
+  const showLive = live && hasRunning
 
   const summary = (
     <span className="subagent-children-summary">
@@ -276,45 +279,47 @@ const SubagentChildList = memo(function SubagentChildList({
       summaryClassName="subagent-children-summary-btn"
       contentClassName="subagent-children-content"
     >
-      {/* In-flight calls highlighted at the top while live. Wrapped in an
-          AnimatedCollapse so the block eases in when work starts and eases out
-          when the last call settles, instead of snapping. Every running call
-          gets a line — a subagent often fires several tools in one frame, and
-          showing only the first hid the rest until they finished. */}
-      <AnimatedCollapse open={showLive} durationMs={160}>
-        {runningCalls.map((c) => (
-          <div
-            key={c.toolUseId}
-            className="subagent-child-live"
-            title={`${c.toolName} ${c.argSummary}`.trim()}
-          >
-            <span className="subagent-child-live-dots" aria-hidden><i /><i /><i /></span>
-            <span className="subagent-child-live-name">{c.toolName}</span>
-            {c.argSummary && (
-              <span className="subagent-child-live-arg">{c.argSummary}</span>
-            )}
-          </div>
-        ))}
-      </AnimatedCollapse>
       <ul className="subagent-child-rows">
-        {settled.map((c) => (
-          <SubagentChildRow key={c.toolUseId} call={c} entering={enteringIds.has(c.toolUseId)} />
+        {calls.map((c) => (
+          <SubagentChildRow
+            key={c.toolUseId}
+            call={c}
+            entering={enteringIds.has(c.toolUseId)}
+            pulse={showLive}
+          />
         ))}
       </ul>
     </AnimatedDetails>
   )
 })
 
-/** One child tool-call row: status dot + tool name + arg preview, expandable
- *  to show the captured tool_result inline. The running call is NOT expandable
- *  (no result yet) — it renders as a plain row (the live highlight above
- *  already surfaces it). A newly-arrived row glides open via GridClipEnter;
- *  its result reveals via ToolResultSection's own entrance animation. */
-const SubagentChildRow = memo(function SubagentChildRow({ call, entering }: { call: SubagentChildCall; entering: boolean }) {
+/** One child tool-call row: status indicator + tool name + arg preview,
+ *  expandable once the captured tool_result lands. Running rows are not
+ *  expandable (no result yet) and pulse while the parent subagent is live.
+ *  A newly-arrived row glides open via GridClipEnter; its result reveals
+ *  via ToolResultSection's own entrance animation.
+ *
+ *  Status flip is in-place: the same `<li>` / button stay mounted and only
+ *  the dot class + expandability change, so a fast tool never rebuilds. */
+const SubagentChildRow = memo(function SubagentChildRow({
+  call,
+  entering,
+  pulse,
+}: {
+  call: SubagentChildCall
+  entering: boolean
+  /** Whether a running row should animate its pulse. False on a settled
+   *  parent record so a stranded `running` child doesn't pulse forever. */
+  pulse: boolean
+}) {
   const [expanded, setExpanded] = useState(false)
-  const canExpand = call.status !== 'running' && !!call.result
-  const statusClass =
-    call.status === 'success' ? 'success' : call.status === 'error' ? 'error' : 'running'
+  const isRunning = call.status === 'running'
+  const canExpand = !isRunning && !!call.result
+  const statusClass = isRunning
+    ? 'running'
+    : call.status === 'success'
+      ? 'success'
+      : 'error'
   // Arm the result's reveal only on a genuine user expand during this mounted
   // row's lifetime (never replay it on a scroll-back remount where expanded
   // seeds false anyway) — gate mirrors the card's other useEnterOnArrival rows.
@@ -329,10 +334,14 @@ const SubagentChildRow = memo(function SubagentChildRow({ call, entering }: { ca
           onClick={canExpand ? () => setExpanded((v) => !v) : undefined}
           disabled={!canExpand}
           aria-expanded={canExpand ? expanded : undefined}
+          aria-busy={isRunning || undefined}
           title={canExpand ? (expanded ? 'Collapse result' : 'Show result') : call.toolName}
           data-expanded={expanded}
         >
-          <span className={`subagent-child-dot subagent-child-dot-${statusClass}`} aria-hidden />
+          <span
+            className={`subagent-child-dot subagent-child-dot-${statusClass}${isRunning && pulse ? ' subagent-child-dot-pulse' : ''}`}
+            aria-hidden
+          />
           <span className="subagent-child-name">{call.toolName}</span>
           {call.argSummary && <span className="subagent-child-arg">{call.argSummary}</span>}
           {canExpand && (

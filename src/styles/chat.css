@@ -2226,53 +2226,23 @@
 .subagent-children-count-live { color: var(--accent); }
 .subagent-children-content { padding: 2px 0 4px; }
 
-/* Running-tool highlight line at the top of the open list. Wrapped in an
-   AnimatedCollapse so it eases in/out as the running tool changes. */
-.subagent-child-live {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 12px;
-  font-size: 12px;
-  color: var(--accent);
-  min-width: 0;
-}
-.subagent-child-live-dots { display: inline-flex; align-items: center; gap: 3px; flex: none; }
-.subagent-child-live-dots i {
-  width: 4px;
-  height: 4px;
-  border-radius: var(--radius-circle);
-  background: var(--accent);
-  animation: subagent-child-pulse 1.4s var(--motion-ease-standard) infinite;
-}
-.subagent-child-live-dots i:nth-child(2) { animation-delay: 0.18s; }
-.subagent-child-live-dots i:nth-child(3) { animation-delay: 0.36s; }
-@keyframes subagent-child-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-@media (prefers-reduced-motion: reduce) {
-  .subagent-child-live-dots i { animation: none; }
-}
-.subagent-child-live-name { font-family: var(--mono); font-weight: 600; flex: none; }
-.subagent-child-live-arg {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: color-mix(in srgb, var(--accent) 70%, var(--fg-muted));
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-/* Settled (success / error) child rows. */
+/* Child tool-call rows — one list, in place. A running row pulses its
+   accent dot; the same row flips to a success/error dot when the result
+   lands (no cross-container move, so a fast tool doesn't flicker). */
 .subagent-child-rows {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 /* NOTE: rows also carry a .subagent-child-row-{success,error,running} status
-   class. They are intentionally unstyled — the status is conveyed by the dot
-   below, and per-row tinting fought the card's own status border. Kept in the
-   markup as a styling hook / test selector. */
+   class. Running rows tint name/arg toward the accent so in-flight work is
+   scannable; success/error stay neutral (the dot carries the status) so the
+   list doesn't fight the card's own status border. */
 .subagent-child-row { margin: 0; }
+.subagent-child-row-running .subagent-child-name { color: var(--accent); }
+.subagent-child-row-running .subagent-child-arg {
+  color: color-mix(in srgb, var(--accent) 70%, var(--fg-muted));
+}
 .subagent-child-row-head {
   display: flex;
   align-items: center;
@@ -2304,6 +2274,15 @@
 .subagent-child-dot-running { background: var(--accent); }
 .subagent-child-dot-success { background: var(--ok); }
 .subagent-child-dot-error   { background: var(--warn); }
+/* Pulse only while the parent subagent is live — a stranded running row on a
+   settled record gets the class without this modifier, so it stays static. */
+.subagent-child-dot-pulse {
+  animation: subagent-child-pulse 1.4s var(--motion-ease-standard) infinite;
+}
+@keyframes subagent-child-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) {
+  .subagent-child-dot-pulse { animation: none; }
+}
 .subagent-child-name {
   font-family: var(--mono);
   font-size: 12px;

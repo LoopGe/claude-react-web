@@ -4,8 +4,9 @@ import { SubagentCard } from './SubagentCard'
 import { SubagentProvider, type SubagentContextValue } from '../hooks/useSubagentContext'
 import type { ActiveSubagent, SubagentChildCall } from '../session-store/types'
 
-// AnimatedCollapse uses ResizeObserver + matchMedia; jsdom lacks both. Provide
-// minimal stubs so AnimatedDetails renders its (open) content synchronously.
+// AnimatedDetails wraps AnimatedCollapse, which uses ResizeObserver +
+// matchMedia; jsdom lacks both. Provide minimal stubs so the details
+// content renders synchronously.
 beforeAll(() => {
   if (!('ResizeObserver' in window)) {
     // @ts-expect-error test stub
@@ -67,7 +68,7 @@ describe('SubagentCard child-call list', () => {
     expect(screen.getByText('2/2')).toBeTruthy()
   })
 
-  it('highlights the running child at the top while the subagent is live', () => {
+  it('renders running and settled calls as one list, in call order', () => {
     renderCard(base({
       status: 'running',
       childToolCalls: [
@@ -75,16 +76,17 @@ describe('SubagentCard child-call list', () => {
         child({ toolUseId: 'c2', toolName: 'Grep', argSummary: 'skipAuth', status: 'running' }),
       ],
     }))
-    // The dedicated live-highlight element carries the running tool's name,
-    // and the summary shows the settled/total count plus the live marker.
-    expect(document.querySelector('.subagent-child-live-name')?.textContent).toBe('Grep')
-    expect(screen.getByText('1/2 · running')).toBeTruthy()
-    // De-duplication: the running call is surfaced ONLY by the highlight line,
-    // never also as a row — rendering it in both places showed the same tool
-    // twice. Its name therefore appears exactly once in the whole card.
-    expect(screen.getAllByText('Grep')).toHaveLength(1)
+    // Unified list: both are rows. The running one carries the pulse modifier
+    // and an accent name tint (via .subagent-child-row-running); it is NOT
+    // hoisted into a separate live-highlight block.
     const rowNames = Array.from(document.querySelectorAll('.subagent-child-name')).map((n) => n.textContent)
-    expect(rowNames).toEqual(['Bash']) // only the settled call is a row
+    expect(rowNames).toEqual(['Bash', 'Grep'])
+    expect(document.querySelector('.subagent-child-row-running .subagent-child-name')?.textContent).toBe('Grep')
+    expect(document.querySelector('.subagent-child-row-running .subagent-child-dot-pulse')).toBeTruthy()
+    expect(document.querySelector('.subagent-child-row-success .subagent-child-name')?.textContent).toBe('Bash')
+    expect(screen.getByText('1/2 · running')).toBeTruthy()
+    // Each tool name appears once — no dual rendering of the running call.
+    expect(screen.getAllByText('Grep')).toHaveLength(1)
   })
 
   it('expands a settled row to reveal its result', () => {
@@ -119,9 +121,9 @@ describe('SubagentCard child-call list', () => {
     expect(document.querySelector('details.subagent-children')?.getAttribute('data-state')).toBe('closed')
   })
 
-  it('shows EVERY in-flight call, not just the first (parallel tool calls)', () => {
-    // A subagent routinely emits several tool_use blocks in one frame. Taking
-    // only the first running call left the rest invisible until they settled.
+  it('shows EVERY in-flight call as a row (parallel tool calls)', () => {
+    // A subagent routinely emits several tool_use blocks in one frame. Each
+    // gets its own row — none are collapsed into a single "current tool" line.
     renderCard(base({
       status: 'running',
       childToolCalls: [
@@ -129,15 +131,18 @@ describe('SubagentCard child-call list', () => {
         child({ toolUseId: 'c2', toolName: 'Read', argSummary: 'a.ts', status: 'running' }),
       ],
     }))
-    const liveNames = Array.from(document.querySelectorAll('.subagent-child-live-name')).map((n) => n.textContent)
-    expect(liveNames).toEqual(['Bash', 'Read'])
+    const runningNames = Array.from(
+      document.querySelectorAll('.subagent-child-row-running .subagent-child-name'),
+    ).map((n) => n.textContent)
+    expect(runningNames).toEqual(['Bash', 'Read'])
     expect(screen.getByText('0/2 · running')).toBeTruthy()
   })
 
   it('does NOT advertise in-flight work on a settled record with a stranded running row', () => {
     // Three reducer paths can terminate a subagent while leaving a `running`
-    // child row (dismiss / pending-timeout / task-notification). The card must
-    // not render pulsing dots and an accent "· running" count on a done card.
+    // child row (dismiss / pending-timeout / task-notification). The row stays
+    // visible (so the tool isn't hidden) but must not pulse or carry an accent
+    // "· running" count on a done card.
     renderCard(base({
       status: 'done',
       childToolCalls: [
@@ -145,7 +150,8 @@ describe('SubagentCard child-call list', () => {
         child({ toolUseId: 'c2', toolName: 'Grep', argSummary: 'x', status: 'running' }),
       ],
     }))
-    expect(document.querySelector('.subagent-child-live-name')).toBeNull()
+    expect(document.querySelector('.subagent-child-row-running .subagent-child-name')?.textContent).toBe('Grep')
+    expect(document.querySelector('.subagent-child-dot-pulse')).toBeNull()
     expect(screen.getByText('1/2')).toBeTruthy()
     expect(screen.queryByText('1/2 · running')).toBeNull()
   })
@@ -159,5 +165,48 @@ describe('SubagentCard child-call list', () => {
       childToolCalls: [child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'ls' })],
     }))
     expect(document.querySelector('.grid-clip-entering')).toBeNull()
+  })
+
+  it('does not re-play entrance when a row flips running → success in place', () => {
+    // The whole point of the unified list: the same toolUseId stays mounted
+    // through the status flip. If `seen` were keyed on settle (the old dual-
+    // list contract) the flip would look like a new arrival and re-animate.
+    const ctx: SubagentContextValue = {
+      index: new Map([['tu_sa', base({
+        status: 'running',
+        childToolCalls: [child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'ls', status: 'running' })],
+      })]]),
+      messages: [],
+      open: vi.fn(),
+    }
+    const { rerender } = render(
+      <SubagentProvider value={ctx}>
+        <SubagentCard toolUseId="tu_sa" />
+      </SubagentProvider>,
+    )
+    expect(document.querySelector('.subagent-child-row-running')).toBeTruthy()
+
+    const next: ActiveSubagent = {
+      ...base({ status: 'running' }),
+      childToolCalls: [child({
+        toolUseId: 'c1',
+        toolName: 'Bash',
+        argSummary: 'ls',
+        status: 'success',
+        result: { content: 'ok', isError: false },
+      })],
+    }
+    // New value object — mutating the old one wouldn't notify context consumers.
+    rerender(
+      <SubagentProvider value={{ ...ctx, index: new Map([['tu_sa', next]]) }}>
+        <SubagentCard toolUseId="tu_sa" />
+      </SubagentProvider>,
+    )
+
+    // Same row flipped in place — no entrance replay, still expandable.
+    expect(document.querySelector('.subagent-child-row-running')).toBeNull()
+    expect(document.querySelector('.subagent-child-row-success .subagent-child-name')?.textContent).toBe('Bash')
+    expect(document.querySelector('.grid-clip-entering')).toBeNull()
+    expect(document.querySelectorAll('.subagent-child-row')).toHaveLength(1)
   })
 })
