@@ -8,7 +8,7 @@
 // HTTPS on save and never logged or stored in component state beyond the
 // transient form field.
 
-import { useId, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type MutableRefObject } from 'react'
 import { api } from '../hooks/useApi'
 import { useProfiles } from '../hooks/useProfiles'
 import type { ModelGroupConfig, ProviderProfile } from '../types/config'
@@ -25,8 +25,26 @@ interface ProfileTestResult {
   baseUrl?: string
 }
 
-export function ProfilesSettingsTab() {
+export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObject<(() => Promise<void>) | null> } = {}) {
   const { profiles, activeProfileId, create, update, remove, activate } = useProfiles()
+
+  // Registry of dirty-card save callbacks, keyed by profile id. The parent
+  // modal calls saveAllRef.current() on its unified Save to flush these.
+  const dirtySavesRef = useRef(new Map<string, () => Promise<void>>())
+
+  const registerDirtySave = useCallback((id: string, save: (() => Promise<void>) | null) => {
+    if (save) dirtySavesRef.current.set(id, save)
+    else dirtySavesRef.current.delete(id)
+  }, [])
+
+  useEffect(() => {
+    if (!saveAllRef) return
+    saveAllRef.current = async () => {
+      const saves = [...dirtySavesRef.current.values()]
+      await Promise.all(saves.map((s) => s()))
+    }
+    return () => { saveAllRef.current = null }
+  }, [saveAllRef])
 
   // Accordion: one profile expanded at a time. `undefined` means the user
   // hasn't toggled anything yet — default to the active profile (or the
@@ -64,6 +82,7 @@ export function ProfilesSettingsTab() {
           onSave={(updates) => update(p.id, updates)}
           onDelete={() => remove(p.id)}
           onActivate={() => activate(p.id)}
+          onRegisterDirtySave={(save) => registerDirtySave(p.id, save)}
         />
       ))}
     </div>
@@ -78,6 +97,7 @@ function ProfileCard({
   onSave,
   onDelete,
   onActivate,
+  onRegisterDirtySave,
 }: {
   profile: ProviderProfile
   canDelete: boolean
@@ -86,6 +106,7 @@ function ProfileCard({
   onSave: (updates: Record<string, unknown>) => Promise<void>
   onDelete: () => Promise<void>
   onActivate: () => unknown
+  onRegisterDirtySave: (save: (() => Promise<void>) | null) => void
 }) {
   // — Editor state (local; initialized from the profile prop once) ?
   const [name, setName] = useState(profile.name)
@@ -104,8 +125,23 @@ function ProfileCard({
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<ProfileTestResult | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [dirty, setDirty] = useState(false)
 
   const uid = useId()
+
+  // Stable ref to the latest handleSave so the effect below doesn't re-run
+  // on every render (handleSave closes over state that changes on each keystroke).
+  const handleSaveRef = useRef<(() => Promise<void>) | null>(null)
+
+  // Register / unregister the save callback with the parent based on dirty
+  // state. The parent's unified Save button calls all registered callbacks.
+  useEffect(() => {
+    if (dirty && handleSaveRef.current) {
+      onRegisterDirtySave(() => handleSaveRef.current!())
+      return () => onRegisterDirtySave(null)
+    }
+    onRegisterDirtySave(null)
+  }, [dirty, onRegisterDirtySave])
 
   const handleSave = async () => {
     setSaving(true)
@@ -126,12 +162,14 @@ function ProfileCard({
       await onSave(updates)
       setAuthTokenDirty(false)
       setAuthToken('')
+      setDirty(false)
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
   }
+  handleSaveRef.current = handleSave
 
   const handleTest = async () => {
     setTesting(true)
@@ -160,11 +198,13 @@ function ProfileCard({
     if (!m || modelList.includes(m)) return
     setModelList([...modelList, m])
     setNewModel('')
+    setDirty(true)
   }
   const removeModel = (model: string) => {
     setModelList(modelList.filter((m) => m !== model))
     if (recapModel === model) setRecapModel('')
     if (commitMessageModel === model) setCommitMessageModel('')
+    setDirty(true)
   }
   const moveModel = (index: number, direction: -1 | 1) => {
     const target = index + direction
@@ -172,18 +212,22 @@ function ProfileCard({
     const next = [...modelList]
     ;[next[index], next[target]] = [next[target], next[index]]
     setModelList(next)
+    setDirty(true)
   }
   const sortModels = () => {
     setModelList([...modelList].sort((a, b) => a.localeCompare(b)))
+    setDirty(true)
   }
 
   // — Model-group handlers (adapted from the old ModelGroupsTab) ?
   const addModelGroup = () => {
     const id = randomId()
     setModelGroups([...modelGroups, { id, name: `Group ${modelGroups.length + 1}`, main: 'opus' }])
+    setDirty(true)
   }
   const removeModelGroup = (id: string) => {
     setModelGroups(modelGroups.filter((g) => g.id !== id))
+    setDirty(true)
   }
   const moveModelGroup = (index: number, direction: -1 | 1) => {
     const next = [...modelGroups]
@@ -191,9 +235,11 @@ function ProfileCard({
     if (j < 0 || j >= next.length) return
     ;[next[index], next[j]] = [next[j], next[index]]
     setModelGroups(next)
+    setDirty(true)
   }
   const updateModelGroup = (id: string, patch: Partial<ModelGroupConfig>) => {
     setModelGroups(modelGroups.map((g) => (g.id === id ? { ...g, ...patch } : g)))
+    setDirty(true)
   }
 
   const canTest = (authTokenDirty && !!authToken.trim()) || !!profile.authTokenMasked
@@ -276,7 +322,7 @@ function ProfileCard({
                 className="input"
                 id={`${uid}-name`}
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => { setName(e.target.value); setDirty(true) }}
               />
             </div>
 
@@ -287,7 +333,7 @@ function ProfileCard({
                 id={`${uid}-authtoken`}
                 type="password"
                 value={authToken}
-                onChange={(e) => { setAuthToken(e.target.value); setAuthTokenDirty(true); setTestResult(null) }}
+                onChange={(e) => { setAuthToken(e.target.value); setAuthTokenDirty(true); setTestResult(null); setDirty(true) }}
                 placeholder={profile.authTokenMasked ? `Current: ${profile.authTokenMasked} — enter new to replace` : 'sk-ant-...'}
               />
               <span className="hint">
@@ -303,7 +349,7 @@ function ProfileCard({
                 className="input"
                 id={`${uid}-baseurl`}
                 value={baseUrl}
-                onChange={(e) => { setBaseUrl(e.target.value); setTestResult(null) }}
+                onChange={(e) => { setBaseUrl(e.target.value); setTestResult(null); setDirty(true) }}
                 placeholder="https://api.anthropic.com"
               />
               <span className="hint">API endpoint (default: https://api.anthropic.com)</span>
@@ -388,7 +434,7 @@ function ProfileCard({
                   className="input settings-model-select"
                   id={`${uid}-recap-model`}
                   value={recapModel}
-                  onChange={(e) => setRecapModel(e.target.value)}
+                  onChange={(e) => { setRecapModel(e.target.value); setDirty(true) }}
                 >
                   <option value="">(default)</option>
                   {modelList.map((m) => (
@@ -408,7 +454,7 @@ function ProfileCard({
                   className="input settings-model-select"
                   id={`${uid}-commit-message-model`}
                   value={commitMessageModel}
-                  onChange={(e) => setCommitMessageModel(e.target.value)}
+                  onChange={(e) => { setCommitMessageModel(e.target.value); setDirty(true) }}
                 >
                   <option value="">(default)</option>
                   {modelList.map((m) => (

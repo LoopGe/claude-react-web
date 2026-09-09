@@ -9,7 +9,7 @@
 // All mutations go through REST; the WS snapshot in PluginRegistryProvider
 // keeps the list in sync across tabs without a manual refetch.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { api, apiRequest } from '../hooks/useApi'
 import { usePluginRegistry } from '../app-plugins/usePluginRegistry'
@@ -21,7 +21,7 @@ import type { NormalisedPermission, AppPluginPermission, PermissionSpec } from '
 import { ALL_PERMISSIONS } from '../../shared/app-plugins/permissions.js'
 import type { PluginConfigurationProperty } from '../../shared/app-plugins/contributions.js'
 
-export function AppPluginsTab() {
+export function AppPluginsTab({ saveAllRef }: { saveAllRef?: MutableRefObject<(() => Promise<void>) | null> } = {}) {
   const { plugins, refresh } = usePluginRegistry()
   const [installPath, setInstallPath] = useState('')
   const [showDirPicker, setShowDirPicker] = useState(false)
@@ -29,6 +29,24 @@ export function AppPluginsTab() {
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [modelList, setModelList] = useState<string[]>([])
+
+  // Registry of dirty-editor save callbacks, keyed by `${pluginId}:${section}`.
+  // The parent modal calls saveAllRef.current() on its unified Save to flush these.
+  const dirtySavesRef = useRef(new Map<string, () => Promise<void>>())
+
+  const registerDirtySave = useCallback((key: string, save: (() => Promise<void>) | null) => {
+    if (save) dirtySavesRef.current.set(key, save)
+    else dirtySavesRef.current.delete(key)
+  }, [])
+
+  useEffect(() => {
+    if (!saveAllRef) return
+    saveAllRef.current = async () => {
+      const saves = [...dirtySavesRef.current.values()]
+      await Promise.all(saves.map((s) => s()))
+    }
+    return () => { saveAllRef.current = null }
+  }, [saveAllRef])
 
   // Fetch the server's model list once for the config editor (model field
   // uses a <datalist> so users can pick or type freely).
@@ -139,6 +157,7 @@ export function AppPluginsTab() {
             onDisable={() => disable(p.id)}
             onUninstall={(del) => uninstall(p.id, del)}
             busy={busy}
+            onRegisterDirtySave={registerDirtySave}
           />
         ))}
       </ul>
@@ -155,6 +174,7 @@ function PluginRow(props: {
   onDisable: () => void
   onUninstall: (deleteData: boolean) => void
   busy: boolean
+  onRegisterDirtySave: (key: string, save: (() => Promise<void>) | null) => void
 }) {
   const { plugin: p, expanded } = props
   const stateColor = p.runtimeState === 'active' ? 'ok'
@@ -182,12 +202,12 @@ function PluginRow(props: {
         <span>v{p.version}</span>
         {p.lastError && <span className="app-plugins-err">{p.lastError}</span>}
       </div>
-      {expanded && <PluginDetails plugin={p} modelList={props.modelList} />}
+      {expanded && <PluginDetails plugin={p} modelList={props.modelList} onRegisterDirtySave={props.onRegisterDirtySave} />}
     </li>
   )
 }
 
-function PluginDetails({ plugin, modelList }: { plugin: AppPluginClientInfo; modelList: string[] }) {
+function PluginDetails({ plugin, modelList, onRegisterDirtySave }: { plugin: AppPluginClientInfo; modelList: string[]; onRegisterDirtySave: (key: string, save: (() => Promise<void>) | null) => void }) {
   return (
     <div className="app-plugins-details">
       {/* key remounts PermissionsSection when the granted set changes, so its
@@ -195,21 +215,23 @@ function PluginDetails({ plugin, modelList }: { plugin: AppPluginClientInfo; mod
       <PermissionsSection
         key={`${plugin.id}:${plugin.grantedPermissions.map((g) => g.permission).join(',')}`}
         plugin={plugin}
+        onRegisterDirtySave={onRegisterDirtySave}
       />
       {plugin.contributions.configuration.properties.length > 0 && (
-        <ConfigurationEditor key={`cfg:${plugin.id}`} plugin={plugin} modelList={modelList} />
+        <ConfigurationEditor key={`cfg:${plugin.id}`} plugin={plugin} modelList={modelList} onRegisterDirtySave={onRegisterDirtySave} />
       )}
       <ContributionsSection plugin={plugin} />
     </div>
   )
 }
 
-function ConfigurationEditor({ plugin, modelList }: { plugin: AppPluginClientInfo; modelList: string[] }) {
+function ConfigurationEditor({ plugin, modelList, onRegisterDirtySave }: { plugin: AppPluginClientInfo; modelList: string[]; onRegisterDirtySave: (key: string, save: (() => Promise<void>) | null) => void }) {
   const props = plugin.contributions.configuration.properties
   const [values, setValues] = useState<Record<string, unknown>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [dirty, setDirty] = useState(false)
 
   // Load current config (with defaults applied server-side) on mount.
   useEffect(() => {
@@ -227,16 +249,30 @@ function ConfigurationEditor({ plugin, modelList }: { plugin: AppPluginClientInf
     return () => { alive = false }
   }, [plugin.id])
 
-  const set = (key: string, v: unknown) => setValues((prev) => ({ ...prev, [key]: v }))
+  const set = (key: string, v: unknown) => { setValues((prev) => ({ ...prev, [key]: v })); setDirty(true) }
 
   const save = async () => {
     setSaving(true); setError(null)
     try {
       await api.put(`/app-plugins/${encodeURIComponent(plugin.id)}/configuration`, { values })
+      setDirty(false)
     } catch (e) {
       setError((e as Error).message)
     } finally { setSaving(false) }
   }
+
+  // Stable ref so the registration effect doesn't re-run on every keystroke.
+  const saveRef = useRef<(() => Promise<void>) | null>(null)
+  saveRef.current = save
+
+  const regKey = `cfg:${plugin.id}`
+  useEffect(() => {
+    if (dirty && saveRef.current) {
+      onRegisterDirtySave(regKey, () => saveRef.current!())
+      return () => onRegisterDirtySave(regKey, null)
+    }
+    onRegisterDirtySave(regKey, null)
+  }, [dirty, regKey, onRegisterDirtySave])
 
   if (loading) return <div className="app-plugins-config"><h4>Settings</h4><p>Loading…</p></div>
   return (
@@ -305,9 +341,10 @@ function ConfigInput({ prop, value, onChange, modelList }: {
   }
 }
 
-function PermissionsSection({ plugin }: { plugin: AppPluginClientInfo }) {
+function PermissionsSection({ plugin, onRegisterDirtySave }: { plugin: AppPluginClientInfo; onRegisterDirtySave: (key: string, save: (() => Promise<void>) | null) => void }) {
   const [granted, setGranted] = useState<NormalisedPermission[]>(plugin.grantedPermissions)
   const [saving, setSaving] = useState(false)
+  const [dirty, setDirty] = useState(false)
 
   const declared = plugin.declaredPermissions
   const grantedSet = new Set(granted.map((g) => g.permission))
@@ -322,6 +359,7 @@ function PermissionsSection({ plugin }: { plugin: AppPluginClientInfo }) {
       const declared = plugin.declaredPermissions.find((d) => d.permission === perm)
       setGranted([...granted, { permission: perm, params: declared?.params ?? {} }])
     }
+    setDirty(true)
   }
 
   const save = async () => {
@@ -333,8 +371,22 @@ function PermissionsSection({ plugin }: { plugin: AppPluginClientInfo }) {
           : g.permission,
       )
       await api.put(`/app-plugins/${encodeURIComponent(plugin.id)}/permissions`, { granted: specs })
+      setDirty(false)
     } finally { setSaving(false) }
   }
+
+  // Stable ref so the registration effect doesn't re-run on every keystroke.
+  const saveRef = useRef<(() => Promise<void>) | null>(null)
+  saveRef.current = save
+
+  const regKey = `perms:${plugin.id}`
+  useEffect(() => {
+    if (dirty && saveRef.current) {
+      onRegisterDirtySave(regKey, () => saveRef.current!())
+      return () => onRegisterDirtySave(regKey, null)
+    }
+    onRegisterDirtySave(regKey, null)
+  }, [dirty, regKey, onRegisterDirtySave])
 
   return (
     <div className="app-plugins-perms">

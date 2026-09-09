@@ -131,6 +131,11 @@ export function GlobalSettingsModal({
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // Set by ProfilesSettingsTab when it has dirty cards; called by handleSave
+  // so the unified Save also flushes unsaved profile edits.
+  const profilesSaveAllRef = useRef<(() => Promise<void>) | null>(null)
+  // Same pattern for AppPluginsTab's per-plugin config/permission editors.
+  const appPluginsSaveAllRef = useRef<(() => Promise<void>) | null>(null)
 
   // — Server tab state ?
   const [maxUploadBytes, setMaxUploadBytes] = useState(0)
@@ -243,6 +248,14 @@ export function GlobalSettingsModal({
     setSaving(true)
     setErr(null)
     try {
+      // Flush any dirty profile cards first so the unified Save covers them.
+      if (profilesSaveAllRef.current) {
+        await profilesSaveAllRef.current()
+      }
+      // Flush dirty app-plugin config/permission editors too.
+      if (appPluginsSaveAllRef.current) {
+        await appPluginsSaveAllRef.current()
+      }
       const updates: Record<string, unknown> = {
         maxUploadBytes: maxUploadBytes > 0 ? maxUploadBytes : null,
         historyCap: historyCap > 0 ? historyCap : null,
@@ -377,7 +390,7 @@ export function GlobalSettingsModal({
           ) : (
             <>
               {tab === 'profiles' && (
-                <ProfilesSettingsTab />
+                <ProfilesSettingsTab saveAllRef={profilesSaveAllRef} />
               )}
               {tab === 'server' && (
                 <ServerTab
@@ -427,7 +440,7 @@ export function GlobalSettingsModal({
               )}
               {tab === 'app-plugins' && (
                 <Suspense fallback={<div className="lazy-tab-loading">Loading app plugins...</div>}>
-                  <AppPluginsTab />
+                  <AppPluginsTab saveAllRef={appPluginsSaveAllRef} />
                 </Suspense>
               )}
               {tab === 'share' && (
