@@ -2442,21 +2442,29 @@ export class SessionManager {
   /** Shared tail for send() and sendContent(): push into the SDK input
    *  queue and broadcast to live subscribers.
    *
-   *  The Pushable's onConsume callback stamps `consumedAt` on whatever
-   *  object it receives.  When the SDK is idle (waiter active), that
-   *  stamp fires synchronously during enqueueUserMessage — BEFORE
-   *  pushToSession broadcasts the message to clients.  Without the copy
-   *  the broadcast arrives already carrying consumedAt, so the client
-   *  derives deliveryStatus='consumed' immediately and the 'queued'
-   *  state is never visible, even when the message genuinely sat in the
-   *  queue behind an in-flight turn.
+   *  A shallow clone goes to the SDK so provider-side mutation can never
+   *  reach the object we store in the ring and hand to subscribers. The one
+   *  piece of state that MUST cross back is `consumedAt`.
    *
-   *  Pushing a shallow clone to the SDK isolates the mutation: the copy
-   *  gets consumedAt (visible to the SDK and to the onInputConsumed
-   *  callback that broadcasts the live message-consumed frame), while
-   *  the original stays clean for pushToSession.  The history ring holds
-   *  the original; a reconnecting client still sees consumedAt via the
-   *  stampConsumedAt fallback in history-utils. */
+   *  The Pushable's onConsume callback stamps it on whatever object it
+   *  receives, and it fires on two different schedules:
+   *
+   *    - IDLE DIRECT HAND-OFF: the SDK already has a waiter parked, so
+   *      enqueueUserMessage consumes the clone SYNCHRONOUSLY — before
+   *      pushToSession has put the original in the ring. onInputConsumed's
+   *      ring scan can't find it yet, so we copy the stamp across here.
+   *    - QUEUE SHIFT (sent mid-turn): consumption happens later, inside the
+   *      SDK's next(); by then the original IS in the ring and
+   *      onInputConsumed stamps it there.
+   *
+   *  Between them the ring copy always ends up with `consumedAt`, which is
+   *  what a client with no cached transcript replays — without it the turn
+   *  renders as permanently 'queued' (deriveDeliveryStatus) and inflates the
+   *  Composer's "Stop also withdraws N queued messages" count. Stamping the
+   *  broadcast in the direct-hand-off case is not a loss of fidelity: a
+   *  message the SDK has already read never sat in the queue, so 'queued'
+   *  would be a lie. Genuinely queued turns still broadcast without
+   *  `consumedAt` and flip later via the `message-consumed` frame. */
   private dispatchUserMessage(s: Session, userMsg: SDKUserMessage): void {
     // A new top-level user turn invalidates the previous turn's predicted
     // next-prompt. If we leave `lastPromptSuggestion` set, it resurfaces as
@@ -2467,7 +2475,13 @@ export class SessionManager {
     if (s.lastPromptSuggestion != null) {
       s.lastPromptSuggestion = undefined
     }
-    s.handle.enqueueUserMessage({ ...userMsg })
+    const forSdk = { ...userMsg }
+    s.handle.enqueueUserMessage(forSdk)
+    // Direct-hand-off case: the consume hook already ran, synchronously,
+    // inside enqueueUserMessage. Carry its stamp onto the copy that enters
+    // the ring (and the broadcast) before pushToSession runs — see docblock.
+    const consumedAt = (forSdk as { consumedAt?: number }).consumedAt
+    if (typeof consumedAt === 'number') stampConsumedAt(userMsg, consumedAt)
     this.pushToSession(s, userMsg)
     this.recordPromptUuid(s, userMsg)
   }
@@ -4278,12 +4292,19 @@ export class SessionManager {
    *       outputs flow through the same Query stream but never through
    *       THIS pushable, so in practice everything here is a user turn;
    *       the guard is defence-in-depth and mirrors the pump's drop rule.
-   *    2. Stamp `consumedAt` on the message object. Because the input
-   *       pushable and the history ring hold the SAME object reference
-   *       (dispatchUserMessage pushes one object to both), this stamp is
-   *       immediately visible on the historical copy — so a reconnecting
-   *       client replays it as already-consumed with zero extra storage.
-   *    3. Broadcast a live `message-consumed` signal so currently-attached
+   *    2. Stamp `consumedAt` on the message object we were handed. That is
+   *       the SDK-bound CLONE (dispatchUserMessage isolates provider-side
+   *       mutation), so it is NOT the object the history ring holds.
+   *    3. Stamp the ring's own copy too, by uuid. This is the path that
+   *       matters for a client with no cached transcript: replay is all it
+   *       gets, and a ring entry without `consumedAt` renders as permanently
+   *       'queued'. Scanning from the tail finds a just-sent turn in the
+   *       first few comparisons; the same timestamp is reused so the ring and
+   *       the frame agree, and stampConsumedAt is first-wins so a
+   *       crash-recovery re-enqueue can't move it. (The idle direct-hand-off
+   *       case runs BEFORE the message reaches the ring — dispatchUserMessage
+   *       carries the stamp across for that one.)
+   *    4. Broadcast a live `message-consumed` signal so currently-attached
    *       tabs flip the bubble without waiting for a replay. */
   private onInputConsumed(id: string, msg: SDKUserMessage): void {
     if (msg.type !== 'user') return
@@ -4291,6 +4312,16 @@ export class SessionManager {
     const consumedAt = stampConsumedAt(msg)
     const uuid = (msg as { uuid?: string }).uuid
     if (typeof uuid !== 'string') return
+    const s = this.sessions.get(id)
+    if (s) {
+      for (let i = s.history.length - 1; i >= 0; i--) {
+        const entry = s.history[i] as { type?: string; uuid?: string } | undefined
+        if (entry?.type === 'user' && entry.uuid === uuid) {
+          stampConsumedAt(entry, consumedAt)
+          break
+        }
+      }
+    }
     this.pushMessageStatus(id, { kind: 'message-consumed', sessionId: id, uuid, consumedAt })
   }
 

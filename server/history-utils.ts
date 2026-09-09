@@ -59,20 +59,27 @@ export function stampReceivedAt(msg: unknown): void {
  * accepted it from the HTTP layer). The gap between the two is exactly how
  * long the message sat queued behind an in-flight turn.
  *
- * Stamped in place on the same object that lives in the history ring, so the
- * "consumed" state rides along on replay for free — a reconnecting client
- * sees `consumedAt` already set on historical messages and renders them as
- * delivered without needing the live `message-consumed` frame. Added only
- * when absent so a message that somehow flows through twice keeps its first
- * consumption time. Returns the stamped value so the caller can broadcast it
- * without re-reading.
+ * Must be applied to the object that lives in the history RING, not only to
+ * the copy handed to the SDK: replay is the only source a client with no
+ * cached transcript has (new tab, cache miss, cold load), and a ring entry
+ * with `receivedAt` but no `consumedAt` is rendered as permanently 'queued'
+ * by deriveDeliveryStatus. SessionManager stamps both copies — see
+ * dispatchUserMessage (idle direct hand-off) and onInputConsumed (the
+ * queue-shift path).
+ *
+ * `at` pins an explicit timestamp so the ring copy and the broadcast
+ * `message-consumed` frame report the SAME instant; omit it to stamp now.
+ * Added only when absent so a message that flows through twice (crash-
+ * recovery re-enqueue, a failed interrupt's re-push) keeps its first
+ * consumption time. Returns the effective value so the caller can broadcast
+ * it without re-reading.
  */
-export function stampConsumedAt(msg: unknown): number {
+export function stampConsumedAt(msg: unknown, at?: number): number {
   const m = msg as { consumedAt?: number }
   if (m && typeof m === 'object' && m.consumedAt == null) {
-    m.consumedAt = Date.now()
+    m.consumedAt = at ?? Date.now()
   }
-  return (m as { consumedAt?: number }).consumedAt ?? Date.now()
+  return (m as { consumedAt?: number }).consumedAt ?? at ?? Date.now()
 }
 
 /** Remove messages from the history ring by server-minted uuid — the

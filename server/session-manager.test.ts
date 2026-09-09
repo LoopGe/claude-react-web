@@ -4868,6 +4868,48 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
   })
 
+  describe('user turn consumedAt (input-queue accounting)', () => {
+    /** What a FRESH subscriber (new tab, cache miss, reconnect whose
+     *  sinceUuid missed the ring) is actually served. `consumedAt` must live
+     *  on these entries, not only on the copy handed to the SDK: the live
+     *  `message-consumed` frame reaches attached tabs only, so a replay-only
+     *  client would otherwise render an already-processed turn as
+     *  permanently 'queued'. */
+    const replayOf = (sid: string): Array<{ uuid?: string; receivedAt?: number; consumedAt?: number }> => {
+      const sub = sm.subscribe(sid)
+      sub.unsubscribe()
+      return sub.history as unknown as Array<{ uuid?: string; receivedAt?: number; consumedAt?: number }>
+    }
+
+    it('stamps consumedAt on the replayed copy for the idle direct-handoff path', async () => {
+      const info = sm.create({ cwd: dir })
+      const sent = sm.send(info.id, 'hello') as { uuid: string }
+      await tick()
+      const entry = replayOf(info.id).find((m) => m.uuid === sent.uuid)!
+      expect(entry).toBeDefined()
+      expect(typeof entry.receivedAt).toBe('number')
+      expect(typeof entry.consumedAt).toBe('number')
+    })
+
+    it('stamps consumedAt on the replayed copy when a queued turn is consumed later', async () => {
+      const info = sm.create({ cwd: dir })
+      const h = mockHandles.at(-1)!
+      sm.send(info.id, 'first') // taken by the parked waiter immediately
+      const queued = sm.send(info.id, 'second') as { uuid: string } // sits in the queue
+      await tick()
+      // Genuinely queued behind the in-flight turn — no stamp yet, so the
+      // 'queued' badge is honest here.
+      expect(replayOf(info.id).find((m) => m.uuid === queued.uuid)!.consumedAt).toBeUndefined()
+      h.emit({
+        type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id,
+        is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {},
+      })
+      await tick()
+      await tick()
+      expect(typeof replayOf(info.id).find((m) => m.uuid === queued.uuid)!.consumedAt).toBe('number')
+    })
+  })
+
   describe('discard (fork-from-anchor)', () => {
     const waitFor = async (cond: () => boolean | Promise<boolean>, ticks = 60) => {
       for (let i = 0; i < ticks; i++) {
