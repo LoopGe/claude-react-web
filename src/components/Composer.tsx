@@ -17,7 +17,9 @@ import { CommandPicker, pickerFlatCommands } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
-import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader, IconFileText } from './icons/ToolIcons'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader, IconFileText, IconClock, IconAlertTriangle } from './icons/ToolIcons'
+import type { ScheduledSendsApi } from '../hooks/useScheduledSends'
+import { SchedulePicker } from './SchedulePicker'
 
 // Mouse-wheel history navigation tuning. A single wheel notch fires several
 // wheel events totalling ~100px of deltaY; accumulate across events and gate
@@ -101,6 +103,12 @@ interface Props {
    *  as the placeholder while the input is empty; a bare Tab fills the
    *  input with it. Replaces the old above-composer chip. */
   suggestion?: string | null
+
+  /** Subset of ScheduledSendsApi the pure-UI Composer needs to render chips
+   *  and cancel/dismiss them. schedule()/hasPending stay in Chat. */
+  scheduled?: Pick<ScheduledSendsApi, 'schedules' | 'now' | 'cancel' | 'dismiss'>
+  /** Called when the user picks a fire-at time from the schedule popover. */
+  onSendScheduled?: (fireAtMs: number) => void
 }
 
 export const Composer = memo(function Composer({
@@ -139,6 +147,8 @@ export const Composer = memo(function Composer({
   onOpenSnippetsManager,
   onSaveCurrentAsSnippet,
   suggestion,
+  scheduled,
+  onSendScheduled,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -495,6 +505,19 @@ export const Composer = memo(function Composer({
     onOpenSnippetsManager,
   ])
 
+  // ── Scheduled send popover state ─────────────────────────────
+  const [scheduleAnchor, setScheduleAnchor] = useState<DOMRect | null>(null)
+
+  const pendingScheduled = scheduled?.schedules.filter((s) => s.status === 'pending') ?? []
+  const failedScheduled = scheduled?.schedules.filter((s) => s.status === 'failed') ?? []
+  const canSchedule =
+    !disabled && (input.trim() !== '' || attachments.length > 0 || pastedImages.length > 0)
+
+  const confirmScheduled = useCallback((fireAtMs: number) => {
+    setScheduleAnchor(null)
+    onSendScheduled?.(fireAtMs)
+  }, [onSendScheduled])
+
   const canSend = !disabled && !sending && (input.trim() !== '' || attachments.length > 0 || pastedImages.length > 0)
 
   if (terminated) {
@@ -566,6 +589,38 @@ export const Composer = memo(function Composer({
               </span>
             ))}
             {uploading && <span className="attachment-chip attachment-chip-ghost">uploading…</span>}
+          </div>
+        )}
+        {(pendingScheduled.length > 0 || failedScheduled.length > 0) && scheduled && (
+          <div className="scheduled-sends">
+            {pendingScheduled.map((s) => (
+              <span key={s.id} className="scheduled-chip" title={formatScheduledExact(s.fireAt)}>
+                <IconClock size={12} aria-hidden />
+                <span>{formatScheduledRelative(s.fireAt, scheduled.now)}</span>
+                <button
+                  type="button"
+                  className="scheduled-chip-cancel"
+                  aria-label={`Cancel scheduled message ${s.id}`}
+                  onClick={() => void scheduled.cancel(s.id)}
+                >
+                  <IconX size={12} />
+                </button>
+              </span>
+            ))}
+            {failedScheduled.map((s) => (
+              <span key={s.id} className="scheduled-chip scheduled-chip-failed" title={s.error}>
+                <IconAlertTriangle size={12} aria-hidden />
+                <span className="scheduled-chip-failed-reason">{s.error ?? 'Scheduled send failed'}</span>
+                <button
+                  type="button"
+                  className="scheduled-chip-dismiss"
+                  aria-label={`Dismiss failed schedule ${s.id}`}
+                  onClick={() => void scheduled.dismiss(s.id)}
+                >
+                  <IconX size={12} />
+                </button>
+              </span>
+            ))}
           </div>
         )}
         {pastedImages.length > 0 && (
@@ -865,6 +920,18 @@ export const Composer = memo(function Composer({
         >
           <IconPaperclip size={18} />
         </button>
+        {onSendScheduled && scheduled && (
+          <button
+            className="btn btn-icon"
+            type="button"
+            onClick={(e) => setScheduleAnchor(e.currentTarget.getBoundingClientRect())}
+            disabled={!canSchedule}
+            title="Schedule this message for a later time"
+            aria-label="Schedule send"
+          >
+            <IconClock size={18} />
+          </button>
+        )}
         {/* Send / Interrupt share one stable control — a two-state morph
             (arrow → stop-square) so the composer's height never changes.
             Background (Ctrl+B semantics) is NOT a button state: keying it on
@@ -920,6 +987,24 @@ export const Composer = memo(function Composer({
         <ContextMenu x={menuPos.x} y={menuPos.y} items={menuItems} onClose={closeMenu} />
       )}
 
+      {scheduleAnchor && (
+        <SchedulePicker anchorRect={scheduleAnchor} onPick={confirmScheduled} onClose={() => setScheduleAnchor(null)} />
+      )}
+
     </div>
   )
 })
+
+function formatScheduledRelative(fireAt: number, now: number): string {
+  const remain = fireAt - now
+  if (remain < 0) return 'now'
+  const mins = Math.round(remain / 60_000)
+  if (mins < 1) return 'in a few seconds'
+  if (mins < 60) return `in ${mins}m`
+  const d = new Date(fireAt)
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
+
+function formatScheduledExact(fireAt: number): string {
+  return new Date(fireAt).toLocaleString()
+}

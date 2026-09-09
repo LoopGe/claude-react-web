@@ -26,6 +26,8 @@ import { buildSkillsRouter } from './skills.js'
 import { buildHooksRouter } from './hooks.js'
 import { buildStructuredRouter } from './structured.js'
 import { buildFirstPartyRouter } from './first-party.js'
+import { ScheduledSendManager } from '../scheduled-send-manager.js'
+import { buildScheduledSendRouter } from './scheduled-sends.js'
 
 /** Parse JSON body, returning 400 on malformed input instead of silently
  *  falling back to an empty object. */
@@ -48,6 +50,21 @@ export function buildApiRouter(
   const app = new Hono()
 
   app.onError(createErrorHandler('[api]'))
+
+  // Scheduled sends: in-memory manager whose `send` delegate routes through
+  // the same sm.send/sendContent as POST /messages. Session deletion is
+  // observed via the global removed feed and drops that session's schedules.
+  const scheduledSends = new ScheduledSendManager({
+    send: (sessionId, body) => {
+      const sent =
+        'content' in body
+          ? sm.sendContent(sessionId, body.content as Array<{ type: string; [k: string]: unknown }>)
+          : sm.send(sessionId, body.text)
+      return { uuid: sent.uuid }
+    },
+    subscribeGlobal: () => sm.subscribeGlobal(),
+  })
+  app.route('/', buildScheduledSendRouter(sm, scheduledSends))
 
   // Health / version
   app.get('/health', (c) => c.json({ ok: true, sessions: sm.sessionCount() }))
