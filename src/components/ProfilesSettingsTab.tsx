@@ -8,7 +8,7 @@
 // HTTPS on save and never logged or stored in component state beyond the
 // transient form field.
 
-import { useCallback, useEffect, useId, useRef, useState, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
 import { api } from '../hooks/useApi'
 import { useProfiles } from '../hooks/useProfiles'
 import type { ModelGroupConfig, ProviderProfile } from '../types/config'
@@ -169,7 +169,13 @@ function ProfileCard({
       setSaving(false)
     }
   }
-  handleSaveRef.current = handleSave
+  // Written in a layout effect, not during render: a render that never commits
+  // would otherwise leave the ref pointing at a dead closure. Layout effects
+  // run before passive effects in the same commit, so the dirty-save
+  // registration effect above still reads the latest handleSave.
+  useLayoutEffect(() => {
+    handleSaveRef.current = handleSave
+  })
 
   const handleTest = async () => {
     setTesting(true)

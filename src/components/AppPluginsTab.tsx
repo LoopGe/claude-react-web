@@ -9,7 +9,7 @@
 // All mutations go through REST; the WS snapshot in PluginRegistryProvider
 // keeps the list in sync across tabs without a manual refetch.
 
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { api, apiRequest } from '../hooks/useApi'
 import { usePluginRegistry } from '../app-plugins/usePluginRegistry'
@@ -262,8 +262,15 @@ function ConfigurationEditor({ plugin, modelList, onRegisterDirtySave }: { plugi
   }
 
   // Stable ref so the registration effect doesn't re-run on every keystroke.
+  // Written in a layout effect, not during render: a render that never commits
+  // (concurrent rendering discards it) would otherwise leave the ref pointing
+  // at a closure from that dead render. Layout effects all run before passive
+  // effects in the same commit, so the registration useEffect below still sees
+  // the latest `save`. Mirrors the connectRef pattern in useWsHub.
   const saveRef = useRef<(() => Promise<void>) | null>(null)
-  saveRef.current = save
+  useLayoutEffect(() => {
+    saveRef.current = save
+  })
 
   const regKey = `cfg:${plugin.id}`
   useEffect(() => {
@@ -376,8 +383,12 @@ function PermissionsSection({ plugin, onRegisterDirtySave }: { plugin: AppPlugin
   }
 
   // Stable ref so the registration effect doesn't re-run on every keystroke.
+  // Layout-effect assignment rather than a render-time write — see the
+  // ConfigEditor above for why.
   const saveRef = useRef<(() => Promise<void>) | null>(null)
-  saveRef.current = save
+  useLayoutEffect(() => {
+    saveRef.current = save
+  })
 
   const regKey = `perms:${plugin.id}`
   useEffect(() => {
