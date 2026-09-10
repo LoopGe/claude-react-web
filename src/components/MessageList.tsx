@@ -86,6 +86,12 @@ interface Props {
    *  ~1.7s server teardown+respawn reads as an intentional transition
    *  instead of a frozen screen followed by a hard snap to empty. */
   clearing?: boolean
+  /** Bottom-anchored overlay content rendered *below* the live streaming
+   *  bubble inside `.chat-bottom-stack` (currently the task checklist and the
+   *  monitor bar). Lives here rather than in Chat so its measured height can
+   *  share the streaming region's spacer + re-pin machinery — one source of
+   *  truth for "how much room the bottom of the transcript must reserve". */
+  bottomOverlay?: React.ReactNode
   /** False while the initial replay from the server is still buffering.
    *  Gates the transcript reveal animation (the one-shot entrance fade on
    *  keyed messages) so it only fires once the replayed content has landed.
@@ -274,7 +280,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, showMessageHeaders = true, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -283,7 +289,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // Handed to the hook, which owns the scroller element and attaches it from
   // the same ref callback that captures it.
   const setOsScroller = useOverlayScrollbar({ autoHide: 'leave' })
-  const streamingRegionRef = useRef<HTMLDivElement | null>(null)
+  const bottomStackRef = useRef<HTMLDivElement | null>(null)
   // --- /clear blur ----------------------------------------------------
   // MessageList applies `.chat-messages-clearing` (see messagesClassName
   // below) while `clearing` is true — the view-only blur that signals a
@@ -321,7 +327,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       ? { source: liveStreamingContent, content: liveStreamingContent, exiting: false }
       : { source: null, content: streamingPresence.content, exiting: streamingPresence.content != null }
     : streamingPresence
-  const hasVisibleStreamingContent = nextStreamingPresence.content != null
 
   if (nextStreamingPresence !== streamingPresence) {
     setStreamingPresence(nextStreamingPresence)
@@ -585,8 +590,12 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     if (virtIdx != null) seekToIndex(virtIdx, 'center')
   }, [searchActiveMsgIdx, itemToVirtIdx, seekToIndex])
 
+  // Measure the bottom overlay stack (live streaming bubble + task cards) and
+  // publish its committed height. The stack is ALWAYS mounted, so the observer
+  // attaches once and any child resize — a task appears, the card expands, the
+  // bubble grows — re-fires it, with no dependency on what is inside.
   useEffect(() => {
-    const el = streamingRegionRef.current
+    const el = bottomStackRef.current
     if (!el) {
       setBottomStackHeight(0)
       return
@@ -602,7 +611,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const ro = new ResizeObserver(updateHeight)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [hasVisibleStreamingContent])
+  }, [])
 
   // --- Scroll to previous / next user message ----------------------------
   // Data-array (0-based, Virtuoso `scrollToIndex` space) indices of every
@@ -1029,15 +1038,17 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           {unseenCount > 0 && <span className="chat-jump-to-bottom-count" aria-hidden>{unseenCount}</span>}
         </button>
       )}
-      {visibleStreamingContent != null && (
-        <div
-          ref={streamingRegionRef}
-          className={streamingRegionClassName}
-          aria-hidden={nextStreamingPresence.exiting}
-        >
-          <StreamingFooter content={visibleStreamingContent} />
-        </div>
-      )}
+      <div className="chat-bottom-stack" ref={bottomStackRef}>
+        {visibleStreamingContent != null && (
+          <div
+            className={streamingRegionClassName}
+            aria-hidden={nextStreamingPresence.exiting}
+          >
+            <StreamingFooter content={visibleStreamingContent} />
+          </div>
+        )}
+        {bottomOverlay}
+      </div>
       </div>
     </div>
     </ResultConsumedCtx.Provider>

@@ -885,9 +885,9 @@ describe('MessageList', () => {
     expect(container.querySelector('.streaming-footer-wrapper')?.textContent).toContain('Live tokens')
   })
 
-  it('re-pins to the bottom when the streaming footer height changes (spacer grows)', () => {
+  it('re-pins to the bottom when the bottom stack height changes (spacer grows)', () => {
     // Regression guard for "the scrollbar sits one line short of the bottom
-    // while the streaming bubble's height is changing". The streaming-region
+    // while the streaming bubble's height is changing". The bottom-stack
     // ResizeObserver calls setBottomStackHeight — an async state update;
     // the Virtuoso Footer spacer that reserves room for the overlay only
     // commits its new height AFTER that update. Re-pinning synchronously
@@ -921,8 +921,8 @@ describe('MessageList', () => {
 
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
     expect(scroller).not.toBeNull()
-    const region = container.querySelector('.chat-streaming-region') as HTMLElement
-    expect(region).not.toBeNull()
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+    expect(stack).not.toBeNull()
 
     // Model real Virtuoso: scrollHeight includes the Footer spacer's height.
     // The spacer is re-rendered with `height: bottomStackHeight`, so
@@ -938,18 +938,20 @@ describe('MessageList', () => {
       },
     })
 
-    let regionHeight = 0
-    Object.defineProperty(region, 'getBoundingClientRect', {
+    let stackHeight = 0
+    Object.defineProperty(stack, 'getBoundingClientRect', {
       configurable: true,
-      value: () => ({ height: regionHeight, width: 400, top: 0, left: 0, right: 400, bottom: regionHeight, x: 0, y: 0 }),
+      value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
     })
 
-    // Grow the streaming bubble 0 -> 40 -> 80. Each growth commits a taller
-    // spacer, so the real bottom moves 200 -> 240 -> 280.
-    regionHeight = 40
-    act(() => { fireResize(region) })
-    regionHeight = 80
-    act(() => { fireResize(region) })
+    // Grow the bottom stack 0 -> 40 -> 80 (the live bubble growing inside it;
+    // the observer watches the whole stack now, so this drives the same path).
+    // Each growth commits a taller spacer, so the real bottom moves
+    // 200 -> 240 -> 280.
+    stackHeight = 40
+    act(() => { fireResize(stack) })
+    stackHeight = 80
+    act(() => { fireResize(stack) })
 
     // Fresh bottom after the 80px spacer commits = 200 + 80 = 280. A
     // stale-read re-pin latches onto 240 (the bottom BEFORE the 80px spacer
@@ -959,7 +961,7 @@ describe('MessageList', () => {
     expect(scroller.scrollTop).toBe(280)
   })
 
-  it('re-pins to the bottom when settled content grows AFTER the streaming footer exits', () => {
+  it('re-pins to the bottom when settled content grows AFTER the bottom overlay exits', () => {
     // Regression guard for the "当 StreamingFooter 消失，视图向上弹一段" bug.
     //
     // The streaming bubble is height-capped (.streaming-plain max-height:
@@ -993,14 +995,14 @@ describe('MessageList', () => {
     ]
 
     let contentHeight = 200 // settled items (user + assistant)
-    let regionHeight = 80   // capped streaming overlay
+    let stackHeight = 80    // capped streaming bubble sitting in the stack
 
     const { container, rerender } = render(
       <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
     )
 
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
-    const region = container.querySelector('.chat-streaming-region') as HTMLElement
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
 
     // Model a real browser scroller: scrollHeight = settled content + the
     // COMMITTED Footer spacer; scrollTop is clamped to [0, maxScrollTop] and
@@ -1025,14 +1027,14 @@ describe('MessageList', () => {
       },
       set: (v: number) => { rawScrollTop = v },
     })
-    Object.defineProperty(region, 'getBoundingClientRect', {
+    Object.defineProperty(stack, 'getBoundingClientRect', {
       configurable: true,
-      value: () => ({ height: regionHeight, width: 400, top: 0, left: 0, right: 400, bottom: regionHeight, x: 0, y: 0 }),
+      value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
     })
 
     // Commit the overlay -> spacer = 80 -> pin to bottom (200 + 80 - 100 = 180).
-    regionHeight = 80
-    act(() => { fireResize(region) })
+    stackHeight = 80
+    act(() => { fireResize(stack) })
     expect(scroller.scrollTop).toBe(180)
 
     // Inflate the backstop's lastScrollHeight to the peak (content + spacer =
@@ -1041,11 +1043,16 @@ describe('MessageList', () => {
     act(() => { fireResize(itemList) })
 
     // Turn ends: streamingContent -> null. The 180ms exit timer unmounts the
-    // region -> bottomStackHeight -> 0 -> spacer removed. scrollHeight
+    // region, so the stack collapses -> bottomStackHeight -> 0 -> spacer
+    // removed. The stub ResizeObserver never fires on its own, so drive the
+    // stack shrink explicitly — a real browser fires it here. scrollHeight
     // drops to 200 and the browser clamps scrollTop 180 -> 100 (bottom of the
     // settled content).
     rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent={null} />)
     act(() => { vi.advanceTimersByTime(180) })
+    expect(container.querySelector('.chat-streaming-region')).toBeNull()
+    stackHeight = 0
+    act(() => { fireResize(stack) })
     expect(scroller.scrollTop).toBe(100) // clamped to the post-exit bottom
 
     // Virtuoso now re-measures the final assistant message at its real
@@ -1913,6 +1920,70 @@ describe('MessageList', () => {
       expect(container.textContent).toContain('peer')
       expect(container.textContent).toContain('handoff from peer')
     })
+  })
+
+  it('renders a bottom stack containing the streaming region and the bottomOverlay', () => {
+    const msgs = [
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'Settled' }] } }),
+    ]
+    const { container, rerender } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        streamingContent="Live tokens"
+        bottomOverlay={<div className="probe-card">card</div>}
+      />,
+    )
+
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+    expect(stack).not.toBeNull()
+    expect(stack.querySelector('.chat-streaming-region')).not.toBeNull()
+    expect(stack.querySelector('.probe-card')).not.toBeNull()
+    // Streaming region first, cards after — the chosen stacking order.
+    const kids = Array.from(stack.children)
+    expect(kids[0].className).toContain('chat-streaming-region')
+    expect(kids[1].className).toContain('probe-card')
+
+    // The stack is always mounted, even with no streaming content and no cards.
+    // The region lingers through its exit animation (`.exiting`), so assert it
+    // is no longer a LIVE region rather than absent.
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent="" />)
+    const stack2 = container.querySelector('.chat-bottom-stack') as HTMLElement
+    expect(stack2).not.toBeNull()
+    expect(stack2.querySelector('.chat-streaming-region:not(.exiting)')).toBeNull()
+  })
+
+  it('drives the bottom spacer from the STACK height, not the streaming region', () => {
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+
+    const msgs = [
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'Settled' }] } }),
+    ]
+    const { container } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        streamingContent=""
+        bottomOverlay={<div className="probe-card">card</div>}
+      />,
+    )
+
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+    expect(stack).not.toBeNull()
+
+    // No streaming content: the stack's height is purely the cards' height.
+    let stackHeight = 0
+    Object.defineProperty(stack, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
+    })
+
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    stackHeight = 64
+    act(() => { fireResize(stack) })
+
+    const spacer = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
+    expect(spacer).not.toBeNull()
+    expect(Number.parseFloat(spacer!.style.height)).toBe(64)
   })
 })
 
