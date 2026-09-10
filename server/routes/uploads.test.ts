@@ -4,9 +4,10 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { rmSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { rmSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createErrorHandler } from '../errors.js'
+import { __setConfigForTest, config as serverConfig } from '../config.js'
 import { buildUploadRouter } from './uploads.js'
 import { UploadStore } from '../upload-store.js'
 import { tempDir } from '../__test-utils__/index.js'
@@ -67,6 +68,32 @@ describe('uploads routes', () => {
       const res = await bare.request('/sessions/s1/uploads', { method: 'POST', body: form })
       expect(res.status).toBe(200)
       expect(store.list()).toHaveLength(0)
+    })
+
+    it('persists two files in one request', async () => {
+      const form = new FormData()
+      form.append('file', new File(['one'], 'a.txt', { type: 'text/plain' }))
+      form.append('file', new File(['two'], 'b.txt', { type: 'text/plain' }))
+      const res = await app.request('/sessions/s1/uploads', { method: 'POST', body: form })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { uploads: Array<{ name: string }> }
+      expect(body.uploads.map((u) => u.name).sort()).toEqual(['a.txt', 'b.txt'])
+    })
+
+    it('413s an over-size file and leaves no partial file', async () => {
+      const before = serverConfig.maxUploadBytes
+      __setConfigForTest({ maxUploadBytes: 10 })
+      try {
+        const form = new FormData()
+        form.append('file', new File([new Uint8Array(50)], 'big.bin'))
+        const res = await app.request('/sessions/s1/uploads', { method: 'POST', body: form })
+        expect(res.status).toBe(413)
+        const dir = join(cwd, 'claude-web-uploads')
+        const leftover = existsSync(dir) ? readdirSync(dir) : []
+        expect(leftover.filter((f) => f.endsWith('.part'))).toEqual([])
+      } finally {
+        __setConfigForTest({ maxUploadBytes: before })
+      }
     })
   })
 

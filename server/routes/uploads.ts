@@ -4,14 +4,14 @@
 // including uploads whose session has since been deleted (orphans).
 
 import { Hono } from 'hono'
-import { mkdir, writeFile, unlink, stat } from 'node:fs/promises'
-import { resolve as resolvePath } from 'node:path'
+import { mkdir, unlink, stat } from 'node:fs/promises'
+import { resolve as resolvePath, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { SessionManager } from '../session-manager.js'
 import { config as serverConfig } from '../config.js'
 import { createLogger } from '../log.js'
 import { UploadStore, UPLOAD_SUBDIR } from '../upload-store.js'
-import type { UploadEntry } from '../../shared/uploads.js'
+import { streamUploads, UploadError, type SavedUpload } from '../stream-upload.js'
 
 const log = createLogger('uploads')
 
@@ -43,64 +43,59 @@ export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore)
     if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
       return c.json({ error: 'expected multipart/form-data' }, 400)
     }
+    if (!c.req.raw.body) return c.json({ error: 'no files in request' }, 400)
 
-    const body = await c.req.parseBody({ all: true }).catch(() => null)
-    if (!body) {
-      log.warn(`upload session=${id} parseBody failed`)
-      return c.json({ error: 'invalid multipart payload' }, 400)
-    }
-
-    const files: File[] = []
-    for (const v of Object.values(body)) {
-      if (v instanceof File) files.push(v)
-      else if (Array.isArray(v)) for (const x of v) if (x instanceof File) files.push(x)
-    }
-    if (files.length === 0) return c.json({ error: 'no files in request' }, 400)
-
-    const uploadDir = resolvePath(info.cwd, UPLOAD_SUBDIR)
+    const cwd = info.cwd
+    const uploadDir = resolvePath(cwd, UPLOAD_SUBDIR)
     await mkdir(uploadDir, { recursive: true })
-
     const now = Date.now()
-    const saved: Array<{ path: string; name: string; size: number }> = []
-    const recorded: UploadEntry[] = []
-    for (const f of files) {
-      if (f.size > serverConfig.maxUploadBytes) {
+
+    let files: SavedUpload[]
+    try {
+      files = await streamUploads({
+        body: c.req.raw.body,
+        contentType,
+        maxFileBytes: serverConfig.maxUploadBytes,
+        maxFiles: 20,
+        place: ({ filename, index }) => {
+          const baseName = filename.split(/[\\/]/).pop() || 'upload'
+          const safeName = baseName.replace(/[\0/\\]/g, '_').slice(0, 200) || 'upload'
+          const destName = `${now}-${safeName}`
+          return { tmp: join(uploadDir, `${destName}.${index}.part`), final: join(uploadDir, destName), name: safeName }
+        },
+      })
+    } catch (e) {
+      if (!(e instanceof UploadError)) throw e
+      const f = e.failure
+      if (f.kind === 'too-large') {
         return c.json(
-          { error: `file ${f.name} exceeds ${serverConfig.maxUploadBytes} bytes` },
+          { error: `file ${f.filename} exceeds ${f.limit} bytes` },
           413 as 400 | 404 | 410 | 500,
         )
       }
-      const rawName = f.name || 'upload'
-      const baseName = rawName.split(/[\\/]/).pop() || 'upload'
-      const safeName = baseName.replace(/[\0/\\]/g, '_').slice(0, 200) || 'upload'
-      const destName = `${now}-${safeName}`
-      const dest = resolvePath(uploadDir, destName)
-      const buf = Buffer.from(await f.arrayBuffer())
-      await writeFile(dest, buf)
-      saved.push({ path: dest, name: safeName, size: f.size })
-      if (uploadStore) {
-        recorded.push({
-          id: randomUUID(),
-          path: dest,
-          cwd: resolvePath(info.cwd),
-          name: safeName,
-          size: f.size,
-          uploadedAt: now,
-          sessionTitle: info.title ?? '',
-        })
-      }
+      return c.json({ error: 'invalid multipart payload' }, 400)
     }
 
-    // Registry recording must never fail the upload itself — persistence
-    // errors inside the store are already logged by the JsonFileStore base.
-    if (uploadStore && recorded.length > 0) {
+    if (files.length === 0) return c.json({ error: 'no files in request' }, 400)
+
+    const saved = files.map((f) => ({ path: f.path, name: f.name, size: f.size }))
+    if (uploadStore) {
       try {
-        uploadStore.record(recorded)
+        uploadStore.record(
+          files.map((f) => ({
+            id: randomUUID(),
+            path: f.path,
+            cwd: resolvePath(cwd),
+            name: f.name,
+            size: f.size,
+            uploadedAt: now,
+            sessionTitle: info.title ?? '',
+          })),
+        )
       } catch (e) {
         log.warn(`upload registry record failed: ${(e as Error).message}`)
       }
     }
-
     log.info(`upload session=${id} files=${saved.length} totalBytes=${saved.reduce((s, f) => s + f.size, 0)}`)
     return c.json({ uploads: saved })
   })
