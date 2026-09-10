@@ -129,7 +129,7 @@ vi.mock('react-virtuoso', async () => {
             set: (value: number) => { virtuosoMockState.scrollTop = value },
           },
         })
-        const spacer = el.querySelector<HTMLElement>('.virtuoso-streaming-spacer')
+        const spacer = el.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
         if (spacer) {
           Object.defineProperty(spacer, 'getBoundingClientRect', {
             configurable: true,
@@ -169,7 +169,7 @@ vi.mock('react-virtuoso', async () => {
           </div>
           {virtuosoMockState.streamingSpacerHeight > 0 && (
             <div
-              className="virtuoso-streaming-spacer"
+              className="virtuoso-bottom-spacer"
               style={{ height: virtuosoMockState.streamingSpacerHeight }}
               aria-hidden
  />
@@ -888,7 +888,7 @@ describe('MessageList', () => {
   it('re-pins to the bottom when the streaming footer height changes (spacer grows)', () => {
     // Regression guard for "the scrollbar sits one line short of the bottom
     // while the streaming bubble's height is changing". The streaming-region
-    // ResizeObserver calls setStreamingOverlayHeight — an async state update;
+    // ResizeObserver calls setBottomStackHeight — an async state update;
     // the Virtuoso Footer spacer that reserves room for the overlay only
     // commits its new height AFTER that update. Re-pinning synchronously
     // inside the observer callback (the old code) read a STALE scrollHeight
@@ -925,14 +925,14 @@ describe('MessageList', () => {
     expect(region).not.toBeNull()
 
     // Model real Virtuoso: scrollHeight includes the Footer spacer's height.
-    // The spacer is re-rendered with `height: streamingOverlayHeight`, so
+    // The spacer is re-rendered with `height: bottomStackHeight`, so
     // reading it from the DOM tracks the COMMITTED spacer — the value a
     // post-commit layout effect sees, but a synchronous observer callback
     // (which runs before the state update flushes) does NOT.
     Object.defineProperty(scroller, 'scrollHeight', {
       configurable: true,
       get: () => {
-        const spacer = scroller.querySelector<HTMLElement>('.virtuoso-streaming-spacer')
+        const spacer = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
         const spacerH = spacer ? (Number.parseFloat(spacer.style.height) || 0) : 0
         return 200 + spacerH
       },
@@ -1007,7 +1007,7 @@ describe('MessageList', () => {
     // the clamp writes back (browsers physically reduce scrollTop when
     // content shrinks below it — the behaviour the bug hides behind).
     const readSpacer = () => {
-      const sp = scroller.querySelector<HTMLElement>('.virtuoso-streaming-spacer')
+      const sp = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
       return sp ? (Number.parseFloat(sp.style.height) || 0) : 0
     }
     let rawScrollTop = 0
@@ -1041,7 +1041,7 @@ describe('MessageList', () => {
     act(() => { fireResize(itemList) })
 
     // Turn ends: streamingContent -> null. The 180ms exit timer unmounts the
-    // region -> streamingOverlayHeight -> 0 -> spacer removed. scrollHeight
+    // region -> bottomStackHeight -> 0 -> spacer removed. scrollHeight
     // drops to 200 and the browser clamps scrollTop 180 -> 100 (bottom of the
     // settled content).
     rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent={null} />)

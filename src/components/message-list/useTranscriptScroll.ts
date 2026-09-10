@@ -39,16 +39,17 @@ import { useLocalStorage } from '../../hooks/useLocalStorage'
 const BOTTOM_EPSILON_PX = 2
 
 /**
- * Height of the streaming-overlay spacer currently rendered in Virtuoso's
- * Footer slot, or 0 when there is none.
+ * Height of the bottom-overlay spacer currently rendered in Virtuoso's Footer
+ * slot, or 0 when there is none.
  *
  * Excluded from every "how far from the bottom are we" calculation: the spacer
- * reserves room for the absolutely-positioned live typing bubble, so counting
- * it would make a viewport that is visually pinned to the last settled message
- * read as ~110px short of the bottom.
+ * reserves room for the absolutely-positioned live typing bubble AND the task
+ * cards stacked beneath it, so counting it would make a viewport that is
+ * visually pinned to the last settled message read as ~110px short of the
+ * bottom.
  */
-const getStreamingSpacerHeight = (el: HTMLElement) => {
-  const spacer = el.querySelector<HTMLElement>('.virtuoso-streaming-spacer')
+const getBottomSpacerHeight = (el: HTMLElement) => {
+  const spacer = el.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
   if (!spacer) return 0
 
   const rectHeight = spacer.getBoundingClientRect().height
@@ -61,7 +62,7 @@ const getStreamingSpacerHeight = (el: HTMLElement) => {
 }
 
 const getDistanceFromBottom = (el: HTMLElement) => (
-  Math.max(0, el.scrollHeight - getStreamingSpacerHeight(el) - el.scrollTop - el.clientHeight)
+  Math.max(0, el.scrollHeight - getBottomSpacerHeight(el) - el.scrollTop - el.clientHeight)
 )
 
 const getBottomGeometry = (el: HTMLElement) => {
@@ -92,9 +93,9 @@ export interface UseTranscriptScrollOptions {
   /** Transcript identity. The inner scroller remounts when it changes, so
    *  element-bound observers must re-attach and all state must reset. */
   transcriptRevealKey: string | undefined
-  /** Committed height of the streaming overlay spacer. Owned by the caller
+  /** Committed height of the bottom-overlay spacer. Owned by the caller
    *  because it also drives the Footer slot. */
-  streamingOverlayHeight: number
+  bottomStackHeight: number
   /**
    * The top-most VISIBLE row changed, reported in Virtuoso's offset space
    * (dataIndex + firstItemIndex) — same space as `rangeChanged`.
@@ -150,7 +151,7 @@ export function useTranscriptScroll({
   itemCount,
   trackedCount,
   transcriptRevealKey,
-  streamingOverlayHeight,
+  bottomStackHeight,
   onVisibleTopChange,
 }: UseTranscriptScrollOptions): TranscriptScrollApi {
   // Virtuoso's underlying scroll element. Captured through scrollerRefCb.
@@ -521,19 +522,19 @@ export function useTranscriptScroll({
     return () => ro.disconnect()
   }, [rowCount, scrollScrollerToBottom, syncBottomGeometry])
 
-  // Re-pin AFTER the streaming spacer commits its new height.
+  // Re-pin AFTER the bottom spacer commits its new height.
   //
   // Root cause of "the scrollbar sits one line short of the bottom while the
-  // streaming bubble's height is changing": the caller's ResizeObserver
-  // measures the live overlay and sets `streamingOverlayHeight`, which resizes
-  // the Virtuoso Footer spacer that reserves room for the overlay. That state
+  // bottom stack's height is changing": the caller's ResizeObserver measures
+  // the stack (live bubble + task cards) and sets `bottomStackHeight`, which
+  // resizes the Virtuoso Footer spacer that reserves room for it. That state
   // update is asynchronous — the spacer's new height only lands once React
   // commits, which is AFTER the ResizeObserver callback returns. Reading
   // scrollHeight inside that callback therefore reads the STALE bottom and pins
   // there; once the spacer grows, the viewport is left one line short.
   //
   // The content-growth backstop below does not catch this: it observes
-  // Virtuoso's item-list, and the streaming spacer lives in the Footer slot — a
+  // Virtuoso's item-list, and the bottom spacer lives in the Footer slot — a
   // SIBLING of the item-list — so an item-list ResizeObserver never fires when
   // the spacer resizes.
   //
@@ -544,9 +545,9 @@ export function useTranscriptScroll({
     // <= 0 means no spacer is rendered (the Footer is gated on it), so there is
     // nothing to re-pin for — skip, to avoid yanking the viewport on mount or
     // after streaming ends when a non-bottom position may be intentional.
-    if (streamingOverlayHeight <= 0) return
+    if (bottomStackHeight <= 0) return
     pinToBottom()
-  }, [streamingOverlayHeight, pinToBottom])
+  }, [bottomStackHeight, pinToBottom])
 
   // Re-pin when SETTLED content grows AFTER the follow animation has already
   // finalized. Root cause of "a tall message (or a rapid burst) lands partway
@@ -596,7 +597,7 @@ export function useTranscriptScroll({
     // the streaming footer disappears" jolt).
     let lastContentHeight = 0
     const contentHeightOf = (scroller: HTMLElement) =>
-      scroller.scrollHeight - getStreamingSpacerHeight(scroller)
+      scroller.scrollHeight - getBottomSpacerHeight(scroller)
     const ro = new ResizeObserver(() => {
       if (cancelled) return
       const scroller = scrollerRef.current
@@ -707,7 +708,7 @@ export function useTranscriptScroll({
     syncBottomGeometry(el, 'confirm-away')
     el.addEventListener('scroll', handler, { passive: true })
     return () => el.removeEventListener('scroll', handler)
-  }, [rowCount, syncBottomGeometry, streamingOverlayHeight, emitVisibleTop])
+  }, [rowCount, syncBottomGeometry, bottomStackHeight, emitVisibleTop])
 
   // Clean up the follow debounce timer on unmount.
   useEffect(() => () => {

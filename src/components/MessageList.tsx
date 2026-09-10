@@ -30,7 +30,7 @@ import { ResultConsumedCtx } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed } from './message-list/rendering'
 import { MessageView } from './message-list/MessageView'
 import { ToolGroupCard } from './message-list/ToolGroupCard'
-import { StreamingOverlaySpacer } from './message-list/views/frame-views'
+import { BottomOverlaySpacer } from './message-list/views/frame-views'
 import {
   advanceRowAnchor,
   buildTranscriptRows,
@@ -289,7 +289,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // below) while `clearing` is true — the view-only blur that signals a
   // clear in progress during the POST. There is no panel-level veil anymore;
   // the fresh session Y plays `.entering` on mount.
-  const [streamingOverlayHeight, setStreamingOverlayHeight] = useState(0)
+  const [bottomStackHeight, setBottomStackHeight] = useState(0)
   // Easter-egg: triple-clicking the empty-state sparkle swaps in a hidden
   // dino-style game. Local UI state only — no session/persistence concerns.
   const [gameOpen, setGameOpen] = useState(false)
@@ -552,7 +552,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
 
   // Scroll behaviour (L3) lives in `message-list/useTranscriptScroll.ts`:
   // bottom-follow gate, jump-to-bottom state, unseen badge, the rAF follow
-  // animation and the three re-pin backstops. `streamingOverlayHeight` stays
+  // animation and the three re-pin backstops. `bottomStackHeight` stays
   // here because it also drives the Footer spacer below.
   const {
     atBottom,
@@ -571,7 +571,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     itemCount: items.length,
     trackedCount,
     transcriptRevealKey,
-    streamingOverlayHeight,
+    bottomStackHeight,
     onVisibleTopChange: forwardVisibleTop,
   })
 
@@ -588,13 +588,13 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   useEffect(() => {
     const el = streamingRegionRef.current
     if (!el) {
-      setStreamingOverlayHeight(0)
+      setBottomStackHeight(0)
       return
     }
 
     const updateHeight = () => {
       const height = Math.ceil(el.getBoundingClientRect().height)
-      setStreamingOverlayHeight((prev) => (prev === height ? prev : height))
+      setBottomStackHeight((prev) => (prev === height ? prev : height))
     }
 
     updateHeight()
@@ -907,8 +907,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     : 'chat-streaming-region'
 
   // Virtuoso Footer is reserved for transcript metadata and invisible bottom
-  // breathing room. The live streaming bubble is an overlay, so the spacer
-  // lets settled messages scroll underneath it instead of being obscured.
+  // breathing room. The bottom overlay stack (live streaming bubble + task
+  // cards) is an overlay, so the spacer lets settled messages scroll underneath
+  // it instead of being obscured.
   const virtuosoComponents = useMemo(() => {
     // The Header slot shows a "loading older history" affordance pinned to
     // the top. Only relevant for the main transcript (loadOlder provided).
@@ -921,13 +922,13 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     if (showOlderHeader) {
       components.Header = () => <OlderHistoryHeader loading={loadingOlder} />
     }
-    if (streamingOverlayHeight > 0) {
+    if (bottomStackHeight > 0) {
       components.Footer = () => (
-        <StreamingOverlaySpacer height={streamingOverlayHeight} />
+        <BottomOverlaySpacer height={bottomStackHeight} />
       )
     }
     return components
-  }, [streamingOverlayHeight, loadOlder, loadingOlder, hasOlder, renderableItems.length])
+  }, [bottomStackHeight, loadOlder, loadingOlder, hasOlder, renderableItems.length])
 
   // Fold the TaskCreate/TaskUpdate stream into a Map<taskId, TaskState> so
   // the inline TaskMutationView card can resolve a TaskUpdate's subject

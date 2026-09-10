@@ -239,7 +239,7 @@
 .streaming-footer-wrapper > .streaming-msg {
   pointer-events: auto;
 }
-.virtuoso-streaming-spacer {
+.virtuoso-bottom-spacer {
   flex: 0 0 auto;
   pointer-events: none;
 }
