@@ -1183,6 +1183,16 @@ body.resizing-col .app {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.chat-panel-stderr-details {
+  background: var(--btn-hover-bg);
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.chat-panel-stderr-details summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
 /* Meta strip that holds the model badge. Sits between the panel
    title (left-aligned) and the panel edge (right-aligned). The git chip
    now lives on header row 2 (see the margin-left rule above). No right

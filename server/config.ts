@@ -117,6 +117,9 @@ interface ConfigFile {
    *  overrides (SessionMeta.autoRecap) take priority; sessions without an
    *  override inherit this value. Manual recap (Alt+R) is never gated. */
   autoRecap: boolean
+  /** Global default for per-session CLI debug logging (Options.debug +
+   *  debugFile). SessionMeta.cliDebug overrides when set. Default: false. */
+  cliDebug?: boolean
   /** Global default for injecting the first-party `apptools` in-process MCP
    *  server (git tools) into sessions. Per-session overrides
    *  (SessionMeta.appToolsGit) take priority; sessions without an override
@@ -181,6 +184,8 @@ export interface ServerConfig {
   /** Global default for idle auto-recap. Sessions without an explicit
    *  override inherit this. */
   readonly autoRecap: boolean
+  /** Global default for per-session CLI debug logging (spawn-time only). */
+  readonly cliDebug: boolean
   /** Global default for the per-session `apptools` git MCP server. Sessions
    *  without an explicit override inherit this. LEGACY derived convenience —
    *  equals `firstPartyTools.apptools?.enabled ?? true`. */
@@ -229,6 +234,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   autoClassifierTimeout: 5000,
   showPinnedUserMessage: true,
   autoRecap: true,
+  cliDebug: false,
   appToolsGit: true,
   firstPartyTools: Object.freeze({ apptools: Object.freeze({ enabled: true }) }),
   allowSensitivePathEdits: false,
@@ -474,6 +480,11 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { autoRecap: boolean }).autoRecap = file_.autoRecap
   }
 
+  if (typeof file_.cliDebug === 'boolean') {
+    ;(merged as { cliDebug: boolean }).cliDebug = file_.cliDebug
+    log.info(`cliDebug: ${file_.cliDebug}`)
+  }
+
   if (typeof file_.appToolsGit === 'boolean') {
     ;(merged as { appToolsGit: boolean }).appToolsGit = file_.appToolsGit
   }
@@ -574,6 +585,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'autoClassifierTimeout',
   'showPinnedUserMessage',
   'autoRecap',
+  'cliDebug',
   'appToolsGit',
   'firstPartyTools',
   'allowSensitivePathEdits',

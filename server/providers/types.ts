@@ -39,6 +39,10 @@ export interface CreateSessionOptions {
    *  would default failIfUnavailable=true and hard-fail the whole session when
    *  sandbox deps are missing; see shared/sandbox.ts). */
   sandbox?: SandboxSetting
+  /** Effective per-session CLI debug intent (session override ?? global
+   *  default). The provider reads this at spawn to decide whether to pass
+   *  debug flags to the CLI. Task 4 wires the actual behavior. */
+  cliDebug?: boolean
   env?: Record<string, string>
   mcpServers?: Record<string, unknown>
   enabledMcpServers?: string[]

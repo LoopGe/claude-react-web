@@ -114,10 +114,15 @@ export class ProcessMonitor {
   /** Safety-window used by the destroy-time timer. Injectable so tests can
    *  exercise the timer path without waiting 15s. Defaults to EXIT_SAFETY_MS. */
   private readonly safetyMs: number
+  /** Optional per-line stderr callback. Called with (sessionId, line) for
+   *  every captured stderr line, in addition to the existing log.warn.
+   *  Used by the claude provider to tee stderr into session-scoped log files. */
+  private readonly stderrSink?: (sessionId: string, line: string) => void
 
-  constructor(onExit: (info: ProcessExitInfo) => void, opts?: { safetyMs?: number }) {
+  constructor(onExit: (info: ProcessExitInfo) => void, opts?: { safetyMs?: number; stderrSink?: (sessionId: string, line: string) => void }) {
     this.onExit = onExit
     this.safetyMs = opts?.safetyMs ?? EXIT_SAFETY_MS
+    this.stderrSink = opts?.stderrSink
   }
 
   /** Register a session before `query()` is called. Returns a handle whose
@@ -184,12 +189,18 @@ export class ProcessMonitor {
         while ((idx = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, idx).trimEnd()
           buf = buf.slice(idx + 1)
-          if (line) log.warn(`[process-monitor] stderr[${sid}]: ${line}`)
+          if (line) {
+            log.warn(`[process-monitor] stderr[${sid}]: ${line}`)
+            this.stderrSink?.(sid, line)
+          }
         }
       }
       stderrEndHandler = () => {
         const tail = buf.trimEnd()
-        if (tail) log.warn(`[process-monitor] stderr[${sid}]: ${tail}`)
+        if (tail) {
+          log.warn(`[process-monitor] stderr[${sid}]: ${tail}`)
+          this.stderrSink?.(sid, tail)
+        }
       }
       child.stderr.on('data', stderrDataHandler)
       child.stderr.on('end', stderrEndHandler)

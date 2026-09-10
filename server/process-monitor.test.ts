@@ -212,4 +212,25 @@ describe('ProcessMonitor', () => {
     ;(proc as unknown as { kill: () => boolean }).kill()
     await new Promise((r) => setTimeout(r, 30))
   })
+
+  it('calls stderrSink with session id and each captured stderr line', async () => {
+    const sink = vi.fn()
+    const mon = new ProcessMonitor(() => {}, { stderrSink: sink })
+    const reg = mon.register('s-stderr-sink')
+
+    // Spawn a child that writes two lines to stderr then exits.
+    const opts: SpawnOptions = {
+      command: process.execPath,
+      args: ['-e', 'process.stderr.write("line-a\\nline-b\\n"); process.exit(0)'],
+      env: { ...process.env } as SpawnOptions['env'],
+      signal: new AbortController().signal,
+    }
+    mon.spawnFor(reg, opts)
+    await expectExitSoon(reg)
+
+    // Give the data/end handlers a tick to flush.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(sink).toHaveBeenCalledWith('s-stderr-sink', 'line-a')
+    expect(sink).toHaveBeenCalledWith('s-stderr-sink', 'line-b')
+  })
 })

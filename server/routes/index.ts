@@ -24,6 +24,7 @@ import { buildUpdateRouter } from './update-routes.js'
 import { buildSearchRouter } from './search.js'
 import { buildSkillsRouter } from './skills.js'
 import { buildHooksRouter } from './hooks.js'
+import { buildDiagnosticsRouter } from './diagnostics.js'
 import { buildStructuredRouter } from './structured.js'
 import { buildFirstPartyRouter } from './first-party.js'
 import { ScheduledSendManager } from '../scheduled-send-manager.js'
@@ -77,6 +78,7 @@ export function buildApiRouter(
   app.route('/', buildSessionRouter(sm, mpStore, agentDefinitionStore))
   app.route('/', buildHooksRouter(sm))
   app.route('/', buildSkillsRouter(sm))
+  app.route('/', buildDiagnosticsRouter(sm))
   app.route('/', buildUploadRouter(sm, uploadStore))
   app.route('/', buildPermissionRouter(sm))
   app.route('/', buildElicitationRouter(sm))

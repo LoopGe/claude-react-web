@@ -306,6 +306,7 @@ const tick = () => new Promise((r) => setImmediate(r))
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
 import { SessionManager, resolveConfiguredModel } from './session-manager.js'
+import type { Session } from './session-types.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
 import type { AgentDefinitionStore } from './agent-definition-store.js'
@@ -5259,5 +5260,96 @@ describe('create() validates modelGroupId against the effective profile', () => 
       profileId: 'B',
       modelGroupId: 'nonexistent',
     } as Parameters<SessionManager['create']>[0])).toThrow('model group nonexistent not found')
+  })
+})
+
+describe('cliDebug resolution', () => {
+  it('resolves the effective cliDebug as session override ?? global default', () => {
+    // defaultConfig.cliDebug = false (the DEFAULTS default)
+    const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
+    const sess = { cliDebug: undefined } as Session
+    // No override → false (global default)
+    expect((smLocal as unknown as { resolveCliDebug(s: Session): boolean }).resolveCliDebug(sess)).toBe(false)
+    // Explicit session override → true
+    sess.cliDebug = true
+    expect((smLocal as unknown as { resolveCliDebug(s: Session): boolean }).resolveCliDebug(sess)).toBe(true)
+    // Explicit false override
+    sess.cliDebug = false
+    expect((smLocal as unknown as { resolveCliDebug(s: Session): boolean }).resolveCliDebug(sess)).toBe(false)
+  })
+})
+
+describe('cliDebug persistence', () => {
+  it('writeStore round-trips cliDebug', () => {
+    const dir = makeTmpDir()
+    const store = new SessionStore({ stateDir: dir })
+    const smLocal = new SessionManager({ store })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    // Initially undefined (session-level default)
+    expect(store.get(info.id)?.cliDebug).toBeUndefined()
+    // Directly mutate the live session's cliDebug to simulate what the
+    // PUT route (Task 5) will do, then trigger a persist.
+    const session = (smLocal as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)
+    expect(session).toBeDefined()
+    session!.cliDebug = true
+    ;(smLocal as unknown as { writeStore(s: Session): void }).writeStore(session!)
+    expect(store.get(info.id)?.cliDebug).toBe(true)
+  })
+})
+
+describe('setCliDebug', () => {
+  it('sets per-session cliDebug to true and persists', async () => {
+    const storeLocal = new SessionStore({ stateDir: makeTmpDir() })
+    await storeLocal.load()
+    const smLocal = new SessionManager({ store: storeLocal })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const result = await smLocal.setCliDebug(info.id, { cliDebug: true })
+    expect(result.cliDebug.perSession).toBe(true)
+    expect(result.cliDebug.effective).toBe(true)
+    expect(result.note).toBe('applies on the next session start')
+    expect(storeLocal.get(info.id)?.cliDebug).toBe(true)
+  })
+
+  it('clears per-session cliDebug with null and persists', async () => {
+    const storeLocal = new SessionStore({ stateDir: makeTmpDir() })
+    await storeLocal.load()
+    const smLocal = new SessionManager({ store: storeLocal })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    await smLocal.setCliDebug(info.id, { cliDebug: true })
+    const result = await smLocal.setCliDebug(info.id, { cliDebug: null })
+    expect(result.cliDebug.perSession).toBeUndefined()
+    expect(result.cliDebug.effective).toBe(false)
+    expect(storeLocal.get(info.id)?.cliDebug).toBeUndefined()
+  })
+
+  it('throws 400 when cliDebug is missing from body', async () => {
+    const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    await expect(smLocal.setCliDebug(info.id, {})).rejects.toThrow(/cliDebug.*required/)
+  })
+})
+
+describe('getDiagnostics', () => {
+  it('returns the expected diagnostics shape', async () => {
+    const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const result = await smLocal.getDiagnostics(info.id)
+    expect(result.cliDebug).toEqual({ global: false, perSession: undefined, effective: false })
+    expect(result.stderrTail).toEqual([])
+    expect(result.debugLog).toEqual({ exists: false })
+  })
+
+  it('reflects per-session override in effective', async () => {
+    const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    await smLocal.setCliDebug(info.id, { cliDebug: true })
+    const result = await smLocal.getDiagnostics(info.id)
+    expect(result.cliDebug.perSession).toBe(true)
+    expect(result.cliDebug.effective).toBe(true)
+  })
+
+  it('throws 404 for unknown session', async () => {
+    const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
+    await expect(smLocal.getDiagnostics('nonexistent')).rejects.toThrow(/not found/)
   })
 })

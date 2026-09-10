@@ -5,7 +5,11 @@
 // right vehicle (Options.sandbox.enabled would default failIfUnavailable=true
 // and hard-fail the whole session when sandbox deps are missing).
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { Options } from '@anthropic-ai/claude-agent-sdk'
 
 const queryMock = vi.hoisted(() => vi.fn())
 
@@ -15,6 +19,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 })
 
 import { ClaudeProvider } from './claude-provider.js'
+import type { CreateSessionOptions } from '../types.js'
 import type { SandboxSetting } from '../../../shared/sandbox.js'
 
 function makeProvider() {
@@ -77,5 +82,67 @@ describe('ClaudeProvider.createSession sandbox', () => {
 
     const options = queryMock.mock.calls[0]?.[0]?.options as { hooks?: unknown }
     expect(options?.hooks).toBeUndefined()
+  })
+})
+
+describe('ClaudeProvider.createSession cliDebug', () => {
+  const tmpDirs: string[] = []
+  beforeEach(() => {
+    queryMock.mockReset()
+  })
+  afterEach(() => {
+    for (const d of tmpDirs) rmSync(d, { recursive: true, force: true })
+    tmpDirs.length = 0
+  })
+
+  it('sets debug=true and debugFile when cliDebug is true', async () => {
+    const q = fakeQuery()
+    queryMock.mockReturnValue(q)
+    const tmpLogsDir = mkdtempSync(join(tmpdir(), 'cw-cli-debug-'))
+    tmpDirs.push(tmpLogsDir)
+
+    new ClaudeProvider({ claudeBinary: '/fake/claude', logsDir: tmpLogsDir }).createSession({ id: 'sess-1', cliDebug: true } as CreateSessionOptions)
+    await flush()
+
+    const options = queryMock.mock.calls[0]?.[0]?.options as Options & { debug?: boolean; debugFile?: string }
+    expect(options.debug).toBe(true)
+    expect(options.debugFile).toMatch(/cli-sess-1\.log$/)
+  })
+
+  it('leaves debug undefined when cliDebug is false', async () => {
+    const q = fakeQuery()
+    queryMock.mockReturnValue(q)
+
+    makeProvider().createSession({ id: 'sess-2', cliDebug: false } as CreateSessionOptions)
+    await flush()
+
+    const options = queryMock.mock.calls[0]?.[0]?.options as Options & { debug?: boolean; debugFile?: string }
+    expect(options.debug).toBeUndefined()
+    expect(options.debugFile).toBeUndefined()
+  })
+
+  it('leaves debug undefined when cliDebug is absent', async () => {
+    const q = fakeQuery()
+    queryMock.mockReturnValue(q)
+
+    makeProvider().createSession({ id: 'sess-3' })
+    await flush()
+
+    const options = queryMock.mock.calls[0]?.[0]?.options as Options & { debug?: boolean; debugFile?: string }
+    expect(options.debug).toBeUndefined()
+    expect(options.debugFile).toBeUndefined()
+  })
+
+  it('leaves debug undefined when cliDebug is true but logsDir is absent (silent no-op)', async () => {
+    const q = fakeQuery()
+    queryMock.mockReturnValue(q)
+
+    // No logsDir — the provider degrades gracefully instead of half-enabling debug.
+    new ClaudeProvider({ claudeBinary: '/fake/claude' }).createSession({ id: 'sess-4', cliDebug: true } as CreateSessionOptions)
+    await flush()
+
+    const options = queryMock.mock.calls[0]?.[0]?.options as Options & { debug?: boolean; debugFile?: string }
+    expect(options.debug).toBeUndefined()
+    expect(options.debugFile).toBeUndefined()
   })
 })

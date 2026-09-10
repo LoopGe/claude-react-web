@@ -24,6 +24,7 @@ import {
 import type { ProcessExitInfo } from './process-monitor.js'
 import { randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
@@ -96,6 +97,7 @@ import { SessionEventBroadcaster } from './session-broadcaster.js'
 import { BackgroundWatcherRegistry } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory } from './history-utils.js'
+import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
 import { deleteTranscriptFile } from './history-reader.js'
@@ -508,6 +510,7 @@ export class SessionManager {
       agentStore: this.agentStore,
       mcpStore: this.mcpStore,
       onProcessExit: (info) => this.handleProcessExit(info),
+      logsDir: join(this.store.getDir(), 'logs'),
     })
     this.defaultProvider = opts.defaultProvider ?? 'claude'
     // Stuck-session monitor — periodic GC tick with auto-interrupt.
@@ -888,6 +891,7 @@ export class SessionManager {
       enabledPlugins: s.enabledPlugins,
       showPinnedUserMessage: s.showPinnedUserMessage,
       autoRecap: s.autoRecap,
+      cliDebug: s.cliDebug,
       appToolsGit: s.appToolsGit,
       firstPartyTools: s.firstPartyTools,
       slept: s.slept,
@@ -925,7 +929,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -976,7 +980,13 @@ export class SessionManager {
         const sb = (opts as { sandbox?: SandboxSetting }).sandbox
         return sb && sb.enabled === true ? sb : undefined
       })(),
+      cliDebug: (opts as { cliDebug?: boolean }).cliDebug,
     }
+  }
+
+  /** Effective per-session CLI debug intent: session override ?? global default. */
+  private resolveCliDebug(s: Session): boolean {
+    return s.cliDebug ?? defaultConfig.cliDebug ?? false
   }
 
   /** The start-as custom agent name to carry onto a re-spawn (resume/fork),
@@ -1237,6 +1247,7 @@ export class SessionManager {
       betas: meta.betas,
       hooks: meta.hooks,
       enabledPlugins: meta.enabledPlugins,
+      cliDebug: meta.cliDebug,
     })
     resumeOpts.resume = id
     // Carry the start-as agent forward only while its def still exists and
@@ -1301,6 +1312,7 @@ export class SessionManager {
       betas: meta.betas,
       hooks: meta.hooks,
       enabledPlugins: meta.enabledPlugins,
+      cliDebug: meta.cliDebug,
     })
     // Re-apply globally configured MCP servers (same as resume / clear).
     await this.applyGlobalMcpServers(freshOpts)
@@ -1550,7 +1562,8 @@ export class SessionManager {
       betas: meta.betas,
       hooks: meta.hooks,
       enabledPlugins: meta.enabledPlugins,
-    }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting }
+      cliDebug: meta.cliDebug,
+    }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting; cliDebug?: boolean }
     forkOpts.resume = id
     forkOpts.forkSession = true
     // Carry the start-as agent forward only while its def still exists and
@@ -2184,6 +2197,7 @@ export class SessionManager {
       // `??` (not `||`) so an explicit `false` override survives.
       showPinnedUserMessage: prefs?.showPinnedUserMessage ?? existingMeta?.showPinnedUserMessage,
       autoRecap: prefs?.autoRecap ?? existingMeta?.autoRecap,
+      cliDebug: existingMeta?.cliDebug ?? metaSnapshot.cliDebug,
       appToolsGit: prefs?.appToolsGit ?? existingMeta?.appToolsGit,
       firstPartyTools: prefs?.firstPartyTools ?? existingMeta?.firstPartyTools,
       hooks: existingMeta?.hooks ?? metaSnapshot.hooks,
@@ -2308,6 +2322,10 @@ export class SessionManager {
     // failIfUnavailable=true and hard-fail a session missing sandbox deps).
     // Strip so the CLI arg builder never sees an `Options.sandbox`.
     delete (sdkOptions as { sandbox?: unknown }).sandbox
+    // Strip cliDebug: not an SDK Option (applied post-spawn via the provider's
+    // own resolution). baseSpawnOptions' return rides into sdkOptions through
+    // providerExtras — leaving it in would hand the CLI arg builder an unknown key.
+    delete (sdkOptions as { cliDebug?: boolean }).cliDebug
     // Inject the first-party in-process MCP servers (session-cwd-bound tools)
     // into the spawn-time mcpServers map. Done AFTER snapshotMeta so the
     // persisted `mcpServerNames` stays the user-configured set. Record the
@@ -2332,6 +2350,7 @@ export class SessionManager {
       autoCompactWindow: session.autoCompactWindow,
       memory: session.memory,
       sandbox: session.sandbox,
+      cliDebug: this.resolveCliDebug(session),
       env: customEnv,
       mcpServers: fullOpts.mcpServers as Record<string, unknown> | undefined,
       enabledPlugins: (fullOpts as { enabledPlugins?: string[] }).enabledPlugins ?? existingMeta?.enabledPlugins,
@@ -3497,6 +3516,42 @@ export class SessionManager {
       (s) => { s.hooks = normalized },
     )
     return { session, hooks: normalized }
+  }
+
+  async getDiagnostics(id: string): Promise<{
+    cliDebug: { global: boolean; perSession?: boolean; effective: boolean }
+    stderrTail: string[]
+    debugLog: { exists: boolean; path?: string; size?: number }
+  }> {
+    const s = this.require(id)
+    const logsDir = this.store ? join(this.store.getDir(), 'logs') : undefined
+    const global = defaultConfig.cliDebug ?? false
+    const perSession = s.cliDebug
+    const [stderrTail, debugLog] = await Promise.all([
+      readStderrTail(logsDir, id),
+      cliLogInfo(logsDir, id),
+    ])
+    return {
+      cliDebug: { global, perSession, effective: perSession ?? global },
+      stderrTail,
+      debugLog,
+    }
+  }
+
+  async setCliDebug(id: string, body: { cliDebug?: boolean | null }): Promise<{
+    cliDebug: { global: boolean; perSession?: boolean; effective: boolean }
+    note: string
+  }> {
+    const s = this.require(id)
+    const v = body?.cliDebug
+    if (v === undefined) throw new HttpError(400, 'cliDebug (boolean or null) is required')
+    s.cliDebug = v === null ? undefined : v
+    this.writeStore(s)
+    const global = defaultConfig.cliDebug ?? false
+    return {
+      cliDebug: { global, perSession: s.cliDebug, effective: s.cliDebug ?? global },
+      note: 'applies on the next session start',
+    }
   }
 
   /** Shared implementation for the "forward a flag to the SDK via
@@ -5332,7 +5387,8 @@ export class SessionManager {
     betas?: string[]
     hooks?: SessionHooksConfig
     enabledPlugins?: string[]
-  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number } {
+    cliDebug?: boolean
+  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number; cliDebug?: boolean } {
     return {
       provider: source.provider,
       cwd: source.cwd,
@@ -5346,6 +5402,7 @@ export class SessionManager {
       betas: source.betas as Options['betas'],
       settings: source.hooks ? ({ hooks: toSdkHooksSettings(source.hooks) } as Settings) : undefined,
       enabledPlugins: source.enabledPlugins,
+      cliDebug: source.cliDebug,
     }
   }
 
@@ -5439,6 +5496,7 @@ export class SessionManager {
       fastMode: session.fastMode,
       autoCompactWindow: session.autoCompactWindow,
       memory: session.memory,
+      cliDebug: this.resolveCliDebug(session),
       enabledPlugins: session.enabledPlugins,
       includeHookEvents: true,
       inProcessHookForward: (_sid, event) => this.recordHookRun(session.id, event),

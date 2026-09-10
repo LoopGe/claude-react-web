@@ -316,6 +316,21 @@ describe('config', () => {
     expect(written.historyCap).toBe(777)
   })
 
+  it('loads a global cliDebug default (false) and honors config.json', async () => {
+    // Explicit default: false before any load.
+    expect(config.cliDebug).toBe(false)
+    // config.json cliDebug:true is surfaced on the frozen config.
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ cliDebug: true }))
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.cliDebug).toBe(true)
+    log.mockRestore()
+  })
+
+  it('exposes cliDebug as a writable config key', () => {
+    expect(WRITABLE_CONFIG_KEYS).toContain('cliDebug')
+  })
+
   describe('clearCredentials', () => {
     it('clears authToken, baseUrl, and accessToken from config.json', async () => {
       writeFileSync(join(dir, 'config.json'), JSON.stringify({

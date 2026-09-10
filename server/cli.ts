@@ -7,6 +7,7 @@
 
 import { serve } from '@hono/node-server'
 import type { Server } from 'node:http'
+import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import open from 'open'
 import QRCode from 'qrcode'
@@ -140,6 +141,14 @@ async function runServer(args: CliArgs): Promise<void> {
   if (uploadEntries.length) {
     log.info(`loaded ${uploadEntries.length} uploaded-file registry ${uploadEntries.length === 1 ? 'entry' : 'entries'} from ${stateDir}`)
   }
+
+  // Prune stale per-session CLI diagnostics (cli-*.log / cli-stderr-*.jsonl)
+  // older than 14 days. Fire-and-forget: never blocks boot on IO.
+  void import('./cli-diagnostics.js').then(({ cleanupCliLogs }) =>
+    cleanupCliLogs(join(stateDir, 'logs')).then((removed) => {
+      if (removed) log.info(`cleaned ${removed} stale CLI diagnostic file(s)`)
+    }).catch(() => undefined),
+  )
 
   const claudeBinary = resolveClaudeBinary(args.claudeBinary)
   if (claudeBinary) {
