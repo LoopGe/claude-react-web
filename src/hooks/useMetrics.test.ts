@@ -56,4 +56,23 @@ describe('useMetrics', () => {
     await act(async () => {})
     expect(result.current.error).toBe('boom')
   })
+
+  it('a superseded (aborted) refresh does not clobber the newer call', async () => {
+    // Deferred promises so we control resolution order.
+    const stale = { reject: (undefined as unknown as (e: Error) => void) }
+    const stalePromise = new Promise<never>((_, rej) => { stale.reject = rej })
+    getMock.mockImplementationOnce(() => stalePromise) // mount fetch — will be aborted
+    const { result } = renderHook(() => useMetrics())
+    await act(async () => {}) // let mount effect run
+    // Manual refresh #2: aborts the mount fetch, issues its own (resolving) call.
+    getMock.mockResolvedValueOnce(snap)
+    await act(async () => { await result.current.refresh() })
+    // Now the aborted stale fetch rejects with an AbortError — its catch/finally
+    // must be skipped so the panel keeps the fresh data and no bogus error.
+    const abortErr = new Error('Request cancelled')
+    abortErr.name = 'AbortError'
+    await act(async () => { stale.reject(abortErr) })
+    expect(result.current.error).toBeNull()
+    expect(result.current.data).toEqual(snap)
+  })
 })

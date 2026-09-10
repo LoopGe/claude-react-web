@@ -22,11 +22,14 @@ export function useMetrics() {
     setError(null)
     try {
       const res = await api.get<MetricsSnapshot>('/metrics', { signal: ctrl.signal })
-      if (mountedRef.current) setData(res)
+      if (!ctrl.signal.aborted && mountedRef.current) setData(res)
     } catch (e) {
-      if (mountedRef.current) setError(e instanceof Error ? e.message : String(e))
+      // A superseded (aborted) request must not clobber the newer call's
+      // in-flight state — aborting is not an unmount, so mountedRef alone
+      // is not enough here.
+      if (!ctrl.signal.aborted && mountedRef.current) setError(e instanceof Error ? e.message : String(e))
     } finally {
-      if (mountedRef.current) setLoading(false)
+      if (!ctrl.signal.aborted && mountedRef.current) setLoading(false)
     }
   }, [])
 

@@ -27,7 +27,6 @@ import { toSnapshot, sanitizeQuestions, formatQuestionAnswers, formatQuestionCla
 import { HttpError } from './errors.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import { createLogger } from './log.js'
-import { metrics } from './metrics.js'
 import { isAutoApprovableEditBash, isInScopeEditTool, isSensitiveAutoEditPath, EDIT_TOOL_PATH_FIELD } from './accept-edits-bash.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 
@@ -156,7 +155,6 @@ export class PermissionBroker {
       const abortHandler = () => {
         if (!session.pending.has(pid)) return
         session.pending.delete(pid)
-        metrics.gauge('permissions_pending', session.pending.size)
         log.info(`[session ${session.id}] permission ${pid} aborted (interrupt)`)
         resolve({ behavior: 'deny', message: 'aborted', interrupt: false, toolUseID: ctx.toolUseID })
         broadcastRes(session, pid, {
@@ -168,7 +166,6 @@ export class PermissionBroker {
       }
       const pending = buildPending(pid, resolve, abortHandler)
       session.pending.set(pid, pending)
-      metrics.gauge('permissions_pending', session.pending.size)
       ctx.signal.addEventListener('abort', abortHandler, { once: true })
       broadcastReq(session, pending)
       notifyPendingChanged(session)
@@ -569,7 +566,6 @@ export class PermissionBroker {
     }
     this.cleanupPending(p)
     session.pending.delete(pid)
-    metrics.gauge('permissions_pending', session.pending.size)
 
     if (decision.behavior === 'allow') {
       // The SDK's runtime Zod schema is stricter than the TypeScript type:
@@ -626,7 +622,6 @@ export class PermissionBroker {
     }
     this.cleanupPending(p)
     session.pending.delete(pid)
-    metrics.gauge('permissions_pending', session.pending.size)
 
     const message = formatQuestionAnswers(p.questions, answers)
     p.resolve({
@@ -654,7 +649,6 @@ export class PermissionBroker {
     }
     this.cleanupPending(p)
     session.pending.delete(pid)
-    metrics.gauge('permissions_pending', session.pending.size)
     const message = formatQuestionClarification(p.questions, normalized)
     p.resolve({ behavior: 'deny', message, interrupt: false, toolUseID: p.toolUseID })
     this.broadcastPermissionResolved(session, pid, {

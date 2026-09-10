@@ -42,15 +42,6 @@ import type { TaskRecordUi } from '../shared/tasks.js'
 
 const log = createLogger('ws')
 
-// Live WS connection count, mirrored into the metrics gauge. Incremented
-// in the wss 'connection' handler, decremented in the socket 'close'
-// handler — the pair brackets every socket's lifetime.
-let wsConnectionCount = 0
-function bumpWsConnections(delta: number): void {
-  wsConnectionCount += delta
-  metrics.gauge('ws_connections', wsConnectionCount)
-}
-
 function hookSnapshotEvent(run: HookRunRecord): HookRuntimeEvent {
   if (run.status === 'started') return { kind: 'started', run }
   if (run.status === 'progress') return { kind: 'progress', run }
@@ -123,10 +114,13 @@ class WsWriteQueue {
    *  pushed into every subscribed connection's queue, avoiding M×
    *  JSON.stringify on the hot path. */
   enqueueRaw(data: string, kind?: string) {
-    if (kind !== undefined) metrics.count('ws_frames_sent', { kind })
     if (this.stopped || this.ws.readyState !== this.ws.OPEN) return
     this.queue.push(data)
     this.totalChars += data.length
+    // Count only frames actually queued to a live socket — frames dropped
+    // above (stopped / not OPEN) never reach a client and would inflate
+    // the volume metric exactly in the overload scenarios it diagnoses.
+    if (kind !== undefined) metrics.count('ws_frames_sent', { kind })
     // Hard cap: a slow-but-alive client can keep this buffer growing
     // while the drain loop is suspended on backpressure. Force-close so
     // the client reconnects and replays from the bounded history ring.
@@ -272,7 +266,9 @@ export function attachWebSocket(
 
   wss.on('connection', (ws) => {
     sockets.add(ws)
-    bumpWsConnections(1)
+    // Gauge derived from the Set itself — single source of truth, no
+    // separate counter to drift.
+    metrics.gauge('ws_connections', sockets.size)
     const subs = new Map<string, SessionSub>()
     /** Sessions whose subscribe-setup is mid-flight (waiting on the
      *  auto-resume await below). Guard: a second subscribe frame for the
@@ -492,12 +488,12 @@ export function attachWebSocket(
           }
         }
 
+        const replayStart = performance.now()
         // Filter out system messages that the frontend doesn't need.
         // Matches the live broadcast filter in session-pump.ts.
         replayHistory = replayHistory.filter(
           (m) => shouldBroadcastMessage(m as { type?: string; subtype?: string }),
         )
-        const replayStart = performance.now()
         const REPLAY_CHUNK_SIZE = 50
         // Key diagnostic: pairs with the client's replay-done handling.
         // If the server logs a non-zero count here but the client renders
@@ -847,7 +843,7 @@ export function attachWebSocket(
       appPluginCleanup?.()
       appPluginCleanup = null
       sockets.delete(ws)
-      bumpWsConnections(-1)
+      metrics.gauge('ws_connections', sockets.size)
     })
 
     ws.on('error', (err) => {

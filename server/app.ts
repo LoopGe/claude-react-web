@@ -220,10 +220,13 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       httpLog.info(`[${c.req.method}] ${c.req.path} → ${c.res.status} (${ms}ms)`)
     }
     // Metrics: record under the ROUTE TEMPLATE (not the concrete path) to
-    // keep label cardinality bounded. /api/metrics excludes itself to avoid
-    // self-excitation every time the panel polls. `c.req.routePath` falls
-    // back to the concrete path only for unmatched routes (404s) — rare and
-    // low-volume, acceptable.
+    // keep label cardinality bounded. Verified against hono 4.12: for an
+    // UNMATCHED /api request `c.req.routePath` resolves to the deepest
+    // executed middleware pattern ('/api/*'), NOT the request path — so the
+    // label space stays finite. Do NOT switch this to `c.req.path`: that
+    // would give every probed/typo'd URL its own permanent histogram series.
+    // /api/metrics excludes itself to avoid self-excitation when the panel
+    // polls.
     if (c.req.path !== '/api/health' && c.req.path !== '/api/metrics') {
       metrics.observe('http_request_ms', ms, { route: `${c.req.method} ${c.req.routePath}` })
     }

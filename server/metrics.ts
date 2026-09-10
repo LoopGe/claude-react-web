@@ -39,7 +39,7 @@ const startedAt = Date.now()
 
 type Labels = Record<string, string | undefined>
 
-export function seriesKey(name: string, labels?: Labels): string {
+function seriesKey(name: string, labels?: Labels): string {
   if (!labels) return name
   const parts = Object.keys(labels)
     .sort()
@@ -48,17 +48,14 @@ export function seriesKey(name: string, labels?: Labels): string {
   return parts.length > 0 ? `${name}:${parts.join(',')}` : name
 }
 
-function bucketsFor(seriesKeyStr: string): number[] {
-  const name = seriesKeyStr.split(':')[0] ?? seriesKeyStr
-  return BUCKETS_BY_NAME[name] ?? DEFAULT_BUCKETS_MS
-}
-
 function observe(name: string, value: number, labels?: Labels): void {
   if (!enabled) return
   const key = seriesKey(name, labels)
   let s = histograms.get(key)
   if (!s) {
-    const buckets = bucketsFor(key)
+    // Bucket config is looked up by the metric NAME (the key without its
+    // label suffix) — `name` is exactly that, no need to re-split the key.
+    const buckets = BUCKETS_BY_NAME[name] ?? DEFAULT_BUCKETS_MS
     s = { buckets, counts: new Array<number>(buckets.length).fill(0), sum: 0, count: 0, max: 0 }
     histograms.set(key, s)
   }

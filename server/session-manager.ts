@@ -2706,7 +2706,6 @@ export class SessionManager {
         `[session ${id}] interrupt() resolved in ${Date.now() - startedAt}ms, ` +
         `withdrawn=${removed} (receipt=${receiptNote})`,
       )
-      metrics.observe('interrupt_ms', Date.now() - startedAt)
       s.lastActivityAt = Date.now()
       this.persist(s)
       return removed
@@ -2722,6 +2721,11 @@ export class SessionManager {
       }
       log.error(`[session ${id}] interrupt() threw after ${Date.now() - startedAt}ms:`, err)
       throw err
+    } finally {
+      // Record ALL outcomes — a rejected interrupt (wedged subprocess, the
+      // stuck-session GC's escalation case) is exactly the sample the
+      // histogram must not lose.
+      metrics.observe('interrupt_ms', Date.now() - startedAt)
     }
   }
 
@@ -3839,7 +3843,6 @@ export class SessionManager {
     try {
       const result = await fn()
       const ms = Date.now() - startedAt
-      metrics.observe('sdk_control_ms', ms, { op: label })
       // Only the slow ones are interesting — a healthy control round-trip
       // is single-digit ms. Warn above 1s so the noise floor stays low.
       if (ms >= 1000) {
@@ -3855,6 +3858,10 @@ export class SessionManager {
       // wrap in requireHandleMethod is never doubled).
       if (err instanceof HttpError) throw err
       throw new HttpError(502, `${label} failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      // Record ALL outcomes — the wedged-subprocess / init-stall failures
+      // this wrapper exists to make visible must land in the histogram too.
+      metrics.observe('sdk_control_ms', Date.now() - startedAt, { op: label })
     }
   }
 
@@ -4779,6 +4786,18 @@ export class SessionManager {
     mapped.sort((a, b) => b.lastModified - a.lastModified)
     return mapped
   }
+  /** Total tool-permission requests currently pending across ALL live
+   *  sessions. Derived at read time (metrics snapshot) instead of a
+   *  manually-maintained gauge — a per-session `pending.size` written to a
+   *  global gauge would be last-writer-wins, and every future
+   *  pending-clearing path (denyAll, abort, decide) would have to remember
+   *  to update it. */
+  totalPendingPermissions(): number {
+    let total = 0
+    for (const s of this.sessions.values()) total += s.pending.size
+    return total
+  }
+
   /** Cheap count of all sessions (live + persisted) without allocating
    *  a full SessionInfo list. Use for health probes etc. */
   sessionCount(): number {

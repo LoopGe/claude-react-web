@@ -74,7 +74,10 @@ export function buildApiRouter(
   // Mount sub-routers in the same order as the original routes.ts
   // to preserve Hono's route-matching priority.
   app.route('/', buildHealthRouter(claudeBinary))
-  app.route('/', buildMetricsRouter())
+  app.route('/', buildMetricsRouter({
+    // Derived at read time — see buildMetricsRouter's doc comment.
+    permissions_pending: () => sm.totalPendingPermissions(),
+  }))
   app.route('/', buildConfigRouter(sm, configDir))
   app.route('/', buildProfilesRouter(configDir, sm))
   app.route('/', buildSessionRouter(sm, mpStore, agentDefinitionStore))

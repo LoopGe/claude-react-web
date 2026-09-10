@@ -55,6 +55,14 @@ describe('PerformancePanel', () => {
     expect(container.textContent).toContain('250') // hot p95
   })
 
+  it('renders counter rows (replay_messages / ws_frames_sent) in the WS group', () => {
+    const { container } = render(<PerformancePanel />)
+    expect(container.textContent).toContain('replay_messages')
+    expect(container.textContent).toContain('130')
+    expect(container.textContent).toContain('ws_frames_sent:kind=message')
+    expect(container.textContent).toContain('42')
+  })
+
   it('highlights p95 above 100ms with perf-hot', () => {
     const { container } = render(<PerformancePanel />)
     expect(container.querySelector('.perf-hot')).toBeTruthy()

@@ -1,5 +1,6 @@
 import { useMetrics } from '../hooks/useMetrics'
 import { Skeleton } from './Skeleton'
+import { formatElapsed } from '../utils/format'
 import type { MetricsHistogramSnapshot, MetricsSnapshot } from '../../shared/metrics.js'
 
 /** Millisecond formatting: integers once large, one decimal below. */
@@ -7,12 +8,13 @@ function fmtMs(v: number): string {
   return v >= 100 ? Math.round(v).toString() : v.toFixed(1)
 }
 
-type HistEntry = [string, MetricsHistogramSnapshot]
+type MetricEntry = { name: string; h?: MetricsHistogramSnapshot; c?: number }
 
-/** One stat table. Row format: count / p50 / p95 / p99 / max; a p95 over
- *  100ms gets the perf-hot highlight (theme variable, works in both
- *  themes). An empty group renders a muted "no data yet" row. */
-function HistTable({ entries }: { entries: HistEntry[] }) {
+/** One stat table: histogram rows (count / p50 / p95 / p99 / max) plus
+ *  plain counter rows (count only, percentile cells dashed). A histogram
+ *  p95 over 100ms gets the perf-hot highlight (theme variable, works in
+ *  both themes). An empty group renders a muted "no data yet" row. */
+function HistTable({ entries }: { entries: MetricEntry[] }) {
   return (
     <table className="perf-table">
       <thead>
@@ -21,14 +23,20 @@ function HistTable({ entries }: { entries: HistEntry[] }) {
         </tr>
       </thead>
       <tbody>
-        {entries.map(([name, h]) => (
+        {entries.map(({ name, h, c }) => (
           <tr key={name}>
             <td className="perf-name">{name}</td>
-            <td>{h.count}</td>
-            <td>{fmtMs(h.p50)}</td>
-            <td className={h.p95 > 100 ? 'perf-hot' : undefined}>{fmtMs(h.p95)}</td>
-            <td>{fmtMs(h.p99)}</td>
-            <td>{fmtMs(h.max)}</td>
+            <td>{h ? h.count : c}</td>
+            {h ? (
+              <>
+                <td>{fmtMs(h.p50)}</td>
+                <td className={h.p95 > 100 ? 'perf-hot' : undefined}>{fmtMs(h.p95)}</td>
+                <td>{fmtMs(h.p99)}</td>
+                <td>{fmtMs(h.max)}</td>
+              </>
+            ) : (
+              <td colSpan={4} className="perf-empty">counter</td>
+            )}
           </tr>
         ))}
         {entries.length === 0 && (
@@ -39,18 +47,18 @@ function HistTable({ entries }: { entries: HistEntry[] }) {
   )
 }
 
-function pickPrefix(snap: MetricsSnapshot, prefixes: string[]): HistEntry[] {
-  return Object.entries(snap.histograms).filter(([k]) =>
-    prefixes.some((p) => k === p || k.startsWith(`${p}:`)),
-  )
+/** Collect histogram AND counter series whose name matches one of the
+ *  given metric-name prefixes (histograms first, then counters). */
+function pickPrefix(snap: MetricsSnapshot, prefixes: string[]): MetricEntry[] {
+  const match = (k: string) => prefixes.some((p) => k === p || k.startsWith(`${p}:`))
+  return [
+    ...Object.entries(snap.histograms).filter(([k]) => match(k)).map(([name, h]) => ({ name, h })),
+    ...Object.entries(snap.counters).filter(([k]) => match(k)).map(([name, c]) => ({ name, c })),
+  ]
 }
 
 function fmtUptime(sec: number): string {
-  const h = Math.floor(sec / 3600)
-  const m = Math.floor((sec % 3600) / 60)
-  const s = sec % 60
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
+  return formatElapsed(sec * 1000)
 }
 
 export function PerformancePanel() {
@@ -71,7 +79,7 @@ export function PerformancePanel() {
 
   const eventLoop = pickPrefix(data, ['event_loop_block_ms'])
   const ws = pickPrefix(data, ['ws_fanout_ms', 'pump_next_gap_ms', 'replay_build_ms', 'replay_messages', 'ws_frames_sent'])
-  const http = pickPrefix(data, ['http_request_ms']).sort((a, b) => b[1].p95 - a[1].p95)
+  const http = pickPrefix(data, ['http_request_ms']).sort((a, b) => (b.h?.p95 ?? 0) - (a.h?.p95 ?? 0))
   const sessions = pickPrefix(data, ['session_spawn_ms', 'interrupt_ms', 'sdk_control_ms', 'auto_classify_ms', 'anthropic_api_ms'])
 
   return (

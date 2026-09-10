@@ -37,37 +37,40 @@ export async function callAnthropicMessages(opts: CallOptions): Promise<string> 
   const token = requireAuthToken()
   const start = Date.now()
   log.debug(`request model=${opts.model} maxTokens=${opts.maxTokens}`)
-  const res = await fetch(`${serverConfig.baseUrl}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'anthropic-version': '2023-06-01',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      model: opts.model,
-      max_tokens: opts.maxTokens,
-      temperature: opts.temperature,
-      system: opts.system,
-      messages: opts.messages ?? [{ role: 'user', content: opts.userContent }],
-    }),
-    signal: opts.signal ?? AbortSignal.timeout(30_000),
-  })
-  const elapsed = Date.now() - start
-  // Records ALL outcomes — success, HTTP error, empty response — since it
-  // runs before the result branches.
-  metrics.observe('anthropic_api_ms', elapsed, { caller: opts.caller ?? 'unknown' })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    log.error(`api error status=${res.status} elapsed=${elapsed}ms model=${opts.model} body=${body.slice(0, 200)}`)
-    throw new Error(`Anthropic API ${res.status}: ${body.slice(0, 200)}`)
+  try {
+    const res = await fetch(`${serverConfig.baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        model: opts.model,
+        max_tokens: opts.maxTokens,
+        temperature: opts.temperature,
+        system: opts.system,
+        messages: opts.messages ?? [{ role: 'user', content: opts.userContent }],
+      }),
+      signal: opts.signal ?? AbortSignal.timeout(30_000),
+    })
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      log.error(`api error status=${res.status} elapsed=${Date.now() - start}ms model=${opts.model} body=${body.slice(0, 200)}`)
+      throw new Error(`Anthropic API ${res.status}: ${body.slice(0, 200)}`)
+    }
+    const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
+    const text = data.content?.[0]?.text
+    if (!text) {
+      log.error(`empty response elapsed=${Date.now() - start}ms model=${opts.model}`)
+      throw new Error('Empty response from Anthropic API')
+    }
+    log.info(`success model=${opts.model} elapsed=${Date.now() - start}ms textLen=${text.length}`)
+    return text
+  } finally {
+    // Records ALL outcomes — success, HTTP error, empty response, AND a
+    // thrown fetch (network failure / 30s timeout), which never reaches the
+    // branches above.
+    metrics.observe('anthropic_api_ms', Date.now() - start, { caller: opts.caller ?? 'unknown' })
   }
-  const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
-  const text = data.content?.[0]?.text
-  if (!text) {
-    log.error(`empty response elapsed=${elapsed}ms model=${opts.model}`)
-    throw new Error('Empty response from Anthropic API')
-  }
-  log.info(`success model=${opts.model} elapsed=${elapsed}ms textLen=${text.length}`)
-  return text
 }

@@ -743,10 +743,14 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // Arrival cadence: gap between consecutive iter.next() resolutions
         // (= processing time of the previous message + any wait). During a
         // heavy stream this is the pump's steady-state heartbeat; a tiny gap
-        // with a large ws_fanout_ms means the loop is the bottleneck.
+        // with a large ws_fanout_ms means the loop is the bottleneck. Gaps
+        // above 60s are idle-between-turns waits, not cadence — reset the
+        // baseline instead of recording them, so a long idle doesn't poison
+        // the distribution.
         const resolvedAt = Date.now()
         if (lastNextResolvedAt !== undefined) {
-          metrics.observe('pump_next_gap_ms', resolvedAt - lastNextResolvedAt)
+          const gap = resolvedAt - lastNextResolvedAt
+          if (gap <= 60_000) metrics.observe('pump_next_gap_ms', gap)
         }
         lastNextResolvedAt = resolvedAt
         const msg = step.value
