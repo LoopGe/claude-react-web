@@ -1799,8 +1799,15 @@
   color: var(--fg-muted);
   animation: working-bubble-pulse 1.8s ease-in-out infinite;
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  /* No max-height. There used to be one (120px) paired with the overflow
+     clip, but the bar's own content is what has to stay short — a hard clip
+     silently ate whatever landed past it, and because the "+N more" badge
+     rendered LAST it was the first thing to disappear. Height is now bounded
+     at the source: a wide subagent fan-out collapses into a single
+     constant-height pill (SUBAGENT_INLINE_LIMIT / SubagentSwarmPill), so the
+     bar can only ever reach ~2 rows. overflow stays for the BFC + to keep a
+     pathological single token from bleeding past the border. */
   overflow: hidden;
-  max-height: 120px;
 }
 /* Slightly tighter spacing when subagent chips are present. */
 .working-bar-with-agents {
@@ -2032,21 +2039,213 @@
   background: var(--fg-muted);
   animation-duration: 2.4s;
 }
-/* "+N more" badge when subagents overflow the max-chip limit. */
-.subagent-overflow {
+/* ?? Subagent swarm pill + popover ?????????????????????????????????????
+   Shown instead of the per-agent chips once the fan-out passes
+   SUBAGENT_INLINE_LIMIT. Deliberately styled as a chip (same dots, radius,
+   accent tint) so the switch from chips to pill reads as a collapse rather
+   than a different widget appearing. */
+.subagent-swarm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: var(--radius-pill);
+  padding: 2px 8px 2px 7px;
+  font: inherit;
   font-size: 12px;
   font-family: var(--mono);
   color: var(--fg-muted);
-  background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
-  padding: 2px 8px;
-  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  cursor: pointer;
+  animation: chip-enter var(--motion-duration-base) var(--motion-ease-enter) both;
+}
+.subagent-swarm:hover,
+.subagent-swarm-open {
+  background: color-mix(in srgb, var(--accent) 22%, var(--bg-elev));
+  border-color: var(--accent);
+}
+.subagent-swarm-count {
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+/* Mixed state: some agents were swept to `pending` (still running in the
+   background after the turn ended). Muted so it reads as secondary to the
+   running count. */
+.subagent-swarm-split {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.subagent-swarm-split::before {
+  content: '·';
+  margin-right: 6px;
+}
+.subagent-swarm-caret {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.subagent-swarm-open .subagent-swarm-caret {
+  transform: rotate(180deg);
+}
+/* Everything left is `pending` — calm it the same way .working-bar-waiting
+   calms the bar, so it stops reading as active in-turn work. */
+.subagent-swarm-waiting {
+  background: color-mix(in srgb, var(--fg-muted) 8%, var(--bg-elev));
+  border-color: color-mix(in srgb, var(--fg-muted) 24%, var(--border));
+}
+.subagent-swarm-waiting .subagent-swarm-count { color: var(--fg); }
+.subagent-swarm-waiting .subagent-chip-dots > span {
+  background: var(--fg-muted);
+  animation-duration: 2.4s;
+}
+
+/* The popover. Portalled to <body> (see SubagentSwarm.tsx), so it reuses the
+   .ctx-menu / .model-picker surface language rather than inheriting anything
+   from the bar. */
+.subagent-swarm-pop {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  max-width: calc(100vw - 16px);
+  max-height: min(340px, calc(100vh - 80px));
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--card-shadow);
+  z-index: var(--z-overlay);
+  overflow: hidden;
+  transform-origin: top left;
+}
+.subagent-swarm-pop:focus-visible {
+  outline: none;
+}
+.subagent-swarm-pop-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.subagent-swarm-pop-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.subagent-swarm-pop-meta {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.subagent-swarm-pop-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+.subagent-swarm-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--fg);
+  text-align: left;
+  font: inherit;
+}
+.subagent-swarm-row-clickable {
+  cursor: pointer;
+}
+.subagent-swarm-row.selected {
+  background: var(--bg-elev-2);
+}
+/* Status dot. Running pulses on the shared chip-dot keyframe; a `pending`
+   row goes muted + slow, matching .subagent-chip-pending. */
+.subagent-swarm-row-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  flex-shrink: 0;
+  border-radius: var(--radius-circle);
+  background: var(--accent);
+  opacity: 0.6;
+  animation: working-dot-bounce 1.2s ease-in-out infinite;
+}
+.subagent-swarm-row-waiting .subagent-swarm-row-dot {
+  background: var(--fg-muted);
+  animation-duration: 2.4s;
+}
+.subagent-swarm-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.subagent-swarm-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.subagent-swarm-row-label {
+  font-size: 12px;
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Reduced motion: skip the phase crossfade + chip stagger, render final
+.subagent-swarm-row-waiting .subagent-swarm-row-label { color: var(--fg); }
+.subagent-swarm-row-time {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+/* The progress line — task_progress.summary, or the last tool name as a
+   fallback. Two lines max: these are model-authored sentences with no length
+   guarantee, and an unbounded row would let one verbose agent stretch the
+   popover. */
+.subagent-swarm-row-sub {
+  font-size: 11px;
+  color: var(--fg-muted);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.subagent-swarm-row-open {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 3px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+  opacity: 0;
+}
+.subagent-swarm-row.selected .subagent-swarm-row-open {
+  opacity: 1;
+}
+/* Reduced motion: skip the phase crossfade + chip/pill stagger, render final
    states immediately. The dots/elapsed timer keep their (essential) motion. */
 @media (prefers-reduced-motion: reduce) {
   .working-bar-label,
-  .subagent-chip {
+  .subagent-chip,
+  .subagent-swarm {
     animation: none;
   }
 }

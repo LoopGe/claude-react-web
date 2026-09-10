@@ -42,11 +42,19 @@ function standaloneRule(css: string, selector: string): string {
   return m![1]
 }
 
-const PICKERS = ['.cmd-picker', '.ctx-menu', '.model-picker'] as const
+// Selector + the stylesheet that declares it: these surfaces don't all live in
+// session-list.css, and asserting against the wrong file would pass vacuously
+// (standaloneRule fails loudly instead, which is the point of carrying the file).
+const PICKERS = [
+  { selector: '.cmd-picker', file: 'session-list.css' },
+  { selector: '.ctx-menu', file: 'session-list.css' },
+  { selector: '.model-picker', file: 'session-list.css' },
+  { selector: '.subagent-swarm-pop', file: 'chat.css' },
+] as const
 
 describe('fixed floating surfaces', () => {
-  it.each(PICKERS)('%s is position: fixed (the coordinate contract its portal exists for)', (selector) => {
-    expect(standaloneRule(style('session-list.css'), selector)).toContain('position: fixed')
+  it.each(PICKERS)('$selector is position: fixed (the coordinate contract its portal exists for)', ({ selector, file }) => {
+    expect(standaloneRule(style(file), selector)).toContain('position: fixed')
   })
 
   it('re-declares the wallpaper fill remap for [data-portaled] surfaces', () => {
