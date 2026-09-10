@@ -19,6 +19,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', async (importOriginal) => {
 })
 
 import { ClaudeProvider } from './claude-provider.js'
+import type { CreateSessionOptions } from '../types.js'
 import type { SandboxSetting } from '../../../shared/sandbox.js'
 
 function makeProvider() {
@@ -100,7 +101,7 @@ describe('ClaudeProvider.createSession cliDebug', () => {
     const tmpLogsDir = mkdtempSync(join(tmpdir(), 'cw-cli-debug-'))
     tmpDirs.push(tmpLogsDir)
 
-    new ClaudeProvider({ claudeBinary: '/fake/claude', logsDir: tmpLogsDir }).createSession({ id: 'sess-1', cliDebug: true } as never)
+    new ClaudeProvider({ claudeBinary: '/fake/claude', logsDir: tmpLogsDir }).createSession({ id: 'sess-1', cliDebug: true } as CreateSessionOptions)
     await flush()
 
     const options = queryMock.mock.calls[0]?.[0]?.options as Options & { debug?: boolean; debugFile?: string }
@@ -112,7 +113,7 @@ describe('ClaudeProvider.createSession cliDebug', () => {
     const q = fakeQuery()
     queryMock.mockReturnValue(q)
 
-    makeProvider().createSession({ id: 'sess-2', cliDebug: false } as never)
+    makeProvider().createSession({ id: 'sess-2', cliDebug: false } as CreateSessionOptions)
     await flush()
 
     const options = queryMock.mock.calls[0]?.[0]?.options as Options & { debug?: boolean; debugFile?: string }
@@ -125,6 +126,19 @@ describe('ClaudeProvider.createSession cliDebug', () => {
     queryMock.mockReturnValue(q)
 
     makeProvider().createSession({ id: 'sess-3' })
+    await flush()
+
+    const options = queryMock.mock.calls[0]?.[0]?.options as Options & { debug?: boolean; debugFile?: string }
+    expect(options.debug).toBeUndefined()
+    expect(options.debugFile).toBeUndefined()
+  })
+
+  it('leaves debug undefined when cliDebug is true but logsDir is absent (silent no-op)', async () => {
+    const q = fakeQuery()
+    queryMock.mockReturnValue(q)
+
+    // No logsDir — the provider degrades gracefully instead of half-enabling debug.
+    new ClaudeProvider({ claudeBinary: '/fake/claude' }).createSession({ id: 'sess-4', cliDebug: true } as CreateSessionOptions)
     await flush()
 
     const options = queryMock.mock.calls[0]?.[0]?.options as Options & { debug?: boolean; debugFile?: string }

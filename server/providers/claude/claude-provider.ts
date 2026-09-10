@@ -343,11 +343,18 @@ export class ClaudeProvider implements AgentProvider {
     // CLI debug mode: wire SDK debug + debugFile so the CLI subprocess
     // writes its full debug log to a per-session file. Gated on the
     // effective per-session cliDebug boolean (resolved by SessionManager
-    // from session override ?? global default).
-    if (opts.cliDebug) {
-      if (this.opts.logsDir) mkdirSync(this.opts.logsDir, { recursive: true })
-      sdkOptions.debug = true
-      if (this.opts.logsDir) sdkOptions.debugFile = join(this.opts.logsDir, `cli-${opts.id}.log`)
+    // from session override ?? global default). Requires logsDir — when
+    // absent (tests, misconfig) this is a silent no-op. mkdirSync failure
+    // (unwritable dir) is caught so a debug-log intent never aborts session
+    // creation.
+    if (opts.cliDebug && this.opts.logsDir) {
+      try {
+        mkdirSync(this.opts.logsDir, { recursive: true })
+        sdkOptions.debug = true
+        sdkOptions.debugFile = join(this.opts.logsDir, `cli-${opts.id}.log`)
+      } catch {
+        log.warn(`[${opts.id}] failed to create CLI logs dir ${this.opts.logsDir} — CLI debug log disabled`)
+      }
     }
 
     const requestedMode = (opts.permissionMode ?? sdkOptions.permissionMode) as PermissionMode | undefined
