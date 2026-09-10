@@ -414,6 +414,46 @@ describe('buildTranscriptRows: tool-group fold', () => {
     expect(rows[2]!.toolGroup!.memberIds).toEqual(['t3', 't4'])
   })
 
+  it('treats EnterWorktree / ExitWorktree as run boundaries (markers stay out of groups)', () => {
+    const { rows } = buildTranscriptRows({
+      items: [
+        toolOnlyAssistant('t1', 'Read'),
+        toolOnlyAssistant('wt-in', 'EnterWorktree'),
+        toolOnlyAssistant('t2', 'Grep'),
+        toolOnlyAssistant('t3', 'Edit'),
+        toolOnlyAssistant('wt-out', 'ExitWorktree'),
+        toolOnlyAssistant('t4', 'Glob'),
+      ],
+      isResultConsumed: () => true,
+    })
+    // The marker rows stay plain (no group chrome) and split the run. Groups
+    // key on the FIRST member id: [t2, t3] folds under 't2'.
+    expect(ids(rows)).toEqual(['t1', 'wt-in', 't2', 'wt-out', 't4'])
+    expect(rows[0]!.toolGroup!.memberIds).toEqual(['t1'])
+    expect(rows[1]!.toolGroup).toBeUndefined()
+    expect(rows[2]!.toolGroup!.memberIds).toEqual(['t2', 't3'])
+    expect(rows[3]!.toolGroup).toBeUndefined()
+    expect(rows[4]!.toolGroup!.memberIds).toEqual(['t4'])
+  })
+
+  it('treats EnterPlanMode as a run boundary like the worktree markers', () => {
+    // Same marker family (tool-views/markers.tsx), same visibility rule: the
+    // thin "Entered plan mode" cue must not be buried in a collapsed fold.
+    const { rows } = buildTranscriptRows({
+      items: [
+        toolOnlyAssistant('t1', 'Read'),
+        toolOnlyAssistant('t2', 'Grep'),
+        toolOnlyAssistant('pm', 'EnterPlanMode'),
+        toolOnlyAssistant('t3', 'Glob'),
+      ],
+      isResultConsumed: () => true,
+    })
+    expect(ids(rows)).toEqual(['t1', 'pm', 't3'])
+    expect(rows[0]!.toolGroup!.memberIds).toEqual(['t1', 't2'])
+    expect(rows[1]!.toolGroup).toBeUndefined()
+    expect(rows[2]!.toolGroup!.memberIds).toEqual(['t3'])
+  })
+
   it('toolGroupCards: false keeps every tool row unfolded with stable ids and itemIndex', () => {
     const { rows } = buildTranscriptRows({
       items: [

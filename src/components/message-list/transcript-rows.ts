@@ -45,6 +45,7 @@ import type { SdkMessage } from '../../types'
 import type { ActiveSubagent, TranscriptItem } from '../../session-store/types'
 import { getBlocks, userMessageHasToolResult } from '../../session-store/normalize'
 import { QUESTION_TOOL_NAME } from '../../utils/question-answers'
+import { MARKER_TOOL_NAMES } from '../../constants/toolNames'
 import { willRenderEmpty } from './rendering'
 
 /**
@@ -165,7 +166,13 @@ function pushRow(
  *  and anything else break the run (SDK emits those as separate messages).
  *
  *  AskUserQuestion is also a boundary — like thinking, it always renders
- *  as its own QuestionCard so the prompt is never buried in a fold. */
+ *  as its own QuestionCard so the prompt is never buried in a fold.
+ *
+ *  The inline-marker tools (MARKER_TOOL_NAMES: EnterPlanMode plus the
+ *  worktree pair) are boundaries too: they render as thin mode-transition
+ *  cues (tool-views/markers.tsx), not tool cards, and a mode transition
+ *  separates the work done before it from the work done after it — so they
+ *  stand alone AND split the run. */
 export function isToolGroupEligible(row: TranscriptRow): boolean {
   if (row.msg.type !== 'assistant') return false
   if (row.isCompactSummary) return false
@@ -176,6 +183,7 @@ export function isToolGroupEligible(row: TranscriptRow): boolean {
     if (b == null) return false
     if (b.type === 'tool_use') {
       if (b.name === QUESTION_TOOL_NAME) return false
+      if (b.name != null && MARKER_TOOL_NAMES.has(b.name)) return false
       hasToolUse = true
       continue
     }
