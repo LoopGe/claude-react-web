@@ -59,13 +59,13 @@
 .tasks-panel-title {
   font-family: var(--mono);
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
 }
 
 .tasks-panel-count {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 
@@ -103,7 +103,7 @@
   padding: 24px 16px;
   text-align: center;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 .tasks-panel-section {
@@ -114,7 +114,7 @@
 
 .tasks-panel-section-title {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -200,7 +200,7 @@
 
 .tasks-row-meta {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -208,7 +208,7 @@
 }
 
 .tasks-row-summary {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -246,7 +246,7 @@
 /* --- subagent card / overlay progress line ------------------------------ */
 
 .subagent-card-progress {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   padding: 4px 10px 6px 26px;
   overflow: hidden;
@@ -308,7 +308,7 @@
 }
 .subagent-transcript-sub {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -349,7 +349,7 @@
 }
 .subagent-transcript-role {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;

@@ -13,6 +13,8 @@ import type { RowGapPreset } from '../../shared/row-gap'
 import { DEFAULT_ROW_GAP, ROW_GAP_LABELS, ROW_GAP_PRESETS } from '../../shared/row-gap'
 import type { TextSpacingPreset } from '../../shared/text-spacing'
 import { DEFAULT_TEXT_SPACING, TEXT_SPACING_LABELS, TEXT_SPACING_PRESETS } from '../../shared/text-spacing'
+import type { FontSizePreset } from '../../shared/font-size'
+import { DEFAULT_FONT_SIZE, FONT_SIZE_LABELS, FONT_SIZE_PRESETS } from '../../shared/font-size'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
@@ -158,6 +160,7 @@ export function GlobalSettingsModal({
   const [showMessageHeaders, setShowMessageHeaders] = useState(true)
   const [rowGap, setRowGap] = useState<RowGapPreset>(DEFAULT_ROW_GAP)
   const [textSpacing, setTextSpacing] = useState<TextSpacingPreset>(DEFAULT_TEXT_SPACING)
+  const [fontSize, setFontSize] = useState<FontSizePreset>(DEFAULT_FONT_SIZE)
   const [allowSensitivePathEdits, setAllowSensitivePathEdits] = useState(false)
 
   // Skills tab state
@@ -208,6 +211,7 @@ export function GlobalSettingsModal({
         setShowMessageHeaders(cfg.showMessageHeaders ?? true)
         setRowGap(cfg.rowGap ?? DEFAULT_ROW_GAP)
         setTextSpacing(cfg.textSpacing ?? DEFAULT_TEXT_SPACING)
+        setFontSize(cfg.fontSize ?? DEFAULT_FONT_SIZE)
         setAllowSensitivePathEdits(cfg.allowSensitivePathEdits ?? false)
         setFirstPartyTools(cfg.firstPartyTools ?? {})
       } catch (e) {
@@ -290,6 +294,7 @@ export function GlobalSettingsModal({
         showMessageHeaders,
         rowGap,
         textSpacing,
+        fontSize,
         allowSensitivePathEdits,
       }
       // Structured first-party defaults — written verbatim as the single
@@ -422,6 +427,7 @@ export function GlobalSettingsModal({
                   showMessageHeaders={showMessageHeaders}
                   rowGap={rowGap}
                   textSpacing={textSpacing}
+                  fontSize={fontSize}
                   allowSensitivePathEdits={allowSensitivePathEdits}
                   onMaxUploadBytesChange={setMaxUploadBytes}
                   onHistoryCapChange={setHistoryCap}
@@ -433,6 +439,7 @@ export function GlobalSettingsModal({
                   onShowMessageHeadersChange={setShowMessageHeaders}
                   onRowGapChange={setRowGap}
                   onTextSpacingChange={setTextSpacing}
+                  onFontSizeChange={setFontSize}
                   onAllowSensitivePathEditsChange={setAllowSensitivePathEdits}
                 />
               )}
@@ -570,11 +577,11 @@ const MIN_MS = 60 * 1000
 
 function ServerTab({
   maxUploadBytes, historyCap, maxGroupPanels, workingStuckMs,
-  showPinnedUserMessage, autoRecap, toolGroupCards, showMessageHeaders, rowGap, textSpacing, allowSensitivePathEdits,
+  showPinnedUserMessage, autoRecap, toolGroupCards, showMessageHeaders, rowGap, textSpacing, fontSize, allowSensitivePathEdits,
   onMaxUploadBytesChange, onHistoryCapChange, onMaxGroupPanelsChange,
   onWorkingStuckMsChange,
   onShowPinnedUserMessageChange, onAutoRecapChange, onToolGroupCardsChange,
-  onShowMessageHeadersChange, onRowGapChange, onTextSpacingChange, onAllowSensitivePathEditsChange,
+  onShowMessageHeadersChange, onRowGapChange, onTextSpacingChange, onFontSizeChange, onAllowSensitivePathEditsChange,
 }: {
   maxUploadBytes: number
   historyCap: number
@@ -586,6 +593,7 @@ function ServerTab({
   showMessageHeaders: boolean
   rowGap: RowGapPreset
   textSpacing: TextSpacingPreset
+  fontSize: FontSizePreset
   allowSensitivePathEdits: boolean
   onMaxUploadBytesChange: (v: number) => void
   onHistoryCapChange: (v: number) => void
@@ -597,6 +605,7 @@ function ServerTab({
   onShowMessageHeadersChange: (v: boolean) => void
   onRowGapChange: (v: RowGapPreset) => void
   onTextSpacingChange: (v: TextSpacingPreset) => void
+  onFontSizeChange: (v: FontSizePreset) => void
   onAllowSensitivePathEditsChange: (v: boolean) => void
 }) {
   const uploadMb = Math.round(maxUploadBytes / MB)
@@ -732,6 +741,18 @@ function ServerTab({
             options={TEXT_SPACING_PRESETS}
             onChange={onTextSpacingChange}
             labelFor={(p) => TEXT_SPACING_LABELS[p]}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Font size"
+          hint="Scales the whole app's typography — message text, sidebar, buttons, panel headers, code blocks — in lockstep. Does not change text spacing (that's the two settings above). Applies globally to every session."
+        >
+          <Segmented
+            ariaLabel="Font size"
+            value={fontSize}
+            options={FONT_SIZE_PRESETS}
+            onChange={onFontSizeChange}
+            labelFor={(p) => FONT_SIZE_LABELS[p]}
           />
         </SettingsRow>
       </section>
@@ -1703,7 +1724,7 @@ function LogsTab() {
         />
       </Field>
 
-      <div style={{ marginTop: 12, fontSize: 12, color: 'var(--fg-muted)' }}>
+      <div style={{ marginTop: 12, fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>
         Level / scope changes apply immediately but are <strong>not
         persisted</strong>. A restart reverts to the boot-time values
         (LOG_LEVEL / LOG_SCOPES env vars, default <code>info</code> / all).
@@ -1719,7 +1740,7 @@ function LogsTab() {
       >
         <button
           className="btn"
-          style={{ padding: '4px 16px', fontSize: 12 }}
+          style={{ padding: '4px 16px', fontSize: 'var(--fs-sm)' }}
           disabled={fileBusy}
           onClick={toggleFileLogging}
         >
@@ -1729,7 +1750,7 @@ function LogsTab() {
 
       {err && <div className="modal-error" style={{ marginTop: 12 }}>{err}</div>}
       {savedAt && !err && (
-        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <div style={{ marginTop: 8, fontSize: 'var(--fs-sm)', color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <IconCheck size={12} /> Updated
         </div>
       )}
@@ -1906,14 +1927,14 @@ function AboutTab({
   return (
     <div>
       <Field label="Project">
-        <div style={{ fontSize: 13 }}>claude-react-web</div>
+        <div style={{ fontSize: 'var(--fs-base)' }}>claude-react-web</div>
       </Field>
       <Field label="Source" hint="Source code, issues, and releases.">
         <a
           href="https://github.com/LoopGe/claude-react-web"
           target="_blank"
           rel="noopener noreferrer"
-          style={{ fontSize: 13, color: 'var(--accent)', textDecoration: 'none' }}
+          style={{ fontSize: 'var(--fs-base)', color: 'var(--accent)', textDecoration: 'none' }}
         >
           github.com/LoopGe/claude-react-web
         </a>
@@ -1931,13 +1952,13 @@ function AboutTab({
         }
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
+          <span style={{ fontSize: 'var(--fs-base)', fontFamily: 'var(--mono)' }}>
             {info?.current ?? '?'}
           </span>
           {info?.deprecated && (
             <span
               style={{
-                fontSize: 11,
+                fontSize: 'var(--fs-xs)',
                 padding: '2px 8px',
                 borderRadius: 'var(--radius-lg)',
                 background: 'var(--danger)',
@@ -1955,12 +1976,12 @@ function AboutTab({
           hint="A newer version was installed but the running server is still the old one."
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
+            <span style={{ fontSize: 'var(--fs-base)', fontFamily: 'var(--mono)' }}>
               {info?.installed}
             </span>
             <span
               style={{
-                fontSize: 11,
+                fontSize: 'var(--fs-xs)',
                 padding: '2px 8px',
                 borderRadius: 'var(--radius-lg)',
                 background: 'var(--ok)',
@@ -1987,11 +2008,11 @@ function AboutTab({
           }
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
+            <span style={{ fontSize: 'var(--fs-base)', fontFamily: 'var(--mono)' }}>
               {info.claudeCli.ok ? info.claudeCli.version ?? 'unknown' : 'not detected'}
             </span>
             {!info.claudeCli.ok && info.claudeCli.error && (
-              <span style={{ fontSize: 12, color: 'var(--danger)' }}>
+              <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--danger)' }}>
                 {info.claudeCli.error}
               </span>
             )}
@@ -2007,7 +2028,7 @@ function AboutTab({
           label="Agent SDK"
           hint="Version of @anthropic-ai/claude-agent-sdk resolved from this server's node_modules."
         >
-          <div style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
+          <div style={{ fontSize: 'var(--fs-base)', fontFamily: 'var(--mono)' }}>
             {info.agentSdk.version}
           </div>
         </Field>
@@ -2027,7 +2048,7 @@ function AboutTab({
       </Field>
       <Field label="Latest version" hint={`Last checked: ${checkedAtLabel}`}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 13, fontFamily: 'var(--mono)' }}>
+          <span style={{ fontSize: 'var(--fs-base)', fontFamily: 'var(--mono)' }}>
             {disabled
               ? '—'
               : info?.latest ?? (info?.checking ? 'checking...' : '?')}
@@ -2035,7 +2056,7 @@ function AboutTab({
           {hasUpdate && (
             <span
               style={{
-                fontSize: 11,
+                fontSize: 'var(--fs-xs)',
                 padding: '2px 8px',
                 borderRadius: 'var(--radius-lg)',
                 background: 'var(--accent)',
@@ -2046,10 +2067,10 @@ function AboutTab({
             </span>
           )}
           {upToDate && (
-            <span style={{ fontSize: 12, color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconCheck size={12} /> up to date</span>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconCheck size={12} /> up to date</span>
           )}
           {disabled && (
-            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>
               update checks disabled
             </span>
           )}
@@ -2060,7 +2081,7 @@ function AboutTab({
           label="Upgrade command"
           hint={`If you installed globally, use \`${buildUpgradeCommand(info.packageName, info.registry, true)}\`.`}
         >
-          <div style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 'var(--fs-sm)' }}>
             {buildUpgradeCommand(info.packageName, info.registry)}
           </div>
         </Field>

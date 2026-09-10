@@ -213,7 +213,7 @@ export function AppPluginMarketplaceSection() {
           >
             {bulkBusy ? (bulkProgress ?? 'Updating…') : 'Update all'}
           </button>
-          {bulkResult && <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{bulkResult}</span>}
+          {bulkResult && <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>{bulkResult}</span>}
         </div>
       )}
 

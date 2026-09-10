@@ -1,6 +1,7 @@
 import type { SkillLoadMode } from '../../shared/skills'
 import type { RowGapPreset } from '../../shared/row-gap'
 import type { TextSpacingPreset } from '../../shared/text-spacing'
+import type { FontSizePreset } from '../../shared/font-size'
 
 /** Client-side mirror of a provider profile. */
 export interface ProviderProfile {
@@ -60,6 +61,9 @@ export interface ConfigResponse {
   /** Global message text density (`--md-*` / `--msg-pad-*`) preset.
    *  Undefined = inherit the server default (spacious). */
   textSpacing?: TextSpacingPreset
+  /** Global font size (`--fs-scale`) preset. Undefined = inherit the server
+   *  default (standard, scale 1). */
+  fontSize?: FontSizePreset
   /** Global default for the first-party `apptools` git MCP server. Sessions
    *  without an explicit override inherit this. */
   appToolsGit?: boolean
@@ -104,6 +108,8 @@ export interface FullServerConfig {
   rowGap: RowGapPreset
   /** Global message text density (`--md-*` / `--msg-pad-*`) preset. */
   textSpacing: TextSpacingPreset
+  /** Global font size (`--fs-scale`) preset. */
+  fontSize: FontSizePreset
   /** Global default for the first-party `apptools` git MCP server. */
   appToolsGit: boolean
   /** Per-first-party-server global defaults. */

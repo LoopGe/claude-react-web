@@ -379,6 +379,30 @@ describe('config', () => {
     expect(WRITABLE_CONFIG_KEYS).toContain('textSpacing')
   })
 
+  it('defaults fontSize to standard', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.fontSize).toBe('standard')
+  })
+
+  it('honors a fontSize override from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ fontSize: 'xlarge' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.fontSize).toBe('xlarge')
+  })
+
+  it('ignores an invalid fontSize value', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ fontSize: '1.3' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.fontSize).toBe('standard')
+  })
+
+  it('exposes fontSize as a writable config key', () => {
+    expect(WRITABLE_CONFIG_KEYS).toContain('fontSize')
+  })
+
   describe('clearCredentials', () => {
     it('clears authToken, baseUrl, and accessToken from config.json', async () => {
       writeFileSync(join(dir, 'config.json'), JSON.stringify({

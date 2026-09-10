@@ -69,7 +69,7 @@
   cursor: pointer;
   padding: 2px 6px;
   border-radius: var(--radius-xs);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .session-filter-clear:hover { background: var(--bg-elev-2); color: var(--fg); }
 
@@ -86,7 +86,7 @@
   gap: 4px;
   padding: 2px 8px;
   border-radius: var(--radius-lg);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   background: var(--bg-elev-2);
   color: var(--fg-muted);
@@ -116,7 +116,7 @@
   opacity: 0.9;
 }
 .group-pill-count {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   opacity: 0.7;
   margin-left: 1px;
 }
@@ -125,7 +125,7 @@
    mirrors the perm-badge's breathing glow; frozen under reduced-motion. */
 .group-pill-hint {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   line-height: 1;
   color: var(--on-accent);
@@ -149,7 +149,7 @@
 }
 .group-pill-new:hover { opacity: 1; }
 .group-pill-input {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 2px 6px;
   border-radius: var(--radius-lg);
   border: 1px solid var(--accent);
@@ -192,7 +192,7 @@
   flex-direction: column;
 }
 .session-section-header {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -209,7 +209,7 @@
   padding: 6px 12px;
   cursor: pointer;
   user-select: none;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--fg);
   /* Joins the card run below it as the run's first row: same faint
@@ -321,7 +321,7 @@
   white-space: nowrap;
 }
 .group-header-count {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 400;
   color: var(--fg-muted);
   background: var(--bg-elev-2);
@@ -336,7 +336,7 @@
    unread uses a muted dot-style. Both stay compact so they fit inside the
    pill row without wrapping. */
 .group-header-badge {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   line-height: 1;
   border-radius: var(--radius-md);
@@ -541,7 +541,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--danger);
   overflow: hidden;
   white-space: nowrap;
@@ -669,7 +669,7 @@
   border-radius: var(--radius-sm);
   box-shadow: var(--card-shadow);
   z-index: var(--z-overlay);
-  font-size: 13px;
+  font-size: var(--fs-base);
   user-select: none;
   /* (#2) Pop in from the anchor — scale + fade, top-origin so it reads as
      unfolding from the click point. */
@@ -881,7 +881,7 @@
   border: none;
   outline: none;
   color: var(--fg);
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-family: var(--mono);
 }
 .model-picker-input::placeholder {
@@ -896,11 +896,11 @@
   padding: 20px;
   text-align: center;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .model-picker-heading {
   padding: 6px 8px 2px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -939,13 +939,13 @@
   flex: 1;
 }
 .model-picker-item-label {
-  font-size: 13px;
+  font-size: var(--fs-base);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .model-picker-item-sub {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--mono);
   color: var(--fg-muted);
   overflow: hidden;
@@ -969,7 +969,7 @@
   border-radius: var(--radius-sm);
   box-shadow: var(--card-shadow);
   z-index: var(--z-overlay);
-  font-size: 13px;
+  font-size: var(--fs-base);
   user-select: none;
   transform-origin: bottom left;
   animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
@@ -1003,12 +1003,12 @@
 .cmd-picker-args {
   font-family: var(--mono);
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 .cmd-picker-desc {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1017,12 +1017,12 @@
 .cmd-picker-empty {
   padding: 8px 10px;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: center;
 }
 .cmd-picker-group-header {
   padding: 6px 10px 2px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -1127,7 +1127,7 @@
   color: var(--accent);
   background: transparent;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   vertical-align: middle;
 }
@@ -1208,7 +1208,7 @@
   background: var(--warn);
   color: var(--bg);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   line-height: 1;
   margin-right: 6px;
@@ -1264,8 +1264,8 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
 }
-.session-item-id { font-family: var(--mono); font-size: 12px; color: var(--fg-muted); }
-.session-item-meta { font-size: 12px; color: color-mix(in srgb, var(--fg-muted) 80%, transparent); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item-id { font-family: var(--mono); font-size: var(--fs-sm); color: var(--fg-muted); }
+.session-item-meta { font-size: var(--fs-sm); color: color-mix(in srgb, var(--fg-muted) 80%, transparent); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The model is the most useful at-a-glance datum in the meta row — lift it
    above the muted msg/viewer counts so the eye lands on it first. Derived
    from theme tokens (no hardcoded hex) so light/dark both adapt. */
@@ -1273,7 +1273,7 @@
 .session-item-cwd {
   display: flex;
   gap: 5px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-family: var(--mono);
   overflow: hidden;

@@ -93,6 +93,8 @@ import type { RowGapPreset } from '../shared/row-gap'
 import { DEFAULT_ROW_GAP, ROW_GAP_PX } from '../shared/row-gap'
 import type { TextSpacingPreset } from '../shared/text-spacing'
 import { DEFAULT_TEXT_SPACING, TEXT_SPACING_CSS } from '../shared/text-spacing'
+import type { FontSizePreset } from '../shared/font-size'
+import { DEFAULT_FONT_SIZE, FONT_SIZE_SCALE } from '../shared/font-size'
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
@@ -223,8 +225,9 @@ export function App() {
     showMessageHeaders: boolean
     rowGap: RowGapPreset
     textSpacing: TextSpacingPreset
+    fontSize: FontSizePreset
     firstPartyTools?: Record<string, { enabled: boolean }>
-  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP, textSpacing: DEFAULT_TEXT_SPACING })
+  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP, textSpacing: DEFAULT_TEXT_SPACING, fontSize: DEFAULT_FONT_SIZE })
 
   // Apply the global transcript spacing to a CSS variable. Set on
   // documentElement, it overrides the `.chat`-scoped default, so message rows,
@@ -245,6 +248,13 @@ export function App() {
       document.documentElement.style.setProperty(`--${name}`, value)
     }
   }, [globalPrefs.textSpacing])
+
+  // Apply the global font size as the --fs-scale multiplier. Every --fs-* token
+  // is calc(base * var(--fs-scale)), so scaling this one var resizes the whole
+  // app's typography in lockstep. Standard = 1 (the shipped default = unchanged).
+  useEffect(() => {
+    document.documentElement.style.setProperty('--fs-scale', String(FONT_SIZE_SCALE[globalPrefs.fontSize]))
+  }, [globalPrefs.fontSize])
 
   const {
     settingsOpenFor,
@@ -501,6 +511,7 @@ export function App() {
           showMessageHeaders: r.showMessageHeaders ?? true,
           rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
           textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
+          fontSize: r.fontSize ?? DEFAULT_FONT_SIZE,
           firstPartyTools: r.firstPartyTools,
         })
       })
@@ -3638,6 +3649,7 @@ export function App() {
       showMessageHeaders: r.showMessageHeaders ?? true,
       rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
       textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
+      fontSize: r.fontSize ?? DEFAULT_FONT_SIZE,
       firstPartyTools: r.firstPartyTools,
     })
   }, [])

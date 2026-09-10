@@ -106,7 +106,7 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
         {phase === 'loading' && <div className="hint">Reading file…</div>}
         {phase === 'importing' && <div className="hint">Importing…</div>}
 
-        {phase === 'preview' && error && <div style={{ color: 'var(--danger)', fontSize: 13 }}>{error}</div>}
+        {phase === 'preview' && error && <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-base)' }}>{error}</div>}
 
         {phase === 'preview' && !error && preview.length === 0 && (
           <div className="hint">No servers found in this file.</div>
@@ -131,7 +131,7 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
                 {conflicts.map((s) => (
                   <ImportRow key={s.name} srv={s} checked={!!checked[s.name]} onToggle={(v) => setChecked((prev) => ({ ...prev, [s.name]: v }))} />
                 ))}
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginTop: 4 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', marginTop: 4 }}>
                   <input type="checkbox" checked={conflicts.length > 0 && conflicts.every((s) => checked[s.name])} onChange={(e) => toggleConflict(e.target.checked)} />
                   Overwrite all existing
                 </label>
@@ -143,9 +143,9 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
                 <div className="settings-note" style={{ color: 'var(--danger)' }}>Invalid (skipped)</div>
                 {invalid.map((s) => (
                   <div key={s.name} className="settings-card" style={{ borderColor: 'var(--danger)', opacity: 0.7 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)' }}>
                       <span style={{ fontWeight: 500 }}>{s.name}</span>
-                      <span style={{ color: 'var(--danger)', fontSize: 12 }}>{s.errors.join('; ')}</span>
+                      <span style={{ color: 'var(--danger)', fontSize: 'var(--fs-sm)' }}>{s.errors.join('; ')}</span>
                     </div>
                   </div>
                 ))}
@@ -155,7 +155,7 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
         )}
 
         {phase === 'summary' && summary && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'var(--fs-base)' }}>
             <div>Imported: {summary.imported.length}</div>
             <div>Updated: {summary.updated.length}</div>
             <div>Skipped: {summary.skipped.length}</div>
@@ -192,12 +192,12 @@ function ImportRow({ srv, checked, onToggle }: {
 }) {
   const secretKeys = [...(srv.envKeys ?? []), ...(srv.headerKeys ?? [])]
   return (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)' }}>
       <input type="checkbox" checked={checked} onChange={(e) => onToggle(e.target.checked)} />
       <span style={{ fontWeight: 500 }}>{srv.name}</span>
       <span className="settings-card-badge">{srv.type}</span>
       {secretKeys.length > 0 && (
-        <span className="settings-note" style={{ fontSize: 11, marginLeft: 'auto' }}>
+        <span className="settings-note" style={{ fontSize: 'var(--fs-xs)', marginLeft: 'auto' }}>
           needs: {secretKeys.join(', ')}
         </span>
       )}

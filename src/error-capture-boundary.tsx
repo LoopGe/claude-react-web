@@ -88,7 +88,7 @@ function CrashScreen({ crash, onReload }: { crash: CrashRecord; onReload: () => 
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-          <span style={{ color: 'var(--danger)', fontSize: 18, lineHeight: 1 }} aria-hidden>
+          <span style={{ color: 'var(--danger)', fontSize: 'calc(18px * var(--fs-scale))', lineHeight: 1 }} aria-hidden>
             ⚠
           </span>
           <h2

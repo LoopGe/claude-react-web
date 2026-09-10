@@ -17,7 +17,7 @@
   text-decoration: none;
   border-radius: var(--radius-xs);
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-base);
   /* Off-screen until focused. transform-based hide avoids `display: none`
      which would also remove from the tab order. */
   transform: translateY(-150%);
@@ -100,7 +100,7 @@
   border-radius: var(--radius-sm);
   background: var(--bg-elev);
   overflow: hidden; /* clip children to the rounded corners */
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .tool-card-header {
   display: flex;
@@ -130,7 +130,7 @@
 .tool-card-title {
   font-weight: 500;
   color: var(--fg);
-  font-size: 13px;
+  font-size: var(--fs-base);
   min-width: 0;
   /* Allow the title to flex but never push past chips/status off-screen */
   display: inline-flex;
@@ -142,7 +142,7 @@
 }
 .tool-card-title-code {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   background: var(--bg);
   padding: 1px 6px;
   border-radius: var(--radius-xs);
@@ -473,7 +473,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1;
   cursor: pointer;
   flex-shrink: 0;
@@ -504,7 +504,7 @@
 .tool-card-diff .tool-card-body {
   padding: 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   overflow-x: auto;
 }
 .diff-block-inner {
@@ -512,7 +512,7 @@
 }
 .diff-chunk-label {
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   border-bottom: 1px dashed var(--border);
   font-family: var(--mono);
@@ -657,7 +657,7 @@
   display: flex;
   gap: 6px;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.45;
 }
@@ -692,7 +692,7 @@
   align-items: flex-start;
   gap: 6px;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.45;
 }
@@ -757,7 +757,7 @@
   gap: 8px;
   padding: 5px 10px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .edit-diff-summary:hover .edit-diff-stats {
@@ -825,7 +825,7 @@
 .sendmessage-tool-summary {
   cursor: pointer;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   padding: 4px 10px;
   white-space: nowrap;
@@ -841,7 +841,7 @@
 }
 .sendmessage-tool-content {
   padding: 6px 10px 8px;
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: var(--fg);
 }
@@ -917,14 +917,16 @@
  */
 
 .tool-group-card {
-  /* No extra margin: .virtuoso-item-wrapper already owns the 4+4=8px
-     between-rows rhythm. A card-level margin-top made the gap above a group
-     13px and below it 7px — visibly uneven next to thinking/user rows. */
+  /* No extra margin: .virtuoso-item-wrapper already owns the between-rows
+     rhythm — calc(var(--chat-row-gap) / 2) per side, i.e. 6+6=12px at the
+     shipped spacious default. A card-level margin-top would stack on the
+     wrapper's own half and make the gap above a group visibly uneven next
+     to thinking/user rows. */
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-elev);
   overflow: hidden;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 /* The header row is a plain flex container holding TWO controls: the toggle
    (everything up to the badge) and, when a member failed, the badge itself as
@@ -998,7 +1000,7 @@ button.tool-group-failed-jump:focus-visible {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   line-height: 1;
 }
@@ -1008,7 +1010,7 @@ button.tool-group-failed-jump:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-weight: 400;
 }
@@ -1197,7 +1199,7 @@ button.tool-group-failed-jump:focus-visible {
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.4;
   /* Allow long lines to wrap within max-width. Previously `nowrap`
      forced lines wider than max-width (e.g. the git chip's multi-stat
@@ -1441,12 +1443,12 @@ button.tool-group-failed-jump:focus-visible {
 .sidebar-empty-note,
 .settings-empty-note {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: center;
   padding: 20px;
 }
 .settings-empty-note {
-  font-size: 13px;
+  font-size: var(--fs-base);
   text-align: left;
   padding: 6px 0 0;
 }
@@ -1478,13 +1480,13 @@ button.tool-group-failed-jump:focus-visible {
   height: 16px;
 }
 .empty-state-ui-title {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--fg);
 }
 .empty-state-ui-body {
   margin-top: 2px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--fg-muted);
 }
@@ -1509,14 +1511,14 @@ button.tool-group-failed-jump:focus-visible {
 .settings-apply-btn { align-self: flex-start; }
 .settings-note {
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
   margin-top: 6px;
 }
 .settings-detail { margin-top: 6px; }
 .settings-detail-tight { margin-top: 4px; }
 .settings-detail > summary {
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .settings-detail-body { margin-top: 4px; }
@@ -1533,14 +1535,14 @@ button.tool-group-failed-jump:focus-visible {
   margin-top: 6px;
 }
 .settings-kv-row {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 2px 0;
   display: flex;
   gap: 6px;
 }
 .settings-kv-row code { font-weight: 500; }
-.settings-kv-source { color: var(--fg-muted); font-size: 11px; }
-.settings-kv-tokens { margin-left: auto; color: var(--fg-muted); font-size: 11px; }
+.settings-kv-source { color: var(--fg-muted); font-size: var(--fs-xs); }
+.settings-kv-tokens { margin-left: auto; color: var(--fg-muted); font-size: var(--fs-xs); }
 
 .settings-card {
   border: 1px solid var(--border);
@@ -1577,7 +1579,7 @@ button.tool-group-failed-jump:focus-visible {
 }
 .settings-card-name {
   font-weight: 500;
-  font-size: 13px;
+  font-size: var(--fs-base);
   flex: 1;
 }
 .settings-card-toggle {
@@ -1595,7 +1597,7 @@ button.tool-group-failed-jump:focus-visible {
   text-align: left;
 }
 .settings-card-badge {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--fg-muted);
   padding: 1px 4px;
   border: 1px solid var(--border);
@@ -1608,12 +1610,12 @@ button.tool-group-failed-jump:focus-visible {
   font-weight: 400;
 }
 .settings-card-meta {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
 }
 .settings-card-path {
   padding: 2px 10px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   font-family: var(--mono);
   background: var(--bg);
@@ -1623,14 +1625,14 @@ button.tool-group-failed-jump:focus-visible {
   background: var(--bg);
 }
 .settings-card-grouplabel {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--fg-muted);
   margin-bottom: 2px;
 }
 .settings-card-grouplabel.spaced { margin-top: 4px; }
 .settings-card-item {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 2px 0;
   display: flex;
   gap: 6px;
@@ -1639,14 +1641,14 @@ button.tool-group-failed-jump:focus-visible {
 .settings-card-item code { font-weight: 500; }
 .settings-card-desc {
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .settings-card-error {
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--danger);
   background: var(--bg);
 }
@@ -1712,7 +1714,7 @@ button.tool-group-failed-jump:focus-visible {
   border-top: 1px solid var(--border);
   background: var(--bg);
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .settings-mcp-result > span:first-child {
   display: inline-flex;
@@ -1741,17 +1743,17 @@ button.tool-group-failed-jump:focus-visible {
 /* Muted one-liner under a card head (first-party description / reset row). */
 .settings-card-note {
   padding: 2px 10px 6px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
 }
 .settings-mcp-tools-error {
   color: var(--danger);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .settings-mcp-tool-item code {
   font-family: var(--mono);
 }
-.settings-tag { font-size: 10px; }
+.settings-tag { font-size: var(--fs-2xs); }
 .settings-tag.readonly { color: var(--ok); }
 .settings-tag.destructive { color: var(--danger); }
 .settings-tag.openworld { color: var(--warn); }
@@ -1877,7 +1879,7 @@ button.tool-group-failed-jump:focus-visible {
 }
 .hooks-json-toggle[data-state="open"] > summary::before { transform: rotate(90deg); }
 
-.btn-xs { padding: 1px 6px; font-size: 11px; }
+.btn-xs { padding: 1px 6px; font-size: var(--fs-xs); }
 .settings-model-list {
   display: flex;
   flex-direction: column;
@@ -1930,7 +1932,7 @@ button.tool-group-failed-jump:focus-visible {
   padding: 2px 6px;
   color: var(--fg-muted);
   background: var(--bg-elev-1);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   line-height: 1.4;
   font-variant-numeric: tabular-nums;
@@ -1948,7 +1950,7 @@ button.tool-group-failed-jump:focus-visible {
   color: var(--fg);
   background: var(--bg-elev-1);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2005,7 +2007,7 @@ button.tool-group-failed-jump:focus-visible {
 .settings-model-input,
 .settings-model-select {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .settings-model-input {
   background: var(--bg-elev-1);
@@ -2054,7 +2056,7 @@ button.tool-group-failed-jump:focus-visible {
 .settings-model-empty {
   padding: 8px;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: center;
 }
 .settings-model-group {
@@ -2085,7 +2087,7 @@ button.tool-group-failed-jump:focus-visible {
 }
 .settings-model-group-slot-label {
   color: var(--fg-muted);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -2152,7 +2154,7 @@ button.tool-group-failed-jump:focus-visible {
 }
 .settings-readonly-value.mono {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 /* New-session dialog: width + small icon close button (was inline). */
@@ -2238,7 +2240,7 @@ button.tool-group-failed-jump:focus-visible {
     border-radius: var(--radius-2xl);
   }
   .app-empty-state h2 {
-    font-size: 22px;
+    font-size: calc(22px * var(--fs-scale));
   }
   .drawer-toggle {
     margin-right: 4px;
@@ -2398,7 +2400,7 @@ button.tool-group-failed-jump:focus-visible {
      into the box jolts the layout. 16px is the documented threshold that
      suppresses that zoom — only raised on mobile to keep the desktop density. */
   .chat-composer textarea {
-    font-size: 16px;
+    font-size: var(--fs-lg);
   }
 
   /* Send / Interrupt are text buttons (.btn, ~30px tall), below the 44px
@@ -2457,7 +2459,7 @@ button.tool-group-failed-jump:focus-visible {
 .share-tab-hint {
   margin: 0 0 8px;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.5;
 }
 .share-tab-qr {
@@ -2485,7 +2487,7 @@ button.tool-group-failed-jump:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   margin-bottom: 12px;
   max-width: 240px;
@@ -2506,13 +2508,13 @@ button.tool-group-failed-jump:focus-visible {
   align-items: center;
 }
 .share-tab-url code {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--code-fg);
 }
 .share-tab-warn {
   margin: 12px 0 0;
   color: var(--warn, var(--fg-muted));
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
 }
 
@@ -2537,7 +2539,7 @@ button.tool-group-failed-jump:focus-visible {
 }
 .settings-skill-kicker {
   color: var(--accent);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -2552,7 +2554,7 @@ button.tool-group-failed-jump:focus-visible {
 .settings-skill-import-main p {
   margin: 4px 0 0;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.45;
 }
 .settings-skill-stats {
@@ -2571,7 +2573,7 @@ button.tool-group-failed-jump:focus-visible {
   padding: 4px 8px;
   color: var(--fg-muted);
   background: var(--code-bg);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .settings-skill-stats strong { color: var(--fg); }
 .settings-skill-stats .warn { color: var(--danger); }
@@ -2641,7 +2643,7 @@ button.tool-group-failed-jump:focus-visible {
   gap: 3px;
 }
 .settings-skill-mode-card strong {
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
 }
 .settings-skill-mode-card small {
@@ -2661,7 +2663,7 @@ button.tool-group-failed-jump:focus-visible {
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   padding: 5px 9px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   background: var(--code-bg);
   cursor: pointer;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard), background var(--motion-duration-fast) var(--motion-ease-standard);
@@ -2789,7 +2791,7 @@ input[type="checkbox"]:disabled {
   background: transparent;
   border: none;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 500;
   cursor: pointer;
   transition: all var(--motion-duration-fast) var(--motion-ease-standard);
@@ -2822,7 +2824,7 @@ input[type="checkbox"]:disabled {
   gap: 6px;
   white-space: nowrap;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .settings-skill-path-row {
   display: grid;
@@ -2882,7 +2884,7 @@ input[type="checkbox"]:disabled {
 .settings-skill-path-mini {
   grid-column: 1 / -1;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2890,7 +2892,7 @@ input[type="checkbox"]:disabled {
 .settings-skill-path-mini {
   opacity: 0.78;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 .settings-skill-preview-modal {
   width: min(800px, 92vw);
@@ -2918,7 +2920,7 @@ input[type="checkbox"]:disabled {
 }
 .settings-skill-frontmatter-title {
   padding: 8px 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--fg-muted);
   background: var(--bg-elev-1);
@@ -2927,7 +2929,7 @@ input[type="checkbox"]:disabled {
 .settings-skill-frontmatter-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .settings-skill-fm-key {
   padding: 6px 12px;
@@ -2956,7 +2958,7 @@ input[type="checkbox"]:disabled {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   overflow: auto;
   white-space: pre-wrap;
@@ -2971,7 +2973,7 @@ input[type="checkbox"]:disabled {
 }
 .settings-error,
 .settings-success {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 8px 10px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
@@ -3028,7 +3030,7 @@ select.input {
   background: var(--btn-hover-bg);
   color: var(--text);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   max-height: 240px;
   overflow: auto;
   padding: 8px;

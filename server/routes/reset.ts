@@ -33,7 +33,7 @@ const APP_SETTING_KEYS: readonly string[] = [
   'maxUploadBytes', 'historyCap',
   'maxGroupPanels', 'maxOpenPanels', 'workingStuckMs', 'updateCheckRegistry', 'skillLoadMode',
   'enabledSkills', 'autoClassifierModel', 'autoClassifierTimeout',
-  'showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'showMessageHeaders', 'rowGap', 'textSpacing', 'appToolsGit', 'firstPartyTools', 'allowSensitivePathEdits',
+  'showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'showMessageHeaders', 'rowGap', 'textSpacing', 'fontSize', 'appToolsGit', 'firstPartyTools', 'allowSensitivePathEdits',
 ]
 
 export interface ResetRouterDeps {

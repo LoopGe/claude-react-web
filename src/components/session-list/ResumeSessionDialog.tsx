@@ -178,7 +178,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
               alignItems: 'center',
               gap: 8,
               marginTop: 8,
-              fontSize: 13,
+              fontSize: 'var(--fs-base)',
               color: 'var(--fg-muted)',
               cursor: 'pointer',
             }}
@@ -247,7 +247,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
                   </span>
                   <span
                     className="palette-item-hint"
-                    style={{ display: 'flex', gap: 8, fontSize: 11 }}
+                    style={{ display: 'flex', gap: 8, fontSize: 'var(--fs-xs)' }}
                   >
                     {s.cwd && <span title={s.cwd}>{shortenPath(s.cwd)}</span>}
                     <span>· {timeAgo(s.lastModified)}</span>

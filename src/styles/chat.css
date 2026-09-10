@@ -23,6 +23,11 @@
    token, so rows + group + floating cards read as one uniform beat. Change
    this single value and everything tightens/loosens together.
 
+   The shipped default (12px) deliberately replaces the prior split values —
+   rows were 14px while the folded tool-group body was 8px — unifying them
+   onto one token is the point of this setting, so a pre-setup install's
+   default is 12px, not either legacy value.
+
    Declared on :root (NOT .chat) on purpose: the App overrides it at runtime
    from the rowGap config value via documentElement.style.setProperty, and an
    inline style on <html> beats a :root rule. Had it lived on .chat, that
@@ -395,12 +400,12 @@
   height: 18px;
 }
 .chat-empty-title {
-  font-size: 14px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--fg);
 }
 .chat-empty-subtitle {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   max-width: 240px;
   line-height: 1.55;
@@ -442,7 +447,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .easter-egg-game-btn {
@@ -451,7 +456,7 @@
   border-radius: var(--radius-sm);
   color: var(--fg-muted);
   padding: 2px 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 .easter-egg-game-btn:hover { color: var(--fg); border-color: var(--fg-muted); }
@@ -470,11 +475,11 @@
   padding: 0 20px;
 }
 .chat-messages-empty-title {
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
 }
 .chat-messages-empty-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.5;
 }
@@ -487,7 +492,7 @@
   justify-content: center;
   padding: 10px 12px;
   min-height: 32px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 
@@ -539,7 +544,7 @@
   background: var(--bg);
   color: var(--accent);
   border-radius: var(--radius-pill);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
 }
 /* Context-usage progress bar, sits between the message list and composer.
@@ -570,12 +575,12 @@
   margin-bottom: 10px;
 }
 .runasagent-label {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-weight: 500;
 }
 .runasagent-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   margin-top: 6px;
 }
@@ -590,7 +595,7 @@
 .ctx-bar-label {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-family: var(--mono);
 }
@@ -668,7 +673,7 @@
 .ctx-bar-stat-danger { color: var(--danger); }
 .ctx-bar-model {
   margin-left: 6px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   opacity: 0.7;
   max-width: 120px;
@@ -809,7 +814,7 @@
   background: transparent;
   color: var(--fg-muted);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   transition: background var(--motion-duration-fast) var(--motion-ease-standard),
               color var(--motion-duration-fast) var(--motion-ease-standard),
@@ -856,7 +861,7 @@
 }
 .composer-preview-empty {
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
   text-align: center;
   padding: 40px 0;
 }
@@ -919,7 +924,7 @@
   color: var(--on-accent);
   font-family: var(--mono);
   font-weight: 700;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1;
   flex-shrink: 0;
 }
@@ -1024,7 +1029,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   padding: 3px 8px 3px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   max-width: 320px;
   animation: chip-enter var(--motion-duration-base) var(--motion-ease-enter) both;
@@ -1036,14 +1041,14 @@
 }
 .attachment-chip-size {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .attachment-chip-remove {
   background: transparent;
   border: none;
   color: var(--fg-muted);
   padding: 0 2px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .attachment-chip-remove:hover { color: var(--danger); }
 .attachment-chip-ghost {
@@ -1065,7 +1070,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   padding: 3px 8px 3px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg);
   max-width: 320px;
   animation: chip-enter var(--motion-duration-base) var(--motion-ease-enter) both;
@@ -1080,7 +1085,7 @@
   border: none;
   color: var(--fg-muted);
   padding: 0 2px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .scheduled-chip-cancel:hover { color: var(--danger); }
 .scheduled-chip-failed-reason {
@@ -1113,7 +1118,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 .schedule-picker-close {
@@ -1133,7 +1138,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg);
 }
 .schedule-preset:hover { background: var(--btn-hover-bg); }
@@ -1141,7 +1146,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .schedule-custom input {
@@ -1150,7 +1155,7 @@
   border-radius: var(--radius-sm);
   color: var(--fg);
   padding: 4px 6px;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .schedule-picker-actions {
   display: flex;
@@ -1182,7 +1187,7 @@
   padding: 2px 0;
   color: var(--fg-muted);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   position: relative;
 }
 .msg.recap::before,
@@ -1217,7 +1222,7 @@
   padding: 4px 0;
   color: var(--fg-muted);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .enter-plan-marker-icon {
   display: inline-flex;
@@ -1245,7 +1250,7 @@
   padding: 4px 0;
   color: var(--fg-muted);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .worktree-marker-icon {
   display: inline-flex;
@@ -1290,7 +1295,7 @@
   border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
   color: var(--accent);
   padding: 1px 8px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   border-radius: var(--radius-pill);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1324,7 +1329,7 @@
 }
 .thinking-label {
   flex: none;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 /* When collapsed, show a one-line preview of the reasoning, ellipsized.
    When expanded, the preview line is hidden so only the full body shows. */
@@ -1359,7 +1364,7 @@
   color: var(--code-fg);
 }
 .msg-header {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--fg-muted);
@@ -1375,7 +1380,7 @@
    time reads as metadata, not content. */
 .msg-timestamp {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   text-transform: none;
   letter-spacing: 0;
   color: var(--fg-muted);
@@ -1395,7 +1400,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   text-transform: none;
   letter-spacing: 0;
   color: var(--fg-muted);
@@ -1430,7 +1435,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   text-transform: none;
   letter-spacing: 0;
   color: var(--fg-muted);
@@ -1465,7 +1470,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   text-transform: none;
   letter-spacing: 0;
   color: var(--accent);
@@ -1790,7 +1795,7 @@
   min-width: 24px;
   min-height: 24px;
   border-radius: var(--radius-circle);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1829,7 +1834,7 @@
    `![x](/api/placeholder)`). Muted mono text instead of a broken image. */
 .md-image-fallback {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   word-break: break-all;
 }
@@ -1856,7 +1861,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
   animation: working-bubble-pulse 1.8s ease-in-out infinite;
@@ -1905,7 +1910,7 @@
 .working-timer {
   color: var(--accent);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
@@ -1919,7 +1924,7 @@
 .working-rate {
   color: var(--fg-muted);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
@@ -1937,7 +1942,7 @@
   gap: 4px;
   color: var(--accent);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
@@ -2042,7 +2047,7 @@
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
   border-radius: var(--radius-pill);
   padding: 2px 10px 2px 7px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
   white-space: nowrap;
@@ -2071,13 +2076,13 @@
 }
 .subagent-chip-timer {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
 .subagent-chip-open {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   flex-shrink: 0;
   margin-left: 2px;
@@ -2127,7 +2132,7 @@
   border-radius: var(--radius-pill);
   padding: 2px 8px 2px 7px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
   white-space: nowrap;
@@ -2206,14 +2211,14 @@
   border-bottom: 1px solid var(--border);
 }
 .subagent-swarm-pop-title {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--fg-muted);
 }
 .subagent-swarm-pop-meta {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--mono);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
@@ -2273,7 +2278,7 @@
   min-width: 0;
 }
 .subagent-swarm-row-label {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   font-weight: 500;
   color: var(--accent);
@@ -2283,7 +2288,7 @@
 }
 .subagent-swarm-row-waiting .subagent-swarm-row-label { color: var(--fg); }
 .subagent-swarm-row-time {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--mono);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
@@ -2294,7 +2299,7 @@
    guarantee, and an unbounded row would let one verbose agent stretch the
    popover. */
 .subagent-swarm-row-sub {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   line-height: 1.35;
   display: -webkit-box;
@@ -2360,7 +2365,7 @@
 .subagent-card-header:disabled { cursor: default; opacity: 0.6; }
 .subagent-card-marker { color: var(--fg-muted); flex-shrink: 0; display: inline-flex; align-items: center; }
 .subagent-card-title {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--fg-muted);
   letter-spacing: 0.04em;
@@ -2381,14 +2386,14 @@
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 .subagent-card-status {
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   display: inline-flex;
   align-items: center;
 }
@@ -2407,7 +2412,7 @@
 /* async/sync mode chip — distinguishes background (returns immediately,
    runs independently) from synchronous (parent waits) subagents. */
 .subagent-card-mode {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   line-height: 1;
   padding: 2px 5px;
   border-radius: var(--radius-sm);
@@ -2418,7 +2423,7 @@
 .subagent-card-mode-sync  { color: var(--fg-muted); }
 .subagent-card-open {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   display: inline-flex;
   align-items: center;
 }
@@ -2477,7 +2482,7 @@
 .subagent-children[data-state="open"] .subagent-children-marker { transform: rotate(90deg); }
 /* Section-label grammar, matching .subagent-card-title / .workflow-card-title. */
 .subagent-children-label {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--fg-muted);
   letter-spacing: 0.04em;
@@ -2488,7 +2493,7 @@
 .subagent-children-count {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   padding: 1px 6px;
@@ -2558,7 +2563,7 @@
 }
 .subagent-child-name {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   flex: none;
 }
@@ -2681,7 +2686,7 @@
   border: 1px solid transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-md);
   padding: 2px 8px;
   border-radius: var(--radius-xs);
   flex-shrink: 0;
@@ -2700,14 +2705,14 @@
   gap: 2px;
 }
 .subagent-overlay-breadcrumb {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .subagent-overlay-current-label {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--fg);
   white-space: nowrap;
@@ -2715,7 +2720,7 @@
   text-overflow: ellipsis;
 }
 .subagent-overlay-status {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
 }
@@ -2759,7 +2764,7 @@
   text-align: center;
   color: var(--fg-muted);
   max-width: 360px;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 /* ─── Workflow card ─────────────────────────────────────────────── */
@@ -2796,7 +2801,7 @@
 .workflow-card-marker { color: var(--fg-muted); flex-shrink: 0; display: inline-flex; align-items: center; }
 .workflow-card-icon { color: var(--accent); flex-shrink: 0; display: inline-flex; align-items: center; }
 .workflow-card-title {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--fg-muted);
   letter-spacing: 0.04em;
@@ -2817,14 +2822,14 @@
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 .workflow-card-phase,
 .workflow-card-agents {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 1px 6px;
   border-radius: var(--radius-3xs);
   background: var(--bg-elev-2);
@@ -2832,7 +2837,7 @@
 }
 .workflow-card-status {
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   display: inline-flex;
   align-items: center;
 }
@@ -2842,12 +2847,12 @@
 .workflow-card-interrupted .workflow-card-status { color: var(--warn); }
 .workflow-card-open {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   display: inline-flex;
   align-items: center;
 }
 .workflow-card-remote {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   padding: 1px 6px;
   border-radius: var(--radius-3xs);
   background: var(--bg-elev-2);
@@ -2861,7 +2866,7 @@
   gap: 6px;
   padding: 6px 12px;
   border-top: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--accent);
   text-decoration: none;
@@ -2939,7 +2944,7 @@
   gap: 2px;
 }
 .workflow-overlay-current-label {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--fg);
   white-space: nowrap;
@@ -2947,7 +2952,7 @@
   text-overflow: ellipsis;
 }
 .workflow-overlay-status {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
 }
@@ -2960,7 +2965,7 @@
   border: 1px solid transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-md);
   padding: 2px 8px;
   border-radius: var(--radius-xs);
   flex-shrink: 0;
@@ -2976,7 +2981,7 @@
   gap: 6px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   flex-shrink: 0;
 }
@@ -3020,7 +3025,7 @@
   padding: 16px 8px;
   text-align: center;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .workflow-phase-group {
   border: 1px solid var(--border);
@@ -3034,7 +3039,7 @@
   gap: 6px;
   padding: 6px 8px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   list-style: none;
 }
 .workflow-phase-group-summary::-webkit-details-marker { display: none; }
@@ -3054,7 +3059,7 @@
 }
 .workflow-phase-count {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
@@ -3064,7 +3069,7 @@
 }
 .workflow-phase-no-children {
   padding: 4px 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   font-style: italic;
 }
@@ -3086,7 +3091,7 @@
   border: 1px solid transparent;
   border-radius: var(--radius-xs);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: left;
   cursor: pointer;
   color: var(--fg);
@@ -3117,7 +3122,7 @@
 }
 .workflow-child-toolname {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--accent);
   flex-shrink: 0;
   padding: 1px 4px;
@@ -3134,7 +3139,7 @@
 }
 .workflow-child-tools {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
@@ -3142,7 +3147,7 @@
 .workflow-child-chevron { color: var(--fg-muted); flex-shrink: 0; }
 .workflow-phase-detail {
   padding: 4px 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   border-top: 1px solid var(--border);
   margin-top: 4px;

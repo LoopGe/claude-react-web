@@ -762,12 +762,12 @@ export function SetupPage({ onConfigured }: Props) {
                   {modelList.map((m, i) => (
                     <div key={m} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                       <span style={{
-                        fontSize: 11, color: 'var(--fg-muted)', width: 18, textAlign: 'right', flexShrink: 0,
+                        fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)', width: 18, textAlign: 'right', flexShrink: 0,
                       }}>
                         {i === 0 ? '★' : ''}
                       </span>
                       <code style={{
-                        flex: 1, fontSize: 12, padding: '4px 8px',
+                        flex: 1, fontSize: 'var(--fs-sm)', padding: '4px 8px',
                         background: 'var(--bg-elev-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-xs)',
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       }}>
@@ -789,7 +789,7 @@ export function SetupPage({ onConfigured }: Props) {
                     <input
                       id="new-model"
                       className="input"
-                      style={{ flex: 1, fontSize: 16, minHeight: 32 }}
+                      style={{ flex: 1, fontSize: 'var(--fs-lg)', minHeight: 32 }}
                       value={newModel}
                       onChange={(e) => setNewModel(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModel() } }}
@@ -938,25 +938,25 @@ export function SetupPage({ onConfigured }: Props) {
                         />
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                            <code style={{ ...styles.code, fontSize: 12 }}>{c.name}</code>
-                            <span className="setup-hint" style={{ fontSize: 11 }}>
+                            <code style={{ ...styles.code, fontSize: 'var(--fs-sm)' }}>{c.name}</code>
+                            <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)' }}>
                               {c.type}
                               {c.command ? ` · ${c.command}` : ''}
                               {c.url ? ` · ${c.url}` : ''}
                             </span>
                           </div>
                           {c.envKeys && c.envKeys.length > 0 && (
-                            <p className="setup-hint" style={{ fontSize: 11, marginTop: 2 }}>
+                            <p className="setup-hint" style={{ fontSize: 'var(--fs-xs)', marginTop: 2 }}>
                               env: {c.envKeys.join(', ')}
                             </p>
                           )}
                           {invalid && (
-                            <p className="setup-hint" style={{ fontSize: 11, marginTop: 2, color: 'var(--msg-error-fg)' }}>
+                            <p className="setup-hint" style={{ fontSize: 'var(--fs-xs)', marginTop: 2, color: 'var(--msg-error-fg)' }}>
                               {c.importErrors.join('; ')}
                             </p>
                           )}
                         </div>
-                        <span className="setup-hint" style={{ fontSize: 11, flexShrink: 0, marginTop: 2 }}>
+                        <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)', flexShrink: 0, marginTop: 2 }}>
                           {status === 'importing' && 'Importing…'}
                           {status === 'imported' && (
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--accent)' }}>
@@ -1246,11 +1246,11 @@ const styles: Record<string, React.CSSProperties> = {
   optional: {
     fontWeight: 400,
     color: 'var(--fg-muted)',
-    fontSize: 12,
+    fontSize: 'var(--fs-sm)',
   },
   hint: {
     margin: 0,
-    fontSize: 12,
+    fontSize: 'var(--fs-sm)',
     color: 'var(--fg-muted)',
     lineHeight: 1.4,
   },
@@ -1260,7 +1260,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   code: {
     fontFamily: 'var(--mono)',
-    fontSize: 11,
+    fontSize: 'var(--fs-xs)',
     padding: '1px 5px',
     background: 'var(--bg-elev-2)',
     borderRadius: 'var(--radius-xs)',
@@ -1272,7 +1272,7 @@ const styles: Record<string, React.CSSProperties> = {
   input: {
     flex: 1,
     padding: '10px 12px',
-    fontSize: 16,
+    fontSize: 'var(--fs-lg)',
     fontFamily: 'var(--mono)',
     background: 'var(--bg-elev-2)',
     border: '1px solid var(--border)',
@@ -1283,7 +1283,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   toggleBtn: {
     padding: '0 14px',
-    fontSize: 12,
+    fontSize: 'var(--fs-sm)',
     fontFamily: 'inherit',
     background: 'var(--bg-elev-2)',
     border: '1px solid var(--border)',
@@ -1313,7 +1313,7 @@ const styles: Record<string, React.CSSProperties> = {
   submitBtn: {
     minHeight: 44,
     padding: '0 16px',
-    fontSize: 14,
+    fontSize: 'var(--fs-md)',
     fontWeight: 600,
     fontFamily: 'inherit',
     background: 'var(--accent)',
@@ -1334,7 +1334,7 @@ const styles: Record<string, React.CSSProperties> = {
   secondaryBtn: {
     minHeight: 44,
     padding: '0 14px',
-    fontSize: 13,
+    fontSize: 'var(--fs-base)',
     fontFamily: 'inherit',
     background: 'var(--bg-elev-2)',
     border: '1px solid var(--border)',
@@ -1346,7 +1346,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 32,
     height: 32,
     minWidth: 32,
-    fontSize: 12,
+    fontSize: 'var(--fs-sm)',
     padding: 0,
     flexShrink: 0,
     display: 'inline-flex',
@@ -1357,13 +1357,13 @@ const styles: Record<string, React.CSSProperties> = {
   smallAddBtn: {
     minHeight: 32,
     padding: '0 12px',
-    fontSize: 12,
+    fontSize: 'var(--fs-sm)',
     flexShrink: 0,
     cursor: 'pointer',
   },
   kbd: {
     fontFamily: 'var(--mono)',
-    fontSize: 11,
+    fontSize: 'var(--fs-xs)',
     padding: '1px 5px',
     background: 'var(--bg-elev-2)',
     border: '1px solid var(--border)',

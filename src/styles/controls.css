@@ -14,7 +14,7 @@
    (Apple HIG / Material scale-feedback). transform-only, GPU-composited. */
 .btn:active:not(:disabled) { transform: scale(var(--motion-scale-press)); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-sm { padding: 2px 8px; font-size: 11px; }
+.btn-sm { padding: 2px 8px; font-size: var(--fs-xs); }
 .btn-primary {
   background: var(--accent-strong);
   border-color: var(--accent);
@@ -50,7 +50,7 @@
   padding: 4px 8px;
   min-width: 34px;
   height: 30px;
-  font-size: 15px;
+  font-size: calc(15px * var(--fs-scale));
   line-height: 1;
   display: inline-flex;
   align-items: center;
@@ -169,7 +169,7 @@
   cursor: pointer;
 }
 .accent-swatch-custom-plus {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1;
   color: var(--fg-muted);
   pointer-events: none;
@@ -248,7 +248,7 @@
   padding-top: 8px;
 }
 .accent-picker-label {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
