@@ -53,6 +53,8 @@ import {
   pump as pumpSession,
   getParentToolUseId,
   applyTaskEvent,
+  reconcileTasksFromStopHook as reconcileTaskMapFromStopHook,
+  type StopHookTaskSummary,
   reapplyAutoCompactWindow,
   applySdkAutoCompactFacts,
   parseSdkAutoCompactFacts,
@@ -770,6 +772,23 @@ export class SessionManager {
    *  so a late completion can't broadcast into a dead session). */
   private stopBackgroundSubagentWatchers(sessionId: string): void {
     this.backgroundWatchers.stopAll(sessionId)
+  }
+
+  /** Settle a background subagent's watcher from the CLI's `SubagentStop` hook
+   *  — the earliest authoritative completion edge (it beats the CLI's own
+   *  task_notification). No-op for an unloaded session or an agent with no
+   *  armed watcher (a sync or nested subagent). See
+   *  BackgroundWatcherRegistry.settleByAgentId. */
+  private settleBackgroundSubagentFromHook(
+    sessionId: string,
+    info: { agentId: string; transcriptPath?: string; lastAssistantMessage?: string },
+  ): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    this.backgroundWatchers.settleByAgentId(session, info.agentId, {
+      transcriptPath: info.transcriptPath,
+      lastAssistantMessage: info.lastAssistantMessage,
+    })
   }
 
   /** Settle all background-subagent watchers for a session because its CLI
@@ -2361,6 +2380,8 @@ export class SessionManager {
       includePartialMessages: fullOpts.includePartialMessages,
       includeHookEvents: true,
       inProcessHookForward: (_sid, event) => this.recordHookRun(id, event),
+      inProcessTaskSnapshot: (_sid, tasks) => this.reconcileTasksFromStopHook(id, tasks),
+      inProcessSubagentStop: (_sid, info) => this.settleBackgroundSubagentFromHook(id, info),
       // Forward subagent text/thinking frames so SubagentOverlay can render
       // the nested transcript. Spawn-time SDK Options key (config-gated;
       // not runtime-switchable — it's not a Settings key).
@@ -4410,6 +4431,16 @@ export class SessionManager {
     this.broadcaster.recordHookRun(id, event)
   }
 
+  /** Reconcile a session's folded task map against the authoritative in-flight
+   *  list the CLI hands to the Stop hook at turn end. No-op for a session that
+   *  was unloaded between the hook firing and this callback. See
+   *  reconcileTasksFromStopHook in session-pump.ts for the sweep rules. */
+  reconcileTasksFromStopHook(id: string, tasks: StopHookTaskSummary[]): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    reconcileTaskMapFromStopHook(s, tasks)
+  }
+
   broadcastCommandsChanged(id: string, commands: unknown[]): void {
     this.broadcaster.broadcastCommandsChanged(id, commands)
   }
@@ -5518,6 +5549,8 @@ export class SessionManager {
       enabledPlugins: session.enabledPlugins,
       includeHookEvents: true,
       inProcessHookForward: (_sid, event) => this.recordHookRun(session.id, event),
+      inProcessTaskSnapshot: (_sid, tasks) => this.reconcileTasksFromStopHook(session.id, tasks),
+      inProcessSubagentStop: (_sid, info) => this.settleBackgroundSubagentFromHook(session.id, info),
       forwardSubagentText: this.forwardSubagentText,
       resume: session.id,
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),

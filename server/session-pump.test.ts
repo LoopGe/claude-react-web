@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   applyBackgroundTasksChanged,
+  reconcileTasksFromStopHook,
   applyTaskEvent,
   backgroundSubagentLaunches,
   compactingOf,
@@ -1530,6 +1531,107 @@ describe('applyBackgroundTasksChanged', () => {
     applyBackgroundTasksChanged(session, { type: 'system', subtype: 'background_tasks_changed', tasks: 'nope' } as unknown as SDKMessage)
     applyBackgroundTasksChanged(session, { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: '' }] } as unknown as SDKMessage)
     expect(session.tasks.size).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// reconcileTasksFromStopHook
+//
+// The Stop hook's `background_tasks` is the only LEVEL signal carrying
+// per-task status, so it is the one place a record stranded by a lost
+// task_notification can be settled. The sweep is deliberately narrow —
+// ambient / paused records and already-settled records are off limits.
+// ---------------------------------------------------------------------------
+
+describe('reconcileTasksFromStopHook', () => {
+  const rec = (over: Partial<TaskRecordUi> & { taskId: string }): TaskRecordUi => ({
+    description: 'work', status: 'running', updatedAt: 1, ...over,
+  })
+
+  it('settles a stranded record as stopped when the CLI reports nothing in flight', () => {
+    const { session, snapshots } = makeTaskSession()
+    session.tasks.set('t1', rec({ taskId: 't1', progressSummary: 'stale', lastToolName: 'Bash' }))
+    expect(reconcileTasksFromStopHook(session, [])).toBe(true)
+    const after = session.tasks.get('t1')!
+    // stopped, not completed: it left the in-flight set, which is not proof
+    // that it succeeded.
+    expect(after.status).toBe('stopped')
+    expect(after.endedAt).toBeGreaterThan(0)
+    expect(after.progressSummary).toBeUndefined()
+    expect(after.lastToolName).toBeUndefined()
+    expect(snapshots).toHaveLength(1)
+  })
+
+  it('keeps records the CLI still lists, and adopts their reported status', () => {
+    const { session } = makeTaskSession()
+    session.tasks.set('live', rec({ taskId: 'live', status: 'pending' }))
+    session.tasks.set('gone', rec({ taskId: 'gone' }))
+    reconcileTasksFromStopHook(session, [{ id: 'live', status: 'running' }])
+    expect(session.tasks.get('live')?.status).toBe('running')
+    expect(session.tasks.get('gone')?.status).toBe('stopped')
+  })
+
+  it('never sweeps ambient / skipTranscript records', () => {
+    // Their in-flight membership in this list is not something the SDK
+    // guarantees, so absence must not kill a live watcher row.
+    const { session } = makeTaskSession()
+    session.tasks.set('amb', rec({ taskId: 'amb', ambient: true }))
+    session.tasks.set('skip', rec({ taskId: 'skip', skipTranscript: true }))
+    expect(reconcileTasksFromStopHook(session, [])).toBe(false)
+    expect(session.tasks.get('amb')?.status).toBe('running')
+    expect(session.tasks.get('skip')?.status).toBe('running')
+  })
+
+  it('never sweeps a paused record', () => {
+    const { session } = makeTaskSession()
+    session.tasks.set('p', rec({ taskId: 'p', status: 'paused' }))
+    expect(reconcileTasksFromStopHook(session, [])).toBe(false)
+    expect(session.tasks.get('p')?.status).toBe('paused')
+  })
+
+  it('never resurrects an already-settled record the CLI still lists', () => {
+    // The edge that settled it carried real completion data; this level
+    // snapshot carries none, so the settled record wins.
+    const { session } = makeTaskSession()
+    session.tasks.set('d', rec({ taskId: 'd', status: 'completed', endedAt: 500 }))
+    expect(reconcileTasksFromStopHook(session, [{ id: 'd', status: 'running' }])).toBe(false)
+    expect(session.tasks.get('d')).toMatchObject({ status: 'completed', endedAt: 500 })
+  })
+
+  it('bails on a non-empty list whose ids match nothing (id-space guard)', () => {
+    // Acting on an unrecognisable id space would sweep every live row.
+    const { session, snapshots } = makeTaskSession()
+    session.tasks.set('t1', rec({ taskId: 't1' }))
+    expect(reconcileTasksFromStopHook(session, [{ id: 'agent_abc', status: 'running' }])).toBe(false)
+    expect(session.tasks.get('t1')?.status).toBe('running')
+    expect(snapshots).toHaveLength(0)
+  })
+
+  it('is a no-op (no snapshot) when nothing needs changing', () => {
+    const { session, snapshots } = makeTaskSession()
+    session.tasks.set('live', rec({ taskId: 'live' }))
+    expect(reconcileTasksFromStopHook(session, [{ id: 'live', status: 'running' }])).toBe(false)
+    expect(snapshots).toHaveLength(0)
+  })
+
+  it('ignores a garbage status and malformed entries', () => {
+    const { session } = makeTaskSession()
+    session.tasks.set('live', rec({ taskId: 'live', status: 'pending' }))
+    reconcileTasksFromStopHook(session, [
+      { id: 'live', status: 'not-a-status' },
+      { id: '' },
+    ] as unknown as Array<{ id: string; status?: string }>)
+    expect(session.tasks.get('live')?.status).toBe('pending')
+  })
+
+  it('does not adopt a terminal status from the in-flight list', () => {
+    // A listed task is by definition still in flight; a terminal status there
+    // is self-contradictory, so it must not settle the record without the
+    // completion data a real notification carries.
+    const { session } = makeTaskSession()
+    session.tasks.set('live', rec({ taskId: 'live' }))
+    reconcileTasksFromStopHook(session, [{ id: 'live', status: 'completed' }])
+    expect(session.tasks.get('live')?.status).toBe('running')
   })
 })
 

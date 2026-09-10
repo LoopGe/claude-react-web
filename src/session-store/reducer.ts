@@ -183,6 +183,38 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         const flipToBackground =
           task.isBackgrounded === true && !isTerminal &&
           (record.status === 'running' || rescueSettled)
+        // Terminal task + still-live record → settle the record. The task map
+        // is the liveness authority (server-folded from the SDK's task frames,
+        // now also reconciled against the Stop hook's authoritative in-flight
+        // list), so a terminal entry here means the work is over even when no
+        // completion signal ever reached the transcript — the CLI does not
+        // reliably emit task_notification for Agent-launched background
+        // subagents, which is exactly how a chip ends up spinning forever and
+        // the WorkingBubble sticks on "Waiting...".
+        //
+        // Restricted to records we know carry no pending transcript payload:
+        // 'background' / 'pending' (async — their Agent tool_result was only a
+        // launch ack) and 'running' ONLY when the snapshot authority already
+        // told us the task was backgrounded. A sync record is deliberately
+        // excluded: its real output arrives as the Agent tool_result, and that
+        // merge branch requires status 'running', so settling here first would
+        // swallow the subagent's output. Stranded sync records are already
+        // covered by the turn-end result-frame sweep.
+        //
+        // 'stopped' maps to 'done' when a result was captured (the work landed,
+        // only the bookend was lost) and 'interrupted' otherwise; a later REAL
+        // task_notification can still overwrite either (its branch accepts
+        // 'done' and 'interrupted').
+        const settleStranded = isTerminal && (
+          record.status === 'background' ||
+          record.status === 'pending' ||
+          (record.status === 'running' && record.isAsync === true)
+        )
+        const settledStatus = task.status === 'completed'
+          ? 'done' as const
+          : task.status === 'stopped' && record.result
+            ? 'done' as const
+            : 'interrupted' as const
         activeSubagents.set(task.toolUseId, {
           ...record,
           taskId: task.taskId,
@@ -193,6 +225,9 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
             ? rescueSettled
               ? { status: 'background' as const, endedAt: undefined, result: undefined }
               : { status: 'background' as const }
+            : {}),
+          ...(settleStranded
+            ? { status: settledStatus, endedAt: task.endedAt ?? record.endedAt ?? Date.now() }
             : {}),
         })
       }

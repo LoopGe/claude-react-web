@@ -6,7 +6,7 @@ import type { SessionMemorySettings, ThinkingSetting } from '../../shared/sessio
 import type { ProviderProfile } from '../config.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../shared/structured.js'
 import type { SandboxSetting } from '../../shared/sandbox.js'
-import type { InProcessHookForward } from './claude/inprocess-hooks.js'
+import type { InProcessHookForward, InProcessSubagentStop, InProcessTaskSnapshot } from './claude/inprocess-hooks.js'
 
 export interface CreateSessionOptions {
   id: string
@@ -54,6 +54,14 @@ export interface CreateSessionOptions {
   /** Forward in-process read+react hook callbacks' structured input into the
    *  session's hook run-log channel (see inprocess-hooks.ts). */
   inProcessHookForward?: InProcessHookForward
+  /** Receive the authoritative in-flight background-task list the CLI attaches
+   *  to the Stop hook input, so the host can reconcile its folded task map
+   *  (see inprocess-hooks.ts / session-pump.ts reconcileTasksFromStopHook). */
+  inProcessTaskSnapshot?: InProcessTaskSnapshot
+  /** Receive the CLI's `SubagentStop` edge (agent_id + transcript path) so the
+   *  host can settle that subagent's watcher immediately instead of waiting for
+   *  a transcript poll (see BackgroundWatcherRegistry.settleByAgentId). */
+  inProcessSubagentStop?: InProcessSubagentStop
   /** Forward subagent text/thinking blocks as assistant/user frames with
    *  parent_tool_use_id set (SDK Options.forwardSubagentText). Resolved by
    *  the session-manager from config and passed explicitly on every spawn /

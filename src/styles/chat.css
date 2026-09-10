@@ -1889,6 +1889,18 @@
 .working-tasks:hover {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
+/* Ambient-only: the panel entry is still there, but there is no user work to
+   report — drop the accent tint to a muted, digit-less marker so housekeeping
+   never reads as activity. */
+.working-tasks-ambient {
+  color: var(--fg-muted);
+  background: transparent;
+  border-color: var(--border);
+  padding: 1px 5px;
+}
+.working-tasks-ambient:hover {
+  background: var(--btn-hover-bg);
+}
 
 .working-dots {
   display: inline-flex;

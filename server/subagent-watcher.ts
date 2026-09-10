@@ -8,7 +8,17 @@
 // `background` record never flips to `done`, and its WorkingBubble chip
 // reappears on every subsequent parent turn.
 //
-// SOLUTION: the CLI DOES write the subagent's transcript to
+// PRIMARY PATH (added later, probe-verified on SDK 0.3.252 / CLI 2.1.252): the
+// CLI's `SubagentStop` hook fires with `agent_id` + `agent_transcript_path` the
+// moment an agent stops — BEFORE any task_* frame it may emit — and
+// `BackgroundWatcherRegistry.settleByAgentId` settles the watcher from it with
+// zero poll latency. The polling described below is now the FALLBACK, retained
+// for what the hook cannot cover: an agent killed together with its host
+// process, a CLI too old to deliver the hook, or a hook that never arrives.
+// Whichever path resolves first deletes the watcher entry, so the other becomes
+// a no-op.
+//
+// SOLUTION (fallback): the CLI DOES write the subagent's transcript to
 //   <cliHome>/projects/<encodedCwd>/<sessionId>/subagents/agent-<agentId>.jsonl
 // and appends a final assistant message with `message.stop_reason` when the
 // subagent settles. The launch ack carries the `agentId`, so we can locate
@@ -538,6 +548,69 @@ export class BackgroundWatcherRegistry {
     // synthesized frame never passes through the pump (it bypasses the SDK
     // stream), so the normal fold path doesn't see it — fold it here.
     this.deps.applyTaskEvent(session, msg)
+  }
+
+  /** Settle one armed watcher because the CLI's `SubagentStop` hook just fired
+   *  for its agent — the authoritative, immediate completion edge, as opposed
+   *  to the transcript poll that has to infer completion from a terminal
+   *  `stop_reason`. Probe-verified (SDK 0.3.252 / CLI 2.1.252): the hook fires
+   *  BEFORE the CLI's own `task_updated` / `task_notification` frames, so this
+   *  is the earliest signal available and it removes the poll latency entirely.
+   *
+   *  Lookup is by agentId, not toolUseId: the hook only knows the agent. A
+   *  hook firing with no armed watcher is a no-op by design — a synchronous
+   *  subagent, a nested (spawn_depth > 1) agent, or one this registry already
+   *  settled all land here.
+   *
+   *  Polling is deliberately NOT removed: the hook cannot cover an agent killed
+   *  with its host process, a CLI too old to deliver it, or a hook that never
+   *  arrives. The poller stays armed until one of the two paths wins, and
+   *  whichever gets there first deletes the entry so the other becomes a no-op.
+   *
+   *  `transcriptPath` comes from the hook (`agent_transcript_path`) and is
+   *  preferred over our own reconstruction of the CLI's on-disk layout — the
+   *  fragility this module's header warns about. It is only used to recover the
+   *  subagent's final text; when the file isn't readable/terminal yet, the
+   *  hook's own `last_assistant_message` is the fallback, so a settle never
+   *  depends on the filesystem. */
+  settleByAgentId(
+    session: Session,
+    agentId: string,
+    opts: { transcriptPath?: string; lastAssistantMessage?: string } = {},
+  ): boolean {
+    const perSession = this.watchers.get(session.id)
+    if (!perSession) return false
+    let match: { toolUseId: string; entry: WatcherEntry } | undefined
+    for (const [toolUseId, entry] of perSession) {
+      if (entry.agentId === agentId) { match = { toolUseId, entry }; break }
+    }
+    if (!match) return false
+    try { match.entry.stop() } catch { /* ignore */ }
+    perSession.delete(match.toolUseId)
+    // Prefer the transcript's own final text (same source the poll path uses,
+    // so a hook-settled record and a poll-settled one read identically), then
+    // the hook's last_assistant_message, then empty.
+    const fromDisk = opts.transcriptPath
+      ? readSubagentCompletion(opts.transcriptPath)
+      : session.cwd
+        ? readSubagentCompletion(subagentTranscriptPath(session.cwd, session.id, agentId))
+        : null
+    const summary = fromDisk?.summary || opts.lastAssistantMessage?.trim() || ''
+    log.info(
+      `[${session.id}] background subagent agentId=${agentId} toolUseId=${match.toolUseId} ` +
+      `settled by SubagentStop hook (summary ${fromDisk?.summary ? 'from transcript' : opts.lastAssistantMessage ? 'from hook' : 'empty'})`,
+    )
+    // SubagentStop only fires when the agent stopped of its own accord, so this
+    // is always a normal completion — never the synthesized 'stopped' the maxMs
+    // backstop and the process-exit path use.
+    if (this.deps.isLive(session.id)) {
+      this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(session) })
+    }
+    this.broadcastSynthesizedTaskNotification(session, match.toolUseId, agentId, {
+      status: 'completed',
+      summary,
+    })
+    return true
   }
 
   /** Stop all background-subagent watchers for a session (called on unload

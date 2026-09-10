@@ -273,24 +273,27 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
     })
   }
 
-  // Evict oldest terminal records beyond the cap. Active tasks are never
-  // evicted; insertion order tracks start order, so the first terminal hit
-  // is the oldest.
+  pruneTerminalTasks(session)
+  pushTasksSnapshot(session)
+}
+
+/** Evict oldest terminal records beyond the cap. Active tasks are never
+ *  evicted; insertion order tracks start order, so the first terminal hit
+ *  is the oldest. Shared by applyTaskEvent and the Stop-hook reconciliation
+ *  (which can settle several records at once). */
+function pruneTerminalTasks(session: Session): void {
   let terminals = 0
   for (const rec of session.tasks.values()) {
     if (isTerminalTaskStatus(rec.status)) terminals++
   }
-  if (terminals > MAX_TERMINAL_TASKS) {
-    for (const [taskId, rec] of session.tasks) {
-      if (terminals <= MAX_TERMINAL_TASKS) break
-      if (isTerminalTaskStatus(rec.status)) {
-        session.tasks.delete(taskId)
-        terminals--
-      }
+  if (terminals <= MAX_TERMINAL_TASKS) return
+  for (const [taskId, rec] of session.tasks) {
+    if (terminals <= MAX_TERMINAL_TASKS) break
+    if (isTerminalTaskStatus(rec.status)) {
+      session.tasks.delete(taskId)
+      terminals--
     }
   }
-
-  pushTasksSnapshot(session)
 }
 
 /** Push the current `session.tasks` contents as a full snapshot to every
@@ -347,6 +350,114 @@ export function applyBackgroundTasksChanged(session: Session, msg: SDKMessage): 
     }
   }
   pushTasksSnapshot(session)
+}
+
+/** One entry of a Stop-hook `background_tasks` array (SDK
+ *  `BackgroundTaskSummary`), narrowed to the fields we consume. `id` is the
+ *  task id; `status` is free-text in the SDK type, so it is adopted only when
+ *  it parses as a known TaskStatus. */
+export interface StopHookTaskSummary {
+  id: string
+  status?: string
+}
+
+/** Reconcile `session.tasks` against the authoritative in-flight list the CLI
+ *  hands to the Stop hook (`StopHookInput.background_tasks` — "In-flight
+ *  background work (running/pending + backgrounded) registered in this
+ *  session. Empty array when nothing is in flight").
+ *
+ *  This is the only LEVEL signal that carries per-task status, which makes it
+ *  the one place we can settle records the edge stream stranded: the CLI does
+ *  not reliably emit `task_notification` for Agent-launched background
+ *  subagents (hence subagent-watcher.ts), so a lost bookend otherwise leaves a
+ *  row spinning forever and the WorkingBubble stuck in "Waiting...". Stop
+ *  fires at turn end, which is exactly when the UI flips active → waiting/idle.
+ *
+ *  Three deliberate restrictions, each guarding a way this could do harm:
+ *
+ *  - **Ambient/skipTranscript records are never swept.** The SDK documents
+ *    those as housekeeping the CLI "does not surface as user work", so their
+ *    membership in this list is not something we can rely on; sweeping them
+ *    would kill live watcher rows at every turn end.
+ *  - **`paused` records are never swept.** Paused is not in-flight but is not
+ *    finished either, so absence proves nothing.
+ *  - **Terminal records are never resurrected.** A listed task we already
+ *    settled means our completion signal and this level snapshot disagree;
+ *    the edge that settled it carried real completion data (endedAt, summary),
+ *    this snapshot carries none, so we keep the settled record.
+ *
+ *  Swept records land on `stopped`, not `completed`: we know they left the
+ *  in-flight set, not that they succeeded. `stopped` renders neutral in the
+ *  TasksPanel (only failed/killed take the error styling).
+ *
+ *  ASSUMPTION worth knowing if this ever mis-fires: the sweep trusts the CLI's
+ *  list to cover EVERY non-ambient task type that can still be running at turn
+ *  end. Probe-verified for `local_bash` and `local_agent`; NOT verified for
+ *  `monitor` / `local_workflow`. If such a task were both genuinely running and
+ *  absent from the list, its row would read `stopped` while the work continues
+ *  — cosmetic and non-destructive (no transcript state, no chip), but it would
+ *  not self-heal, because applyTaskEvent's `task_progress` branch preserves an
+ *  existing status. A later `task_updated` carrying a status DOES reopen it.
+ *  That is the first place to look, and narrowing the sweep to
+ *  `isBackgrounded === true` is the fix — at the cost of no longer settling
+ *  foreground records whose completion frame was lost.
+ *
+ *  Returns true when anything changed (a snapshot was pushed). */
+export function reconcileTasksFromStopHook(session: Session, summaries: StopHookTaskSummary[]): boolean {
+  const live = new Set<string>()
+  for (const s of summaries) {
+    if (s && typeof s.id === 'string' && s.id !== '') live.add(s.id)
+  }
+
+  // Id-space guard: a non-empty list where NOTHING matches a known record is
+  // more likely a shape/id-space mismatch (or a session whose whole task set
+  // we never saw) than a genuine "everything you know about is done" — and
+  // acting on it would sweep every live row. Bail instead. An empty list needs
+  // no such check: "nothing is in flight" is id-space independent.
+  if (live.size > 0) {
+    let anyKnown = false
+    for (const id of live) {
+      if (session.tasks.has(id)) { anyKnown = true; break }
+    }
+    if (!anyKnown) return false
+  }
+
+  const now = Date.now()
+  let changed = false
+
+  for (const [taskId, rec] of session.tasks) {
+    if (isTerminalTaskStatus(rec.status)) continue
+    if (live.has(taskId)) {
+      // Listed → still in flight. Adopt the CLI's status when it parses as a
+      // known non-terminal one and differs from ours (e.g. pending → running).
+      const reported = summaries.find((s) => s.id === taskId)?.status
+      if (
+        isTaskRecordStatus(reported) &&
+        !isTerminalTaskStatus(reported) &&
+        reported !== rec.status
+      ) {
+        session.tasks.set(taskId, { ...rec, status: reported, updatedAt: now })
+        changed = true
+      }
+      continue
+    }
+    if (rec.ambient === true || rec.skipTranscript === true) continue
+    if (rec.status === 'paused') continue
+    session.tasks.set(taskId, {
+      ...rec,
+      status: 'stopped',
+      endedAt: rec.endedAt ?? now,
+      progressSummary: undefined,
+      lastToolName: undefined,
+      updatedAt: now,
+    })
+    changed = true
+  }
+
+  if (!changed) return false
+  pruneTerminalTasks(session)
+  pushTasksSnapshot(session)
+  return true
 }
 
 /** Extract the SDK-reported `fast_mode_state` from a message, if present.

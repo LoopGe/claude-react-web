@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import {
+  BackgroundWatcherRegistry,
   encodeCwd,
   parseAckAgentId,
   readSubagentCompletion,
@@ -10,6 +11,9 @@ import {
   watchBackgroundSubagent,
   type SubagentCompletion,
 } from './subagent-watcher.js'
+import { applyTaskEvent } from './session-pump.js'
+import type { Session } from './session-types.js'
+import type { TaskRecordUi } from '../shared/tasks.js'
 
 describe('subagent-watcher', () => {
   describe('encodeCwd', () => {
@@ -370,5 +374,155 @@ describe('subagent-watcher', () => {
       // scheduling): the first steady tick comes after at least one fast tick.
       expect(delays.indexOf(intervalMs)).toBeGreaterThan(0)
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// BackgroundWatcherRegistry.settleByAgentId — the CLI's SubagentStop hook as
+// the completion edge, replacing a poll cycle.
+//
+// Probe-verified (SDK 0.3.252 / CLI 2.1.252): SubagentStop fires with agent_id
+// + agent_transcript_path BEFORE the CLI's own task_notification, so it is the
+// earliest signal available. Polling stays armed as the fallback for what the
+// hook can't cover (agent killed with its host process, older CLI, hook lost),
+// and whichever path wins first deletes the entry so the other is a no-op.
+// ---------------------------------------------------------------------------
+
+describe('BackgroundWatcherRegistry.settleByAgentId', () => {
+  const AGENT = 'a9e4d7c8364c6bffa'
+  const TOOL_USE = 'call_00_vo1XZOTGROU7iI3oTSWo5450'
+
+  function terminalTranscript(text: string): string {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'sw-reg-'))
+    const file = path.join(dir, `agent-${AGENT}.jsonl`)
+    writeFileSync(file, JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text }] },
+    }) + '\n')
+    return file
+  }
+
+  function setup() {
+    const broadcasts: unknown[] = []
+    const pushed: unknown[] = []
+    const snapshots: TaskRecordUi[][] = []
+    const session = {
+      id: 's1',
+      cwd: 'D:/nonexistent-cwd',
+      history: [] as unknown[],
+      tasks: new Map<string, TaskRecordUi>(),
+      taskSubscribers: new Set([{ push: (t: TaskRecordUi[]) => snapshots.push(t) }]),
+      subscribers: new Map([['sub-1', { push: (m: unknown) => pushed.push(m) }]]),
+    } as unknown as Session
+    const registry = new BackgroundWatcherRegistry({
+      applyTaskEvent,
+      broadcastGlobal: (ev) => broadcasts.push(ev),
+      info: (s) => ({ id: s.id }) as never,
+      historyCap: 100,
+      isLive: () => true,
+    })
+    return { registry, session, broadcasts, pushed, snapshots }
+  }
+
+  /** The synthesized task_notification the settle path broadcasts. */
+  const notification = (pushed: unknown[]) =>
+    pushed.find((m) => (m as { subtype?: string }).subtype === 'task_notification') as
+      Record<string, unknown> | undefined
+
+  it('settles the watcher and broadcasts a completed notification with the transcript text', () => {
+    const { registry, session, pushed } = setup()
+    const file = terminalTranscript('the real final answer')
+    registry.start(session, TOOL_USE, AGENT)
+    expect(registry.count('s1')).toBe(1)
+
+    expect(registry.settleByAgentId(session, AGENT, {
+      transcriptPath: file,
+      lastAssistantMessage: 'the real final answer',
+    })).toBe(true)
+
+    // Watcher gone — the poller is cancelled, so the sidebar count drops and
+    // the maxMs backstop can never later flip this record to 'stopped'.
+    expect(registry.count('s1')).toBe(0)
+    const n = notification(pushed)!
+    expect(n).toMatchObject({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: AGENT,
+      tool_use_id: TOOL_USE,
+      status: 'completed',
+      summary: 'the real final answer',
+    })
+    // Folded into the task map too, so the TasksPanel row settles.
+    expect(session.tasks.get(AGENT)?.status).toBe('completed')
+    // And it rode the history ring, so it survives replay.
+    expect((session.history as unknown[]).length).toBe(1)
+  })
+
+  it('uses the hook-provided path, not our reconstruction of the CLI layout', () => {
+    // The module header calls the on-disk path replication its fragility; the
+    // hook hands us the real path, so a session whose cwd would encode to
+    // nothing usable still recovers the subagent's text.
+    const { registry, session, pushed } = setup()
+    ;(session as { cwd?: string }).cwd = undefined
+    const file = terminalTranscript('found via hook path')
+    registry.start(session, TOOL_USE, AGENT)
+    // No cwd → start() refuses to arm a poller, so settle has nothing to find.
+    expect(registry.count('s1')).toBe(0)
+    expect(registry.settleByAgentId(session, AGENT, { transcriptPath: file })).toBe(false)
+    expect(notification(pushed)).toBeUndefined()
+  })
+
+  it('falls back to the hook last_assistant_message when the transcript is unreadable', () => {
+    const { registry, session, pushed } = setup()
+    registry.start(session, TOOL_USE, AGENT)
+    expect(registry.settleByAgentId(session, AGENT, {
+      transcriptPath: path.join(os.tmpdir(), 'definitely-missing', 'agent.jsonl'),
+      lastAssistantMessage: '  pong  ',
+    })).toBe(true)
+    expect(notification(pushed)).toMatchObject({ status: 'completed', summary: 'pong' })
+  })
+
+  it('settles with an empty summary when neither source has text', () => {
+    const { registry, session, pushed } = setup()
+    registry.start(session, TOOL_USE, AGENT)
+    expect(registry.settleByAgentId(session, AGENT, {})).toBe(true)
+    expect(notification(pushed)).toMatchObject({ status: 'completed', summary: '' })
+  })
+
+  it('is a no-op for an agent with no armed watcher (sync / nested / already settled)', () => {
+    const { registry, session, pushed, broadcasts } = setup()
+    expect(registry.settleByAgentId(session, 'unknown-agent', {})).toBe(false)
+    expect(pushed).toHaveLength(0)
+    expect(broadcasts).toHaveLength(0)
+
+    // And a second settle for the same agent can't double-broadcast.
+    registry.start(session, TOOL_USE, AGENT)
+    expect(registry.settleByAgentId(session, AGENT, { lastAssistantMessage: 'x' })).toBe(true)
+    const after = pushed.length
+    expect(registry.settleByAgentId(session, AGENT, { lastAssistantMessage: 'x' })).toBe(false)
+    expect(pushed).toHaveLength(after)
+  })
+
+  it('matches on agentId only — a different agent leaves the watcher armed', () => {
+    // SubagentStop fires for every subagent, including ones this registry does
+    // not track; matching must not settle the wrong watcher.
+    const { registry, session, pushed } = setup()
+    registry.start(session, TOOL_USE, AGENT)
+    expect(registry.settleByAgentId(session, 'some-other-agent', {})).toBe(false)
+    expect(registry.count('s1')).toBe(1)
+    expect(notification(pushed)).toBeUndefined()
+    registry.stopAll('s1')
+  })
+
+  it('leaves a later real task_notification as a harmless no-op', () => {
+    // The CLI still emits its own notification after the hook; cancel() must
+    // find no entry and change nothing (the record is already settled).
+    const { registry, session, pushed } = setup()
+    registry.start(session, TOOL_USE, AGENT)
+    registry.settleByAgentId(session, AGENT, { lastAssistantMessage: 'pong' })
+    const after = pushed.length
+    registry.cancel('s1', TOOL_USE, session)
+    expect(pushed).toHaveLength(after)
+    expect(session.tasks.get(AGENT)?.status).toBe('completed')
   })
 })

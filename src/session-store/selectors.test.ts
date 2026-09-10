@@ -22,9 +22,9 @@ describe('useSessionTaskCounts', () => {
     await sessionStoreRegistry.clear()
   })
 
-  it('counts all non-terminal tasks as `all` and excludes skipTranscript/ambient from `waiting`', () => {
+  it('counts all non-terminal tasks as `all` and excludes skipTranscript/ambient from the shared `indicator` count', () => {
     const { result } = renderHook(() => useSessionTaskCounts('s1'))
-    expect(result.current).toEqual({ all: 0, waiting: 0 })
+    expect(result.current).toEqual({ all: 0, indicator: 0 })
 
     act(() => {
       getSessionStore('s1').dispatch({
@@ -39,9 +39,11 @@ describe('useSessionTaskCounts', () => {
       })
     })
 
-    // a + c + e are non-terminal (3); only a counts toward Waiting (c is
-    // skipTranscript, e is the 0.3.247 ambient watcher superset).
-    expect(result.current).toEqual({ all: 3, waiting: 1 })
+    // a + c + e are non-terminal (3); only a counts toward the indicator (c is
+    // skipTranscript, e is the 0.3.247 ambient watcher superset). Every
+    // activity surface reads `indicator`, which is what keeps the WorkingBubble
+    // pill and the TasksPanel header from disagreeing.
+    expect(result.current).toEqual({ all: 3, indicator: 1 })
   })
 
   it('stays reference-stable when the tasks array changes but the counts do not (no rerender churn)', () => {
@@ -50,7 +52,7 @@ describe('useSessionTaskCounts', () => {
       getSessionStore('s1').dispatch({ type: 'TASKS_SNAPSHOT', tasks: [task({ taskId: 'a' })] })
     })
     const first = result.current
-    expect(first).toEqual({ all: 1, waiting: 1 })
+    expect(first).toEqual({ all: 1, indicator: 1 })
 
     // Same statuses/counts, brand-new array identity → must NOT churn the
     // consumer (this is the Chat re-render the finding calls out).
@@ -60,7 +62,7 @@ describe('useSessionTaskCounts', () => {
         tasks: [task({ taskId: 'b', description: 'changed' })],
       })
     })
-    expect(result.current).toEqual({ all: 1, waiting: 1 })
+    expect(result.current).toEqual({ all: 1, indicator: 1 })
     expect(result.current).toBe(first)
   })
 
@@ -69,12 +71,12 @@ describe('useSessionTaskCounts', () => {
     act(() => {
       getSessionStore('s1').dispatch({ type: 'TASKS_SNAPSHOT', tasks: [task({ taskId: 'a' })] })
     })
-    expect(result.current).toEqual({ all: 1, waiting: 1 })
+    expect(result.current).toEqual({ all: 1, indicator: 1 })
 
     act(() => {
       getSessionStore('s1').dispatch({ type: 'TASKS_SNAPSHOT', tasks: [task({ taskId: 'a', status: 'completed' })] })
     })
-    expect(result.current).toEqual({ all: 0, waiting: 0 })
+    expect(result.current).toEqual({ all: 0, indicator: 0 })
   })
 })
 

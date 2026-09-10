@@ -3567,6 +3567,128 @@ describe('reducer: TASKS_SNAPSHOT', () => {
     state = reduceSessionState(state, { type: 'CLEAR_TRANSCRIPT' })
     expect(state.mirror.tasks).toEqual([])
   })
+
+  // ── terminal snapshot settles a stranded record ────────────────────────
+  //
+  // The task map is the liveness authority; a terminal entry means the work
+  // is over even when no completion signal reached the transcript. Without
+  // this the chip spins forever and the WorkingBubble sticks on "Waiting..."
+  // (the CLI does not reliably emit task_notification for Agent-launched
+  // background subagents — see server/subagent-watcher.ts).
+
+  const bg = (toolUseId: string): { state: ReturnType<typeof createInitialSessionState> } => {
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse(toolUseId, `a-${toolUseId}`) })
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId, isBackgrounded: true })],
+    })
+    return { state }
+  }
+
+  it('settles a background record when the task goes terminal (completed → done)', () => {
+    let { state } = bg('tu_a')
+    expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('background')
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_a', isBackgrounded: true, status: 'completed', endedAt: 9_000 })],
+    })
+    expect(state.mirror.activeSubagents.get('tu_a')).toMatchObject({ status: 'done', endedAt: 9_000 })
+  })
+
+  it('settles a pending (post-turn-end) record so Waiting can collapse', () => {
+    let { state } = bg('tu_p')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: result('r1') })
+    expect(state.mirror.activeSubagents.get('tu_p')?.status).toBe('pending')
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_p', isBackgrounded: true, status: 'failed', endedAt: 9_000 })],
+    })
+    expect(state.mirror.activeSubagents.get('tu_p')?.status).toBe('interrupted')
+  })
+
+  it("maps a swept 'stopped' task to done when a result was captured, interrupted otherwise", () => {
+    // The Stop-hook sweep uses 'stopped' for "left the in-flight set, outcome
+    // unknown". A record that already captured output ended fine — only the
+    // bookend was lost — so it must not render as an error.
+    let withResult = bg('tu_r').state
+    // A child assistant frame is how an async subagent's real output lands in
+    // `result` — use the real path rather than seeding the record by hand.
+    withResult = reduceSessionState(withResult, {
+      type: 'MESSAGE',
+      message: {
+        type: 'assistant',
+        uuid: 'a-child',
+        parent_tool_use_id: 'tu_r',
+        receivedAt: 5_000,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'child output' }] },
+      } as unknown as SdkMessage,
+    })
+    expect(withResult.mirror.activeSubagents.get('tu_r')?.result).toBeDefined()
+    withResult = reduceSessionState(withResult, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_r', isBackgrounded: true, status: 'stopped', endedAt: 9_000 })],
+    })
+    expect(withResult.mirror.activeSubagents.get('tu_r')?.status).toBe('done')
+
+    let noResult = bg('tu_n').state
+    noResult = reduceSessionState(noResult, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_n', isBackgrounded: true, status: 'stopped', endedAt: 9_000 })],
+    })
+    expect(noResult.mirror.activeSubagents.get('tu_n')?.status).toBe('interrupted')
+  })
+
+  it('does NOT settle a sync running record (its tool_result still has to merge)', () => {
+    // A sync subagent's real output arrives as the Agent tool_result, and that
+    // merge branch requires status 'running' — settling here first would
+    // swallow the output. Stranded sync records are the turn-end sweep's job.
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_s', 'a-s') })
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_s', isBackgrounded: false, status: 'completed', endedAt: 9_000 })],
+    })
+    expect(state.mirror.activeSubagents.get('tu_s')?.status).toBe('running')
+  })
+
+  it('leaves a dismissed record alone', () => {
+    let { state } = bg('tu_d')
+    state = reduceSessionState(state, { type: 'DISMISS_SUBAGENT', toolUseId: 'tu_d' })
+    expect(state.mirror.activeSubagents.get('tu_d')?.status).toBe('dismissed')
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_d', isBackgrounded: true, status: 'completed', endedAt: 9_000 })],
+    })
+    expect(state.mirror.activeSubagents.get('tu_d')?.status).toBe('dismissed')
+  })
+
+  it('a later real task_notification still overwrites a snapshot-settled record', () => {
+    // The snapshot settles without completion data; the notification is the
+    // only frame carrying the real output, so it must win.
+    let { state } = bg('tu_o')
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [task({ toolUseId: 'tu_o', isBackgrounded: true, status: 'stopped', endedAt: 9_000 })],
+    })
+    expect(state.mirror.activeSubagents.get('tu_o')?.status).toBe('interrupted')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 't-1',
+        tool_use_id: 'tu_o',
+        status: 'completed',
+        summary: 'the real output',
+        receivedAt: 30_000,
+      } as unknown as SdkMessage,
+    })
+    const settled = state.mirror.activeSubagents.get('tu_o')
+    expect(settled?.status).toBe('done')
+    expect(settled?.endedAt).toBe(30_000)
+    expect(settled?.result?.content).toBe('the real output')
+  })
 })
 
 // ---------------------------------------------------------------------------

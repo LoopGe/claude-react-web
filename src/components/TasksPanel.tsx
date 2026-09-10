@@ -17,7 +17,7 @@
 //     normal snapshot path; no optimistic state here.
 
 import { memo, useCallback, useState } from 'react'
-import { useSessionField } from '../session-store/selectors'
+import { useSessionField, useSessionTaskCounts } from '../session-store/selectors'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -110,13 +110,30 @@ export const TasksPanel = memo(function TasksPanel({
 
   const active = tasks.filter((t) => !isTerminal(t.status))
   const finished = tasks.filter((t) => isTerminal(t.status))
-  const animatedActive = Math.round(useCountUp(active.length, 300))
+  // The header count comes from the SHARED indicator selector, not from
+  // `active.length`: the panel lists ambient housekeeping (the SDK says it may
+  // appear in a tasks panel) but must not COUNT it, because the WorkingBubble
+  // pill reads the same selector and the two numbers have to agree. The
+  // ambient remainder is surfaced separately instead of being folded in.
+  const { indicator: indicatorCount } = useSessionTaskCounts(sessionId)
+  const ambientActive = active.length - indicatorCount
+  const animatedActive = Math.round(useCountUp(indicatorCount, 300))
 
   return (
     <aside className="tasks-panel" role="region" aria-label="Tasks" ref={setPanelOs}>
       <header className="tasks-panel-header">
         <span className="tasks-panel-title">Tasks</span>
-        <span className="tasks-panel-count">{animatedActive > 0 ? `${animatedActive} running` : 'idle'}</span>
+        <span className="tasks-panel-count">
+          {animatedActive > 0 ? `${animatedActive} running` : 'idle'}
+          {ambientActive > 0 && (
+            <span
+              className="tasks-panel-count-ambient"
+              title="Housekeeping tasks the CLI runs itself — listed here, excluded from activity counts"
+            >
+              {` +${ambientActive} ambient`}
+            </span>
+          )}
+        </span>
         <span className="tasks-panel-spacer" />
         <button className="tasks-panel-icon-btn" onClick={onClose} aria-label="Close">
           <IconX size={14} />

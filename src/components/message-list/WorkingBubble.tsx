@@ -27,6 +27,7 @@ export const WorkingBubble = memo(function WorkingBubble({
   recapping,
   waiting,
   runningTaskCount,
+  totalTaskCount,
   onOpenTasks,
   onOpenSubagent,
   active: _active,
@@ -53,10 +54,17 @@ export const WorkingBubble = memo(function WorkingBubble({
    *  with calmed visuals instead of unmounting — surfacing that background
    *  work is ongoing after the turn. */
   waiting?: boolean
-  /** Authoritative running background-task count (non-terminal,
-   *  non-skipTranscript) from the session store. When > 0, renders a
-   *  clickable count pill that calls `onOpenTasks`. */
+  /** The single indicator count — non-terminal tasks minus ambient /
+   *  skipTranscript housekeeping (`useSessionTaskCounts().indicator`). This is
+   *  the number the pill renders, and the TasksPanel header renders the same
+   *  selector value, so the two surfaces cannot disagree. */
   runningTaskCount?: number
+  /** Every non-terminal task, ambient included (`useSessionTaskCounts().all`).
+   *  Only decides whether the pill stays visible as the TasksPanel entry point:
+   *  while ambient housekeeping is the only thing running, the pill renders
+   *  icon-only (no digit) rather than claiming work the SDK says hosts should
+   *  keep out of activity indicators. */
+  totalTaskCount?: number
   /** Opens the Tasks overlay. Wired by the host (Chat) to open TasksPanel. */
   onOpenTasks?: () => void
   /** When provided, each subagent chip becomes a button that calls this
@@ -79,6 +87,11 @@ export const WorkingBubble = memo(function WorkingBubble({
   const subagentCount = subagents.length
   const hasSubagents = subagentCount > 0
   const taskCount = runningTaskCount ?? 0
+  // Ambient-only work: nothing to report as activity, but the panel entry must
+  // stay reachable. Falls back to taskCount when the host doesn't pass a total
+  // (SideChatDrawer), so the pill keeps its old all-or-nothing behaviour there.
+  const totalTasks = Math.max(totalTaskCount ?? taskCount, taskCount)
+  const ambientOnly = taskCount === 0 && totalTasks > 0
   const active = _active ?? true
   const idle = !active && !waiting
 
@@ -171,20 +184,30 @@ export const WorkingBubble = memo(function WorkingBubble({
         </span>
       )}
       {/* Background-task count pill — the clickable entry to the Tasks
-          overlay. Shows the authoritative running count (not just
-          transcript-tracked subagents); visible in both the active and
-          Waiting states so a background task outliving its turn stays
-          surfaced. */}
-      {taskCount > 0 && onOpenTasks && (
+          overlay. The digit is the shared indicator count (not just
+          transcript-tracked subagents, and not ambient housekeeping); visible
+          in both the active and Waiting states so a background task outliving
+          its turn stays surfaced. Ambient-only work keeps the pill (the panel
+          has to stay reachable) but drops the digit — counting housekeeping as
+          activity is what made this number disagree with the TasksPanel. */}
+      {totalTasks > 0 && onOpenTasks && (
         <button
           type="button"
-          className="working-tasks"
+          className={`working-tasks${ambientOnly ? ' working-tasks-ambient' : ''}`}
           onClick={onOpenTasks}
-          title={`${taskCount} background task${taskCount === 1 ? '' : 's'} running — click to open Tasks`}
-          aria-label={`${taskCount} background task${taskCount === 1 ? '' : 's'} running`}
+          title={
+            ambientOnly
+              ? `${totalTasks} background housekeeping task${totalTasks === 1 ? '' : 's'} — click to open Tasks`
+              : `${taskCount} background task${taskCount === 1 ? '' : 's'} running — click to open Tasks`
+          }
+          aria-label={
+            ambientOnly
+              ? `${totalTasks} background housekeeping task${totalTasks === 1 ? '' : 's'}`
+              : `${taskCount} background task${taskCount === 1 ? '' : 's'} running`
+          }
         >
           <IconListTodo size={12} aria-hidden />
-          {countTasks}
+          {!ambientOnly && countTasks}
         </button>
       )}
       {hasSubagents && (

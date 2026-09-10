@@ -69,6 +69,13 @@
   color: var(--fg-muted);
 }
 
+/* Ambient remainder — listed in the panel, deliberately outside the running
+   count (see TasksPanel.tsx). Dimmer than the count it trails. */
+.tasks-panel-count-ambient {
+  color: var(--fg-muted);
+  opacity: 0.7;
+}
+
 .tasks-panel-spacer { flex: 1; }
 
 .tasks-panel-icon-btn {

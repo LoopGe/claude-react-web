@@ -35,39 +35,46 @@ export function useSessionField<K extends keyof SessionSnapshot>(
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
-/** Subscribe to the running background-task counts for a session, derived
- *  from the `tasks` mirror. Returns a stable `{ all, waiting }` object —
- *  identity only changes when a count actually changes — so consumers
- *  (Chat's WorkingBubble) don't re-render on every task-list mutation that
- *  leaves the counts untouched.
+/** Subscribe to the background-task counts for a session, derived from the
+ *  `tasks` mirror. Returns a stable `{ all, indicator }` object — identity
+ *  only changes when a count actually changes — so consumers don't re-render
+ *  on every task-list mutation that leaves the counts untouched.
  *
- *  `all` = every non-terminal task (the WorkingBubble pill / TasksPanel entry).
- *  `waiting` = non-terminal AND not (skipTranscript || ambient) — housekeeping
- *  tasks are SDK-flagged as not belonging in the inline transcript, and
- *  `ambient` (0.3.247) additionally covers auto-started live-update watchers;
- *  neither may keep the WorkingBubble in a phantom Waiting state. */
-export function useSessionTaskCounts(sessionId: string): { all: number; waiting: number } {
+ *  `indicator` is the ONE number every activity surface must show: non-terminal
+ *  AND not (skipTranscript || ambient). This is the SDK's own rule — it
+ *  documents `ambient` as housekeeping the CLI "does not surface as user work"
+ *  (every skip_transcript task plus auto-started live-update watchers) and says
+ *  hosts should exclude them from activity indicators. Every consumer reads it
+ *  from here rather than re-deriving: the WorkingBubble count pill, its
+ *  Waiting-state gate, and the TasksPanel header. Two surfaces counting the
+ *  same tasks under different rules is exactly the "the panel says 3, the
+ *  bubble says 1" mismatch this selector exists to prevent.
+ *
+ *  `all` = every non-terminal task, ambient included. NOT an indicator count:
+ *  it only answers "is there anything in the TasksPanel worth opening", which
+ *  keeps the panel reachable while ambient housekeeping runs. */
+export function useSessionTaskCounts(sessionId: string): { all: number; indicator: number } {
   const store = sessionStoreRegistry.getOrCreate(sessionId)
-  const prevRef = useRef<{ all: number; waiting: number } | null>(null)
+  const prevRef = useRef<{ all: number; indicator: number } | null>(null)
   const subscribe = useCallback(
     (listener: () => void) => store.subscribe(listener),
     [store],
   )
   const getSnapshot = useCallback(() => {
     let all = 0
-    let waiting = 0
+    let indicator = 0
     for (const t of store.getSnapshot().tasks) {
       if (
         t.status === 'completed' || t.status === 'failed' ||
         t.status === 'killed' || t.status === 'stopped'
       ) continue
       all++
-      if (!t.skipTranscript && !t.ambient) waiting++
+      if (!t.skipTranscript && !t.ambient) indicator++
     }
-    if (prevRef.current && prevRef.current.all === all && prevRef.current.waiting === waiting) {
+    if (prevRef.current && prevRef.current.all === all && prevRef.current.indicator === indicator) {
       return prevRef.current
     }
-    prevRef.current = { all, waiting }
+    prevRef.current = { all, indicator }
     return prevRef.current
   }, [store])
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)

@@ -250,6 +250,30 @@ describe('WorkingBubble', () => {
     expect(container.querySelector('.working-tasks')).toBeNull()
   })
 
+  it('keeps a digit-less pill when only ambient housekeeping is running', () => {
+    // indicator 0 + total 2 = ambient-only. The SDK says hosts should keep
+    // housekeeping out of activity indicators, so the number goes away — but
+    // the pill must survive, since it is the only entry to the TasksPanel.
+    const { container } = render(
+      <WorkingBubble runningTaskCount={0} totalTaskCount={2} onOpenTasks={() => {}} waiting />,
+    )
+    const pill = container.querySelector('.working-tasks')
+    expect(pill).toBeTruthy()
+    expect(pill!.classList.contains('working-tasks-ambient')).toBe(true)
+    expect(pill!.textContent).not.toContain('2')
+    expect(pill!.getAttribute('aria-label')).toContain('housekeeping')
+  })
+
+  it('renders the indicator count (not the ambient-inclusive total)', () => {
+    const { container } = render(
+      <WorkingBubble runningTaskCount={1} totalTaskCount={4} onOpenTasks={() => {}} waiting />,
+    )
+    const pill = container.querySelector('.working-tasks')
+    expect(pill!.textContent).toContain('1')
+    expect(pill!.textContent).not.toContain('4')
+    expect(pill!.classList.contains('working-tasks-ambient')).toBe(false)
+  })
+
   it('does not render the pill without an onOpenTasks handler', () => {
     const { container } = render(
       <WorkingBubble runningTaskCount={2} waiting />,

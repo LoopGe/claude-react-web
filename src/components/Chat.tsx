@@ -721,18 +721,17 @@ export const Chat = memo(function Chat({
   // between phases don't churn the label. `turnActive` above keeps the raw
   // activePhase so turn-end detection stays immediate.
   const displayPhase = usePhaseDwell(stream.activePhase)
-  // Authoritative running background-task counts from the session store's
-  // `tasks` mirror (same data TasksPanel reads). Read via a primitive-count
-  // selector so unrelated task-list identity changes don't re-render Chat.
-  //   `taskCount` — ALL non-terminal tasks (the WorkingBubble count pill;
-  //     ambient/housekeeping tasks count toward the pill so the TasksPanel
-  //     entry stays available).
-  //   `waitingTaskCount` — non-terminal AND not (skipTranscript || ambient).
-  //     skipTranscript tasks are SDK-flagged as not belonging in the inline
-  //     transcript; `ambient` (SDK 0.3.247) is the superset that also covers
-  //     auto-started live-update watchers. Neither may keep the WorkingBubble
-  //     in a phantom "Waiting..." state.
-  const { all: taskCount, waiting: waitingTaskCount } = useSessionTaskCounts(session.id)
+  // Authoritative background-task counts from the session store's `tasks`
+  // mirror (same data TasksPanel reads). Read via a primitive-count selector
+  // so unrelated task-list identity changes don't re-render Chat.
+  //   `indicatorTaskCount` — the single indicator count (non-terminal, minus
+  //     ambient/skipTranscript housekeeping). Drives BOTH the WorkingBubble
+  //     count pill and the Waiting gate, and the TasksPanel header reads the
+  //     same selector, so the two surfaces can't disagree.
+  //   `taskCount` — every non-terminal task, ambient included. Only used to
+  //     decide whether the bubble/pill stays mounted as the TasksPanel entry
+  //     point while ambient housekeeping runs; never rendered as a count.
+  const { all: taskCount, indicator: indicatorTaskCount } = useSessionTaskCounts(session.id)
   /** A background (async) subagent still in flight after the parent turn
    *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
    *  such subagent exists, so the user sees that background work is ongoing
@@ -753,7 +752,7 @@ export const Chat = memo(function Chat({
   const waitingRaw = computeWaiting({
     turnActive,
     terminated: session.terminated,
-    runningCount: waitingTaskCount,
+    runningCount: indicatorTaskCount,
     hasTranscriptBackground,
   })
   // The Waiting banner is dismissible. The SDK exposes no task-list query and
@@ -779,11 +778,11 @@ export const Chat = memo(function Chat({
         .sort(),
     [stream.activeSubagents],
   )
-  const somethingWaiting = waitingTaskCount > 0 || waitingSubagentIds.length > 0
+  const somethingWaiting = indicatorTaskCount > 0 || waitingSubagentIds.length > 0
   // Compact signature of the current waiting set (count + sorted subagent
   // ids). Identity-churn of `activeSubagents` is irrelevant — the string is
   // the dependency that matters.
-  const waitingKey = `${waitingTaskCount}|${waitingSubagentIds.join(',')}`
+  const waitingKey = `${indicatorTaskCount}|${waitingSubagentIds.join(',')}`
   const prevWaitingKeyRef = useRef(waitingKey)
   useEffect(() => {
     const prevKey = prevWaitingKeyRef.current
@@ -797,10 +796,10 @@ export const Chat = memo(function Chat({
     const prevIds = prevIdsStr ? new Set(prevIdsStr.split(',')) : new Set<string>()
     const isNewEpisode = prevCount === 0 && prevIds.size === 0
     const grew =
-      waitingTaskCount > prevCount ||
+      indicatorTaskCount > prevCount ||
       waitingSubagentIds.some((id) => !prevIds.has(id))
     if (isNewEpisode || grew) setWaitingDismissed(false)
-  }, [waitingKey, somethingWaiting, waitingTaskCount, waitingSubagentIds])
+  }, [waitingKey, somethingWaiting, indicatorTaskCount, waitingSubagentIds])
   /** Open this panel's Tasks overlay. Stable callback so the memoized
    *  WorkingBubble count pill doesn't re-render on every Chat render. */
   const openTasksPanel = useCallback(() => onOpenTasksPanel?.(session.id), [onOpenTasksPanel, session.id])
@@ -2129,7 +2128,8 @@ export const Chat = memo(function Chat({
           activePhase={displayPhase}
           recapping={session.compacting ?? false}
           waiting={waiting}
-          runningTaskCount={taskCount}
+          runningTaskCount={indicatorTaskCount}
+          totalTaskCount={taskCount}
           onOpenTasks={openTasksPanel}
           onOpenSubagent={openSubagent}
           onDismissWaiting={dismissWaiting}
