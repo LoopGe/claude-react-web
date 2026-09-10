@@ -82,6 +82,10 @@ export default [
         FormData: 'readonly',
         File: 'readonly',
         Request: 'readonly',
+        URL: 'readonly',
+        ReadableStream: 'readonly',
+        Response: 'readonly',
+        fetch: 'readonly',
       },
     },
     rules: {
