@@ -1626,7 +1626,7 @@
   margin: 0 var(--chat-reading-inset) 8px;
   border-radius: var(--radius-xl);
   border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 75%, transparent);
+  background: var(--glass-surface-bg);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   box-shadow: var(--drawer-shadow);
@@ -1747,9 +1747,10 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  /* Cap so a long checklist doesn't dominate the viewport — the panel is
-     position:sticky, so without a cap a 20-item list fills the whole chat
-     area. The list scrolls internally (overlay scrollbar attached in
+  /* Cap so a long checklist doesn't dominate the viewport — the card is a
+     bottom OVERLAY now, so without a cap the list grows the stack past the
+     transcript, whose height is reserved as scroll space (blanking it out).
+     The list scrolls internally (overlay scrollbar attached in
      TodoChecklist); the header + count stay visible above. */
   max-height: 240px;
   overflow-y: auto;
@@ -1944,7 +1945,7 @@
   margin: 0 var(--chat-reading-inset) 8px;
   border-radius: var(--radius-xl);
   border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 75%, transparent);
+  background: var(--glass-surface-bg);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   box-shadow: var(--drawer-shadow);
@@ -1980,6 +1981,12 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
+  /* Cap so a long-running monitor set can't grow the card without bound. The
+     bar is a bottom overlay now, so an uncapped list can push the whole stack
+     past the transcript viewport and blank it out; .todo-panel-list carries
+     the same cap for the same reason. */
+  max-height: 240px;
+  overflow-y: auto;
 }
 .monitor-item {
   display: flex;

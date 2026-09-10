@@ -19,7 +19,8 @@
     /* round() to a whole CSS pixel: the centered column is rendered through two
        different boxes — message rows live inside .chat-virtuoso-scroller (whose
        content box is inset by the scrollbar gutter, then shifted back by it) while
-       .chat-streaming-region is an absolutely-positioned full-width sibling. A
+       .chat-bottom-stack (which holds .chat-streaming-region) is an
+       absolutely-positioned full-width overlay. A
        fractional inset like 137.5px snaps in two steps on the row path
        (round(gutter)+round(inset-gutter)) vs one step on the streaming path
        (round(inset)), landing ~1px apart on non-integer-DPR displays. Quantizing

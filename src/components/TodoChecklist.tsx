@@ -89,8 +89,9 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   const result = useMemo(() => extractTodos(messages, !!working), [messages, working])
   const hc = skin === 'hc'
   // Cap the list height so a long checklist doesn't dominate the viewport
-  // (the panel is position:sticky; without a cap a 20-item list fills the
-  // whole chat area). The list scrolls internally via the project's overlay
+  // (the card is a bottom overlay; without a cap the stack outgrows the
+  // transcript and blanks it out). The list scrolls internally via the
+  // project's overlay
   // scrollbar (same as MessageList / RecapWindow), keeping the header + count
   // visible. Declared here (before the early returns) so the hook order is
   // stable across renders where the panel is hidden.
@@ -109,7 +110,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   const hiddenSet = useMemo(() => new Set(hiddenList), [hiddenList])
 
   // Undo row auto-dismisses after UNDO_DISMISS_MS (toast pattern) so a hide
-  // doesn't leave a permanent button in the sticky header. Re-shown on every
+  // doesn't leave a permanent button in the card header. Re-shown on every
   // new hide; hiding again just resets the window. Dismissal does NOT clear
   // hiddenList — the items stay hidden, the undo affordance is what closes.
   const [undoDismissed, setUndoDismissed] = useState(false)

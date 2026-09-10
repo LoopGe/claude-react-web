@@ -595,11 +595,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // attaches once and any child resize — a task appears, the card expands, the
   // bubble grows — re-fires it, with no dependency on what is inside.
   useEffect(() => {
+    // The stack is rendered unconditionally, so React has already assigned the
+    // ref by the time this passive effect runs — no null branch is needed.
     const el = bottomStackRef.current
-    if (!el) {
-      setBottomStackHeight(0)
-      return
-    }
+    if (!el) return
 
     const updateHeight = () => {
       const height = Math.ceil(el.getBoundingClientRect().height)
