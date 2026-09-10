@@ -42,6 +42,7 @@ import {
 import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
 import { tryCaptureGitHead } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
+import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
@@ -2418,6 +2419,7 @@ export class SessionManager {
 
     session.pumpTask = this.pump(session)
     this.sessions.set(id, session)
+    metrics.gauge('sessions_active', this.sessions.size)
     log.info(`[session ${id}] spawned model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
     // Classify the model's effort capability (keyword-based, synchronous) so
     // the very first `created` frame below already carries the correct
@@ -2704,6 +2706,7 @@ export class SessionManager {
         `[session ${id}] interrupt() resolved in ${Date.now() - startedAt}ms, ` +
         `withdrawn=${removed} (receipt=${receiptNote})`,
       )
+      metrics.observe('interrupt_ms', Date.now() - startedAt)
       s.lastActivityAt = Date.now()
       this.persist(s)
       return removed
@@ -3836,6 +3839,7 @@ export class SessionManager {
     try {
       const result = await fn()
       const ms = Date.now() - startedAt
+      metrics.observe('sdk_control_ms', ms, { op: label })
       // Only the slow ones are interesting — a healthy control round-trip
       // is single-digit ms. Warn above 1s so the noise floor stays low.
       if (ms >= 1000) {
@@ -4652,6 +4656,7 @@ export class SessionManager {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
     this.sessions.delete(id)
+    metrics.gauge('sessions_active', this.sessions.size)
     // Clear the recap state. The session is no longer in the manager's
     // map so getPhase will return 'unknown' from inside the manager —
     // we still call invalidate() to end any subscribers and clear the

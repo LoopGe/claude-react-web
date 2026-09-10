@@ -8,6 +8,7 @@
 
 import { config as serverConfig, requireAuthToken } from './config.js'
 import { createLogger } from './log.js'
+import { metrics } from './metrics.js'
 
 const log = createLogger('anthropic-api')
 
@@ -23,6 +24,9 @@ interface CallOptions {
   /** Multi-turn messages. When provided, takes precedence over userContent.
    *  Used by the auto-mode classifier which needs conversation context. */
   messages?: Array<{ role: string; content: string }>
+  /** Metrics label for the observability histogram — which server feature
+   *  is calling. Finite enum: 'recap' | 'commit-message' | 'auto-classifier'. */
+  caller?: string
 }
 
 /** POST /v1/messages with a single-turn user message. Returns the raw
@@ -50,6 +54,9 @@ export async function callAnthropicMessages(opts: CallOptions): Promise<string> 
     signal: opts.signal ?? AbortSignal.timeout(30_000),
   })
   const elapsed = Date.now() - start
+  // Records ALL outcomes — success, HTTP error, empty response — since it
+  // runs before the result branches.
+  metrics.observe('anthropic_api_ms', elapsed, { caller: opts.caller ?? 'unknown' })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     log.error(`api error status=${res.status} elapsed=${elapsed}ms model=${opts.model} body=${body.slice(0, 200)}`)
