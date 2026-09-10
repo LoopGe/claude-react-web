@@ -119,7 +119,7 @@ export function UpdateDialog({ open, mode, info, updating, onUpdate, onClose }: 
 
         {loading && <div className="update-dialog-loading">Loading release notes...</div>}
 
-        {!loading && releases && releases.length === 0 && (
+        {!loading && (!releases || releases.length === 0) && (
           <p className="update-dialog-empty">
             {error
               ? `Release notes are unavailable right now (${error}).`

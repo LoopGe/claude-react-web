@@ -4,13 +4,16 @@ import { render, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { UpdateDialog } from './UpdateDialog'
 import type { UpdateInfo } from '../../shared/update-info'
 
-const { getNotes } = vi.hoisted(() => ({ getNotes: vi.fn() }))
+const { getNotes, getError } = vi.hoisted(() => ({
+  getNotes: vi.fn(),
+  getError: vi.fn().mockReturnValue(null),
+}))
 const mockToast = { success: vi.fn(), error: vi.fn(), info: vi.fn() }
 
 vi.mock('../hooks/useReleaseNotes', () => ({
   useReleaseNotes: (enabled: boolean) =>
     enabled
-      ? { releases: getNotes(), loading: false, error: null }
+      ? { releases: getNotes(), loading: false, error: getError() }
       : { releases: null, loading: false, error: null },
 }))
 vi.mock('../hooks/useToast', () => ({
@@ -69,6 +72,8 @@ describe('UpdateDialog', () => {
   beforeEach(() => {
     getNotes.mockReset()
     getNotes.mockReturnValue([NOTE])
+    getError.mockReset()
+    getError.mockReturnValue(null)
   })
 
   it('renders header, release sections, and footer buttons', () => {
@@ -164,6 +169,15 @@ describe('UpdateDialog', () => {
     getNotes.mockReturnValue([])
     const { getByText } = render(<UpdateDialog {...baseProps()} />)
     expect(getByText(/Release notes are unavailable/)).toBeTruthy()
+  })
+
+  it('shows notes-unavailable with error text on transport failure', () => {
+    getNotes.mockReturnValue(null)
+    getError.mockReturnValue('network down')
+    const { getByText } = render(<UpdateDialog {...baseProps()} />)
+    expect(
+      getByText('Release notes are unavailable right now (network down).'),
+    ).toBeTruthy()
   })
 
   it('copies the upgrade command and flips to Copied', async () => {

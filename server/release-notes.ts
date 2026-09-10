@@ -37,7 +37,7 @@ const PER_PAGE = 30
 
 /** Parse `owner/repo` out of a package.json `repository` field.
  *  Accepts a plain URL string (`git+https://github.com/o/r.git`,
- *  `https://github.com/o/r`, `git@github.com:o/r.git`, `github:o/r`)
+ *  `https://github.com/o/r`, `git@github.com:o/r.git`)
  *  OR the object form `{ type: 'git', url: '…' }` that npm/popular
  *  tooling emits. Returns null when the URL isn't a GitHub repo we can
  *  extract a slug from. */
