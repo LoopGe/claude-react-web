@@ -7,6 +7,8 @@
 // carries no reliable extension, and the wrong kind renders as nothing at all.
 
 import { useEffect, useRef, useState } from 'react'
+import { getMaxUploadBytes } from '../hooks/config-store'
+import { formatBytes } from '../utils/format'
 import {
   BACKGROUND_OPACITY_MIN,
   BACKGROUND_OPACITY_MAX,
@@ -217,6 +219,12 @@ export function BackgroundPicker({ setting, onChange }: Props) {
 
   const handleUpload = async (file: File) => {
     const forMedia = media
+    const max = getMaxUploadBytes()
+    if (file.size > max) {
+      setApplied(false)
+      setError(`File too large (${formatBytes(file.size)}). Max ${formatBytes(max)}.`)
+      return
+    }
     const form = new FormData()
     form.append('file', file, file.name)
     try {
