@@ -836,10 +836,10 @@
   font-size: 12px;
 }
 /* Optional checkbox below the message (discard "permanently delete").
-   Mirrors .settings-toggle's self-drawn checkbox (messages.css) so the
-   look is identical across default/glow/hc skins — a native checkbox would
-   render inconsistently under glow's :checked override and hc's contrast
-   rules. */
+   Self-drawn to match the global input[type="checkbox"] chrome
+   (utilities.css) so the look is identical across default/glow/hc skins —
+   a native checkbox would render inconsistently under glow's :checked
+   override and hc's contrast rules. */
 .confirm-dialog-checkbox {
   display: flex;
   align-items: center;

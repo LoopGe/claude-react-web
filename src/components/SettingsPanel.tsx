@@ -938,7 +938,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           <div className="settings-readonly-value mono" title={session.cwd ?? '—'}>{session.cwd ?? '—'}</div>
         </SettingsRow>
         <SettingsRow stack title="Created">
-          <div className="settings-readonly-value">{new Date(session.createdAt).toLocaleString()}</div>
+          <div className="settings-readonly-value" title={new Date(session.createdAt).toLocaleString()}>{new Date(session.createdAt).toLocaleString()}</div>
         </SettingsRow>
       </section>
 
