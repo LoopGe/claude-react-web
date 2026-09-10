@@ -1620,10 +1620,11 @@
        - it re-enables pointer-events (the stack turns it off so clicks fall
          through its empty area);
        - `--chat-reading-inset` keeps its edges on the transcript's reading
-         column, and the 18px bottom margin matches .streaming-footer-wrapper's
-         bottom padding — that wrapper carried the "room off the composer" gap
-         when the live bubble was bottom-most in this slot, so the cards inherit
-         the same rhythm now that they are;
+         column, and the --chat-row-gap bottom margin matches
+         .streaming-footer-wrapper's bottom padding — that wrapper carried the
+         "room off the composer" gap when the live bubble was bottom-most in
+         this slot, so the cards inherit the same shared rhythm now that they
+         are;
        - it is a column flex box with `min-height: 0` so it can SHRINK when the
          stack hits its height cap (see .chat-bottom-stack). The chain runs on
          through .animated-collapse to the scrolling list — without it the stack
@@ -1634,7 +1635,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  margin: 0 var(--chat-reading-inset) 18px;
+  margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
   padding: 10px 14px;
   font-size: 13px;
   /* One-shot entrance when the card mounts (a visible task list appears at
@@ -1955,16 +1956,16 @@
 
 /* Monitor bar — surfaces currently-running Monitor background tasks. It is
    the second card in the transcript's bottom overlay stack, sharing
-   .todo-panel's shell (glass.css), its 18px bottom rhythm, and its shrinkable
-   column-flex role; only the accent differs (--warn, so it reads as distinct
-   from the Checklist). */
+   .todo-panel's shell (glass.css), its --chat-row-gap bottom rhythm, and its
+   shrinkable column-flex role; only the accent differs (--warn, so it reads
+   as distinct from the Checklist). */
 .monitor-bar {
   pointer-events: auto;
   flex: 0 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  margin: 0 var(--chat-reading-inset) 18px;
+  margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
   padding: 10px 14px;
   font-size: 13px;
 }

@@ -331,6 +331,30 @@ describe('config', () => {
     expect(WRITABLE_CONFIG_KEYS).toContain('cliDebug')
   })
 
+  it('defaults rowGap to spacious', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.rowGap).toBe('spacious')
+  })
+
+  it('honors a rowGap override from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ rowGap: 'airy' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.rowGap).toBe('airy')
+  })
+
+  it('ignores an invalid rowGap value', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ rowGap: '14px' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.rowGap).toBe('spacious')
+  })
+
+  it('exposes rowGap as a writable config key', () => {
+    expect(WRITABLE_CONFIG_KEYS).toContain('rowGap')
+  })
+
   describe('clearCredentials', () => {
     it('clears authToken, baseUrl, and accessToken from config.json', async () => {
       writeFileSync(join(dir, 'config.json'), JSON.stringify({

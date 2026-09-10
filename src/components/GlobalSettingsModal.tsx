@@ -9,6 +9,8 @@ import { IconX, IconCheck, IconChevronDown, IconFolder, IconDownload, IconRefres
 import { EmptyState } from './EmptyState'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
+import type { RowGapPreset } from '../../shared/row-gap'
+import { DEFAULT_ROW_GAP, ROW_GAP_LABELS, ROW_GAP_PRESETS } from '../../shared/row-gap'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
@@ -152,6 +154,7 @@ export function GlobalSettingsModal({
   const [autoRecap, setAutoRecap] = useState(true)
   const [toolGroupCards, setToolGroupCards] = useState(true)
   const [showMessageHeaders, setShowMessageHeaders] = useState(true)
+  const [rowGap, setRowGap] = useState<RowGapPreset>(DEFAULT_ROW_GAP)
   const [allowSensitivePathEdits, setAllowSensitivePathEdits] = useState(false)
 
   // Skills tab state
@@ -200,6 +203,7 @@ export function GlobalSettingsModal({
         setAutoRecap(cfg.autoRecap ?? true)
         setToolGroupCards(cfg.toolGroupCards ?? true)
         setShowMessageHeaders(cfg.showMessageHeaders ?? true)
+        setRowGap(cfg.rowGap ?? DEFAULT_ROW_GAP)
         setAllowSensitivePathEdits(cfg.allowSensitivePathEdits ?? false)
         setFirstPartyTools(cfg.firstPartyTools ?? {})
       } catch (e) {
@@ -280,6 +284,7 @@ export function GlobalSettingsModal({
         autoRecap,
         toolGroupCards,
         showMessageHeaders,
+        rowGap,
         allowSensitivePathEdits,
       }
       // Structured first-party defaults — written verbatim as the single
@@ -410,6 +415,7 @@ export function GlobalSettingsModal({
                   autoRecap={autoRecap}
                   toolGroupCards={toolGroupCards}
                   showMessageHeaders={showMessageHeaders}
+                  rowGap={rowGap}
                   allowSensitivePathEdits={allowSensitivePathEdits}
                   onMaxUploadBytesChange={setMaxUploadBytes}
                   onHistoryCapChange={setHistoryCap}
@@ -419,6 +425,7 @@ export function GlobalSettingsModal({
                   onAutoRecapChange={setAutoRecap}
                   onToolGroupCardsChange={setToolGroupCards}
                   onShowMessageHeadersChange={setShowMessageHeaders}
+                  onRowGapChange={setRowGap}
                   onAllowSensitivePathEditsChange={setAllowSensitivePathEdits}
                 />
               )}
@@ -556,11 +563,11 @@ const MIN_MS = 60 * 1000
 
 function ServerTab({
   maxUploadBytes, historyCap, maxGroupPanels, workingStuckMs,
-  showPinnedUserMessage, autoRecap, toolGroupCards, showMessageHeaders, allowSensitivePathEdits,
+  showPinnedUserMessage, autoRecap, toolGroupCards, showMessageHeaders, rowGap, allowSensitivePathEdits,
   onMaxUploadBytesChange, onHistoryCapChange, onMaxGroupPanelsChange,
   onWorkingStuckMsChange,
   onShowPinnedUserMessageChange, onAutoRecapChange, onToolGroupCardsChange,
-  onShowMessageHeadersChange, onAllowSensitivePathEditsChange,
+  onShowMessageHeadersChange, onRowGapChange, onAllowSensitivePathEditsChange,
 }: {
   maxUploadBytes: number
   historyCap: number
@@ -570,6 +577,7 @@ function ServerTab({
   autoRecap: boolean
   toolGroupCards: boolean
   showMessageHeaders: boolean
+  rowGap: RowGapPreset
   allowSensitivePathEdits: boolean
   onMaxUploadBytesChange: (v: number) => void
   onHistoryCapChange: (v: number) => void
@@ -579,6 +587,7 @@ function ServerTab({
   onAutoRecapChange: (v: boolean) => void
   onToolGroupCardsChange: (v: boolean) => void
   onShowMessageHeadersChange: (v: boolean) => void
+  onRowGapChange: (v: RowGapPreset) => void
   onAllowSensitivePathEditsChange: (v: boolean) => void
 }) {
   const uploadMb = Math.round(maxUploadBytes / MB)
@@ -690,6 +699,18 @@ function ServerTab({
             label="Show message card headers"
             checked={showMessageHeaders}
             onChange={onShowMessageHeadersChange}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Transcript spacing"
+          hint="Vertical rhythm between message rows, folded tool groups, and the floating task/monitor cards. Applies globally to every session."
+        >
+          <Segmented
+            ariaLabel="Transcript spacing"
+            value={rowGap}
+            options={ROW_GAP_PRESETS}
+            onChange={onRowGapChange}
+            labelFor={(p) => ROW_GAP_LABELS[p]}
           />
         </SettingsRow>
       </section>
@@ -807,13 +828,16 @@ function Stepper({
 }
 
 /** Compact segmented picker for small ordinal ranges (e.g. 2–5 panels). */
-function Segmented<T extends number>({
-  value, options, onChange, ariaLabel,
+function Segmented<T extends number | string>({
+  value, options, onChange, ariaLabel, labelFor,
 }: {
   value: T
   options: readonly T[]
   onChange: (v: T) => void
   ariaLabel: string
+  /** Optional display text; defaults to the raw value (used by numeric
+   *  options like "Max group panels", where the number is the label). */
+  labelFor?: (v: T) => string
 }) {
   return (
     <div className="segmented" role="radiogroup" aria-label={ariaLabel}>
@@ -826,7 +850,7 @@ function Segmented<T extends number>({
           className={`segmented-btn${value === opt ? ' active' : ''}`}
           onClick={() => onChange(opt)}
         >
-          {opt}
+          {labelFor ? labelFor(opt) : opt}
         </button>
       ))}
     </div>

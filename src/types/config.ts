@@ -1,4 +1,5 @@
 import type { SkillLoadMode } from '../../shared/skills'
+import type { RowGapPreset } from '../../shared/row-gap'
 
 /** Client-side mirror of a provider profile. */
 export interface ProviderProfile {
@@ -52,6 +53,9 @@ export interface ConfigResponse {
    *  timestamp + sending status). Sessions without an explicit override
    *  inherit this. */
   showMessageHeaders?: boolean
+  /** Global transcript spacing (`--chat-row-gap`) density preset.
+   *  Undefined = inherit the server default (spacious). */
+  rowGap?: RowGapPreset
   /** Global default for the first-party `apptools` git MCP server. Sessions
    *  without an explicit override inherit this. */
   appToolsGit?: boolean
@@ -92,6 +96,8 @@ export interface FullServerConfig {
   toolGroupCards: boolean
   /** Global default for message-card header rows. */
   showMessageHeaders: boolean
+  /** Global transcript spacing (`--chat-row-gap`) density preset. */
+  rowGap: RowGapPreset
   /** Global default for the first-party `apptools` git MCP server. */
   appToolsGit: boolean
   /** Per-first-party-server global defaults. */

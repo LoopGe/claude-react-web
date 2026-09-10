@@ -12,6 +12,20 @@
   --chat-reading-max-width: 900px;
   --chat-reading-min-inset: 20px;
   --chat-reading-inset: max(var(--chat-reading-min-inset), calc((100% - var(--chat-reading-max-width)) / 2));
+  /* Vertical rhythm for the whole transcript — the gap between two adjacent
+     messages. Each .virtuoso-item-wrapper carries half of it (top + bottom),
+     so two neighbours sum to the full gap; the first/last outside edge uses
+     the whole token. The folded tool-group body derives its internal padding
+     and inter-card gaps, and the bottom overlay cards (todo/monitor + the
+     streaming footer) derive their leave-off-the-composer gap from the same
+     token, so rows + group + floating cards read as one uniform beat. Change
+     this single value and everything tightens/loosens together.
+
+     The default is the shipped preset (spacious, `--space-3` = 12px); the App
+     overrides it at runtime from the rowGap config value via
+     documentElement.style.setProperty, so this is only the pre-JS fallback and
+     stays in sync with the server default. */
+  --chat-row-gap: var(--space-3);
 }
 @supports (width: round(1px, 1px)) {
   .chat,
@@ -74,10 +88,12 @@
   overflow-y: hidden;
   overflow-x: hidden;
   /* No container inset: the top/bottom breathing room now lives on each
-     .virtuoso-item-wrapper (padding-block: 7px) so the gap belongs to the
-     messages themselves rather than a fixed container liner. This keeps the
-     first message off the header and the last off the composer, while the
-     between-message gap stays 14px (7px + 7px). */
+     .virtuoso-item-wrapper (padding-block: calc(var(--chat-row-gap) / 2)) so
+     the gap belongs to the messages themselves rather than a fixed container
+     liner. This keeps the first message off the header and the last off the
+     composer, while the between-message gap is the full --chat-row-gap — the
+     same rhythm the folded tool-group body uses internally (it reads the same
+     token), so a group card is one uniform beat with the messages around it. */
 }
 /* The native scrollbar on .chat-virtuoso-scroller is hidden by the overlay
    scrollbar (useOverlayScrollbar in MessageList), so scrollbar-gutter is no
@@ -183,18 +199,19 @@
 .virtuoso-item-wrapper {
   display: flex;
   flex-direction: column;
-  /* 7px top + 7px bottom gives 14px between adjacent items. Real
-     transcript first/last rows get one extra 7px so their outside
-     edge also totals 14px; class-based because Virtuoso can mount a
-     window whose DOM first-child is not the transcript first message. */
-  padding-top: 7px;
-  padding-bottom: 7px;
+  /* Each side carries half of --chat-row-gap, so two adjacent items hand off
+     the full gap (matching the tool-group body, which shares the token). The
+     real transcript first/last rows get the whole token so their outside edge
+     also totals it; class-based because Virtuoso can mount a window whose DOM
+     first-child is not the transcript first message. */
+  padding-top: calc(var(--chat-row-gap) / 2);
+  padding-bottom: calc(var(--chat-row-gap) / 2);
   padding-left: var(--chat-reading-inset);
   padding-right: var(--chat-reading-inset);
   contain: layout style;
 }
-.virtuoso-item-wrapper.transcript-first-item { padding-top: 14px; }
-.virtuoso-item-wrapper.transcript-last-item { padding-bottom: 14px; }
+.virtuoso-item-wrapper.transcript-first-item { padding-top: var(--chat-row-gap); }
+.virtuoso-item-wrapper.transcript-last-item { padding-bottom: var(--chat-row-gap); }
 /* Virtuoso Footer doesn't go through .virtuoso-item-wrapper, so transcript
    metadata needs the same centering padding to align with message rows. */
 .virtuoso-footer-wrapper {
@@ -202,11 +219,12 @@
   flex-direction: column;
   padding-left: var(--chat-reading-inset);
   padding-right: var(--chat-reading-inset);
-  /* 7px top keeps the recap bubble 14px below the previous item
-     (matching .virtuoso-item-wrapper's rhythm now that .chat-messages has no
-     container padding); the larger bottom gives it room off the composer. */
-  padding-top: 7px;
-  padding-bottom: 14px;
+  /* Half of --chat-row-gap on top keeps the recap bubble a full --chat-row-gap
+     below the previous item (matching .virtuoso-item-wrapper's rhythm now that
+     .chat-messages has no container padding); the bottom uses the same token
+     so the whole spacing vocabulary stays unified at --chat-row-gap. */
+  padding-top: calc(var(--chat-row-gap) / 2);
+  padding-bottom: var(--chat-row-gap);
 }
 /* Bottom overlay stack — the live streaming bubble and the task cards (passed
    into MessageList as `bottomOverlay`) share one bottom-anchored layer, so
@@ -264,14 +282,15 @@
   padding-left: var(--chat-reading-inset);
   padding-right: var(--chat-reading-inset);
   /* Top padding is 0 so the streaming bubble's visible top edge sits at the
-     same 14px rhythm below the previous message as any two settled messages
-     (the last settled item carries padding-bottom:14px). Adding top padding
-     here pushed the live bubble ~30px down, reading as a visual "step" the
-     moment streaming began. The breathing glow is inset-only (contained
-     inside the border), so there is no outer halo to clip or reserve room
-     for — padding-bottom is now purely bottom rhythm. */
+     same --chat-row-gap rhythm below the previous message as any two settled
+     messages (the last settled item carries padding-bottom:var(--chat-row-gap)).
+     Adding top padding here pushed the live bubble ~30px down, reading as a
+     visual "step" the moment streaming began. The breathing glow is inset-only
+     (contained inside the border), so there is no outer halo to clip or reserve
+     room for — padding-bottom is now purely bottom rhythm, sharing the same
+     --chat-row-gap as the overlay cards that replace this slot. */
   padding-top: 0;
-  padding-bottom: 18px;
+  padding-bottom: var(--chat-row-gap);
   pointer-events: none;
 }
 .streaming-footer-wrapper > .streaming-msg {

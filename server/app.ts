@@ -242,6 +242,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       showMessageHeaders: serverConfig.showMessageHeaders,
       appToolsGit: serverConfig.appToolsGit,
       firstPartyTools: serverConfig.firstPartyTools,
+      rowGap: serverConfig.rowGap,
       activeProfileId: serverConfig.activeProfileId,
       activeProfileName: serverConfig.profiles.find((p) => p.id === serverConfig.activeProfileId)?.name ?? 'Default',
     }),

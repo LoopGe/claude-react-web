@@ -89,6 +89,8 @@ import {
   clampMaxOpen,
 } from './constants/storageKeys'
 import type { Defaults, ConfigResponse } from './types/config'
+import type { RowGapPreset } from '../shared/row-gap'
+import { DEFAULT_ROW_GAP, ROW_GAP_PX } from '../shared/row-gap'
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
@@ -217,8 +219,18 @@ export function App() {
     autoRecap: boolean
     toolGroupCards: boolean
     showMessageHeaders: boolean
+    rowGap: RowGapPreset
     firstPartyTools?: Record<string, { enabled: boolean }>
-  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, showMessageHeaders: true })
+  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP })
+
+  // Apply the global transcript spacing to a CSS variable. Set on
+  // documentElement, it overrides the `.chat`-scoped default, so message rows,
+  // the folded tool-group body, and the floating bottom cards (todo/monitor)
+  // all follow the chosen density preset live.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--chat-row-gap', `${ROW_GAP_PX[globalPrefs.rowGap]}px`)
+  }, [globalPrefs.rowGap])
+
   const {
     settingsOpenFor,
     settingsTabRequest,
@@ -472,6 +484,7 @@ export function App() {
           autoRecap: r.autoRecap ?? true,
           toolGroupCards: r.toolGroupCards ?? true,
           showMessageHeaders: r.showMessageHeaders ?? true,
+          rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
           firstPartyTools: r.firstPartyTools,
         })
       })
@@ -3607,6 +3620,7 @@ export function App() {
       autoRecap: r.autoRecap ?? true,
       toolGroupCards: r.toolGroupCards ?? true,
       showMessageHeaders: r.showMessageHeaders ?? true,
+      rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
       firstPartyTools: r.firstPartyTools,
     })
   }, [])
