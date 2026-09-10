@@ -19,6 +19,7 @@ import { buildBackgroundRouter } from './background-routes.js'
 import { buildMcpConfigRouter } from './mcp-routes.js'
 import { buildSnippetRouter } from './snippet-routes.js'
 import { buildAgentDefinitionsRouter } from './agent-definition-routes.js'
+import { metrics } from './metrics.js'
 import type { AgentDefinitionStore } from './agent-definition-store.js'
 import { buildUiStateRouter } from './routes/ui-state-routes.js'
 import { buildResetRouter } from './routes/reset.js'
@@ -217,6 +218,14 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       // highest-volume log line — actually reaches the file sink when file
       // logging is enabled. Bare console.log bypasses writeToFile().
       httpLog.info(`[${c.req.method}] ${c.req.path} → ${c.res.status} (${ms}ms)`)
+    }
+    // Metrics: record under the ROUTE TEMPLATE (not the concrete path) to
+    // keep label cardinality bounded. /api/metrics excludes itself to avoid
+    // self-excitation every time the panel polls. `c.req.routePath` falls
+    // back to the concrete path only for unmatched routes (404s) — rare and
+    // low-volume, acceptable.
+    if (c.req.path !== '/api/health' && c.req.path !== '/api/metrics') {
+      metrics.observe('http_request_ms', ms, { route: `${c.req.method} ${c.req.routePath}` })
     }
   })
 
