@@ -3,7 +3,7 @@
 // multipart file to /api/background/upload, verifies HTTP 200 + {url}, GET 200
 // with correct content-type, Range: bytes=0-3 → 206, no *.part residue.
 // Run: npx tsx scripts/e2e-stream-upload.mjs
-import { mkdtempSync, rmSync, readdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, readdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -12,6 +12,11 @@ import { fileURLToPath } from 'node:url'
 
 const thisDir = fileURLToPath(new URL('.', import.meta.url))
 const projectRoot = join(thisDir, '..')
+
+if (!existsSync(join(projectRoot, 'dist', 'cli.mjs'))) {
+  console.error('dist/cli.mjs not found — run `npm run build` first.')
+  process.exit(1)
+}
 
 /** Find a free port by briefly binding to port 0. */
 function getFreePort() {

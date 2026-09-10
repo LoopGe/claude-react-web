@@ -10,7 +10,7 @@ import {
   BACKGROUND_SRC_MAX,
   type BackgroundSetting,
 } from '../theme'
-import { setMaxUploadBytes } from '../hooks/config-store'
+import { setMaxUploadBytes, DEFAULT_MAX_UPLOAD_BYTES } from '../hooks/config-store'
 
 const MP4_UPLOAD = '/api/background/files/7c9e6679-7425-40de-944b-e07fc1f90ae7.mp4'
 const PNG_UPLOAD = '/api/background/files/7c9e6679-7425-40de-944b-e07fc1f90ae7.png'
@@ -32,7 +32,7 @@ describe('BackgroundPicker', () => {
     cleanup()
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
-    setMaxUploadBytes(25 * 1024 * 1024) // config-store is module-global
+    setMaxUploadBytes(DEFAULT_MAX_UPLOAD_BYTES) // config-store is module-global
   })
 
   it('renders None/Image/Video and defaults to None active', () => {

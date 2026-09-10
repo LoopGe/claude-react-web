@@ -234,6 +234,7 @@ security backstop. This is accepted, not hidden.
 | Disallowed type (`.mov`, `.gif`, `'constructor'`) | 400, nothing written |
 | Client disconnects mid-upload | temp deleted, no orphan |
 | Two files in one session-upload request | both persisted (distinct temp indices) |
+| More than 20 file parts in one session-upload request | first 20 persisted; excess silently dropped by busboy `files` limit |
 | Pasted images | unchanged — still buffered, still capped by the internal constant |
 | `maxUploadBytes` raised in Settings | streaming upload paths honour the new value |
 | Raising `maxUploadBytes` | pasted-image cap **unchanged** |

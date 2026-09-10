@@ -2,7 +2,11 @@
 // response arrives; read by hooks (e.g. usePastedImages) that need
 // server-driven limits without prop-drilling through 4 component layers.
 
-let _maxUploadBytes = 25 * 1024 * 1024 // 25 MB default, overwritten on config load
+/** Fallback for maxUploadBytes when the /api/config fetch has not arrived yet.
+ *  Must match the server default in `server/config.ts`. */
+export const DEFAULT_MAX_UPLOAD_BYTES = 500 * 1024 * 1024 // 500 MB
+
+let _maxUploadBytes = DEFAULT_MAX_UPLOAD_BYTES
 
 export function getMaxUploadBytes(): number {
   return _maxUploadBytes

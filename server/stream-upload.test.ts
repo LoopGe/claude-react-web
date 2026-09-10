@@ -98,6 +98,20 @@ describe('streamUploads', () => {
     expect(noParts()).toEqual([])
   })
 
+  it('a write failure produces no file at the final path', async () => {
+    // Point tmp into a directory that does not exist so createWriteStream errors.
+    const badPlace = ({ filename, index }: { filename: string; index: number }) => ({
+      tmp: join(dir, 'does-not-exist', `${index}.part`),
+      final: join(dir, `${index}-${filename}`),
+      name: filename,
+    })
+    const { body, contentType } = form([{ body: 'hello', filename: 'a.txt', type: 'text/plain' }])
+    await expect(
+      streamUploads({ body, contentType, maxFileBytes: 1024, place: badPlace }),
+    ).rejects.toBeInstanceOf(UploadError)
+    expect(readdirSync(dir)).toEqual([])
+  })
+
   it('recognises only the streaming upload routes', () => {
     expect(isStreamingUploadPath('/api/background/upload')).toBe(true)
     expect(isStreamingUploadPath('/api/sessions/abc/uploads')).toBe(true)
