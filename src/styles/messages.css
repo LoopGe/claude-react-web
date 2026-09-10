@@ -1611,18 +1611,33 @@
   margin: 0;
 }
 
-/* TodoChecklist — sticky floating panel at the top of the chat area. */
+/* TodoChecklist — floating card sitting between the transcript and the
+   composer (in-flow, not an overlay — see the note on .todo-panel). */
 .todo-panel {
+  /* Floating card, mirroring .recap-window (rounded, bordered, gapped on all
+     sides). The panel is an in-flow flex item of .chat that sits between the
+     transcript and the composer — NOT an overlay, so `position: sticky` is
+     inert here (.chat doesn't scroll) and the gaps come from `margin` rather
+     than absolute positioning. `--chat-reading-inset` keeps the card edges
+     aligned with the transcript's 900px reading column. The accent identity
+     now lives in the title color alone (the old full-bleed top border would
+     read as a bar edge, not a card edge). */
+  /* Sits flush against the transcript above (a top gap read as a dead strip
+     the scrolled messages vanished into) and gapped below to clear the
+     full-bleed top border of the WorkingBubble / composer group beneath. */
   position: sticky;
   top: 0;
   z-index: 3;
-  background: var(--bg-elev);
-  border-bottom: 1px solid var(--border);
-  padding: 10px max(20px, calc((100% - 900px) / 2));
+  margin: 0 var(--chat-reading-inset) 8px;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 75%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--drawer-shadow);
+  overflow: hidden;
+  padding: 10px 14px;
   font-size: 13px;
-  /* Subtle accent glow so the panel doesn't feel like just another
-     divider — it's actionable context the user should glance at. */
-  border-top: 2px solid color-mix(in srgb, var(--accent) 40%, var(--border));
   /* One-shot entrance when the panel mounts (a visible task list appears at
      turn start). Plays per insertion only — the panel is a single non-
      virtualized sticky element, so there is no scroll-back remount to worry
@@ -1924,17 +1939,23 @@
 }
 
 /* Monitor bar — surfaces currently-running Monitor background tasks. Shares
-   the visual vocabulary of .todo-panel (sticky, top glow, count chip, pulsing
+   the visual vocabulary of .todo-panel (floating card, count chip, pulsing
    icon) but uses --warn for the accent so it reads as distinct from the
-   Checklist. */
+   Checklist. Kept in lockstep with .todo-panel's card shell (see the note
+   there) so the two read as one family when both are on screen. */
 .monitor-bar {
   position: sticky;
   top: 0;
   z-index: 3;
-  background: var(--bg-elev);
-  border-bottom: 1px solid var(--border);
-  border-top: 2px solid color-mix(in srgb, var(--warn) 45%, var(--border));
-  padding: 10px max(20px, calc((100% - 900px) / 2));
+  margin: 0 var(--chat-reading-inset) 8px;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 75%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--drawer-shadow);
+  overflow: hidden;
+  padding: 10px 14px;
   font-size: 13px;
 }
 .monitor-bar-header {
