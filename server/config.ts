@@ -12,6 +12,8 @@ import { join } from 'node:path'
 import type { SkillLoadMode } from '../shared/skills.js'
 import type { RowGapPreset } from '../shared/row-gap.js'
 import { isRowGapPreset, DEFAULT_ROW_GAP } from '../shared/row-gap.js'
+import type { TextSpacingPreset } from '../shared/text-spacing.js'
+import { isTextSpacingPreset, DEFAULT_TEXT_SPACING } from '../shared/text-spacing.js'
 import {
   enableFileLogging, disableFileLogging, setLogConfig,
   LOG_LEVELS, LOG_LEVEL_FROM_ENV, LOG_SCOPES_FROM_ENV, type LogLevel,
@@ -133,6 +135,9 @@ interface ConfigFile {
   /** Global transcript spacing (`--chat-row-gap`) density preset. A personal
    *  UI preference — global only, never per-session. */
   rowGap?: string
+  /** Global message text density preset. A personal UI preference — global
+   *  only, never per-session. */
+  textSpacing?: string
   /** Global default for per-session CLI debug logging (Options.debug +
    *  debugFile). SessionMeta.cliDebug overrides when set. Default: false. */
   cliDebug?: boolean
@@ -209,6 +214,9 @@ export interface ServerConfig {
   /** Global transcript spacing (`--chat-row-gap`) density preset. Not a
    *  per-session thing — a personal UI preference applied globally. */
   readonly rowGap: RowGapPreset
+  /** Global message text density (`--md-*` / `--msg-pad-*`) preset. Sibling of
+   *  rowGap (intra-card vs inter-card rhythm). Applied globally. */
+  readonly textSpacing: TextSpacingPreset
   /** Global default for per-session CLI debug logging (spawn-time only). */
   readonly cliDebug: boolean
   /** Global default for the per-session `apptools` git MCP server. Sessions
@@ -262,6 +270,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   toolGroupCards: true,
   showMessageHeaders: true,
   rowGap: DEFAULT_ROW_GAP,
+  textSpacing: DEFAULT_TEXT_SPACING,
   cliDebug: false,
   appToolsGit: true,
   firstPartyTools: Object.freeze({ apptools: Object.freeze({ enabled: true }) }),
@@ -526,6 +535,10 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { rowGap: RowGapPreset }).rowGap = file_.rowGap
   }
 
+  if (typeof file_.textSpacing === 'string' && isTextSpacingPreset(file_.textSpacing)) {
+    ;(merged as { textSpacing: TextSpacingPreset }).textSpacing = file_.textSpacing
+  }
+
   if (typeof file_.cliDebug === 'boolean') {
     ;(merged as { cliDebug: boolean }).cliDebug = file_.cliDebug
     log.info(`cliDebug: ${file_.cliDebug}`)
@@ -634,6 +647,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'toolGroupCards',
   'showMessageHeaders',
   'rowGap',
+  'textSpacing',
   'cliDebug',
   'appToolsGit',
   'firstPartyTools',

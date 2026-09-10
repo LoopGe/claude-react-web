@@ -91,6 +91,8 @@ import {
 import type { Defaults, ConfigResponse } from './types/config'
 import type { RowGapPreset } from '../shared/row-gap'
 import { DEFAULT_ROW_GAP, ROW_GAP_PX } from '../shared/row-gap'
+import type { TextSpacingPreset } from '../shared/text-spacing'
+import { DEFAULT_TEXT_SPACING, TEXT_SPACING_CSS } from '../shared/text-spacing'
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
@@ -220,8 +222,9 @@ export function App() {
     toolGroupCards: boolean
     showMessageHeaders: boolean
     rowGap: RowGapPreset
+    textSpacing: TextSpacingPreset
     firstPartyTools?: Record<string, { enabled: boolean }>
-  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP })
+  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP, textSpacing: DEFAULT_TEXT_SPACING })
 
   // Apply the global transcript spacing to a CSS variable. Set on
   // documentElement, it overrides the `.chat`-scoped default, so message rows,
@@ -230,6 +233,18 @@ export function App() {
   useEffect(() => {
     document.documentElement.style.setProperty('--chat-row-gap', `${ROW_GAP_PX[globalPrefs.rowGap]}px`)
   }, [globalPrefs.rowGap])
+
+  // Apply the global message text density to the intra-card CSS variables
+  // (`--md-*` prose rhythm + `--msg-pad-*` card padding). Written against the
+  // values cached in TEXT_SPACING_CSS for the chosen preset; every consumer
+  // falls back to the `spacious` hardcoded values when a var is unset, so an
+  // unconfigured app renders identically to before.
+  useEffect(() => {
+    const vars = TEXT_SPACING_CSS[globalPrefs.textSpacing]
+    for (const [name, value] of Object.entries(vars)) {
+      document.documentElement.style.setProperty(`--${name}`, value)
+    }
+  }, [globalPrefs.textSpacing])
 
   const {
     settingsOpenFor,
@@ -485,6 +500,7 @@ export function App() {
           toolGroupCards: r.toolGroupCards ?? true,
           showMessageHeaders: r.showMessageHeaders ?? true,
           rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
+          textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
           firstPartyTools: r.firstPartyTools,
         })
       })
@@ -3621,6 +3637,7 @@ export function App() {
       toolGroupCards: r.toolGroupCards ?? true,
       showMessageHeaders: r.showMessageHeaders ?? true,
       rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
+      textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
       firstPartyTools: r.firstPartyTools,
     })
   }, [])

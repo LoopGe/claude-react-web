@@ -11,6 +11,8 @@ import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
 import type { RowGapPreset } from '../../shared/row-gap'
 import { DEFAULT_ROW_GAP, ROW_GAP_LABELS, ROW_GAP_PRESETS } from '../../shared/row-gap'
+import type { TextSpacingPreset } from '../../shared/text-spacing'
+import { DEFAULT_TEXT_SPACING, TEXT_SPACING_LABELS, TEXT_SPACING_PRESETS } from '../../shared/text-spacing'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
@@ -155,6 +157,7 @@ export function GlobalSettingsModal({
   const [toolGroupCards, setToolGroupCards] = useState(true)
   const [showMessageHeaders, setShowMessageHeaders] = useState(true)
   const [rowGap, setRowGap] = useState<RowGapPreset>(DEFAULT_ROW_GAP)
+  const [textSpacing, setTextSpacing] = useState<TextSpacingPreset>(DEFAULT_TEXT_SPACING)
   const [allowSensitivePathEdits, setAllowSensitivePathEdits] = useState(false)
 
   // Skills tab state
@@ -204,6 +207,7 @@ export function GlobalSettingsModal({
         setToolGroupCards(cfg.toolGroupCards ?? true)
         setShowMessageHeaders(cfg.showMessageHeaders ?? true)
         setRowGap(cfg.rowGap ?? DEFAULT_ROW_GAP)
+        setTextSpacing(cfg.textSpacing ?? DEFAULT_TEXT_SPACING)
         setAllowSensitivePathEdits(cfg.allowSensitivePathEdits ?? false)
         setFirstPartyTools(cfg.firstPartyTools ?? {})
       } catch (e) {
@@ -285,6 +289,7 @@ export function GlobalSettingsModal({
         toolGroupCards,
         showMessageHeaders,
         rowGap,
+        textSpacing,
         allowSensitivePathEdits,
       }
       // Structured first-party defaults — written verbatim as the single
@@ -416,6 +421,7 @@ export function GlobalSettingsModal({
                   toolGroupCards={toolGroupCards}
                   showMessageHeaders={showMessageHeaders}
                   rowGap={rowGap}
+                  textSpacing={textSpacing}
                   allowSensitivePathEdits={allowSensitivePathEdits}
                   onMaxUploadBytesChange={setMaxUploadBytes}
                   onHistoryCapChange={setHistoryCap}
@@ -426,6 +432,7 @@ export function GlobalSettingsModal({
                   onToolGroupCardsChange={setToolGroupCards}
                   onShowMessageHeadersChange={setShowMessageHeaders}
                   onRowGapChange={setRowGap}
+                  onTextSpacingChange={setTextSpacing}
                   onAllowSensitivePathEditsChange={setAllowSensitivePathEdits}
                 />
               )}
@@ -563,11 +570,11 @@ const MIN_MS = 60 * 1000
 
 function ServerTab({
   maxUploadBytes, historyCap, maxGroupPanels, workingStuckMs,
-  showPinnedUserMessage, autoRecap, toolGroupCards, showMessageHeaders, rowGap, allowSensitivePathEdits,
+  showPinnedUserMessage, autoRecap, toolGroupCards, showMessageHeaders, rowGap, textSpacing, allowSensitivePathEdits,
   onMaxUploadBytesChange, onHistoryCapChange, onMaxGroupPanelsChange,
   onWorkingStuckMsChange,
   onShowPinnedUserMessageChange, onAutoRecapChange, onToolGroupCardsChange,
-  onShowMessageHeadersChange, onRowGapChange, onAllowSensitivePathEditsChange,
+  onShowMessageHeadersChange, onRowGapChange, onTextSpacingChange, onAllowSensitivePathEditsChange,
 }: {
   maxUploadBytes: number
   historyCap: number
@@ -578,6 +585,7 @@ function ServerTab({
   toolGroupCards: boolean
   showMessageHeaders: boolean
   rowGap: RowGapPreset
+  textSpacing: TextSpacingPreset
   allowSensitivePathEdits: boolean
   onMaxUploadBytesChange: (v: number) => void
   onHistoryCapChange: (v: number) => void
@@ -588,6 +596,7 @@ function ServerTab({
   onToolGroupCardsChange: (v: boolean) => void
   onShowMessageHeadersChange: (v: boolean) => void
   onRowGapChange: (v: RowGapPreset) => void
+  onTextSpacingChange: (v: TextSpacingPreset) => void
   onAllowSensitivePathEditsChange: (v: boolean) => void
 }) {
   const uploadMb = Math.round(maxUploadBytes / MB)
@@ -711,6 +720,18 @@ function ServerTab({
             options={ROW_GAP_PRESETS}
             onChange={onRowGapChange}
             labelFor={(p) => ROW_GAP_LABELS[p]}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Message text density"
+          hint="White-space and line-height inside each message card: prose rhythm, paragraph/heading spacing, code-block gaps, and card padding. Sibling of transcript spacing (which controls the gap between cards). Applies globally to every session."
+        >
+          <Segmented
+            ariaLabel="Message text density"
+            value={textSpacing}
+            options={TEXT_SPACING_PRESETS}
+            onChange={onTextSpacingChange}
+            labelFor={(p) => TEXT_SPACING_LABELS[p]}
           />
         </SettingsRow>
       </section>

@@ -355,6 +355,30 @@ describe('config', () => {
     expect(WRITABLE_CONFIG_KEYS).toContain('rowGap')
   })
 
+  it('defaults textSpacing to spacious', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.textSpacing).toBe('spacious')
+  })
+
+  it('honors a textSpacing override from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ textSpacing: 'airy' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.textSpacing).toBe('airy')
+  })
+
+  it('ignores an invalid textSpacing value', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ textSpacing: '1.7' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.textSpacing).toBe('spacious')
+  })
+
+  it('exposes textSpacing as a writable config key', () => {
+    expect(WRITABLE_CONFIG_KEYS).toContain('textSpacing')
+  })
+
   describe('clearCredentials', () => {
     it('clears authToken, baseUrl, and accessToken from config.json', async () => {
       writeFileSync(join(dir, 'config.json'), JSON.stringify({
