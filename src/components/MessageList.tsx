@@ -803,6 +803,11 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
             memberItemIndices={item.toolGroup.memberItemIndices}
             searchQuery={searchQuery}
             working={working}
+            // Agent/Task/Explore and Workflow are absent from toolStatus by
+            // design; without their own maps the header would read every
+            // settled one as still running (and never fold the group).
+            subagentStatuses={subagentCtx?.index}
+            workflowStatuses={workflowCtx?.index}
             // A group is closed the moment a non-foldable row follows it:
             // nextItemTypeMap holds an entry for every folded row that is NOT
             // the last one (consecutive eligible rows were folded into the
@@ -839,7 +844,11 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
         )}
       </div>
     )
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, enterNodeRef, working, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash])
+    // The two lifecycle indexes must be deps, not just reads: when a subagent
+    // settles, a stale closure would leave its group card reading the old map
+    // (and so still showing `running`). Both change only on subagent/workflow
+    // events, unlike the context values that carry `messages`.
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, enterNodeRef, working, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, subagentCtx?.index, workflowCtx?.index])
 
   // Key rows by their stable message id instead of Virtuoso's default
   // (offset-space index).

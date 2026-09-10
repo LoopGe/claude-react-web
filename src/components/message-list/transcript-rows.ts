@@ -15,7 +15,10 @@
  *
  * After filtering, consecutive tool-only assistant rows are folded into one
  * group row (see `foldToolGroupRows`) so the UI can collapse historical tool
- * cascades. Length-1 runs stay unwrapped.
+ * cascades. Length-1 runs are folded too: a lone tool is the most common row
+ * in a transcript and folding it is what keeps a 40-line Edit diff from
+ * owning the viewport, and it keeps row identity + the rendered component
+ * stable when a second tool lands (see I1/I3).
  *
  * The invariants the virtualization layer depends on:
  *

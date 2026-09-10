@@ -4,8 +4,12 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react'
 import { ToolGroupCard } from './ToolGroupCard'
 import { ToolStatusProvider, ToolResultProvider, PlanStatusProvider } from '../../hooks/usePlanStatus'
 import { BackgroundToolProvider } from '../../hooks/useBackgroundTool'
-import type { ToolStatus } from '../../session-store/types'
+import type { ActiveSubagent, ToolStatus } from '../../session-store/types'
 import type { SdkMessage } from '../../types'
+
+// Stub scrollIntoView — jsdom lacks it, and the failed badge scrolls the
+// member it points at (same stub as ModelPicker.test.tsx / MessageList.test.tsx).
+Element.prototype.scrollIntoView = vi.fn()
 
 beforeEach(() => {
   vi.stubGlobal('matchMedia', () => ({
@@ -17,6 +21,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
+  // Some tests stub window.getSelection; matchMedia is re-stubbed above.
+  vi.unstubAllGlobals()
 })
 
 function toolMsg(id: string, name = 'Read', input: Record<string, unknown> = {}): SdkMessage {
@@ -39,6 +45,7 @@ function renderGroup({
   activeMatchInItem,
   working,
   closed,
+  subagentStatuses,
 }: {
   members: SdkMessage[]
   toolStatus: Map<string, ToolStatus>
@@ -48,6 +55,7 @@ function renderGroup({
   activeMatchInItem?: number
   working?: boolean
   closed?: boolean
+  subagentStatuses?: ReadonlyMap<string, ActiveSubagent>
 }) {
   return render(
     <ToolStatusProvider value={toolStatus}>
@@ -62,6 +70,7 @@ function renderGroup({
               activeMatchInItem={activeMatchInItem}
               working={working}
               closed={closed}
+              subagentStatuses={subagentStatuses}
             />
           </BackgroundToolProvider>
         </PlanStatusProvider>
@@ -108,7 +117,7 @@ describe('ToolGroupCard', () => {
       ]),
     })
     expect(isOpen(container)).toBe(true)
-    fireEvent.click(container.querySelector('.tool-group-summary-inner')!)
+    fireEvent.click(container.querySelector('.tool-group-toggle')!)
     // forceOpen (running) wins over userOpen=false
     expect(isOpen(container)).toBe(true)
   })
@@ -171,7 +180,30 @@ describe('ToolGroupCard', () => {
     expect(isOpen(container)).toBe(false)
   })
 
-  it('shows failed badge when collapsed and a tool errored', () => {
+  it('folds a group holding a finished subagent instead of spinning forever', () => {
+    // Regression: Agent/Task/Explore are absent from toolStatus by design, and
+    // the generic "no entry = in flight" default made such a group show a
+    // permanent `running` badge AND never fold (live keeps it pinned open).
+    const { container } = renderGroup({
+      members: [toolMsg('t1', 'Read', { file_path: 'a.ts' }), toolMsg('t2', 'Agent', { description: 'audit' })],
+      toolStatus: new Map<string, ToolStatus>([['t1-tu', 'success']]),
+      subagentStatuses: new Map([['t2-tu', { status: 'done' } as unknown as ActiveSubagent]]),
+    })
+    expect(container.querySelector('.tool-status-running')).toBeNull()
+    expect(isOpen(container)).toBe(false)
+  })
+
+  it('keeps a group open while its subagent is genuinely running', () => {
+    const { container } = renderGroup({
+      members: [toolMsg('t1', 'Agent', { description: 'audit' })],
+      toolStatus: new Map<string, ToolStatus>(),
+      subagentStatuses: new Map([['t1-tu', { status: 'running' } as unknown as ActiveSubagent]]),
+    })
+    expect(container.querySelector('.tool-status-running')).not.toBeNull()
+    expect(isOpen(container)).toBe(true)
+  })
+
+  it('shows failed badge when collapsed and a tool errored, without alarming the whole card', () => {
     const { container } = renderGroup({
       members: [toolMsg('t1'), toolMsg('t2')],
       toolStatus: new Map<string, ToolStatus>([
@@ -181,6 +213,74 @@ describe('ToolGroupCard', () => {
     })
     expect(isOpen(container)).toBe(false)
     expect(container.querySelector('.tool-status-error')).not.toBeNull()
+    // One failed call out of several does not make the whole group red — the
+    // badge (and the failing card itself) carry that, not a card-wide stripe.
+    expect(container.querySelector('.tool-group-has-error')).toBeNull()
+  })
+
+  describe('failed badge jumps to the call that failed', () => {
+    const twoOfWhichOneFailed = () => ({
+      members: [
+        toolMsg('t1', 'Read', { file_path: 'a.ts' }),
+        toolMsg('t2', 'Bash', { command: 'npm test' }),
+      ],
+      toolStatus: new Map<string, ToolStatus>([
+        ['t1-tu', 'success'],
+        ['t2-tu', 'error'],
+      ]),
+    })
+
+    it('is a button, so it is reachable without a pointer', () => {
+      const { container } = renderGroup(twoOfWhichOneFailed())
+      const badge = container.querySelector('.tool-group-failed-jump')!
+      expect(badge.tagName).toBe('BUTTON')
+      expect(badge.getAttribute('aria-label')).toBeTruthy()
+    })
+
+    it('expands the group and tints the failing member', () => {
+      vi.useFakeTimers()
+      const { container } = renderGroup(twoOfWhichOneFailed())
+      expect(isOpen(container)).toBe(false)
+      fireEvent.click(container.querySelector('.tool-group-failed-jump')!)
+      expect(isOpen(container)).toBe(true)
+      const flashed = container.querySelector('.tool-group-member-flash')!
+      expect(flashed.getAttribute('data-member-tool-use-id')).toBe('t2-tu')
+      // Transient: the card's own error badge is the standing signal.
+      act(() => {
+        vi.advanceTimersByTime(1500)
+      })
+      expect(container.querySelector('.tool-group-member-flash')).toBeNull()
+    })
+
+    it('scrolls the failing member into view once the fold has settled', () => {
+      vi.useFakeTimers()
+      const { container } = renderGroup(twoOfWhichOneFailed())
+      const scrolls: Element[] = []
+      for (const el of container.querySelectorAll('[data-member-tool-use-id]')) {
+        ;(el as HTMLElement).scrollIntoView = () => scrolls.push(el)
+      }
+      fireEvent.click(container.querySelector('.tool-group-failed-jump')!)
+      // Not while the height is still animating — that lands short.
+      expect(scrolls).toHaveLength(0)
+      act(() => {
+        vi.advanceTimersByTime(300)
+      })
+      expect(scrolls.map((el) => el.getAttribute('data-member-tool-use-id'))).toEqual(['t2-tu'])
+    })
+
+    it('does not turn the badge into a control when no id is resolvable', () => {
+      // Status is keyed by tool_use id; without one there is nothing to point
+      // at, and the group counts as in-flight anyway (so: no failed badge).
+      const { container } = renderGroup({
+        members: [{
+          type: 'assistant',
+          uuid: 'x',
+          message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Read', input: {} }] },
+        } as unknown as SdkMessage],
+        toolStatus: new Map<string, ToolStatus>(),
+      })
+      expect(container.querySelector('.tool-group-failed-jump')).toBeNull()
+    })
   })
 
   it('keeps a pending-plan group open (and shows waiting) even after a manual close', () => {
@@ -190,7 +290,7 @@ describe('ToolGroupCard', () => {
       planStatus: new Map([['p1-tu', 'pending' as const]]),
     })
     expect(isOpen(container)).toBe(true)
-    fireEvent.click(container.querySelector('.tool-group-summary-inner')!)
+    fireEvent.click(container.querySelector('.tool-group-toggle')!)
     // pending interactive also force-opens — a folded plan would stall the turn
     expect(isOpen(container)).toBe(true)
     expect(container.textContent).toContain('waiting')
@@ -214,9 +314,9 @@ describe('ToolGroupCard', () => {
         ['t2-tu', 'success'],
       ]),
     })
-    fireEvent.click(container.querySelector('.tool-group-summary-inner')!)
+    fireEvent.click(container.querySelector('.tool-group-toggle')!)
     expect(isOpen(container)).toBe(true)
-    fireEvent.click(container.querySelector('.tool-group-summary-inner')!)
+    fireEvent.click(container.querySelector('.tool-group-toggle')!)
     expect(isOpen(container)).toBe(false)
   })
 
@@ -257,8 +357,10 @@ describe('ToolGroupCard', () => {
         ['t3-tu', 'success'],
       ]),
     })
-    const header = container.querySelector('.tool-group-summary-inner')!
-    expect(header.getAttribute('role')).toBe('button')
+    const header = container.querySelector('.tool-group-toggle')!
+    // A real button: Enter/Space, focus and role come from the platform
+    // instead of hand-rolled key handling.
+    expect(header.tagName).toBe('BUTTON')
     // Count and the deduced name summary must reach the accessible name (the
     // count pill itself is aria-hidden, so the number lives only here).
     const label = header.getAttribute('aria-label')!
@@ -288,6 +390,66 @@ describe('ToolGroupCard', () => {
     expect(container.textContent).not.toContain('tool call')
     // The tool-name summary is still the scannable lead inside the header.
     expect(container.textContent).toContain('Read')
+  })
+
+  it('shows what each tool acted on, not just its name', () => {
+    const { container } = renderGroup({
+      members: [
+        toolMsg('t1', 'Read', { file_path: 'src/components/MessageList.tsx' }),
+        toolMsg('t2', 'Grep', { pattern: 'useWsHub' }),
+      ],
+      toolStatus: new Map<string, ToolStatus>([
+        ['t1-tu', 'success'],
+        ['t2-tu', 'success'],
+      ]),
+    })
+    expect(isOpen(container)).toBe(false)
+    expect(container.querySelector('.tool-group-names')?.textContent).toBe(
+      'Read MessageList.tsx \u00b7 Grep \u201cuseWsHub\u201d',
+    )
+    // The identifying half is its own span so it can take the foreground.
+    expect(
+      Array.from(container.querySelectorAll('.tool-group-entry-target')).map((e) => e.textContent),
+    ).toEqual(['MessageList.tsx', '\u201cuseWsHub\u201d'])
+    // Hover and AT see the same list as the eye. `title` sits on the ellipsis
+    // line (that's what it explains), the accessible name on the button.
+    expect(container.querySelector('.tool-group-names')?.getAttribute('title'))
+      .toContain('MessageList.tsx')
+    expect(container.querySelector('.tool-group-toggle')?.getAttribute('aria-label'))
+      .toContain('\u201cuseWsHub\u201d')
+  })
+
+  it('folds repeat calls of one tool behind the first target', () => {
+    const { container } = renderGroup({
+      members: [
+        toolMsg('t1', 'Read', { file_path: 'src/App.tsx' }),
+        toolMsg('t2', 'Read', { file_path: 'src/main.tsx' }),
+        toolMsg('t3', 'Read', { file_path: 'src/types.ts' }),
+      ],
+      toolStatus: new Map<string, ToolStatus>([
+        ['t1-tu', 'success'],
+        ['t2-tu', 'success'],
+        ['t3-tu', 'success'],
+      ]),
+    })
+    expect(container.querySelector('.tool-group-names')?.textContent).toBe('Read App.tsx +2')
+    expect(container.querySelector('.tool-group-count')?.textContent).toBe('3')
+  })
+
+  it('folds a lone settled tool too — vertical space beats the doubled header', () => {
+    // A single tool is the most common transcript row, and its payload can be
+    // arbitrarily tall (an Edit diff, a Bash result). Keeping the chrome means
+    // one 36px line either way, so count===1 gets no special case.
+    const { container } = renderGroup({
+      members: [toolMsg('t1', 'Read', { file_path: 'src/App.tsx' })],
+      toolStatus: new Map<string, ToolStatus>([['t1-tu', 'success']]),
+    })
+    expect(container.querySelector('.tool-group-toggle')).not.toBeNull()
+    expect(isOpen(container)).toBe(false)
+    // On a single call the tally would only ever read "1"; the width goes to
+    // the target instead.
+    expect(container.querySelector('.tool-group-count')).toBeNull()
+    expect(container.querySelector('.tool-group-names')?.textContent).toBe('Read App.tsx')
   })
 
   describe('boundary closure (`closed`) — fold mid-turn once a non-foldable row follows', () => {
@@ -337,6 +499,18 @@ describe('ToolGroupCard', () => {
       expect(isOpen(container)).toBe(true) // not closed = live tail, may grow
     })
 
+    it('lets the user collapse a settled tail group mid-turn', () => {
+      const { container, getByTestId } = render(<ClosureHarness />)
+      fireEvent.click(getByTestId('settle'))
+      expect(isOpen(container)).toBe(true) // held open because it may grow
+      // Once every tool has settled the header carries no badge explaining the
+      // hold, so an explicit fold MUST win over it — otherwise the click looks
+      // broken. (A running / pending member still force-opens: that state does
+      // announce itself, and hiding it would bury a turn needing action.)
+      fireEvent.click(container.querySelector('.tool-group-toggle')!)
+      expect(isOpen(container)).toBe(false)
+    })
+
     it('does not fold a closed group while a member is still running', () => {
       const { container } = renderGroup({
         members: [toolMsg('t1'), toolMsg('t2')],
@@ -352,8 +526,11 @@ describe('ToolGroupCard', () => {
 
     it('search force-expands a settled closed group', () => {
       const { container } = renderGroup({
-        members: [toolMsg('t1', 'Read', { file_path: 'needle.ts' })],
-        toolStatus: new Map<string, ToolStatus>([['t1-tu', 'success']]),
+        members: [toolMsg('t1', 'Read', { file_path: 'needle.ts' }), toolMsg('t2', 'Grep')],
+        toolStatus: new Map<string, ToolStatus>([
+          ['t1-tu', 'success'],
+          ['t2-tu', 'success'],
+        ]),
         working: true,
         closed: true,
         searchQuery: 'needle',
@@ -372,7 +549,7 @@ describe('ToolGroupCard', () => {
         closed: true,
       })
       expect(isOpen(container)).toBe(false)
-      fireEvent.click(container.querySelector('.tool-group-summary-inner')!)
+      fireEvent.click(container.querySelector('.tool-group-toggle')!)
       expect(isOpen(container)).toBe(true)
     })
 
@@ -465,6 +642,50 @@ describe('ToolGroupCard', () => {
       expect(isOpen(container)).toBe(false)
     })
 
+    it('will not fold out from under the pointer, and folds once it leaves', () => {
+      vi.useFakeTimers()
+      const { container, getByTestId } = render(<TurnHarness />)
+      fireEvent.click(getByTestId('settle'))
+      fireEvent.click(getByTestId('end')) // grace window opens
+      expect(isOpen(container)).toBe(true)
+      const card = container.querySelector('.tool-group-card')! as HTMLElement
+      // jsdom has no real hover state, and the component asks the DOM for it
+      // (`:hover` also catches a stationary cursor the card grew underneath).
+      const hover = vi.spyOn(card, 'matches').mockImplementation((sel) => sel === ':hover')
+      act(() => {
+        vi.advanceTimersByTime(5000)
+      })
+      expect(isOpen(container)).toBe(true) // someone is reading it
+      hover.mockReturnValue(false)
+      act(() => {
+        vi.advanceTimersByTime(400) // next re-check after they leave
+      })
+      expect(isOpen(container)).toBe(false)
+    })
+
+    it('will not fold while a text selection runs through the card', () => {
+      vi.useFakeTimers()
+      const { container, getByTestId } = render(<TurnHarness />)
+      fireEvent.click(getByTestId('settle'))
+      fireEvent.click(getByTestId('end'))
+      const card = container.querySelector('.tool-group-card')!
+      vi.stubGlobal('getSelection', () => ({
+        isCollapsed: false,
+        rangeCount: 1,
+        getRangeAt: () => ({ commonAncestorContainer: card }),
+      }))
+      act(() => {
+        vi.advanceTimersByTime(5000)
+      })
+      expect(isOpen(container)).toBe(true) // copying something out of it
+
+      vi.stubGlobal('getSelection', () => ({ isCollapsed: true, rangeCount: 0 }))
+      act(() => {
+        vi.advanceTimersByTime(400)
+      })
+      expect(isOpen(container)).toBe(false)
+    })
+
     it('lets a user collapse a tail group during the settle hold', () => {
       vi.useFakeTimers()
       const { container, getByTestId } = render(<TurnHarness />)
@@ -472,7 +693,7 @@ describe('ToolGroupCard', () => {
       fireEvent.click(getByTestId('end')) // settle hold opens the tail group
       expect(isOpen(container)).toBe(true)
       // Explicit user fold inside the grace window must win over the hold.
-      fireEvent.click(container.querySelector('.tool-group-summary-inner')!)
+      fireEvent.click(container.querySelector('.tool-group-toggle')!)
       expect(isOpen(container)).toBe(false)
       act(() => {
         vi.advanceTimersByTime(2300)

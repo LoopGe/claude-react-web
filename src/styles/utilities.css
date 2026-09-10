@@ -926,24 +926,52 @@
   overflow: hidden;
   font-size: 13px;
 }
+/* The header row is a plain flex container holding TWO controls: the toggle
+   (everything up to the badge) and, when a member failed, the badge itself as
+   a jump button. Hence no role/hover on the row — each control owns its own
+   affordance, and a hover wash spanning both would imply one target. */
 .tool-group-summary-inner {
+  display: flex;
+  align-items: center;
+  padding-right: 10px;
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+  min-width: 0;
+}
+/* Fills the row minus the badge, so the click target stays nearly as large as
+   the old whole-row one. Padding lives here (not on the row) so the hover wash
+   covers the full area the user is aiming at. */
+.tool-group-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 6px 10px;
   min-height: 36px;
-  background: var(--bg-elev-2);
-  color: var(--fg-muted);
-  min-width: 0;
-  cursor: pointer;
+  background: transparent;
+  border: 0;
+  text-align: left;
   user-select: none;
 }
-.tool-group-summary-inner:hover {
+.tool-group-toggle:hover {
   background: var(--btn-hover-bg);
 }
-.tool-group-summary-inner:focus-visible {
+.tool-group-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+/* The failed badge doubles as "take me to it". .tool-status + -error already
+   supply the chip's box and colour; only the button affordances are added. */
+button.tool-group-failed-jump {
+  text-align: left;
+}
+button.tool-group-failed-jump:hover {
+  background: color-mix(in srgb, var(--danger) 22%, transparent);
+}
+button.tool-group-failed-jump:focus-visible {
+  outline: 1px solid var(--danger);
+  outline-offset: 1px;
 }
 .tool-group-card[data-state="open"] > .tool-group-summary-inner {
   border-bottom: 1px solid var(--border);
@@ -984,6 +1012,14 @@
   color: var(--fg-muted);
   font-weight: 400;
 }
+/* Each entry reads "<name> <target>". The TARGET carries the identity (which
+   file, which pattern) while the name is a small repeating vocabulary, so the
+   target gets the foreground — same polarity as .tool-card-filepath-base vs
+   -dir, where the specific thing is strong and its category is muted. Names,
+   counts and the `+N` tail all inherit the header's muted colour. */
+.tool-group-entry-target {
+  color: var(--fg);
+}
 .tool-group-body {
   background: var(--bg);
   /* Side inset 10px matches .tool-group-summary-inner's horizontal padding,
@@ -1002,13 +1038,31 @@
    14px inter-row rhythm — the same rhythm a lone tool-card message used. */
 
 /* Plan-card-style left accent: quieter than a header box-shadow and
-   still visible when the group is collapsed. */
-.tool-group-has-error {
-  border-left: 3px solid var(--danger);
-}
-/* Amber, so the stripe agrees with the "waiting" badge it accompanies. */
+   still visible when the group is collapsed. Amber, so the stripe agrees with
+   the "waiting" badge it accompanies.
+   Only "waiting on you" gets a stripe. A failure is carried by the badge alone
+   (which is also the jump control): a red edge alarmed about the whole group
+   when one call out of a dozen had failed, and it competed with the error
+   styling the failing card already shows. */
 .tool-group-has-pending {
   border-left: 3px solid var(--warn);
+}
+
+/* Wrapper around each folded tool call: the anchor the failed badge scrolls to
+   and the thing it tints. Layout-neutral (a block box around a block card), so
+   the sibling margin rules above still supply the 8px rhythm. */
+.tool-group-member-flash {
+  border-radius: var(--radius-sm);
+  animation: tool-group-member-flash 1400ms var(--motion-ease-standard) both;
+}
+@keyframes tool-group-member-flash {
+  0%,
+  45% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 0%, transparent);
+  }
 }
 
 /* ── A11y: prefers-reduced-motion ──────────────────────────────────

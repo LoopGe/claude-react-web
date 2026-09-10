@@ -575,20 +575,31 @@ function looksLikePath(value: string): boolean {
   return !/\s/.test(value) && /[/\\]/.test(value)
 }
 
-/** Build a short one-line argument preview for a subagent's internal tool
- *  call, so SubagentCard's child row can show "Bash · ls server/auth" rather
- *  than just the tool name. Best-effort per tool shape (command / file_path /
- *  pattern / url / query), falling back to the first stringy input value, then
- *  ''. Defensive because the SDK input schema varies per tool.
+/** The one input field that stands for what a tool_use call is *about*, plus
+ *  whether it reads as a filesystem path (callers shorten those differently
+ *  from prose). */
+export interface ToolArg {
+  kind: 'path' | 'literal'
+  /** Trimmed; `literal` values also have their whitespace runs collapsed. */
+  value: string
+}
+
+/** Pick the field that identifies a tool call's target, best-effort per tool
+ *  shape (command / file_path / pattern / url / query), falling back to the
+ *  first stringy input value, then null. Defensive because the SDK input
+ *  schema varies per tool.
  *
- *  Path-valued args (file_path / path / notebook_path, or any bare path-shaped
- *  fallback) are shortened to their last two segments — an absolute repo path
- *  is mostly redundant prefix and pushed the informative tail out of the row's
- *  ellipsis. Commands, patterns, URLs and prose keep their full text (trimmed
- *  to the length cap). */
-export function subagentChildArgSummary(input: unknown): string {
+ *  This is the single definition of "which field is the target". Two very
+ *  different renderings consume it — SubagentCard's child rows via
+ *  `subagentChildArgSummary` (80 chars, last two path segments) and
+ *  ToolGroupCard's folded header via `toolTargetLabel` (28 chars, basename
+ *  only, per-tool quoting) — and they must not drift on WHICH field they
+ *  read, only on how they shorten it. `description` precedes `prompt` to
+ *  match the label ladder in getSubagentStarts, so a nested Agent row and its
+ *  own card read the same string instead of diverging. */
+export function pickToolArg(input: unknown): ToolArg | null {
   const obj = (input && typeof input === 'object') ? input as Record<string, unknown> : undefined
-  if (!obj) return ''
+  if (!obj) return null
   const pick = (...keys: string[]): string | undefined => {
     for (const k of keys) {
       const v = obj[k]
@@ -596,21 +607,17 @@ export function subagentChildArgSummary(input: unknown): string {
     }
     return undefined
   }
-  // Path-shaped args are shortened; everything else keeps its full text.
   const pathArg = pick('file_path', 'path', 'notebook_path')
-  if (pathArg) return truncate(shortenPathForPreview(pathArg), 80)
-  // Known non-path shapes keep their full text: a URL's host and a Grep
-  // pattern's leading segments are meaningful, so path-shortening them
-  // ("https://example.com/a/b/c" → "b/c", "src/.*\.tsx" → ".*\.tsx") destroys
-  // the informative part. `description` precedes `prompt` to match the label
-  // ladder in getSubagentStarts, so a nested Agent row and its own card read
-  // the same string instead of diverging.
+  if (pathArg) return { kind: 'path', value: pathArg }
+  // Known non-path shapes: a URL's host and a Grep pattern's leading segments
+  // are meaningful, so path-shortening them ("https://example.com/a/b/c" →
+  // "b/c", "src/.*\.tsx" → ".*\.tsx") destroys the informative part.
   const literal =
     pick('command', 'cmd') ||          // Bash
     pick('pattern') ||                 // Grep / Glob
     pick('url') ||                     // WebFetch
     pick('query', 'description', 'prompt') // WebSearch / Task / Agent
-  if (literal) return truncate(literal.replace(/\s+/g, ' '), 80)
+  if (literal) return { kind: 'literal', value: literal.replace(/\s+/g, ' ') }
   // Last resort: first stringy value on an unknown key. Only THIS path gets
   // the path sniff — an unrecognised key holding a bare path benefits from
   // shortening, and we have no shape information to say otherwise.
@@ -618,9 +625,23 @@ export function subagentChildArgSummary(input: unknown): string {
   for (const v of Object.values(obj)) {
     if (typeof v === 'string' && v.trim()) { fallback = v.trim(); break }
   }
-  if (!fallback) return ''
+  if (!fallback) return null
   const collapsed = fallback.replace(/\s+/g, ' ')
-  return truncate(looksLikePath(collapsed) ? shortenPathForPreview(collapsed) : collapsed, 80)
+  return { kind: looksLikePath(collapsed) ? 'path' : 'literal', value: collapsed }
+}
+
+/** Build a short one-line argument preview for a subagent's internal tool
+ *  call, so SubagentCard's child row can show "Bash · ls server/auth" rather
+ *  than just the tool name.
+ *
+ *  Path-valued args are shortened to their last two segments — an absolute
+ *  repo path is mostly redundant prefix and pushed the informative tail out of
+ *  the row's ellipsis. Commands, patterns, URLs and prose keep their full text
+ *  (trimmed to the length cap). */
+export function subagentChildArgSummary(input: unknown): string {
+  const arg = pickToolArg(input)
+  if (!arg) return ''
+  return truncate(arg.kind === 'path' ? shortenPathForPreview(arg.value) : arg.value, 80)
 }
 
 /** Extract the GENERIC internal tool_use calls a subagent ran, from an
@@ -824,7 +845,12 @@ export function getWorkflowChildStarts(
  *  EXCLUDED — those have their own (more semantic) status maps and
  *  rendering their generic status badge alongside the specific one
  *  would be redundant and confusing. */
-const TOOL_STATUS_EXCLUDE = new Set<string>([
+/** Exported because readers of `toolStatus` need to know which absences are BY
+ *  DESIGN. For every name in here a missing entry means "this tool reports
+ *  through its own lifecycle map (or has none)", NOT "still in flight" — the
+ *  default a generic tool_use gets. ToolGroupCard's header learnt that the
+ *  hard way: a settled subagent kept its group pinned open, spinning. */
+export const TOOL_STATUS_EXCLUDE = new Set<string>([
   ...PLAN_TOOL_NAMES,
   ...SUBAGENT_TOOL_NAMES,
   // EnterPlanMode renders as a standalone inline marker (no card), so it must
