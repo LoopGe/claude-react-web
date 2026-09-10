@@ -97,6 +97,7 @@ import { SessionEventBroadcaster } from './session-broadcaster.js'
 import { BackgroundWatcherRegistry } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory } from './history-utils.js'
+import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
 import { deleteTranscriptFile } from './history-reader.js'
@@ -3515,6 +3516,42 @@ export class SessionManager {
       (s) => { s.hooks = normalized },
     )
     return { session, hooks: normalized }
+  }
+
+  async getDiagnostics(id: string): Promise<{
+    cliDebug: { global: boolean; perSession?: boolean; effective: boolean }
+    stderrTail: string[]
+    debugLog: { exists: boolean; path?: string; size?: number }
+  }> {
+    const s = this.require(id)
+    const logsDir = this.store ? join(this.store.getDir(), 'logs') : undefined
+    const global = defaultConfig.cliDebug ?? false
+    const perSession = s.cliDebug
+    const [stderrTail, debugLog] = await Promise.all([
+      readStderrTail(logsDir, id),
+      cliLogInfo(logsDir, id),
+    ])
+    return {
+      cliDebug: { global, perSession, effective: perSession ?? global },
+      stderrTail,
+      debugLog,
+    }
+  }
+
+  async setCliDebug(id: string, body: { cliDebug?: boolean | null }): Promise<{
+    cliDebug: { global: boolean; perSession?: boolean; effective: boolean }
+    note: string
+  }> {
+    const s = this.require(id)
+    const v = body?.cliDebug
+    if (v === undefined) throw new HttpError(400, 'cliDebug (boolean or null) is required')
+    s.cliDebug = v === null ? undefined : v
+    this.writeStore(s)
+    const global = defaultConfig.cliDebug ?? false
+    return {
+      cliDebug: { global, perSession: s.cliDebug, effective: s.cliDebug ?? global },
+      note: 'applies on the next session start',
+    }
   }
 
   /** Shared implementation for the "forward a flag to the SDK via

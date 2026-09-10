@@ -5304,3 +5304,60 @@ describe('cliDebug persistence', () => {
     expect(store.get(info.id)?.cliDebug).toBe(true)
   })
 })
+
+describe('setCliDebug', () => {
+  it('sets per-session cliDebug to true and persists', async () => {
+    const storeLocal = new SessionStore({ stateDir: makeTmpDir() })
+    await storeLocal.load()
+    const smLocal = new SessionManager({ store: storeLocal })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const result = await smLocal.setCliDebug(info.id, { cliDebug: true })
+    expect(result.cliDebug.perSession).toBe(true)
+    expect(result.cliDebug.effective).toBe(true)
+    expect(result.note).toBe('applies on the next session start')
+    expect(storeLocal.get(info.id)?.cliDebug).toBe(true)
+  })
+
+  it('clears per-session cliDebug with null and persists', async () => {
+    const storeLocal = new SessionStore({ stateDir: makeTmpDir() })
+    await storeLocal.load()
+    const smLocal = new SessionManager({ store: storeLocal })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    await smLocal.setCliDebug(info.id, { cliDebug: true })
+    const result = await smLocal.setCliDebug(info.id, { cliDebug: null })
+    expect(result.cliDebug.perSession).toBeUndefined()
+    expect(result.cliDebug.effective).toBe(false)
+    expect(storeLocal.get(info.id)?.cliDebug).toBeUndefined()
+  })
+
+  it('throws 400 when cliDebug is missing from body', async () => {
+    const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    await expect(smLocal.setCliDebug(info.id, {})).rejects.toThrow(/cliDebug.*required/)
+  })
+})
+
+describe('getDiagnostics', () => {
+  it('returns the expected diagnostics shape', async () => {
+    const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const result = await smLocal.getDiagnostics(info.id)
+    expect(result.cliDebug).toEqual({ global: false, perSession: undefined, effective: false })
+    expect(result.stderrTail).toEqual([])
+    expect(result.debugLog).toEqual({ exists: false })
+  })
+
+  it('reflects per-session override in effective', async () => {
+    const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    await smLocal.setCliDebug(info.id, { cliDebug: true })
+    const result = await smLocal.getDiagnostics(info.id)
+    expect(result.cliDebug.perSession).toBe(true)
+    expect(result.cliDebug.effective).toBe(true)
+  })
+
+  it('throws 404 for unknown session', async () => {
+    const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
+    await expect(smLocal.getDiagnostics('nonexistent')).rejects.toThrow(/not found/)
+  })
+})
