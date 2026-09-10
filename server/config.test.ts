@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { clearCredentials, config, defaultConfig, loadConfig, readConfigFile, updateConfigFile, WRITABLE_CONFIG_KEYS } from './config.js'
+import { clearCredentials, config, loadConfig, readConfigFile, updateConfigFile, WRITABLE_CONFIG_KEYS } from './config.js'
 import { tempDir } from './__test-utils__/index.js'
 
 describe('config', () => {
@@ -318,12 +318,13 @@ describe('config', () => {
 
   it('loads a global cliDebug default (false) and honors config.json', async () => {
     // Explicit default: false before any load.
-    expect(defaultConfig.cliDebug).toBe(false)
+    expect(config.cliDebug).toBe(false)
     // config.json cliDebug:true is surfaced on the frozen config.
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ cliDebug: true }))
-    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
     expect(config.cliDebug).toBe(true)
+    log.mockRestore()
   })
 
   it('exposes cliDebug as a writable config key', () => {

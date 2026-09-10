@@ -207,7 +207,7 @@ export interface ServerConfig {
  *  config.json (or PUT /api/config sending {key: ''}) actually reverts
  *  to the default instead of silently retaining the previously-loaded
  *  value in memory. */
-export const defaultConfig: ServerConfig = Object.freeze<ServerConfig>({
+const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   modelList: Object.freeze([
     'anthropic/claude-sonnet-4-20250514',
     'claude-opus-4-20250514',
@@ -243,22 +243,22 @@ export const defaultConfig: ServerConfig = Object.freeze<ServerConfig>({
   activeProfileId: 'default',
 })
 
-/** Synthetic fallback profile derived from defaultConfig. Used as the migration
+/** Synthetic fallback profile derived from DEFAULTS. Used as the migration
  *  source, the coerce fallback, and resolveActiveProfile's last resort. */
 export const DEFAULT_PROFILE: ProviderProfile = Object.freeze({
   id: 'default',
   name: 'Default',
   authToken: '',
-  baseUrl: defaultConfig.baseUrl,
-  modelList: Object.freeze([...defaultConfig.modelList]),
-  modelGroups: Object.freeze([...defaultConfig.modelGroups]),
-  recapModel: defaultConfig.recapModel,
-  commitMessageModel: defaultConfig.commitMessageModel,
+  baseUrl: DEFAULTS.baseUrl,
+  modelList: Object.freeze([...DEFAULTS.modelList]),
+  modelGroups: Object.freeze([...DEFAULTS.modelGroups]),
+  recapModel: DEFAULTS.recapModel,
+  commitMessageModel: DEFAULTS.commitMessageModel,
 })
 
 /** Current server config. Frozen after loadConfig() — reads are safe,
  *  writes throw at runtime. */
-export let config: ServerConfig = defaultConfig
+export let config: ServerConfig = DEFAULTS
 
 /** Return the configured auth token or throw. Use at request time so a
  *  missing token surfaces as an HTTP 401 rather than a silent fallback. */
@@ -302,7 +302,7 @@ export async function loadConfig(stateDir: string): Promise<void> {
             id: 'default',
             name: 'Default',
             authToken: '',
-            baseUrl: defaultConfig.baseUrl,
+            baseUrl: DEFAULTS.baseUrl,
             modelList: [...config.modelList],
             modelGroups: [...config.modelGroups],
             recapModel: config.recapModel,
@@ -370,14 +370,14 @@ async function migrateLegacyProfiles(
  *  Extracted from loadConfig() so doUpdateConfigFile() can skip the
  *  second disk read after writing an update.
  *
- *  Crucially we rebuild from `defaultConfig`, not the current `config`. If
+ *  Crucially we rebuild from `DEFAULTS`, not the current `config`. If
  *  the user removes a key from config.json (or PUT /api/config sends
  *  `{key: null}` / `{key: ''}` to clear it), `existing` will lack that
  *  key and the merged result must fall back to the hardcoded default.
  *  Building from `config` would carry the stale loaded value forward,
  *  making cleared keys behave like "no change". */
 function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): void {
-  const merged: ServerConfig = { ...defaultConfig }
+  const merged: ServerConfig = { ...DEFAULTS }
 
   // Derive credential/model fields from the active profile.
   const raw_ = file_ as unknown as Record<string, unknown>
@@ -707,7 +707,7 @@ export async function clearCredentials(stateDir: string): Promise<void> {
     const profiles = Array.isArray(existing.profiles) ? existing.profiles : []
     existing.profiles = profiles.map((p) => {
       if (typeof p !== 'object' || p === null || Array.isArray(p)) return p
-      return { ...p, authToken: '', baseUrl: defaultConfig.baseUrl }
+      return { ...p, authToken: '', baseUrl: DEFAULTS.baseUrl }
     })
   })
   await loadConfig(stateDir)
