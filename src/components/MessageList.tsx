@@ -1031,6 +1031,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         <button
           type="button"
           className="chat-jump-to-bottom"
+          // chat.css anchors this at `bottom: 16px`; ride above the bottom
+          // overlay stack so the pill never sits on top of the cards. With no
+          // stack the offset is 0 and the anchor is unchanged.
+          style={{ bottom: 16 + bottomStackHeight }}
           onClick={jumpToBottom}
           aria-label={unseenCount > 0 ? `Scroll to latest: ${unseenCount} new message${unseenCount === 1 ? '' : 's'}` : 'Scroll to latest messages'}
         >

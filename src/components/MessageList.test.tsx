@@ -1091,6 +1091,50 @@ describe('MessageList', () => {
     })
   })
 
+  it('lifts the jump-to-bottom button above the bottom stack', async () => {
+    // The button sits bottom-right (chat.css: `right:16px; bottom:16px`) — the
+    // exact corner the cards are parked in once they are a bottom overlay — so
+    // it has to ride above the stack by the stack's own height.
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 100 // start at the bottom (following)
+
+    const msgs = [
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'Settled' }] } }),
+    ]
+    const { container } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        streamingContent=""
+        bottomOverlay={<div className="probe-card">card</div>}
+      />,
+    )
+
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+    expect(stack).not.toBeNull()
+    let stackHeight = 0
+    Object.defineProperty(stack, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
+    })
+    stackHeight = 64
+    act(() => { fireResize(stack) })
+
+    // A genuine scroll-up is what surfaces the button — geometry alone does not
+    // (the follow logic keeps it hidden). Mirrors the existing jump-to-bottom
+    // tests so this asserts the OFFSET, not the gating.
+    scrollUpFromBottom(container)
+
+    await waitFor(() => {
+      const button = container.querySelector('.chat-jump-to-bottom') as HTMLElement
+      expect(button).not.toBeNull()
+      // 16px base offset (chat.css) + the 64px stack.
+      expect(button.style.bottom).toBe('80px')
+    })
+  })
+
   it('ignores an initial not-at-bottom report when DOM geometry is already at bottom', async () => {
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = false
