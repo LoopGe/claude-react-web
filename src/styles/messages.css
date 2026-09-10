@@ -1614,40 +1614,55 @@
 /* TodoChecklist — bottom member of the transcript's overlay stack
    (see .chat-bottom-stack in chat.css). */
 .todo-panel {
-  /* Card shell mirroring .recap-window: rounded, bordered, frosted. It no
-     longer positions itself — .chat-bottom-stack owns the anchoring — and it
-     re-enables pointer-events, which the stack turns off so clicks fall
-     through its empty area. `--chat-reading-inset` keeps the card edges
-     aligned with the transcript's 900px reading column; the 18px bottom
-     margin is the gap to the stack's next member (and, for the last one, to
-     the WorkingBubble / composer group beneath the stack), matching
-     .streaming-footer-wrapper's 18px bottom padding — that wrapper carried the
-     "room off the composer" gap when the live bubble was bottom-most in this
-     slot, so the cards inherit the same rhythm now that they are. The accent
-     identity lives in the title color alone. */
+  /* The card shell (radius / border / fill / blur / shadow) is shared — see
+     the "Transcript cards" group in glass.css. What lives here is this card's
+     ROLE inside .chat-bottom-stack:
+       - it re-enables pointer-events (the stack turns it off so clicks fall
+         through its empty area);
+       - `--chat-reading-inset` keeps its edges on the transcript's reading
+         column, and the 18px bottom margin matches .streaming-footer-wrapper's
+         bottom padding — that wrapper carried the "room off the composer" gap
+         when the live bubble was bottom-most in this slot, so the cards inherit
+         the same rhythm now that they are;
+       - it is a column flex box with `min-height: 0` so it can SHRINK when the
+         stack hits its height cap (see .chat-bottom-stack). The chain runs on
+         through .animated-collapse to the scrolling list — without it the stack
+         would outgrow the transcript instead of the list scrolling.
+     The accent identity lives in the title color alone. */
   pointer-events: auto;
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   margin: 0 var(--chat-reading-inset) 18px;
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--border);
-  background: var(--glass-surface-bg);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  box-shadow: var(--drawer-shadow);
-  overflow: hidden;
   padding: 10px 14px;
   font-size: 13px;
   /* One-shot entrance when the card mounts (a visible task list appears at
      turn start). Plays per insertion only — the card is a single non-
      virtualized element, so there is no scroll-back remount to worry about.
-     Transform/opacity only, so no layout-height reflow is triggered. The
-     shift is UPWARD (negative Y) so the card slides down into its final spot
-     without growing scrollHeight. */
+     Transform/opacity only, so no layout-height reflow is triggered. */
   animation: todo-panel-in var(--motion-duration-moderate) var(--motion-ease-enter);
+}
+/* Shrink chain (see .todo-panel). Scoped to the overlay cards so
+   AnimatedCollapse's many other consumers — session list, settings panels —
+   keep their existing flow-root layout untouched. */
+.todo-panel .animated-collapse {
+  display: flex;
+  flex-direction: column;
+}
+.todo-panel .animated-collapse-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 @keyframes todo-panel-in {
   from {
     opacity: 0;
-    transform: translateY(calc(-1 * var(--motion-distance-sm)));
+    /* Rises into place from BELOW: the card is the bottom member of
+       .chat-bottom-stack, so a downward shift (its original form, authored for
+       a top-sticky bar) would read as dropping in from the transcript. */
+    transform: translateY(var(--motion-distance-sm));
   }
   to {
     opacity: 1;
@@ -1750,11 +1765,12 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  /* Cap so a long checklist doesn't dominate the viewport — the card is a
-     bottom OVERLAY now, so without a cap the list grows the stack past the
-     transcript, whose height is reserved as scroll space (blanking it out).
-     The list scrolls internally (overlay scrollbar attached in
-     TodoChecklist); the header + count stay visible above. */
+  /* Natural cap; the GUARANTEE is .chat-bottom-stack's height cap, which this
+     list absorbs by shrinking (flex:1 + min-height:0) and scrolling. The list
+     scrolls internally (overlay scrollbar attached in TodoChecklist); the
+     header + count stay visible above. */
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: 240px;
   overflow-y: auto;
 }
@@ -1937,22 +1953,18 @@
   pointer-events: none;
 }
 
-/* Monitor bar — surfaces currently-running Monitor background tasks. Shares
-   the visual vocabulary of .todo-panel (a card in the transcript's bottom
-   overlay stack, count chip, pulsing icon) but uses --warn for the accent so
-   it reads as distinct from the Checklist. Kept in lockstep with
-   .todo-panel's shell (see the note there) so the two read as one family when
-   both are on screen. */
+/* Monitor bar — surfaces currently-running Monitor background tasks. It is
+   the second card in the transcript's bottom overlay stack, sharing
+   .todo-panel's shell (glass.css), its 18px bottom rhythm, and its shrinkable
+   column-flex role; only the accent differs (--warn, so it reads as distinct
+   from the Checklist). */
 .monitor-bar {
   pointer-events: auto;
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   margin: 0 var(--chat-reading-inset) 18px;
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--border);
-  background: var(--glass-surface-bg);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  box-shadow: var(--drawer-shadow);
-  overflow: hidden;
   padding: 10px 14px;
   font-size: 13px;
 }
@@ -1984,10 +1996,11 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  /* Cap so a long-running monitor set can't grow the card without bound. The
-     bar is a bottom overlay now, so an uncapped list can push the whole stack
-     past the transcript viewport and blank it out; .todo-panel-list carries
-     the same cap for the same reason. */
+  /* Same cap and same shrink contract as .todo-panel-list — see the note
+     there. Kept in lockstep so the two cards behave identically when the stack
+     is height-capped. */
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: 240px;
   overflow-y: auto;
 }

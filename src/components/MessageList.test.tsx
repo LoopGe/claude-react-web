@@ -1091,7 +1091,7 @@ describe('MessageList', () => {
     })
   })
 
-  it('lifts the jump-to-bottom button above the bottom stack', async () => {
+  it('lifts the jump-to-bottom button above the bottom overlay cards', async () => {
     // The button sits bottom-right (chat.css: `right:16px; bottom:16px`) — the
     // exact corner the cards are parked in once they are a bottom overlay — so
     // it has to ride above the stack by the stack's own height.
@@ -1112,15 +1112,17 @@ describe('MessageList', () => {
       />,
     )
 
-    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
-    expect(stack).not.toBeNull()
-    let stackHeight = 0
-    Object.defineProperty(stack, 'getBoundingClientRect', {
+    // The offset tracks the CARDS' wrapper, not the whole stack — the stack
+    // also holds the live bubble, whose height churns on every token.
+    const overlay = container.querySelector('.chat-bottom-overlay') as HTMLElement
+    expect(overlay).not.toBeNull()
+    let overlayHeight = 0
+    Object.defineProperty(overlay, 'getBoundingClientRect', {
       configurable: true,
-      value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
+      value: () => ({ height: overlayHeight, width: 400, top: 0, left: 0, right: 400, bottom: overlayHeight, x: 0, y: 0 }),
     })
-    stackHeight = 64
-    act(() => { fireResize(stack) })
+    overlayHeight = 64
+    act(() => { fireResize(overlay) })
 
     // A genuine scroll-up is what surfaces the button — geometry alone does not
     // (the follow logic keeps it hidden). Mirrors the existing jump-to-bottom
@@ -1980,12 +1982,15 @@ describe('MessageList', () => {
 
     const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
     expect(stack).not.toBeNull()
-    expect(stack.querySelector('.chat-streaming-region')).not.toBeNull()
-    expect(stack.querySelector('.probe-card')).not.toBeNull()
-    // Streaming region first, cards after — the chosen stacking order.
+    // Streaming region first, cards after — the chosen stacking order. Each
+    // sits in its own wrapper: the region's clips its own exit slide (the stack
+    // no longer clips), the cards' is measured on its own so the
+    // jump-to-bottom button can clear them without tracking the live bubble.
     const kids = Array.from(stack.children)
-    expect(kids[0].className).toContain('chat-streaming-region')
-    expect(kids[1].className).toContain('probe-card')
+    expect(kids[0].className).toContain('chat-streaming-clip')
+    expect(kids[1].className).toContain('chat-bottom-overlay')
+    expect(kids[0].querySelector('.chat-streaming-region')).not.toBeNull()
+    expect(kids[1].querySelector('.probe-card')).not.toBeNull()
 
     // The stack is always mounted, even with no streaming content and no cards.
     // The region lingers through its exit animation (`.exiting`), so assert it

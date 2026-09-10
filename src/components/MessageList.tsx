@@ -7,7 +7,7 @@
 // Filters out `stream_event` partials (the final assistant message
 // carries the complete content, so showing both just flickers).
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
@@ -290,12 +290,17 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // the same ref callback that captures it.
   const setOsScroller = useOverlayScrollbar({ autoHide: 'leave' })
   const bottomStackRef = useRef<HTMLDivElement | null>(null)
+  const bottomOverlayRef = useRef<HTMLDivElement | null>(null)
   // --- /clear blur ----------------------------------------------------
   // MessageList applies `.chat-messages-clearing` (see messagesClassName
   // below) while `clearing` is true — the view-only blur that signals a
   // clear in progress during the POST. There is no panel-level veil anymore;
   // the fresh session Y plays `.entering` on mount.
   const [bottomStackHeight, setBottomStackHeight] = useState(0)
+  /** Height of the cards alone (the `bottomOverlay` contents) — what the
+   *  jump-to-bottom button offsets by. Distinct from `bottomStackHeight`,
+   *  which also covers the live streaming bubble above them. */
+  const [bottomOverlayHeight, setBottomOverlayHeight] = useState(0)
   // Easter-egg: triple-clicking the empty-state sparkle swaps in a hidden
   // dino-style game. Local UI state only — no session/persistence concerns.
   const [gameOpen, setGameOpen] = useState(false)
@@ -594,15 +599,38 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // publish its committed height. The stack is ALWAYS mounted, so the observer
   // attaches once and any child resize — a task appears, the card expands, the
   // bubble grows — re-fires it, with no dependency on what is inside.
-  useEffect(() => {
-    // The stack is rendered unconditionally, so React has already assigned the
-    // ref by the time this passive effect runs — no null branch is needed.
+  // useLayoutEffect, not useEffect: the Footer spacer is gated on the height
+  // being > 0, so measuring after paint would leave the first frame with no
+  // reserved room — the newest settled message would sit behind the cards for
+  // that frame. Both observed elements are rendered unconditionally, so a ref
+  // is always assigned by the time this runs.
+  useLayoutEffect(() => {
     const el = bottomStackRef.current
     if (!el) return
 
     const updateHeight = () => {
       const height = Math.ceil(el.getBoundingClientRect().height)
       setBottomStackHeight((prev) => (prev === height ? prev : height))
+    }
+
+    updateHeight()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(updateHeight)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  // Measured separately from the stack: the jump-to-bottom button must clear
+  // the CARDS, and the stack also contains the live streaming bubble, whose
+  // height churns every token — offsetting by the stack would make the pill
+  // bob during a turn and could push it off the top of the stage.
+  useLayoutEffect(() => {
+    const el = bottomOverlayRef.current
+    if (!el) return
+
+    const updateHeight = () => {
+      const height = Math.ceil(el.getBoundingClientRect().height)
+      setBottomOverlayHeight((prev) => (prev === height ? prev : height))
     }
 
     updateHeight()
@@ -1030,10 +1058,12 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         <button
           type="button"
           className="chat-jump-to-bottom"
-          // chat.css anchors this at `bottom: 16px`; ride above the bottom
-          // overlay stack so the pill never sits on top of the cards. With no
-          // stack the offset is 0 and the anchor is unchanged.
-          style={{ bottom: 16 + bottomStackHeight }}
+          // chat.css anchors this at `bottom: 16px`; ride above the CARDS. The
+          // offset uses the overlay's own height, NOT the stack's — the stack
+          // also holds the live bubble, whose height churns every token, which
+          // would make the pill bob and could push it off the stage. With no
+          // cards the offset is 0 and the anchor is unchanged.
+          style={{ bottom: 16 + bottomOverlayHeight }}
           onClick={jumpToBottom}
           aria-label={unseenCount > 0 ? `Scroll to latest: ${unseenCount} new message${unseenCount === 1 ? '' : 's'}` : 'Scroll to latest messages'}
         >
@@ -1043,14 +1073,18 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       )}
       <div className="chat-bottom-stack" ref={bottomStackRef}>
         {visibleStreamingContent != null && (
-          <div
-            className={streamingRegionClassName}
-            aria-hidden={nextStreamingPresence.exiting}
-          >
-            <StreamingFooter content={visibleStreamingContent} />
+          <div className="chat-streaming-clip">
+            <div
+              className={streamingRegionClassName}
+              aria-hidden={nextStreamingPresence.exiting}
+            >
+              <StreamingFooter content={visibleStreamingContent} />
+            </div>
           </div>
         )}
-        {bottomOverlay}
+        <div className="chat-bottom-overlay" ref={bottomOverlayRef}>
+          {bottomOverlay}
+        </div>
       </div>
       </div>
     </div>
