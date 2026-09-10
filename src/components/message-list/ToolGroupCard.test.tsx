@@ -195,6 +195,15 @@ describe('ToolGroupCard', () => {
     expect(isOpen(container)).toBe(true)
     expect(container.textContent).toContain('waiting')
     expect(container.querySelector('.tool-group-has-pending')).not.toBeNull()
+    // The waiting badge must NOT borrow .tool-status-running: that rule spins
+    // the badge glyph, and this one (IconMessageQuestion) isn't rotationally
+    // symmetric, so it visibly wobbled. It also isn't semantically "running" —
+    // nothing is in flight, the turn is parked on the user.
+    expect(container.querySelector('.tool-status-waiting')).not.toBeNull()
+    expect(container.querySelector('.tool-status-running')).toBeNull()
+    // Belt-and-braces: no loader glyph in the waiting badge at all, so even a
+    // future unscoped spin rule can't animate it.
+    expect(container.querySelector('.tool-status-waiting .icon-loader')).toBeNull()
   })
 
   it('toggles on header click', () => {

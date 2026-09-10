@@ -240,16 +240,29 @@ export function IconCopy(props: IconProps) {
   )
 }
 
-export function IconLoader(props: IconProps) {
-  // The loader rotates at the .tool-status-running CSS rule. We render
-  // two OPPOSITE 135° arcs — 180°-rotationally symmetric — instead of a
-  // single 270° arc. A single partial arc's visual mass (centroid) is
-  // offset toward its solid side, so as it spins the mass orbits ~1px
-  // around the center: the "off-center wobble". Two opposite arcs cancel
-  // that, keeping the centroid on the rotation axis at every angle.
+export function IconLoader({ className, ...props }: IconProps) {
+  // The loader rotates at the .tool-status-running CSS rule, so its SILHOUETTE
+  // must be rotation-invariant — a full circle. Earlier revisions rotated a
+  // gapped shape (first one 270° arc, then two opposite 135° arcs). Both keep
+  // the centroid on the rotation axis, but neither keeps the *outline* fixed:
+  // a gap swallows the outermost ink along its own axis, so the rendered
+  // bounding box pumps between "tall-narrow" and "short-wide" as the gaps
+  // sweep past the axes. Measured at 11–14px that is a 1–2 device-px pump
+  // twice per revolution, which reads as an off-center wobble even though the
+  // center never moves.
+  //
+  // So: draw the complete ring as a dim track (its outline can't change under
+  // rotation) and put the motion in a bright 90° highlight arc riding on the
+  // same radius and stroke, so it adds no extent of its own. Same trick the
+  // CSS border-ring spinners use (`.msg-sending-spinner` et al), which measure
+  // 0px outline drift at every angle.
+  //
+  // The always-on `icon-loader` class lets stylesheets spin *the loader* rather
+  // than "any svg inside a badge" — see the note on .tool-status-running.
   return (
-    <Icon {...props}>
-      <path d="M15.444 20.315a9 9 0 0 1-11.759-11.759M8.556 3.685a9 9 0 0 1 11.759 11.759" />
+    <Icon {...props} className={className ? `icon-loader ${className}` : 'icon-loader'}>
+      <circle cx="12" cy="12" r="9" opacity={0.25} />
+      <path d="M21 12a9 9 0 0 0-9-9" />
     </Icon>
   )
 }

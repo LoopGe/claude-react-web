@@ -377,16 +377,31 @@
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }
-.tool-status-running svg {
+/* Scoped to .icon-loader (a class IconLoader always carries), NOT to `svg`.
+   The old `.tool-status-running svg` selector spun whatever glyph happened to
+   sit in the badge, so reusing the running colors for another state silently
+   rotated a non-symmetric icon — which visibly wobbles. Only the loader spins. */
+.tool-status-running .icon-loader {
   animation: tool-status-spin 0.9s linear infinite;
-  /* Pin rotation to the icon's geometric center. IconLoader is drawn
-     centered in the 24×24 viewBox, so resolving the origin to the SVG
-     viewport center (12,12) keeps the geometric center fixed while it
-     spins. (The visual-mass wobble — a single arc's centroid orbits the
-     center — is eliminated in the icon itself: IconLoader is two
-     opposite 135° arcs, 180°-rotationally symmetric.) */
+  /* Rotate about the box center. Both declarations below are belt-and-braces:
+     on an OUTERMOST <svg> (which has a CSS layout box) `fill-box` resolves to
+     content-box per spec, so the computed origin is the box center — 6px 6px
+     for a 12px icon — exactly what the initial value gives. They do NOT pin
+     the origin to the drawn glyph's own bounding box, so this rule cannot
+     rescue an off-center icon; the icon has to be centered and
+     rotation-invariant itself (see IconLoader's note on why it's a full ring
+     plus a highlight arc rather than a gapped arc). */
   transform-box: fill-box;
   transform-origin: center;
+}
+/* "Waiting on you" — a plan or question in the group needs a decision. Amber,
+   matching the sidebar's own waiting grammar (.session-status-dot.status-waiting
+   uses --warn), and deliberately NOT animated: nothing is in flight, the turn is
+   parked on the user. */
+.tool-status-waiting {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
 }
 .tool-status-success {
   color: var(--ok);
@@ -991,8 +1006,9 @@
 .tool-group-has-error {
   border-left: 3px solid var(--danger);
 }
+/* Amber, so the stripe agrees with the "waiting" badge it accompanies. */
 .tool-group-has-pending {
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--warn);
 }
 
 /* ── A11y: prefers-reduced-motion ──────────────────────────────────

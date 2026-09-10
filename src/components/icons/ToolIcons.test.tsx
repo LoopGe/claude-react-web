@@ -22,51 +22,64 @@ describe('IconSidebar', () => {
   })
 })
 
-/** Parse IconLoader's `d` into its arc subpaths: two `M x y a9 9 0 0 1 dx dy`
- *  segments. SVG path grammar lets the sweep flag abut a following negative
- *  number with no space (`0 0 1-11.759`), and lets the two relative endpoints
- *  be separated by a space or a sign — the regex allows both. */
-function parseLoaderArcs(d: string) {
-  return d
-    .split('M')
-    .slice(1)
-    .map((s) => {
-      const m = s.match(/^([\d.]+) ([\d.]+)a9 9 0 0 1 ?(-?[\d.]+)\s?(-?[\d.]+)/)
-      if (!m) throw new Error(`unexpected loader path segment: ${s}`)
-      return { sx: +m[1], sy: +m[2], dx: +m[3], dy: +m[4] }
-    })
-}
-
 describe('IconLoader', () => {
-  // The spinner is 180°-rotationally symmetric (two OPPOSITE 135° arcs) so its
-  // visual-mass centroid stays on the rotation axis at every angle. A single
-  // partial arc has its centroid offset toward the solid side and wobbles
-  // ~1px off-center as it spins — that was the reported "偏心" bug. This test
-  // pins the symmetry invariant so a future "simplification" back to one arc
-  // can't silently regress the spinner.
-  it('renders two opposite 135° arcs on the 24×24 viewBox', () => {
+  // The spinner is rotated by CSS (.tool-status-running .icon-loader et al), so the
+  // shape it rotates must have a rotation-INVARIANT silhouette: a complete
+  // circle. Any gapped shape (one 270° arc, or two opposite 135° arcs — both
+  // shipped previously) swallows the outermost ink along the gap axis, so the
+  // rendered outline pumps between tall-narrow and short-wide as the gaps
+  // sweep past the axes. Measured at 11–14px that's a 1–2 device-px pump twice
+  // per revolution, i.e. the reported "圆心偏移" wobble, even though the
+  // centroid never leaves the rotation axis.
+  //
+  // These assertions pin the two properties that kill the wobble: a full
+  // circular track, and a highlight that rides the same radius so it can't
+  // extend the outline. A future "simplify to one path" would break them.
+  // The stylesheet targets `.tool-status-running .icon-loader` rather than a
+  // bare `svg` so a badge can reuse the running colors without its glyph being
+  // rotated. That only holds if the class is unconditional and survives a
+  // caller-supplied className.
+  it('always carries the icon-loader class, merged with a caller className', () => {
+    const { container } = render(<IconLoader size={12} />)
+    expect(container.querySelector('svg')!.classList.contains('icon-loader')).toBe(true)
+
+    cleanup()
+    const withCaller = render(<IconLoader size={12} className="git-panel-spin" />)
+    const cls = withCaller.container.querySelector('svg')!.classList
+    expect(cls.contains('icon-loader')).toBe(true)
+    expect(cls.contains('git-panel-spin')).toBe(true)
+  })
+
+  it('draws a full circular track centred on the viewBox', () => {
+    const { container } = render(<IconLoader size={12} />)
+    const circle = container.querySelector('circle')
+    expect(circle).not.toBeNull()
+    expect(circle!.getAttribute('cx')).toBe('12')
+    expect(circle!.getAttribute('cy')).toBe('12')
+    expect(circle!.getAttribute('r')).toBe('9')
+    // Dimmed so the highlight arc reads as the moving part.
+    expect(Number(circle!.getAttribute('opacity'))).toBeGreaterThan(0)
+    expect(Number(circle!.getAttribute('opacity'))).toBeLessThan(1)
+  })
+
+  it('rides the highlight arc on the track radius so the outline never grows', () => {
     const { container } = render(<IconLoader size={12} />)
     const d = container.querySelector('path')!.getAttribute('d')!
-    const arcs = parseLoaderArcs(d)
-    expect(arcs).toHaveLength(2)
+    // `M21 12 a9 9 0 0 0 -9 -9` — start point plus one relative arc. The sweep
+    // flag may abut a following negative number with no space.
+    const m = d.match(/^M([\d.]+) ([\d.]+)a9 9 0 0 0 ?(-?[\d.]+)\s?(-?[\d.]+)$/)
+    expect(m).not.toBeNull()
+    const [sx, sy, dx, dy] = [+m![1], +m![2], +m![3], +m![4]]
 
-    const a = arcs[0]
-    const b = arcs[1]
-    const ax = a.sx + a.dx
-    const ay = a.sy + a.dy
+    // Both endpoints sit exactly on the track's radius, so the highlight adds
+    // no extent of its own at any rotation.
+    expect(Math.hypot(sx - 12, sy - 12)).toBeCloseTo(9, 2)
+    expect(Math.hypot(sx + dx - 12, sy + dy - 12)).toBeCloseTo(9, 2)
 
-    // Both arcs are radius 9, centered on (12,12).
-    expect(Math.hypot(a.sx - 12, a.sy - 12)).toBeCloseTo(9, 2)
-    expect(Math.hypot(ax - 12, ay - 12)).toBeCloseTo(9, 2)
-
-    // 180° rotational symmetry: the mirror of arc A's start is arc B's start.
-    expect(b.sx).toBeCloseTo(24 - a.sx, 2)
-    expect(b.sy).toBeCloseTo(24 - a.sy, 2)
-
-    // Each arc spans 135° (chord = 2r·sin(θ/2)), i.e. the two gaps are
-    // opposite 45° wedges — not a single 270° arc.
-    const chord = Math.hypot(a.dx, a.dy)
+    // A quarter turn (chord = 2r·sin(θ/2) → θ = 90°) reads clearly as motion
+    // without covering enough of the track to look like a second ring.
+    const chord = Math.hypot(dx, dy)
     const halfDeg = (Math.asin(Math.min(chord / 18, 1)) * 180) / Math.PI
-    expect(halfDeg).toBeCloseTo(67.5, 1)
+    expect(halfDeg).toBeCloseTo(45, 1)
   })
 })

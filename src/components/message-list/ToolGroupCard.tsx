@@ -143,8 +143,11 @@ export const ToolGroupCard = memo(function ToolGroupCard({
       <span className="tool-status-label">running</span>
     </span>
   ) : summary.anyPendingInteractive ? (
+    // Its own class, not tool-status-running: nothing is in flight here, and
+    // the running rule spins the glyph (IconMessageQuestion isn't rotationally
+    // symmetric, so it visibly wobbles).
     <span
-      className="tool-status tool-status-running"
+      className="tool-status tool-status-waiting"
       title="Waiting on you — a plan or question in this group needs a decision."
     >
       <IconMessageQuestion size={12} />
