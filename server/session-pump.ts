@@ -12,6 +12,7 @@ import type { Session, SessionBroadcaster } from './session-types.js'
 import { endAllSubscribers } from './session-types.js'
 import { isTranscriptMessage, pushBounded, stampReceivedAt, shouldBroadcastMessage, trimLargeToolResults, truncateMiddle } from './history-utils.js'
 import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
+import { metrics } from './metrics.js'
 import { parseAckAgentId } from './subagent-watcher.js'
 
 /** Anchored signature of an async/background subagent launch ack (the
@@ -704,6 +705,9 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
     // clearing a new setTimeout per message (which for a 200-message turn
     // means 200 timer allocations).
     let nextStartedAt = Date.now()
+    // Metrics: previous iter.next() resolution timestamp, for the arrival
+    // cadence histogram (pump_next_gap_ms).
+    let lastNextResolvedAt: number | undefined
     const idleTimer = setTimeout(() => {
       if (session.pendingTurns === 0 && session.pending.size === 0) return
       log.warn(
@@ -736,6 +740,19 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           try { await iter.return?.() } catch { /* subprocess already dead — ignore */ }
           break
         }
+        // Arrival cadence: gap between consecutive iter.next() resolutions
+        // (= processing time of the previous message + any wait). During a
+        // heavy stream this is the pump's steady-state heartbeat; a tiny gap
+        // with a large ws_fanout_ms means the loop is the bottleneck. Gaps
+        // above 60s are idle-between-turns waits, not cadence — reset the
+        // baseline instead of recording them, so a long idle doesn't poison
+        // the distribution.
+        const resolvedAt = Date.now()
+        if (lastNextResolvedAt !== undefined) {
+          const gap = resolvedAt - lastNextResolvedAt
+          if (gap <= 60_000) metrics.observe('pump_next_gap_ms', gap)
+        }
+        lastNextResolvedAt = resolvedAt
         const msg = step.value
         const msgSubtype = (msg as unknown as { subtype?: string }).subtype
         // The SDK may echo top-level user input back through the Query
@@ -868,6 +885,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         ) {
           session.initAtMs = Date.now()
           const bootMs = session.bootStartedAt !== undefined ? session.initAtMs - session.bootStartedAt : undefined
+          if (bootMs !== undefined) metrics.observe('session_spawn_ms', bootMs)
           const model = typeof (msg as { model?: unknown }).model === 'string' ? (msg as { model?: string }).model : ''
           log.info(
             `[${session.id}] init handshake done in ${bootMs ?? '?'}ms from pump start` +
@@ -1058,6 +1076,13 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // just-sent user message, an assistant message, a tool result — from
         // the replay surface within seconds, so a reload during/after the
         // flood loses recent durable messages.
+        // Metrics: time this message's synchronous fanout work (ring append +
+        // subscriber pushes). This is the portion of the pump that directly
+        // blocks the event loop per message — the primary signal for the
+        // "session A streams, session B hangs" hypothesis. (The early-continue
+        // ephemeral frames above perform no fanout and are intentionally not
+        // observed.)
+        const fanoutStart = performance.now()
         if (isTranscriptMessage(msg)) {
           // Split by frame origin: subagent frames (parent_tool_use_id
           // set — tool hops plus the text/thinking frames forwarded when
@@ -1085,6 +1110,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             try { sub.push(msg) } catch { /* subscriber dead — don't break broadcast to others */ }
           }
         }
+        metrics.observe('ws_fanout_ms', performance.now() - fanoutStart)
         msgCount++
         // Derive a context-usage snapshot directly from the result's own
         // `usage` + `modelUsage` payload — no IPC. The result message is

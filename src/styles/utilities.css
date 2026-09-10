@@ -3037,3 +3037,61 @@ select.input {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Performance panel (SettingsPanel → Performance tab): metric tables. */
+.perf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.perf-table th,
+.perf-table td {
+  text-align: right;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.perf-table th:first-child,
+.perf-table td:first-child {
+  text-align: left;
+}
+.perf-table th {
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.perf-name {
+  font-family: var(--mono);
+  color: var(--fg-muted);
+}
+.perf-hot {
+  color: var(--warn);
+  font-weight: 600;
+}
+.perf-empty {
+  color: var(--fg-muted);
+  text-align: center;
+}
+.perf-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.perf-auto {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.perf-gauges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.perf-gauges b {
+  color: inherit;
+  font-family: var(--mono);
+}

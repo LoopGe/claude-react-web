@@ -42,6 +42,7 @@ import {
 import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
 import { tryCaptureGitHead } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
+import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
@@ -2418,6 +2419,7 @@ export class SessionManager {
 
     session.pumpTask = this.pump(session)
     this.sessions.set(id, session)
+    metrics.gauge('sessions_active', this.sessions.size)
     log.info(`[session ${id}] spawned model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
     // Classify the model's effort capability (keyword-based, synchronous) so
     // the very first `created` frame below already carries the correct
@@ -2719,6 +2721,11 @@ export class SessionManager {
       }
       log.error(`[session ${id}] interrupt() threw after ${Date.now() - startedAt}ms:`, err)
       throw err
+    } finally {
+      // Record ALL outcomes — a rejected interrupt (wedged subprocess, the
+      // stuck-session GC's escalation case) is exactly the sample the
+      // histogram must not lose.
+      metrics.observe('interrupt_ms', Date.now() - startedAt)
     }
   }
 
@@ -3851,6 +3858,10 @@ export class SessionManager {
       // wrap in requireHandleMethod is never doubled).
       if (err instanceof HttpError) throw err
       throw new HttpError(502, `${label} failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      // Record ALL outcomes — the wedged-subprocess / init-stall failures
+      // this wrapper exists to make visible must land in the histogram too.
+      metrics.observe('sdk_control_ms', Date.now() - startedAt, { op: label })
     }
   }
 
@@ -4652,6 +4663,7 @@ export class SessionManager {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
     this.sessions.delete(id)
+    metrics.gauge('sessions_active', this.sessions.size)
     // Clear the recap state. The session is no longer in the manager's
     // map so getPhase will return 'unknown' from inside the manager —
     // we still call invalidate() to end any subscribers and clear the
@@ -4774,6 +4786,18 @@ export class SessionManager {
     mapped.sort((a, b) => b.lastModified - a.lastModified)
     return mapped
   }
+  /** Total tool-permission requests currently pending across ALL live
+   *  sessions. Derived at read time (metrics snapshot) instead of a
+   *  manually-maintained gauge — a per-session `pending.size` written to a
+   *  global gauge would be last-writer-wins, and every future
+   *  pending-clearing path (denyAll, abort, decide) would have to remember
+   *  to update it. */
+  totalPendingPermissions(): number {
+    let total = 0
+    for (const s of this.sessions.values()) total += s.pending.size
+    return total
+  }
+
   /** Cheap count of all sessions (live + persisted) without allocating
    *  a full SessionInfo list. Use for health probes etc. */
   sessionCount(): number {
