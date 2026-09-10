@@ -1618,12 +1618,15 @@
      longer positions itself — .chat-bottom-stack owns the anchoring — and it
      re-enables pointer-events, which the stack turns off so clicks fall
      through its empty area. `--chat-reading-inset` keeps the card edges
-     aligned with the transcript's 900px reading column; the 8px bottom margin
-     is the gap to the stack's next member (and, for the last one, to the
-     WorkingBubble / composer group beneath the stack). The accent identity
-     lives in the title color alone. */
+     aligned with the transcript's 900px reading column; the 18px bottom
+     margin is the gap to the stack's next member (and, for the last one, to
+     the WorkingBubble / composer group beneath the stack), matching
+     .streaming-footer-wrapper's 18px bottom padding — that wrapper carried the
+     "room off the composer" gap when the live bubble was bottom-most in this
+     slot, so the cards inherit the same rhythm now that they are. The accent
+     identity lives in the title color alone. */
   pointer-events: auto;
-  margin: 0 var(--chat-reading-inset) 8px;
+  margin: 0 var(--chat-reading-inset) 18px;
   border-radius: var(--radius-xl);
   border: 1px solid var(--border);
   background: var(--glass-surface-bg);
@@ -1942,7 +1945,7 @@
    both are on screen. */
 .monitor-bar {
   pointer-events: auto;
-  margin: 0 var(--chat-reading-inset) 8px;
+  margin: 0 var(--chat-reading-inset) 18px;
   border-radius: var(--radius-xl);
   border: 1px solid var(--border);
   background: var(--glass-surface-bg);

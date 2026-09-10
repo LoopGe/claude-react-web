@@ -270,7 +270,11 @@
   flex-direction: column;
   border-radius: var(--radius-xl);
   border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 75%, transparent);
+  /* --glass-surface-bg, not a hand-rolled color-mix: the hc / soft-hc skins
+     pair `--glass-blur: none` with an OPAQUE --glass-surface-bg to say "no
+     translucency here", and a literal color-mix bypasses that. Shares the
+     recipe with the transcript's bottom-overlay cards (messages.css). */
+  background: var(--glass-surface-bg);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   box-shadow: var(--drawer-shadow);
