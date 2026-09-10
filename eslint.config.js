@@ -79,6 +79,13 @@ export default [
         clearTimeout: 'readonly',
         setImmediate: 'readonly',
         Buffer: 'readonly',
+        FormData: 'readonly',
+        File: 'readonly',
+        Request: 'readonly',
+        URL: 'readonly',
+        ReadableStream: 'readonly',
+        Response: 'readonly',
+        fetch: 'readonly',
       },
     },
     rules: {

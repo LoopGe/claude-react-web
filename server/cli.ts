@@ -328,6 +328,12 @@ async function runServer(args: CliArgs): Promise<void> {
     socket.on('error', () => {})
   })
 
+  // Node's default `requestTimeout` (~300s) covers receiving the ENTIRE request,
+  // so a large file over a slow link (phone on LAN) can be killed mid-upload.
+  // Raise it well past a 500 MB upload at ~1 MB/s; a finite value keeps some
+  // slowloris protection rather than disabling the timeout outright.
+  ;(server as unknown as Server).requestTimeout = 30 * 60 * 1000
+
   // Attach the WebSocket multiplexer to the same HTTP server. The
   // returned shutdown fn closes every live socket during SIGINT.
   // @hono/node-server returns a Node http.Server (same shape), so cast

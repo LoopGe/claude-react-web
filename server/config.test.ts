@@ -17,7 +17,7 @@ describe('config', () => {
   })
 
   it('exports sensible hardcoded defaults', () => {
-    expect(config.maxUploadBytes).toBe(25 * 1024 * 1024)
+    expect(config.maxUploadBytes).toBe(500 * 1024 * 1024)
     expect(config.historyCap).toBe(500)
     expect(config.modelList.length).toBeGreaterThan(0)
     expect(config.defaultModel).toBeTruthy()

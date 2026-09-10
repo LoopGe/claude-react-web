@@ -36,6 +36,9 @@ export interface ConfigResponse {
   modelGroups?: ModelGroupConfig[]
   maxGroupPanels?: number
   maxUploadBytes?: number
+  /** Internal cap on the total size of pasted images in one message (bytes).
+   *  NOT a user setting — these bytes ride the buffered JSON message body. */
+  maxPastedImageBytes?: number
   /** Global default for the pinned "current question" header. Sessions
    *  without an explicit override inherit this. */
   showPinnedUserMessage?: boolean
@@ -71,6 +74,7 @@ export interface FullServerConfig {
   recapModel: string
   commitMessageModel: string
   maxUploadBytes: number
+  maxPastedImageBytes?: number
   historyCap: number
   maxGroupPanels: number
   workingStuckMs: number

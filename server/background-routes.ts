@@ -5,13 +5,14 @@
 // names are never trusted. Every read/delete is containment-checked.
 
 import { Hono } from 'hono'
-import { mkdir, writeFile, stat, unlink } from 'node:fs/promises'
+import { mkdir, stat, unlink } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { Readable } from 'node:stream'
 import { resolve, join, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { config as serverConfig } from './config.js'
 import { createLogger } from './log.js'
+import { streamUploads, UploadError, type SavedUpload } from './stream-upload.js'
 
 const log = createLogger('background')
 
@@ -101,29 +102,38 @@ export function buildBackgroundRouter(opts: { dir: string; maxUploadBytes?: numb
     if (!ct.toLowerCase().startsWith('multipart/form-data')) {
       return c.json({ error: 'expected multipart/form-data' }, 400)
     }
-    const body = await c.req.parseBody({ all: true }).catch(() => null)
-    if (!body) return c.json({ error: 'invalid multipart payload' }, 400)
-
-    let file: File | undefined
-    for (const v of Object.values(body)) {
-      if (v instanceof File) { file = v; break }
-    }
-    if (!file) return c.json({ error: 'no file in request' }, 400)
-
-    // `hasOwn` — a bare index is a prototype-chain lookup, so a part declaring
-    // e.g. `Content-Type: constructor` would resolve to Object and bypass the
-    // allow-list, storing a file whose name can never be served.
-    const ext = Object.hasOwn(ALLOWED_UPLOAD, file.type) ? ALLOWED_UPLOAD[file.type] : undefined
-    if (!ext) return c.json({ error: `unsupported file type '${file.type}'` }, 400)
-    if (file.size > maxBytes) {
-      return c.json({ error: `file exceeds ${maxBytes} bytes` }, 413 as 400 | 404 | 410 | 500)
-    }
+    if (!c.req.raw.body) return c.json({ error: 'no file in request' }, 400)
 
     await mkdir(dir, { recursive: true })
-    const name = `${randomUUID()}${ext}`
-    await writeFile(join(dir, name), Buffer.from(await file.arrayBuffer()))
-    log.info(`upload background name=${name} bytes=${file.size}`)
-    return c.json({ url: `/api/background/files/${name}` })
+    let saved: SavedUpload[]
+    try {
+      saved = await streamUploads({
+        body: c.req.raw.body,
+        contentType: ct,
+        maxFileBytes: maxBytes,
+        maxFiles: 1,
+        accept: ALLOWED_UPLOAD,
+        place: ({ mimeType }) => {
+          // The allow-list already passed, so the extension is present.
+          const name = `${randomUUID()}${ALLOWED_UPLOAD[mimeType]}`
+          return { tmp: join(dir, `${name}.part`), final: join(dir, name), name }
+        },
+      })
+    } catch (e) {
+      if (!(e instanceof UploadError)) throw e
+      const f = e.failure
+      if (f.kind === 'too-large') {
+        return c.json({ error: `file exceeds ${f.limit} bytes` }, 413 as 400 | 404 | 410 | 500)
+      }
+      if (f.kind === 'bad-type') {
+        return c.json({ error: `unsupported file type '${f.mimeType}'` }, 400)
+      }
+      return c.json({ error: 'invalid multipart payload' }, 400)
+    }
+
+    if (saved.length === 0) return c.json({ error: 'no file in request' }, 400)
+    log.info(`upload background name=${saved[0].name} bytes=${saved[0].size}`)
+    return c.json({ url: `/api/background/files/${saved[0].name}` })
   })
 
   app.get('/files/:name', async (c) => {

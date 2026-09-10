@@ -89,7 +89,7 @@ import {
   clampMaxOpen,
 } from './constants/storageKeys'
 import type { Defaults, ConfigResponse } from './types/config'
-import { setMaxUploadBytes } from './hooks/config-store'
+import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
 import { buildNewLikeThisForm } from './utils/new-like-this'
@@ -466,6 +466,7 @@ export function App() {
         if (r.models?.length) setServerModels(r.models)
         if (r.maxGroupPanels != null) setServerMaxOpen(r.maxGroupPanels)
         if (r.maxUploadBytes != null) setMaxUploadBytes(r.maxUploadBytes)
+        if (r.maxPastedImageBytes != null) setMaxPastedImageBytes(r.maxPastedImageBytes)
         setGlobalPrefs({
           showPinnedUserMessage: r.showPinnedUserMessage ?? true,
           autoRecap: r.autoRecap ?? true,

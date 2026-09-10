@@ -22,7 +22,7 @@ import { buildAgentDefinitionsRouter } from './agent-definition-routes.js'
 import type { AgentDefinitionStore } from './agent-definition-store.js'
 import { buildUiStateRouter } from './routes/ui-state-routes.js'
 import { buildResetRouter } from './routes/reset.js'
-import { config as serverConfig } from './config.js'
+import { config as serverConfig, MAX_PASTED_IMAGE_BYTES } from './config.js'
 import { createLogger } from './log.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
@@ -34,6 +34,7 @@ import type { AppPluginManager } from './app-plugins/app-plugin-manager.js'
 import { buildAppPluginRouter } from './app-plugins/routes.js'
 import type { AppPluginMarketplaceStore } from './app-plugins/marketplace-store.js'
 import { buildAppPluginMarketplaceRouter } from './app-plugins/marketplace-routes.js'
+import { isStreamingUploadPath } from './stream-upload.js'
 
 const appLog = createLogger('app')
 
@@ -182,19 +183,19 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     c.res.headers.set('X-XSS-Protection', '1; mode=block')
   })
 
-  // Reject oversized request bodies early. This covers JSON payloads and
-  // multipart uploads — the cap is generous (32 MB) to allow the 28 MB
-  // base64 image payload plus JSON wrapper overhead.
-  //
-  // Uses Hono's built-in bodyLimit middleware which correctly handles
-  // chunked transfer encoding by reading the actual stream when
-  // Content-Length is absent — our previous Content-Length-only check
-  // was bypassable by omitting that header.
+  // Reject oversized request bodies early. This covers the *buffered* paths —
+  // JSON message payloads (base64 images inflate ~1.33x) and the config/store
+  // routes. The two file-upload routes are exempt: they stream, and Hono's
+  // bodyLimit reads a chunked body into memory before calling next(), which
+  // would defeat that. Their size limit is enforced by streamUploads while it
+  // writes. Keep this default (the small one) — only listed paths are exempt,
+  // so a path-detection mistake fails closed.
   const MAX_BODY_BYTES = 32 * 1024 * 1024
-  app.use('*', bodyLimit({
+  const smallBodyLimit = bodyLimit({
     maxSize: MAX_BODY_BYTES,
     onError: (c) => c.json({ error: 'request body too large' }, 413),
-  }))
+  })
+  app.use('*', (c, next) => (isStreamingUploadPath(c.req.path) ? next() : smallBodyLimit(c, next)))
 
   // Web access gate. No-op unless auth is enabled (set by cli.ts when
   // bound to a non-loopback host or when an access token is configured).
@@ -234,6 +235,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       modelGroups: serverConfig.modelGroups,
       maxGroupPanels: serverConfig.maxGroupPanels,
       maxUploadBytes: serverConfig.maxUploadBytes,
+      maxPastedImageBytes: MAX_PASTED_IMAGE_BYTES,
       showPinnedUserMessage: serverConfig.showPinnedUserMessage,
       autoRecap: serverConfig.autoRecap,
       toolGroupCards: serverConfig.toolGroupCards,

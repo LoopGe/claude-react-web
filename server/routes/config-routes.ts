@@ -10,7 +10,7 @@ import { createLogger } from '../log.js'
 import { safeJson } from './index.js'
 
 const log = createLogger('config')
-import { config as serverConfig, loadConfig, readConfigFile, updateConfigFile } from '../config.js'
+import { config as serverConfig, loadConfig, readConfigFile, updateConfigFile, MAX_PASTED_IMAGE_BYTES } from '../config.js'
 import {
   LOG_LEVELS, getLogConfig, setLogConfig, type LogLevel,
   enableFileLogging, disableFileLogging, isFileLoggingEnabled, getLogFilePath,
@@ -182,6 +182,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       })),
       activeProfileId: serverConfig.activeProfileId,
       maxUploadBytes: serverConfig.maxUploadBytes,
+      maxPastedImageBytes: MAX_PASTED_IMAGE_BYTES,
       historyCap: serverConfig.historyCap,
       maxGroupPanels: serverConfig.maxGroupPanels,
       workingStuckMs: serverConfig.workingStuckMs,
