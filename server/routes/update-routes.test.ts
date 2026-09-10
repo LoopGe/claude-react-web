@@ -497,7 +497,7 @@ describe('GET /api/release-notes', () => {
     )
     const res = await makeApp().request('/release-notes?from=0.7.0&to=0.8.0')
     expect(res.status).toBe(200)
-    const body = await res.json()
+    const body = (await res.json()) as { releases: Array<{ version: string }> }
     expect(body.releases).toHaveLength(1)
     expect(body.releases[0].version).toBe('0.8.0')
     vi.unstubAllGlobals()
@@ -511,7 +511,7 @@ describe('GET /api/release-notes', () => {
     vi.stubGlobal('fetch', fetchSpy)
     const res = await makeApp().request('/release-notes?from=0.7.0&to=0.8.0')
     expect(res.status).toBe(200)
-    const body = await res.json()
+    const body = (await res.json()) as { releases: unknown[]; error?: string }
     expect(body.releases).toEqual([])
     expect(body.error).toMatch(/not configured/i)
     expect(fetchSpy).not.toHaveBeenCalled()
