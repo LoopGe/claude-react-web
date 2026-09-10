@@ -162,7 +162,7 @@ function TagInput({
     setDraft('')
   }
   return (
-    <label className="settings-field settings-field-block">
+    <label className="settings-field">
       <span>{label}</span>
       <input
         type="text"
@@ -242,7 +242,7 @@ export function AgentDefinitionForm({ initial, onSaved, onCancel }: AgentDefinit
     <div className="agent-def-form">
       <div className="settings-section-head">
         <h4>{editing ? `Edit ${initial.name}` : 'New agent'}</h4>
-        <div>
+        <div className="settings-section-head-actions">
           <button className="btn btn-sm" onClick={onCancel} disabled={saving}>
             Cancel
           </button>
@@ -273,7 +273,7 @@ export function AgentDefinitionForm({ initial, onSaved, onCancel }: AgentDefinit
             onChange={(e) => set('description', e.target.value)}
           />
         </label>
-        <label className="settings-field settings-field-block">
+        <label className="settings-field">
           <span>Prompt</span>
           <textarea
             rows={5}
@@ -353,7 +353,7 @@ export function AgentDefinitionForm({ initial, onSaved, onCancel }: AgentDefinit
             ))}
           </select>
         </label>
-        <label className="settings-field settings-field-block">
+        <label className="settings-field">
           <span>Initial message</span>
           <textarea rows={3} value={form.initialPrompt} onChange={(e) => set('initialPrompt', e.target.value)} />
         </label>
@@ -369,7 +369,7 @@ export function AgentDefinitionForm({ initial, onSaved, onCancel }: AgentDefinit
           <span>Observer message</span>
           <input type="text" value={form.observerMessage} onChange={(e) => set('observerMessage', e.target.value)} />
         </label>
-        <label className="settings-field settings-field-block">
+        <label className="settings-field">
           <span>Critical system reminder (experimental)</span>
           <textarea
             rows={3}

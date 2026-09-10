@@ -839,9 +839,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     { key: 'hooks', label: 'Hooks' },
     { key: 'plugins', label: 'Plugins' },
     { key: 'mcp', label: 'MCP Servers' },
-    { key: 'usage', label: 'Usage' },
     { key: 'agents', label: 'Agents' },
     { key: 'tools', label: 'Tools' },
+    { key: 'usage', label: 'Usage' },
   ]
 
   const panelBodyRef = useRef<HTMLDivElement | null>(null)

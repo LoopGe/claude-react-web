@@ -703,7 +703,199 @@
 }
 .settings-field { display: flex; flex-direction: column; gap: 4px; }
 .settings-field label { font-size: 12px; color: var(--fg-muted); }
+/* Standalone `.hint` base — muted helper text used directly (not inside a
+   .settings-field) across dialogs and settings tabs. Matches the scoped
+   variants below; this base rule had been missing, so ~50 call sites were
+   rendering at full body colour. */
+.hint { font-size: 12px; color: var(--fg-muted); }
 .settings-field .hint { font-size: 12px; color: var(--fg-muted); }
+
+/* --- Agent-definition form (Settings → Agents → New/Edit) --------------
+   The form's own class names live here: chip-based tag inputs, the inline
+   checkbox row, block textareas, and a fieldset/legend reset. Its bare
+   <input>/<textarea>/<select> controls intentionally carry no .input class,
+   so the shared control chrome is reproduced scoped under .agent-def-form.
+   The global `select` rule already draws every select's dropdown arrow and
+   enforces its padding-right gutter, so these rules only supply the box
+   (border/radius/padding/width). */
+.agent-def-form {
+  display: flex;
+  flex-direction: column;
+}
+/* Header + error banner aren't wrapped in a .settings-section (the list view
+   is), so pad them to match the section's 14px/16px inset. */
+.agent-def-form > .settings-section-head {
+  padding: 14px 16px 0;
+}
+.agent-def-form .settings-section-head h4 {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+}
+.agent-def-form > .settings-card-error {
+  margin: 8px 16px 0;
+}
+.agent-def-form fieldset.settings-section {
+  border: none;
+  border-bottom: 1px solid var(--border);
+  margin: 0;
+  min-inline-size: 0;
+}
+.agent-def-form legend {
+  padding: 0;
+  margin: 0 0 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+}
+/* The Advanced section is a <details> with a <summary>, not a fieldset
+   legend, so style its heading to match the other section headings (the
+   disclosure triangle stays as the collapse affordance). */
+.agent-def-form details.settings-section > summary {
+  margin: 0 0 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+/* Field label text uses <span> (a nested <label> inside the TagInput's
+   wrapping <label> would be invalid), so mirror .settings-field label. */
+.agent-def-form .settings-field > span {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+/* Inline boolean row ("Background"): label text and checkbox share one line. */
+.agent-def-form .settings-field-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.agent-def-form .settings-field-inline > span {
+  font-size: 13px;
+  color: var(--fg);
+  flex: 1;
+}
+/* Shared control chrome (mirrors .input/.textarea/.select in controls.css). */
+.agent-def-form input[type="text"],
+.agent-def-form input[type="number"],
+.agent-def-form select,
+.agent-def-form textarea {
+  background-color: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  color: var(--fg);
+  width: 100%;
+}
+.agent-def-form textarea {
+  resize: vertical;
+  min-height: 60px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+.agent-def-form input[type="text"]:hover,
+.agent-def-form input[type="number"]:hover,
+.agent-def-form select:hover,
+.agent-def-form textarea:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.agent-def-form input[type="text"]:focus,
+.agent-def-form input[type="number"]:focus,
+.agent-def-form select:focus,
+.agent-def-form textarea:focus {
+  border-color: var(--accent);
+}
+/* Tag chips (Tools / Disallowed tools / MCP servers / Skills).
+   The Background checkbox needs no scoped rule — the global
+   input[type="checkbox"] rule (utilities.css) already draws the custom
+   box with an accent fill when checked. */
+.agent-def-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.agent-def-form .tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: var(--fs-sm);
+  color: var(--fg);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  /* Long tool/MCP/skill names wrap inside the chip instead of overflowing
+     the 420px panel (a chip is a single flex item; wrap can't split it). */
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.agent-def-form .tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.agent-def-form .tag-remove:hover {
+  color: var(--danger);
+}
+.agent-def-form .tag-remove:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-pill);
+}
+
+/* --- Tools tab (Settings → Tools) --------------------------------------
+   Same gap as the agent-definition form: bare <input>/<textarea> controls
+   (no .input class) plus .field-label / .settings-hint captions that have no
+   standalone rule. Scoped under .tools-tab so the generic .field-label name
+   never leaks into StructuredPanel, whose own .structured-panel .field-label
+   rule is self-contained. */
+.tools-tab .settings-hint {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.tools-tab .field-label {
+  display: block;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.tools-tab input,
+.tools-tab textarea {
+  background-color: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  color: var(--fg);
+  width: 100%;
+}
+.tools-tab textarea {
+  resize: vertical;
+  min-height: 60px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+.tools-tab input:hover,
+.tools-tab textarea:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.tools-tab input:focus,
+.tools-tab textarea:focus {
+  border-color: var(--accent);
+}
 
 /* Boolean preference toggle row (Preferences section). A custom checkbox
    paired with a label, sitting on its own line above an optional .hint. */
