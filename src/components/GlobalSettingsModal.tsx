@@ -18,6 +18,7 @@ import { useToast } from '../hooks/useToast'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { DirectoryPicker } from './DirectoryPicker'
 import { Switch } from './Switch'
+import { SettingsRow } from './SettingsRow'
 import { Overlay } from './Overlay'
 import { McpToolsList, firstPartyToolDefsAsMcpTools } from './McpToolsList'
 import type { FirstPartyToolServerInfo } from '../../shared/first-party'
@@ -148,6 +149,7 @@ export function GlobalSettingsModal({
   // `|| null`, which PUT /config would treat as "delete key".
   const [showPinnedUserMessage, setShowPinnedUserMessage] = useState(true)
   const [autoRecap, setAutoRecap] = useState(true)
+  const [toolGroupCards, setToolGroupCards] = useState(true)
   const [allowSensitivePathEdits, setAllowSensitivePathEdits] = useState(false)
 
   // Skills tab state
@@ -194,6 +196,7 @@ export function GlobalSettingsModal({
         setEnabledSkills(cfg.enabledSkills ?? [])
         setShowPinnedUserMessage(cfg.showPinnedUserMessage ?? true)
         setAutoRecap(cfg.autoRecap ?? true)
+        setToolGroupCards(cfg.toolGroupCards ?? true)
         setAllowSensitivePathEdits(cfg.allowSensitivePathEdits ?? false)
         setFirstPartyTools(cfg.firstPartyTools ?? {})
       } catch (e) {
@@ -272,6 +275,7 @@ export function GlobalSettingsModal({
         // so `false` must be sent explicitly to persist a real OFF default.
         showPinnedUserMessage,
         autoRecap,
+        toolGroupCards,
         allowSensitivePathEdits,
       }
       // Structured first-party defaults — written verbatim as the single
@@ -400,6 +404,7 @@ export function GlobalSettingsModal({
                   workingStuckMs={workingStuckMs}
                   showPinnedUserMessage={showPinnedUserMessage}
                   autoRecap={autoRecap}
+                  toolGroupCards={toolGroupCards}
                   allowSensitivePathEdits={allowSensitivePathEdits}
                   onMaxUploadBytesChange={setMaxUploadBytes}
                   onHistoryCapChange={setHistoryCap}
@@ -407,6 +412,7 @@ export function GlobalSettingsModal({
                   onWorkingStuckMsChange={setWorkingStuckMs}
                   onShowPinnedUserMessageChange={setShowPinnedUserMessage}
                   onAutoRecapChange={setAutoRecap}
+                  onToolGroupCardsChange={setToolGroupCards}
                   onAllowSensitivePathEditsChange={setAllowSensitivePathEdits}
                 />
               )}
@@ -544,10 +550,10 @@ const MIN_MS = 60 * 1000
 
 function ServerTab({
   maxUploadBytes, historyCap, maxGroupPanels, workingStuckMs,
-  showPinnedUserMessage, autoRecap, allowSensitivePathEdits,
+  showPinnedUserMessage, autoRecap, toolGroupCards, allowSensitivePathEdits,
   onMaxUploadBytesChange, onHistoryCapChange, onMaxGroupPanelsChange,
   onWorkingStuckMsChange,
-  onShowPinnedUserMessageChange, onAutoRecapChange,
+  onShowPinnedUserMessageChange, onAutoRecapChange, onToolGroupCardsChange,
   onAllowSensitivePathEditsChange,
 }: {
   maxUploadBytes: number
@@ -556,6 +562,7 @@ function ServerTab({
   workingStuckMs: number
   showPinnedUserMessage: boolean
   autoRecap: boolean
+  toolGroupCards: boolean
   allowSensitivePathEdits: boolean
   onMaxUploadBytesChange: (v: number) => void
   onHistoryCapChange: (v: number) => void
@@ -563,6 +570,7 @@ function ServerTab({
   onWorkingStuckMsChange: (v: number) => void
   onShowPinnedUserMessageChange: (v: boolean) => void
   onAutoRecapChange: (v: boolean) => void
+  onToolGroupCardsChange: (v: boolean) => void
   onAllowSensitivePathEditsChange: (v: boolean) => void
 }) {
   const uploadMb = Math.round(maxUploadBytes / MB)
@@ -575,7 +583,7 @@ function ServerTab({
           <h4>Limits</h4>
           <span className="settings-group-desc">Server-wide caps applied to every session.</span>
         </div>
-        <ServerRow
+        <SettingsRow
           title="Max upload size"
           hint="Largest pasted image or uploaded file accepted. 0 = no override (server default 25 MB)."
         >
@@ -587,8 +595,8 @@ function ServerTab({
             suffix="MB"
             onChange={(mb) => onMaxUploadBytesChange(mb * MB)}
           />
-        </ServerRow>
-        <ServerRow
+        </SettingsRow>
+        <SettingsRow
           title="History cap"
           hint="Messages kept in memory per session. Server default 500."
         >
@@ -599,8 +607,8 @@ function ServerTab({
             step={100}
             onChange={onHistoryCapChange}
           />
-        </ServerRow>
-        <ServerRow
+        </SettingsRow>
+        <SettingsRow
           title="Working-stuck timeout"
           hint={workingStuckMs > 0
             ? `Auto-interrupt a session that stays mid-turn without output for ~${stuckMin} min. 0 = disabled.`
@@ -614,8 +622,8 @@ function ServerTab({
             suffix="min"
             onChange={(min) => onWorkingStuckMsChange(min * MIN_MS)}
           />
-        </ServerRow>
-        <ServerRow
+        </SettingsRow>
+        <SettingsRow
           title="Max group panels"
           hint="Max sessions per group. Opening a group fans out that many side-by-side panels."
         >
@@ -625,7 +633,7 @@ function ServerTab({
             options={[2, 3, 4, 5]}
             onChange={onMaxGroupPanelsChange}
           />
-        </ServerRow>
+        </SettingsRow>
       </section>
 
       <section className="settings-group">
@@ -636,7 +644,7 @@ function ServerTab({
             their own Settings panel.
           </span>
         </div>
-        <ServerRow
+        <SettingsRow
           title="Show pinned “current question” header"
           hint="Pins the user message of the turn in view at the top of the chat when it scrolls out of sight."
         >
@@ -645,8 +653,8 @@ function ServerTab({
             checked={showPinnedUserMessage}
             onChange={onShowPinnedUserMessageChange}
           />
-        </ServerRow>
-        <ServerRow
+        </SettingsRow>
+        <SettingsRow
           title="Auto-generate session recap"
           hint="Automatically produces a session summary after the conversation has been idle. Manual recap (Alt+R) still works when this is off."
         >
@@ -655,7 +663,17 @@ function ServerTab({
             checked={autoRecap}
             onChange={onAutoRecapChange}
           />
-        </ServerRow>
+        </SettingsRow>
+        <SettingsRow
+          title="Use collapsible tool-group cards"
+          hint="Folds consecutive tool calls in the transcript into one collapsible card. When off, every tool renders as its own card."
+        >
+          <Switch
+            label="Use collapsible tool-group cards"
+            checked={toolGroupCards}
+            onChange={onToolGroupCardsChange}
+          />
+        </SettingsRow>
       </section>
 
       <section className="settings-group">
@@ -666,7 +684,7 @@ function ServerTab({
             acceptEdits and bypassPermissions modes.
           </span>
         </div>
-        <ServerRow
+        <SettingsRow
           title="Allow editing sensitive paths in auto-approve modes"
           hint={<>When on, acceptEdits and bypassPermissions also auto-approve edits
             and commands targeting <code>.git/</code>, <code>.claude/</code>,{' '}
@@ -680,26 +698,8 @@ function ServerTab({
             checked={allowSensitivePathEdits}
             onChange={onAllowSensitivePathEditsChange}
           />
-        </ServerRow>
+        </SettingsRow>
       </section>
-    </div>
-  )
-}
-
-/** Row layout shared by every Server-tab setting: a left text column
- *  (title + optional description) and a right-aligned control. */
-function ServerRow({ title, hint, children }: {
-  title: React.ReactNode
-  hint?: React.ReactNode
-  children: React.ReactNode
-}) {
-  return (
-    <div className="settings-row">
-      <div className="settings-row-text">
-        <span className="settings-row-title">{title}</span>
-        {hint != null && <span className="settings-row-hint">{hint}</span>}
-      </div>
-      <div className="settings-row-control">{children}</div>
     </div>
   )
 }

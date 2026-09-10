@@ -262,6 +262,11 @@ export interface SessionInfoBase<PM = string> {
    *  that value. Manual recap (Alt+R) is never gated by this. Persisted
    *  so it survives resume / fork / reload. */
   autoRecap?: boolean
+  /** Per-session override for the transcript's collapsible tool-group
+   *  cards. Undefined = inherit the global default (config.toolGroupCards);
+   *  a boolean pins this session to that value. Persisted so it survives
+   *  resume / fork / reload. */
+  toolGroupCards?: boolean
   /** Per-session override for the first-party `apptools` git MCP server.
    *  Undefined = inherit the global default (config.appToolsGit); a boolean
    *  pins this session to that value. Persisted so it survives resume /

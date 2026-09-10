@@ -213,8 +213,9 @@ export function App() {
   const [globalPrefs, setGlobalPrefs] = useState<{
     showPinnedUserMessage: boolean
     autoRecap: boolean
+    toolGroupCards: boolean
     firstPartyTools?: Record<string, { enabled: boolean }>
-  }>({ showPinnedUserMessage: true, autoRecap: true })
+  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true })
   const {
     settingsOpenFor,
     settingsTabRequest,
@@ -457,6 +458,7 @@ export function App() {
         setGlobalPrefs({
           showPinnedUserMessage: r.showPinnedUserMessage ?? true,
           autoRecap: r.autoRecap ?? true,
+          toolGroupCards: r.toolGroupCards ?? true,
           firstPartyTools: r.firstPartyTools,
         })
       })
@@ -3590,6 +3592,7 @@ export function App() {
     setGlobalPrefs({
       showPinnedUserMessage: r.showPinnedUserMessage ?? true,
       autoRecap: r.autoRecap ?? true,
+      toolGroupCards: r.toolGroupCards ?? true,
       firstPartyTools: r.firstPartyTools,
     })
   }, [])

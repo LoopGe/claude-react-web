@@ -29,6 +29,8 @@ import { UsagePanel } from './UsagePanel'
 import { DiagnosticsPanel } from './DiagnosticsPanel'
 import { SessionProfileSelect } from './SessionProfileSelect'
 import { Overlay } from './Overlay'
+import { Switch } from './Switch'
+import { SettingsRow } from './SettingsRow'
 import { AgentDefinitionsSection } from './agent-definitions/AgentDefinitionsSection'
 import ToolsTab from './tools/ToolsTab'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
@@ -58,6 +60,7 @@ interface Props {
   globalPrefs: {
     showPinnedUserMessage: boolean
     autoRecap: boolean
+    toolGroupCards: boolean
     firstPartyTools?: Record<string, { enabled: boolean }>
   }
   onClose: () => void
@@ -162,6 +165,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // Effective UI prefs: a per-session override wins, else the global default.
   const effShowPinned = session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage
   const effAutoRecap = session.autoRecap ?? globalPrefs.autoRecap
+  const effToolGroupCards = session.toolGroupCards ?? globalPrefs.toolGroupCards
   /** POST a per-session pref override. A boolean pins it; `null` clears the
    *  override so the session re-inherits the global default. No success toast
    *  — checkbox toggles are too frequent to toast on every change; only
@@ -169,7 +173,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
    *  onSessionUpdate propagates optimistically (the server's follow-up
    *  session-update frame confirms). */
   const changePref = async (
-    partial: { showPinnedUserMessage?: boolean | null; autoRecap?: boolean | null },
+    partial: {
+      showPinnedUserMessage?: boolean | null
+      autoRecap?: boolean | null
+      toolGroupCards?: boolean | null
+    },
   ) => {
     try {
       const r = await api.post<{ session: SessionInfo }>(`/sessions/${session.id}/prefs`, partial)
@@ -917,18 +925,29 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       <div ref={panelBodyRefMerged} className="settings-panel-body">
         <div ref={panelContentRef} className="settings-panel-content" data-animate={tab}>
       {tab === 'general' && (
-      <>
-      <div className="settings-section">
-        <h4>Read-only (set at create)</h4>
-        <ReadOnlyField label="Session ID" value={session.id} mono />
-        <ReadOnlyField label="CWD" value={session.cwd ?? '—'} mono />
-        <ReadOnlyField label="Created" value={new Date(session.createdAt).toLocaleString()} />
-      </div>
+      <div className="settings-stack">
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Session</h4>
+          <span className="settings-group-desc">Read-only values fixed when the session was created.</span>
+        </div>
+        <SettingsRow stack title="Session ID">
+          <div className="settings-readonly-value mono" title={session.id}>{session.id}</div>
+        </SettingsRow>
+        <SettingsRow stack title="CWD">
+          <div className="settings-readonly-value mono" title={session.cwd ?? '—'}>{session.cwd ?? '—'}</div>
+        </SettingsRow>
+        <SettingsRow stack title="Created">
+          <div className="settings-readonly-value">{new Date(session.createdAt).toLocaleString()}</div>
+        </SettingsRow>
+      </section>
 
-      <div className="settings-section">
-        <h4>Live controls</h4>
-        <div className="settings-field">
-          <label htmlFor={panelUid + '-title'}>Title</label>
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Live controls</h4>
+          <span className="settings-group-desc">Applied to this session. Some fields commit on blur.</span>
+        </div>
+        <SettingsRow stack title={<label htmlFor={panelUid + '-title'}>Title</label>}>
           <input
             id={panelUid + '-title'}
             ref={titleInputRef}
@@ -955,10 +974,13 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               }
             }}
           />
-        </div>
+        </SettingsRow>
         <SessionProfileSelect session={session} onSessionUpdate={onSessionUpdate} />
-        <div className="settings-field">
-          <label htmlFor={panelUid + '-model'}>Model</label>
+        <SettingsRow
+          stack
+          title={<label htmlFor={panelUid + '-model'}>Model</label>}
+          hint="Changes apply to the next assistant turn."
+        >
           <select
             id={panelUid + '-model'}
             className="select"
@@ -977,11 +999,18 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               </option>
             ))}
           </select>
-          <span className="hint">Changes apply to the next assistant turn.</span>
-        </div>
+        </SettingsRow>
 
-        <div className="settings-field">
-          <label htmlFor={panelUid + '-permission-mode'}>Permission mode</label>
+        <SettingsRow
+          stack
+          title={<label htmlFor={panelUid + '-permission-mode'}>Permission mode</label>}
+          hint={<>Switches take effect on the very next tool call without needing to
+            restart the session. Plan and Autonomous are forwarded to the
+            Claude CLI for enforcement (older CLI versions fall back to the
+            server's own <code>canUseTool</code> callback); the remaining
+            modes are always enforced by the server's own{' '}
+            <code>canUseTool</code> callback.</>}
+        >
           <select
             id={panelUid + '-permission-mode'}
             className="select"
@@ -995,45 +1024,32 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               </option>
             ))}
           </select>
-          <span className="hint">
-            Switches take effect on the very next tool call without needing to
-            restart the session. Plan and Autonomous are forwarded to the
-            Claude CLI for enforcement (older CLI versions fall back to the
-            server's own <code>canUseTool</code> callback); the remaining
-            modes are always enforced by the server's own{' '}
-            <code>canUseTool</code> callback.
+        </SettingsRow>
+
+        <div className="settings-group-body">
+          <FlagSettingsEditor
+            value={settingsText}
+            onChange={setSettingsText}
+            disabled={busy || session.terminated}
+          />
+          <button className="btn btn-primary settings-apply-btn" onClick={applySettings} disabled={busy || session.terminated}>
+            Apply settings
+          </button>
+        </div>
+      </section>
+
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Memory</h4>
+          <span className="settings-group-desc">
+            {!session.running && !session.terminated
+              ? 'Resume the session to change memory settings.'
+              : 'Auto-memory directory and background consolidation for this session.'}
           </span>
         </div>
-
-        <FlagSettingsEditor
-          value={settingsText}
-          onChange={setSettingsText}
-          disabled={busy || session.terminated}
-        />
-        <button className="btn btn-primary settings-apply-btn" onClick={applySettings} disabled={busy || session.terminated}>
-          Apply settings
-        </button>
-      </div>
-
-      <div className="settings-section">
-        <h4>Memory</h4>
-        {!session.running && !session.terminated && (
-          <span className="hint">Resume the session to change memory settings.</span>
-        )}
-        <div className="settings-field">
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={session.memory?.autoMemoryEnabled === true}
-              disabled={memoryDisabled}
-              onChange={() =>
-                void changeMemory({ autoMemoryEnabled: session.memory?.autoMemoryEnabled === true ? false : true })
-              }
-            />
-            <span>Auto-memory</span>
-          </label>
-          <span className="hint">
-            Lets Claude read from and write to this project's auto-memory directory; recalled
+        <SettingsRow
+          title="Auto-memory"
+          hint={<>Lets Claude read from and write to this project's auto-memory directory; recalled
             memories appear in the transcript.{' '}
             {session.memory?.autoMemoryEnabled === undefined
               ? 'Not set (following project default).'
@@ -1049,12 +1065,32 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               >
                 Reset (use default)
               </button>
-            )}
-          </span>
-        </div>
+            )}</>}
+        >
+          <Switch
+            label="Auto-memory"
+            checked={session.memory?.autoMemoryEnabled === true}
+            disabled={memoryDisabled}
+            onChange={(next) => void changeMemory({ autoMemoryEnabled: next })}
+          />
+        </SettingsRow>
 
-        <div className="settings-field">
-          <label htmlFor={panelUid + '-memory-dir'}>Memory directory</label>
+        <SettingsRow
+          stack
+          title={<label htmlFor={panelUid + '-memory-dir'}>Memory directory</label>}
+          hint={<>Overrides the default memory directory (supports <code>~/</code>). Ignored when pinned
+            in project settings. Clearing the field restores the default.
+            {session.memory?.autoMemoryDirectory !== undefined && (
+              <button
+                type="button"
+                className="settings-reset-link"
+                disabled={memoryDisabled}
+                onClick={() => void changeMemory({ autoMemoryDirectory: null })}
+              >
+                Reset (use default)
+              </button>
+            )}</>}
+        >
           <input
             id={panelUid + '-memory-dir'}
             ref={memoryDirInputRef}
@@ -1075,36 +1111,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               }
             }}
           />
-          <span className="hint">
-            Overrides the default memory directory (supports <code>~/</code>). Ignored when pinned
-            in project settings. Clearing the field restores the default.
-            {session.memory?.autoMemoryDirectory !== undefined && (
-              <button
-                type="button"
-                className="settings-reset-link"
-                disabled={memoryDisabled}
-                onClick={() => void changeMemory({ autoMemoryDirectory: null })}
-              >
-                Reset (use default)
-              </button>
-            )}
-          </span>
-        </div>
+        </SettingsRow>
 
-        <div className="settings-field">
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={session.memory?.autoDreamEnabled === true}
-              disabled={memoryDisabled}
-              onChange={() =>
-                void changeMemory({ autoDreamEnabled: session.memory?.autoDreamEnabled === true ? false : true })
-              }
-            />
-            <span>Background memory consolidation</span>
-          </label>
-          <span className="hint">
-            Auto-dream: consolidates accumulated memories in the background so recall stays
+        <SettingsRow
+          title="Background memory consolidation"
+          hint={<>Auto-dream: consolidates accumulated memories in the background so recall stays
             relevant.{' '}
             {session.memory?.autoDreamEnabled === undefined
               ? 'Not set (following server default).'
@@ -1120,162 +1131,152 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               >
                 Reset (use default)
               </button>
-            )}
-          </span>
-        </div>
-      </div>
+            )}</>}
+        >
+          <Switch
+            label="Background memory consolidation"
+            checked={session.memory?.autoDreamEnabled === true}
+            disabled={memoryDisabled}
+            onChange={(next) => void changeMemory({ autoDreamEnabled: next })}
+          />
+        </SettingsRow>
+      </section>
 
-      <div className="settings-section">
-        <h4>Sandbox</h4>
-        {!session.running && !session.terminated && (
-          <span className="hint">Resume the session to change sandbox settings.</span>
-        )}
-        <div className="settings-field">
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={session.sandbox != null}
-              disabled={sandboxDisabled}
-              onChange={() => void toggleSandbox(session.sandbox == null)}
-            />
-            <span>Run commands in a sandbox</span>
-          </label>
-          <span className="hint">
-            Isolates Bash file/network access behind permission rules. macOS needs nothing; Linux
-            /WSL2 require <code>bubblewrap</code> + <code>socat</code>. When off, commands run with
-            the project/SDK default.
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Sandbox</h4>
+          <span className="settings-group-desc">
+            {!session.running && !session.terminated
+              ? 'Resume the session to change sandbox settings.'
+              : 'Isolates Bash file/network access behind permission rules.'}
           </span>
         </div>
+        <SettingsRow
+          title="Run commands in a sandbox"
+          hint={<>Isolates Bash file/network access behind permission rules. macOS needs nothing; Linux
+            /WSL2 require <code>bubblewrap</code> + <code>socat</code>. When off, commands run with
+            the project/SDK default.</>}
+        >
+          <Switch
+            label="Run commands in a sandbox"
+            checked={session.sandbox != null}
+            disabled={sandboxDisabled}
+            onChange={(next) => void toggleSandbox(next)}
+          />
+        </SettingsRow>
 
         {session.sandbox != null && (
           <>
-            <div className="settings-field">
-              <label className="settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={session.sandbox.autoAllowBashIfSandboxed === true}
-                  disabled={sandboxDisabled}
-                  onChange={() => void toggleSandboxBool('autoAllowBashIfSandboxed')}
-                />
-                <span>Auto-allow sandboxed commands</span>
-              </label>
-              <span className="hint">
-                Runs sandboxed Bash without prompting (the SDK's default when unset). Toggle off
-                to require a prompt even for sandboxed commands.
-              </span>
-            </div>
+            <SettingsRow
+              title="Auto-allow sandboxed commands"
+              hint="Runs sandboxed Bash without prompting (the SDK's default when unset). Toggle off to require a prompt even for sandboxed commands."
+            >
+              <Switch
+                label="Auto-allow sandboxed commands"
+                checked={session.sandbox.autoAllowBashIfSandboxed === true}
+                disabled={sandboxDisabled}
+                onChange={() => void toggleSandboxBool('autoAllowBashIfSandboxed')}
+              />
+            </SettingsRow>
 
-            <div className="settings-field">
-              <label className="settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={session.sandbox.allowUnsandboxedCommands === true}
-                  disabled={sandboxDisabled}
-                  onChange={() => void toggleSandboxBool('allowUnsandboxedCommands')}
-                />
-                <span>Allow unsandboxed fallback</span>
-              </label>
-              <span className="hint">
-                When on, commands that can't run in the sandbox may retry unsandboxed via
-                dangerouslyDisableSandbox. Off forces every command to stay sandboxed.
-              </span>
-            </div>
+            <SettingsRow
+              title="Allow unsandboxed fallback"
+              hint="When on, commands that can't run in the sandbox may retry unsandboxed via dangerouslyDisableSandbox. Off forces every command to stay sandboxed."
+            >
+              <Switch
+                label="Allow unsandboxed fallback"
+                checked={session.sandbox.allowUnsandboxedCommands === true}
+                disabled={sandboxDisabled}
+                onChange={() => void toggleSandboxBool('allowUnsandboxedCommands')}
+              />
+            </SettingsRow>
 
-            <div className="settings-field">
-              <label className="settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={session.sandbox.failIfUnavailable === true}
-                  disabled={sandboxDisabled}
-                  onChange={() => void toggleSandboxBool('failIfUnavailable')}
-                />
-                <span>Fail hard if unavailable</span>
-              </label>
-              <span className="hint">
-                Exit an error if the sandbox can't start. Off (default) degrades gracefully to
-                running unsandboxed.
-              </span>
-            </div>
+            <SettingsRow
+              title="Fail hard if unavailable"
+              hint="Exit an error if the sandbox can't start. Off (default) degrades gracefully to running unsandboxed."
+            >
+              <Switch
+                label="Fail hard if unavailable"
+                checked={session.sandbox.failIfUnavailable === true}
+                disabled={sandboxDisabled}
+                onChange={() => void toggleSandboxBool('failIfUnavailable')}
+              />
+            </SettingsRow>
 
-            <details className="settings-advanced">
-              <summary>Advanced (network / filesystem overrides)</summary>
-              <div className="settings-field">
-                <label htmlFor={panelUid + '-sandbox-domains'}>Allowed network domains</label>
-                <input
-                  id={panelUid + '-sandbox-domains'}
-                  ref={sandboxDomainsInputRef}
-                  type="text"
-                  className="input"
-                  value={sandboxDomainsDraft}
-                  placeholder="e.g. api.github.com, *.npmjs.org (comma-separated)"
-                  disabled={sandboxDisabled}
-                  onChange={(e) => setSandboxDomainsDraft(e.target.value)}
-                  onBlur={() => void commitSandboxDomains()}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      sandboxDomainsInputRef.current?.blur()
-                    } else if (e.key === 'Escape') {
-                      sandboxDomainsSkipCommitRef.current = true
-                      sandboxDomainsInputRef.current?.blur()
-                    }
-                  }}
-                />
-                <span className="hint">
-                  Pre-approved hosts sandboxed commands may reach. The SDK prompts for anything
-                  not listed. Empty means "prompt / deny by default".
-                </span>
-              </div>
-              <div className="settings-field">
-                <label htmlFor={panelUid + '-sandbox-write'}>Extra writable paths</label>
-                <input
-                  id={panelUid + '-sandbox-write'}
-                  ref={sandboxWriteInputRef}
-                  type="text"
-                  className="input"
-                  value={sandboxWriteDraft}
-                  placeholder="e.g. /tmp/build (comma-separated)"
-                  disabled={sandboxDisabled}
-                  onChange={(e) => setSandboxWriteDraft(e.target.value)}
-                  onBlur={() => void commitSandboxWrite()}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      sandboxWriteInputRef.current?.blur()
-                    } else if (e.key === 'Escape') {
-                      sandboxWriteSkipCommitRef.current = true
-                      sandboxWriteInputRef.current?.blur()
-                    }
-                  }}
-                />
-                <span className="hint">
-                  Paths sandboxed commands may write beyond the working dir / session temp dir.
-                </span>
-              </div>
-            </details>
+            <div className="settings-group-body">
+              <details className="settings-advanced">
+                <summary>Advanced (network / filesystem overrides)</summary>
+                <SettingsRow
+                  stack
+                  title={<label htmlFor={panelUid + '-sandbox-domains'}>Allowed network domains</label>}
+                  hint="Pre-approved hosts sandboxed commands may reach. The SDK prompts for anything not listed. Empty means &quot;prompt / deny by default&quot;."
+                >
+                  <input
+                    id={panelUid + '-sandbox-domains'}
+                    ref={sandboxDomainsInputRef}
+                    type="text"
+                    className="input"
+                    value={sandboxDomainsDraft}
+                    placeholder="e.g. api.github.com, *.npmjs.org (comma-separated)"
+                    disabled={sandboxDisabled}
+                    onChange={(e) => setSandboxDomainsDraft(e.target.value)}
+                    onBlur={() => void commitSandboxDomains()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        sandboxDomainsInputRef.current?.blur()
+                      } else if (e.key === 'Escape') {
+                        sandboxDomainsSkipCommitRef.current = true
+                        sandboxDomainsInputRef.current?.blur()
+                      }
+                    }}
+                  />
+                </SettingsRow>
+                <SettingsRow
+                  stack
+                  title={<label htmlFor={panelUid + '-sandbox-write'}>Extra writable paths</label>}
+                  hint="Paths sandboxed commands may write beyond the working dir / session temp dir."
+                >
+                  <input
+                    id={panelUid + '-sandbox-write'}
+                    ref={sandboxWriteInputRef}
+                    type="text"
+                    className="input"
+                    value={sandboxWriteDraft}
+                    placeholder="e.g. /tmp/build (comma-separated)"
+                    disabled={sandboxDisabled}
+                    onChange={(e) => setSandboxWriteDraft(e.target.value)}
+                    onBlur={() => void commitSandboxWrite()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        sandboxWriteInputRef.current?.blur()
+                      } else if (e.key === 'Escape') {
+                        sandboxWriteSkipCommitRef.current = true
+                        sandboxWriteInputRef.current?.blur()
+                      }
+                    }}
+                  />
+                </SettingsRow>
+              </details>
+            </div>
           </>
         )}
-      </div>
+      </section>
 
-      <div className="settings-section">
-        <h4>Preferences</h4>
-        {/* Per-session overrides on top of the global defaults (set in the
-            Global Settings modal). The checkbox reflects the EFFECTIVE value
-            (session override ?? global); toggling writes a per-session
-            override. "Reset" clears the override so the session re-inherits
-            the global default live. */}
-        <div className="settings-field">
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={effShowPinned}
-              disabled={busy || session.terminated}
-              onChange={() => void changePref({ showPinnedUserMessage: !effShowPinned })}
-            />
-            <span>Show pinned "current question" header</span>
-          </label>
-          <span className="hint">
-            Pins the user message of the turn in view at the top of the chat
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Preferences</h4>
+          <span className="settings-group-desc">
+            Per-session overrides of the global defaults. Reset restores inheritance.
+          </span>
+        </div>
+        {/* The switch reflects the EFFECTIVE value (session override ??
+            global); toggling writes a per-session override. "Reset" clears
+            the override so the session re-inherits the global default live. */}
+        <SettingsRow
+          title="Show pinned “current question” header"
+          hint={<>Pins the user message of the turn in view at the top of the chat
             when it scrolls out of sight, so you keep context while reading a
             long reply.{' '}
             {session.showPinnedUserMessage === undefined
@@ -1290,22 +1291,19 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               >
                 Reset (inherit global)
               </button>
-            )}
-          </span>
-        </div>
+            )}</>}
+        >
+          <Switch
+            label="Show pinned current question header"
+            checked={effShowPinned}
+            disabled={busy || session.terminated}
+            onChange={(next) => void changePref({ showPinnedUserMessage: next })}
+          />
+        </SettingsRow>
 
-        <div className="settings-field">
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={effAutoRecap}
-              disabled={busy || session.terminated}
-              onChange={() => void changePref({ autoRecap: !effAutoRecap })}
-            />
-            <span>Auto-generate session recap</span>
-          </label>
-          <span className="hint">
-            Automatically produces a session summary after the conversation has
+        <SettingsRow
+          title="Auto-generate session recap"
+          hint={<>Automatically produces a session summary after the conversation has
             been idle. Manual recap (Alt+R) still works when this is off.{' '}
             {session.autoRecap === undefined
               ? `Inheriting global (${globalPrefs.autoRecap ? 'ON' : 'OFF'}).`
@@ -1319,11 +1317,43 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               >
                 Reset (inherit global)
               </button>
-            )}
-          </span>
-        </div>
+            )}</>}
+        >
+          <Switch
+            label="Auto-generate session recap"
+            checked={effAutoRecap}
+            disabled={busy || session.terminated}
+            onChange={(next) => void changePref({ autoRecap: next })}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          title="Use collapsible tool-group cards"
+          hint={<>Folds consecutive tool calls in this transcript into one collapsible
+            card. When off, every tool renders as its own card.{' '}
+            {session.toolGroupCards === undefined
+              ? `Inheriting global (${globalPrefs.toolGroupCards ? 'ON' : 'OFF'}).`
+              : 'Session override.'}
+            {session.toolGroupCards !== undefined && (
+              <button
+                type="button"
+                className="settings-reset-link"
+                disabled={busy || session.terminated}
+                onClick={() => void changePref({ toolGroupCards: null })}
+              >
+                Reset (inherit global)
+              </button>
+            )}</>}
+        >
+          <Switch
+            label="Use collapsible tool-group cards"
+            checked={effToolGroupCards}
+            disabled={busy || session.terminated}
+            onChange={(next) => void changePref({ toolGroupCards: next })}
+          />
+        </SettingsRow>
+      </section>
       </div>
-      </>
       )}
 
       {tab === 'context' && (
@@ -1611,20 +1641,6 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     </aside>
   )
 })
-
-function ReadOnlyField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="settings-field">
-      <label>{label}</label>
-      <div
-        className={`settings-readonly-value${mono ? ' mono' : ''}`}
-        title={value}
-      >
-        {value}
-      </div>
-    </div>
-  )
-}
 
 // ── Session skill policy card ─────────────────────────────────────
 //

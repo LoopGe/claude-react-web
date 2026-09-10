@@ -51,6 +51,10 @@ interface Props {
    *  offer the per-card background button too (same session, tool ids are
    *  session-scoped). */
   onBackgroundTool?: (toolUseId: string) => void
+  /** Transcript's collapsible tool-group cards pref (effective value from
+   *  the owning Chat panel) — forwarded so the subagent's inner transcript
+   *  matches the main one. */
+  toolGroupCards?: boolean
 }
 
 
@@ -70,6 +74,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   planContent,
   questionAnswers,
   onBackgroundTool,
+  toolGroupCards,
 }: Props) {
   const currentId = stack[stack.length - 1]
   const current = currentId ? index.get(currentId) : undefined
@@ -253,6 +258,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             planContent={planContent}
             questionAnswers={questionAnswers}
             onBackgroundTool={onBackgroundTool}
+            toolGroupCards={toolGroupCards}
             replayReady
             // Subagents are not interactive — you can't type into them.
             // The default ChatEmptyState ("Type a message below, or paste

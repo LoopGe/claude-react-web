@@ -54,6 +54,10 @@ interface Props {
   planStatus?: ReadonlyMap<string, PlanStatus>
   planContent?: ReadonlyMap<string, string>
   questionAnswers?: ReadonlyMap<string, QuestionAnswerEntry[]>
+  /** Transcript's collapsible tool-group cards pref (effective value from
+   *  the owning Chat panel) — forwarded so this transcript matches the
+   *  main one. */
+  toolGroupCards?: boolean
 }
 
 const UNGROUPED = '(ungrouped)'
@@ -69,6 +73,7 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
   planStatus,
   planContent,
   questionAnswers,
+  toolGroupCards,
 }: Props) {
   // Focused child: null = show the Workflow's direct children (phase tree
   // level). A child's toolUseId = drill into THAT child's inner conversation.
@@ -250,6 +255,7 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
               planStatus={planStatus}
               planContent={planContent}
               questionAnswers={questionAnswers}
+              toolGroupCards={toolGroupCards}
               replayReady
             />
           </div>

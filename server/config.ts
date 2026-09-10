@@ -117,6 +117,11 @@ interface ConfigFile {
    *  overrides (SessionMeta.autoRecap) take priority; sessions without an
    *  override inherit this value. Manual recap (Alt+R) is never gated. */
   autoRecap: boolean
+  /** Global default for the transcript's collapsible tool-group cards.
+   *  Per-session overrides (SessionMeta.toolGroupCards) take priority;
+   *  sessions without an override inherit this value. When false, tool-only
+   *  assistant rows render as individual tool cards with no fold chrome. */
+  toolGroupCards: boolean
   /** Global default for per-session CLI debug logging (Options.debug +
    *  debugFile). SessionMeta.cliDebug overrides when set. Default: false. */
   cliDebug?: boolean
@@ -184,6 +189,9 @@ export interface ServerConfig {
   /** Global default for idle auto-recap. Sessions without an explicit
    *  override inherit this. */
   readonly autoRecap: boolean
+  /** Global default for the transcript's collapsible tool-group cards.
+   *  Sessions without an explicit override inherit this. */
+  readonly toolGroupCards: boolean
   /** Global default for per-session CLI debug logging (spawn-time only). */
   readonly cliDebug: boolean
   /** Global default for the per-session `apptools` git MCP server. Sessions
@@ -234,6 +242,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   autoClassifierTimeout: 5000,
   showPinnedUserMessage: true,
   autoRecap: true,
+  toolGroupCards: true,
   cliDebug: false,
   appToolsGit: true,
   firstPartyTools: Object.freeze({ apptools: Object.freeze({ enabled: true }) }),
@@ -480,6 +489,10 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { autoRecap: boolean }).autoRecap = file_.autoRecap
   }
 
+  if (typeof file_.toolGroupCards === 'boolean') {
+    ;(merged as { toolGroupCards: boolean }).toolGroupCards = file_.toolGroupCards
+  }
+
   if (typeof file_.cliDebug === 'boolean') {
     ;(merged as { cliDebug: boolean }).cliDebug = file_.cliDebug
     log.info(`cliDebug: ${file_.cliDebug}`)
@@ -585,6 +598,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'autoClassifierTimeout',
   'showPinnedUserMessage',
   'autoRecap',
+  'toolGroupCards',
   'cliDebug',
   'appToolsGit',
   'firstPartyTools',

@@ -6,7 +6,8 @@
 // separate files would just push the coupling into the import graph.
 //
 //   ToolCard       — the outer chrome (icon + title + chips + status badge)
-//   CopyButton     — hover-revealed clipboard button used inside cards
+//   CopyButton     — always-visible copy icon in the card header (only its
+//                    backdrop appears on hover)
 //   ToolStatusBadge — running/success/error pill, also used standalone
 //                     by some tool views
 
@@ -34,12 +35,11 @@ import { AnsiText } from './AnsiText'
 // CopyButton
 // ---------------------------------------------------------------------------
 
-/** Tiny copy-to-clipboard button. Appears as a static icon, flips to a
- *  green check + "Copied!" tooltip for 2s after a successful copy.
- *  Designed for placement in a ToolCard header — has a 24×24 visual
- *  size with a 32×32 hit area (room for thumbs on touch devices)
- *  and inherits parent text color so it sits next to status badges
- *  without competing for attention.
+/** Copy-to-clipboard button for a ToolCard header. The icon is always
+ *  visible; only its backdrop brightens on hover (see `.tool-copy-btn`
+ *  for the sizing/hit-area details), so it sits next to status badges
+ *  without competing for attention. Flips to a green check + "Copied!"
+ *  tooltip for 2s after a successful copy.
  *
  *  Use `getValue` (a function) rather than passing the raw string when
  *  the value is large — the function is only called on click, so we

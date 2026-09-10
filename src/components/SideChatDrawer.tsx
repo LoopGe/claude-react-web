@@ -31,6 +31,9 @@ interface Props {
   stream: ChatStream
   /** Permission state from the ChatPanel-level usePermissionChannel hook. */
   permissions: UsePermissionChannel
+  /** Transcript's collapsible tool-group cards pref (effective value —
+   *  session override ?? global default, resolved by ChatPanel). */
+  toolGroupCards?: boolean
   /** True close — deletes the ephemeral session. */
   onClose: () => void
   /** Collapse — hides the drawer but keeps the session alive. */
@@ -42,6 +45,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   parentSession,
   stream,
   permissions,
+  toolGroupCards,
   onClose,
   onCollapse,
 }: Props) {
@@ -209,6 +213,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           loadOlder={stream.loadOlder}
           hasOlder={stream.hasOlder}
           loadingOlder={stream.loadingOlder}
+          toolGroupCards={toolGroupCards}
           emptyStateContent={(
             // Side Chat-specific empty state. The drawer is ephemeral —
             // closing it deletes the conversation — and most users only

@@ -1,6 +1,7 @@
 import { useId, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { useProfiles } from '../hooks/useProfiles'
+import { SettingsRow } from './SettingsRow'
 import type { SessionInfo } from '../types'
 
 export function SessionProfileSelect({
@@ -23,8 +24,11 @@ export function SessionProfileSelect({
   }
 
   return (
-    <div className="settings-field">
-      <label htmlFor={uid}>Profile</label>
+    <SettingsRow
+      stack
+      title={<label htmlFor={uid}>Profile</label>}
+      hint="Credentials and model set for this session."
+    >
       <select
         id={uid}
         className="select"
@@ -37,13 +41,12 @@ export function SessionProfileSelect({
           <option key={p.id} value={p.id}>{p.name}</option>
         ))}
       </select>
-      <span className="hint">Credentials and model set for this session.</span>
       {value && value !== session.profileId && (
         <div className="session-profile-select__actions">
           <button type="button" className="btn btn-xs" onClick={() => void choose(value, 'now')}>Restart now</button>
           <button type="button" className="btn btn-xs" onClick={() => void choose(value, 'deferred')}>Apply next restart</button>
         </div>
       )}
-    </div>
+    </SettingsRow>
   )
 }

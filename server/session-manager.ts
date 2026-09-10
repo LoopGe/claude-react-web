@@ -891,6 +891,7 @@ export class SessionManager {
       enabledPlugins: s.enabledPlugins,
       showPinnedUserMessage: s.showPinnedUserMessage,
       autoRecap: s.autoRecap,
+      toolGroupCards: s.toolGroupCards,
       cliDebug: s.cliDebug,
       appToolsGit: s.appToolsGit,
       firstPartyTools: s.firstPartyTools,
@@ -1598,10 +1599,10 @@ export class SessionManager {
       opts?.historySeed,
       parentOverride,
       // Carry the source's pure-UI pref overrides onto the fork so a
-      // pinned header / auto-recap override survives forking. No-op when
-      // the source inherits global (both undefined) — the fork then
-      // inherits global too.
-      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, appToolsGit: meta.appToolsGit, firstPartyTools: meta.firstPartyTools },
+      // pinned header / auto-recap / tool-group-card override survives
+      // forking. No-op when the source inherits global (all undefined) —
+      // the fork then inherits global too.
+      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, toolGroupCards: meta.toolGroupCards, appToolsGit: meta.appToolsGit, firstPartyTools: meta.firstPartyTools },
       // joinGroupOf: the source id — Y joins X's group (append semantics;
       // X stays, since fork doesn't remove the source). The crash-recovery
       // "Fork from last completed turn" button sets `replacesSource` so the
@@ -1991,7 +1992,7 @@ export class SessionManager {
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
-    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> },
+    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; toolGroupCards?: boolean; appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> },
     /** When this spawn is a fresh Y that should land in an existing session
      *  X's sidebar group, pass X's id here so the `created` broadcast carries
      *  `joinGroupOf: X`. Set by `/clear`, restart, and fork. Append
@@ -2197,6 +2198,7 @@ export class SessionManager {
       // `??` (not `||`) so an explicit `false` override survives.
       showPinnedUserMessage: prefs?.showPinnedUserMessage ?? existingMeta?.showPinnedUserMessage,
       autoRecap: prefs?.autoRecap ?? existingMeta?.autoRecap,
+      toolGroupCards: prefs?.toolGroupCards ?? existingMeta?.toolGroupCards,
       cliDebug: existingMeta?.cliDebug ?? metaSnapshot.cliDebug,
       appToolsGit: prefs?.appToolsGit ?? existingMeta?.appToolsGit,
       firstPartyTools: prefs?.firstPartyTools ?? existingMeta?.firstPartyTools,
@@ -3654,14 +3656,18 @@ export class SessionManager {
     })
   }
 
-  /** Set per-session UI prefs (pinned-header + auto-recap overrides).
-   *  Unlike setFastMode / setEffortLevel these are PURE UI prefs — no
-   *  applyFlagSettings round-trip to the SDK. A value of `undefined`
+  /** Set per-session UI prefs (pinned-header + auto-recap + tool-group-card
+   *  overrides). Unlike setFastMode / setEffortLevel these are PURE UI prefs
+   *  — no applyFlagSettings round-trip to the SDK. A value of `undefined`
    *  clears the override so the session re-inherits the global default;
    *  a boolean pins it. Persisted so it survives resume / fork / reload. */
   async setPrefs(
     id: string,
-    partial: { showPinnedUserMessage?: boolean | undefined; autoRecap?: boolean | undefined },
+    partial: {
+      showPinnedUserMessage?: boolean | undefined
+      autoRecap?: boolean | undefined
+      toolGroupCards?: boolean | undefined
+    },
   ): Promise<SessionInfo> {
     const s = this.requireLive(id)
     if ('showPinnedUserMessage' in partial) {
@@ -3669,6 +3675,9 @@ export class SessionManager {
     }
     if ('autoRecap' in partial) {
       s.autoRecap = partial.autoRecap
+    }
+    if ('toolGroupCards' in partial) {
+      s.toolGroupCards = partial.toolGroupCards
     }
     s.lastActivityAt = Date.now()
     this.persist(s)
@@ -5045,6 +5054,7 @@ export class SessionManager {
     enabledPlugins?: string[]
     showPinnedUserMessage?: boolean
     autoRecap?: boolean
+    toolGroupCards?: boolean
     appToolsGit?: boolean
     firstPartyTools?: Record<string, boolean | null>
     slept?: boolean
@@ -5077,6 +5087,7 @@ export class SessionManager {
       enabledPlugins: x.enabledPlugins,
       showPinnedUserMessage: x.showPinnedUserMessage,
       autoRecap: x.autoRecap,
+      toolGroupCards: x.toolGroupCards,
       appToolsGit: x.appToolsGit,
       firstPartyTools: x.firstPartyTools,
       slept: x.slept,

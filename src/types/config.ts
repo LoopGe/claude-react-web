@@ -42,6 +42,9 @@ export interface ConfigResponse {
   /** Global default for idle auto-recap. Sessions without an explicit
    *  override inherit this. */
   autoRecap?: boolean
+  /** Global default for the transcript's collapsible tool-group cards.
+   *  Sessions without an explicit override inherit this. */
+  toolGroupCards?: boolean
   /** Global default for the first-party `apptools` git MCP server. Sessions
    *  without an explicit override inherit this. */
   appToolsGit?: boolean
@@ -77,6 +80,8 @@ export interface FullServerConfig {
   showPinnedUserMessage: boolean
   /** Global default for idle auto-recap. */
   autoRecap: boolean
+  /** Global default for the transcript's collapsible tool-group cards. */
+  toolGroupCards: boolean
   /** Global default for the first-party `apptools` git MCP server. */
   appToolsGit: boolean
   /** Per-first-party-server global defaults. */

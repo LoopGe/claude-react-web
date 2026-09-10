@@ -3,10 +3,11 @@
 // visible label lives next to the switch in the caller's layout; `label` is
 // the accessible name only, so a bare switch still announces what it toggles.
 
-export function Switch({ checked, onChange, label }: {
+export function Switch({ checked, onChange, label, disabled }: {
   checked: boolean
   onChange: (v: boolean) => void
   label: string
+  disabled?: boolean
 }) {
   return (
     <button
@@ -14,6 +15,7 @@ export function Switch({ checked, onChange, label }: {
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       className={`settings-switch${checked ? ' on' : ''}`}
       onClick={() => onChange(!checked)}
     >

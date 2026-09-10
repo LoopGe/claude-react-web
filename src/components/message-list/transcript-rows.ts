@@ -112,6 +112,10 @@ export interface BuildTranscriptRowsInput {
   /** Transient `api_retry` frame. Render-only: it lives in its own slot, not
    *  in items/messages/IDB, and is appended as a synthetic tail row. */
   apiRetry?: SdkMessage | null
+  /** Whether consecutive tool-only rows fold into collapsible group cards
+   *  (the `toolGroupCards` UI pref). False renders each tool row individually
+   *  with no fold chrome. Defaults to true. */
+  toolGroupCards?: boolean
 }
 
 export interface TranscriptRowsResult {
@@ -220,6 +224,7 @@ export function buildTranscriptRows({
   leadingItems,
   trailingItems,
   apiRetry,
+  toolGroupCards = true,
 }: BuildTranscriptRowsInput): TranscriptRowsResult {
   const out: TranscriptRow[] = []
 
@@ -262,8 +267,9 @@ export function buildTranscriptRows({
   }
 
   // Fold tool-only assistant runs. Must run before nextItemTypeMap so the
-  // map keys on the surviving (group) ids.
-  const folded = foldToolGroupRows(out)
+  // map keys on the surviving (group) ids. The `toolGroupCards` pref skips
+  // the fold entirely — every tool row stays its own card.
+  const folded = toolGroupCards ? foldToolGroupRows(out) : out
 
   const nextItemTypeMap = new Map<string, string>()
   for (let i = 0; i < folded.length - 1; i++) {

@@ -190,6 +190,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       enabledSkills: serverConfig.enabledSkills,
       showPinnedUserMessage: serverConfig.showPinnedUserMessage,
       autoRecap: serverConfig.autoRecap,
+      toolGroupCards: serverConfig.toolGroupCards,
       appToolsGit: serverConfig.appToolsGit,
       firstPartyTools: serverConfig.firstPartyTools,
       allowSensitivePathEdits: serverConfig.allowSensitivePathEdits,

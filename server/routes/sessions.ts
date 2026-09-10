@@ -679,16 +679,22 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     return c.json({ session: info })
   })
 
-  // Per-session UI prefs (pinned-header + auto-recap overrides). Pure UI
-  // prefs — no SDK round-trip. Body keys are optional; a `null` value for a
-  // key clears the override so the session re-inherits the global default,
-  // while an explicit boolean pins it. Mirrors the /sessions/:id/model shape.
+  // Per-session UI prefs (pinned-header + auto-recap + tool-group-card
+  // overrides). Pure UI prefs — no SDK round-trip. Body keys are optional;
+  // a `null` value for a key clears the override so the session re-inherits
+  // the global default, while an explicit boolean pins it. Mirrors the
+  // /sessions/:id/model shape.
   app.post('/sessions/:id/prefs', async (c) => {
     const body = await safeJson<{
       showPinnedUserMessage?: boolean | null
       autoRecap?: boolean | null
+      toolGroupCards?: boolean | null
     }>(c.req)
-    const partial: { showPinnedUserMessage?: boolean | undefined; autoRecap?: boolean | undefined } = {}
+    const partial: {
+      showPinnedUserMessage?: boolean | undefined
+      autoRecap?: boolean | undefined
+      toolGroupCards?: boolean | undefined
+    } = {}
     if (body && Object.prototype.hasOwnProperty.call(body, 'showPinnedUserMessage')) {
       const v = body.showPinnedUserMessage
       if (v !== null && typeof v !== 'boolean') {
@@ -702,6 +708,13 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
         return c.json({ error: 'autoRecap must be a boolean or null' }, 400)
       }
       partial.autoRecap = v ?? undefined
+    }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'toolGroupCards')) {
+      const v = body.toolGroupCards
+      if (v !== null && typeof v !== 'boolean') {
+        return c.json({ error: 'toolGroupCards must be a boolean or null' }, 400)
+      }
+      partial.toolGroupCards = v ?? undefined
     }
     const info = await sm.setPrefs(c.req.param('id'), partial)
     return c.json({ session: info })

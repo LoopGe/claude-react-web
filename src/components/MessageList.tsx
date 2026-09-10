@@ -70,6 +70,11 @@ interface Props {
    *  "processing" indicator on consumed user messages so it doesn't
    *  reappear on historical messages after a reconnect. */
   working?: boolean
+  /** Whether consecutive tool-only rows fold into collapsible group cards
+   *  (the transcript's `toolGroupCards` UI pref, resolved by the caller as
+   *  session override ?? global default). False renders every tool row as
+   *  its own card with no fold chrome. Defaults to true. */
+  toolGroupCards?: boolean
   /** True while a /clear is in flight (trigger → session-cleared frame).
    *  Adds a blur-fade-out to the transcript and a "Clearing…" veil so the
    *  ~1.7s server teardown+respawn reads as an intentional transition
@@ -263,7 +268,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -417,8 +422,9 @@ export const MessageList = memo(function MessageList({ items, working, clearing,
       leadingItems,
       trailingItems,
       apiRetry,
+      toolGroupCards,
     }),
-    [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, apiRetry],
+    [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, apiRetry, toolGroupCards],
   )
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----

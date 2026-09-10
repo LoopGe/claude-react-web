@@ -413,4 +413,34 @@ describe('buildTranscriptRows: tool-group fold', () => {
     expect(rows[1]!.toolGroup).toBeUndefined()
     expect(rows[2]!.toolGroup!.memberIds).toEqual(['t3', 't4'])
   })
+
+  it('toolGroupCards: false keeps every tool row unfolded with stable ids and itemIndex', () => {
+    const { rows } = buildTranscriptRows({
+      items: [
+        user('u1', 'go'),
+        toolOnlyAssistant('t1', 'Read'),
+        toolOnlyAssistant('t2', 'Grep'),
+        toolOnlyAssistant('t3', 'Glob'),
+        assistant('a1', 'done'),
+      ],
+      isResultConsumed: () => true,
+      toolGroupCards: false,
+    })
+    expect(ids(rows)).toEqual(['u1', 't1', 't2', 't3', 'a1'])
+    // No fold chrome — each row is a plain tool card.
+    for (const r of rows) expect(r.toolGroup).toBeUndefined()
+    // itemIndex still maps back to the original items[] positions.
+    expect(rows.map((r) => r.itemIndex)).toEqual([0, 1, 2, 3, 4])
+  })
+
+  it('toolGroupCards: true (explicit) folds identically to the default', () => {
+    const input = {
+      items: [toolOnlyAssistant('t1', 'Read'), toolOnlyAssistant('t2', 'Grep')],
+      isResultConsumed: () => true,
+    }
+    const explicit = buildTranscriptRows({ ...input, toolGroupCards: true })
+    const byDefault = buildTranscriptRows(input)
+    expect(ids(explicit.rows)).toEqual(ids(byDefault.rows))
+    expect(explicit.rows[0]!.toolGroup!.memberIds).toEqual(['t1', 't2'])
+  })
 })

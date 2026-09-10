@@ -1164,6 +1164,40 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+.settings-switch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Stacked variant of .settings-row — control sits under the text column
+   instead of pinned right. Used by the session Settings panel for wide
+   controls (text inputs, selects) in the narrower 420px surface. */
+.settings-row.stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+/* Block content inside a settings group that isn't a row (e.g. the flag
+   settings editor + Apply button, or the sandbox Advanced disclosure). */
+.settings-group-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-group-body + .settings-row,
+.settings-row + .settings-group-body,
+.settings-group-body + .settings-group-body {
+  border-top: 1px solid var(--border);
+}
+
+/* Carded groups live inside the global settings body (16px padding) but the
+   session settings panel content has no padding of its own — sections used
+   to supply it. Pad the stack so the cards aren't flush to the panel edge. */
+.settings-panel-content > .settings-stack {
+  padding: 12px;
+}
 
 /* Sandbox advanced (network / filesystem) overrides — a bordered, muted
    collapsible so the extra fields don't crowd the three primary toggles. */

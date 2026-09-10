@@ -51,6 +51,7 @@ function renderPanel(opts: {
           {
             showPinnedUserMessage: true,
             autoRecap: true,
+            toolGroupCards: true,
             ...opts.globalPrefs,
           } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
         }
@@ -151,6 +152,7 @@ describe('SettingsPanel first-party card display chain', () => {
               {
                 showPinnedUserMessage: true,
                 autoRecap: true,
+                toolGroupCards: true,
                 firstPartyTools: {},
               } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
             }
@@ -192,6 +194,7 @@ describe('SettingsPanel MCP reconnect feedback', () => {
   const globalPrefs = {
     showPinnedUserMessage: true,
     autoRecap: true,
+    toolGroupCards: true,
   } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
 
   /** Render the session panel on its MCP tab with a ToastHost mounted under

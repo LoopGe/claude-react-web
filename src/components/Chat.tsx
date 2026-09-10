@@ -253,6 +253,7 @@ interface Props {
   globalPrefs: {
     showPinnedUserMessage: boolean
     autoRecap: boolean
+    toolGroupCards: boolean
     firstPartyTools?: Record<string, { enabled: boolean }>
   }
   /** True while App is playing the /clear fade-in on this panel. Combined
@@ -413,6 +414,7 @@ export const Chat = memo(function Chat({
   // re-renders this panel with the new effective value immediately.
   const effectiveShowPinned = session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage
   const effectiveAutoRecap = session.autoRecap ?? globalPrefs.autoRecap
+  const effectiveToolGroupCards = session.toolGroupCards ?? globalPrefs.toolGroupCards
   // Pinned "current question" header — the user message of the turn in view,
   // shown when it has scrolled above the viewport. `pinnedUserMsg` drives
   // presence (open/exit); `pinnedText` retains the last text through the exit
@@ -1980,6 +1982,7 @@ export const Chat = memo(function Chat({
           onUserMessagesChange={handleUserMessagesChange}
           cwd={session.cwd}
           onBackgroundTool={backgroundToolAction}
+          toolGroupCards={effectiveToolGroupCards}
         />
         </div>
         {discardConfirm && (
@@ -2471,6 +2474,7 @@ export const Chat = memo(function Chat({
             planContent={stream.planContent}
             questionAnswers={stream.questionAnswers}
             onBackgroundTool={backgroundToolAction}
+            toolGroupCards={effectiveToolGroupCards}
           />
         </SubagentProvider>
       )}
@@ -2493,6 +2497,7 @@ export const Chat = memo(function Chat({
               planStatus={stream.planStatus}
               planContent={stream.planContent}
               questionAnswers={stream.questionAnswers}
+              toolGroupCards={effectiveToolGroupCards}
             />
           </WorkflowProvider>
         </SubagentProvider>
