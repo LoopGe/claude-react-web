@@ -26,6 +26,9 @@ export type Toast = {
   onClick?: () => void
   /** Label for the dedicated action button. Ignored without `onClick`. */
   actionLabel?: string
+  /** Called exactly once when the toast is first dismissed (✕, action
+   *  click, or auto-timeout). Not called on capacity eviction. */
+  onDismiss?: () => void
 }
 
 export type PushOptions = {
@@ -37,6 +40,9 @@ export type PushOptions = {
   onClick?: () => void
   /** Pair with `onClick` to render a separate action button. */
   actionLabel?: string
+  /** Called exactly once when the toast is first dismissed (✕, action
+   *  click, or auto-timeout). Not called on capacity eviction. */
+  onDismiss?: () => void
 }
 
 export type ToastContextValue = {
