@@ -122,6 +122,12 @@ interface ConfigFile {
    *  sessions without an override inherit this value. When false, tool-only
    *  assistant rows render as individual tool cards with no fold chrome. */
   toolGroupCards: boolean
+  /** Global default for message-card header rows (assistant/you label +
+   *  timestamp + sending status). Per-session overrides
+   *  (SessionMeta.showMessageHeaders) take priority; sessions without an
+   *  override inherit this value. When false, user bubbles and assistant
+   *  cards render as bare content with no header row. */
+  showMessageHeaders: boolean
   /** Global default for per-session CLI debug logging (Options.debug +
    *  debugFile). SessionMeta.cliDebug overrides when set. Default: false. */
   cliDebug?: boolean
@@ -192,6 +198,9 @@ export interface ServerConfig {
   /** Global default for the transcript's collapsible tool-group cards.
    *  Sessions without an explicit override inherit this. */
   readonly toolGroupCards: boolean
+  /** Global default for message-card header rows. Sessions without an
+   *  explicit override inherit this. */
+  readonly showMessageHeaders: boolean
   /** Global default for per-session CLI debug logging (spawn-time only). */
   readonly cliDebug: boolean
   /** Global default for the per-session `apptools` git MCP server. Sessions
@@ -243,6 +252,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   showPinnedUserMessage: true,
   autoRecap: true,
   toolGroupCards: true,
+  showMessageHeaders: true,
   cliDebug: false,
   appToolsGit: true,
   firstPartyTools: Object.freeze({ apptools: Object.freeze({ enabled: true }) }),
@@ -493,6 +503,10 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { toolGroupCards: boolean }).toolGroupCards = file_.toolGroupCards
   }
 
+  if (typeof file_.showMessageHeaders === 'boolean') {
+    ;(merged as { showMessageHeaders: boolean }).showMessageHeaders = file_.showMessageHeaders
+  }
+
   if (typeof file_.cliDebug === 'boolean') {
     ;(merged as { cliDebug: boolean }).cliDebug = file_.cliDebug
     log.info(`cliDebug: ${file_.cliDebug}`)
@@ -599,6 +613,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'showPinnedUserMessage',
   'autoRecap',
   'toolGroupCards',
+  'showMessageHeaders',
   'cliDebug',
   'appToolsGit',
   'firstPartyTools',

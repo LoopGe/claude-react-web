@@ -892,6 +892,7 @@ export class SessionManager {
       showPinnedUserMessage: s.showPinnedUserMessage,
       autoRecap: s.autoRecap,
       toolGroupCards: s.toolGroupCards,
+      showMessageHeaders: s.showMessageHeaders,
       cliDebug: s.cliDebug,
       appToolsGit: s.appToolsGit,
       firstPartyTools: s.firstPartyTools,
@@ -1599,10 +1600,10 @@ export class SessionManager {
       opts?.historySeed,
       parentOverride,
       // Carry the source's pure-UI pref overrides onto the fork so a
-      // pinned header / auto-recap / tool-group-card override survives
-      // forking. No-op when the source inherits global (all undefined) —
-      // the fork then inherits global too.
-      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, toolGroupCards: meta.toolGroupCards, appToolsGit: meta.appToolsGit, firstPartyTools: meta.firstPartyTools },
+      // pinned header / auto-recap / tool-group-card / message-header
+      // override survives forking. No-op when the source inherits global
+      // (all undefined) — the fork then inherits global too.
+      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, toolGroupCards: meta.toolGroupCards, showMessageHeaders: meta.showMessageHeaders, appToolsGit: meta.appToolsGit, firstPartyTools: meta.firstPartyTools },
       // joinGroupOf: the source id — Y joins X's group (append semantics;
       // X stays, since fork doesn't remove the source). The crash-recovery
       // "Fork from last completed turn" button sets `replacesSource` so the
@@ -1992,7 +1993,7 @@ export class SessionManager {
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
-    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; toolGroupCards?: boolean; appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> },
+    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; toolGroupCards?: boolean; showMessageHeaders?: boolean; appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> },
     /** When this spawn is a fresh Y that should land in an existing session
      *  X's sidebar group, pass X's id here so the `created` broadcast carries
      *  `joinGroupOf: X`. Set by `/clear`, restart, and fork. Append
@@ -2199,6 +2200,7 @@ export class SessionManager {
       showPinnedUserMessage: prefs?.showPinnedUserMessage ?? existingMeta?.showPinnedUserMessage,
       autoRecap: prefs?.autoRecap ?? existingMeta?.autoRecap,
       toolGroupCards: prefs?.toolGroupCards ?? existingMeta?.toolGroupCards,
+      showMessageHeaders: prefs?.showMessageHeaders ?? existingMeta?.showMessageHeaders,
       cliDebug: existingMeta?.cliDebug ?? metaSnapshot.cliDebug,
       appToolsGit: prefs?.appToolsGit ?? existingMeta?.appToolsGit,
       firstPartyTools: prefs?.firstPartyTools ?? existingMeta?.firstPartyTools,
@@ -3657,16 +3659,18 @@ export class SessionManager {
   }
 
   /** Set per-session UI prefs (pinned-header + auto-recap + tool-group-card
-   *  overrides). Unlike setFastMode / setEffortLevel these are PURE UI prefs
-   *  — no applyFlagSettings round-trip to the SDK. A value of `undefined`
-   *  clears the override so the session re-inherits the global default;
-   *  a boolean pins it. Persisted so it survives resume / fork / reload. */
+   *  + message-header overrides). Unlike setFastMode / setEffortLevel these
+   *  are PURE UI prefs — no applyFlagSettings round-trip to the SDK. A value
+   *  of `undefined` clears the override so the session re-inherits the
+   *  global default; a boolean pins it. Persisted so it survives resume /
+   *  fork / reload. */
   async setPrefs(
     id: string,
     partial: {
       showPinnedUserMessage?: boolean | undefined
       autoRecap?: boolean | undefined
       toolGroupCards?: boolean | undefined
+      showMessageHeaders?: boolean | undefined
     },
   ): Promise<SessionInfo> {
     const s = this.requireLive(id)
@@ -3678,6 +3682,9 @@ export class SessionManager {
     }
     if ('toolGroupCards' in partial) {
       s.toolGroupCards = partial.toolGroupCards
+    }
+    if ('showMessageHeaders' in partial) {
+      s.showMessageHeaders = partial.showMessageHeaders
     }
     s.lastActivityAt = Date.now()
     this.persist(s)

@@ -34,6 +34,9 @@ interface Props {
   /** Transcript's collapsible tool-group cards pref (effective value —
    *  session override ?? global default, resolved by ChatPanel). */
   toolGroupCards?: boolean
+  /** Message-card header visibility pref (effective value — session
+   *  override ?? global default, resolved by ChatPanel). */
+  showMessageHeaders?: boolean
   /** True close — deletes the ephemeral session. */
   onClose: () => void
   /** Collapse — hides the drawer but keeps the session alive. */
@@ -46,6 +49,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   stream,
   permissions,
   toolGroupCards,
+  showMessageHeaders,
   onClose,
   onCollapse,
 }: Props) {
@@ -214,6 +218,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           hasOlder={stream.hasOlder}
           loadingOlder={stream.loadingOlder}
           toolGroupCards={toolGroupCards}
+          showMessageHeaders={showMessageHeaders}
           emptyStateContent={(
             // Side Chat-specific empty state. The drawer is ephemeral —
             // closing it deletes the conversation — and most users only

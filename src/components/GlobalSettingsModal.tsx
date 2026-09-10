@@ -150,6 +150,7 @@ export function GlobalSettingsModal({
   const [showPinnedUserMessage, setShowPinnedUserMessage] = useState(true)
   const [autoRecap, setAutoRecap] = useState(true)
   const [toolGroupCards, setToolGroupCards] = useState(true)
+  const [showMessageHeaders, setShowMessageHeaders] = useState(true)
   const [allowSensitivePathEdits, setAllowSensitivePathEdits] = useState(false)
 
   // Skills tab state
@@ -197,6 +198,7 @@ export function GlobalSettingsModal({
         setShowPinnedUserMessage(cfg.showPinnedUserMessage ?? true)
         setAutoRecap(cfg.autoRecap ?? true)
         setToolGroupCards(cfg.toolGroupCards ?? true)
+        setShowMessageHeaders(cfg.showMessageHeaders ?? true)
         setAllowSensitivePathEdits(cfg.allowSensitivePathEdits ?? false)
         setFirstPartyTools(cfg.firstPartyTools ?? {})
       } catch (e) {
@@ -276,6 +278,7 @@ export function GlobalSettingsModal({
         showPinnedUserMessage,
         autoRecap,
         toolGroupCards,
+        showMessageHeaders,
         allowSensitivePathEdits,
       }
       // Structured first-party defaults — written verbatim as the single
@@ -405,6 +408,7 @@ export function GlobalSettingsModal({
                   showPinnedUserMessage={showPinnedUserMessage}
                   autoRecap={autoRecap}
                   toolGroupCards={toolGroupCards}
+                  showMessageHeaders={showMessageHeaders}
                   allowSensitivePathEdits={allowSensitivePathEdits}
                   onMaxUploadBytesChange={setMaxUploadBytes}
                   onHistoryCapChange={setHistoryCap}
@@ -413,6 +417,7 @@ export function GlobalSettingsModal({
                   onShowPinnedUserMessageChange={setShowPinnedUserMessage}
                   onAutoRecapChange={setAutoRecap}
                   onToolGroupCardsChange={setToolGroupCards}
+                  onShowMessageHeadersChange={setShowMessageHeaders}
                   onAllowSensitivePathEditsChange={setAllowSensitivePathEdits}
                 />
               )}
@@ -550,11 +555,11 @@ const MIN_MS = 60 * 1000
 
 function ServerTab({
   maxUploadBytes, historyCap, maxGroupPanels, workingStuckMs,
-  showPinnedUserMessage, autoRecap, toolGroupCards, allowSensitivePathEdits,
+  showPinnedUserMessage, autoRecap, toolGroupCards, showMessageHeaders, allowSensitivePathEdits,
   onMaxUploadBytesChange, onHistoryCapChange, onMaxGroupPanelsChange,
   onWorkingStuckMsChange,
   onShowPinnedUserMessageChange, onAutoRecapChange, onToolGroupCardsChange,
-  onAllowSensitivePathEditsChange,
+  onShowMessageHeadersChange, onAllowSensitivePathEditsChange,
 }: {
   maxUploadBytes: number
   historyCap: number
@@ -563,6 +568,7 @@ function ServerTab({
   showPinnedUserMessage: boolean
   autoRecap: boolean
   toolGroupCards: boolean
+  showMessageHeaders: boolean
   allowSensitivePathEdits: boolean
   onMaxUploadBytesChange: (v: number) => void
   onHistoryCapChange: (v: number) => void
@@ -571,6 +577,7 @@ function ServerTab({
   onShowPinnedUserMessageChange: (v: boolean) => void
   onAutoRecapChange: (v: boolean) => void
   onToolGroupCardsChange: (v: boolean) => void
+  onShowMessageHeadersChange: (v: boolean) => void
   onAllowSensitivePathEditsChange: (v: boolean) => void
 }) {
   const uploadMb = Math.round(maxUploadBytes / MB)
@@ -672,6 +679,16 @@ function ServerTab({
             label="Use collapsible tool-group cards"
             checked={toolGroupCards}
             onChange={onToolGroupCardsChange}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Show message card headers"
+          hint="Shows the assistant/you label, timestamp, and sending status row on each message card. When off, message cards render as bare content."
+        >
+          <Switch
+            label="Show message card headers"
+            checked={showMessageHeaders}
+            onChange={onShowMessageHeadersChange}
           />
         </SettingsRow>
       </section>

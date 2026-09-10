@@ -46,6 +46,7 @@ export const MessageView = memo(function MessageView({
   deliveryStatus,
   working,
   nextItemType,
+  showMessageHeaders = true,
   onSwitchModel,
   onAbortBash,
 }: {
@@ -78,6 +79,13 @@ export const MessageView = memo(function MessageView({
    *  processing indicator once the model has started responding
    *  (assistant/result after a consumed user message). */
   nextItemType?: string
+  /** Whether user bubbles and assistant cards render their `.msg-header`
+   *  row (label + timestamp + sending/queued/processing indicators) —
+   *  the `showMessageHeaders` UI pref. False renders those cards as bare
+   *  content. Only the user/assistant bubble branches are affected;
+   *  system-frame cards (bash, memory recall, …) keep their functional
+   *  headers. Defaults to true. */
+  showMessageHeaders?: boolean
   /** Called when the user clicks "Switch model" on a model_not_found
    *  error message. Forwarded from MessageList's onSwitchModel prop. */
   onSwitchModel?: () => void
@@ -310,6 +318,7 @@ export const MessageView = memo(function MessageView({
     const showProcessing = !sending && deliveryStatus === 'consumed' && working && nextItemType !== 'assistant' && nextItemType !== 'result'
     return (
       <div className={`msg user${sending ? ' msg-sending' : ''}${showQueued ? ' msg-queued' : ''}`}>
+        {showMessageHeaders && (
         <div className="msg-header">
           <span><IconUser size={12} /> you</span>
           <MessageTimestamp ms={msg.receivedAt} />
@@ -344,6 +353,7 @@ export const MessageView = memo(function MessageView({
             </span>
           )}
         </div>
+        )}
         <div className="msg-body">
           {imageBlocks.length > 0 && (
             <div className="msg-image-row">
@@ -431,11 +441,13 @@ export const MessageView = memo(function MessageView({
     const modelNotFound = msg.error === 'model_not_found'
     return (
       <div className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}>
+        {showMessageHeaders && (
         <div className="msg-header">
           <span>{isSubagent ? 'subagent' : 'assistant'}</span>
           <MessageTimestamp ms={msg.receivedAt} />
           {msg.error && !modelNotFound && <span className="msg-header-error">{msg.error as string}</span>}
         </div>
+        )}
         <div className="msg-body">
           {blocks.map((b, i) => (
             <BlockView key={i} block={b} searchQuery={searchQuery} activeMatchIdx={blockActiveIdx[i]} toolResultActiveMatchIdx={toolResultActiveMatchIdx} />

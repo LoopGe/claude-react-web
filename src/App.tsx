@@ -214,8 +214,9 @@ export function App() {
     showPinnedUserMessage: boolean
     autoRecap: boolean
     toolGroupCards: boolean
+    showMessageHeaders: boolean
     firstPartyTools?: Record<string, { enabled: boolean }>
-  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true })
+  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, showMessageHeaders: true })
   const {
     settingsOpenFor,
     settingsTabRequest,
@@ -459,6 +460,7 @@ export function App() {
           showPinnedUserMessage: r.showPinnedUserMessage ?? true,
           autoRecap: r.autoRecap ?? true,
           toolGroupCards: r.toolGroupCards ?? true,
+          showMessageHeaders: r.showMessageHeaders ?? true,
           firstPartyTools: r.firstPartyTools,
         })
       })
@@ -3593,6 +3595,7 @@ export function App() {
       showPinnedUserMessage: r.showPinnedUserMessage ?? true,
       autoRecap: r.autoRecap ?? true,
       toolGroupCards: r.toolGroupCards ?? true,
+      showMessageHeaders: r.showMessageHeaders ?? true,
       firstPartyTools: r.firstPartyTools,
     })
   }, [])

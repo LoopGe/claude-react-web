@@ -125,6 +125,10 @@ export interface SessionMeta {
    *  cards. Undefined = inherit the global config default. Persisted so
    *  the override survives reload. */
   toolGroupCards?: boolean
+  /** Per-session override for message-card header rows. Undefined =
+   *  inherit the global config default. Persisted so the override
+   *  survives reload. */
+  showMessageHeaders?: boolean
   /** User intent: per-session CLI debug logging. undefined = inherit the
    *  global config default. Persisted so resume/fork/restart keep the intent.
    *  Spawn-time only — takes effect on the next spawn. */
@@ -263,6 +267,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     showPinnedUserMessage: typeof r.showPinnedUserMessage === 'boolean' ? r.showPinnedUserMessage : undefined,
     autoRecap: typeof r.autoRecap === 'boolean' ? r.autoRecap : undefined,
     toolGroupCards: typeof r.toolGroupCards === 'boolean' ? r.toolGroupCards : undefined,
+    showMessageHeaders: typeof r.showMessageHeaders === 'boolean' ? r.showMessageHeaders : undefined,
     cliDebug: typeof r.cliDebug === 'boolean' ? r.cliDebug : undefined,
     appToolsGit: typeof r.appToolsGit === 'boolean' ? r.appToolsGit : undefined,
     firstPartyTools: (() => {

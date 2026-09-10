@@ -75,6 +75,12 @@ interface Props {
    *  session override ?? global default). False renders every tool row as
    *  its own card with no fold chrome. Defaults to true. */
   toolGroupCards?: boolean
+  /** Whether user bubbles and assistant cards render their `.msg-header`
+   *  row (label + timestamp + sending/queued/processing indicators) — the
+   *  `showMessageHeaders` UI pref, resolved by the caller as session
+   *  override ?? global default. False renders those cards as bare
+   *  content. Defaults to true. */
+  showMessageHeaders?: boolean
   /** True while a /clear is in flight (trigger → session-cleared frame).
    *  Adds a blur-fade-out to the transcript and a "Clearing…" veil so the
    *  ~1.7s server teardown+respawn reads as an intentional transition
@@ -268,7 +274,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, showMessageHeaders = true, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -844,6 +850,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
             deliveryStatus={item.deliveryStatus}
             working={working}
             nextItemType={nextItemTypeMap.get(item.id)}
+            showMessageHeaders={showMessageHeaders}
             onSwitchModel={onSwitchModel}
             onAbortBash={onAbortBash}
           />
@@ -854,7 +861,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // settles, a stale closure would leave its group card reading the old map
     // (and so still showing `running`). Both change only on subagent/workflow
     // events, unlike the context values that carry `messages`.
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, enterNodeRef, working, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, subagentCtx?.index, workflowCtx?.index])
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, enterNodeRef, working, showMessageHeaders, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, subagentCtx?.index, workflowCtx?.index])
 
   // Key rows by their stable message id instead of Virtuoso's default
   // (offset-space index).

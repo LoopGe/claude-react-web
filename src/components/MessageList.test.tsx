@@ -715,6 +715,28 @@ describe('MessageList', () => {
     expect(container.textContent).toContain('Hello world')
   })
 
+  it('hides user/assistant message headers when showMessageHeaders is false', () => {
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'hi there' }] } }),
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Hello world' }] },
+      }),
+    ]
+    // Default: both bubble kinds render their .msg-header row.
+    const shown = render(<MessageList items={toItems(msgs as SdkMessage[])} />)
+    expect(shown.container.querySelectorAll('.msg.user .msg-header').length).toBe(1)
+    expect(shown.container.querySelectorAll('.msg.assistant .msg-header').length).toBe(1)
+    shown.unmount()
+    // Opt-out: headers gone, body content untouched.
+    const hidden = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} showMessageHeaders={false} />,
+    )
+    expect(hidden.container.querySelector('.msg.user .msg-header')).toBeNull()
+    expect(hidden.container.querySelector('.msg.assistant .msg-header')).toBeNull()
+    expect(hidden.container.textContent).toContain('hi there')
+    expect(hidden.container.textContent).toContain('Hello world')
+  })
+
   it('renders system/permission_denied with tool + reason (not the raw-type fallback)', () => {
     const msgs = [
       makeMsg('system', {

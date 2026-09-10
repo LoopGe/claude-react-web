@@ -237,6 +237,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       showPinnedUserMessage: serverConfig.showPinnedUserMessage,
       autoRecap: serverConfig.autoRecap,
       toolGroupCards: serverConfig.toolGroupCards,
+      showMessageHeaders: serverConfig.showMessageHeaders,
       appToolsGit: serverConfig.appToolsGit,
       firstPartyTools: serverConfig.firstPartyTools,
       activeProfileId: serverConfig.activeProfileId,

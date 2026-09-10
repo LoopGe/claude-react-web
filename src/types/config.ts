@@ -45,6 +45,10 @@ export interface ConfigResponse {
   /** Global default for the transcript's collapsible tool-group cards.
    *  Sessions without an explicit override inherit this. */
   toolGroupCards?: boolean
+  /** Global default for message-card header rows (assistant/you label +
+   *  timestamp + sending status). Sessions without an explicit override
+   *  inherit this. */
+  showMessageHeaders?: boolean
   /** Global default for the first-party `apptools` git MCP server. Sessions
    *  without an explicit override inherit this. */
   appToolsGit?: boolean
@@ -82,6 +86,8 @@ export interface FullServerConfig {
   autoRecap: boolean
   /** Global default for the transcript's collapsible tool-group cards. */
   toolGroupCards: boolean
+  /** Global default for message-card header rows. */
+  showMessageHeaders: boolean
   /** Global default for the first-party `apptools` git MCP server. */
   appToolsGit: boolean
   /** Per-first-party-server global defaults. */

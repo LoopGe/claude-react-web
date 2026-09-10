@@ -58,6 +58,9 @@ interface Props {
    *  the owning Chat panel) — forwarded so this transcript matches the
    *  main one. */
   toolGroupCards?: boolean
+  /** Message-card header visibility pref (effective value from the owning
+   *  Chat panel) — forwarded for consistency with the main transcript. */
+  showMessageHeaders?: boolean
 }
 
 const UNGROUPED = '(ungrouped)'
@@ -74,6 +77,7 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
   planContent,
   questionAnswers,
   toolGroupCards,
+  showMessageHeaders,
 }: Props) {
   // Focused child: null = show the Workflow's direct children (phase tree
   // level). A child's toolUseId = drill into THAT child's inner conversation.
@@ -256,6 +260,7 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
               planContent={planContent}
               questionAnswers={questionAnswers}
               toolGroupCards={toolGroupCards}
+              showMessageHeaders={showMessageHeaders}
               replayReady
             />
           </div>

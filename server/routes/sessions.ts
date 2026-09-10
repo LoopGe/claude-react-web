@@ -689,11 +689,13 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
       showPinnedUserMessage?: boolean | null
       autoRecap?: boolean | null
       toolGroupCards?: boolean | null
+      showMessageHeaders?: boolean | null
     }>(c.req)
     const partial: {
       showPinnedUserMessage?: boolean | undefined
       autoRecap?: boolean | undefined
       toolGroupCards?: boolean | undefined
+      showMessageHeaders?: boolean | undefined
     } = {}
     if (body && Object.prototype.hasOwnProperty.call(body, 'showPinnedUserMessage')) {
       const v = body.showPinnedUserMessage
@@ -715,6 +717,13 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
         return c.json({ error: 'toolGroupCards must be a boolean or null' }, 400)
       }
       partial.toolGroupCards = v ?? undefined
+    }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'showMessageHeaders')) {
+      const v = body.showMessageHeaders
+      if (v !== null && typeof v !== 'boolean') {
+        return c.json({ error: 'showMessageHeaders must be a boolean or null' }, 400)
+      }
+      partial.showMessageHeaders = v ?? undefined
     }
     const info = await sm.setPrefs(c.req.param('id'), partial)
     return c.json({ session: info })

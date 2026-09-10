@@ -61,6 +61,7 @@ interface Props {
     showPinnedUserMessage: boolean
     autoRecap: boolean
     toolGroupCards: boolean
+    showMessageHeaders: boolean
     firstPartyTools?: Record<string, { enabled: boolean }>
   }
   onClose: () => void
@@ -166,6 +167,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   const effShowPinned = session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage
   const effAutoRecap = session.autoRecap ?? globalPrefs.autoRecap
   const effToolGroupCards = session.toolGroupCards ?? globalPrefs.toolGroupCards
+  const effShowMessageHeaders = session.showMessageHeaders ?? globalPrefs.showMessageHeaders
   /** POST a per-session pref override. A boolean pins it; `null` clears the
    *  override so the session re-inherits the global default. No success toast
    *  — checkbox toggles are too frequent to toast on every change; only
@@ -177,6 +179,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       showPinnedUserMessage?: boolean | null
       autoRecap?: boolean | null
       toolGroupCards?: boolean | null
+      showMessageHeaders?: boolean | null
     },
   ) => {
     try {
@@ -1350,6 +1353,32 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             checked={effToolGroupCards}
             disabled={busy || session.terminated}
             onChange={(next) => void changePref({ toolGroupCards: next })}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          title="Show message card headers"
+          hint={<>Shows the assistant/you label, timestamp, and sending status row on
+            each message card. When off, message cards render as bare content.{' '}
+            {session.showMessageHeaders === undefined
+              ? `Inheriting global (${globalPrefs.showMessageHeaders ? 'ON' : 'OFF'}).`
+              : 'Session override.'}
+            {session.showMessageHeaders !== undefined && (
+              <button
+                type="button"
+                className="settings-reset-link"
+                disabled={busy || session.terminated}
+                onClick={() => void changePref({ showMessageHeaders: null })}
+              >
+                Reset (inherit global)
+              </button>
+            )}</>}
+        >
+          <Switch
+            label="Show message card headers"
+            checked={effShowMessageHeaders}
+            disabled={busy || session.terminated}
+            onChange={(next) => void changePref({ showMessageHeaders: next })}
           />
         </SettingsRow>
       </section>

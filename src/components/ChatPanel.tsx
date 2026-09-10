@@ -121,6 +121,7 @@ export interface ChatPanelProps {
     showPinnedUserMessage: boolean
     autoRecap: boolean
     toolGroupCards: boolean
+    showMessageHeaders: boolean
     firstPartyTools?: Record<string, { enabled: boolean }>
   }
   /** True when a turn has completed on this session since the user last
@@ -1297,6 +1298,7 @@ export const ChatPanel = memo(function ChatPanel({
           stream={sideChatStream}
           permissions={sideChatPermissions}
           toolGroupCards={sideChatSession.toolGroupCards ?? globalPrefs.toolGroupCards}
+          showMessageHeaders={sideChatSession.showMessageHeaders ?? globalPrefs.showMessageHeaders}
           onClose={onCloseSideChat}
           onCollapse={onToggleCollapseSideChat}
         />

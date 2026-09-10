@@ -267,6 +267,11 @@ export interface SessionInfoBase<PM = string> {
    *  a boolean pins this session to that value. Persisted so it survives
    *  resume / fork / reload. */
   toolGroupCards?: boolean
+  /** Per-session override for message-card header rows (assistant/you
+   *  label + timestamp + sending status). Undefined = inherit the global
+   *  default (config.showMessageHeaders); a boolean pins this session to
+   *  that value. Persisted so it survives resume / fork / reload. */
+  showMessageHeaders?: boolean
   /** Per-session override for the first-party `apptools` git MCP server.
    *  Undefined = inherit the global default (config.appToolsGit); a boolean
    *  pins this session to that value. Persisted so it survives resume /

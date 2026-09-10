@@ -55,6 +55,9 @@ interface Props {
    *  the owning Chat panel) — forwarded so the subagent's inner transcript
    *  matches the main one. */
   toolGroupCards?: boolean
+  /** Message-card header visibility pref (effective value from the owning
+   *  Chat panel) — forwarded for consistency with the main transcript. */
+  showMessageHeaders?: boolean
 }
 
 
@@ -75,6 +78,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   questionAnswers,
   onBackgroundTool,
   toolGroupCards,
+  showMessageHeaders,
 }: Props) {
   const currentId = stack[stack.length - 1]
   const current = currentId ? index.get(currentId) : undefined
@@ -259,6 +263,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             questionAnswers={questionAnswers}
             onBackgroundTool={onBackgroundTool}
             toolGroupCards={toolGroupCards}
+            showMessageHeaders={showMessageHeaders}
             replayReady
             // Subagents are not interactive — you can't type into them.
             // The default ChatEmptyState ("Type a message below, or paste
