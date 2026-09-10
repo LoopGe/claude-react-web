@@ -42,8 +42,9 @@ import { ProfileSwitcher } from './components/ProfileSwitcher'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { BackgroundVideo } from './components/BackgroundVideo'
 import { IconSettings, IconBellToggle, IconMenu, IconSidebar, IconFolderSearch } from './components/icons/ToolIcons'
-import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
+import { useUpdateNag, nagValueForUpdate, nagValueForDeprecated, writeNagDismiss } from './hooks/useUpdateNag'
+import type { UpdateDialogMode } from './components/UpdateDialog'
 import { useUiState } from './hooks/useUiState'
 import { sessionStoreRegistry } from './session-store/registry'
 import { useAppOverlays } from './app/useAppOverlays'
@@ -69,6 +70,7 @@ const CommandPalette = lazy(() => import('./components/CommandPalette').then((m)
 const ResumeSessionDialog = lazy(() => import('./components/session-list/ResumeSessionDialog').then((m) => ({ default: m.ResumeSessionDialog })))
 const ShortcutHelp = lazy(() => import('./components/ShortcutHelp').then((m) => ({ default: m.ShortcutHelp })))
 const GlobalSettingsModal = lazy(() => import('./components/GlobalSettingsModal').then((m) => ({ default: m.GlobalSettingsModal })))
+const UpdateDialog = lazy(() => import('./components/UpdateDialog').then((m) => ({ default: m.UpdateDialog })))
 const SetupPage = lazy(() => import('./components/SetupPage').then((m) => ({ default: m.SetupPage })))
 const SnippetsManagerDialog = lazy(() => import('./components/SnippetsManagerDialog').then((m) => ({ default: m.SnippetsManagerDialog })))
 const PromptDialog = lazy(() => import('./components/PromptDialog').then((m) => ({ default: m.PromptDialog })))
@@ -442,9 +444,17 @@ export function App() {
   // Update checker — gated on isConfigured so we don't probe before
   // the setup wizard finishes (the npm registry shouldn't see traffic
   // from a server that can't yet talk to Claude either way). Shared
-  // between the top-of-page banner and the About tab in
-  // GlobalSettingsModal so "Check now" propagates instantly.
+  // between the toast nag and the About tab in GlobalSettingsModal so
+  // "Check now" propagates instantly.
   const updateInfo = useUpdateInfo(isConfigured === true)
+
+  // What's New dialog state — one global instance (App can host 3 chat
+  // panels; the dialog must be app-level). Driven by useUpdateNag's toast.
+  const [updateNagDialog, setUpdateNagDialog] = useState<UpdateDialogMode | null>(null)
+  const openUpdateNagDialog = useCallback((mode: UpdateDialogMode) => {
+    setUpdateNagDialog(mode)
+  }, [])
+  useUpdateNag(updateInfo.info, openUpdateNagDialog)
 
   useEffect(() => {
     void api
@@ -3892,12 +3902,6 @@ export function App() {
           {reconnectingBanner ?? ''}
         </div>
 
-        <UpdateBanner
-          info={updateInfo.info}
-          updating={updateInfo.updating}
-          onUpdate={updateInfo.update}
-        />
-
         <div
           ref={bodyRef}
           className="main-body"
@@ -4173,6 +4177,30 @@ export function App() {
             versionsLoading={updateInfo.versionsLoading}
             versionsError={updateInfo.versionsError}
             onFetchVersions={updateInfo.fetchVersions}
+          />
+        </Suspense>
+      )}
+
+      {updateNagDialog && updateInfo.info && (
+        <Suspense fallback={null}>
+          <UpdateDialog
+            open
+            mode={updateNagDialog}
+            info={updateInfo.info}
+            updating={updateInfo.updating}
+            onUpdate={updateInfo.update}
+            onClose={() => {
+              // One nag per version: any dialog closure counts as "seen".
+              const info = updateInfo.info
+              if (info) {
+                writeNagDismiss(
+                  updateNagDialog === 'update' && info.latest
+                    ? nagValueForUpdate(info.latest)
+                    : nagValueForDeprecated(info.current),
+                )
+              }
+              setUpdateNagDialog(null)
+            }}
           />
         </Suspense>
       )}
