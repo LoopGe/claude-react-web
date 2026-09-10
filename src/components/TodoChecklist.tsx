@@ -1,8 +1,9 @@
 // Floating checklist that surfaces the current task list from the message
-// stream. Rendered as an in-flow card between the transcript and the composer
-// (measured: it sits below the message area, above the WorkingBubble/composer —
-// its `position: sticky` is inert because .chat doesn't scroll), so it stays
-// visible without scrolling through the transcript.
+// stream. Rendered as the bottom member of the transcript's overlay stack
+// (.chat-bottom-stack, alongside the live streaming bubble), so settled
+// messages scroll behind it and show through its frosted background.
+// MessageList measures the stack and reserves its height, so the newest
+// message can always be scrolled clear of the card.
 //
 // Two source shapes are supported, because the underlying claude CLI exposes
 // task management through ONE of two mutually-exclusive tool families

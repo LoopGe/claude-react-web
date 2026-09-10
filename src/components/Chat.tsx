@@ -1986,6 +1986,23 @@ export const Chat = memo(function Chat({
           onBackgroundTool={backgroundToolAction}
           toolGroupCards={effectiveToolGroupCards}
           showMessageHeaders={effectiveShowMessageHeaders}
+          // The task checklist + monitor bar are bottom OVERLAYS of the
+          // transcript, not siblings of it: rendering them here puts them in
+          // `.chat-bottom-stack`, so settled messages scroll behind their
+          // frosted backgrounds and their real height is reserved through
+          // MessageList's Footer spacer (never permanently hidden).
+          bottomOverlay={
+            <>
+              <TodoChecklist
+                messages={stream.messages}
+                working={session.working}
+                skin={skin}
+                clearing={effectiveClearing}
+                sessionId={session.id}
+              />
+              <MonitorBar messages={stream.messages} clearing={effectiveClearing} />
+            </>
+          }
         />
         </div>
         {discardConfirm && (
@@ -2095,9 +2112,6 @@ export const Chat = memo(function Chat({
         </ReopenQuestionProvider>
         </WorkflowProvider>
       </SubagentProvider>
-
-      <TodoChecklist messages={stream.messages} working={session.working} skin={skin} clearing={effectiveClearing} sessionId={session.id} />
-      <MonitorBar messages={stream.messages} clearing={effectiveClearing} />
 
       {/* Always-mounted live region ?see `.error-bar-empty` in styles.css.
           Keeping the region in the DOM (just visually hidden when empty)
