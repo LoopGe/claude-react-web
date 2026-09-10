@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { rmSync, existsSync } from 'node:fs'
+import { rmSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createErrorHandler } from './errors.js'
 import { buildBackgroundRouter } from './background-routes.js'
@@ -80,6 +80,29 @@ describe('background routes', () => {
       form.append('file', new File([new Uint8Array(1025)], 'big.png', { type: 'image/png' }))
       const res = await app.request('/api/background/upload', { method: 'POST', body: form })
       expect(res.status).toBe(413)
+    })
+
+    it('400s when the request carries no file', async () => {
+      const form = new FormData()
+      form.append('note', 'no file here')
+      const res = await app.request('/api/background/upload', { method: 'POST', body: form })
+      expect(res.status).toBe(400)
+    })
+
+    it('400s on a malformed multipart body', async () => {
+      const res = await app.request('/api/background/upload', {
+        method: 'POST',
+        headers: { 'content-type': 'multipart/form-data; boundary=nope' },
+        body: 'not-a-real-multipart-body',
+      })
+      expect(res.status).toBe(400)
+    })
+
+    it('leaves no .part file behind after a rejected upload', async () => {
+      const form = new FormData()
+      form.append('file', new File(['x'], 'a.gif', { type: 'image/gif' }))
+      await app.request('/api/background/upload', { method: 'POST', body: form })
+      expect(readdirSync(dir).filter((f) => f.endsWith('.part'))).toEqual([])
     })
   })
 
