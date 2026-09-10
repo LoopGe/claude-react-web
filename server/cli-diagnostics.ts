@@ -34,9 +34,9 @@ export async function appendStderrLine(
   if (size > 0 && size + lineLen > MAX_STDERR_BYTES) {
     const raw = await fs.readFile(file, 'utf8').catch(() => '')
     const kept = raw.slice(Math.max(0, raw.length - KEEP_LAST_BYTES))
-    await fs.writeFile(file, kept + entry + '\n', 'utf8')
+    await fs.writeFile(file, kept + entry + '\n', 'utf8').catch(() => undefined)
   } else {
-    await fs.appendFile(file, entry + '\n', 'utf8')
+    await fs.appendFile(file, entry + '\n', 'utf8').catch(() => undefined)
   }
 }
 

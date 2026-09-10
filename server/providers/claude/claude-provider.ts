@@ -12,6 +12,8 @@ import {
   type AgentDefinition,
 } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
+import { mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { config as defaultConfig, DEFAULT_PROFILE } from '../../config.js'
 import type { ModelGroupConfig, ProviderProfile } from '../../config.js'
 import { profileDefaultModel, resolveActiveProfile } from '../../profiles.js'
@@ -37,6 +39,7 @@ import type { AgentUserMessage } from '../../agent-message.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../../shared/structured.js'
 import type { ResumableSession } from '../../session-types.js'
 import { createLogger } from '../../log.js'
+import { appendStderrLine } from '../../cli-diagnostics.js'
 
 const log = createLogger('claude-provider')
 
@@ -189,6 +192,11 @@ export interface ClaudeProviderOptions {
   agentStore?: AgentDefinitionStore
   mcpStore?: McpConfigStore
   onProcessExit?: (info: ProcessExitInfo) => void
+  /** Directory for session-scoped CLI diagnostic logs. When set, the
+   *  provider tees every captured stderr line to a per-session jsonl file
+   *  (via appendStderrLine) and writes SDK debug logs here. Derived by
+   *  SessionManager from its store directory. */
+  logsDir?: string
 }
 
 // Behavior switch seeded by Workstream A. Default TRUE = assume a bare MCP
@@ -277,7 +285,14 @@ export class ClaudeProvider implements AgentProvider {
   private cachedBaseUrl?: string
 
   constructor(private readonly opts: ClaudeProviderOptions = {}) {
-    this.processMonitor = new ProcessMonitor((info) => this.opts.onProcessExit?.(info))
+    this.processMonitor = new ProcessMonitor(
+      (info) => this.opts.onProcessExit?.(info),
+      {
+        stderrSink: (sid, line) => {
+          void appendStderrLine(this.opts.logsDir, sid, line)
+        },
+      },
+    )
   }
 
   createSession(opts: CreateSessionOptions): ClaudeSessionHandle {
@@ -324,6 +339,16 @@ export class ClaudeProvider implements AgentProvider {
     // CLI — it can then route interrupt semantics through the per-task control
     // instead of aborting the whole turn.
     sdkOptions.perTaskStopAffordance = true
+
+    // CLI debug mode: wire SDK debug + debugFile so the CLI subprocess
+    // writes its full debug log to a per-session file. Gated on the
+    // effective per-session cliDebug boolean (resolved by SessionManager
+    // from session override ?? global default).
+    if (opts.cliDebug) {
+      if (this.opts.logsDir) mkdirSync(this.opts.logsDir, { recursive: true })
+      sdkOptions.debug = true
+      if (this.opts.logsDir) sdkOptions.debugFile = join(this.opts.logsDir, `cli-${opts.id}.log`)
+    }
 
     const requestedMode = (opts.permissionMode ?? sdkOptions.permissionMode) as PermissionMode | undefined
     this.applyStandardQueryOpts(sdkOptions, opts.env, opts.enabledPlugins, group, profile)

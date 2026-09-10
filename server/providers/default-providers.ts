@@ -11,6 +11,9 @@ export interface DefaultProvidersOptions {
   agentStore?: AgentDefinitionStore
   mcpStore?: McpConfigStore
   onProcessExit?: (info: ProcessExitInfo) => void
+  /** Directory for session-scoped CLI diagnostic logs. Passed through to
+   *  ClaudeProvider for stderr tee + SDK debug log files. */
+  logsDir?: string
 }
 
 export function createDefaultProviders(opts: DefaultProvidersOptions = {}): ProviderRegistry {

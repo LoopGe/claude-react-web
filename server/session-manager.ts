@@ -24,6 +24,7 @@ import {
 import type { ProcessExitInfo } from './process-monitor.js'
 import { randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
@@ -508,6 +509,7 @@ export class SessionManager {
       agentStore: this.agentStore,
       mcpStore: this.mcpStore,
       onProcessExit: (info) => this.handleProcessExit(info),
+      logsDir: join(this.store.getDir(), 'logs'),
     })
     this.defaultProvider = opts.defaultProvider ?? 'claude'
     // Stuck-session monitor — periodic GC tick with auto-interrupt.
