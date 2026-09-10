@@ -12,7 +12,7 @@ const APPEARANCE_KEYS = [
   'claude-react-web:sidebar-width', 'claude-react-web:sidebar-min-px', 'claude-react-web:sidebar-max-px',
   'claude-react-web:panel-col-ratios', 'claude-react-web:panel-min-ratio',
   'claude-react-web:recent-models', 'claude-react-web:recent-cwds',
-  'claude-react-web:update-banner-dismissed-version', 'claude-react-web:last-seen-turn',
+  'claude-react-web:update-nag-dismissed-version', 'claude-react-web:last-seen-turn',
 ]
 
 function clearBrowserItem(item: BrowserDataItem): void {

@@ -24,6 +24,7 @@ import { McpToolsList, firstPartyToolDefsAsMcpTools } from './McpToolsList'
 import type { FirstPartyToolServerInfo } from '../../shared/first-party'
 import type { PublishedVersions, UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 import { isUpdateNagNeeded, isVersionNewer } from '../../shared/update-info'
+import { reportUpdateResult } from '../utils/update-action'
 
 // MarketplaceTab pulls in catalog-rendering UI; McpInstaller is a heavy
 // modal-within-modal. Both are only opened on demand from inside the
@@ -1751,7 +1752,8 @@ function AboutTab({
   const displayError = info?.error ?? error
   // Suppress the "Update now" nag once the on-disk `installed` version
   // already satisfies `latest` (in-app update applied, restart pending) —
-  // mirrors UpdateBanner. `restartPending` below then carries the
+  // mirrors the nag's suppression rule via `isUpdateNagNeeded`.
+  // `restartPending` below then carries the
   // "restart to apply" message, so the two states don't contradict.
   const hasUpdate = isUpdateNagNeeded(info)
   const disabled = !!info?.disabled
@@ -1773,29 +1775,11 @@ function AboutTab({
     setUpdateError(null)
     try {
       const res = await onUpdate()
-      if (res.performed) {
-        if (res.updateApplied) {
-          // The on-disk package was verifiably upgraded — tell the user the
-          // exact version that landed and that a restart applies it.
-          toast.success(
-            `Installed ${res.installedVersion ?? res.latest ?? 'the latest version'} on disk — restart the server to apply.`,
-          )
-        } else {
-          // Install ran but the on-disk version didn't advance — npm reported
-          // the package was already current (a no-op), or the on-disk version
-          // couldn't be confirmed. Either way, nothing to restart for.
-          toast.info(
-            res.installedVersion
-              ? `Already on the latest version (${res.installedVersion}).`
-              : 'Install completed, but the new version could not be confirmed on disk.',
-          )
-        }
-        onRefresh?.()
-      } else {
-        // Server declined to install (npx / unknown). Point the user at the
-        // copy-command instead.
-        toast.info('In-app update is not available for this install - copy the command below.')
-      }
+      reportUpdateResult(toast, res)
+      // Refresh the update-info snapshot either way (no-op installs still
+      // refresh `checkedAt` / `installed` overlays) — preserves the old
+      // About-tab behaviour of re-probing after any performed install.
+      if (res.performed) onRefresh?.()
     } catch (e) {
       setUpdateError(e instanceof Error ? e.message : String(e))
     }

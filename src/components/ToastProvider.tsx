@@ -83,9 +83,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     }
     if (removalTimersRef.current.has(id)) return
 
-    const hasToast = toastsRef.current.some((t) => t.id === id && !t.exiting)
-    if (!hasToast) return
-
+    const toast = toastsRef.current.find((t) => t.id === id && !t.exiting)
+    if (!toast) return
+    // Fire once: the exiting guard above means a second dismiss(id) for the
+    // same toast short-circuits here.
+    toast.onDismiss?.()
     commitToasts(toastsRef.current.map((t) => (t.id === id ? { ...t, exiting: true } : t)))
     const removal = setTimeout(() => removeNow(id), TOAST_EXIT_MS)
     removalTimersRef.current.set(id, removal)
@@ -114,6 +116,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       const durationMs = opts?.durationMs ?? DEFAULT_DURATIONS[kind]
       const onClick = opts?.onClick
       const actionLabel = opts?.actionLabel
+      const onDismiss = opts?.onDismiss
       const active = toastsRef.current.filter((t) => !t.exiting)
       const overflow = Math.max(0, active.length + 1 - MAX_TOASTS)
       // Newest-first stack: the freshest toast is the FRONT of the array.
@@ -128,7 +131,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         }
       }
       commitToasts([
-        { id, kind, message, title, durationMs, onClick, actionLabel },
+        { id, kind, message, title, durationMs, onClick, actionLabel, onDismiss },
         ...toastsRef.current.map((t) => (evictedIds.has(t.id) ? { ...t, exiting: true } : t)),
       ])
       for (const droppedId of evictedIds) {

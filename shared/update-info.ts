@@ -315,3 +315,38 @@ export interface PublishedVersions {
   disabled?: boolean
 }
 
+// ── Release notes (What's New dialog) ──────────────────────────────
+//
+// Returned by GET /api/release-notes. Separate from UpdateInfo because the
+// notes come from GitHub Releases (a different source than the npm dist-tag
+// probe) and are only fetched when the user opens the What's New dialog.
+
+/** One GitHub release narrowed to the fields the dialog renders. */
+export interface ReleaseNote {
+  /** tag_name with any leading `v` stripped, e.g. `0.8.0`. */
+  version: string
+  /** The release title (`name`); may be empty. */
+  name: string
+  /** Release body markdown, verbatim. */
+  body: string
+  /** ISO-8601 publish timestamp. */
+  publishedAt: string
+  /** Browser URL of the release page. */
+  url: string
+}
+
+export interface ReleaseNotesResult {
+  /** The exclusive lower bound the caller asked for (running version). */
+  from: string
+  /** The inclusive upper bound (the offered latest version). */
+  to: string
+  /** Releases with version in `(from, to]`, DESC by semver. Empty on
+   *  error — see `error`. Never throws to the caller. */
+  releases: ReleaseNote[]
+  /** Human-readable failure reason (GitHub unreachable / rate-limited /
+   *  no repo slug). Absent on success. */
+  error?: string
+  /** ms epoch of the successful fetch this result came from. */
+  checkedAt?: number
+}
+

@@ -39,6 +39,8 @@ import { HttpError } from '../errors.js'
 import { createLogger } from '../log.js'
 import { getClaudeHealth } from './health-routes.js'
 import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info.js'
+import { parseSemver } from '../../shared/update-info.js'
+import { getReleaseNotes } from '../release-notes.js'
 
 const log = createLogger('update')
 
@@ -146,6 +148,20 @@ export function buildUpdateRouter(claudeBinary?: string): Hono {
     // first open is acceptable.
     await checkForVersions()
     return c.json(getCachedVersions()!)
+  })
+
+  // What's New release notes for the (from, to] version range. On-demand
+  // (only fetched when the user opens the update dialog), so it has its own
+  // cache in release-notes.ts. Failures resolve to `{ releases: [], error }`
+  // — the dialog degrades to a version-only view; this route never 5xxs on
+  // a GitHub hiccup.
+  app.get('/release-notes', async (c) => {
+    const from = c.req.query('from') ?? ''
+    const to = c.req.query('to') ?? ''
+    if (!parseSemver(from) || !parseSemver(to)) {
+      throw new HttpError(400, 'from and to must be semver version strings')
+    }
+    return c.json(await getReleaseNotes(from, to))
   })
 
   app.post('/update', async (c) => {

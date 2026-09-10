@@ -458,3 +458,64 @@ describe('GET /api/update-info?registry= override', () => {
     vi.unstubAllGlobals()
   })
 })
+
+describe('GET /api/release-notes', () => {
+  beforeEach(() => {
+    __resetUpdateCheckerForTests()
+    __setConfigForTest({ updateCheckRegistry: TEST_REGISTRY })
+  })
+
+  it('400s when from/to are missing or not semver', async () => {
+    const app = makeApp()
+    for (const qs of ['', '?from=x&to=0.8.0', '?from=0.7.0&to=y', '?from=0.7.0']) {
+      const res = await app.request(`/release-notes${qs}`)
+      expect(res.status).toBe(400)
+    }
+  })
+
+  it('returns releases for a valid range', async () => {
+    const { __resetReleaseNotesForTests } = await import('../release-notes.js')
+    __resetReleaseNotesForTests()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify([
+            {
+              tag_name: 'v0.8.0',
+              name: '0.8.0',
+              body: 'notes',
+              published_at: '2026-09-10T00:00:00Z',
+              html_url: 'https://github.com/LoopGe/claude-react-web/releases/tag/v0.8.0',
+              draft: false,
+              prerelease: false,
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    )
+    const res = await makeApp().request('/release-notes?from=0.7.0&to=0.8.0')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { releases: Array<{ version: string }> }
+    expect(body.releases).toHaveLength(1)
+    expect(body.releases[0].version).toBe('0.8.0')
+    vi.unstubAllGlobals()
+  })
+
+  it('short-circuits with an error when update checks are disabled', async () => {
+    __setConfigForTest({ updateCheckRegistry: '' })
+    const { __resetReleaseNotesForTests } = await import('../release-notes.js')
+    __resetReleaseNotesForTests()
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const res = await makeApp().request('/release-notes?from=0.7.0&to=0.8.0')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { releases: unknown[]; error?: string }
+    expect(body.releases).toEqual([])
+    expect(body.error).toMatch(/not configured/i)
+    expect(fetchSpy).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+    __setConfigForTest({ updateCheckRegistry: TEST_REGISTRY })
+  })
+})
