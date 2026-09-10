@@ -207,12 +207,28 @@
   padding-top: 7px;
   padding-bottom: 14px;
 }
-.chat-streaming-region {
+/* Bottom overlay stack — the live streaming bubble and the task cards (passed
+   into MessageList as `bottomOverlay`) share one bottom-anchored layer, so
+   settled messages scroll behind both and are visible through the cards'
+   frosted background. MessageList measures this element and reserves its
+   height via the Virtuoso Footer spacer (.virtuoso-bottom-spacer), so nothing
+   stays permanently hidden behind it. `pointer-events: none` lets clicks fall
+   through the stack's empty area; the cards re-enable it for themselves (see
+   .todo-panel / .monitor-bar in messages.css). */
+.chat-bottom-stack {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 2;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+/* Anchoring now lives on .chat-bottom-stack, so this is a plain flex child.
+   It keeps pointer-events: none so the live bubble never blocks clicks on the
+   messages behind it. */
+.chat-streaming-region {
   overflow: hidden;
   pointer-events: none;
   animation: streaming-region-in var(--motion-duration-base) var(--motion-ease-enter) both;

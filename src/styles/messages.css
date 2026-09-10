@@ -1611,23 +1611,18 @@
   margin: 0;
 }
 
-/* TodoChecklist — floating card sitting between the transcript and the
-   composer (in-flow, not an overlay — see the note on .todo-panel). */
+/* TodoChecklist — bottom member of the transcript's overlay stack
+   (see .chat-bottom-stack in chat.css). */
 .todo-panel {
-  /* Floating card, mirroring .recap-window (rounded, bordered, gapped on all
-     sides). The panel is an in-flow flex item of .chat that sits between the
-     transcript and the composer — NOT an overlay, so `position: sticky` is
-     inert here (.chat doesn't scroll) and the gaps come from `margin` rather
-     than absolute positioning. `--chat-reading-inset` keeps the card edges
-     aligned with the transcript's 900px reading column. The accent identity
-     now lives in the title color alone (the old full-bleed top border would
-     read as a bar edge, not a card edge). */
-  /* Sits flush against the transcript above (a top gap read as a dead strip
-     the scrolled messages vanished into) and gapped below to clear the
-     full-bleed top border of the WorkingBubble / composer group beneath. */
-  position: sticky;
-  top: 0;
-  z-index: 3;
+  /* Card shell mirroring .recap-window: rounded, bordered, frosted. It no
+     longer positions itself — .chat-bottom-stack owns the anchoring — and it
+     re-enables pointer-events, which the stack turns off so clicks fall
+     through its empty area. `--chat-reading-inset` keeps the card edges
+     aligned with the transcript's 900px reading column; the 8px bottom margin
+     is the gap to the stack's next member (and, for the last one, to the
+     WorkingBubble / composer group beneath the stack). The accent identity
+     lives in the title color alone. */
+  pointer-events: auto;
   margin: 0 var(--chat-reading-inset) 8px;
   border-radius: var(--radius-xl);
   border: 1px solid var(--border);
@@ -1638,12 +1633,12 @@
   overflow: hidden;
   padding: 10px 14px;
   font-size: 13px;
-  /* One-shot entrance when the panel mounts (a visible task list appears at
-     turn start). Plays per insertion only — the panel is a single non-
-     virtualized sticky element, so there is no scroll-back remount to worry
-     about. Transform/opacity only: sticky positioning is unaffected and no
-     layout-height reflow is triggered. The shift is UPWARD (negative Y) so the
-     panel slides down into its final spot without growing scrollHeight. */
+  /* One-shot entrance when the card mounts (a visible task list appears at
+     turn start). Plays per insertion only — the card is a single non-
+     virtualized element, so there is no scroll-back remount to worry about.
+     Transform/opacity only, so no layout-height reflow is triggered. The
+     shift is UPWARD (negative Y) so the card slides down into its final spot
+     without growing scrollHeight. */
   animation: todo-panel-in var(--motion-duration-moderate) var(--motion-ease-enter);
 }
 @keyframes todo-panel-in {
@@ -1939,14 +1934,13 @@
 }
 
 /* Monitor bar — surfaces currently-running Monitor background tasks. Shares
-   the visual vocabulary of .todo-panel (floating card, count chip, pulsing
-   icon) but uses --warn for the accent so it reads as distinct from the
-   Checklist. Kept in lockstep with .todo-panel's card shell (see the note
-   there) so the two read as one family when both are on screen. */
+   the visual vocabulary of .todo-panel (a card in the transcript's bottom
+   overlay stack, count chip, pulsing icon) but uses --warn for the accent so
+   it reads as distinct from the Checklist. Kept in lockstep with
+   .todo-panel's shell (see the note there) so the two read as one family when
+   both are on screen. */
 .monitor-bar {
-  position: sticky;
-  top: 0;
-  z-index: 3;
+  pointer-events: auto;
   margin: 0 var(--chat-reading-inset) 8px;
   border-radius: var(--radius-xl);
   border: 1px solid var(--border);
