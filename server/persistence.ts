@@ -121,6 +121,10 @@ export interface SessionMeta {
   /** Per-session override for idle auto-recap. Undefined = inherit the
    *  global config default. Persisted so the override survives reload. */
   autoRecap?: boolean
+  /** User intent: per-session CLI debug logging. undefined = inherit the
+   *  global config default. Persisted so resume/fork/restart keep the intent.
+   *  Spawn-time only — takes effect on the next spawn. */
+  cliDebug?: boolean
   /** Per-session override for the first-party `apptools` git MCP server.
    *  Undefined = inherit the global config default. Persisted so the
    *  override survives reload. */
@@ -254,6 +258,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       : undefined,
     showPinnedUserMessage: typeof r.showPinnedUserMessage === 'boolean' ? r.showPinnedUserMessage : undefined,
     autoRecap: typeof r.autoRecap === 'boolean' ? r.autoRecap : undefined,
+    cliDebug: typeof r.cliDebug === 'boolean' ? r.cliDebug : undefined,
     appToolsGit: typeof r.appToolsGit === 'boolean' ? r.appToolsGit : undefined,
     firstPartyTools: (() => {
       const v = r.firstPartyTools

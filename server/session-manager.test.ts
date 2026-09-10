@@ -306,6 +306,7 @@ const tick = () => new Promise((r) => setImmediate(r))
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
 import { SessionManager, resolveConfiguredModel } from './session-manager.js'
+import type { Session } from './session-types.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
 import type { AgentDefinitionStore } from './agent-definition-store.js'
@@ -5259,5 +5260,47 @@ describe('create() validates modelGroupId against the effective profile', () => 
       profileId: 'B',
       modelGroupId: 'nonexistent',
     } as Parameters<SessionManager['create']>[0])).toThrow('model group nonexistent not found')
+  })
+})
+
+describe('cliDebug resolution', () => {
+  it('resolves the effective cliDebug as session override ?? global default', () => {
+    // defaultConfig.cliDebug = false (the DEFAULTS default)
+    const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
+    const sess = { cliDebug: undefined } as Session
+    // No override → false (global default)
+    expect((smLocal as unknown as { resolveCliDebug(s: Session): boolean }).resolveCliDebug(sess)).toBe(false)
+    // Explicit session override → true
+    sess.cliDebug = true
+    expect((smLocal as unknown as { resolveCliDebug(s: Session): boolean }).resolveCliDebug(sess)).toBe(true)
+    // Explicit false override
+    sess.cliDebug = false
+    expect((smLocal as unknown as { resolveCliDebug(s: Session): boolean }).resolveCliDebug(sess)).toBe(false)
+  })
+})
+
+describe('cliDebug persistence', () => {
+  it('writeStore round-trips cliDebug', () => {
+    const dir = makeTmpDir()
+    const store = new SessionStore({ stateDir: dir })
+    const smLocal = new SessionManager({ store })
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    // Initially undefined (session-level default)
+    expect(store.get(info.id)?.cliDebug).toBeUndefined()
+    // Directly mutate the live session's cliDebug to simulate what the
+    // PUT route (Task 5) will do, then trigger a persist.
+    const session = (smLocal as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)
+    expect(session).toBeDefined()
+    session!.cliDebug = true
+    // Trigger a writeStore by updating lastActivityAt (smallest mutation that
+    // calls persist, which calls writeStore).
+    smLocal.broadcastGitStatusChanged(info.id)
+    // The store should now reflect the override.
+    // Note: broadcastGitStatusChanged doesn't call writeStore directly;
+    // we need to poke persist. The simplest path: call the public info() which
+    // triggers a broadcastGlobal that itself doesn't write. Instead, directly
+    // invoke the private writeStore through the test cast.
+    ;(smLocal as unknown as { writeStore(s: Session): void }).writeStore(session!)
+    expect(store.get(info.id)?.cliDebug).toBe(true)
   })
 })

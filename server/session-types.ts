@@ -542,6 +542,9 @@ export interface Session {
    *  global config default; a boolean pins it. Persisted via SessionMeta
    *  and mirrored into SessionInfo. Pure UI pref — no SDK call. */
   autoRecap?: boolean
+  /** User intent: per-session CLI debug logging. undefined = inherit the
+   *  global config default. Persisted so resume/fork/restart keep the intent. */
+  cliDebug?: boolean
   /** Per-session override for the first-party `apptools` git MCP server.
    *  Undefined = inherit the global config default; a boolean pins it.
    *  Persisted via SessionMeta and mirrored into SessionInfo. Read at
