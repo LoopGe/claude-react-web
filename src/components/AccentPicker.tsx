@@ -19,7 +19,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CSSProperties } from 'react'
-import { ACCENT_COLORS, isPresetAccent } from '../theme'
+import { ACCENT_COLORS, isPresetAccent, markPortaledSurface } from '../theme'
 import { useRecentColors } from '../hooks/useRecentColors'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 
@@ -200,6 +200,16 @@ export function AccentPickerPanel({
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
+    // The wallpaper fill remap has to be re-declared for this <body> child:
+    // the swatch rows and the custom-colour field inside read --bg-elev*, so
+    // without the marker they stay opaque over an active background.
+    //
+    // No owner is stamped (data-portaled=""): this panel is shared between the
+    // app-level picker and the per-session one (SessionList), and the swatches
+    // paint from --swatch/--fg — never --accent — so there is none to carry.
+    // If the popover ever reads --accent, thread the session owner through
+    // here, or per-session picks will resolve against the global accent.
+    markPortaledSurface(el)
     const rect = el.getBoundingClientRect()
     const vw = window.innerWidth
     const vh = window.innerHeight

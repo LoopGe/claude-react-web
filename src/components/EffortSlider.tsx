@@ -14,6 +14,7 @@ import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import { usePopoverMotion } from '../utils/transitions'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { markPortaledSurface } from '../theme'
 import type { EffortLevel } from '../types'
 
 interface Props {
@@ -60,6 +61,11 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
+    // No accent to carry (the slider reads --accent but never a per-session
+    // one), but the wallpaper fill remap must still reach this <body> child —
+    // otherwise its own --bg-elev fill, the track (--bg-elev-2) and the opacity
+    // targets inside stay opaque over an active background.
+    markPortaledSurface(el)
     const rect = el.getBoundingClientRect()
     const vw = window.innerWidth
     const vh = window.innerHeight

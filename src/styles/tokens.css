@@ -1212,4 +1212,17 @@ button { cursor: pointer; }
   --msg-tool-result-bg-solid: var(--msg-tool-result-bg);
   --msg-system-bg-solid: var(--msg-system-bg);
   --msg-error-bg-solid: var(--msg-error-bg);
+  /* Interaction-state fills. A hover tint is a fixed hex per theme/skin, so
+     nothing else makes it track the Content slider — but the surfaces painting
+     with it sit INSIDE the chrome (a hovered button, a drag target), and
+     without an opaque alias to mix against they stayed solid blocks over the
+     wallpaper.
+     DELIBERATELY NOT the --msg-user-* bubble trio, even though those are also
+     frozen at :root: .chat-panel re-declares them against its own --accent
+     (layout.css), and the remap would SHADOW that re-declaration and pin user
+     bubbles to the global accent. They already follow the slider through
+     --bg, which the panel remap turns translucent. */
+  --btn-hover-bg-solid: var(--btn-hover-bg);
+  --btn-hover-border-solid: var(--btn-hover-border);
+  --drag-over-bg-solid: var(--drag-over-bg);
 }

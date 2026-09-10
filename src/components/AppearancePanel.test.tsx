@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { AppearancePanel } from './AppearancePanel'
+import { expectPortaledToBody } from './portal-test-utils'
 import type { BackgroundSetting } from '../theme'
 
 const noBg: BackgroundSetting = { pref: { kind: 'none' }, opacity: 0.85 }
@@ -45,5 +46,14 @@ describe('AppearancePanel background section', () => {
       expect(screen.queryByText('Background')).toBeNull()
       unmount()
     }
+  })
+
+  it('portals to <body> and stamps the marker so the wallpaper remap reaches the panel', async () => {
+    // The panel's own fill is the fixed --glass-surface-bg frost, but the skin
+    // cards, accent rows and inputs inside read --bg-elev*, so without the
+    // marker they stay opaque while the rest of the chrome dims.
+    const { container } = renderPanel('default')
+    await openPanel()
+    expectPortaledToBody(container, '.appearance-panel')
   })
 })

@@ -16,7 +16,7 @@ import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
 import type { Skin, Theme } from '../utils/theme'
 import { isBackgroundLocked } from '../utils/theme'
-import { ACCENT_COLORS } from '../theme'
+import { ACCENT_COLORS, markPortaledSurface } from '../theme'
 import type { BackgroundSetting } from '../theme'
 import { AccentSwatchGrid } from './AccentPicker'
 import { BackgroundPicker } from './BackgroundPicker'
@@ -96,6 +96,11 @@ function AppearancePopover({
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
+    // App-level surface (no per-session accent to carry), but the wallpaper
+    // fill remap must be re-declared for this <body> child — the skin cards,
+    // accent/skill rows and inputs inside read --bg-elev* and would otherwise
+    // sit opaque while the panel behind them dims.
+    markPortaledSurface(el)
     const rect = el.getBoundingClientRect()
     const vw = window.innerWidth
     const vh = window.innerHeight

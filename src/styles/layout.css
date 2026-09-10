@@ -1524,12 +1524,15 @@ body.resizing-col .app {
      attribute stamped by whoever performs the portal (see PORTAL_MARKER in
      src/theme.ts). Deliberately a marker rather than a roster of class names: a
      surface gets the compensation by portalling, not by being listed here.
-     KNOWN GAP, stated rather than implied: three surfaces that portal on their
-     own — .effort-slider, .appearance-panel, .accent-popover — predate the
-     marker and never stamp it, so they keep opaque fills under a wallpaper
-     today. Making them follow the Content slider is a deliberate visual change
-     for surfaces nobody has reported, so it is not swept in here; add
-     `markPortaledSurface` at those three call sites if it should change.
+     The three surfaces that portal on their own — .effort-slider,
+     .appearance-panel, .accent-popover — used to predate the marker and keep
+     opaque fills under a wallpaper today; they now stamp it too (EffortSlider /
+     AccentPicker / AppearancePanel each call `markPortaledSurface`). Note that
+     .effort-slider is NOT a glass surface: its own fill is `var(--bg-elev)`, so
+     stamping the marker makes the whole slider — panel, track, thumb outline —
+     follow the Content slider. The other two DO paint from --glass-surface-bg,
+     so only their inherited interior (swatch/skin rows, inputs) follows; that is
+     the same fixed-frost contract every floating glass surface has.
      What the re-declaration actually buys was measured, not assumed: a portalled
      surface's own base fill reads --glass-surface-bg, which <html> had already
      resolved against the root token, so that fill tracked the Content slider
@@ -1572,6 +1575,18 @@ body.resizing-col .app {
     --msg-tool-result-bg: color-mix(in srgb, var(--msg-tool-result-bg-solid) var(--app-surface-alpha), transparent);
     --msg-system-bg: color-mix(in srgb, var(--msg-system-bg-solid) var(--app-surface-alpha), transparent);
     --msg-error-bg: color-mix(in srgb, var(--msg-error-bg-solid) var(--app-surface-alpha), transparent);
+    /* Interaction-state fills. Their source is a fixed hex, so unlike the fills
+       above nothing else would make them track the slider — without these a
+       hovered button or a drag target stayed a solid block over the wallpaper.
+       DELIBERATELY NOT the --msg-user-* bubble tokens, even though they read as
+       opaque too: this rule's specificity (0,2,1) beats .chat-panel's own
+       accent-derived re-declaration of them (0,1,0, ~line 277), so listing them
+       here would replace the per-session accent with the GLOBAL one frozen into
+       --msg-user-*-solid at :root. The bubble already follows the slider via
+       --bg, which the rule above makes translucent. */
+    --btn-hover-bg: color-mix(in srgb, var(--btn-hover-bg-solid) var(--app-surface-alpha), transparent);
+    --btn-hover-border: color-mix(in srgb, var(--btn-hover-border-solid) var(--app-surface-alpha), transparent);
+    --drag-over-bg: color-mix(in srgb, var(--drag-over-bg-solid) var(--app-surface-alpha), transparent);
   }
 
   body.has-bg .sidebar,
