@@ -1293,6 +1293,23 @@ describe('applyTaskEvent', () => {
     })
   })
 
+  it('normalizes the frame task_type onto the friendly label the UI matches on', () => {
+    // The frames say local_bash / local_agent / local_workflow; TasksPanel's
+    // TypeIcon matches shell / subagent / workflow. Records used to carry
+    // whichever spelling their creating writer happened to use, so the same
+    // kind of task rendered differently depending on who created it first.
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'bash', task_type: 'local_bash', receivedAt: 1 }))
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'agent', task_type: 'local_agent', receivedAt: 2 }))
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'wf', task_type: 'local_workflow', receivedAt: 3 }))
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'odd', task_type: 'brand_new_kind', receivedAt: 4 }))
+    expect(session.tasks.get('bash')?.taskType).toBe('shell')
+    expect(session.tasks.get('agent')?.taskType).toBe('subagent')
+    expect(session.tasks.get('wf')?.taskType).toBe('workflow')
+    // Unknown discriminants survive rather than being dropped.
+    expect(session.tasks.get('odd')?.taskType).toBe('brand_new_kind')
+  })
+
   it('task_started keeps ambient undefined when the frame omits it (older CLIs)', () => {
     const { session } = makeTaskSession()
     applyTaskEvent(session, sysFrame('task_started', {
@@ -1522,6 +1539,22 @@ describe('applyBackgroundTasksChanged', () => {
       tasks: [{ task_id: 'x', task_type: 'shell', description: 'late desc' }],
     }))
     expect(session.tasks.get('x')).toMatchObject({ description: 'late desc', taskType: 'shell', status: 'running' })
+  })
+
+  it('normalizes task_type on both the seed and the back-fill path', () => {
+    // The level frame uses the same local_* vocabulary as the edge frames
+    // (probe-verified), so both writers here must fold it too — otherwise a
+    // record's icon depends on which frame created it.
+    const { session } = makeTaskSession()
+    session.tasks.set('has-none', { taskId: 'has-none', description: 'x', status: 'running', updatedAt: 1 })
+    applyBackgroundTasksChanged(session, sysFrame('background_tasks_changed', {
+      tasks: [
+        { task_id: 'seeded', task_type: 'local_bash', description: 'sleep 40' },
+        { task_id: 'has-none', task_type: 'local_agent', description: 'x' },
+      ],
+    }))
+    expect(session.tasks.get('seeded')?.taskType).toBe('shell')
+    expect(session.tasks.get('has-none')?.taskType).toBe('subagent')
   })
 
   it('ignores non-system frames, other subtypes, and malformed tasks arrays', () => {

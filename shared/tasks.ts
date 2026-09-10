@@ -37,6 +37,34 @@ export function isTerminalTaskStatus(status: string): boolean {
   return (TERMINAL_TASK_STATUSES as readonly string[]).includes(status)
 }
 
+/** The CLI names a task's kind twice, differently: the `task_*` frames and
+ *  `background_tasks_changed` carry the internal discriminant (`local_bash`,
+ *  `local_agent`, `local_workflow`), while `BackgroundTaskSummary.type` (the
+ *  Stop-hook payload) carries the friendly label (`shell`, `subagent`,
+ *  `monitor`, `workflow`). The UI is written against the friendly label —
+ *  TasksPanel's TypeIcon matches 'shell' / 'subagent' / 'workflow' — so a
+ *  record created from a frame used to fall through to the generic icon while
+ *  an otherwise identical record created by the watcher seed (which writes
+ *  'subagent') got the right one. Same task, different meta text, depending on
+ *  which writer happened to create it first.
+ *
+ *  This is the single place that fold: every writer into `session.tasks` runs
+ *  `task_type` through it, so `TaskRecordUi.taskType` is always the friendly
+ *  vocabulary. Unknown values pass through unchanged, mirroring the SDK's own
+ *  documented behaviour for `BackgroundTaskSummary.type` ("falls back to the
+ *  raw discriminant for unknown types") — add a mapping here when a new
+ *  discriminant shows up rather than teaching the UI a second vocabulary. */
+const TASK_TYPE_ALIASES: Record<string, string> = {
+  local_bash: 'shell',
+  local_agent: 'subagent',
+  local_workflow: 'workflow',
+}
+
+export function normalizeTaskType(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === '') return undefined
+  return TASK_TYPE_ALIASES[raw] ?? raw
+}
+
 /** A task as tracked by the server and rendered by the client (TasksPanel,
  *  subagent chip enrichment). All optional fields are read defensively from
  *  the SDK frames — the wire shape can evolve without a protocol bump. */
@@ -47,7 +75,10 @@ export interface TaskRecordUi {
   toolUseId?: string
   description: string
   subagentType?: string
-  /** 'shell' | 'subagent' | 'monitor' | 'workflow' (from task_started). */
+  /** 'shell' | 'subagent' | 'monitor' | 'workflow' — the friendly label, always
+   *  normalized on write (see normalizeTaskType) even though the `task_*`
+   *  frames spell it `local_bash` / `local_agent` / `local_workflow`. An
+   *  unrecognised discriminant passes through as-is. */
   taskType?: string
   workflowName?: string
   status: TaskStatus

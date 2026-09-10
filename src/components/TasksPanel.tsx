@@ -44,6 +44,12 @@ function StatusIcon({ status }: { status: TaskRecordUi['status'] }) {
   return <IconAlertCircle size={14} className="tasks-icon-err" aria-hidden />
 }
 
+/** Icon for a task's kind. Matches the FRIENDLY vocabulary ('shell' /
+ *  'subagent' / 'monitor' / 'workflow'), which is the canonical one: the CLI's
+ *  frames spell it `local_bash` / `local_agent` / `local_workflow` and every
+ *  writer into `session.tasks` folds that on the way in (see normalizeTaskType
+ *  in shared/tasks.ts). Add a mapping there, not a branch here, when a new
+ *  discriminant appears. */
 function TypeIcon({ task }: { task: TaskRecordUi }) {
   if (task.taskType === 'workflow') return <IconWorkflow size={13} aria-hidden />
   if (task.taskType === 'subagent' || task.subagentType) return <IconBot size={13} aria-hidden />

@@ -23,7 +23,7 @@ const LAUNCH_ACK_RE = /^async agent launched successfully/i
 import { createLogger } from './log.js'
 import type { HookRunRecord, HookRuntimeEvent, HookRunStatus } from '../shared/hooks.js'
 import type { CliNotification } from '../shared/ws-protocol.js'
-import { isTerminalTaskStatus } from '../shared/tasks.js'
+import { isTerminalTaskStatus, normalizeTaskType } from '../shared/tasks.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 
 const MAX_HOOK_OUTPUT_CHARS = 20_000
@@ -213,7 +213,10 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
       toolUseId: str(raw.tool_use_id) ?? existing?.toolUseId,
       description: str(raw.description) ?? existing?.description ?? '',
       subagentType: str(raw.subagent_type) ?? existing?.subagentType,
-      taskType: str(raw.task_type) ?? existing?.taskType,
+      // Frames carry the internal discriminant (local_bash / local_agent /
+      // local_workflow); the record always holds the friendly label the UI
+      // matches on. See normalizeTaskType.
+      taskType: normalizeTaskType(str(raw.task_type)) ?? existing?.taskType,
       workflowName: str(raw.workflow_name) ?? existing?.workflowName,
       status: 'running',
       skipTranscript: raw.skip_transcript === true ? true : existing?.skipTranscript,
@@ -333,7 +336,7 @@ export function applyBackgroundTasksChanged(session: Session, msg: SDKMessage): 
     if (existing) {
       const next = { ...existing }
       if (!next.description && typeof t.description === 'string') next.description = t.description
-      if (!next.taskType && typeof t.task_type === 'string') next.taskType = t.task_type
+      if (!next.taskType && typeof t.task_type === 'string') next.taskType = normalizeTaskType(t.task_type)
       if (t.ambient === true) next.ambient = true
       next.updatedAt = now
       session.tasks.set(taskId, next)
@@ -341,7 +344,7 @@ export function applyBackgroundTasksChanged(session: Session, msg: SDKMessage): 
       session.tasks.set(taskId, {
         taskId,
         description: typeof t.description === 'string' ? t.description : '',
-        taskType: typeof t.task_type === 'string' ? t.task_type : undefined,
+        taskType: typeof t.task_type === 'string' ? normalizeTaskType(t.task_type) : undefined,
         ambient: t.ambient === true,
         isBackgrounded: true,
         status: 'running',
