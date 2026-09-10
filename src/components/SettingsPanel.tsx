@@ -26,6 +26,7 @@ import { useExitPresence } from '../hooks/useExitPresence'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { HooksPanel } from './HooksPanel'
 import { UsagePanel } from './UsagePanel'
+import { DiagnosticsPanel } from './DiagnosticsPanel'
 import { SessionProfileSelect } from './SessionProfileSelect'
 import { Overlay } from './Overlay'
 import { AgentDefinitionsSection } from './agent-definitions/AgentDefinitionsSection'
@@ -45,7 +46,7 @@ import { formatTokens, formatJson } from '../utils/format'
 import { pluginTagOf } from '../utils/text'
 import type { ContextUsage } from '../hooks/useChatStream'
 
-type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents' | 'tools'
+type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents' | 'tools' | 'diagnostics'
 
 interface Props {
   session: SessionInfo
@@ -842,6 +843,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     { key: 'usage', label: 'Usage' },
     { key: 'agents', label: 'Agents' },
     { key: 'tools', label: 'Tools' },
+    { key: 'diagnostics', label: 'Diagnostics' },
   ]
 
   const panelBodyRef = useRef<HTMLDivElement | null>(null)
@@ -1566,6 +1568,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
 
       {tab === 'tools' && (
         <ToolsTab sessionId={session.id} />
+      )}
+
+      {tab === 'diagnostics' && (
+        <DiagnosticsPanel sessionId={session.id} />
       )}
         </div>
       </div>

@@ -2954,3 +2954,16 @@ select.input {
   padding-right: 32px !important;
   cursor: pointer !important;
 }
+
+/* Diagnostics panel — stderr tail pre block */
+.diag-stderr {
+  background: var(--btn-hover-bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -19,6 +19,7 @@ import { useGitStatus } from '../hooks/useGitStatus'
 import { useChatStream } from '../hooks/useChatStream'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useDiagnostics } from '../hooks/useDiagnostics'
 import { shortenModel } from '../utils/session-status'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { AnimatePresence } from 'motion/react'
@@ -349,6 +350,7 @@ export const ChatPanel = memo(function ChatPanel({
   // Panel swap via drag is a multi-panel desktop affordance; mobile is
   // single-panel and touch can't HTML5-drag, so disable it there.
   const isMobile = useIsMobile()
+  const diagnostics = useDiagnostics(session.id)
   const [dropActive, setDropActive] = useState(false)
   /** Tracks the `generatedAt` of the recap the user has dismissed. When it
    *  matches the current session.recap.generatedAt, the floating window
@@ -1106,12 +1108,20 @@ export const ChatPanel = memo(function ChatPanel({
         </AnimatePresence>
         </div>
         {session.error && (
+          <>
           <Tooltip label={session.error}>
             <div className="chat-panel-error">
               <IconAlertTriangle size={12} style={{ marginRight: 4, flexShrink: 0 }} />
               {session.error}
             </div>
           </Tooltip>
+          {diagnostics.data?.stderrTail && diagnostics.data.stderrTail.length > 0 && (
+            <details className="chat-panel-stderr-details">
+              <summary>stderr</summary>
+              <pre className="diag-stderr">{diagnostics.data.stderrTail.slice(-30).join('\n')}</pre>
+            </details>
+          )}
+          </>
         )}
         {/* Second header row — secondary metadata. Muted colour, smaller
             font, skipped when there's literally nothing to show. */}
