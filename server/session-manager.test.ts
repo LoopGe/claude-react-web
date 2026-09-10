@@ -5292,14 +5292,6 @@ describe('cliDebug persistence', () => {
     const session = (smLocal as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)
     expect(session).toBeDefined()
     session!.cliDebug = true
-    // Trigger a writeStore by updating lastActivityAt (smallest mutation that
-    // calls persist, which calls writeStore).
-    smLocal.broadcastGitStatusChanged(info.id)
-    // The store should now reflect the override.
-    // Note: broadcastGitStatusChanged doesn't call writeStore directly;
-    // we need to poke persist. The simplest path: call the public info() which
-    // triggers a broadcastGlobal that itself doesn't write. Instead, directly
-    // invoke the private writeStore through the test cast.
     ;(smLocal as unknown as { writeStore(s: Session): void }).writeStore(session!)
     expect(store.get(info.id)?.cliDebug).toBe(true)
   })
