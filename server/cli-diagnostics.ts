@@ -30,12 +30,12 @@ export async function appendStderrLine(
   const entry = JSON.stringify({ ts: Date.now(), line })
   const lineLen = entry.length + 1
   const size = await statSize(file)
+  await fs.mkdir(join(file, '..'), { recursive: true }).catch(() => undefined)
   if (size > 0 && size + lineLen > MAX_STDERR_BYTES) {
     const raw = await fs.readFile(file, 'utf8').catch(() => '')
     const kept = raw.slice(Math.max(0, raw.length - KEEP_LAST_BYTES))
     await fs.writeFile(file, kept + entry + '\n', 'utf8')
   } else {
-    await fs.mkdir(join(file, '..'), { recursive: true }).catch(() => undefined)
     await fs.appendFile(file, entry + '\n', 'utf8')
   }
 }
