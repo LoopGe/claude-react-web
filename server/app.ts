@@ -22,7 +22,7 @@ import { buildAgentDefinitionsRouter } from './agent-definition-routes.js'
 import type { AgentDefinitionStore } from './agent-definition-store.js'
 import { buildUiStateRouter } from './routes/ui-state-routes.js'
 import { buildResetRouter } from './routes/reset.js'
-import { config as serverConfig } from './config.js'
+import { config as serverConfig, MAX_PASTED_IMAGE_BYTES } from './config.js'
 import { createLogger } from './log.js'
 import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
@@ -235,6 +235,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       modelGroups: serverConfig.modelGroups,
       maxGroupPanels: serverConfig.maxGroupPanels,
       maxUploadBytes: serverConfig.maxUploadBytes,
+      maxPastedImageBytes: MAX_PASTED_IMAGE_BYTES,
       showPinnedUserMessage: serverConfig.showPinnedUserMessage,
       autoRecap: serverConfig.autoRecap,
       toolGroupCards: serverConfig.toolGroupCards,

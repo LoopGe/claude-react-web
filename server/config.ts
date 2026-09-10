@@ -225,7 +225,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   defaultModel: 'anthropic/claude-sonnet-4-20250514',
   recapModel: 'claude-haiku-4-5-20251001',
   commitMessageModel: 'claude-haiku-4-5-20251001',
-  maxUploadBytes: 25 * 1024 * 1024,
+  maxUploadBytes: 500 * 1024 * 1024,
   historyCap: 500,
   subagentHistoryCap: 300,
   forwardSubagentText: true,
@@ -251,6 +251,12 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   profiles: Object.freeze([]),
   activeProfileId: 'default',
 })
+
+/** Hard cap on the total size of pasted images in one message. NOT a user
+ *  setting: those bytes ride the buffered JSON message body (base64, ~1.33x),
+ *  so this is a memory-safety limit, not a preference. The user-facing file
+ *  upload knob is `maxUploadBytes`. */
+export const MAX_PASTED_IMAGE_BYTES = 25 * 1024 * 1024
 
 /** Synthetic fallback profile derived from DEFAULTS. Used as the migration
  *  source, the coerce fallback, and resolveActiveProfile's last resort. */

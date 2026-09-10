@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatBytes } from '../utils/format'
 import { randomId } from '../utils/uuid'
-import { getMaxUploadBytes } from './config-store'
+import { getMaxPastedImageBytes } from './config-store'
 import type { PastedImage } from '../types'
 
 const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
@@ -65,7 +65,7 @@ export function usePastedImages(): UsePastedImages {
       return
     }
     const currentTotal = imagesRef.current.reduce((sum, i) => sum + i.size, 0)
-    const maxTotal = getMaxUploadBytes()
+    const maxTotal = getMaxPastedImageBytes()
     if (currentTotal + file.size > maxTotal) {
       setError(`Total image size too large. Max ${formatBytes(maxTotal)} across all images.`)
       return

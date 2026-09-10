@@ -585,7 +585,7 @@ function ServerTab({
         </div>
         <SettingsRow
           title="Max upload size"
-          hint="Largest pasted image or uploaded file accepted. 0 = no override (server default 25 MB)."
+          hint="Largest uploaded file accepted (backgrounds, session files). Pasted images are capped separately. 0 = no override (server default 500 MB)."
         >
           <Stepper
             ariaLabel="Max upload size, in megabytes"

@@ -11,3 +11,13 @@ export function getMaxUploadBytes(): number {
 export function setMaxUploadBytes(v: number): void {
   if (v > 0) _maxUploadBytes = v
 }
+
+let _maxPastedImageBytes = 25 * 1024 * 1024
+
+export function getMaxPastedImageBytes(): number {
+  return _maxPastedImageBytes
+}
+
+export function setMaxPastedImageBytes(v: number): void {
+  if (v > 0) _maxPastedImageBytes = v
+}
