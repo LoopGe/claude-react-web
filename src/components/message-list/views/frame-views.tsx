@@ -708,7 +708,7 @@ export function CompactSummary({ text }: { text: string }) {
   )
 }
 
-export const StreamingOverlaySpacer = memo(function StreamingOverlaySpacer({ height }: { height: number }) {
-  return <div className="virtuoso-streaming-spacer" style={{ height }} aria-hidden />
+export const BottomOverlaySpacer = memo(function BottomOverlaySpacer({ height }: { height: number }) {
+  return <div className="virtuoso-bottom-spacer" style={{ height }} aria-hidden />
 })
 

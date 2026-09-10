@@ -1754,6 +1754,28 @@ export const Chat = memo(function Chat({
     return onRegisterTurnActive?.(session.id, () => turnActiveRef.current)
   }, [session.id, onRegisterTurnActive])
 
+  // Stable identity for the transcript's bottom overlay. An inline fragment
+  // would be a NEW element on every Chat render — and Chat re-renders on every
+  // composer keystroke — failing MessageList's memo() shallow compare and
+  // re-rendering the whole virtualized transcript for nothing. Every other
+  // prop at that call site is referentially stable, so this was the only one
+  // that could break the memo.
+  const bottomOverlay = useMemo(
+    () => (
+      <>
+        <TodoChecklist
+          messages={stream.messages}
+          working={session.working}
+          skin={skin}
+          clearing={effectiveClearing}
+          sessionId={session.id}
+        />
+        <MonitorBar messages={stream.messages} clearing={effectiveClearing} />
+      </>
+    ),
+    [stream.messages, session.working, skin, effectiveClearing, session.id],
+  )
+
   return (
     <div className="chat">
       {exportMenuPos && (
@@ -1985,6 +2007,13 @@ export const Chat = memo(function Chat({
           onBackgroundTool={backgroundToolAction}
           toolGroupCards={effectiveToolGroupCards}
           showMessageHeaders={effectiveShowMessageHeaders}
+          // The task checklist + monitor bar are bottom OVERLAYS of the
+          // transcript, not siblings of it: rendering them here puts them in
+          // `.chat-bottom-stack`, so settled messages scroll behind their
+          // frosted backgrounds and their real height is reserved through
+          // MessageList's Footer spacer (never permanently hidden).
+          // `bottomOverlay` is memoized above — see the note there.
+          bottomOverlay={bottomOverlay}
         />
         </div>
         {discardConfirm && (
@@ -2094,9 +2123,6 @@ export const Chat = memo(function Chat({
         </ReopenQuestionProvider>
         </WorkflowProvider>
       </SubagentProvider>
-
-      <TodoChecklist messages={stream.messages} working={session.working} skin={skin} clearing={effectiveClearing} sessionId={session.id} />
-      <MonitorBar messages={stream.messages} clearing={effectiveClearing} />
 
       {/* Always-mounted live region ?see `.error-bar-empty` in styles.css.
           Keeping the region in the DOM (just visually hidden when empty)

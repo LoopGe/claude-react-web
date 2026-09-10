@@ -7,7 +7,7 @@
 // Filters out `stream_event` partials (the final assistant message
 // carries the complete content, so showing both just flickers).
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
@@ -30,7 +30,7 @@ import { ResultConsumedCtx } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed } from './message-list/rendering'
 import { MessageView } from './message-list/MessageView'
 import { ToolGroupCard } from './message-list/ToolGroupCard'
-import { StreamingOverlaySpacer } from './message-list/views/frame-views'
+import { BottomOverlaySpacer } from './message-list/views/frame-views'
 import {
   advanceRowAnchor,
   buildTranscriptRows,
@@ -86,6 +86,12 @@ interface Props {
    *  ~1.7s server teardown+respawn reads as an intentional transition
    *  instead of a frozen screen followed by a hard snap to empty. */
   clearing?: boolean
+  /** Bottom-anchored overlay content rendered *below* the live streaming
+   *  bubble inside `.chat-bottom-stack` (currently the task checklist and the
+   *  monitor bar). Lives here rather than in Chat so its measured height can
+   *  share the streaming region's spacer + re-pin machinery — one source of
+   *  truth for "how much room the bottom of the transcript must reserve". */
+  bottomOverlay?: React.ReactNode
   /** False while the initial replay from the server is still buffering.
    *  Gates the transcript reveal animation (the one-shot entrance fade on
    *  keyed messages) so it only fires once the replayed content has landed.
@@ -274,7 +280,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, showMessageHeaders = true, clearing, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -283,13 +289,18 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // Handed to the hook, which owns the scroller element and attaches it from
   // the same ref callback that captures it.
   const setOsScroller = useOverlayScrollbar({ autoHide: 'leave' })
-  const streamingRegionRef = useRef<HTMLDivElement | null>(null)
+  const bottomStackRef = useRef<HTMLDivElement | null>(null)
+  const bottomOverlayRef = useRef<HTMLDivElement | null>(null)
   // --- /clear blur ----------------------------------------------------
   // MessageList applies `.chat-messages-clearing` (see messagesClassName
   // below) while `clearing` is true — the view-only blur that signals a
   // clear in progress during the POST. There is no panel-level veil anymore;
   // the fresh session Y plays `.entering` on mount.
-  const [streamingOverlayHeight, setStreamingOverlayHeight] = useState(0)
+  const [bottomStackHeight, setBottomStackHeight] = useState(0)
+  /** Height of the cards alone (the `bottomOverlay` contents) — what the
+   *  jump-to-bottom button offsets by. Distinct from `bottomStackHeight`,
+   *  which also covers the live streaming bubble above them. */
+  const [bottomOverlayHeight, setBottomOverlayHeight] = useState(0)
   // Easter-egg: triple-clicking the empty-state sparkle swaps in a hidden
   // dino-style game. Local UI state only — no session/persistence concerns.
   const [gameOpen, setGameOpen] = useState(false)
@@ -321,7 +332,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       ? { source: liveStreamingContent, content: liveStreamingContent, exiting: false }
       : { source: null, content: streamingPresence.content, exiting: streamingPresence.content != null }
     : streamingPresence
-  const hasVisibleStreamingContent = nextStreamingPresence.content != null
 
   if (nextStreamingPresence !== streamingPresence) {
     setStreamingPresence(nextStreamingPresence)
@@ -552,7 +562,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
 
   // Scroll behaviour (L3) lives in `message-list/useTranscriptScroll.ts`:
   // bottom-follow gate, jump-to-bottom state, unseen badge, the rAF follow
-  // animation and the three re-pin backstops. `streamingOverlayHeight` stays
+  // animation and the three re-pin backstops. `bottomStackHeight` stays
   // here because it also drives the Footer spacer below.
   const {
     atBottom,
@@ -571,7 +581,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     itemCount: items.length,
     trackedCount,
     transcriptRevealKey,
-    streamingOverlayHeight,
+    bottomStackHeight,
     onVisibleTopChange: forwardVisibleTop,
   })
 
@@ -585,16 +595,22 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     if (virtIdx != null) seekToIndex(virtIdx, 'center')
   }, [searchActiveMsgIdx, itemToVirtIdx, seekToIndex])
 
-  useEffect(() => {
-    const el = streamingRegionRef.current
-    if (!el) {
-      setStreamingOverlayHeight(0)
-      return
-    }
+  // Measure the bottom overlay stack (live streaming bubble + task cards) and
+  // publish its committed height. The stack is ALWAYS mounted, so the observer
+  // attaches once and any child resize — a task appears, the card expands, the
+  // bubble grows — re-fires it, with no dependency on what is inside.
+  // useLayoutEffect, not useEffect: the Footer spacer is gated on the height
+  // being > 0, so measuring after paint would leave the first frame with no
+  // reserved room — the newest settled message would sit behind the cards for
+  // that frame. Both observed elements are rendered unconditionally, so a ref
+  // is always assigned by the time this runs.
+  useLayoutEffect(() => {
+    const el = bottomStackRef.current
+    if (!el) return
 
     const updateHeight = () => {
       const height = Math.ceil(el.getBoundingClientRect().height)
-      setStreamingOverlayHeight((prev) => (prev === height ? prev : height))
+      setBottomStackHeight((prev) => (prev === height ? prev : height))
     }
 
     updateHeight()
@@ -602,7 +618,27 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const ro = new ResizeObserver(updateHeight)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [hasVisibleStreamingContent])
+  }, [])
+
+  // Measured separately from the stack: the jump-to-bottom button must clear
+  // the CARDS, and the stack also contains the live streaming bubble, whose
+  // height churns every token — offsetting by the stack would make the pill
+  // bob during a turn and could push it off the top of the stage.
+  useLayoutEffect(() => {
+    const el = bottomOverlayRef.current
+    if (!el) return
+
+    const updateHeight = () => {
+      const height = Math.ceil(el.getBoundingClientRect().height)
+      setBottomOverlayHeight((prev) => (prev === height ? prev : height))
+    }
+
+    updateHeight()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(updateHeight)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // --- Scroll to previous / next user message ----------------------------
   // Data-array (0-based, Virtuoso `scrollToIndex` space) indices of every
@@ -907,8 +943,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     : 'chat-streaming-region'
 
   // Virtuoso Footer is reserved for transcript metadata and invisible bottom
-  // breathing room. The live streaming bubble is an overlay, so the spacer
-  // lets settled messages scroll underneath it instead of being obscured.
+  // breathing room. The bottom overlay stack (live streaming bubble + task
+  // cards) is an overlay, so the spacer lets settled messages scroll underneath
+  // it instead of being obscured.
   const virtuosoComponents = useMemo(() => {
     // The Header slot shows a "loading older history" affordance pinned to
     // the top. Only relevant for the main transcript (loadOlder provided).
@@ -921,13 +958,13 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     if (showOlderHeader) {
       components.Header = () => <OlderHistoryHeader loading={loadingOlder} />
     }
-    if (streamingOverlayHeight > 0) {
+    if (bottomStackHeight > 0) {
       components.Footer = () => (
-        <StreamingOverlaySpacer height={streamingOverlayHeight} />
+        <BottomOverlaySpacer height={bottomStackHeight} />
       )
     }
     return components
-  }, [streamingOverlayHeight, loadOlder, loadingOlder, hasOlder, renderableItems.length])
+  }, [bottomStackHeight, loadOlder, loadingOlder, hasOlder, renderableItems.length])
 
   // Fold the TaskCreate/TaskUpdate stream into a Map<taskId, TaskState> so
   // the inline TaskMutationView card can resolve a TaskUpdate's subject
@@ -1021,6 +1058,12 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         <button
           type="button"
           className="chat-jump-to-bottom"
+          // chat.css anchors this at `bottom: 16px`; ride above the CARDS. The
+          // offset uses the overlay's own height, NOT the stack's — the stack
+          // also holds the live bubble, whose height churns every token, which
+          // would make the pill bob and could push it off the stage. With no
+          // cards the offset is 0 and the anchor is unchanged.
+          style={{ bottom: 16 + bottomOverlayHeight }}
           onClick={jumpToBottom}
           aria-label={unseenCount > 0 ? `Scroll to latest: ${unseenCount} new message${unseenCount === 1 ? '' : 's'}` : 'Scroll to latest messages'}
         >
@@ -1028,15 +1071,21 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           {unseenCount > 0 && <span className="chat-jump-to-bottom-count" aria-hidden>{unseenCount}</span>}
         </button>
       )}
-      {visibleStreamingContent != null && (
-        <div
-          ref={streamingRegionRef}
-          className={streamingRegionClassName}
-          aria-hidden={nextStreamingPresence.exiting}
-        >
-          <StreamingFooter content={visibleStreamingContent} />
+      <div className="chat-bottom-stack" ref={bottomStackRef}>
+        {visibleStreamingContent != null && (
+          <div className="chat-streaming-clip">
+            <div
+              className={streamingRegionClassName}
+              aria-hidden={nextStreamingPresence.exiting}
+            >
+              <StreamingFooter content={visibleStreamingContent} />
+            </div>
+          </div>
+        )}
+        <div className="chat-bottom-overlay" ref={bottomOverlayRef}>
+          {bottomOverlay}
         </div>
-      )}
+      </div>
       </div>
     </div>
     </ResultConsumedCtx.Provider>

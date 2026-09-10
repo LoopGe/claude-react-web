@@ -263,22 +263,29 @@
    max-height cap), so it can shrink when the pinned-question header is
    also open; its body scrolls to absorb the overflow. */
 .recap-window {
+  /* The frosted card shell (radius / border / fill / blur / shadow) is shared
+     with the transcript's bottom-overlay cards — see the "Transcript cards"
+     group in glass.css. Only what differs lives here. */
   flex: 0 1 auto;
   min-height: 0;
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  border-radius: var(--radius-xl);
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 75%, transparent);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  box-shadow: var(--drawer-shadow);
-  overflow: hidden;
   /* Height is tweened via JS (RecapWindow useLayoutEffect) between explicit
      px values on content change; transition the property so the swap reads
      as a smooth grow/shrink instead of a snap. */
   transition: height var(--motion-duration-base) var(--motion-ease-standard);
+}
+/* Shared base for the two transcript overlay stacks: one absolutely-anchored
+   flex column whose empty area is click-through (each child re-enables
+   pointer-events for itself). Each stack adds its own anchor, cap and
+   z-index. */
+.chat-top-stack,
+.chat-bottom-stack {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
 }
 /* Top-anchored overlay stack hosting the recap window and the pinned
    "current question" header. Absolute positioning + the 45% max-height cap
@@ -287,16 +294,12 @@
    clicks pass through the stack's own empty area to the transcript beneath;
    each child re-enables pointer-events. */
 .chat-top-stack {
-  position: absolute;
   top: 8px;
   left: var(--chat-reading-inset);
   right: var(--chat-reading-inset);
   max-height: 45%;
   z-index: 4;
-  display: flex;
-  flex-direction: column;
   gap: 8px;
-  pointer-events: none;
 }
 /* Pinned "current question" header — single-line, click-to-jump-back. Sits
    beneath the recap when both are open (flex order = DOM order). */

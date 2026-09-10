@@ -79,8 +79,12 @@ export function AnimatedCollapse({
     // nothing stays clipped under `overflow-y: clip`.
     const content = contentRef.current
     if (content) {
+      // Same flex-clamp guard as the ResizeObserver below: don't treat the
+      // clamped height as the content's true height.
+      const specified = Number.parseFloat(body.style.height)
+      const clamped = Number.isFinite(specified) && body.getBoundingClientRect().height < specified - 1
       const trueHeight = content.getBoundingClientRect().height
-      if (trueHeight > 0 && Math.abs(trueHeight - height) > 1) {
+      if (!clamped && trueHeight > 0 && Math.abs(trueHeight - height) > 1) {
         lastHeightRef.current = trueHeight
         body.style.height = `${trueHeight}px`
       }
@@ -220,6 +224,13 @@ export function AnimatedCollapse({
       // box and is immune to the overflow-clip scrollHeight quirk.
       const nextHeight = content.getBoundingClientRect().height
       const currentHeight = body.getBoundingClientRect().height
+      // Flex-clamped by an ancestor (the transcript's bottom overlay stack caps
+      // its height): the rendered height is the space we were handed, not the
+      // content's natural height. Pinning to it would latch the panel small
+      // even after the constraint lifts, so bail — the clamp is layout, not
+      // content. Without a constrained ancestor this never triggers.
+      const specified = Number.parseFloat(body.style.height)
+      if (Number.isFinite(specified) && currentHeight < specified - 1) return
       if (Math.abs(nextHeight - currentHeight) < 1) return
       lastHeightRef.current = nextHeight
       if (animatingRef.current) {

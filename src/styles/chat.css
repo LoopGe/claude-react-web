@@ -19,7 +19,8 @@
     /* round() to a whole CSS pixel: the centered column is rendered through two
        different boxes — message rows live inside .chat-virtuoso-scroller (whose
        content box is inset by the scrollbar gutter, then shifted back by it) while
-       .chat-streaming-region is an absolutely-positioned full-width sibling. A
+       .chat-bottom-stack (which holds .chat-streaming-region) is an
+       absolutely-positioned full-width overlay. A
        fractional inset like 137.5px snaps in two steps on the row path
        (round(gutter)+round(inset-gutter)) vs one step on the streaming path
        (round(inset)), landing ~1px apart on non-integer-DPR displays. Quantizing
@@ -207,12 +208,49 @@
   padding-top: 7px;
   padding-bottom: 14px;
 }
-.chat-streaming-region {
-  position: absolute;
+/* Bottom overlay stack — the live streaming bubble and the task cards (passed
+   into MessageList as `bottomOverlay`) share one bottom-anchored layer, so
+   settled messages scroll behind both and are visible through the cards'
+   frosted background. MessageList measures this element and reserves its
+   height via the Virtuoso Footer spacer (.virtuoso-bottom-spacer), so nothing
+   stays permanently hidden behind it. `pointer-events: none` lets clicks fall
+   through the stack's empty area; the cards re-enable it for themselves (see
+   .todo-panel / .monitor-bar in messages.css). The absolute anchoring / flex
+   column / click-through base is shared with .chat-top-stack (overlays.css). */
+.chat-bottom-stack {
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 2;
+  /* THE height constraint for everything below the live-streaming text. The
+     stack can never eat the transcript: past 45% the cards shrink (column
+     flex + min-height:0 all the way to their scrolling lists) instead of the
+     spacer pushing every message out of view. Mirrors .chat-top-stack's cap. */
+  max-height: 45%;
+}
+/* Clips the streaming region's own entrance/exit translate. The old layout got
+   this for free — the region was absolutely positioned inside .chat-messages,
+   whose overflow:hidden cut the 14px slide — but as a flex child of the stack
+   the fading bubble would otherwise slide across the cards underneath it. */
+.chat-streaming-clip {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+/* The cards. Wrapped (and measured separately from the stack) so the
+   jump-to-bottom button can clear just the cards, not the transient live
+   bubble stacked above them. A flex column of its own so the cards' bottom
+   margins count toward the measured height instead of collapsing out. */
+.chat-bottom-overlay {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* The streaming region itself is a plain block inside .chat-streaming-clip. It
+   keeps pointer-events: none so the live bubble never blocks clicks on the
+   messages behind it. */
+.chat-streaming-region {
   overflow: hidden;
   pointer-events: none;
   animation: streaming-region-in var(--motion-duration-base) var(--motion-ease-enter) both;
@@ -239,7 +277,7 @@
 .streaming-footer-wrapper > .streaming-msg {
   pointer-events: auto;
 }
-.virtuoso-streaming-spacer {
+.virtuoso-bottom-spacer {
   flex: 0 0 auto;
   pointer-events: none;
 }

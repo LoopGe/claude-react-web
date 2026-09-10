@@ -54,6 +54,27 @@
   -webkit-backdrop-filter: var(--glass-blur-strong);
 }
 
+/* Transcript cards — the session recap and the two bottom-overlay cards
+   (task checklist + monitor bar). Same idea as the group above, but a
+   deliberately WEAKER recipe: these sit INSIDE the transcript rather than
+   over the whole app, so they take the plain --glass-blur (not the strong
+   one), the ordinary border, and the drawer elevation instead of a modal
+   shadow. Defining it once keeps the three in sync — they are read side by
+   side, so a radius/blur/shadow tweak landing on only some of them is
+   immediately visible. Per-surface rules keep only what differs (padding,
+   flex role, animation). */
+.recap-window,
+.todo-panel,
+.monitor-bar {
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border);
+  background-color: var(--glass-surface-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--drawer-shadow);
+  overflow: hidden;
+}
+
 /* Chain the edge-highlight onto each surface's existing elevation
    shadow. Spelled out per-surface so we never drop the original
    --xxx-shadow token (modal vs card vs toast vs tooltip vs overlay). */
@@ -105,7 +126,10 @@
   .accent-popover,
   .appearance-panel,
   .tt-bubble,
-  .toast {
+  .toast,
+  .recap-window,
+  .todo-panel,
+  .monitor-bar {
     background-color: var(--bg-elev);
     border-color: var(--border);
   }

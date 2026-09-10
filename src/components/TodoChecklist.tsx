@@ -1,6 +1,9 @@
-// Sticky floating checklist that surfaces the current task list from the
-// message stream. Rendered at the top of the chat area so users can see the
-// current task list without scrolling through the transcript.
+// Floating checklist that surfaces the current task list from the message
+// stream. Rendered as the bottom member of the transcript's overlay stack
+// (.chat-bottom-stack, alongside the live streaming bubble), so settled
+// messages scroll behind it and show through its frosted background.
+// MessageList measures the stack and reserves its height, so the newest
+// message can always be scrolled clear of the card.
 //
 // Two source shapes are supported, because the underlying claude CLI exposes
 // task management through ONE of two mutually-exclusive tool families
@@ -86,8 +89,9 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   const result = useMemo(() => extractTodos(messages, !!working), [messages, working])
   const hc = skin === 'hc'
   // Cap the list height so a long checklist doesn't dominate the viewport
-  // (the panel is position:sticky; without a cap a 20-item list fills the
-  // whole chat area). The list scrolls internally via the project's overlay
+  // (the card is a bottom overlay; without a cap the stack outgrows the
+  // transcript and blanks it out). The list scrolls internally via the
+  // project's overlay
   // scrollbar (same as MessageList / RecapWindow), keeping the header + count
   // visible. Declared here (before the early returns) so the hook order is
   // stable across renders where the panel is hidden.
@@ -106,7 +110,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   const hiddenSet = useMemo(() => new Set(hiddenList), [hiddenList])
 
   // Undo row auto-dismisses after UNDO_DISMISS_MS (toast pattern) so a hide
-  // doesn't leave a permanent button in the sticky header. Re-shown on every
+  // doesn't leave a permanent button in the card header. Re-shown on every
   // new hide; hiding again just resets the window. Dismissal does NOT clear
   // hiddenList — the items stay hidden, the undo affordance is what closes.
   const [undoDismissed, setUndoDismissed] = useState(false)
