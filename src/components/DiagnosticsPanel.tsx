@@ -1,16 +1,21 @@
 import { useState } from 'react'
 import { useDiagnostics } from '../hooks/useDiagnostics'
 
+/** Lines shown in the Diagnostics tab — full context for deep inspection. */
+const STDERR_PANEL_LINES = 100
+
 export function DiagnosticsPanel({ sessionId }: { sessionId: string }) {
   const { data, loading, error, refresh, setCliDebug } = useDiagnostics(sessionId)
   const [saving, setSaving] = useState(false)
+  const [mutationError, setMutationError] = useState<string | null>(null)
 
   async function choose(value: boolean | null) {
     setSaving(true)
+    setMutationError(null)
     try {
       await setCliDebug(value)
-    } catch {
-      // keep minimal — the hook keeps prior data; a toast could be added later
+    } catch (e) {
+      setMutationError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
     }
@@ -41,11 +46,12 @@ export function DiagnosticsPanel({ sessionId }: { sessionId: string }) {
         </select>
         <span className="settings-hint">Applies on the next session start.</span>
       </label>
+      {mutationError && <div className="settings-card-error">{mutationError}</div>}
 
       <div className="settings-field settings-field-block">
         <span>stderr tail</span>
         <pre className="diag-stderr">
-          {(data?.stderrTail ?? []).slice(-100).join('\n') || '(no stderr yet)'}
+          {(data?.stderrTail ?? []).slice(-STDERR_PANEL_LINES).join('\n') || '(no stderr yet)'}
         </pre>
         <span className="settings-hint">{(data?.stderrTail ?? []).length} lines captured</span>
       </div>

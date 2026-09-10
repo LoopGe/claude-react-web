@@ -100,4 +100,23 @@ describe('DiagnosticsPanel', () => {
     const { container } = render(<DiagnosticsPanel sessionId="s1" />)
     expect(container.textContent).toContain('0 lines captured')
   })
+
+  it('shows mutation error when setCliDebug fails', async () => {
+    mockSetCliDebug.mockRejectedValue(new Error('PUT failed'))
+    const { container } = render(<DiagnosticsPanel sessionId="s1" />)
+    const select = container.querySelector('select')!
+    fireEvent.change(select, { target: { value: 'off' } })
+    await waitFor(() => expect(container.textContent).toContain('PUT failed'))
+  })
+
+  it('clears mutation error on next successful submit', async () => {
+    mockSetCliDebug.mockRejectedValueOnce(new Error('PUT failed'))
+    const { container } = render(<DiagnosticsPanel sessionId="s1" />)
+    const select = container.querySelector('select')!
+    fireEvent.change(select, { target: { value: 'off' } })
+    await waitFor(() => expect(container.textContent).toContain('PUT failed'))
+    mockSetCliDebug.mockResolvedValue(undefined)
+    fireEvent.change(select, { target: { value: 'on' } })
+    await waitFor(() => expect(container.textContent).not.toContain('PUT failed'))
+  })
 })

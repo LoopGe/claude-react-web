@@ -21,7 +21,7 @@ describe('useDiagnostics', () => {
   it('fetches diagnostics on mount and refreshes', async () => {
     const { result } = renderHook(() => useDiagnostics('s1'))
     await waitFor(() => expect(result.current.data).toEqual(data))
-    expect(mocks.get).toHaveBeenCalledWith('/sessions/s1/diagnostics')
+    expect(mocks.get).toHaveBeenCalledWith('/sessions/s1/diagnostics', expect.anything())
     mocks.get.mockResolvedValue({ ...data, stderrTail: ['x'] })
     await act(async () => { await result.current.refresh() })
     expect(result.current.data?.stderrTail).toEqual(['x'])
@@ -42,5 +42,37 @@ describe('useDiagnostics', () => {
     await waitFor(() => expect(result.current.error).toBe('network down'))
     expect(result.current.loading).toBe(false)
     expect(result.current.data).toBeNull()
+  })
+  it('does not fetch when enabled is false', () => {
+    const { result } = renderHook(() => useDiagnostics('s1', false))
+    expect(mocks.get).not.toHaveBeenCalled()
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(false)
+  })
+  it('fetches when enabled toggles from false to true', async () => {
+    const { result, rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useDiagnostics('s1', enabled),
+      { initialProps: { enabled: false } },
+    )
+    expect(mocks.get).not.toHaveBeenCalled()
+    rerender({ enabled: true })
+    await waitFor(() => expect(result.current.data).toEqual(data))
+    expect(mocks.get).toHaveBeenCalled()
+  })
+  it('aborts in-flight fetch when refresh is called again', async () => {
+    let resolveFirst: (v: DiagnosticsData) => void
+    const firstFetch = new Promise<DiagnosticsData>((r) => { resolveFirst = r })
+    mocks.get.mockReturnValueOnce(firstFetch)
+    const { result } = renderHook(() => useDiagnostics('s1'))
+    // First fetch is in flight
+    expect(result.current.loading).toBe(true)
+    // Trigger a second refresh — should abort the first
+    mocks.get.mockResolvedValueOnce({ ...data, stderrTail: ['second'] })
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.data?.stderrTail).toEqual(['second'])
+    // Resolve the first fetch — should be a no-op because it was aborted
+    resolveFirst!(data)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(result.current.data?.stderrTail).toEqual(['second'])
   })
 })

@@ -12,34 +12,44 @@ export interface DiagnosticsData {
   debugLog: { exists: boolean; path?: string; size?: number }
 }
 
-export function useDiagnostics(sessionId: string) {
+export function useDiagnostics(sessionId: string, enabled = true) {
   const [data, setData] = useState<DiagnosticsData | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const cancelledRef = useRef(false)
+  const abortRef = useRef<AbortController | null>(null)
+  const mountedRef = useRef(true)
 
   const refresh = useCallback(async () => {
+    if (!enabled) return
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     setLoading(true)
     setError(null)
     try {
-      const res = await api.get<DiagnosticsData>(`/sessions/${sessionId}/diagnostics`)
-      if (!cancelledRef.current) setData(res)
+      const res = await api.get<DiagnosticsData>(`/sessions/${sessionId}/diagnostics`, { signal: ctrl.signal })
+      if (!ctrl.signal.aborted && mountedRef.current) setData(res)
     } catch (e) {
-      if (!cancelledRef.current) setError(e instanceof Error ? e.message : String(e))
+      if (!ctrl.signal.aborted && mountedRef.current) setError(e instanceof Error ? e.message : String(e))
     } finally {
-      if (!cancelledRef.current) setLoading(false)
+      if (!ctrl.signal.aborted && mountedRef.current) setLoading(false)
     }
-  }, [sessionId])
+  }, [sessionId, enabled])
 
   useEffect(() => {
-    cancelledRef.current = false
+    mountedRef.current = true
     void refresh()
-    return () => { cancelledRef.current = true }
+    return () => {
+      mountedRef.current = false
+      abortRef.current?.abort()
+    }
   }, [refresh])
 
   const setCliDebug = useCallback(async (value: boolean | null) => {
     const res = await api.put<{ cliDebug: DiagnosticsCliDebug }>(`/sessions/${sessionId}/diagnostics`, { cliDebug: value })
-    setData((prev) => (prev ? { ...prev, cliDebug: res.cliDebug } : prev))
+    if (mountedRef.current) {
+      setData((prev) => (prev ? { ...prev, cliDebug: res.cliDebug } : prev))
+    }
   }, [sessionId])
 
   return { data, loading, error, refresh, setCliDebug }

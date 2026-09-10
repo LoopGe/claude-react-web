@@ -37,6 +37,10 @@ import type { GitStatus } from '../../shared/git-types'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 
+/** Lines shown in the collapsed stderr summary below the header error bar.
+ *  Keeps the header compact — the full context lives in the Diagnostics tab. */
+const STDERR_HEADER_LINES = 30
+
 /** Chip tooltip — verbose form for users who hover before clicking.
  *  Returns a ReactNode (one <div> per line) rather than a `\n`-joined
  *  string: newlines inside HTML text collapse to spaces, so the multi-
@@ -350,7 +354,7 @@ export const ChatPanel = memo(function ChatPanel({
   // Panel swap via drag is a multi-panel desktop affordance; mobile is
   // single-panel and touch can't HTML5-drag, so disable it there.
   const isMobile = useIsMobile()
-  const diagnostics = useDiagnostics(session.id)
+  const diagnostics = useDiagnostics(session.id, !!session.error)
   const [dropActive, setDropActive] = useState(false)
   /** Tracks the `generatedAt` of the recap the user has dismissed. When it
    *  matches the current session.recap.generatedAt, the floating window
@@ -1118,7 +1122,7 @@ export const ChatPanel = memo(function ChatPanel({
           {diagnostics.data?.stderrTail && diagnostics.data.stderrTail.length > 0 && (
             <details className="chat-panel-stderr-details">
               <summary>stderr</summary>
-              <pre className="diag-stderr">{diagnostics.data.stderrTail.slice(-30).join('\n')}</pre>
+              <pre className="diag-stderr">{diagnostics.data.stderrTail.slice(-STDERR_HEADER_LINES).join('\n')}</pre>
             </details>
           )}
           </>
