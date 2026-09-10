@@ -225,9 +225,16 @@ export function applyPortaledThemeVars(el: HTMLElement, fromElement: Element | n
 // utils/theme.ts); the branded/a11y skins suppress the effect but preserve
 // the stored choice.
 
+/** What kind of file a `custom` src points at. Drives which element renders it
+ *  (a CSS background-image vs. a <video>) — the two cannot be swapped at
+ *  runtime, so the choice is stored rather than guessed. */
+export type BackgroundMedia = 'image' | 'video'
+
 export type BackgroundPref =
   | { kind: 'none' }
-  | { kind: 'custom'; src: string }     // http(s) URL, or /api/background/files/<uuid>.<ext>
+  // http(s) URL, or /api/background/files/<uuid>.<ext>. `media` is absent on
+  // prefs saved before video existed and then means 'image'.
+  | { kind: 'custom'; src: string; media?: BackgroundMedia }
 
 export interface BackgroundSetting {
   pref: BackgroundPref
@@ -243,10 +250,15 @@ export interface BackgroundSetting {
    *  one for the content panels. Optional, same pre-feature reasoning as blur. */
   surface?: number
   /** The most recent real `src`, kept across a switch to `none` so that
-   *  re-selecting "Custom image" restores the wallpaper instead of dropping it.
+   *  re-selecting its media restores the wallpaper instead of dropping it.
    *  A convenience copy only — `pref` remains the sole source of truth for what
    *  is applied, and never holds an empty `src`. */
   lastSrc?: string
+  /** The media `lastSrc` belongs to. Stored beside it because a remote URL's
+   *  kind cannot be recovered from the string, and restoring an image src into
+   *  the video player (or vice versa) would render nothing. Absent means
+   *  'image', matching `pref.media`. */
+  lastMedia?: BackgroundMedia
 }
 
 export const BACKGROUND_KEY = 'claude-react-web:background'
@@ -278,17 +290,58 @@ export const BACKGROUND_SURFACE_STEP = 0.05
  *  inline `--app-bg-image: url("…")` on <html>, so it must not be unbounded. */
 export const BACKGROUND_SRC_MAX = 4096
 
-/** Server-assigned upload name: `<uuid>.<raster ext>` under this path
- *  (see server/background-routes.ts, which generates it with randomUUID()). */
-const BACKGROUND_UPLOAD_NAME
-  = /^\/api\/background\/files\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:jpe?g|png|webp)$/i
+/** Every container this feature serves, by extension, and the media it belongs
+ *  to. ONE table on the client: the upload-name regex and the video-name test
+ *  are derived from it, and it is what decides whether a URL's own extension
+ *  contradicts the media the user declared for it. Must stay in step with
+ *  server/background-routes.ts's ALLOWED_UPLOAD (the server owns what it will
+ *  accept and serve; this owns what the client will apply). */
+const MEDIA_BY_EXT: Record<string, BackgroundMedia> = {
+  jpg: 'image',
+  jpeg: 'image',
+  png: 'image',
+  webp: 'image',
+  mp4: 'video',
+  webm: 'video',
+}
 
-/** Is `src` one of OUR uploaded background files? Also the guard on
- *  BackgroundPicker's delete-on-replace fetch: a loose prefix test would let a
- *  dot-segment path through, and the browser normalizes it before the request
- *  leaves — turning a persisted string into an arbitrary same-origin DELETE. */
+// Longest first, so an extension that is a prefix of another can never win.
+const EXT_PATTERN = Object.keys(MEDIA_BY_EXT).sort((a, b) => b.length - a.length).join('|')
+
+/** Server-assigned upload name: `<uuid>.<ext>` under this path (see
+ *  server/background-routes.ts, which generates it with randomUUID()). */
+const BACKGROUND_UPLOAD_NAME = new RegExp(
+  `^/api/background/files/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.(?:${EXT_PATTERN})$`,
+  'i',
+)
+
+/** The media a src's own extension names, or null when it names none we serve.
+ *  Only the path is read: a query or fragment (`.mp4#t=5`) is not part of the
+ *  name, and `?next=b.mp4` must not be mistaken for one. */
+export function mediaOfExtension(src: string): BackgroundMedia | null {
+  const path = src.split(/[?#]/, 1)[0]
+  const m = /\.([a-z0-9]+)$/i.exec(path)
+  if (!m) return null
+  const ext = m[1].toLowerCase()
+  // `hasOwn` — a bare index walks the prototype chain, so `.constructor` would
+  // resolve to the Object function (truthy, and not a media) and be read back
+  // as a real extension.
+  return Object.hasOwn(MEDIA_BY_EXT, ext) ? MEDIA_BY_EXT[ext] : null
+}
+
+/** Is `src` one of OUR uploaded background files — image or video? Also the
+ *  guard on BackgroundPicker's delete-on-replace fetch: a loose prefix test
+ *  would let a dot-segment path through, and the browser normalizes it before
+ *  the request leaves — turning a persisted string into an arbitrary
+ *  same-origin DELETE. */
 export function isBackgroundUpload(src: string): boolean {
   return BACKGROUND_UPLOAD_NAME.test(src)
+}
+
+/** Is `src` one of our video uploads? Used to keep a declared media honest for
+ *  files we named ourselves; a remote URL is taken on the user's word. */
+export function isBackgroundVideoUpload(src: string): boolean {
+  return isBackgroundUpload(src) && mediaOfExtension(src) === 'video'
 }
 
 /** Is `v` an image reference the background can actually apply — a remote
@@ -300,8 +353,68 @@ export function isBackgroundUpload(src: string): boolean {
  *  is dropped (see useLocalStorage), so a weaker gate would mean a click that
  *  silently does nothing. */
 export function isBackgroundSrc(v: unknown): v is string {
-  if (typeof v !== 'string' || v.length === 0 || v.length > BACKGROUND_SRC_MAX) return false
-  return /^https?:\/\//i.test(v) || isBackgroundUpload(v)
+  if (!isUsableSrc(v)) return false
+  // Our own video uploads are excluded: an image pref pointing at an .mp4
+  // would render a broken background image.
+  return isRemoteSrc(v) || (isBackgroundUpload(v) && !isBackgroundVideoUpload(v))
+}
+
+/** Is `v` a *video* reference the background can actually play — a remote
+ *  http(s) URL (taken on the user's word; only they know what a bare link
+ *  serves) or one of our own .mp4/.webm uploads? */
+export function isBackgroundVideoSrc(v: unknown): v is string {
+  if (!isUsableSrc(v)) return false
+  return isRemoteSrc(v) || isBackgroundVideoUpload(v)
+}
+
+/** The shape rule both src predicates share: a bounded, non-empty string. */
+function isUsableSrc(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0 && v.length <= BACKGROUND_SRC_MAX
+}
+
+/** Is `v` a remote reference that could actually be fetched? A bare scheme
+ *  (`https://`, `https://?a=1`) satisfies a prefix test but resolves to
+ *  nothing, so it would commit a checked radio and an "Applied" badge over a
+ *  wallpaper that paints nothing. */
+function isRemoteSrc(v: unknown): v is string {
+  if (!isUsableSrc(v) || !/^https?:\/\//i.test(v)) return false
+  try {
+    return new URL(v).hostname.length > 0
+  } catch {
+    return false
+  }
+}
+
+export function isBackgroundMedia(v: unknown): v is BackgroundMedia {
+  return v === 'image' || v === 'video'
+}
+
+/** Which media a pref applies as. An absent `media` means 'image' — the shape
+ *  written before video existed. ONE definition, because the store's validator,
+ *  useBackground's policy and the picker must not be able to disagree about
+ *  what a stored pref means: a mismatch there is a checked radio over nothing.
+ *
+ *  A `none` pref has no media; it reports 'image', which no caller may act on. */
+export function mediaOfPref(pref: { kind?: unknown; media?: unknown }): BackgroundMedia {
+  return pref.kind === 'custom' && pref.media === 'video' ? 'video' : 'image'
+}
+
+/** Does `src` satisfy the contract of the media it is declared as? The picker's
+ *  commit gate and the store's validator share this one rule, so a pick the
+ *  picker accepts is exactly one the store keeps. */
+export function srcMatchesMedia(src: unknown, media: BackgroundMedia): src is string {
+  if (media === 'video') {
+    if (!isBackgroundVideoSrc(src)) return false
+  } else if (!isBackgroundSrc(src)) {
+    return false
+  }
+  // The shape is fine; now check the declaration against the one thing a bare
+  // URL does say about itself. Trusting the user past a *contradiction* commits
+  // a wallpaper nothing can paint (a .png handed to the <video> element) and
+  // reports it as applied. A URL naming no container we know is still theirs to
+  // vouch for — only they know what `…/stream?v=1` serves.
+  const named = mediaOfExtension(src)
+  return named === null || named === media
 }
 
 /** Type-guard for useLocalStorage's `validate` — rejects corrupt /
@@ -313,7 +426,10 @@ export function isBackgroundSrc(v: unknown): v is string {
  *  outlive the gesture and render a checked radio with nothing behind it. */
 export function isBackgroundSetting(v: unknown): v is BackgroundSetting {
   if (!v || typeof v !== 'object') return false
-  const s = v as { pref?: unknown; opacity?: unknown; blur?: unknown; surface?: unknown; lastSrc?: unknown }
+  const s = v as {
+    pref?: unknown; opacity?: unknown; blur?: unknown; surface?: unknown
+    lastSrc?: unknown; lastMedia?: unknown
+  }
   if (typeof s.opacity !== 'number' || Number.isNaN(s.opacity)) return false
   if (s.opacity < BACKGROUND_OPACITY_MIN || s.opacity > BACKGROUND_OPACITY_MAX) return false
   // Optional numeric fields: absent is legitimate (a pref saved before the
@@ -322,10 +438,28 @@ export function isBackgroundSetting(v: unknown): v is BackgroundSetting {
     x === undefined || (typeof x === 'number' && !Number.isNaN(x) && x >= min && x <= max)
   if (!absentOrInRange(s.blur, BACKGROUND_BLUR_MIN, BACKGROUND_BLUR_MAX)) return false
   if (!absentOrInRange(s.surface, BACKGROUND_SURFACE_MIN, BACKGROUND_SURFACE_MAX)) return false
-  if (s.lastSrc !== undefined && !isBackgroundSrc(s.lastSrc)) return false
-  const p = s.pref as { kind?: unknown; src?: unknown } | null
+  if (s.lastMedia !== undefined) {
+    // `lastMedia` without a `lastSrc` is half a memory — it can only mislead a
+    // restore, so it must not survive a load.
+    if (s.lastSrc === undefined || !isBackgroundMedia(s.lastMedia)) return false
+    if (!srcMatchesMedia(s.lastSrc, s.lastMedia)) return false
+  } else if (s.lastSrc !== undefined && !isBackgroundSrc(s.lastSrc) && !isBackgroundVideoSrc(s.lastSrc)) {
+    // A media-less `lastSrc` may still name a video: a pre-video build wrote
+    // only this field, and rejecting the whole setting over it would take the
+    // applied wallpaper and its tuning down with it. The picker declines to
+    // restore a src its row cannot apply, so this cannot become a dead click.
+    return false
+  }
+  const p = s.pref as { kind?: unknown; src?: unknown; media?: unknown } | null
   if (!p || typeof p !== 'object') return false
   if (p.kind === 'none') return true
-  if (p.kind === 'custom') return isBackgroundSrc(p.src)
+  if (p.kind === 'custom') {
+    // A value we do not know is rejected outright; an absent one falls back to
+    // 'image' (mediaOfPref) because that is what pre-video prefs mean. Declared
+    // media must also agree with the src: a mismatch renders nothing and is
+    // never a state the picker writes, so it must not survive a load.
+    if (p.media !== undefined && !isBackgroundMedia(p.media)) return false
+    return srcMatchesMedia(p.src, mediaOfPref(p))
+  }
   return false
 }

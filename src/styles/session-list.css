@@ -1412,6 +1412,13 @@
   font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
+/* A refused upload (over the size cap, wrong container) used to be console-only,
+   which reads as a click that did nothing. */
+.appearance-bg-error {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--danger);
+}
 .appearance-bg-slider {
   width: 100%;
   accent-color: var(--accent);

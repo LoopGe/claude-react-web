@@ -1150,6 +1150,22 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Video wallpaper (see BackgroundVideo). useBackground reports an active video
+   through `activeVideoSrc`, and App renders this element for it in place of
+   --app-bg-image. z-index: -1 is what makes it occupy the same slot as the old
+   CSS background: above the canvas background `body` paints, below every
+   chrome surface — so the existing translucency and backdrop-filter rules
+   under body.has-bg compose with a video exactly as they do with an image. */
+.app-bg-video {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: -1;
+  pointer-events: none;
+}
+
 /* Code / input surfaces: enable slashed zero so 0 vs O and 1 vs l stay
    distinguishable in code, IDs, hashes and diffs, and tabular-nums so digits
    keep a fixed width. 'zero' is the standardized OpenType slashed-zero

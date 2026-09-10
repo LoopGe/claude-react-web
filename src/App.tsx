@@ -40,6 +40,7 @@ import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
 import { ProfileSwitcher } from './components/ProfileSwitcher'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { BackgroundVideo } from './components/BackgroundVideo'
 import { IconSettings, IconBellToggle, IconMenu, IconSidebar, IconFolderSearch } from './components/icons/ToolIcons'
 import { UpdateBanner } from './components/UpdateBanner'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
@@ -277,10 +278,15 @@ export function App() {
     sessionAccentMap,
     handleSessionColorChange,
   } = useTheme()
-  // Global background image (default/glow skins). Depends on `skin` so a
-  // switch to a background-locked skin suppresses the effect but keeps the
-  // stored choice (see useBackground).
-  const { setting: backgroundSetting, setSetting: setBackgroundSetting } = useBackground(skin)
+  // Global background (default/glow skins). Depends on `skin` so a switch to a
+  // background-locked skin suppresses the effect but keeps the stored choice
+  // (see useBackground). An image rides the CSS background; a video comes back
+  // as `activeVideoSrc` and is rendered as its own element below.
+  const {
+    setting: backgroundSetting,
+    setSetting: setBackgroundSetting,
+    activeVideoSrc: backgroundVideoSrc,
+  } = useBackground(skin)
   /** Ids currently being resumed — briefly disables the item so a double-
    *  click doesn't fire two POSTs. */
   const [resuming, setResuming] = useState<Set<string>>(new Set())
@@ -3682,6 +3688,10 @@ export function App() {
       className={`app${isMobile && drawerOpen ? ' drawer-open' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}
       style={{ ['--sidebar-width' as string]: `${effectiveSidebarWidth}px` }}
     >
+      {/* Behind the whole grid (z-index: -1) and inert to the pointer. Keyed by
+          src so switching wallpapers remounts the element rather than reusing
+          one mid-decode. */}
+      {backgroundVideoSrc && <BackgroundVideo key={backgroundVideoSrc} src={backgroundVideoSrc} />}
       {/* Skip link for keyboard users — first focusable element on the
           page. Hidden visually until it receives focus, at which point
           it slides into view. Sends focus to the chat panels region so

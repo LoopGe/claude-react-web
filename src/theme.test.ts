@@ -3,8 +3,13 @@ import {
   buildSessionAccentMap, BACKGROUND_BLUR_MAX, BACKGROUND_SRC_MAX, BACKGROUND_SURFACE_STEP,
   BACKGROUND_DEFAULT_SURFACE, BACKGROUND_OPACITY_STEP, BACKGROUND_DEFAULT_OPACITY,
   BACKGROUND_DEFAULT_BLUR, BACKGROUND_BLUR_STEP,
-  isBackgroundSrc, isBackgroundSetting,
+  isBackgroundSrc, isBackgroundVideoSrc, isBackgroundUpload, isBackgroundSetting,
+  srcMatchesMedia, mediaOfExtension,
 } from './theme'
+
+const VIDEO_UPLOAD = '/api/background/files/3f2a1b4c-5d6e-7f80-91a2-b3c4d5e6f708.mp4'
+const WEBM_UPLOAD = '/api/background/files/3f2a1b4c-5d6e-7f80-91a2-b3c4d5e6f708.webm'
+const IMAGE_UPLOAD = '/api/background/files/3f2a1b4c-5d6e-7f80-91a2-b3c4d5e6f708.png'
 
 describe('background slider defaults land on their step grid', () => {
   // A default off the grid is silently snapped by real browsers (range value
@@ -36,6 +41,142 @@ describe('isBackgroundSrc', () => {
     expect(isBackgroundSrc('/api/background/files/deadbeef.png.sh')).toBe(false)
     expect(isBackgroundSrc('file:///C:/bg.png')).toBe(false)
     expect(isBackgroundSrc('')).toBe(false)
+  })
+})
+
+describe('a scheme with no host', () => {
+  it('is refused, because nothing can be fetched from it', () => {
+    // `url("https://")` is not resolvable, so it commits a checked radio and an
+    // "Applied" badge over a wallpaper that paints nothing.
+    expect(isBackgroundSrc('https://')).toBe(false)
+    expect(isBackgroundVideoSrc('https://')).toBe(false)
+    expect(isBackgroundSrc('https://?a=1')).toBe(false)
+  })
+})
+
+describe('isBackgroundVideoSrc', () => {
+  it('accepts a remote http(s) URL and a server-assigned video upload', () => {
+    expect(isBackgroundVideoSrc('https://example.com/clip.mp4')).toBe(true)
+    expect(isBackgroundVideoSrc('https://example.com/clip.webm?a=1')).toBe(true)
+    expect(isBackgroundVideoSrc(VIDEO_UPLOAD)).toBe(true)
+    expect(isBackgroundVideoSrc(WEBM_UPLOAD)).toBe(true)
+  })
+  it('rejects an image upload, a non-http(s) scheme, and an empty src', () => {
+    // We control the names of our own uploads, so the extension is the one
+    // place we can be certain; a declared-video pref must not point at a .png.
+    expect(isBackgroundVideoSrc(IMAGE_UPLOAD)).toBe(false)
+    expect(isBackgroundVideoSrc('/api/background/files/x.mp4')).toBe(false)
+    expect(isBackgroundVideoSrc('file:///C:/clip.mp4')).toBe(false)
+    expect(isBackgroundVideoSrc('')).toBe(false)
+  })
+})
+
+describe('isBackgroundUpload', () => {
+  it('recognizes both image and video uploads of ours, and nothing else', () => {
+    // It is the delete-on-replace guard, so it must cover every file the
+    // picker can have uploaded — images and videos alike.
+    expect(isBackgroundUpload(IMAGE_UPLOAD)).toBe(true)
+    expect(isBackgroundUpload(VIDEO_UPLOAD)).toBe(true)
+    expect(isBackgroundUpload('https://example.com/clip.mp4')).toBe(false)
+    expect(isBackgroundUpload('/api/background/files/x.mov')).toBe(false)
+  })
+})
+
+describe('isBackgroundSrc (image)', () => {
+  it('rejects a video upload — an image pref must not reference one', () => {
+    expect(isBackgroundSrc(VIDEO_UPLOAD)).toBe(false)
+  })
+})
+
+describe('mediaOfExtension', () => {
+  it('names the media a src extension belongs to, and null when it names none', () => {
+    expect(mediaOfExtension('https://ex.com/a.png')).toBe('image')
+    expect(mediaOfExtension('https://ex.com/a.webp')).toBe('image')
+    expect(mediaOfExtension('https://ex.com/a.MP4')).toBe('video')
+    expect(mediaOfExtension('/api/background/files/3f2a1b4c-5d6e-7f80-91a2-b3c4d5e6f708.webm')).toBe('video')
+    // Only the path counts — a query or fragment is not part of the name.
+    expect(mediaOfExtension('https://ex.com/a.png?sig=abc')).toBe('image')
+    expect(mediaOfExtension('https://ex.com/a.png?next=b.mp4')).toBe('image')
+    // No extension, or one we do not serve.
+    expect(mediaOfExtension('https://ex.com/stream?v=1')).toBe(null)
+    expect(mediaOfExtension('https://ex.com/render.php')).toBe(null)
+  })
+
+  it('does not mistake an Object.prototype member for a media', () => {
+    // A bare index walks the prototype chain, so `.constructor` would resolve
+    // to the Object function — truthy, so `?? null` never fires and the picker
+    // interpolates it into a refusal message.
+    expect(mediaOfExtension('https://ex.com/art.constructor')).toBe(null)
+    expect(mediaOfExtension('https://ex.com/art.toString')).toBe(null)
+    expect(mediaOfExtension('https://ex.com/art.valueOf')).toBe(null)
+  })
+})
+
+describe('srcMatchesMedia vs a URL that names its own kind', () => {
+  it('refuses a URL whose extension names the other media', () => {
+    // The extension is the one thing a bare URL does say about itself. Trusting
+    // the declaration past a contradiction commits a wallpaper nothing can
+    // paint, and reports it as applied.
+    expect(srcMatchesMedia('https://ex.com/clip.png', 'video')).toBe(false)
+    expect(srcMatchesMedia('https://ex.com/clip.mp4', 'image')).toBe(false)
+    expect(srcMatchesMedia('https://ex.com/clip.webm', 'image')).toBe(false)
+  })
+  it('accepts a URL whose extension agrees, and one that names nothing', () => {
+    expect(srcMatchesMedia('https://ex.com/clip.mp4', 'video')).toBe(true)
+    expect(srcMatchesMedia('https://ex.com/bg.png', 'image')).toBe(true)
+    // Extension-less (or unknown-extension) URLs are still the user's word to
+    // give: only they know what a bare link serves.
+    expect(srcMatchesMedia('https://ex.com/stream?v=1', 'video')).toBe(true)
+    expect(srcMatchesMedia('https://ex.com/render.php', 'image')).toBe(true)
+  })
+  it('reads the extension off the path, ignoring query and fragment', () => {
+    expect(srcMatchesMedia('https://ex.com/bg.png?sig=abc', 'image')).toBe(true)
+    expect(srcMatchesMedia('https://ex.com/clip.mp4#t=5', 'image')).toBe(false)
+    expect(srcMatchesMedia('https://ex.com/a.png?next=b.mp4', 'image')).toBe(true)
+  })
+})
+
+describe('isBackgroundSetting with media', () => {
+  it('accepts a video pref whose src matches its declared media', () => {
+    expect(isBackgroundSetting({ pref: { kind: 'custom', src: VIDEO_UPLOAD, media: 'video' }, opacity: 0.85 })).toBe(true)
+    expect(isBackgroundSetting({ pref: { kind: 'custom', src: 'https://ex.com/a.mp4', media: 'video' }, opacity: 0.85 })).toBe(true)
+  })
+  it('treats a missing media as image, so pre-existing prefs keep loading', () => {
+    expect(isBackgroundSetting({ pref: { kind: 'custom', src: IMAGE_UPLOAD }, opacity: 0.85 })).toBe(true)
+    expect(isBackgroundSetting({ pref: { kind: 'custom', src: VIDEO_UPLOAD }, opacity: 0.85 })).toBe(false)
+  })
+  it('rejects a pref whose src contradicts its declared media', () => {
+    expect(isBackgroundSetting({ pref: { kind: 'custom', src: IMAGE_UPLOAD, media: 'video' }, opacity: 0.85 })).toBe(false)
+    expect(isBackgroundSetting({ pref: { kind: 'custom', src: VIDEO_UPLOAD, media: 'image' }, opacity: 0.85 })).toBe(false)
+    expect(isBackgroundSetting({ pref: { kind: 'custom', src: 'https://ex.com/a.png', media: 'weird' }, opacity: 0.85 })).toBe(false)
+  })
+  it('keeps a setting whose remembered src is a video with no media recorded', () => {
+    // A pre-video build wrote only `lastSrc`, and it may name a video. Rejecting
+    // the whole setting would throw away the applied wallpaper, its opacity and
+    // its sliders over a convenience copy that the picker will simply decline to
+    // restore (see pickMedia).
+    expect(isBackgroundSetting({ pref: { kind: 'none' }, opacity: 0.8, lastSrc: 'https://ex.com/clip.mp4' })).toBe(true)
+    expect(isBackgroundSetting({ pref: { kind: 'none' }, opacity: 0.8, lastSrc: VIDEO_UPLOAD })).toBe(true)
+  })
+
+  it('validates lastSrc against lastMedia, and rejects a dangling lastMedia', () => {
+    expect(isBackgroundSetting({
+      pref: { kind: 'none' }, opacity: 0.85, lastSrc: VIDEO_UPLOAD, lastMedia: 'video',
+    })).toBe(true)
+    expect(isBackgroundSetting({
+      pref: { kind: 'none' }, opacity: 0.85, lastSrc: IMAGE_UPLOAD, lastMedia: 'image',
+    })).toBe(true)
+    // A remembered src that contradicts its remembered media would restore the
+    // wrong kind of file into the wrong player.
+    expect(isBackgroundSetting({
+      pref: { kind: 'none' }, opacity: 0.85, lastSrc: VIDEO_UPLOAD, lastMedia: 'image',
+    })).toBe(false)
+    expect(isBackgroundSetting({
+      pref: { kind: 'none' }, opacity: 0.85, lastSrc: IMAGE_UPLOAD, lastMedia: 'video',
+    })).toBe(false)
+    // lastMedia with nothing remembered is meaningless half-state.
+    expect(isBackgroundSetting({ pref: { kind: 'none' }, opacity: 0.85, lastMedia: 'video' })).toBe(false)
+    expect(isBackgroundSetting({ pref: { kind: 'none' }, opacity: 0.85, lastMedia: 'weird' })).toBe(false)
   })
 })
 
