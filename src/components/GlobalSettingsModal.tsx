@@ -1752,7 +1752,8 @@ function AboutTab({
   const displayError = info?.error ?? error
   // Suppress the "Update now" nag once the on-disk `installed` version
   // already satisfies `latest` (in-app update applied, restart pending) —
-  // mirrors UpdateBanner. `restartPending` below then carries the
+  // mirrors the nag's suppression rule via `isUpdateNagNeeded`.
+  // `restartPending` below then carries the
   // "restart to apply" message, so the two states don't contradict.
   const hasUpdate = isUpdateNagNeeded(info)
   const disabled = !!info?.disabled

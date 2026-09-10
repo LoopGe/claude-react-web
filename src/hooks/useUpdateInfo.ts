@@ -1,9 +1,9 @@
 // React hook for the update-info endpoint.
 //
 // One instance is created near the top of <App> and shared down to
-// <UpdateBanner> (top-of-page banner) and the About tab in
+// the update nag toast and the About tab in
 // <GlobalSettingsModal>. Both consumers see the same refresh state;
-// clicking "Check now" in the modal updates the banner immediately.
+// clicking "Check now" in the modal updates the nag immediately.
 //
 // Auto-fetch policy: one fetch on mount when `enabled` flips true (gated
 // on isConfigured at the call site so we don't probe before setup is
