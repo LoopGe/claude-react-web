@@ -4,10 +4,10 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-import { __resetReleaseNotesForTests, getReleaseNotes } from './release-notes.js'
+import { __resetReleaseNotesForTests, getReleaseNotes, parseRepoSlug } from './release-notes.js'
 
 /** Fake GitHub release objects covering the filter matrix: stable in-range
- *  (0.7.3, 0.8.0), stable below range (0.7.1), prerelease tag (0.9.0-rc.1),
+ *  (0.7.3, 0.8.0), stable below range (0.7.2), prerelease tag (0.9.0-rc.1),
  *  API-prerelease flag, draft, unparseable tag (`nightly`), and above `to`. */
 function ghRelease(over: Record<string, unknown> = {}) {
   return {
@@ -115,5 +115,34 @@ describe('getReleaseNotes', () => {
     expect(res.error).toMatch(/not configured/i)
     expect(fetchMock).not.toHaveBeenCalled()
     __setConfigForTest({ updateCheckRegistry: 'https://registry.npmjs.org' })
+  })
+})
+
+describe('parseRepoSlug', () => {
+  it('extracts owner/repo from a git+https URL', () => {
+    expect(parseRepoSlug('git+https://github.com/LoopGe/claude-react-web.git'))
+      .toBe('LoopGe/claude-react-web')
+  })
+
+  it('extracts owner/repo from the object form { type, url }', () => {
+    expect(parseRepoSlug({ type: 'git', url: 'git+https://github.com/LoopGe/claude-react-web.git' }))
+      .toBe('LoopGe/claude-react-web')
+  })
+
+  it('extracts owner/repo from a git@ssh URL', () => {
+    expect(parseRepoSlug('git@github.com:LoopGe/claude-react-web.git'))
+      .toBe('LoopGe/claude-react-web')
+  })
+
+  it('returns null for a non-GitHub URL', () => {
+    expect(parseRepoSlug('https://gitlab.com/some/repo')).toBeNull()
+  })
+
+  it('returns null for undefined', () => {
+    expect(parseRepoSlug(undefined)).toBeNull()
+  })
+
+  it('returns null for an object without a url field', () => {
+    expect(parseRepoSlug({ type: 'git' })).toBeNull()
   })
 })
