@@ -32,7 +32,10 @@ export function useMetrics() {
 
   useEffect(() => {
     mountedRef.current = true
-    void refresh()
+    // Defer to a microtask so the effect body performs no synchronous
+    // setState (react-hooks/set-state-in-effect) — the first fetch's
+    // loading flip happens one microtask later, which is unobservable.
+    void Promise.resolve().then(() => refresh())
     return () => {
       mountedRef.current = false
       abortRef.current?.abort()
