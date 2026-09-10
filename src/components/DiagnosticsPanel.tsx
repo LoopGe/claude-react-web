@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useDiagnostics } from '../hooks/useDiagnostics'
+import { SettingsRow } from './SettingsRow'
+import { Skeleton } from './Skeleton'
 
 /** Lines shown in the Diagnostics tab — full context for deep inspection. */
 const STDERR_PANEL_LINES = 100
@@ -21,8 +23,19 @@ export function DiagnosticsPanel({ sessionId }: { sessionId: string }) {
     }
   }
 
-  if (loading && !data) return <div className="settings-field">Loading diagnostics…</div>
-  if (error && !data) return <div className="settings-card-error">{error}</div>
+  if (loading && !data) {
+    return (
+      <div className="settings-section">
+        <span className="settings-note">Loading diagnostics…</span>
+        <Skeleton rows={2} />
+      </div>
+    )
+  }
+  if (error && !data) {
+    return <div className="settings-section"><div className="settings-card-error">{error}</div></div>
+  }
+
+  const stderrLines = data?.stderrTail ?? []
 
   return (
     <div className="settings-section">
@@ -31,38 +44,59 @@ export function DiagnosticsPanel({ sessionId }: { sessionId: string }) {
         <button className="btn btn-sm" onClick={() => void refresh()}>Refresh</button>
       </div>
 
-      <label className="settings-field">
-        <span>CLI debug logging</span>
-        <select
-          value={data?.cliDebug.perSession === undefined ? '' : data.cliDebug.perSession ? 'on' : 'off'}
-          onChange={(e) => {
-            const v = e.target.value
-            void choose(v === '' ? null : v === 'on')
-          }}
-          disabled={saving}>
-          <option value="">Global ({data?.cliDebug.global ? 'on' : 'off'})</option>
-          <option value="on">On</option>
-          <option value="off">Off</option>
-        </select>
-        <span className="settings-hint">Applies on the next session start.</span>
-      </label>
-      {mutationError && <div className="settings-card-error">{mutationError}</div>}
+      <div className="settings-stack">
+        <section className="settings-group">
+          <div className="settings-group-head">
+            <h4>CLI debugging</h4>
+            <span className="settings-group-desc">Verbose logging from the CLI subprocess backing this session.</span>
+          </div>
+          <SettingsRow
+            stack
+            title="CLI debug logging"
+            hint={<>Toggles debug output for this session. Applies on the next session start.</>}
+          >
+            <select
+              className="select"
+              value={data?.cliDebug.perSession === undefined ? '' : data.cliDebug.perSession ? 'on' : 'off'}
+              onChange={(e) => {
+                const v = e.target.value
+                void choose(v === '' ? null : v === 'on')
+              }}
+              disabled={saving}>
+              <option value="">Global ({data?.cliDebug.global ? 'on' : 'off'})</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select>
+          </SettingsRow>
+        </section>
 
-      <div className="settings-field settings-field-block">
-        <span>stderr tail</span>
-        <pre className="diag-stderr">
-          {(data?.stderrTail ?? []).slice(-STDERR_PANEL_LINES).join('\n') || '(no stderr yet)'}
-        </pre>
-        <span className="settings-hint">{(data?.stderrTail ?? []).length} lines captured</span>
+        <section className="settings-group">
+          <div className="settings-group-head">
+            <h4>Process output</h4>
+            <span className="settings-group-desc">Live stderr recently captured from the CLI subprocess.</span>
+          </div>
+          <SettingsRow stack title="stderr tail" hint={`${stderrLines.length} lines captured`}>
+            <pre className="diag-stderr">
+              {stderrLines.slice(-STDERR_PANEL_LINES).join('\n') || '(no stderr yet)'}
+            </pre>
+          </SettingsRow>
+        </section>
+
+        {data?.debugLog.exists && (
+          <section className="settings-group">
+            <div className="settings-group-head">
+              <h4>Debug log</h4>
+              <span className="settings-group-desc">On-disk log file written for this session.</span>
+            </div>
+            <SettingsRow stack title="Log path">
+              <code className="settings-note">{data.debugLog.path}</code>
+              <span className="settings-note"> ({data.debugLog.size} bytes)</span>
+            </SettingsRow>
+          </section>
+        )}
       </div>
 
-      {data?.debugLog.exists && (
-        <div className="settings-field">
-          <span>Debug log</span>
-          <code className="settings-hint">{data.debugLog.path}</code>
-          <span className="settings-hint"> ({data.debugLog.size} bytes)</span>
-        </div>
-      )}
+      {mutationError && <div className="settings-card-error">{mutationError}</div>}
     </div>
   )
 }
