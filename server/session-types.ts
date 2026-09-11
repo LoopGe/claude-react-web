@@ -360,6 +360,12 @@ export interface Session {
    *  into SessionInfo and persisted via SessionMeta so it survives
    *  resume + server restart. */
   gitStartSha?: string
+  /** Work-tree top level captured at spawn (git rev-parse --show-toplevel).
+   *  The git-snapshot fan-out group key: sessions sharing a repoRoot share
+   *  one pushed git snapshot. Undefined for non-repo cwds (fallback key:
+   *  cwd) and for sessions spawned before this field existed (until their
+   *  next respawn). Persisted via SessionMeta. */
+  repoRoot?: string
   /** When present, this session is a Side Chat forked from the
    *  indicated parent session. Set by createSideChat(), persisted via
    *  SessionMeta, and mirrored into SessionInfo. */

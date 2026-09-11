@@ -143,6 +143,19 @@ describe('SessionStore', () => {
     expect(loaded[0].gitStartSha).toBe(sha)
   })
 
+  // ── repoRoot persistence ─────────────────────────────────────
+  it('preserves repoRoot across upsert + reload', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a', { repoRoot: 'D:/codes/repo' }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    const loaded = await store2.load()
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0].repoRoot).toBe('D:/codes/repo')
+  })
+
   // ── enabledPlugins persistence ─────────────────────────────────
   it('round-trips enabledPlugins', async () => {
     const store = new SessionStore({ stateDir: dir })
@@ -266,6 +279,19 @@ describe('SessionStore', () => {
     const loaded = await store.load()
     expect(loaded).toHaveLength(1)
     expect(loaded[0].gitStartSha).toBeUndefined()
+  })
+
+  it('drops non-string repoRoot during coerce', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        { id: 'b', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, repoRoot: 42 },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0].repoRoot).toBeUndefined()
   })
 
   it('round-trips a valid memory object', async () => {

@@ -94,6 +94,8 @@ export interface SessionMeta {
    *  Survives across process restarts so the GitPanel "This session"
    *  view stays anchored even if the server is bounced mid-conversation. */
   gitStartSha?: string
+  /** Work-tree top level captured at spawn. See Session.repoRoot. */
+  repoRoot?: string
   /** When present, this session is a Side Chat forked from the
    *  indicated parent session. Undefined for normal sessions. */
   parentId?: string
@@ -256,6 +258,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     error: typeof r.error === 'string' ? r.error : undefined,
     lastTurnAt: typeof r.lastTurnAt === 'number' ? r.lastTurnAt : undefined,
     gitStartSha: typeof r.gitStartSha === 'string' ? r.gitStartSha : undefined,
+    repoRoot: typeof r.repoRoot === 'string' ? r.repoRoot : undefined,
     parentId: typeof r.parentId === 'string' ? r.parentId : undefined,
     forkBoundaryUuid: typeof r.forkBoundaryUuid === 'string' ? r.forkBoundaryUuid : undefined,
     mcpServerNames: Array.isArray(r.mcpServerNames) && r.mcpServerNames.every((n: unknown) => typeof n === 'string')
