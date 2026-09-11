@@ -360,6 +360,12 @@ export interface Session {
    *  into SessionInfo and persisted via SessionMeta so it survives
    *  resume + server restart. */
   gitStartSha?: string
+  /** Work-tree top level captured at spawn (git rev-parse --show-toplevel).
+   *  The git-snapshot fan-out group key: sessions sharing a repoRoot share
+   *  one pushed git snapshot. Undefined for non-repo cwds (fallback key:
+   *  cwd) and for sessions spawned before this field existed (until their
+   *  next respawn). Persisted via SessionMeta. */
+  repoRoot?: string
   /** When present, this session is a Side Chat forked from the
    *  indicated parent session. Set by createSideChat(), persisted via
    *  SessionMeta, and mirrored into SessionInfo. */
@@ -446,11 +452,10 @@ export interface Session {
    *  Map's values as an array) on every task-state change. Same shape as
    *  contextUsageSubscribers; snapshot semantics make reconnects trivial. */
   taskSubscribers: Set<Pushable<import('../shared/tasks.js').TaskRecordUi[]>>
-  /** Per-subscriber pushables for `git-status-changed` signal frames.
-   *  Same shape as contextUsageSubscribers but carries a signal-only
-   *  payload (no GitStatus snapshot — clients refetch). Driven by
-   *  session-pump on mutating tool_results and by git-write routes on
-   *  user-initiated mutations. */
+  /** Per-subscriber pushables for `git-snapshot` frames carrying full
+   *  status + branches + stashes. Same shape as contextUsageSubscribers.
+   *  Driven by session-pump on mutating tool_results and by git-write
+   *  routes on user-initiated mutations. */
   gitStatusSubscribers: Set<Pushable<unknown>>
   /** Per-subscriber pushables for input-queue message-status signal frames.
    *  Carries either a full `message-consumed` frame each time the SDK reads
@@ -746,7 +751,7 @@ export interface SessionBroadcaster {
   subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: import('./session-pump.js').LiteContextUsage | undefined; unsubscribe: () => void } | null
   subscribePromptSuggestion(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null
   subscribeTasks(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null
-  subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
+  subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<import('./ws-protocol.js').WsGitSnapshot>; unsubscribe: () => void } | null
   /** Per-session subscription for `message-consumed` / `messages-withdrawn`
    *  signal frames (typed union — the channel carries full frames, not bare
    *  payloads). Returns null when the session is unknown (callers
@@ -770,11 +775,20 @@ export interface SessionBroadcaster {
     snapshot: import('../shared/session-info.js').SessionRecap | undefined
     unsubscribe: () => void
   } | null
-  /** Push a `git-status-changed` signal to every subscriber of the
-   *  session. Mutator-shaped (modifies subscriber state by enqueueing)
-   *  but pure from the caller's perspective; included in the broadcaster
-   *  contract so the debounce helper and write routes can both call it. */
-  broadcastGitStatusChanged(sessionId: string): void
+  /** Compute/adopt the group's git snapshot and push a `git-snapshot`
+   *  frame to every session sharing the trigger's group key (repoRoot,
+   *  falling back to cwd). Mutator-shaped but fire-and-forget: the async
+   *  compute detaches, failures warn without throwing. `opts.snapshot`
+   *  supplies fields the caller already computed (write routes) so the
+   *  broadcast only fills the gaps. */
+  broadcastGitStatusChanged(sessionId: string, opts?: { snapshot?: Partial<import('./session-broadcaster.js').GitSnapshotPayload> }): void
+  /** The group key (repoRoot ?? cwd ?? id) for one session, or null when
+   *  unknown. Consumed by git-broadcast's per-group debounce. */
+  gitGroupKeyOf(sessionId: string): string | null
+  /** Another live session sharing this session's group key, or null when
+   *  alone. Consumed by cancelGitBroadcast so an unload doesn't kill a
+   *  pending broadcast peers still need. */
+  gitGroupLivePeer(sessionId: string): string | null
   /** Per-session subscription for `session-cleared` signal frames.
    *  Returns null when the session is unknown (callers short-circuit).
    *  Mirrors subscribeGitStatus. */

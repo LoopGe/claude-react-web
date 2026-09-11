@@ -25,11 +25,29 @@
 
 import type { Session } from './session-types.js'
 import type { SessionRecap } from './session-types.js'
-import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessagesWithdrawn, WsGitSnapshot } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
 import type { Pushable } from './pushable.js'
 import { createPushable } from './pushable.js'
-import { invalidateStatusCache } from './git.js'
+import { createLogger } from './log.js'
+import { getStatus, listBranches, listStashes } from './git.js'
+import type { GitStatusResponse, GitBranch, GitStashEntry } from '../shared/git-types.js'
+
+const log = createLogger('git-snapshot')
+
+/** The three lists that make up one pushed git snapshot. */
+export interface GitSnapshotPayload {
+  status: GitStatusResponse
+  branches: GitBranch[]
+  stashes: GitStashEntry[]
+}
+
+/** Fan-out group key: spawn-captured work-tree top level, falling back to
+ *  cwd string equality for non-repo sessions and pre-upgrade metas. The
+ *  `?? s.id` last resort keeps cwd-less sessions in their own group. */
+function gitGroupKey(s: Session): string {
+  return s.repoRoot ?? s.cwd ?? s.id
+}
 
 export class SessionEventBroadcaster {
   constructor(private sessions: Map<string, Session>) {}
@@ -68,13 +86,21 @@ export class SessionEventBroadcaster {
     return { iterable: sub.iterable, snapshot: Array.from(s.tasks.values()), unsubscribe: sub.unsubscribe }
   }
 
-  /** AsyncIterable of `git-status-changed` signal frames for one session.
-   *  Mirrors subscribeContextUsage; returns null when the session is
-   *  unknown so callers can short-circuit gracefully. */
-  subscribeGitStatus(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
+  /** AsyncIterable of full `git-snapshot` frames for one session. A fresh
+   *  subscriber is seeded with the group's most recent frame (when one
+   *  exists) before live frames flow — a newly opened tab paints instantly
+   *  without an HTTP round-trip. maxDepth 5: frames are fat but idempotent
+   *  and droppable — a dropped frame self-heals on the next mutation, and
+   *  the shallow queue keeps memory bounded. Returns null when the session
+   *  is unknown. */
+  subscribeGitStatus(id: string): { iterable: AsyncIterable<WsGitSnapshot>; unsubscribe: () => void } | null {
     const s = this.sessions.get(id)
     if (!s) return null
-    return this.subscribePushableSet(s, s.gitStatusSubscribers, 'git', 20)
+    const cached = this.gitSnapshots.get(gitGroupKey(s))
+    this.pruneGitSnapshots()
+    return this.subscribePushableSet<WsGitSnapshot>(s, s.gitStatusSubscribers as Set<Pushable<WsGitSnapshot>>, 'git', 5, () =>
+      cached ? [cached] : [],
+    )
   }
 
   /** AsyncIterable of `message-consumed` / `messages-withdrawn` signal
@@ -185,22 +211,84 @@ export class SessionEventBroadcaster {
     }
   }
 
-  /** Broadcast a `git-status-changed` signal to every subscriber of the
-   *  given session. No-op when the session is unknown or has no
-   *  subscribers. The payload is bare (signal-only) — the client side
-   *  responds by re-fetching its useGitStatus endpoint. */
-  broadcastGitStatusChanged(id: string): void {
+  /** Most recent pushed snapshot per group key — seeds fresh subscribers
+   *  (mirrors subscribeTasks' snapshot pattern, but via the pushable seed
+   *  callback so ws.ts needs no special case). Pruned lazily: a key with
+   *  no live session is dropped on the next emit or subscribe. */
+  private gitSnapshots = new Map<string, WsGitSnapshot>()
+
+  /** Compute (or adopt from opts) the group's git snapshot, cache it for
+   *  subscriber seeding, and push a `git-snapshot` frame to every session
+   *  sharing the trigger's group key — not just the trigger's own
+   *  subscribers. Two sessions on the same repo therefore stay in sync:
+   *  Claude's edits in A refresh B's chip/panel, and a commit in B's
+   *  GitPanel refreshes A.
+   *
+   *  Fire-and-forget by design (call sites are sync): the async compute
+   *  runs detached, failures log a warning and push nothing — clients
+   *  keep their last known state and the next mutation retries. Write
+   *  routes pass `opts.snapshot` with whatever they already computed
+   *  (status for stage/commit, +branches for checkout, +stashes for
+   *  stash ops); missing fields are computed here so a field is never
+   *  git-spawned twice in one broadcast. */
+  broadcastGitStatusChanged(id: string, opts?: { snapshot?: Partial<GitSnapshotPayload> }): void {
+    void this.emitGitSnapshot(id, opts?.snapshot).catch((err: unknown) => {
+      log.warn(`git snapshot compute failed session=${id}: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
+
+  private async emitGitSnapshot(id: string, partial?: Partial<GitSnapshotPayload>): Promise<void> {
     const s = this.sessions.get(id)
-    if (!s) return
-    // Drop any cached read-route status for this cwd so the refetch the
-    // clients are about to issue recomputes from ground truth (the cache
-    // only exists to coalesce that refetch herd, never to hide a change).
-    if (s.cwd) invalidateStatusCache(s.cwd)
-    if (s.gitStatusSubscribers.size === 0) return
-    const frame = { kind: 'git-status-changed' as const, sessionId: id }
-    for (const sub of s.gitStatusSubscribers) {
-      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
+    if (!s || !s.cwd) return
+    const key = gitGroupKey(s)
+    const status = await (partial?.status ?? getStatus(s.cwd))
+    const isRepo = 'isRepo' in status && status.isRepo
+    const [branches, stashes] = isRepo
+      ? await Promise.all([
+        partial?.branches ?? listBranches(s.cwd),
+        partial?.stashes ?? listStashes(s.cwd),
+      ])
+      : [partial?.branches ?? [], partial?.stashes ?? []]
+    const frame: WsGitSnapshot = { kind: 'git-snapshot', sessionId: id, cwd: s.cwd, repoRoot: key, status, branches, stashes }
+    this.gitSnapshots.set(key, frame)
+    this.pruneGitSnapshots()
+    for (const other of this.sessions.values()) {
+      if (gitGroupKey(other) !== key) continue
+      for (const sub of other.gitStatusSubscribers) {
+        try { sub.push(frame) } catch { /* subscriber dead - skip */ }
+      }
     }
+  }
+
+  /** Drop seed entries whose group no longer has a live session. Cheap
+   *  (few keys); called after every emit and on subscribe. */
+  private pruneGitSnapshots(): void {
+    if (this.gitSnapshots.size === 0) return
+    const live = new Set<string>()
+    for (const s of this.sessions.values()) live.add(gitGroupKey(s))
+    for (const k of this.gitSnapshots.keys()) {
+      if (!live.has(k)) this.gitSnapshots.delete(k)
+    }
+  }
+
+  /** The group key of one session, or null when unknown. Consumed by
+   *  git-broadcast's per-group debounce. */
+  gitGroupKeyOf(sessionId: string): string | null {
+    const s = this.sessions.get(sessionId)
+    return s ? gitGroupKey(s) : null
+  }
+
+  /** Another live session sharing this session's group key, or null when
+   *  this is the only member. Consumed by cancelGitBroadcast: an unload
+   *  must not kill a pending debounced broadcast that peers still need. */
+  gitGroupLivePeer(sessionId: string): string | null {
+    const s = this.sessions.get(sessionId)
+    if (!s) return null
+    const key = gitGroupKey(s)
+    for (const other of this.sessions.values()) {
+      if (other.id !== sessionId && gitGroupKey(other) === key) return other.id
+    }
+    return null
   }
 
   /** Shared implementation for subscribeContextUsage / subscribeGitStatus.

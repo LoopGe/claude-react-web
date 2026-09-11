@@ -1,59 +1,85 @@
-// Per-session debounce wrapper around SessionManager.broadcastGitStatusChanged.
+// Per-git-group debounce wrapper around SessionManager.broadcastGitStatusChanged.
 //
 // When Claude runs a tool that mutates the filesystem, the session-pump
 // detects the matching tool_result and asks us to broadcast a
-// `git-status-changed` frame. A long-running plan can run 5+ Edit/Write
-// calls back-to-back; if we broadcast each one immediately, the chip
-// (which refetches `git status`) gets hammered with redundant requests.
+// `git-snapshot` frame fanned out by group key. A long-running plan can
+// run 5+ Edit/Write calls back-to-back;
+// if we broadcast each one immediately, the chip (which refetches `git
+// status`) gets hammered with redundant requests.
 //
-// This module coalesces bursts: every call within DEBOUNCE_MS resets the
-// timer, so a streak of mutations produces exactly one broadcast `DEBOUNCE_MS`
-// after the last one settles. User-initiated writes (the POST routes in
-// `routes/git-write.ts`) call `sm.broadcastGitStatusChanged` directly to
-// keep their UX latency tight; only the auto-detection path pays the
-// debounce.
+// This module coalesces bursts *per git group* (sessions sharing the same
+// repo root): every call within DEBOUNCE_MS resets the group's timer, so a
+// streak of mutations produces exactly one broadcast DEBOUNCE_MS after the
+// last one settles. When multiple sessions share a group key their
+// schedules collapse onto a single timer.
+//
+// User-initiated writes (the POST routes in `routes/git-write.ts`) call
+// `sm.broadcastGitStatusChanged` directly to keep their UX latency tight;
+// only the auto-detection path pays the debounce.
+//
+// On session unload, `cancelGitBroadcast` checks whether a live peer still
+// needs the pending broadcast: if so the timer survives and its origin
+// re-points to the peer; otherwise the timer is cleared.
 
 import type { SessionBroadcaster } from './session-types.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 
 const DEBOUNCE_MS = 500
-const timers = new Map<string, NodeJS.Timeout>()
+interface DebounceEntry {
+  timer: NodeJS.Timeout
+  /** The session whose schedule most recently (re)set this timer. The
+   *  broadcast fires with this id — it only names the trigger for
+   *  logging/frame.sessionId; fan-out is group-wide regardless. */
+  originSessionId: string
+}
+/** Keyed by git group key (repoRoot ?? cwd ?? id), NOT sessionId: bursts
+ *  from two sessions in the same repo coalesce into one compute+push. */
+const timers = new Map<string, DebounceEntry>()
 
 export function scheduleGitBroadcast(sm: SessionBroadcaster, sessionId: string): void {
   // No subscribeGitStatus call here — the broadcast call inside the
   // timer is itself a no-op when no subscribers are attached, so there's
   // nothing to short-circuit.
-  const existing = timers.get(sessionId)
-  if (existing) clearTimeout(existing)
+  const key = sm.gitGroupKeyOf(sessionId) ?? sessionId
+  const existing = timers.get(key)
+  if (existing) clearTimeout(existing.timer)
   const t = setTimeout(() => {
-    timers.delete(sessionId)
+    const entry = timers.get(key)
+    timers.delete(key)
     // The broadcaster contract: if the session was unloaded between the
     // schedule call and the timer firing, this is a no-op. We don't need
-    // to guard separately.
-    sm.broadcastGitStatusChanged(sessionId)
+    // to guard separately. Read originSessionId at fire time — cancel may
+    // have re-pointed it to a live peer.
+    sm.broadcastGitStatusChanged(entry?.originSessionId ?? sessionId)
   }, DEBOUNCE_MS)
   // unref so a pending broadcast doesn't keep Node alive past server
   // shutdown. Some test harnesses run on Node ≥18 where timeout.unref
   // is always present, but guard for older typings.
   t.unref?.()
-  timers.set(sessionId, t)
+  timers.set(key, { timer: t, originSessionId: sessionId })
 }
 
-/** Cancel any pending broadcast for the given session. Call this from
- *  session unload paths so we don't fire a stale event after the
- *  session has been removed. */
-export function cancelGitBroadcast(sessionId: string): void {
-  const existing = timers.get(sessionId)
-  if (existing) {
-    clearTimeout(existing)
-    timers.delete(sessionId)
+/** Cancel the pending debounced broadcast *iff* `sessionId` is its origin
+ *  AND no live peer shares the group — an unload must not kill a refresh
+ *  peers still need. With a live peer the timer survives and its origin
+ *  re-points to the peer so the broadcast still fires. */
+export function cancelGitBroadcast(sm: SessionBroadcaster, sessionId: string): void {
+  const key = sm.gitGroupKeyOf(sessionId) ?? sessionId
+  const entry = timers.get(key)
+  if (!entry || entry.originSessionId !== sessionId) return
+  const peer = sm.gitGroupLivePeer(sessionId)
+  if (peer) {
+    entry.originSessionId = peer
+    return
   }
+  clearTimeout(entry.timer)
+  timers.delete(key)
 }
 
 /** Test-only: clear all pending timers and any internal state.
  *  Real code should never call this. */
 export function _resetGitBroadcastForTests(): void {
-  for (const t of timers.values()) clearTimeout(t)
+  for (const t of timers.values()) clearTimeout(t.timer)
   timers.clear()
 }
 

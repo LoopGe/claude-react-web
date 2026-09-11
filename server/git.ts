@@ -326,49 +326,6 @@ export async function getStatus(cwd: string): Promise<GitStatusResponse> {
   return getStatusInRepo(cwd)
 }
 
-// ── Read-route status cache / request coalescing ──────────────────────
-//
-// A single `git-status-changed` broadcast makes EVERY subscribed client
-// fire `GET /api/git/status?cwd=X` at almost the same instant, and each
-// getStatus() spawns 3-4 git child processes. With N tabs on one session
-// that's N×(3-4) processes for identical data. `getStatusCached` collapses
-// that: concurrent (or near-back-to-back) calls for the same cwd share one
-// in-flight Promise, and the result is reused for a short TTL window.
-//
-// The cache stores the PROMISE (not the resolved value) so simultaneous
-// callers coalesce onto the first request. The window is intentionally
-// tiny — long enough to absorb a broadcast's thundering herd, short enough
-// that ordinary polling stays fresh. Writes and the auto-detect path both
-// route through `broadcastGitStatusChanged`, which calls
-// `invalidateStatusCache(cwd)`, so a mutation never serves a stale snapshot.
-//
-// Only the read route uses this. Tests and write routes call getStatus /
-// getStatusInRepo directly for ground truth.
-const STATUS_CACHE_TTL_MS = 500
-interface StatusCacheEntry { ts: number; promise: Promise<GitStatusResponse> }
-const statusCache = new Map<string, StatusCacheEntry>()
-
-export function getStatusCached(cwd: string): Promise<GitStatusResponse> {
-  const now = Date.now()
-  const hit = statusCache.get(cwd)
-  if (hit && now - hit.ts < STATUS_CACHE_TTL_MS) return hit.promise
-  const promise = getStatus(cwd).catch((err: unknown) => {
-    // Never cache a failure — drop our own entry so the next call retries
-    // (guard against clobbering a newer entry that replaced ours).
-    if (statusCache.get(cwd)?.promise === promise) statusCache.delete(cwd)
-    throw err
-  })
-  statusCache.set(cwd, { ts: now, promise })
-  return promise
-}
-
-/** Drop cached status for a cwd (or all cwds when omitted). Called on every
- *  git state change so the next read recomputes from ground truth. */
-export function invalidateStatusCache(cwd?: string): void {
-  if (cwd === undefined) statusCache.clear()
-  else statusCache.delete(cwd)
-}
-
 /** Variant of getStatus that skips the inside-work-tree probe. Callers
  *  must have already proven the cwd is a repo (e.g. via the per-route
  *  ensureGitRepo() that ran before the write itself). Saves one git
@@ -1102,6 +1059,27 @@ export async function tryCaptureGitHead(cwd: string): Promise<string | undefined
     return sha
   } catch {
     // runGit's HttpError, timeout, ENOENT — all collapse to "no anchor".
+    return undefined
+  }
+}
+
+/** Best-effort work-tree top-level capture — the absolute path git
+ *  reports for the repository root (`git rev-parse --show-toplevel`).
+ *  Used at session spawn as the git-snapshot fan-out group key: two
+ *  sessions whose cwds sit in the same repo (including different
+ *  subdirectories) share one snapshot. Windows output is forward-slashed
+ *  (D:/codes/repo) — both sessions capture through this same command, so
+ *  the keys are consistently normalized. Returns undefined for every
+ *  failure (not a repo, git missing, timeout, empty output); callers
+ *  fall back to cwd string equality. Never throws. */
+export async function tryCaptureRepoRoot(cwd: string): Promise<string | undefined> {
+  try {
+    if (!(await isInsideWorkTree(cwd))) return undefined
+    const r = await runGit(cwd, ['rev-parse', '--show-toplevel'], { timeoutMs: 5_000 })
+    if (r.exitCode !== 0) return undefined
+    const root = r.stdout.trim()
+    return root || undefined
+  } catch {
     return undefined
   }
 }

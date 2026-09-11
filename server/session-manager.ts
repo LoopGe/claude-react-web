@@ -40,7 +40,7 @@ import {
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
 import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
-import { tryCaptureGitHead } from './git.js'
+import { tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
@@ -905,6 +905,7 @@ export class SessionManager {
       error: s.error,
       lastTurnAt: s.lastTurnAt,
       gitStartSha: s.gitStartSha,
+      repoRoot: s.repoRoot,
       parentId: s.parentId,
       forkBoundaryUuid: s.forkBoundaryUuid,
       mcpServerNames: s.mcpServerNames,
@@ -1992,16 +1993,28 @@ export class SessionManager {
     return this.spawn(randomUUID(), sideChatOpts)
   }
 
-  /** Fire-and-forget capture of the worktree's HEAD SHA at session spawn.
-   *  Extracted from spawn() for readability; only called once per session
-   *  (autoResume uses the existing gitStartSha). */
+  /** Fire-and-forget capture of git anchors at session spawn: the
+   *  worktree's HEAD SHA (gitStartSha, "This session" anchor) and the
+   *  work-tree top level (repoRoot, git-snapshot fan-out group key).
+   *  Extracted from spawn() for readability; gitStartSha is only captured
+   *  once per session (autoResume restores it from meta), while repoRoot
+   *  is re-captured whenever missing so sessions persisted before the
+   *  field existed heal on their next spawn. */
   private captureGitHead(session: Session): void {
-    if (!session.gitStartSha && session.cwd) {
+    if (!session.cwd) return
+    if (!session.gitStartSha) {
       void tryCaptureGitHead(session.cwd).then((sha) => {
         if (!sha || session.terminated || !this.sessions.has(session.id)) return
         session.gitStartSha = sha
         this.writeStore(session)
         this.broadcastGlobal({ kind: 'update', session: this.info(session) })
+      }).catch(() => {})
+    }
+    if (!session.repoRoot) {
+      void tryCaptureRepoRoot(session.cwd).then((root) => {
+        if (!root || session.terminated || !this.sessions.has(session.id)) return
+        session.repoRoot = root
+        this.writeStore(session)
       }).catch(() => {})
     }
   }
@@ -2198,6 +2211,7 @@ export class SessionManager {
       // it forward so the "This session" anchor stays stable even if the
       // server restarts. New sessions get a fresh capture below.
       gitStartSha: existingMeta?.gitStartSha,
+      repoRoot: existingMeta?.repoRoot,
       fastMode: existingMeta?.fastMode,
       // Auto-compact window intent. Resume paths (same id) restore from the
       // persisted meta; create/fork/clear pass it on opts where snapshotMeta
@@ -4171,7 +4185,7 @@ export class SessionManager {
    *
    *  Idle-only: rewinding mid-turn would race the running tool edits, so a
    *  working/queued session gets a 409. A REAL (non-dry) rewind also fires
-   *  git-status-changed so open GitPanels refetch the now-changed worktree. */
+   *  a git-snapshot push so open GitPanels refetch the now-changed worktree. */
   async rewindFiles(id: string, messageId: string, opts?: { dryRun?: boolean }): Promise<RewindFilesResult> {
     const s = this.requireLive(id)
     switch (this.phaseOf(s)) {
@@ -4407,7 +4421,7 @@ export class SessionManager {
     return this.broadcaster.subscribeTasks(id)
   }
 
-  subscribeGitStatus(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
+  subscribeGitStatus(id: string): { iterable: AsyncIterable<import('./ws-protocol.js').WsGitSnapshot>; unsubscribe: () => void } | null {
     return this.broadcaster.subscribeGitStatus(id)
   }
 
@@ -4466,10 +4480,18 @@ export class SessionManager {
     this.broadcaster.broadcastSessionCleared(id)
   }
 
-  /** Broadcast a `git-status-changed` signal to every subscriber of the
-   *  given session. See SessionEventBroadcaster.broadcastGitStatusChanged. */
-  broadcastGitStatusChanged(id: string): void {
-    this.broadcaster.broadcastGitStatusChanged(id)
+  /** Broadcast a `git-snapshot` frame to every session sharing the
+   *  trigger's group key. See SessionEventBroadcaster.broadcastGitStatusChanged. */
+  broadcastGitStatusChanged(id: string, opts?: { snapshot?: Partial<import('./session-broadcaster.js').GitSnapshotPayload> }): void {
+    this.broadcaster.broadcastGitStatusChanged(id, opts)
+  }
+
+  gitGroupKeyOf(sessionId: string): string | null {
+    return this.broadcaster.gitGroupKeyOf(sessionId)
+  }
+
+  gitGroupLivePeer(sessionId: string): string | null {
+    return this.broadcaster.gitGroupLivePeer(sessionId)
   }
 
   /** Consume hook wired into each session's input pushable (see spawn /
@@ -4649,7 +4671,7 @@ export class SessionManager {
     // scheduled by the last mutating tool_use could still fire after the
     // session is removed (the broadcast itself is a no-op then, but the
     // timer is dead code that should be released up front).
-    cancelGitBroadcast(id)
+    cancelGitBroadcast(this, id)
     endAllSubscribers(s)
     // Broadcast the running=false / terminated state BEFORE removing
     // from the map. Without this, the client's copy stays stale at

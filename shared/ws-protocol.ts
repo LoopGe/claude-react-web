@@ -10,6 +10,8 @@
 // - Inbound: subscribe / unsubscribe / ping. User turns go through REST.
 // - Outbound: self-describing frames with no stream-order dependency.
 
+import type { GitStatusResponse, GitBranch, GitStashEntry } from './git-types.js'
+
 // --- inbound (client → server) -----------------------------------------------
 
 /** Ask the server to start streaming events for `sessionId` on this
@@ -256,14 +258,23 @@ export interface WsTasksSnapshot {
   tasks: import('./tasks.js').TaskRecordUi[]
 }
 
-/** Signal-only frame: "git status for this session changed, please
- *  refetch". The server intentionally does NOT pack the GitStatus
- *  payload here so the WS protocol stays decoupled from git-types and
- *  the frame stays small even on bursty mutations. Clients respond by
- *  bumping their useGitStatus refresh counter. */
-export interface WsGitStatusChanged {
-  kind: 'git-status-changed'
+/** Full git-state snapshot for one work tree, pushed after any
+ *  filesystem-mutating event (Claude tool runs, user write routes).
+ *  Replaces the old signal-only git-status-changed frame: the payload IS
+ *  the fresh state, so clients apply it directly with zero refetch.
+ *  `repoRoot` is the fan-out group key (spawn-captured work-tree top
+ *  level, falling back to cwd for non-repo sessions); subscribers whose
+ *  session shares that key receive the frame. `sessionId` is the
+ *  trigger — clients must not route on it. Frames are idempotent and
+ *  droppable: losing one self-heals on the next mutation. */
+export interface WsGitSnapshot {
+  kind: 'git-snapshot'
   sessionId: string
+  cwd: string
+  repoRoot: string
+  status: GitStatusResponse
+  branches: GitBranch[]
+  stashes: GitStashEntry[]
 }
 
 /** Signal frame: "the SDK just read this user message off the input
@@ -436,7 +447,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsContextUsage
   | WsPromptSuggestion
   | WsTasksSnapshot
-  | WsGitStatusChanged
+  | WsGitSnapshot
   | WsMessageConsumed
   | WsMessagesWithdrawn
   | WsSessionRecapUpdate<Recap>

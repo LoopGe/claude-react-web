@@ -469,7 +469,8 @@ export const ChatPanel = memo(function ChatPanel({
   // the GitPanel overlay (mounted inside <Chat>). Hoisting the hook here
   // means a single fetch satisfies both consumers; the panel receives
   // status via prop drilling rather than re-fetching on open. Passing
-  // session.id wires WS auto-refresh on git-status-changed frames.
+  // session.id wires the git-snapshot WS sink (frames carry the full
+  // status; no refetch).
   // Git status is a read-only filesystem probe — it's valid whether or not
   // the SDK subprocess is mid-turn. Gating on session.running made the chip
   // vanish (and never return) the moment a session went idle, because the

@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from 'node:fs'
-import { rm } from 'node:fs/promises'
+import { rm, mkdir, mkdtemp } from 'node:fs/promises'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { buildGitRouter } from './git-routes.js'
 import {
   validateRepoRelativePath,
@@ -22,6 +23,7 @@ import {
   abortMerge,
   getStatus,
   tryCaptureGitHead,
+  tryCaptureRepoRoot,
   getStagedDiff,
   listWorktrees,
   getStatusInRepo,
@@ -800,6 +802,52 @@ describe('git-routes', () => {
         execFileSync('git', ['checkout', '--quiet', sha1], { cwd: dir })
         const captured = await tryCaptureGitHead(dir)
         expect(captured).toBe(sha1)
+      })
+    })
+
+    describe('tryCaptureRepoRoot', () => {
+      it.skipIf(!gitOk)('returns the work-tree top level inside a repo', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'crw-reporoot-'))
+        try {
+          gitInit(dir)
+          writeFileSync(join(dir, 'a.txt'), 'hi\n')
+          gitCommitAll(dir, 'init')
+          const root = await tryCaptureRepoRoot(dir)
+          // git rev-parse --show-toplevel returns forward slashes on Windows;
+          // use realpathSync.native to resolve 8.3 short paths (GEZELI~1 → Ge Zelin)
+          // so the comparison works regardless of how the OS canonicalises.
+          expect(root).toBe(realpathSync.native(dir).replace(/\\/g, '/'))
+        } finally {
+          void rm(dir, { recursive: true, force: true }).catch(() => {})
+        }
+      })
+
+      it.skipIf(!gitOk)('resolves subdirectory cwd to the repo root', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'crw-reporoot-'))
+        try {
+          gitInit(dir)
+          writeFileSync(join(dir, 'a.txt'), 'hi\n')
+          gitCommitAll(dir, 'init')
+          const sub = join(dir, 'packages', 'app')
+          await mkdir(sub, { recursive: true })
+          const root = await tryCaptureRepoRoot(sub)
+          expect(root).toBe(realpathSync.native(dir).replace(/\\/g, '/'))
+        } finally {
+          void rm(dir, { recursive: true, force: true }).catch(() => {})
+        }
+      })
+
+      it('returns undefined for a non-repo directory', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'crw-norepo-'))
+        try {
+          expect(await tryCaptureRepoRoot(dir)).toBeUndefined()
+        } finally {
+          void rm(dir, { recursive: true, force: true }).catch(() => {})
+        }
+      })
+
+      it('returns undefined for a nonexistent directory', async () => {
+        expect(await tryCaptureRepoRoot(join(tmpdir(), 'crw-does-not-exist-' + Math.random()))).toBeUndefined()
       })
     })
 

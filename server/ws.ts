@@ -33,6 +33,7 @@ import { metrics } from './metrics.js'
 import {
   WS_PATH,
   type WsClientFrame,
+  type WsGitSnapshot,
   type WsMessageConsumed,
   type WsMessagesWithdrawn,
   type WsServerFrame,
@@ -702,7 +703,11 @@ export function attachWebSocket(
                   queue.enqueue({ kind: 'context-usage', sessionId, usage: winner.result.value })
                   break
                 case 'git':
-                  queue.enqueue({ kind: 'git-status-changed', sessionId })
+                  // The pushable carries the complete frame (broadcaster
+                  // constructed it with kind/cwd/repoRoot/payload); forward
+                  // verbatim. Seed frames for fresh subscribers ride the
+                  // same path.
+                  queue.enqueue(winner.result.value as WsGitSnapshot)
                   break
                 case 'msgstat': {
                   // Input-queue message status: either a consumed stamp

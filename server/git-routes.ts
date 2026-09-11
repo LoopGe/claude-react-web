@@ -8,20 +8,20 @@
 //   - HttpError thrown from server/git.ts is translated to JSON by the
 //     global onError handler in app.ts.
 //
-// All three endpoints are GET / cwd-scope. Writes (stage/unstage/commit)
+// All endpoints here are GET / cwd-scope. Writes (stage/unstage/commit)
 // live under /api/sessions/:id/git/* in routes/git-write.ts.
 
 import { Hono } from 'hono'
 import { isAbsolute } from 'node:path'
 import { HttpError, createErrorHandler } from './errors.js'
-import { getDiff, getLog, getStatusCached, getRangeDiffFiles, getRangeDiffFile, validateRef } from './git.js'
+import { getDiff, getLog, getStatus, getRangeDiffFiles, getRangeDiffFile, validateRef, listBranches, listStashes } from './git.js'
 import type { GitLogResponse, GitRangeDiffResponse } from '../shared/git-types.js'
 
 export function buildGitRouter(): Hono {
   const app = new Hono()
   app.onError(createErrorHandler('[git]'))
 
-  // Validation shared by all three routes. Throws HttpError on failure
+  // Validation shared by all routes here. Throws HttpError on failure
   // so the caller can early-return with a single line.
   function requireCwd(raw: string | undefined): string {
     if (!raw) throw new HttpError(400, 'cwd query param is required')
@@ -36,9 +36,9 @@ export function buildGitRouter(): Hono {
   // shows a friendly message) — it's not an error.
   app.get('/status', async (c) => {
     const cwd = requireCwd(c.req.query('cwd'))
-    // Coalesce the thundering herd a single git-status-changed broadcast
-    // produces across N subscribed tabs. Invalidated on every git mutation.
-    const result = await getStatusCached(cwd)
+    // Ground-truth fetch: clients mount-fetch once, then consume pushed
+    // git-snapshot frames.
+    const result = await getStatus(cwd)
     return c.json(result)
   })
 
@@ -104,6 +104,22 @@ export function buildGitRouter(): Hono {
     const commits = await getLog(cwd, limit)
     const body: GitLogResponse = { commits }
     return c.json(body)
+  })
+
+  // --- GET /branches ----------------------------------------------------
+  // Full branch list for the cwd's repo. cwd-scoped (not session-scoped)
+  // like every other read here: branches are a property of the work tree,
+  // and two sessions on the same repo share one answer.
+  app.get('/branches', async (c) => {
+    const cwd = requireCwd(c.req.query('cwd'))
+    return c.json({ branches: await listBranches(cwd) })
+  })
+
+  // --- GET /stashes -----------------------------------------------------
+  // Stash list for the cwd's repo. Same cwd-scoping rationale as /branches.
+  app.get('/stashes', async (c) => {
+    const cwd = requireCwd(c.req.query('cwd'))
+    return c.json({ stashes: await listStashes(cwd) })
   })
 
   return app
