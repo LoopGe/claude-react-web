@@ -4185,7 +4185,7 @@ export class SessionManager {
    *
    *  Idle-only: rewinding mid-turn would race the running tool edits, so a
    *  working/queued session gets a 409. A REAL (non-dry) rewind also fires
-   *  git-status-changed so open GitPanels refetch the now-changed worktree. */
+   *  a git-snapshot push so open GitPanels refetch the now-changed worktree. */
   async rewindFiles(id: string, messageId: string, opts?: { dryRun?: boolean }): Promise<RewindFilesResult> {
     const s = this.requireLive(id)
     switch (this.phaseOf(s)) {
@@ -4421,7 +4421,7 @@ export class SessionManager {
     return this.broadcaster.subscribeTasks(id)
   }
 
-  subscribeGitStatus(id: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null {
+  subscribeGitStatus(id: string): { iterable: AsyncIterable<import('./ws-protocol.js').WsGitSnapshot>; unsubscribe: () => void } | null {
     return this.broadcaster.subscribeGitStatus(id)
   }
 
@@ -4480,10 +4480,18 @@ export class SessionManager {
     this.broadcaster.broadcastSessionCleared(id)
   }
 
-  /** Broadcast a `git-status-changed` signal to every subscriber of the
-   *  given session. See SessionEventBroadcaster.broadcastGitStatusChanged. */
-  broadcastGitStatusChanged(id: string): void {
-    this.broadcaster.broadcastGitStatusChanged(id)
+  /** Broadcast a `git-snapshot` frame to every session sharing the
+   *  trigger's group key. See SessionEventBroadcaster.broadcastGitStatusChanged. */
+  broadcastGitStatusChanged(id: string, opts?: { snapshot?: Partial<import('./session-broadcaster.js').GitSnapshotPayload> }): void {
+    this.broadcaster.broadcastGitStatusChanged(id, opts)
+  }
+
+  gitGroupKeyOf(sessionId: string): string | null {
+    return this.broadcaster.gitGroupKeyOf(sessionId)
+  }
+
+  gitGroupLivePeer(sessionId: string): string | null {
+    return this.broadcaster.gitGroupLivePeer(sessionId)
   }
 
   /** Consume hook wired into each session's input pushable (see spawn /

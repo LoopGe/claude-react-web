@@ -575,7 +575,7 @@ export interface PumpDeps {
    *  in the seed). Fire-and-forget on the turn path. */
   recordResultFrame?: (sessionId: string, resultUuid: string, assistantUuid: string, result: SDKMessage) => void
   /** Reference to the broadcaster — needed by the mutating-tool detector
-   *  to schedule a debounced `git-status-changed` frame after Claude
+   *  to schedule a debounced git-snapshot broadcast after Claude
    *  runs Edit/Write/NotebookEdit/Bash. Optional so test fixtures that
    *  don't exercise tool-use behaviour can omit it. */
   broadcaster?: SessionBroadcaster
@@ -830,7 +830,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           continue
         }
         // Detect filesystem-mutating tool_use ids so we can fire a debounced
-        // git-status-changed broadcast when the matching tool_result lands.
+        // git-snapshot broadcast when the matching tool_result lands.
         if (msg.type === 'assistant') {
           const content = (msg as { message?: { content?: unknown } }).message?.content
           if (Array.isArray(content)) {
@@ -852,7 +852,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           }
         }
         // tool_result for a mutating tool → schedule a debounced
-        // git-status-changed broadcast. The SDK wraps tool_results in a
+        // git-snapshot broadcast. The SDK wraps tool_results in a
         // user message; the originating tool_use id is on each tool_result
         // BLOCK (`tool_use_id`), NOT on the message's `parent_tool_use_id`
         // (which is null for main-thread results — see the drop-filter note

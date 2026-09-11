@@ -752,7 +752,7 @@ export interface SessionBroadcaster {
   subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: import('./session-pump.js').LiteContextUsage | undefined; unsubscribe: () => void } | null
   subscribePromptSuggestion(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null
   subscribeTasks(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null
-  subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null
+  subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<import('./ws-protocol.js').WsGitSnapshot>; unsubscribe: () => void } | null
   /** Per-session subscription for `message-consumed` / `messages-withdrawn`
    *  signal frames (typed union — the channel carries full frames, not bare
    *  payloads). Returns null when the session is unknown (callers
@@ -776,11 +776,20 @@ export interface SessionBroadcaster {
     snapshot: import('../shared/session-info.js').SessionRecap | undefined
     unsubscribe: () => void
   } | null
-  /** Push a `git-status-changed` signal to every subscriber of the
-   *  session. Mutator-shaped (modifies subscriber state by enqueueing)
-   *  but pure from the caller's perspective; included in the broadcaster
-   *  contract so the debounce helper and write routes can both call it. */
-  broadcastGitStatusChanged(sessionId: string): void
+  /** Compute/adopt the group's git snapshot and push a `git-snapshot`
+   *  frame to every session sharing the trigger's group key (repoRoot,
+   *  falling back to cwd). Mutator-shaped but fire-and-forget: the async
+   *  compute detaches, failures warn without throwing. `opts.snapshot`
+   *  supplies fields the caller already computed (write routes) so the
+   *  broadcast only fills the gaps. */
+  broadcastGitStatusChanged(sessionId: string, opts?: { snapshot?: Partial<import('./session-broadcaster.js').GitSnapshotPayload> }): void
+  /** The group key (repoRoot ?? cwd ?? id) for one session, or null when
+   *  unknown. Consumed by git-broadcast's per-group debounce. */
+  gitGroupKeyOf(sessionId: string): string | null
+  /** Another live session sharing this session's group key, or null when
+   *  alone. Consumed by cancelGitBroadcast so an unload doesn't kill a
+   *  pending broadcast peers still need. */
+  gitGroupLivePeer(sessionId: string): string | null
   /** Per-session subscription for `session-cleared` signal frames.
    *  Returns null when the session is unknown (callers short-circuit).
    *  Mirrors subscribeGitStatus. */
