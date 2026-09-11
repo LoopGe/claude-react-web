@@ -49,7 +49,7 @@ import { formatTokens, formatJson } from '../utils/format'
 import { pluginTagOf } from '../utils/text'
 import type { ContextUsage } from '../hooks/useChatStream'
 
-type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents' | 'tools' | 'diagnostics' | 'performance'
+type SettingsTab = 'general' | 'appearance' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents' | 'tools' | 'diagnostics' | 'performance'
 
 interface Props {
   session: SessionInfo
@@ -848,6 +848,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
 
   const tabs: { key: SettingsTab; label: string }[] = [
     { key: 'general', label: 'General' },
+    { key: 'appearance', label: 'Appearance' },
     { key: 'context', label: 'Context' },
     { key: 'hooks', label: 'Hooks' },
     { key: 'plugins', label: 'Plugins' },
@@ -1268,10 +1269,14 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           </>
         )}
       </section>
+      </div>
+      )}
 
+      {tab === 'appearance' && (
+      <div className="settings-stack">
       <section className="settings-group">
         <div className="settings-group-head">
-          <h4>Preferences</h4>
+          <h4>Display</h4>
           <span className="settings-group-desc">
             Per-session overrides of the global defaults. Reset restores inheritance.
           </span>

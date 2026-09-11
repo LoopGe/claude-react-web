@@ -62,7 +62,7 @@ const ShareTab = lazy(() =>
   import('./ShareTab').then((m) => ({ default: m.ShareTab })),
 )
 
-type Tab = 'profiles' | 'server' | 'skills' | 'mcp' | 'marketplace' | 'app-plugins' | 'share' | 'logs' | 'about'
+type Tab = 'profiles' | 'server' | 'appearance' | 'skills' | 'mcp' | 'marketplace' | 'app-plugins' | 'share' | 'logs' | 'about'
 
 type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace'
 
@@ -145,15 +145,18 @@ export function GlobalSettingsModal({
   // Same pattern for AppPluginsTab's per-plugin config/permission editors.
   const appPluginsSaveAllRef = useRef<(() => Promise<void>) | null>(null)
 
-  // — Server tab state ?
+  // — Server tab state (Limits + Permissions) ?
   const [maxUploadBytes, setMaxUploadBytes] = useState(0)
   const [historyCap, setHistoryCap] = useState(500)
   const [maxGroupPanels, setMaxGroupPanels] = useState(3)
   const [workingStuckMs, setWorkingStuckMs] = useState(0)
   const [defaultCwd, setDefaultCwd] = useState('')
-  // Global UI-pref defaults (Server tab). Sessions without an explicit
-  // per-session override inherit these. Sent as literal booleans — never
-  // `|| null`, which PUT /config would treat as "delete key".
+  const [allowSensitivePathEdits, setAllowSensitivePathEdits] = useState(false)
+
+  // — Appearance tab state ?
+  // Display / behaviour defaults for every session. Sessions without an
+  // explicit per-session override inherit these. Sent as literal booleans —
+  // never `|| null`, which PUT /config would treat as "delete key".
   const [showPinnedUserMessage, setShowPinnedUserMessage] = useState(true)
   const [autoRecap, setAutoRecap] = useState(true)
   const [toolGroupCards, setToolGroupCards] = useState(true)
@@ -161,7 +164,6 @@ export function GlobalSettingsModal({
   const [rowGap, setRowGap] = useState<RowGapPreset>(DEFAULT_ROW_GAP)
   const [textSpacing, setTextSpacing] = useState<TextSpacingPreset>(DEFAULT_TEXT_SPACING)
   const [fontSize, setFontSize] = useState<FontSizePreset>(DEFAULT_FONT_SIZE)
-  const [allowSensitivePathEdits, setAllowSensitivePathEdits] = useState(false)
 
   // Skills tab state
   const [skillLoadMode, setSkillLoadMode] = useState<SkillLoadMode>('default')
@@ -334,6 +336,7 @@ export function GlobalSettingsModal({
   const tabs: { key: Tab; label: string }[] = [
     { key: 'profiles', label: 'Profiles' },
     { key: 'server', label: 'Server' },
+    { key: 'appearance', label: 'Appearance' },
     { key: 'skills', label: 'Skills' },
     { key: 'mcp', label: 'MCP Servers' },
     { key: 'marketplace', label: 'Marketplace' },
@@ -421,6 +424,16 @@ export function GlobalSettingsModal({
                   historyCap={historyCap}
                   maxGroupPanels={maxGroupPanels}
                   workingStuckMs={workingStuckMs}
+                  allowSensitivePathEdits={allowSensitivePathEdits}
+                  onMaxUploadBytesChange={setMaxUploadBytes}
+                  onHistoryCapChange={setHistoryCap}
+                  onMaxGroupPanelsChange={setMaxGroupPanels}
+                  onWorkingStuckMsChange={setWorkingStuckMs}
+                  onAllowSensitivePathEditsChange={setAllowSensitivePathEdits}
+                />
+              )}
+              {tab === 'appearance' && (
+                <AppearanceTab
                   showPinnedUserMessage={showPinnedUserMessage}
                   autoRecap={autoRecap}
                   toolGroupCards={toolGroupCards}
@@ -428,11 +441,6 @@ export function GlobalSettingsModal({
                   rowGap={rowGap}
                   textSpacing={textSpacing}
                   fontSize={fontSize}
-                  allowSensitivePathEdits={allowSensitivePathEdits}
-                  onMaxUploadBytesChange={setMaxUploadBytes}
-                  onHistoryCapChange={setHistoryCap}
-                  onMaxGroupPanelsChange={setMaxGroupPanels}
-                  onWorkingStuckMsChange={setWorkingStuckMs}
                   onShowPinnedUserMessageChange={setShowPinnedUserMessage}
                   onAutoRecapChange={setAutoRecap}
                   onToolGroupCardsChange={setToolGroupCards}
@@ -440,7 +448,6 @@ export function GlobalSettingsModal({
                   onRowGapChange={setRowGap}
                   onTextSpacingChange={setTextSpacing}
                   onFontSizeChange={setFontSize}
-                  onAllowSensitivePathEditsChange={setAllowSensitivePathEdits}
                 />
               )}
               {tab === 'skills' && (
@@ -576,36 +583,19 @@ const MB = 1024 * 1024
 const MIN_MS = 60 * 1000
 
 function ServerTab({
-  maxUploadBytes, historyCap, maxGroupPanels, workingStuckMs,
-  showPinnedUserMessage, autoRecap, toolGroupCards, showMessageHeaders, rowGap, textSpacing, fontSize, allowSensitivePathEdits,
+  maxUploadBytes, historyCap, maxGroupPanels, workingStuckMs, allowSensitivePathEdits,
   onMaxUploadBytesChange, onHistoryCapChange, onMaxGroupPanelsChange,
-  onWorkingStuckMsChange,
-  onShowPinnedUserMessageChange, onAutoRecapChange, onToolGroupCardsChange,
-  onShowMessageHeadersChange, onRowGapChange, onTextSpacingChange, onFontSizeChange, onAllowSensitivePathEditsChange,
+  onWorkingStuckMsChange, onAllowSensitivePathEditsChange,
 }: {
   maxUploadBytes: number
   historyCap: number
   maxGroupPanels: number
   workingStuckMs: number
-  showPinnedUserMessage: boolean
-  autoRecap: boolean
-  toolGroupCards: boolean
-  showMessageHeaders: boolean
-  rowGap: RowGapPreset
-  textSpacing: TextSpacingPreset
-  fontSize: FontSizePreset
   allowSensitivePathEdits: boolean
   onMaxUploadBytesChange: (v: number) => void
   onHistoryCapChange: (v: number) => void
   onMaxGroupPanelsChange: (v: number) => void
   onWorkingStuckMsChange: (v: number) => void
-  onShowPinnedUserMessageChange: (v: boolean) => void
-  onAutoRecapChange: (v: boolean) => void
-  onToolGroupCardsChange: (v: boolean) => void
-  onShowMessageHeadersChange: (v: boolean) => void
-  onRowGapChange: (v: RowGapPreset) => void
-  onTextSpacingChange: (v: TextSpacingPreset) => void
-  onFontSizeChange: (v: FontSizePreset) => void
   onAllowSensitivePathEditsChange: (v: boolean) => void
 }) {
   const uploadMb = Math.round(maxUploadBytes / MB)
@@ -673,7 +663,60 @@ function ServerTab({
 
       <section className="settings-group">
         <div className="settings-group-head">
-          <h4>Preferences</h4>
+          <h4>Permissions</h4>
+          <span className="settings-group-desc">
+            Relaxes the sensitive-path safety check that still prompts in
+            acceptEdits and bypassPermissions modes.
+          </span>
+        </div>
+        <SettingsRow
+          title="Allow editing sensitive paths in auto-approve modes"
+          hint={<>When on, acceptEdits and bypassPermissions also auto-approve edits
+            and commands targeting <code>.git/</code>, <code>.claude/</code>,{' '}
+            <code>.vscode/</code>, <code>.idea/</code>, and shell/git config
+            files instead of prompting. Off (default) keeps the safe behavior.
+            Plan review (ExitPlanMode) and questions (AskUserQuestion) still
+            prompt regardless.</>}
+        >
+          <Switch
+            label="Allow editing sensitive paths in auto-approve modes"
+            checked={allowSensitivePathEdits}
+            onChange={onAllowSensitivePathEditsChange}
+          />
+        </SettingsRow>
+      </section>
+    </div>
+  )
+}
+
+/** Display / behaviour defaults applied to every session, overridable per
+ *  session from the session Settings panel's own Appearance tab. Split out of
+ *  the Server tab, which now holds only server-wide Limits + Permissions. */
+function AppearanceTab({
+  showPinnedUserMessage, autoRecap, toolGroupCards, showMessageHeaders, rowGap, textSpacing, fontSize,
+  onShowPinnedUserMessageChange, onAutoRecapChange, onToolGroupCardsChange,
+  onShowMessageHeadersChange, onRowGapChange, onTextSpacingChange, onFontSizeChange,
+}: {
+  showPinnedUserMessage: boolean
+  autoRecap: boolean
+  toolGroupCards: boolean
+  showMessageHeaders: boolean
+  rowGap: RowGapPreset
+  textSpacing: TextSpacingPreset
+  fontSize: FontSizePreset
+  onShowPinnedUserMessageChange: (v: boolean) => void
+  onAutoRecapChange: (v: boolean) => void
+  onToolGroupCardsChange: (v: boolean) => void
+  onShowMessageHeadersChange: (v: boolean) => void
+  onRowGapChange: (v: RowGapPreset) => void
+  onTextSpacingChange: (v: TextSpacingPreset) => void
+  onFontSizeChange: (v: FontSizePreset) => void
+}) {
+  return (
+    <div className="settings-stack">
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Display defaults</h4>
           <span className="settings-group-desc">
             Defaults for every session. Individual sessions can override these in
             their own Settings panel.
@@ -753,31 +796,6 @@ function ServerTab({
             options={FONT_SIZE_PRESETS}
             onChange={onFontSizeChange}
             labelFor={(p) => FONT_SIZE_LABELS[p]}
-          />
-        </SettingsRow>
-      </section>
-
-      <section className="settings-group">
-        <div className="settings-group-head">
-          <h4>Permissions</h4>
-          <span className="settings-group-desc">
-            Relaxes the sensitive-path safety check that still prompts in
-            acceptEdits and bypassPermissions modes.
-          </span>
-        </div>
-        <SettingsRow
-          title="Allow editing sensitive paths in auto-approve modes"
-          hint={<>When on, acceptEdits and bypassPermissions also auto-approve edits
-            and commands targeting <code>.git/</code>, <code>.claude/</code>,{' '}
-            <code>.vscode/</code>, <code>.idea/</code>, and shell/git config
-            files instead of prompting. Off (default) keeps the safe behavior.
-            Plan review (ExitPlanMode) and questions (AskUserQuestion) still
-            prompt regardless.</>}
-        >
-          <Switch
-            label="Allow editing sensitive paths in auto-approve modes"
-            checked={allowSensitivePathEdits}
-            onChange={onAllowSensitivePathEditsChange}
           />
         </SettingsRow>
       </section>

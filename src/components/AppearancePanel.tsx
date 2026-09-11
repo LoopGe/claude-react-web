@@ -135,7 +135,7 @@ function AppearancePopover({
       className="appearance-panel"
       style={{ left: pos.x, top: pos.y }}
       role="dialog"
-      aria-label="Appearance"
+      aria-label="Theme"
       onMouseDown={(e) => e.stopPropagation()}
     >
       {/* Skin */}
@@ -273,8 +273,8 @@ export function AppearancePanel({
         onClick={toggle}
         aria-haspopup="dialog"
         aria-expanded={open}
-        aria-label="Appearance"
-        title="Appearance — theme, mode & accent"
+        aria-label="Theme"
+        title="Theme — skin, mode & accent"
       >
         <IconSparkles size={16} />
       </button>

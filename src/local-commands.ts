@@ -15,8 +15,10 @@ import type { SlashCommand } from './types'
 
 /** Capabilities a local command can invoke. Owned by App, threaded down to
  *  each Chat panel. Grows as new local commands need new actions. */
-/** Tabs of the session SettingsPanel a local command can deep-link to. Keep
- *  in sync with SettingsTab in components/SettingsPanel.tsx. */
+/** Tabs of the session SettingsPanel a local command can deep-link to. A
+ *  deliberately NARROW SUBSET of SettingsTab in components/SettingsPanel.tsx
+ *  (only tabs some local command actually targets) — not a mirror of it, so
+ *  adding a panel tab does not imply a member here. */
 export type SettingsTabName = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp'
 
 export interface LocalCommandContext {

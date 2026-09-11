@@ -42,6 +42,8 @@ const apptoolsStatus = {
 function renderPanel(opts: {
   session?: SessionInfo
   globalPrefs?: Record<string, unknown>
+  /** Tab to deep-link into. Defaults to 'mcp' (the historical callers). */
+  tab?: 'general' | 'appearance' | 'mcp'
 }) {
   return render(
     <ToastProvider>
@@ -52,12 +54,13 @@ function renderPanel(opts: {
             showPinnedUserMessage: true,
             autoRecap: true,
             toolGroupCards: true,
+            showMessageHeaders: true,
             ...opts.globalPrefs,
           } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
         }
         onClose={() => {}}
         onSessionUpdate={() => {}}
-        tabRequest={{ tab: 'mcp', nonce: 1 }}
+        tabRequest={{ tab: opts.tab ?? 'mcp', nonce: 1 }}
       />
     </ToastProvider>,
   )
@@ -341,5 +344,65 @@ describe('SettingsPanel MCP reconnect feedback', () => {
     expect(container.querySelector('.toast-info')).not.toBeNull()
     expect(container.querySelector('.toast-success')).toBeNull()
     expect(card.querySelector('.settings-card-pending')).toBeNull()
+  })
+})
+
+describe('SettingsPanel Appearance tab', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      if (url === '/profiles') return Promise.resolve({ profiles: [] })
+      if (url === '/config') return Promise.resolve({ models: [] })
+      return Promise.resolve({})
+    })
+    vi.mocked(api.post).mockResolvedValue({ session: mkSession() })
+  })
+
+  // NOTE: scoped to the returned `container`, never document-wide `screen`.
+  // vitest.config.ts sets `globals: false` and this file has no
+  // `afterEach(cleanup)`, so prior renders stay mounted in document.body —
+  // a `screen` query here would match the previous test's panel.
+  const switchEl = (container: HTMLElement, label: string) =>
+    container.querySelector(`button[aria-label="${label}"]`)
+
+  /** Every per-session override row, paired with the pref key its switch must
+   *  write. Labels here carry NO curly quotes (unlike the global modal's
+   *  "Show pinned “current question” header"). */
+  const OVERRIDES = [
+    ['Show pinned current question header', 'showPinnedUserMessage'],
+    ['Auto-generate session recap', 'autoRecap'],
+    ['Use collapsible tool-group cards', 'toolGroupCards'],
+    ['Show message card headers', 'showMessageHeaders'],
+  ] as const
+
+  it('renders every override row and posts each one under its own key', async () => {
+    const { container } = renderPanel({ tab: 'appearance' })
+
+    // Each switch reflects the inherited global default (globalPrefs are all
+    // true) because the session carries no override.
+    await waitFor(() => expect(switchEl(container, OVERRIDES[0][0])).not.toBeNull())
+    for (const [label] of OVERRIDES) {
+      expect(switchEl(container, label)!.getAttribute('aria-checked')).toBe('true')
+    }
+
+    // Toggling writes THAT row's key — a copy-paste handler that reports the
+    // wrong pref fails here.
+    for (const [label, key] of OVERRIDES) {
+      fireEvent.click(switchEl(container, label)!)
+      await waitFor(() =>
+        expect(api.post).toHaveBeenCalledWith('/sessions/s1/prefs', { [key]: false }))
+    }
+  })
+
+  it('no longer renders the display overrides on the General tab', async () => {
+    const { container } = renderPanel({ tab: 'general' })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+
+    // Moved, not duplicated.
+    expect(switchEl(container, 'Auto-generate session recap')).toBeNull()
+    expect(switchEl(container, 'Show message card headers')).toBeNull()
   })
 })

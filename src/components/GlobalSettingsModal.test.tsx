@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { ToastProvider } from './ToastProvider'
 import { GlobalSettingsModal } from './GlobalSettingsModal'
 import { api } from '../hooks/useApi'
@@ -148,9 +148,9 @@ describe('GlobalSettingsModal Server tab', () => {
       historyCap: 1000,
       maxGroupPanels: 4,
       workingStuckMs: 3600000,
-      showPinnedUserMessage: true,
-      autoRecap: false,
-      allowSensitivePathEdits: false,
+      // Deliberately the NON-default (true) so this asserts the value came
+      // from /config/full rather than the useState(false) initial.
+      allowSensitivePathEdits: true,
     })
 
     // Bytes → MB and ms → minutes, with unit suffixes (not raw 31457280 / 3600000).
@@ -163,10 +163,10 @@ describe('GlobalSettingsModal Server tab', () => {
     // Max group panels is a segmented picker; the configured value is active.
     expect(screen.getByRole('radio', { name: '4' }).getAttribute('aria-checked')).toBe('true')
 
-    // Booleans render as switches reflecting the loaded values.
-    expect(screen.getByRole('switch', { name: 'Show pinned “current question” header' }).getAttribute('aria-checked')).toBe('true')
-    expect(screen.getByRole('switch', { name: 'Auto-generate session recap' }).getAttribute('aria-checked')).toBe('false')
-    expect(screen.getByRole('switch', { name: 'Allow editing sensitive paths in auto-approve modes' }).getAttribute('aria-checked')).toBe('false')
+    // The one switch that stays on this tab reflects its loaded value. The
+    // display-defaults switches now live on the Appearance tab (covered by
+    // the 'Appearance tab' suite below).
+    expect(screen.getByRole('switch', { name: 'Allow editing sensitive paths in auto-approve modes' }).getAttribute('aria-checked')).toBe('true')
   })
 
   it('steps History cap by the field step and persists the raw value on Save', async () => {
@@ -240,5 +240,110 @@ describe('GlobalSettingsModal Server tab', () => {
       maxGroupPanels: 5,
       allowSensitivePathEdits: true,
     }))
+  })
+})
+
+describe('GlobalSettingsModal Appearance tab', () => {
+  beforeEach(() => {
+    vi.mocked(api.put).mockResolvedValue({})
+    // mockResolvedValue only sets an implementation — it does NOT clear the
+    // call history. Without this, the `waitFor(api.put).toHaveBeenCalled()`
+    // gate below is satisfied instantly by an earlier test's PUT.
+    vi.mocked(api.put).mockClear()
+  })
+
+  /** Every control the move relocates from the Server tab. Used by both the
+   *  presence and the absence assertion so the two lists can't drift. */
+  const MOVED_SWITCHES = [
+    'Show pinned “current question” header',
+    'Auto-generate session recap',
+    'Use collapsible tool-group cards',
+    'Show message card headers',
+  ] as const
+  const MOVED_GROUPS = ['Transcript spacing', 'Message text density', 'Font size'] as const
+
+  const openAppearanceTab = async (config: Record<string, unknown>) => {
+    mockGet(config)
+    render(
+      <ToastProvider>
+        <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />
+      </ToastProvider>,
+    )
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Appearance' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
+    // Content is gated on the /config/full fetch — wait for an Appearance-only control.
+    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Font size' })).toBeTruthy())
+  }
+
+  const save = () => fireEvent.click(screen.getByText('Save'))
+
+  /** aria-checked of one option inside a named segmented group. Scoped by the
+   *  radiogroup because the two spacing groups reuse the same option labels. */
+  const segmentedActive = (group: string, option: string) =>
+    within(screen.getByRole('radiogroup', { name: group }))
+      .getByRole('radio', { name: option })
+      .getAttribute('aria-checked')
+
+  it('renders every moved display default from config', async () => {
+    // Every value is deliberately the NON-default so a dropped /config/full
+    // mapping can't pass by coinciding with the useState initial value.
+    // (useState defaults: all four switches true, spacious/spacious/standard.)
+    await openAppearanceTab({
+      showPinnedUserMessage: false,
+      autoRecap: false,
+      toolGroupCards: false,
+      showMessageHeaders: false,
+      rowGap: 'comfortable',
+      textSpacing: 'compact',
+      fontSize: 'large',
+    })
+
+    for (const name of MOVED_SWITCHES) {
+      expect(screen.getByRole('switch', { name }).getAttribute('aria-checked')).toBe('false')
+    }
+
+    // Each segmented group reflects its configured preset.
+    expect(segmentedActive('Transcript spacing', 'Comfortable')).toBe('true')
+    expect(segmentedActive('Message text density', 'Compact')).toBe('true')
+    expect(segmentedActive('Font size', 'Large')).toBe('true')
+  })
+
+  it('persists a switch flip and a preset change on Save', async () => {
+    await openAppearanceTab({
+      showPinnedUserMessage: false,
+      fontSize: 'standard',
+    })
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Show pinned “current question” header' }))
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Font size' }))
+      .getByRole('radio', { name: 'X-Large' }))
+
+    save()
+    await waitFor(() => expect(api.put).toHaveBeenCalled())
+    expect(vi.mocked(api.put)).toHaveBeenCalledWith('/config', expect.objectContaining({
+      showPinnedUserMessage: true,
+      fontSize: 'xlarge',
+    }))
+  })
+
+  it('no longer renders any moved display default on the Server tab', async () => {
+    mockGet({})
+    render(
+      <ToastProvider>
+        <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />
+      </ToastProvider>,
+    )
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Server' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Server' }))
+    // Prove the tab actually mounted before asserting absence.
+    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Max group panels' })).toBeTruthy())
+
+    // Moved, not duplicated — every relocated control, not a sample.
+    for (const name of MOVED_SWITCHES) {
+      expect(screen.queryByRole('switch', { name })).toBeNull()
+    }
+    for (const name of MOVED_GROUPS) {
+      expect(screen.queryByRole('radiogroup', { name })).toBeNull()
+    }
   })
 })

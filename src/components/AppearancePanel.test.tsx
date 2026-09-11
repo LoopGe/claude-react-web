@@ -22,8 +22,8 @@ function renderPanel(skin: 'default' | 'glow' | 'anthropic' | 'hc' | 'soft-hc') 
 }
 
 async function openPanel() {
-  fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
-  await screen.findByRole('dialog', { name: 'Appearance' })
+  fireEvent.click(screen.getByRole('button', { name: 'Theme' }))
+  await screen.findByRole('dialog', { name: 'Theme' })
 }
 
 describe('AppearancePanel background section', () => {

@@ -68,7 +68,7 @@ export interface UseSessionRecapApi {
  *
  * `autoRecapEnabled` (default true) gates ONLY the automatic idle-fired
  * fetch above. Manual `refresh()` is never gated, so Alt+R still works
- * when the user has turned auto-recap off via Preferences.
+ * when the user has turned auto-recap off via the Appearance tab.
  */
 export function useSessionRecap(session: SessionInfo, autoRecapEnabled = true): UseSessionRecapApi {
   const fetchAbortRef = useRef<AbortController | null>(null)
@@ -98,7 +98,7 @@ export function useSessionRecap(session: SessionInfo, autoRecapEnabled = true): 
   // (schedule a timer) sits at the bottom and reads top-to-bottom:
   // requirements first, then the action.
   useEffect(() => {
-    // Auto-recap disabled by the user (Preferences toggle). Only the
+    // Auto-recap disabled by the user (Appearance tab toggle). Only the
     // automatic idle-triggered fetch is gated — manual refresh (Alt+R)
     // still works regardless.
     if (!autoRecapEnabled) return
