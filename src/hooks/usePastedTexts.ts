@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { expandPastedTextRefs, type PastedTextMap } from '../utils/pastedText'
 
 /**
@@ -27,16 +27,30 @@ export interface UsePastedTexts {
   expand: (text: string) => string
 }
 
-export function usePastedTexts(): UsePastedTexts {
+export function usePastedTexts(
+  /** Bodies restored from a draft, if any. */
+  initialTexts: PastedTextMap = {},
+  /** Called whenever the map changes, so the caller can persist it. */
+  onBodiesChange?: (texts: PastedTextMap) => void,
+): UsePastedTexts {
   // The ref is the source of truth: `expand` runs in the same tick as `add`
-  // (a paste stores its body and immediately needs it for the draft
-  // write-through), so it must not read through a rendered closure.
-  const textsRef = useRef<PastedTextMap>({})
-  const nextIdRef = useRef(1)
+  // (a paste stores its body and immediately needs it), so it must not read
+  // through a rendered closure.
+  const textsRef = useRef<PastedTextMap>(initialTexts)
+  const onChangeRef = useRef(onBodiesChange)
+  useEffect(() => {
+    onChangeRef.current = onBodiesChange
+  })
+  // Continue past any id restored from a draft. Reusing one would make an
+  // existing reference in the composer resolve to whatever is pasted next.
+  const nextIdRef = useRef(
+    1 + Object.keys(initialTexts).reduce((max, k) => Math.max(max, Number(k) || 0), 0),
+  )
 
   const add = useCallback((content: string): number => {
     const id = nextIdRef.current++
     textsRef.current = { ...textsRef.current, [id]: { id, content } }
+    onChangeRef.current?.(textsRef.current)
     return id
   }, [])
 

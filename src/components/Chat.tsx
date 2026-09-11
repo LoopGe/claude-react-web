@@ -73,7 +73,8 @@ import { useSessionTaskCounts } from '../session-store/selectors'
 import { computeWaiting, autoTitleDescription, topLevelUserPromptSignature, countQueuedUserTurns } from '../session-store/normalize'
 import { createDedupGuard, shouldOfferBackgroundAction } from '../utils/task-actions'
 import { composeOutgoing } from '../utils/outgoing-text'
-import { PASTED_TEXT_REF_PREFIX } from '../utils/pastedText'
+import { planSubmission } from '../utils/submission'
+import { parseReferences, type PastedTextMap } from '../utils/pastedText'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
@@ -100,6 +101,10 @@ import type { SettingsTabName } from '../local-commands'
 
 const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
 
+/** Bodies the draft's `[Pasted text #N]` references resolve against. Written
+ *  only when the map changes, never on a keystroke. */
+const DRAFT_BODIES_KEY_PREFIX = 'claude-react-web:draft-bodies:'
+
 /** Trailing-edge delay for persisting the draft. Long enough that a burst of
  *  typing produces one write, short enough that a crash loses little. */
 const DRAFT_WRITE_DEBOUNCE_MS = 400
@@ -124,18 +129,45 @@ const isNonPlanPermission = (p: PermissionRequest): boolean =>
  */
 const pendingDrafts = new Map<string, string>()
 
-/** Read a session's draft, preferring the live in-memory copy. Non-throwing. */
-function readDraft(sessionId: string): string {
-  const pending = pendingDrafts.get(sessionId)
-  if (pending !== undefined) return pending
-  try {
-    return window.sessionStorage.getItem(DRAFT_KEY_PREFIX + sessionId) ?? ''
-  } catch {
-    return ''
+/**
+ * Read a session's draft: the composer text — which keeps its
+ * `[Pasted text #N]` references, so the collapse survives a reload or a panel
+ * switch — plus the bodies those references resolve against.
+ *
+ * A reference whose body did not survive (over quota, storage cleared) is
+ * dropped from the text rather than restored. Restoring it would leave a
+ * reference that expands to nothing, and the literal placeholder is what would
+ * reach the model.
+ */
+function readDraft(sessionId: string): { text: string; texts: PastedTextMap } {
+  let text = pendingDrafts.get(sessionId)
+  if (text === undefined) {
+    try {
+      text = window.sessionStorage.getItem(DRAFT_KEY_PREFIX + sessionId) ?? ''
+    } catch {
+      text = ''
+    }
   }
+
+  let texts: PastedTextMap = {}
+  try {
+    const raw = window.sessionStorage.getItem(DRAFT_BODIES_KEY_PREFIX + sessionId)
+    if (raw) texts = JSON.parse(raw) as PastedTextMap
+  } catch {
+    texts = {}
+  }
+
+  const refs = parseReferences(text)
+  for (let i = refs.length - 1; i >= 0; i--) {
+    const ref = refs[i]!
+    if (texts[ref.id]) continue
+    text = text.slice(0, ref.index) + text.slice(ref.index + ref.match.length)
+  }
+
+  return { text, texts }
 }
 
-/** Persist (or clear) a session's draft, in memory and in sessionStorage. */
+/** Persist (or clear) a session's draft text, in memory and in sessionStorage. */
 function writeDraft(sessionId: string, draft: string): void {
   if (draft) pendingDrafts.set(sessionId, draft)
   else pendingDrafts.delete(sessionId)
@@ -144,6 +176,19 @@ function writeDraft(sessionId: string, draft: string): void {
     else window.sessionStorage.removeItem(DRAFT_KEY_PREFIX + sessionId)
   } catch {
     /* quota or SecurityError ?drafts are best-effort */
+  }
+}
+
+/** Persist the bodies a draft's references resolve against. Paste-only. */
+function writeDraftBodies(sessionId: string, texts: PastedTextMap): void {
+  try {
+    if (Object.keys(texts).length === 0) {
+      window.sessionStorage.removeItem(DRAFT_BODIES_KEY_PREFIX + sessionId)
+    } else {
+      window.sessionStorage.setItem(DRAFT_BODIES_KEY_PREFIX + sessionId, JSON.stringify(texts))
+    }
+  } catch {
+    /* quota — readDraft drops references it cannot resolve */
   }
 }
 
@@ -407,7 +452,10 @@ export const Chat = memo(function Chat({
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
   // this initializer runs exactly once per mount — the right place to hydrate.
-  const [input, setInputState] = useState(() => readDraft(session.id))
+  // Restored once per mount: the draft text plus the paste bodies its
+  // `[Pasted text #N]` references resolve against.
+  const [restoredDraft] = useState(() => readDraft(session.id))
+  const [input, setInputState] = useState(restoredDraft.text)
   const [sending, setSending] = useState(false)
   // SettingsPanel is kept mounted (CSS-hidden) once shown so its internal
   // state survives close/reopen. We defer its first mount — and thus its
@@ -689,8 +737,16 @@ export const Chat = memo(function Chat({
   }, [session.id, session.running])
 
   // A paste too large to sit in the textarea collapses to a `[Pasted text #N]`
-  // reference; its body is held here and spliced back in on send.
-  const { add: addPastedText, expand: expandPastedText } = usePastedTexts()
+  // reference; its body is held here and spliced back in on send — and
+  // persisted separately so the collapse survives a reload.
+  const persistPastedBodies = useCallback(
+    (texts: PastedTextMap) => writeDraftBodies(session.id, texts),
+    [session.id],
+  )
+  const { add: addPastedText, expand: expandPastedText } = usePastedTexts(
+    restoredDraft.texts,
+    persistPastedBodies,
+  )
 
   /** Write-through setter: mirror every change to sessionStorage so the
    *  draft survives a tab reload or a session switch-and-back.
@@ -725,24 +781,23 @@ export const Chat = memo(function Chat({
   const setInput = useCallback(
     (v: string) => {
       setInputState(v)
-      const draft = v.includes(PASTED_TEXT_REF_PREFIX) ? expandPastedText(v) : v
-      // Mirror synchronously so a remount inside the debounce window (see
-      // `pendingDrafts`) restores the live text; sessionStorage catches up on
-      // the trailing edge.
-      if (draft) pendingDrafts.set(session.id, draft)
+      // The draft keeps the REFERENCE form. It is short, so the per-keystroke
+      // write stays O(text) rather than re-serializing the whole paste; the
+      // bodies persist under their own key, written on paste.
+      if (v) pendingDrafts.set(session.id, v)
       else pendingDrafts.delete(session.id)
       // Clearing is immediate: a send consumes the draft, and a deferred write
       // would leave it in storage to be restored as a phantom draft later.
-      if (draft === '') {
+      if (v === '') {
         pendingDraftRef.current = ''
         flushDraft()
         return
       }
-      pendingDraftRef.current = draft
+      pendingDraftRef.current = v
       if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current)
       draftTimerRef.current = setTimeout(flushDraft, DRAFT_WRITE_DEBOUNCE_MS)
     },
-    [session.id, expandPastedText, flushDraft],
+    [session.id, flushDraft],
   )
 
   useEffect(() => {
@@ -1480,9 +1535,6 @@ export const Chat = memo(function Chat({
     // Synchronous guard FIRST ?before any await or React state read,
     // so two rapid Enter presses (within one frame) can't both pass.
     if (sendingRef.current) return
-    // Expanded here, ahead of the shell / local-command branches, so every
-    // path below works on the pasted bodies instead of `[Pasted text #N]`.
-    const { text, full } = composeOutgoing(input, attachmentList, expandPastedText)
     // `!` bash mode — run a shell command directly in the session cwd,
     // bypassing the model. Detected before slash-command matching so a
     // command starting with `!` (rare) still routes here. Mirrors Claude
@@ -1490,26 +1542,19 @@ export const Chat = memo(function Chat({
     //   `!cmd`  — local only, zero model round-trips, model never sees output.
     //   `!!cmd` — share with model: injects output into the transcript so the
     //             model sees it on the next turn (triggers a real model turn).
-    // Routing reads what the user TYPED, not the expanded text. A collapsed
-    // paste whose body happens to begin with `!` or `/clear` would otherwise be
-    // executed as a shell / local command the moment it was expanded — the
-    // composer shows only a short reference, so the user never typed a prefix.
-    // The command payload is still expanded, so `!` followed by a paste works.
+    // Routing reads what the user TYPED, never the expanded prompt — a
+    // collapsed paste whose body begins with `!` must reach the model, not the
+    // shell. See planSubmission.
     const typed = input.trim()
-    if (typed.startsWith('!!') && typed.length > 2) {
-      const command = expandPastedText(typed.slice(2))
+    const plan = planSubmission(typed, expandPastedText)
+    if (plan.mode === 'bash') {
       setInput('')
-      await runBashCommand(command, { share: true })
+      await runBashCommand(plan.command, plan.share ? { share: true } : undefined)
       return
     }
-    // `!cmd` — local only. Exclude the `!!` prefix (handled above) so a bare
-    // `!!` falls through to a normal message instead of running shell `!`.
-    if (typed.startsWith('!') && !typed.startsWith('!!') && typed.length > 1) {
-      const command = expandPastedText(typed.slice(1))
-      setInput('')
-      await runBashCommand(command)
-      return
-    }
+    // Expanded here, after routing, so every path below works on the pasted
+    // bodies instead of `[Pasted text #N]`.
+    const { text, full } = composeOutgoing(input, attachmentList, expandPastedText)
     // Client-side local commands (e.g. /resume) are intercepted here and
     // handled in-app instead of being POSTed to the SDK. Matched strictly
     // (first token only) so real SDK/plugin commands still pass through.

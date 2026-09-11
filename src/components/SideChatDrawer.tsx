@@ -17,13 +17,7 @@ import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { usePastedImages } from '../hooks/usePastedImages'
 import { usePastedTexts } from '../hooks/usePastedTexts'
-import {
-  formatPastedTextRef,
-  planPaste,
-  refKeyAction,
-  refRanges,
-  type PastePlan,
-} from '../utils/pastedText'
+import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 
@@ -78,39 +72,9 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   // on send, same as the main composer.
   const { add: addPastedText, expand: expandPastedText } = usePastedTexts()
   const fileInputRef = useRef<HTMLInputElement>(null)
-
-  /** Replace `[from, to)` with `text` in the input. Prefers the native command
-   *  so the browser's undo stack survives; falls back to a splice on engines
-   *  without execCommand (jsdom). */
-  const replaceRange = useCallback(
-    (from: number, to: number, text: string) => {
-      const el = textareaRef.current
-      el?.setSelectionRange(from, to)
-      // `insertText` with an empty string is a no-op on some engines, so a
-      // pure removal uses the dedicated delete command.
-      const native =
-        text === ''
-          ? el?.ownerDocument?.execCommand?.('delete')
-          : el?.ownerDocument?.execCommand?.('insertText', false, text)
-      if (native) return
-      setInput(input.slice(0, from) + text + input.slice(to))
-      const caret = from + text.length
-      requestAnimationFrame(() => el?.setSelectionRange(caret, caret))
-    },
-    [input],
-  )
-
-  const placePastedText = useCallback(
-    (raw: string, insert: (text: string) => void, plan: PastePlan = planPaste(raw)) => {
-      if (!plan.collapsed) {
-        insert(raw)
-        return
-      }
-      const id = addPastedText(plan.normalized)
-      insert(formatPastedTextRef(id, plan.numLines))
-    },
-    [addPastedText],
-  )
+  // Same reference-editing rules as the main composer (see the hook).
+  const { handleRefKeyDown, widenToRef, handlePaste: handleRefPaste } =
+    usePastedTextEditing({ input, setInput, textareaRef, addPastedText })
   /** Waiting = a background subagent is still in flight after the side-chat
    *  turn ended. Mirrors Chat.tsx's derivation (checks both `pending` and
    *  `background` — the latter survives a server-restart replay where no
@@ -339,25 +303,8 @@ export const SideChatDrawer = memo(function SideChatDrawer({
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               // A `[Pasted text #N]` reference is one unit: Backspace/Delete
-              // remove it whole and the arrows step over it. Shift is excluded
-              // so Shift+Arrow still extends a selection and Shift+Delete stays
-              // the platform cut.
-              if (
-                !e.nativeEvent.isComposing &&
-                !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
-              ) {
-                const el = textareaRef.current
-                const caret = el?.selectionStart
-                if (el && caret != null && caret === el.selectionEnd) {
-                  const action = refKeyAction(input, caret, e.key)
-                  if (action) {
-                    e.preventDefault()
-                    if (action.kind === 'move') el.setSelectionRange(action.caret, action.caret)
-                    else replaceRange(action.from, action.to, '')
-                    return
-                  }
-                }
-              }
+              // remove it whole and the arrows step over it.
+              if (handleRefKeyDown(e)) return
               // Skip Enter while an IME composition is active — Enter in
               // that context confirms the candidate, not submission. Without
               // this check Chinese/Japanese/Korean users would send partial
@@ -367,42 +314,8 @@ export const SideChatDrawer = memo(function SideChatDrawer({
                 void handleSend()
               }
             }}
-            onDoubleClick={() => {
-              // Widen the browser's word-select back out to the whole
-              // reference, matching the main composer.
-              const el = textareaRef.current
-              if (!el || el.selectionStart === el.selectionEnd) return
-              const range = refRanges(input).find(
-                (r) => r.start <= el.selectionStart && el.selectionStart < r.end,
-              )
-              if (range) el.setSelectionRange(range.start, range.end)
-            }}
-            onPaste={(e) => {
-              // Collect images, but don't return — a clipboard can carry an
-              // image AND a large text/plain, and bailing would let the
-              // browser insert that body inline, uncollapsed.
-              const items = e.clipboardData?.items
-              if (items) {
-                for (const item of items) {
-                  if (item.type.startsWith('image/') && item.type !== 'image/svg+xml') {
-                    const file = item.getAsFile()
-                    if (file) void pastedImages.addImage(file)
-                  }
-                }
-              }
-              const raw = e.clipboardData?.getData('text/plain') ?? ''
-              if (!raw) return
-              const plan = planPaste(raw)
-              if (!plan.collapsed) return
-              e.preventDefault()
-              const el = textareaRef.current
-              if (!el) return
-              placePastedText(
-                raw,
-                (text) => replaceRange(el.selectionStart, el.selectionEnd, text),
-                plan,
-              )
-            }}
+            onDoubleClick={widenToRef}
+            onPaste={(e) => handleRefPaste(e, (file) => void pastedImages.addImage(file))}
             placeholder={session.terminated ? 'Session ended' : 'Ask something...'}
             disabled={session.terminated || sending}
             rows={1}

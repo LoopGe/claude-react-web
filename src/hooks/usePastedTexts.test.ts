@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { usePastedTexts } from './usePastedTexts'
 
@@ -61,5 +61,39 @@ describe('usePastedTexts', () => {
     expect(result.current.expand('[ Pasted text #1]')).toBe('[ Pasted text #1]')
 
     expect(result.current.expand(`[Pasted text #${id}]`)).toBe('the pasted body')
+  })
+})
+
+describe('usePastedTexts draft restore', () => {
+  it('expands references restored from a draft', () => {
+    const { result } = renderHook(() =>
+      usePastedTexts({ 4: { id: 4, content: 'restored body' } }),
+    )
+    expect(result.current.expand('[Pasted text #4 +1 lines]')).toBe('restored body')
+  })
+
+  it('allocates new ids past the restored ones', () => {
+    // Reusing a restored id would make an existing reference in the composer
+    // resolve to whatever is pasted next.
+    const onBodiesChange = vi.fn()
+    const { result } = renderHook(() =>
+      usePastedTexts({ 4: { id: 4, content: 'old body' } }, onBodiesChange),
+    )
+    let id = 0
+    act(() => {
+      id = result.current.add('new body')
+    })
+    expect(id).toBe(5)
+    expect(result.current.expand('[Pasted text #4]')).toBe('old body')
+    expect(result.current.expand(`[Pasted text #${id}]`)).toBe('new body')
+  })
+
+  it('reports the whole map whenever a body is added', () => {
+    const onBodiesChange = vi.fn()
+    const { result } = renderHook(() => usePastedTexts({}, onBodiesChange))
+    act(() => {
+      result.current.add('body')
+    })
+    expect(onBodiesChange).toHaveBeenCalledWith({ 1: { id: 1, content: 'body' } })
   })
 })
