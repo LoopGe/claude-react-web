@@ -8,6 +8,13 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatBytes } from '../utils/format'
+import {
+  formatPastedTextRef,
+  planPaste,
+  refKeyAction,
+  refRanges,
+  type PastePlan,
+} from '../utils/pastedText'
 import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
@@ -75,6 +82,10 @@ interface Props {
   pastedImages: PastedImage[]
   onPasteImage: (file: File) => Promise<void>
   onRemovePastedImage: (id: string) => void
+  /** Store a collapsed paste's full text and return the id its
+   *  `[Pasted text #N]` reference should carry. Nothing else sees the body
+   *  until the message is sent, when the parent expands the reference. */
+  onAddPastedText: (content: string) => number
   onSend: () => void
   onInterrupt: () => void
   /** True only while there's an outstanding turn the server can interrupt.
@@ -143,6 +154,7 @@ export const Composer = memo(function Composer({
   pastedImages,
   onPasteImage,
   onRemovePastedImage,
+  onAddPastedText,
   onSend,
   onInterrupt,
   canInterrupt,
@@ -382,6 +394,70 @@ export const Composer = memo(function Composer({
     [input, savedSelection, setInput],
   )
 
+  /** Replace `[from, to)` with `text`, preferring the native path so the
+   *  browser's undo stack survives AND the caret scrolls into view — a manual
+   *  splice only moves the caret via setSelectionRange, which never scrolls,
+   *  leaving the new text below the fold on this fixed-height textarea. Falls
+   *  back to a splice on engines without execCommand (e.g. jsdom).
+   *
+   *  With the range already selected, this is also the delete path: replacing
+   *  it with '' removes it. */
+  const replaceRange = useCallback(
+    (from: number, to: number, text: string) => {
+      const el = textareaRef.current
+      if (!el) return
+      el.setSelectionRange(from, to)
+      // `insertText` with an empty string is a no-op on some engines, so a
+      // pure removal goes through the dedicated delete command instead.
+      // Either way this fires a native input event, so onChange runs setInput
+      // and history.reset() for us.
+      const native =
+        text === ''
+          ? el.ownerDocument?.execCommand?.('delete')
+          : el.ownerDocument?.execCommand?.('insertText', false, text)
+      if (native) return
+      setInput(input.slice(0, from) + text + input.slice(to))
+      if (history.isBrowsing()) history.reset()
+      const caret = from + text.length
+      requestAnimationFrame(() => {
+        el.setSelectionRange(caret, caret)
+      })
+    },
+    [input, setInput, history],
+  )
+
+  /** Insert `text` at the live caret. */
+  const insertAtCaret = useCallback(
+    (text: string) => {
+      const el = textareaRef.current
+      if (!el) return
+      replaceRange(el.selectionStart, el.selectionEnd, text)
+    },
+    [replaceRange],
+  )
+
+  /**
+   * Place a clipboard's text: a small paste goes in verbatim — the exact
+   * string the browser would have inserted itself, tabs and all — while a
+   * large one is stored and replaced by a `[Pasted text #N]` reference.
+   *
+   * Ctrl+V and the context menu's Paste both route through here, over the
+   * shared `planPaste` policy, so the threshold and the normalization cannot
+   * drift between the two entry points. `insert` receives whatever should land
+   * in the composer; each caller supplies its own caret target.
+   */
+  const placePastedText = useCallback(
+    (raw: string, insert: (text: string) => void, plan: PastePlan = planPaste(raw)) => {
+      if (!plan.collapsed) {
+        insert(raw)
+        return
+      }
+      const id = onAddPastedText(plan.normalized)
+      insert(formatPastedTextRef(id, plan.numLines))
+    },
+    [onAddPastedText],
+  )
+
   const handleCut = useCallback(async () => {
     const { start, end } = savedSelection
     if (start === end) return
@@ -407,12 +483,16 @@ export const Composer = memo(function Composer({
 
   const handlePaste = useCallback(async () => {
     try {
-      const text = await navigator.clipboard.readText()
-      if (text) insertAtSavedSelection(text)
+      const raw = await navigator.clipboard.readText()
+      if (!raw) return
+      // Goes to the range snapshotted when the menu opened, not the live
+      // caret: the menu holds focus, so the textarea is blurred while this
+      // runs. insertAtSavedSelection also restores focus afterwards.
+      placePastedText(raw, insertAtSavedSelection)
     } catch {
       toast.error('Paste failed — use Ctrl+V instead.')
     }
-  }, [insertAtSavedSelection, toast])
+  }, [insertAtSavedSelection, placePastedText, toast])
 
   const handleSelectAll = useCallback(() => {
     requestAnimationFrame(() => {
@@ -713,18 +793,40 @@ export const Composer = memo(function Composer({
           onBlur={() => { composingRef.current = false }}
           onContextMenu={handleTextareaContextMenu}
           onPaste={(e) => {
+            // Collect every image item, but do NOT return: a clipboard can
+            // carry an image AND a large text/plain (copying a selection out
+            // of a rich editor, say), and bailing here would let the browser
+            // insert that body inline, uncollapsed.
             const items = e.clipboardData?.items
-            if (!items) return
-            for (const item of items) {
-              if (item.type.startsWith('image/') && item.type !== 'image/svg+xml') {
-                // Don't call e.preventDefault() — the browser's default
-                // paste inserts any text/plain content into the textarea.
-                // We additionally process the image as an attachment.
-                const file = item.getAsFile()
-                if (file) void onPasteImage(file)
-                return
+            if (items) {
+              for (const item of items) {
+                if (item.type.startsWith('image/') && item.type !== 'image/svg+xml') {
+                  const file = item.getAsFile()
+                  if (file) void onPasteImage(file)
+                }
               }
             }
+            // A paste large enough to hurt the textarea collapses into a
+            // reference whose body is held by onAddPastedText. Anything
+            // shorter is left to the browser's own insert.
+            const raw = e.clipboardData?.getData('text/plain') ?? ''
+            if (!raw) return
+            const plan = planPaste(raw)
+            if (!plan.collapsed) return
+            e.preventDefault()
+            placePastedText(raw, insertAtCaret, plan)
+          }}
+          onDoubleClick={() => {
+            // The browser's word-select lands *inside* a reference and takes
+            // only one word of it ("[Pasted", "text", …). Widen the selection
+            // back out to cover the whole reference.
+            const el = textareaRef.current
+            if (!el || el.selectionStart === el.selectionEnd) return
+            const range = refRanges(input).find(
+              (r) => r.start <= el.selectionStart && el.selectionStart < r.end,
+            )
+            if (!range) return
+            el.setSelectionRange(range.start, range.end)
           }}
           onChange={(e) => {
             const val = e.target.value
@@ -783,6 +885,30 @@ export const Composer = memo(function Composer({
               // All other keys (letters, backspace, etc.) fall through to
               // onChange which will re-filter or close the picker.
             }
+            // A `[Pasted text #N]` reference is one unit, not two dozen
+            // characters: Backspace/Delete remove it whole and the arrows step
+            // over it. Handled before the history/send paths below so an arrow
+            // at a reference edge is consumed here instead of starting a walk.
+            // Shift is excluded throughout: Shift+Arrow extends a selection,
+            // and Shift+Delete / Shift+Backspace are the cut gesture on
+            // Windows — taking those over would delete without copying.
+            if (
+              !pickerOpen &&
+              !e.nativeEvent.isComposing &&
+              !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
+            ) {
+              const el = textareaRef.current
+              const caret = el?.selectionStart
+              if (el && caret != null && caret === el.selectionEnd) {
+                const action = refKeyAction(input, caret, e.key)
+                if (action) {
+                  e.preventDefault()
+                  if (action.kind === 'move') el.setSelectionRange(action.caret, action.caret)
+                  else replaceRange(action.from, action.to, '')
+                  return
+                }
+              }
+            }
             // Bare Tab with an empty input fills the predicted prompt
             // suggestion (if any). Modifiers keep the default behaviour
             // (focus traversal / shift-tab). `recall` sets the input and
@@ -805,31 +931,9 @@ export const Composer = memo(function Composer({
               !e.nativeEvent.isComposing
             ) {
               e.preventDefault()
-              const el = textareaRef.current
-              if (el) {
-                // Prefer execCommand('insertText') so the newline goes in the
-                // same way Shift+Enter's native insert does — it keeps the
-                // browser's undo stack intact AND scrolls the caret into view.
-                // A manual splice (below) only moves the caret via
-                // setSelectionRange, which never scrolls, so on this fixed-
-                // height textarea the new line ends up hidden below the fold.
-                // execCommand fires a native input event, so onChange already
-                // runs setInput + history.reset() for us.
-                const inserted =
-                  el.ownerDocument?.execCommand?.('insertText', false, '\n')
-                if (!inserted) {
-                  // Fallback for engines without execCommand (e.g. jsdom).
-                  const start = el.selectionStart
-                  const end = el.selectionEnd
-                  const next = input.slice(0, start) + '\n' + input.slice(end)
-                  setInput(next)
-                  if (history.isBrowsing()) history.reset()
-                  const caret = start + 1
-                  requestAnimationFrame(() => {
-                    el.setSelectionRange(caret, caret)
-                  })
-                }
-              }
+              // Same native-first insert Shift+Enter gets, so the newline
+              // keeps the browser's undo stack and scrolls the caret into view.
+              insertAtCaret('\n')
               return
             }
             // Alt+Enter: toggle expanded mode (enlarge textarea + show
