@@ -4671,7 +4671,7 @@ export class SessionManager {
     // scheduled by the last mutating tool_use could still fire after the
     // session is removed (the broadcast itself is a no-op then, but the
     // timer is dead code that should be released up front).
-    cancelGitBroadcast(id)
+    cancelGitBroadcast(this, id)
     endAllSubscribers(s)
     // Broadcast the running=false / terminated state BEFORE removing
     // from the map. Without this, the client's copy stays stale at

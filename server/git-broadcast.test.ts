@@ -60,7 +60,10 @@ describe('mutatingToolUseId', () => {
 
 // ── Debounce + broadcast wiring ──────────────────────────────────────
 
-function makeStubBroadcaster(): SessionBroadcaster & { calls: string[] } {
+function makeStubBroadcaster(
+  keys: Record<string, string> = {},
+  peers: Record<string, string | null> = {},
+): SessionBroadcaster & { calls: string[] } {
   const calls: string[] = []
   return {
     calls,
@@ -74,6 +77,8 @@ function makeStubBroadcaster(): SessionBroadcaster & { calls: string[] } {
     broadcastGitStatusChanged(id: string) {
       calls.push(id)
     },
+    gitGroupKeyOf: (id: string) => keys[id] ?? id,
+    gitGroupLivePeer: (id: string) => peers[id] ?? null,
   } as unknown as SessionBroadcaster & { calls: string[] }
 }
 
@@ -132,8 +137,61 @@ describe('scheduleGitBroadcast', () => {
     const sm = makeStubBroadcaster()
     scheduleGitBroadcast(sm, 'sess-1')
     vi.advanceTimersByTime(200)
-    cancelGitBroadcast('sess-1')
+    cancelGitBroadcast(sm, 'sess-1')
     vi.advanceTimersByTime(1000)
     expect(sm.calls).toEqual([])
+  })
+
+  it('coalesces schedules from two sessions sharing a group key into one broadcast', () => {
+    const sm = makeStubBroadcaster({ 'sess-A': '/repo', 'sess-B': '/repo' })
+    scheduleGitBroadcast(sm, 'sess-A')
+    vi.advanceTimersByTime(100)
+    scheduleGitBroadcast(sm, 'sess-B') // same group: resets the same timer
+    vi.advanceTimersByTime(500)
+    // Only one fire; trigger origin is the last scheduler (sess-B)
+    expect(sm.calls).toEqual(['sess-B'])
+  })
+
+  it('keeps separate timers for different group keys', () => {
+    const sm = makeStubBroadcaster({ 'sess-A': '/repo-a', 'sess-B': '/repo-b' })
+    scheduleGitBroadcast(sm, 'sess-A')
+    vi.advanceTimersByTime(200)
+    scheduleGitBroadcast(sm, 'sess-B')
+    vi.advanceTimersByTime(300)
+    expect(sm.calls).toEqual(['sess-A'])
+    vi.advanceTimersByTime(200)
+    expect(sm.calls).toEqual(['sess-A', 'sess-B'])
+  })
+
+  it('cancel with a live peer keeps the timer and re-points origin to the peer', () => {
+    const sm = makeStubBroadcaster(
+      { 'sess-A': '/repo', 'sess-B': '/repo' },
+      { 'sess-A': 'sess-B' },
+    )
+    scheduleGitBroadcast(sm, 'sess-A')
+    vi.advanceTimersByTime(200)
+    cancelGitBroadcast(sm, 'sess-A') // A unloads; B still needs the refresh
+    vi.advanceTimersByTime(500)
+    expect(sm.calls).toEqual(['sess-B']) // timer alive, origin switched to B
+  })
+
+  it('cancel without peers clears the timer', () => {
+    const sm = makeStubBroadcaster()
+    scheduleGitBroadcast(sm, 'sess-1')
+    vi.advanceTimersByTime(200)
+    cancelGitBroadcast(sm, 'sess-1')
+    vi.advanceTimersByTime(1000)
+    expect(sm.calls).toEqual([])
+  })
+
+  it('cancel ignores timers whose origin is another session', () => {
+    const sm = makeStubBroadcaster({ 'sess-A': '/repo', 'sess-B': '/repo' })
+    scheduleGitBroadcast(sm, 'sess-A')
+    vi.advanceTimersByTime(100)
+    scheduleGitBroadcast(sm, 'sess-B') // origin is now B
+    vi.advanceTimersByTime(100)
+    cancelGitBroadcast(sm, 'sess-A') // A is not origin — must not kill B's timer
+    vi.advanceTimersByTime(500)
+    expect(sm.calls).toEqual(['sess-B'])
   })
 })
