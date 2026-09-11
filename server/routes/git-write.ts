@@ -7,7 +7,9 @@
 //   2. Require `session.cwd` (throws 400 if missing)
 //   3. Validate body fields (destructive ops require `confirm: true`)
 //   4. Call into server/git.ts to perform the git operation
-//   5. Broadcast `git-status-changed` to the session's WS subscribers
+//   5. Broadcast a git-snapshot frame (fanned out to every session sharing
+//      the cwd's repo group), passing the fresh lists as opts.snapshot so
+//      the broadcast never re-spawns git for a field we already computed
 //   6. Return the freshly-fetched status snapshot, plus stash/branch
 //      lists when relevant, so the client can update without a second
 //      round-trip.
@@ -70,8 +72,9 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const paths = parsePathsArray(body.paths)
     log.info(`stage session=${id} paths=${paths.length}`)
     await stageFiles(cwd, paths)
-    sm.broadcastGitStatusChanged(id)
-    return c.json({ status: await freshStatus(cwd) })
+    const status = await freshStatus(cwd)
+    sm.broadcastGitStatusChanged(id, { snapshot: { status } })
+    return c.json({ status })
   })
 
   app.post('/sessions/:id/git/unstage', async (c) => {
@@ -81,8 +84,9 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const paths = parsePathsArray(body.paths)
     log.info(`unstage session=${id} paths=${paths.length}`)
     await unstageFiles(cwd, paths)
-    sm.broadcastGitStatusChanged(id)
-    return c.json({ status: await freshStatus(cwd) })
+    const status = await freshStatus(cwd)
+    sm.broadcastGitStatusChanged(id, { snapshot: { status } })
+    return c.json({ status })
   })
 
   app.post('/sessions/:id/git/discard', async (c) => {
@@ -98,8 +102,9 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     } else {
       await discardTracked(cwd, paths)
     }
-    sm.broadcastGitStatusChanged(id)
-    return c.json({ status: await freshStatus(cwd) })
+    const status = await freshStatus(cwd)
+    sm.broadcastGitStatusChanged(id, { snapshot: { status } })
+    return c.json({ status })
   })
 
   // ── Commits ────────────────────────────────────────────────────────
@@ -121,8 +126,9 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     }
     log.info(`commit session=${id} amend=${amend} msgLen=${body.message.length}`)
     await commitChanges(cwd, body.message, amend)
-    sm.broadcastGitStatusChanged(id)
-    return c.json({ status: await freshStatus(cwd) })
+    const status = await freshStatus(cwd)
+    sm.broadcastGitStatusChanged(id, { snapshot: { status } })
+    return c.json({ status })
   })
 
   // ── Conflict abort ────────────────────────────────────────────────
@@ -134,8 +140,9 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     if (body.confirm !== true) throw new HttpError(400, 'abort-merge requires confirm:true')
     log.warn(`abort-merge session=${id}`)
     await abortMerge(cwd)
-    sm.broadcastGitStatusChanged(id)
-    return c.json({ status: await freshStatus(cwd) })
+    const status = await freshStatus(cwd)
+    sm.broadcastGitStatusChanged(id, { snapshot: { status } })
+    return c.json({ status })
   })
 
   app.post('/sessions/:id/git/abort-rebase', async (c) => {
@@ -145,8 +152,9 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     if (body.confirm !== true) throw new HttpError(400, 'abort-rebase requires confirm:true')
     log.warn(`abort-rebase session=${id}`)
     await abortRebase(cwd)
-    sm.broadcastGitStatusChanged(id)
-    return c.json({ status: await freshStatus(cwd) })
+    const status = await freshStatus(cwd)
+    sm.broadcastGitStatusChanged(id, { snapshot: { status } })
+    return c.json({ status })
   })
 
   // ── Stash ─────────────────────────────────────────────────────────
@@ -165,8 +173,8 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const includeUntracked = body.includeUntracked === true
     log.info(`stash session=${id} includeUntracked=${includeUntracked}`)
     await stashCreate(cwd, message, includeUntracked)
-    sm.broadcastGitStatusChanged(id)
     const [status, stashes] = await Promise.all([freshStatus(cwd), listStashes(cwd)])
+    sm.broadcastGitStatusChanged(id, { snapshot: { status, stashes } })
     return c.json({ status, stashes })
   })
 
@@ -179,8 +187,8 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     }
     log.info(`stash-pop session=${id} index=${body.index}`)
     await stashPop(cwd, body.index)
-    sm.broadcastGitStatusChanged(id)
     const [status, stashes] = await Promise.all([freshStatus(cwd), listStashes(cwd)])
+    sm.broadcastGitStatusChanged(id, { snapshot: { status, stashes } })
     return c.json({ status, stashes })
   })
 
@@ -194,8 +202,9 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     }
     log.warn(`stash-drop session=${id} index=${body.index}`)
     await stashDrop(cwd, body.index)
-    sm.broadcastGitStatusChanged(id)
-    return c.json({ stashes: await listStashes(cwd) })
+    const stashes = await listStashes(cwd)
+    sm.broadcastGitStatusChanged(id, { snapshot: { stashes } })
+    return c.json({ stashes })
   })
 
   // ── Branches ──────────────────────────────────────────────────────
@@ -215,8 +224,8 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const autoStash = body.autoStash === true
     log.info(`branch session=${id} name=${body.name} checkout=${checkout}`)
     const result = await createBranch(cwd, body.name, checkout, autoStash)
-    sm.broadcastGitStatusChanged(id)
     const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])
+    sm.broadcastGitStatusChanged(id, { snapshot: { status, branches } })
     return c.json({ status, branches, stashed: result.stashed })
   })
 
@@ -228,8 +237,8 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const autoStash = body.autoStash === true
     log.info(`checkout session=${id} branch=${body.branch}`)
     const result = await checkoutBranch(cwd, body.branch, autoStash)
-    sm.broadcastGitStatusChanged(id)
     const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])
+    sm.broadcastGitStatusChanged(id, { snapshot: { status, branches } })
     return c.json({ status, branches, stashed: result.stashed })
   })
 
@@ -259,8 +268,8 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const cwd = getSessionCwd(id)
     log.info(`pull session=${id}`)
     const result = await pullFromRemote(cwd)
-    sm.broadcastGitStatusChanged(id)
     const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])
+    sm.broadcastGitStatusChanged(id, { snapshot: { status, branches } })
     return c.json({ status, branches, updated: result.updated })
   })
 
@@ -274,8 +283,8 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     }
     log.info(`push session=${id} force=${force}`)
     await pushToRemote(cwd, force)
-    sm.broadcastGitStatusChanged(id)
     const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])
+    sm.broadcastGitStatusChanged(id, { snapshot: { status, branches } })
     return c.json({ status, branches })
   })
 
