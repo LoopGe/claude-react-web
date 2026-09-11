@@ -49,7 +49,9 @@ function useGitSnapshotListener(
 ): void {
   const hub = useWsHub()
   const onFrameRef = useRef(onFrame)
-  onFrameRef.current = onFrame
+  useEffect(() => {
+    onFrameRef.current = onFrame
+  })
   useEffect(() => {
     if (!enabled || !sessionId) return
     const offSub = hub.subscribe(sessionId)
