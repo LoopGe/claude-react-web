@@ -8,13 +8,13 @@
 //   - HttpError thrown from server/git.ts is translated to JSON by the
 //     global onError handler in app.ts.
 //
-// All three endpoints are GET / cwd-scope. Writes (stage/unstage/commit)
+// All endpoints here are GET / cwd-scope. Writes (stage/unstage/commit)
 // live under /api/sessions/:id/git/* in routes/git-write.ts.
 
 import { Hono } from 'hono'
 import { isAbsolute } from 'node:path'
 import { HttpError, createErrorHandler } from './errors.js'
-import { getDiff, getLog, getStatusCached, getRangeDiffFiles, getRangeDiffFile, validateRef } from './git.js'
+import { getDiff, getLog, getStatusCached, getRangeDiffFiles, getRangeDiffFile, validateRef, listBranches, listStashes } from './git.js'
 import type { GitLogResponse, GitRangeDiffResponse } from '../shared/git-types.js'
 
 export function buildGitRouter(): Hono {
@@ -104,6 +104,22 @@ export function buildGitRouter(): Hono {
     const commits = await getLog(cwd, limit)
     const body: GitLogResponse = { commits }
     return c.json(body)
+  })
+
+  // --- GET /branches ----------------------------------------------------
+  // Full branch list for the cwd's repo. cwd-scoped (not session-scoped)
+  // like every other read here: branches are a property of the work tree,
+  // and two sessions on the same repo share one answer.
+  app.get('/branches', async (c) => {
+    const cwd = requireCwd(c.req.query('cwd'))
+    return c.json({ branches: await listBranches(cwd) })
+  })
+
+  // --- GET /stashes -----------------------------------------------------
+  // Stash list for the cwd's repo. Same cwd-scoping rationale as /branches.
+  app.get('/stashes', async (c) => {
+    const cwd = requireCwd(c.req.query('cwd'))
+    return c.json({ stashes: await listStashes(cwd) })
   })
 
   return app
