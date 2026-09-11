@@ -15,6 +15,44 @@ const TRANSITION = [
   'opacity var(--motion-duration-fast) var(--motion-ease-standard)',
 ].join(', ')
 
+/** What the collapse should settle the body's height on, or null when the
+ *  measurement must not be adopted.
+ *
+ *  Normally simply the content's rendered height. Under a flex clamp from an
+ *  ancestor (`.chat-bottom-stack` caps its height, and the clamp lands on the
+ *  body) that box belongs to the ancestor, not the content — adopting it is
+ *  what latches a panel small after the constraint lifts — so a caller that
+ *  has not opted in gets null, exactly as before.
+ *
+ *  `keepWhileClamped` is the opt-in for the one shape where the reading stays
+ *  trustworthy under a clamp: a body whose content is deliberately left at its
+ *  intrinsic height, so it OVERFLOWS a clamped body rather than being squeezed
+ *  into it (the TaskList card's `flex: 0 0 auto` content). There the content's
+ *  own height is what the body should be pinned to, in both directions, so the
+ *  card is right again the moment the constraint lifts. Do not set it for
+ *  content stretched to the body: the measured height is then the clamp. */
+function measureAdoptableHeight(
+  body: HTMLDivElement,
+  content: HTMLDivElement,
+  keepWhileClamped: boolean,
+): { height: number; pinned: number; clamped: boolean } | null {
+  const contentHeight = content.getBoundingClientRect().height
+  const pinned = Number.parseFloat(body.style.height)
+  // The LAYOUT height (`offsetHeight`), not a rect: getBoundingClientRect
+  // includes ancestor transforms, and the chat panel plus the overlay panels
+  // enter with `scale(0.98)` — every body inside one would read as clamped for
+  // the length of that entrance. offsetHeight is the used height, which is what
+  // "the ancestor handed us less than we pinned" actually means.
+  const clamped = Number.isFinite(pinned) && body.offsetHeight < pinned - 1
+  if (clamped && !keepWhileClamped) return null
+  // Under a clamp the reading we pin must be in the same coordinate space as
+  // the pin: a rect would carry the same ancestor scale that the probe above
+  // just discounted, and pinning 98% of the content leaves the card a few px
+  // short (a stray scrollbar and a clipped last row) until something else
+  // resizes the content.
+  return { height: clamped ? content.offsetHeight : contentHeight, pinned, clamped }
+}
+
 interface AnimatedCollapseProps {
   open: boolean
   children: ReactNode
@@ -34,6 +72,18 @@ interface AnimatedCollapseProps {
    *  panel smoothly. The open/close fold always takes precedence — a resize
    *  that lands mid-open/close lets that animation finish first. */
   animateResize?: boolean
+  /** Keep the pinned height in step with the content while an ancestor
+   *  flex-clamps the body (`remeasureWhileClamped` opts out of the default
+   *  "never adopt a clamped reading" rule — see measureAdoptableHeight). Only
+   *  for bodies whose content is deliberately left at its intrinsic height, so
+   *  a reading taller than the clamped box really is the content's own height:
+   *  the TaskList card, whose `.todo-panel .animated-collapse-content` is
+   *  `flex: 0 0 auto` inside `.chat-bottom-stack`'s 45% cap. Without it a row
+   *  landing under the clamp leaves the pin stale, so the card stays short —
+   *  the new rows reachable only by scrolling — until some later row heals it.
+   *  Default false: for the ordinary content stretched to the body, the
+   *  measured height IS the clamp and must never be adopted. */
+  remeasureWhileClamped?: boolean
 }
 
 export function AnimatedCollapse({
@@ -47,6 +97,7 @@ export function AnimatedCollapse({
   onExitComplete,
   id,
   animateResize = false,
+  remeasureWhileClamped = false,
 }: AnimatedCollapseProps) {
   const [mounted, setMounted] = useState(open || !unmountOnExit)
   const bodyRef = useRef<HTMLDivElement | null>(null)
@@ -76,20 +127,18 @@ export function AnimatedCollapse({
     // If the content's true height drifted while the open animation played
     // (ResizeObserver snaps are deferred during the animation so it can play
     // out — see the observer below), snap to the current true height now so
-    // nothing stays clipped under `overflow-y: clip`.
+    // nothing stays clipped under `overflow-y: clip`. Under a clamp this is
+    // the same rule the observer applies — one definition, see
+    // measureAdoptableHeight.
     const content = contentRef.current
     if (content) {
-      // Same flex-clamp guard as the ResizeObserver below: don't treat the
-      // clamped height as the content's true height.
-      const specified = Number.parseFloat(body.style.height)
-      const clamped = Number.isFinite(specified) && body.getBoundingClientRect().height < specified - 1
-      const trueHeight = content.getBoundingClientRect().height
-      if (!clamped && trueHeight > 0 && Math.abs(trueHeight - height) > 1) {
-        lastHeightRef.current = trueHeight
-        body.style.height = `${trueHeight}px`
+      const measured = measureAdoptableHeight(body, content, remeasureWhileClamped)
+      if (measured && measured.height > 0 && Math.abs(measured.height - height) > 1) {
+        lastHeightRef.current = measured.height
+        body.style.height = `${measured.height}px`
       }
     }
-  }, [unmountOnExit])
+  }, [remeasureWhileClamped, unmountOnExit])
 
   const finishClosed = useCallback(() => {
     const body = bodyRef.current
@@ -222,17 +271,29 @@ export function AnimatedCollapse({
       // which pins the collapse to a stale height and leaves whitespace
       // after a drag-out. getBoundingClientRect reflects the actual layout
       // box and is immune to the overflow-clip scrollHeight quirk.
-      const nextHeight = content.getBoundingClientRect().height
+      const measured = measureAdoptableHeight(body, content, remeasureWhileClamped)
+      if (!measured) return
+      if (measured.clamped) {
+        // The box belongs to the ancestor, not the content (see
+        // measureAdoptableHeight, which only returns a height here for opted-in
+        // callers). Record it rather than animating into it: the body's own box
+        // does not move while the clamp holds — the ancestor still governs it —
+        // so the visible effect is only that the card comes back at its full
+        // height when the constraint lifts, instead of staying at whatever
+        // height it had when the constraint appeared. (The pinned height is
+        // part of the card's flex basis, so with a sibling card sharing the
+        // same capped stack the shrink split between them does shift.)
+        // Never retarget a live tween (see the guard below); finishOpen
+        // re-measures — by this same rule — at its end.
+        if (animatingRef.current) return
+        if (Math.abs(measured.height - measured.pinned) < 1) return
+        lastHeightRef.current = measured.height
+        body.style.height = `${measured.height}px`
+        return
+      }
       const currentHeight = body.getBoundingClientRect().height
-      // Flex-clamped by an ancestor (the transcript's bottom overlay stack caps
-      // its height): the rendered height is the space we were handed, not the
-      // content's natural height. Pinning to it would latch the panel small
-      // even after the constraint lifts, so bail — the clamp is layout, not
-      // content. Without a constrained ancestor this never triggers.
-      const specified = Number.parseFloat(body.style.height)
-      if (Number.isFinite(specified) && currentHeight < specified - 1) return
-      if (Math.abs(nextHeight - currentHeight) < 1) return
-      lastHeightRef.current = nextHeight
+      if (Math.abs(measured.height - currentHeight) < 1) return
+      lastHeightRef.current = measured.height
       if (animatingRef.current) {
         // An open/close animation is in flight — let it play to its target
         // rather than tearing it down (which made every open instant /
@@ -245,15 +306,15 @@ export function AnimatedCollapse({
         // natural height. fade=false — opacity belongs to the open/close beat,
         // not layout motion. Rapid successive events call animateHeight again,
         // which cancels the in-flight tween and restarts from the live height.
-        animateHeight(currentHeight, nextHeight, true, false)
+        animateHeight(currentHeight, measured.height, true, false)
       } else {
-        body.style.height = `${nextHeight}px`
+        body.style.height = `${measured.height}px`
       }
     })
 
     observer.observe(content)
     return () => observer.disconnect()
-  }, [animateHeight, animateResize, open, rendered, unmountOnExit])
+  }, [animateHeight, animateResize, open, remeasureWhileClamped, rendered, unmountOnExit])
 
   useEffect(() => () => cleanupAnimation(), [cleanupAnimation])
 

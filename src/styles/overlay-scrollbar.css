@@ -167,7 +167,12 @@
    message bodies that may scroll; they're listed explicitly (there is no
    shared `.msg-body pre` base anymore). `.md pre` extends the hide to
    <Markdown> rendered outside a message body (RecapWindow, Composer preview,
-   plugin results). */
+   plugin results). `.todo-panel .animated-collapse` is the TaskList card's
+   body: it only scrolls while .chat-bottom-stack's height cap bites, and a
+   bar there would appear and vanish on every height tween (AnimatedCollapse
+   pins the body shorter than its content for the length of each one), shifting
+   the row text by the bar's width each time. The list inside keeps its own
+   overlay thumb. */
 .os-hidden,
 .md pre,
 .md table,
@@ -177,7 +182,8 @@
 .diff-block,
 .bash-msg-pre,
 .perm-raw,
-.question-option-preview {
+.question-option-preview,
+.todo-panel .animated-collapse {
   scrollbar-width: none;
 }
 .os-hidden::-webkit-scrollbar,
@@ -189,7 +195,8 @@
 .diff-block::-webkit-scrollbar,
 .bash-msg-pre::-webkit-scrollbar,
 .perm-raw::-webkit-scrollbar,
-.question-option-preview::-webkit-scrollbar {
+.question-option-preview::-webkit-scrollbar,
+.todo-panel .animated-collapse::-webkit-scrollbar {
   width: 0;
   height: 0;
   display: none;

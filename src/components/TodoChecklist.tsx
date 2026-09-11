@@ -301,7 +301,12 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
           </button>
         </div>
       )}
-      <AnimatedCollapse open={!collapsed} animateResize>
+      {/* remeasureWhileClamped: this card lives in .chat-bottom-stack, whose
+          45% height cap lands on the collapse body. The card's own content is
+          left at its intrinsic height (see `.todo-panel .animated-collapse-content`),
+          so the body can be re-pinned to it while the cap holds and come back at
+          full height when the cap lifts. */}
+      <AnimatedCollapse open={!collapsed} animateResize remeasureWhileClamped>
         <ul ref={setListScroller} id="todo-panel-list" className="todo-panel-list">
           {visibleTodos.map((t, i) => (
             <li

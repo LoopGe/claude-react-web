@@ -1630,9 +1630,11 @@
          this slot, so the cards inherit the same shared rhythm now that they
          are;
        - it is a column flex box with `min-height: 0` so it can SHRINK when the
-         stack hits its height cap (see .chat-bottom-stack). The chain runs on
-         through .animated-collapse to the scrolling list — without it the stack
-         would outgrow the transcript instead of the list scrolling.
+         stack hits its height cap (see .chat-bottom-stack). The clamp lands on
+         .animated-collapse's body, which scrolls — the list inside it keeps
+         its own intrinsic height (see the notes there and on
+         .todo-panel-list). Without that chain the stack would outgrow the
+         transcript instead of the card scrolling.
      The accent identity lives in the title color alone. */
   pointer-events: auto;
   flex: 0 1 auto;
@@ -1654,12 +1656,32 @@
 .todo-panel .animated-collapse {
   display: flex;
   flex-direction: column;
+  /* The card's scroll container, for when .chat-bottom-stack's height cap
+     bites: the content below stays at its intrinsic height, so the overflow
+     lands here and the header + count above (siblings of this body) stay
+     visible. `auto` — not the shared `clip` — is what lets the user reach the
+     rows the cap would otherwise cut off. Its scrollbar is hidden
+     (overlay-scrollbar.css): the body is pinned shorter than its content for
+     the length of every height tween, so a bar here would appear and vanish on
+     each one and shift the row text by its width; wheel and trackpad still
+     scroll. The nested-scroller caveat: a list longer than its own 240px cap
+     is scrollable in its own right, so under a cap this card has two
+     scrollports over the same rows — the list to its cap, the body past it.
+     That is the price of the intrinsic height above; the alternative measured
+     a box pinned to this body and froze the card at its first-layout height. */
+  overflow-y: auto;
 }
+/* Intrinsic height, deliberately NOT stretched to the body's animated height.
+   AnimatedCollapse's ResizeObserver (animateResize) measures THIS element to
+   grow the card, and a box sized by the body can never report that a row was
+   appended or removed — every box below a pinned height is pinned with it, so
+   the card would freeze at the height it first laid out at and clip every row
+   added afterwards. This is the whole fix for that; the shrink chain still
+   works because the clamp is absorbed one level up (see above). */
 .todo-panel .animated-collapse-content {
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 0 0 auto;
 }
 @keyframes todo-panel-in {
   from {
@@ -1770,12 +1792,20 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  /* Natural cap; the GUARANTEE is .chat-bottom-stack's height cap, which this
-     list absorbs by shrinking (flex:1 + min-height:0) and scrolling. The list
-     scrolls internally (overlay scrollbar attached in TodoChecklist); the
-     header + count stay visible above. */
-  flex: 1 1 auto;
-  min-height: 0;
+  /* Natural cap, and a height kept at the list's own (never squeezed or
+     stretched to the collapse body's animated height): this list's box IS the
+     collapse content's box — the one AnimatedCollapse's ResizeObserver measures
+     to grow the card — so stretching or squeezing it hides a row appearing or
+     disappearing from the only box that still reports it. The cap below is
+     part of that height: the observer measures min(rows, 240px), and past it
+     the list scrolls internally with the overlay thumb useOverlayScrollbar
+     attaches to it.
+     Read this with .todo-panel .animated-collapse: the card's clamp is
+     absorbed there, so a capped card has two scrollports over these rows (this
+     list up to the cap, the body past it). That is the price of the intrinsic
+     height above — the alternative measured a box pinned to the body and froze
+     the card at its first-layout height. */
+  flex: 0 0 auto;
   max-height: 240px;
   overflow-y: auto;
 }
@@ -2001,9 +2031,12 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  /* Same cap and same shrink contract as .todo-panel-list — see the note
-     there. Kept in lockstep so the two cards behave identically when the stack
-     is height-capped. */
+  /* Same 240px cap as .todo-panel-list so the two cards read at one size.
+     This list has no AnimatedCollapse between it and .chat-bottom-stack, so it
+     is also what absorbs the stack's height cap: it shrinks (flex-shrink +
+     min-height: 0) and scrolls in one movement. The todo card's list is held at
+     its intrinsic height by the collapse content instead, so that card scrolls
+     its collapse body under the same cap (see .todo-panel .animated-collapse). */
   flex: 1 1 auto;
   min-height: 0;
   max-height: 240px;
