@@ -1240,6 +1240,138 @@ describe('MessageList', () => {
     })
   })
 
+  it('treats an up-scroll inside the task-list dead zone as a leave (jump button appears, no re-pin yank)', async () => {
+    // Regression guard for the "TASKLIST present → wheel-up snaps back to the
+    // bottom" bug. `getDistanceFromBottom` subtracts the bottom spacer (the
+    // task list + live bubble reserve) and clamps to 0, so an up-scroll that
+    // stays inside the spacer reads as "at bottom" and the follow gate never
+    // turns off — and the re-pin backstops (append pin, content-growth
+    // ResizeObserver) keep snapping the viewport back down mid-scroll. The fix
+    // measures the user leave against the TRUE bottom (scrollHeight, ignoring
+    // the spacer) so the first up-scroll disables follow.
+    virtuosoMockState.atBottomReport = true
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.streamingSpacerHeight = 254 // tall task list reserves 254px
+
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
+    ]
+
+    // 200px of settled content + 254px footer spacer. True bottom (max
+    // scrollTop) = 454 - 100 = 354. Model real Virtuoso: scrollHeight includes
+    // the committed Footer spacer.
+    const contentHeight = 200
+    virtuosoMockState.scrollHeight = contentHeight + virtuosoMockState.streamingSpacerHeight // 454
+    virtuosoMockState.scrollTop = contentHeight + virtuosoMockState.streamingSpacerHeight - virtuosoMockState.clientHeight // 354
+
+    const { container, rerender } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
+    )
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+
+    Object.defineProperty(scroller, 'scrollHeight', {
+      configurable: true,
+      get: () => {
+        const sp = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
+        return contentHeight + (sp ? (Number.parseFloat(sp.style.height) || 0) : 0)
+      },
+    })
+
+    // Start at the true bottom, following.
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    })
+
+    // User wheels up 50px — still inside the 254px dead zone the task list
+    // reserves. With the bug this reads as "at bottom" (follow stays on) and
+    // the button stays hidden; with the fix the leave is detected immediately.
+    virtuosoMockState.scrollTop = contentHeight + virtuosoMockState.streamingSpacerHeight - virtuosoMockState.clientHeight - 50 // 304
+    act(() => { fireEvent.scroll(scroller) })
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+    })
+
+    // A new message appends → the append re-pin fires. With the bug follow is
+    // still on, so pinToBottom yanks scrollTop back to the very bottom; with
+    // the fix follow is off and the pin is a no-op, so the viewport stays 50px
+    // up.
+    rerender(
+      <MessageList
+        items={toItems([...msgs, makeMsg('assistant', { message: { content: [{ type: 'text', text: 'new reply' }] } })] as SdkMessage[])}
+ />,
+    )
+    expect(scroller.scrollTop).toBe(contentHeight + virtuosoMockState.streamingSpacerHeight - virtuosoMockState.clientHeight - 50)
+  })
+
+  it('does not re-latch follow when the bottom spacer collapses under an away user', async () => {
+    // Regression guard for the flip side of the dead-zone fix: while the user
+    // is AWAY (follow off), the task list completing/collapsing shrinks the
+    // bottom spacer, scrollHeight shrinks and the browser clamps scrollTop down
+    // to the new max. That scroll event reads `isScrollingUp=true` but
+    // `distTrue≈0`, and must NOT re-arm follow — the content moved, not the
+    // user. Re-latching there would resurrect the re-pin yank on the next
+    // appended message.
+    virtuosoMockState.atBottomReport = true
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.streamingSpacerHeight = 254
+
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
+    ]
+
+    const contentHeight = 200
+    virtuosoMockState.scrollHeight = contentHeight + virtuosoMockState.streamingSpacerHeight
+    virtuosoMockState.scrollTop = contentHeight + virtuosoMockState.streamingSpacerHeight - virtuosoMockState.clientHeight
+
+    const { container, rerender } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
+    )
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    Object.defineProperty(scroller, 'scrollHeight', {
+      configurable: true,
+      get: () => {
+        const sp = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
+        return contentHeight + (sp ? (Number.parseFloat(sp.style.height) || 0) : 0)
+      },
+    })
+
+    // Start at the true bottom, following.
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    })
+
+    // User wheels up 50px into the dead zone → leave (follow off, button up).
+    virtuosoMockState.scrollTop = contentHeight + virtuosoMockState.streamingSpacerHeight - virtuosoMockState.clientHeight - 50
+    act(() => { fireEvent.scroll(scroller) })
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+    })
+
+    // The task list collapses: spacer 254 → 0, re-render drops the spacer, and
+    // the browser clamps scrollTop from 304 down to the new max (200 - 100 =
+    // 100), firing a scroll event with isScrollingUp=true + distTrue≈0.
+    virtuosoMockState.streamingSpacerHeight = 0
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])} />)
+    virtuosoMockState.scrollTop = contentHeight - virtuosoMockState.clientHeight // 100 = new true max
+    act(() => { fireEvent.scroll(scroller) })
+
+    // Still away — the button stays up and follow stays off, so an appended
+    // message must NOT yank the viewport back to the bottom.
+    await waitFor(() => {
+      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+    })
+    rerender(
+      <MessageList
+        items={toItems([...msgs, makeMsg('assistant', { message: { content: [{ type: 'text', text: 'after collapse' }] } })] as SdkMessage[])}
+ />,
+    )
+    expect(scroller.scrollTop).toBe(contentHeight - virtuosoMockState.clientHeight)
+  })
+
   it('keeps jump-to-bottom hidden while following, even across the follow-disable window (session-switch flicker guard)', async () => {
     // Regression guard for the switch flicker. During a session's bulk replay
     // the scroller is still following (`shouldFollowRef` true) but content

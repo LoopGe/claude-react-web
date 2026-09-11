@@ -65,11 +65,39 @@ const getDistanceFromBottom = (el: HTMLElement) => (
   Math.max(0, el.scrollHeight - getBottomSpacerHeight(el) - el.scrollTop - el.clientHeight)
 )
 
+/**
+ * Distance from the TRUE bottom of the scroll content — `scrollHeight`, with NO
+ * spacer subtraction.
+ *
+ * Why a second metric? The spacer-aware `getDistanceFromBottom` above is right
+ * for the BUTTON and the "at bottom" state (a viewport resting above the task
+ * list / live bubble should read as at-bottom), but it is WRONG for the
+ * user-leave gate: because the spacer height is subtracted, an up-scroll that
+ * stays inside the spacer reads as `0`, so `shouldFollowRef` never turns off
+ * and the re-pin backstops keep snapping the viewport back down ("wheel-up gets
+ * absorbed").
+ *
+ * The true-bottom distance is keyed to `scrollHeight`, which is where
+ * `pinToBottom` parks the viewport when following. Any net upward scroll from
+ * there is a genuine user leave; an animated group FOLD clamps `scrollTop`
+ * down in lockstep as `scrollHeight` shrinks, so this distance stays ≈ 0 there
+ * and is not mistaken for a leave.
+ */
+const getDistanceFromTrueBottom = (el: HTMLElement) => (
+  Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight)
+)
+
 const getBottomGeometry = (el: HTMLElement) => {
   const distanceFromBottom = getDistanceFromBottom(el)
   const atBottom = distanceFromBottom <= BOTTOM_EPSILON_PX
   return { atBottom, canJumpToBottom: !atBottom }
 }
+
+/** True when the viewport is parked at the very bottom (scrollHeight) — the
+ *  only geometry that may re-arm follow. Distinct from
+ *  `getBottomGeometry().atBottom`, which also covers the spacer-reserved dead
+ *  zone (see `getDistanceFromTrueBottom`). */
+const isAtTrueBottom = (el: HTMLElement) => getDistanceFromTrueBottom(el) <= BOTTOM_EPSILON_PX
 
 type FollowMode = 'restore' | 'disable-now' | 'disable-debounced' | 'preserve'
 type BottomSyncMode = FollowMode | 'confirm-away'
@@ -279,13 +307,17 @@ export function useTranscriptScroll({
       setBottomState(nextAtBottom)
     }
 
-    if (nextAtBottom) {
+    if (nextAtBottom && shouldFollowRef.current) {
       clearUnseen()
     }
 
     if (followMode === 'restore') {
       clearFollowTimer()
       shouldFollowRef.current = true
+      setCanJumpToBottom(false)
+      // The generic clear above is gated on shouldFollowRef, so an arrive
+      // from AWAY (follow was off) has to clear here, after re-arming.
+      clearUnseen()
       return
     }
 
@@ -329,12 +361,21 @@ export function useTranscriptScroll({
         }
 
         // Already away: reflect the real settled geometry — show the button
-        // when below is unavailable-looking / away, restore follow when back.
-        if (geometry.atBottom) {
+        // when below is unavailable-looking / away, restore follow when back
+        // at the TRUE bottom. Restoring while still inside the dead zone
+        // (spacer-aware at-bottom) would re-latch follow and re-arm the re-pin
+        // backstops that snap the viewport back down.
+        if (isAtTrueBottom(el)) {
           setCanJumpToBottom(false)
           setBottomState(true)
           shouldFollowRef.current = true
           clearUnseen()
+        } else if (geometry.atBottom) {
+          // Settled inside the dead zone while away: keep the leave — button
+          // stays up so the user has the affordance (and the badge keeps
+          // counting new arrivals).
+          setCanJumpToBottom(true)
+          setBottomState(false)
         } else {
           setCanJumpToBottom(geometry.canJumpToBottom)
           setBottomState(geometry.atBottom)
@@ -360,6 +401,12 @@ export function useTranscriptScroll({
       return getBottomGeometry(el)
     }
     const geometry = getBottomGeometry(el)
+    // The top of the real bottom: the viewport parked at scrollHeight (what
+    // pinToBottom targets). Follow re-arms ONLY here. The spacer-aware
+    // `geometry.atBottom` also covers the dead zone (the region reserved by the
+    // task list / live bubble) — re-latching follow there is exactly the state
+    // that lets the re-pin backstops snap an upward scroll back down.
+    const atTrueBottom = isAtTrueBottom(el)
     const delayAway = modeWhenAway === 'confirm-away' && !geometry.atBottom && atBottomRef.current
     // Never surface the jump button while we're still auto-following / pinned
     // to the bottom. During a bulk replay/load the content (scrollHeight) grows
@@ -369,14 +416,32 @@ export function useTranscriptScroll({
     // even though the user never left the bottom. The button only becomes
     // meaningful once follow has been disabled — either the user scrolled up
     // ('disable-now' flips shouldFollowRef false immediately) or the 150ms
-    // follow-disable debounce confirmed a genuine stay-away.
+    // follow-disable debounce confirmed a genuine stay-away. Once AWAY, the
+    // button is always offered — including inside the dead zone, where the
+    // spacer-aware `geometry.canJumpToBottom` (false) would otherwise hide it
+    // and park an away user with no affordance.
     const following = shouldFollowRef.current
-    const canJump = following ? false : geometry.canJumpToBottom
+    const canJump = !following
     setCanJumpToBottom(delayAway ? false : canJump)
-    syncBottomState(
-      geometry.atBottom,
-      geometry.atBottom ? 'restore' : modeWhenAway === 'confirm-away' ? 'disable-debounced' : modeWhenAway,
-    )
+    const userLeft = modeWhenAway === 'disable-now'
+    // Follow re-arms ONLY when the user is at the true bottom AND either (a)
+    // they were already following (a passive re-read / content fold keeps it
+    // on), or (b) this call is the scroll handler reporting an active
+    // scroll-BACK-down to the true bottom ('restore'). A passive re-read that
+    // lands at the true bottom while the user is AWAY — notably a bottom-spacer
+    // collapse clamping scrollTop down to the new max — must NOT re-latch,
+    // because the content moved, not the user; re-latching is what lets the
+    // re-pin backstops snap an away viewport back.
+    const followMode = userLeft
+      ? 'disable-now'
+      : (atTrueBottom && (following || modeWhenAway === 'restore'))
+        ? 'restore'
+        : geometry.atBottom
+          ? (following ? 'preserve' : 'disable-now')
+          : modeWhenAway === 'confirm-away'
+            ? 'disable-debounced'
+            : modeWhenAway === 'restore' ? 'preserve' : modeWhenAway
+    syncBottomState(geometry.atBottom, followMode)
     return geometry
   }, [syncBottomState])
 
@@ -696,14 +761,27 @@ export function useTranscriptScroll({
       // guard when it lands (or aborts on user scroll-up).
       if (scrollAnimatingRef.current) return
       const isScrollingUp = el.scrollTop < prevScrollTop
-      // A genuine user push-away leaves the viewport OFF the bottom (dist>ε).
-      // But an animated group FOLD collapses content above and the browser
-      // clamps scrollTop DOWN to the shrinking bottom — that decreasing
-      // scrollTop keeps dist ≈ 0 (still glued to the current bottom), so it
-      // must not be read as a user leave, or following turns OFF exactly when
-      // a boundary/new message below needs to be followed.
-      const isUserLeave = isScrollingUp && getDistanceFromBottom(el) > BOTTOM_EPSILON_PX
-      syncBottomGeometry(el, isUserLeave ? 'disable-now' : 'preserve')
+      // A genuine user push-away measures against the TRUE bottom
+      // (scrollHeight). The spacer-aware `getDistanceFromBottom` subtracts the
+      // task-list / live-bubble reserve, so an up-scroll that stays inside it
+      // reads as 0 and follow never turns off — and the re-pin backstops then
+      // keep snapping the viewport back ("wheel-up gets absorbed"). Any net
+      // upward scroll from the true bottom is a user leave; an animated group
+      // FOLD clamps scrollTop down in lockstep with the shrinking content
+      // bottom, so this distance stays ≈ 0 there and is not a leave.
+      const distTrue = getDistanceFromTrueBottom(el)
+      const isUserLeave = isScrollingUp && distTrue > BOTTOM_EPSILON_PX
+      if (isUserLeave) {
+        syncBottomGeometry(el, 'disable-now')
+      } else if (!isScrollingUp && distTrue <= BOTTOM_EPSILON_PX) {
+        // The user actively scrolled back DOWN to the true bottom — the only
+        // scroll-driven path that re-arms follow. A scrollTop drop caused by a
+        // bottom-spacer COLLAPSE (task list finishes, clamp back to the new
+        // max) must NOT re-latch an away user: the content moved, not them.
+        syncBottomGeometry(el, 'restore')
+      } else {
+        syncBottomGeometry(el, 'preserve')
+      }
     }
     syncBottomGeometry(el, 'confirm-away')
     el.addEventListener('scroll', handler, { passive: true })
