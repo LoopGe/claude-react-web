@@ -1106,6 +1106,27 @@ export async function tryCaptureGitHead(cwd: string): Promise<string | undefined
   }
 }
 
+/** Best-effort work-tree top-level capture — the absolute path git
+ *  reports for the repository root (`git rev-parse --show-toplevel`).
+ *  Used at session spawn as the git-snapshot fan-out group key: two
+ *  sessions whose cwds sit in the same repo (including different
+ *  subdirectories) share one snapshot. Windows output is forward-slashed
+ *  (D:/codes/repo) — both sessions capture through this same command, so
+ *  the keys are consistently normalized. Returns undefined for every
+ *  failure (not a repo, git missing, timeout, empty output); callers
+ *  fall back to cwd string equality. Never throws. */
+export async function tryCaptureRepoRoot(cwd: string): Promise<string | undefined> {
+  try {
+    if (!(await isInsideWorkTree(cwd))) return undefined
+    const r = await runGit(cwd, ['rev-parse', '--show-toplevel'], { timeoutMs: 5_000 })
+    if (r.exitCode !== 0) return undefined
+    const root = r.stdout.trim()
+    return root || undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Unified diff of the staged area (`git diff --cached`), capped at
  *  MAX_AI_DIFF_BYTES with the same head+tail trim used elsewhere.
  *  Feeds the Generate-commit-message flow in the Commit section. Returns
