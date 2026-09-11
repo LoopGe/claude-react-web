@@ -31,7 +31,7 @@
   gap: 8px;
 }
 .snippets-manager-add-title {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--fg-muted);
   text-transform: uppercase;
@@ -58,7 +58,7 @@
   gap: 2px;
 }
 .snippet-label {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--fg);
   overflow: hidden;
@@ -87,7 +87,7 @@
 .snippet-edit-form .textarea {
   min-height: 80px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .snippet-edit-actions {
   display: flex;
@@ -122,7 +122,7 @@
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -144,7 +144,7 @@
   border: none;
   color: inherit;
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--fs-md);
   opacity: 0.7;
 }
 .marketplace-dismiss:hover { opacity: 1; }
@@ -173,7 +173,7 @@
   min-width: 0;
 }
 .marketplace-meta-source {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-family: var(--mono);
   overflow: hidden;
@@ -181,7 +181,7 @@
   white-space: nowrap;
 }
 .marketplace-meta-time {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   margin-top: 2px;
 }
@@ -259,7 +259,7 @@
 
 .marketplace-plugin-empty {
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
   text-align: center;
   padding: 20px;
 }
@@ -277,15 +277,15 @@
 }
 .marketplace-plugin-name {
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .marketplace-plugin-version {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-family: var(--mono);
 }
 .marketplace-plugin-status {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 1px 6px;
   border-radius: var(--radius-3xs);
   border: 1px solid currentColor;
@@ -303,13 +303,13 @@
   flex-shrink: 0;
 }
 .marketplace-plugin-desc {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   margin-top: 4px;
   line-height: 1.4;
 }
 .marketplace-plugin-author {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   margin-top: 2px;
 }

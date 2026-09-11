@@ -63,7 +63,7 @@
   gap: 6px;
   font-family: var(--mono);
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
@@ -86,7 +86,7 @@
   align-items: center;
   gap: 4px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   margin-right: 3px;
 }
@@ -99,7 +99,7 @@
 }
 .git-panel-sync-actions .git-panel-icon-btn {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   width: 24px;
   height: 24px;
@@ -109,7 +109,7 @@
   border: none;
   background: transparent;
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--fs-md);
   width: 26px;
   height: 26px;
   border-radius: var(--radius-xs);
@@ -140,7 +140,7 @@
   background: color-mix(in srgb, var(--warn) 18%, transparent);
   color: var(--warn);
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   flex-shrink: 0;
 }
 
@@ -162,7 +162,7 @@
   border: none;
   outline: none;
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
 }
 .git-panel-filter-input::placeholder { color: var(--fg-muted); }
@@ -171,7 +171,7 @@
   padding: 24px 16px;
   text-align: center;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .git-panel-error {
   color: var(--danger);
@@ -184,7 +184,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 .git-panel-action:hover { background: var(--btn-hover-bg); }
@@ -208,7 +208,7 @@
   cursor: pointer;
   user-select: none;
   font-weight: 500;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
   list-style: none;
   display: flex;
@@ -228,7 +228,7 @@
 .git-panel-section-title { flex: 1; }
 .git-panel-section-count {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   background: var(--bg-elev-2);
   padding: 0 6px;
@@ -241,7 +241,7 @@
 }
 .git-panel-section-empty {
   padding: 6px 24px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-style: italic;
 }
@@ -260,7 +260,7 @@
   gap: 8px;
   padding: 5px 12px 5px 24px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg);
 }
 .git-file-row-toggle {
@@ -274,7 +274,7 @@
   color: var(--fg);
   cursor: pointer;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: left;
 }
 @keyframes git-file-row-in {
@@ -320,7 +320,7 @@
   display: flex;
   gap: 4px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
   margin-left: 6px;
 }
@@ -337,7 +337,7 @@
   display: inline-flex;
   gap: 4px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   flex-shrink: 0;
 }
 .git-section-change-totals {
@@ -345,7 +345,7 @@
 }
 .git-file-arrow {
   color: var(--fg-muted);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -361,7 +361,7 @@
 .git-file-diff-error,
 .git-file-diff-binary {
   padding: 8px 24px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-style: italic;
 }
@@ -374,7 +374,7 @@
 .git-file-diff {
   margin: 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.55;
   overflow-x: auto;
   max-height: 400px;
@@ -429,7 +429,7 @@
   gap: 8px;
   align-items: baseline;
   padding: 5px 12px 5px 24px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
 }
 .git-commit:first-child { border-top: 0; }
@@ -437,7 +437,7 @@
 .git-commit-hash {
   font-family: var(--mono);
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .git-commit-subject {
   color: var(--fg);
@@ -447,12 +447,12 @@
 }
 .git-commit-meta {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 .git-commits-empty {
   padding: 8px 24px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-style: italic;
 }
@@ -496,7 +496,7 @@
   padding: 2px 8px;
   min-height: 24px;
   border-radius: var(--radius-3xs);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   cursor: pointer;
   font-family: var(--mono);
   display: inline-flex;
@@ -577,7 +577,7 @@
   height: 24px;
   border-radius: var(--radius-3xs);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-family: var(--mono);
   display: inline-flex;
   align-items: center;
@@ -632,7 +632,7 @@
   gap: 8px;
   padding: 5px 12px 5px 24px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg);
   background: transparent;
   border: 0;
@@ -664,7 +664,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   box-sizing: border-box;
   /* Focus glow — same single animated indicator as the composer and side
@@ -692,7 +692,7 @@
   flex: 1;
   text-align: right;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -714,7 +714,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .git-new-branch-input:focus {
   outline: none;
@@ -734,7 +734,7 @@
   color: var(--fg);
   cursor: pointer;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: left;
 }
 .git-branch-row:hover:not(:disabled):not(.current) {
@@ -763,7 +763,7 @@
 }
 .git-branch-upstream {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 /* Each branch row is wrapped in a `.tt-wrap` (Tooltip) span, which is
@@ -784,14 +784,14 @@
   gap: 8px;
   align-items: center;
   padding: 5px 12px 5px 24px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
 }
 .git-stash-row:first-child { border-top: 0; }
 .git-stash-ref {
   font-family: var(--mono);
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 .git-stash-message {
@@ -810,7 +810,7 @@
    per-section empty hint to allow different copy. */
 .git-section-empty {
   padding: 6px 24px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-style: italic;
 }
@@ -818,7 +818,7 @@
 /* ConfirmDialog message body — extra spacing for multi-paragraph
    warnings. */
 .confirm-dialog-message {
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: var(--fg);
 }
@@ -833,7 +833,7 @@
   padding: 1px 4px;
   border-radius: var(--radius-3xs);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 /* Optional checkbox below the message (discard "permanently delete").
    Self-drawn to match the global input[type="checkbox"] chrome
@@ -845,7 +845,7 @@
   align-items: center;
   gap: 8px;
   margin-top: 12px;
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: var(--fg);
   cursor: pointer;
@@ -910,7 +910,7 @@
   gap: 8px;
   padding: 6px 8px;
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.4;
   color: var(--fg);
   cursor: pointer;
@@ -972,13 +972,13 @@
   white-space: nowrap;
 }
 .profile-activate-session-model {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 /* Secondary hint paragraph (kept-on-disk / permanently-deleted note). */
 .confirm-dialog-hint {
   margin: 8px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 
@@ -995,7 +995,7 @@
   border: none;
   border-radius: var(--radius-xs);
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   padding: 3px 8px;
   cursor: pointer;

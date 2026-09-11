@@ -71,13 +71,21 @@
      reference these instead of hardcoding px. Off-scale fractional sizes
      (10.5/11.5/12.5/13.5px) snap down to the nearest integer step — the
      half-pixel difference is imperceptible and integer px avoids blurry
-     subpixel text on non-retina displays. */
-  --fs-2xs: 10px;
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-base: 13px;
-  --fs-md: 14px;
-  --fs-lg: 16px;
+     subpixel text on non-retina displays.
+
+     Every step is a product of its base px and `--fs-scale`, a unitless
+     multiplier driven at runtime by the global Font size setting
+     (shared/font-size.ts, applied on documentElement). At scale 1 these
+     resolve to the exact px above — the shipped default — so an unconfigured
+     app renders identically to a static scale. No consumer composes these
+     tokens inside a calc() today, so redefining them as calc is safe. */
+  --fs-scale: 1;
+  --fs-2xs: calc(10px * var(--fs-scale));
+  --fs-xs: calc(11px * var(--fs-scale));
+  --fs-sm: calc(12px * var(--fs-scale));
+  --fs-base: calc(13px * var(--fs-scale));
+  --fs-md: calc(14px * var(--fs-scale));
+  --fs-lg: calc(16px * var(--fs-scale));
   /* Motion tokens: shared durations/easings/distances for UI transitions. */
   --motion-duration-instant: 80ms;
   --motion-duration-fast: 120ms;

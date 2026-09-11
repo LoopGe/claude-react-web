@@ -29,6 +29,7 @@ import { buildStructuredRouter } from './structured.js'
 import { buildFirstPartyRouter } from './first-party.js'
 import { ScheduledSendManager } from '../scheduled-send-manager.js'
 import { buildScheduledSendRouter } from './scheduled-sends.js'
+import { buildMetricsRouter } from './metrics.js'
 
 /** Parse JSON body, returning 400 on malformed input instead of silently
  *  falling back to an empty object. */
@@ -73,6 +74,10 @@ export function buildApiRouter(
   // Mount sub-routers in the same order as the original routes.ts
   // to preserve Hono's route-matching priority.
   app.route('/', buildHealthRouter(claudeBinary))
+  app.route('/', buildMetricsRouter({
+    // Derived at read time — see buildMetricsRouter's doc comment.
+    permissions_pending: () => sm.totalPendingPermissions(),
+  }))
   app.route('/', buildConfigRouter(sm, configDir))
   app.route('/', buildProfilesRouter(configDir, sm))
   app.route('/', buildSessionRouter(sm, mpStore, agentDefinitionStore))

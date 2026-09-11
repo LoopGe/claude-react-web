@@ -13,7 +13,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 .file-viewer-body {

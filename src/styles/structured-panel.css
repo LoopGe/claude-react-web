@@ -94,7 +94,7 @@
   overflow: auto;
   white-space: pre;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   margin: 8px 0 0;
   padding: 10px 12px;
   border: 1px solid var(--border);

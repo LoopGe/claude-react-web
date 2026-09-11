@@ -50,12 +50,12 @@
 }
 
 .update-dialog-release-date {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 
 .update-dialog-release-link {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 
@@ -63,7 +63,7 @@
   padding: 24px 8px;
   text-align: center;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 .update-dialog-loading {
@@ -87,7 +87,7 @@
 }
 
 .update-dialog-error {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg);
   background: var(--btn-hover-bg);
   border-radius: 6px;

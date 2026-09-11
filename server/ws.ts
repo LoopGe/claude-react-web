@@ -29,6 +29,7 @@ import type { SessionBroadcaster } from './session-types.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
 import { shouldBroadcastMessage } from './history-utils.js'
 import { createLogger } from './log.js'
+import { metrics } from './metrics.js'
 import {
   WS_PATH,
   type WsClientFrame,
@@ -104,7 +105,7 @@ class WsWriteQueue {
    *  has been stopped or is no longer OPEN — callers don't need to
    *  check readyState themselves. */
   enqueue(frame: WsServerFrame) {
-    this.enqueueRaw(JSON.stringify(frame))
+    this.enqueueRaw(JSON.stringify(frame), frame.kind)
   }
 
   /** Enqueue an already-serialized frame string. Used by the broadcast
@@ -112,10 +113,14 @@ class WsWriteQueue {
    *  is stringified once (see `messageFrameJson`) and the same string is
    *  pushed into every subscribed connection's queue, avoiding M×
    *  JSON.stringify on the hot path. */
-  enqueueRaw(data: string) {
+  enqueueRaw(data: string, kind?: string) {
     if (this.stopped || this.ws.readyState !== this.ws.OPEN) return
     this.queue.push(data)
     this.totalChars += data.length
+    // Count only frames actually queued to a live socket — frames dropped
+    // above (stopped / not OPEN) never reach a client and would inflate
+    // the volume metric exactly in the overload scenarios it diagnoses.
+    if (kind !== undefined) metrics.count('ws_frames_sent', { kind })
     // Hard cap: a slow-but-alive client can keep this buffer growing
     // while the drain loop is suspended on backpressure. Force-close so
     // the client reconnects and replays from the bounded history ring.
@@ -261,6 +266,9 @@ export function attachWebSocket(
 
   wss.on('connection', (ws) => {
     sockets.add(ws)
+    // Gauge derived from the Set itself — single source of truth, no
+    // separate counter to drift.
+    metrics.gauge('ws_connections', sockets.size)
     const subs = new Map<string, SessionSub>()
     /** Sessions whose subscribe-setup is mid-flight (waiting on the
      *  auto-resume await below). Guard: a second subscribe frame for the
@@ -480,6 +488,7 @@ export function attachWebSocket(
           }
         }
 
+        const replayStart = performance.now()
         // Filter out system messages that the frontend doesn't need.
         // Matches the live broadcast filter in session-pump.ts.
         replayHistory = replayHistory.filter(
@@ -523,6 +532,8 @@ export function attachWebSocket(
             dialogs: dialogs.snapshot,
           })
         }
+        metrics.observe('replay_build_ms', performance.now() - replayStart)
+        metrics.count('replay_messages', undefined, replayHistory.length)
 
         // 2.5) Send the current recap snapshot if there is one. The
         //      live iterable picks up future transitions; the snapshot
@@ -648,6 +659,7 @@ export function attachWebSocket(
                     typeof winner.result.value === 'object' && winner.result.value !== null
                       ? messageFrameJson(sessionId, winner.result.value as object)
                       : JSON.stringify({ kind: 'message', sessionId, message: winner.result.value as never }),
+                    'message',
                   )
                   break
                 case 'perm': {
@@ -831,6 +843,7 @@ export function attachWebSocket(
       appPluginCleanup?.()
       appPluginCleanup = null
       sockets.delete(ws)
+      metrics.gauge('ws_connections', sockets.size)
     })
 
     ws.on('error', (err) => {

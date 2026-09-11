@@ -331,6 +331,78 @@ describe('config', () => {
     expect(WRITABLE_CONFIG_KEYS).toContain('cliDebug')
   })
 
+  it('defaults rowGap to spacious', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.rowGap).toBe('spacious')
+  })
+
+  it('honors a rowGap override from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ rowGap: 'airy' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.rowGap).toBe('airy')
+  })
+
+  it('ignores an invalid rowGap value', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ rowGap: '14px' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.rowGap).toBe('spacious')
+  })
+
+  it('exposes rowGap as a writable config key', () => {
+    expect(WRITABLE_CONFIG_KEYS).toContain('rowGap')
+  })
+
+  it('defaults textSpacing to spacious', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.textSpacing).toBe('spacious')
+  })
+
+  it('honors a textSpacing override from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ textSpacing: 'airy' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.textSpacing).toBe('airy')
+  })
+
+  it('ignores an invalid textSpacing value', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ textSpacing: '1.7' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.textSpacing).toBe('spacious')
+  })
+
+  it('exposes textSpacing as a writable config key', () => {
+    expect(WRITABLE_CONFIG_KEYS).toContain('textSpacing')
+  })
+
+  it('defaults fontSize to standard', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.fontSize).toBe('standard')
+  })
+
+  it('honors a fontSize override from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ fontSize: 'xlarge' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.fontSize).toBe('xlarge')
+  })
+
+  it('ignores an invalid fontSize value', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ fontSize: '1.3' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.fontSize).toBe('standard')
+  })
+
+  it('exposes fontSize as a writable config key', () => {
+    expect(WRITABLE_CONFIG_KEYS).toContain('fontSize')
+  })
+
   describe('clearCredentials', () => {
     it('clears authToken, baseUrl, and accessToken from config.json', async () => {
       writeFileSync(join(dir, 'config.json'), JSON.stringify({

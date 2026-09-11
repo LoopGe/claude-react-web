@@ -37,6 +37,7 @@ async function callAnthropic(diff: string, signal: AbortSignal | undefined): Pro
     model: serverConfig.commitMessageModel,
     system: SYSTEM_PROMPT,
     userContent: diff || '(empty diff)',
+    caller: 'commit-message',
     // 400 covers a 72-char subject + a few-paragraph body. Larger
     // values waste cost on a model that should be terse anyway.
     maxTokens: 400,

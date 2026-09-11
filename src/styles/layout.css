@@ -301,7 +301,7 @@ body.resizing-col .app {
      --bg-elev automatically. */
   background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev));
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   /* The whole header is the drag handle for panel swaps. */
   cursor: grab;
   user-select: none;
@@ -320,7 +320,7 @@ body.resizing-col .app {
   align-items: center;
   gap: 12px;
   padding: 2px 10px 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   min-width: 0;
 }
@@ -375,7 +375,7 @@ body.resizing-col .app {
   color: var(--accent);
   background: transparent;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -492,7 +492,7 @@ body.resizing-col .app {
      phantom gap and the chip stays symmetric. */
   gap: 0;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--mono);
   /* The accent-tinted chip is uniform across modes (theme色); the mode
@@ -607,7 +607,7 @@ body.resizing-col .app {
      phantom gap and the chip stays symmetric. */
   gap: 0;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--mono);
   color: var(--fg-muted);
@@ -683,7 +683,7 @@ body.resizing-col .app {
      phantom gap and the chip stays symmetric. */
   gap: 0;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--mono);
   color: var(--fg-muted);
@@ -760,7 +760,7 @@ body.resizing-col .app {
      phantom gap and the chip stays symmetric. */
   gap: 0;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--mono);
   color: var(--fg-muted);
@@ -844,12 +844,12 @@ body.resizing-col .app {
   margin-bottom: 8px;
 }
 .effort-slider-title {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--fg-muted);
 }
 .effort-slider-value {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   font-family: var(--mono);
   color: var(--accent);
@@ -903,7 +903,7 @@ body.resizing-col .app {
 .effort-slider-tick {
   flex: 1;
   padding: 2px 0;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-family: var(--mono);
   color: var(--fg-muted);
   background: transparent;
@@ -933,7 +933,7 @@ body.resizing-col .app {
   gap: 4px;
   max-width: 180px;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--mono);
   color: var(--fg-muted);
@@ -1023,7 +1023,7 @@ body.resizing-col .app {
   max-width: 160px;
   padding-top: 1px;
   padding-bottom: 1px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   font-family: var(--mono);
   color: var(--accent);
@@ -1176,7 +1176,7 @@ body.resizing-col .app {
   background: color-mix(in srgb, var(--danger) 16%, transparent);
   color: var(--danger);
   padding: 3px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   border-top: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
   overflow: hidden;
@@ -1186,12 +1186,12 @@ body.resizing-col .app {
 .chat-panel-stderr-details {
   background: var(--btn-hover-bg);
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .chat-panel-stderr-details summary {
   cursor: pointer;
   color: var(--fg-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 /* Meta strip that holds the model badge. Sits between the panel
    title (left-aligned) and the panel edge (right-aligned). The git chip
@@ -1301,7 +1301,7 @@ body.resizing-col .app {
   border: 1px solid var(--btn-border, var(--border));
   background: var(--btn-bg);
   color: var(--fg);
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 500;
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
@@ -1334,7 +1334,7 @@ body.resizing-col .app {
 }
 .app-empty-state h2 {
   margin: 0;
-  font-size: 24px;
+  font-size: calc(24px * var(--fs-scale));
   letter-spacing: -0.02em;
 }
 .app-empty-state p {
@@ -1343,7 +1343,7 @@ body.resizing-col .app {
 .app-empty-state-eyebrow {
   margin: 0 0 8px;
   color: var(--accent);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1368,12 +1368,12 @@ body.resizing-col .app {
 }
 .empty-state-hint {
   margin-top: 14px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .empty-state-hint kbd {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
@@ -1422,13 +1422,13 @@ body.resizing-col .app {
 .app-loading-title {
   margin: 0;
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--fs-md);
   font-weight: 700;
 }
 .app-loading-subtitle {
   margin: 2px 0 0;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .app-loading-spinner {
   width: 22px;
@@ -1462,7 +1462,7 @@ body.resizing-col .app {
 .lazy-tab-loading {
   padding: 24px 16px;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
   text-align: center;
 }
 
@@ -1471,7 +1471,7 @@ body.resizing-col .app {
   background: var(--msg-error-bg);
   border-bottom: 1px solid var(--msg-error-border);
   color: var(--msg-error-fg);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 /* Visually-hide the error-bar when empty WITHOUT removing it from the
  * a11y tree. Keeping the live region permanently mounted (instead of

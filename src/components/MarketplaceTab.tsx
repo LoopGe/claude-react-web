@@ -412,13 +412,13 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
         border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 12, marginBottom: 16,
         background: 'var(--bg-elev)',
       }}>
-        <div style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 6 }}>
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)', marginBottom: 6 }}>
           Add a marketplace from a public https git repository.
         </div>
         <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
           <input
             className="input"
-            style={{ flex: 1, fontSize: 12 }}
+            style={{ flex: 1, fontSize: 'var(--fs-sm)' }}
             value={newUrl}
             onChange={(e) => setNewUrl(e.target.value)}
             aria-label="Repository URL"
@@ -428,7 +428,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
           />
           <input
             className="input"
-            style={{ width: 130, fontSize: 12 }}
+            style={{ width: 130, fontSize: 'var(--fs-sm)' }}
             value={newRef}
             onChange={(e) => setNewRef(e.target.value)}
             aria-label="Git ref (optional)"
@@ -438,14 +438,14 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
           />
           <button
             className="btn btn-primary"
-            style={{ fontSize: 12, padding: '4px 14px' }}
+            style={{ fontSize: 'var(--fs-sm)', padding: '4px 14px' }}
             onClick={() => void handleAdd()}
             disabled={addState.phase === 'busy' || !newUrl.trim()}
           >
             {addState.phase === 'busy' ? 'Cloning…' : 'Add'}
           </button>
         </div>
-        <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)' }}>
           Only https:// URLs are accepted. Cloning runs as a depth-1 fetch and is
           stored under the server's state directory.
         </div>
@@ -477,7 +477,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
                 : `Update all (${updateableCount})`}
             </button>
           ) : checking ? (
-            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>Checking for updates…</span>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>Checking for updates…</span>
           ) : updateCheckError || anyCheckError ? (
             <>
               {/* Whole-request failure (network/timeout) and per-marketplace
@@ -492,7 +492,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
                   ? `Couldn't check for updates: ${updateCheckError}`
                   : 'Some marketplaces could not be checked against their upstream'}
                 style={{
-                  fontSize: 12, color: 'var(--warn, var(--fg-muted))',
+                  fontSize: 'var(--fs-sm)', color: 'var(--warn, var(--fg-muted))',
                   display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'help',
                 }}
               >
@@ -501,7 +501,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
               </span>
               <button
                 className="btn"
-                style={{ padding: '1px 8px', fontSize: 11 }}
+                style={{ padding: '1px 8px', fontSize: 'var(--fs-xs)' }}
                 onClick={() => void handleRetryCheck()}
                 title="Retry the update check"
               >
@@ -509,10 +509,10 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
               </button>
             </>
           ) : (
-            <span style={{ fontSize: 12, color: 'var(--ok)' }}>All marketplaces up to date</span>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ok)' }}>All marketplaces up to date</span>
           )}
           {bulkResult && (
-            <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>{bulkResult}</span>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>{bulkResult}</span>
           )}
         </div>
       )}
@@ -522,7 +522,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
         <div style={{ padding: 24, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading…</div>
       )}
       {!loading && items.length === 0 && (
-        <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--fg-muted)', fontSize: 13 }}>
+        <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--fg-muted)', fontSize: 'var(--fs-base)' }}>
           No marketplaces added yet. Paste an https git URL above to add one.
         </div>
       )}
@@ -593,7 +593,7 @@ function MarketplaceCard({
       }}>
         <button
           className="btn"
-          style={{ padding: '0 6px', fontSize: 11, lineHeight: '20px', minWidth: 22 }}
+          style={{ padding: '0 6px', fontSize: 'var(--fs-xs)', lineHeight: '20px', minWidth: 22 }}
           onClick={onToggleExpand}
           title={expanded ? 'Collapse' : 'Expand'}
           aria-label={expanded ? 'Collapse' : 'Expand'}
@@ -602,11 +602,11 @@ function MarketplaceCard({
           {expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
         </button>
         <div style={{ flex: 1, overflow: 'hidden' }}>
-          <div style={{ fontWeight: 500, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ fontWeight: 500, fontSize: 'var(--fs-base)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {item.displayName}
           </div>
           <div style={{
-            fontSize: 11, color: 'var(--fg-muted)', fontFamily: 'var(--mono)',
+            fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)', fontFamily: 'var(--mono)',
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
             {item.source.url}
@@ -615,7 +615,7 @@ function MarketplaceCard({
         </div>
         <span
           style={{
-            fontSize: 11, color: 'var(--fg-muted)', background: 'var(--bg-elev-2)',
+            fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)', background: 'var(--bg-elev-2)',
             padding: '1px 6px', borderRadius: 'var(--radius-3xs)', flexShrink: 0,
           }}
           title={`${item.enabledCount} enabled of ${item.pluginCount} plugin${item.pluginCount === 1 ? '' : 's'}`}
@@ -630,7 +630,7 @@ function MarketplaceCard({
           <span
             title="Upstream has new commits — click Refresh to pull"
             style={{
-              fontSize: 11, color: 'var(--warn, var(--fg-muted))', flexShrink: 0,
+              fontSize: 'var(--fs-xs)', color: 'var(--warn, var(--fg-muted))', flexShrink: 0,
               display: 'inline-flex', alignItems: 'center', gap: 4,
             }}
           >
@@ -648,7 +648,7 @@ function MarketplaceCard({
           <span
             title={`Couldn't check for updates: ${updateStatus.error}`}
             style={{
-              fontSize: 11, color: 'var(--warn, var(--fg-muted))', flexShrink: 0,
+              fontSize: 'var(--fs-xs)', color: 'var(--warn, var(--fg-muted))', flexShrink: 0,
               display: 'inline-flex', alignItems: 'center', gap: 3, cursor: 'help',
             }}
             aria-label={`Couldn't check for updates: ${updateStatus.error}`}
@@ -672,7 +672,7 @@ function MarketplaceCard({
           <div style={{ display: 'flex', gap: 2 }}>
             <button
               className="btn"
-              style={{ padding: '2px 6px', fontSize: 11, color: 'var(--danger)' }}
+              style={{ padding: '2px 6px', fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}
               onClick={onConfirmRemove}
               disabled={busy || bulkBusy}
             >
@@ -680,7 +680,7 @@ function MarketplaceCard({
             </button>
             <button
               className="btn"
-              style={{ padding: '2px 6px', fontSize: 11 }}
+              style={{ padding: '2px 6px', fontSize: 'var(--fs-xs)' }}
               onClick={onCancelRemove}
               disabled={busy || bulkBusy}
               aria-label="Cancel"
@@ -694,7 +694,7 @@ function MarketplaceCard({
       {/* Warnings strip --------------------------------------------- */}
       {warnings.length > 0 && (
         <div style={{
-          padding: '4px 10px', fontSize: 11, color: 'var(--fg-muted)',
+          padding: '4px 10px', fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)',
           borderTop: '1px solid var(--border)', background: 'var(--bg-elev)',
         }}>
           <span style={{ color: 'var(--warn, var(--fg-muted))', display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconAlertTriangle size={12} /> {warnings.length} warning{warnings.length === 1 ? '' : 's'}:</span>{' '}
@@ -709,10 +709,10 @@ function MarketplaceCard({
           padding: '6px 10px 8px', borderTop: '1px solid var(--border)', background: 'var(--bg-elev)',
         }}>
           {!plugins && (
-            <div style={{ padding: '8px 0', fontSize: 12, color: 'var(--fg-muted)' }}>Loading plugins…</div>
+            <div style={{ padding: '8px 0', fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>Loading plugins…</div>
           )}
           {plugins && plugins.length === 0 && (
-            <div style={{ padding: '8px 0', fontSize: 12, color: 'var(--fg-muted)' }}>
+            <div style={{ padding: '8px 0', fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>
               No plugins in this marketplace.
             </div>
           )}
@@ -730,7 +730,7 @@ function MarketplaceCard({
                     onClick={() => setPluginFilter(f)}
                     aria-pressed={pluginFilter === f}
                     style={{
-                      fontSize: 11,
+                      fontSize: 'var(--fs-xs)',
                       textTransform: 'capitalize',
                       background: pluginFilter === f ? 'var(--bg-elev-2)' : undefined,
                       fontWeight: pluginFilter === f ? 600 : undefined,
@@ -743,7 +743,7 @@ function MarketplaceCard({
             </div>
           )}
           {plugins && plugins.length > 0 && visiblePlugins.length === 0 && (
-            <div style={{ padding: '8px 0', fontSize: 12, color: 'var(--fg-muted)' }}>
+            <div style={{ padding: '8px 0', fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>
               No {pluginFilter} plugins.
             </div>
           )}
@@ -756,13 +756,13 @@ function MarketplaceCard({
                 background: p.enabled ? 'var(--plugin-active)' : 'var(--plugin-inactive)',
               }} />
               <div style={{ flex: 1, overflow: 'hidden' }}>
-                <div style={{ fontSize: 12, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {p.name}
-                  {p.version ? <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--fg-muted)' }}>v{p.version}</span> : null}
+                  {p.version ? <span style={{ marginLeft: 6, fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)' }}>v{p.version}</span> : null}
                 </div>
                 {p.description && (
                   <div style={{
-                    fontSize: 11, color: 'var(--fg-muted)',
+                    fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)',
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }}>
                     {p.description}

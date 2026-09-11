@@ -20,6 +20,7 @@
 // interval with EVENT_LOOP_PROBE_MS (default 5000).
 
 import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks'
+import { metrics } from './metrics.js'
 
 const NS_PER_MS = 1e6
 
@@ -54,6 +55,10 @@ export function startEventLoopProbe(
     const p50Ms = histogram.percentile(50) / NS_PER_MS
     const meanMs = histogram.mean / NS_PER_MS
     histogram.reset()
+    // Feed the metrics histogram every window (quiet ones included) so the
+    // Performance panel shows the distribution, not only the spikes. The
+    // log behavior below is unchanged.
+    metrics.observe('event_loop_block_ms', maxMs)
     if (maxMs < quietThresholdMs) return
     log(
       `[event-loop] BLOCKED — max=${maxMs.toFixed(0)}ms p99=${p99Ms.toFixed(0)}ms ` +

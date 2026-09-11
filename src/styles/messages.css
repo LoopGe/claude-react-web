@@ -14,7 +14,7 @@
    "Switch model" button (see MessageList assistant branch). */
 .msg.msg-error-card { border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
 .msg-switch-model-btn { margin-top: 8px; }
-.msg.system { background: var(--msg-system-bg); border-color: var(--msg-system-border); font-family: var(--mono); font-size: 12px; }
+.msg.system { background: var(--msg-system-bg); border-color: var(--msg-system-border); font-family: var(--mono); font-size: var(--fs-sm); }
 /* Turn-complete marker. NOT a card — a centered hairline divider with a
    success tick and de-emphasised tabular metadata. Shares the .msg.recap
    divider vocabulary so a turn boundary reads consistently with a recap /
@@ -29,7 +29,7 @@
   padding: 2px 0;
   color: var(--fg-muted);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .msg.result::before,
 .msg.result::after {
@@ -108,14 +108,14 @@
 .msg.local-command-output { padding: 8px 10px; }
 .msg.local-command-output .msg-header {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   margin-bottom: 4px;
 }
 .local-command-output-body {
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
   word-wrap: break-word;
 }
@@ -127,7 +127,7 @@
 .msg.memory-recall { padding: 8px 10px; }
 .msg.memory-recall .msg-header {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -163,7 +163,7 @@
 }
 .memory-recall-scope {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-muted);
@@ -173,7 +173,7 @@
 }
 .memory-recall-source {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   margin-top: 2px;
   overflow: hidden;
@@ -181,14 +181,14 @@
   white-space: nowrap;
 }
 .memory-recall-body {
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
   margin-top: 4px;
   word-wrap: break-word;
 }
 .memory-recall-more {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--mono);
   color: var(--fg-muted);
   background: none;
@@ -268,20 +268,20 @@
 }
 .msg.refusal-fallback .msg-header {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   margin-bottom: 4px;
 }
 .refusal-fallback-body {
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
   word-wrap: break-word;
 }
 .refusal-fallback-detail {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   overflow: hidden;
   display: -webkit-box;
@@ -330,7 +330,7 @@
   overflow-x: auto;
   font-family: var(--mono);
   font-size: var(--fs-sm);
-  margin: 8px 0;
+  margin: var(--md-block-mt, 8px) 0 var(--md-block-mb, 8px);
 }
 .md pre code {
   background: none;
@@ -340,7 +340,7 @@
 
 /* Fenced code-block wrapper (language label + copy button). Rendered
    by Markdown.tsx's <CodeBlock> inside react-markdown's `pre` override. */
-.code-block { position: relative; margin: 8px 0; }
+.code-block { position: relative; margin: var(--md-block-mt, 8px) 0 var(--md-block-mb, 8px); }
 .code-block-bar {
   display: flex;
   align-items: center;
@@ -350,7 +350,7 @@
   border: 1px solid var(--code-block-border);
   border-bottom: none;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--mono);
   color: var(--fg-muted);
 }
@@ -365,7 +365,7 @@
   border-radius: var(--radius-xs);
   padding: 1px 8px;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   cursor: pointer;
   opacity: 0;
@@ -466,19 +466,23 @@
   overflow-wrap: anywhere;
   tab-size: 4;
 }
-.md p { margin: 6px 0; line-height: 1.55; }
-.md h1, .md h2, .md h3, .md h4 { margin: 14px 0 6px; font-weight: 600; line-height: 1.3; }
+.md p { margin: var(--md-p-mt, 6px) 0 var(--md-p-mb, 6px); line-height: var(--md-lh-p, 1.55); }
+.md h1, .md h2, .md h3, .md h4 { margin: var(--md-head-mt, 14px) 0 var(--md-head-mb, 6px); font-weight: 600; line-height: var(--md-lh-head, 1.3); }
 .md h1 { font-size: 1.4em; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
 .md h2 { font-size: 1.22em; }
 .md h3 { font-size: 1.08em; }
 .md h4 { font-size: 1em; color: var(--fg-muted); }
-.md ul, .md ol { margin: 6px 0; padding-left: 24px; }
-.md li { margin: 2px 0; line-height: 1.5; }
-.md li > p { margin: 2px 0; }
+.md ul, .md ol { margin: var(--md-list-mt, 6px) 0 var(--md-list-mb, 6px); padding-left: 24px; }
+.md li { margin: 2px 0; line-height: var(--md-lh-list, 1.5); }
+/* A paragraph *inside* a list item is intentionally tighter than a top-level
+   paragraph (1/3 the paragraph margin — loose/multi-paragraph list items are
+   rare in chat). Scale it off the same --md-p-* vars so the text-density
+   preset still applies inside lists; at the spacious default it stays 2px. */
+.md li > p { margin: calc(var(--md-p-mt, 6px) / 3) 0 calc(var(--md-p-mb, 6px) / 3); }
 .md blockquote {
   border-left: 3px solid var(--border);
   padding: 2px 10px;
-  margin: 8px 0;
+  margin: var(--md-block-mt, 8px) 0 var(--md-block-mb, 8px);
   color: var(--fg-muted);
 }
 .md a { color: var(--accent); text-decoration: none; }
@@ -486,8 +490,8 @@
 .md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 .md table {
   border-collapse: collapse;
-  margin: 8px 0;
-  font-size: 13px;
+  margin: var(--md-block-mt, 8px) 0 var(--md-block-mb, 8px);
+  font-size: var(--fs-base);
   display: block;
   overflow-x: auto;
 }
@@ -501,7 +505,7 @@
 .md input[type="checkbox"] { margin-right: 6px; }
 .tool-input {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   /* margin shorthand (not margin-top) so the UA <pre> margin (1em 0) is
      fully defeated on the <pre> variant; harmless on the <div> variant. */
@@ -524,7 +528,7 @@
 .tool-result-summary {
   cursor: pointer;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   padding: 4px 8px;
   border-radius: var(--radius-xs);
@@ -554,7 +558,7 @@
 /* Diff view for Edit / Write tool_use blocks */
 .diff-block {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   margin-top: 4px;
   background: var(--bg);
   border-radius: var(--radius-xs);
@@ -569,7 +573,7 @@
   background: var(--bg-elev-2);
   border-bottom: 1px solid var(--border);
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   /* See .diff-line note below — same horizontal-scroll concern applies
      here so the header bg covers the full content width. */
@@ -684,7 +688,7 @@
 }
 .settings-panel-header h3 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .settings-section {
@@ -696,19 +700,19 @@
 }
 .settings-section h4 {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--fg-muted);
 }
 .settings-field { display: flex; flex-direction: column; gap: 4px; }
-.settings-field label { font-size: 12px; color: var(--fg-muted); }
+.settings-field label { font-size: var(--fs-sm); color: var(--fg-muted); }
 /* Standalone `.hint` base — muted helper text used directly (not inside a
    .settings-field) across dialogs and settings tabs. Matches the scoped
    variants below; this base rule had been missing, so ~50 call sites were
    rendering at full body colour. */
-.hint { font-size: 12px; color: var(--fg-muted); }
-.settings-field .hint { font-size: 12px; color: var(--fg-muted); }
+.hint { font-size: var(--fs-sm); color: var(--fg-muted); }
+.settings-field .hint { font-size: var(--fs-sm); color: var(--fg-muted); }
 
 /* --- Agent-definition form (Settings → Agents → New/Edit) --------------
    The form's own class names live here: chip-based tag inputs, the inline
@@ -729,7 +733,7 @@
 }
 .agent-def-form .settings-section-head h4 {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--fg-muted);
@@ -746,7 +750,7 @@
 .agent-def-form legend {
   padding: 0;
   margin: 0 0 2px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--fg-muted);
@@ -756,7 +760,7 @@
    disclosure triangle stays as the collapse affordance). */
 .agent-def-form details.settings-section > summary {
   margin: 0 0 2px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--fg-muted);
@@ -765,7 +769,7 @@
 /* Field label text uses <span> (a nested <label> inside the TagInput's
    wrapping <label> would be invalid), so mirror .settings-field label. */
 .agent-def-form .settings-field > span {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 /* Inline boolean row ("Background"): label text and checkbox share one line. */
@@ -775,7 +779,7 @@
   gap: 8px;
 }
 .agent-def-form .settings-field-inline > span {
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
   flex: 1;
 }
@@ -844,7 +848,7 @@
   border: none;
   background: none;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1;
   cursor: pointer;
 }
@@ -866,11 +870,11 @@
 .tools-tab .settings-hint {
   margin: 0;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .tools-tab .field-label {
   display: block;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .tools-tab input,
@@ -904,7 +908,7 @@
    rule in utilities.css draws the boxes those cards still use.) */
 .settings-first-party-error {
   color: var(--danger);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 /* "Reset (inherit global)" link inside a Preferences .hint — clears the
@@ -915,7 +919,7 @@
   padding: 0 0 0 4px;
   margin: 0;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--accent);
   cursor: pointer;
   text-decoration: underline;
@@ -950,13 +954,13 @@
 }
 .settings-group-head h4 {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--fg-muted);
 }
 .settings-group-desc {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.45;
   color: var(--fg-muted);
 }
@@ -975,15 +979,15 @@
   flex-direction: column;
   gap: 2px;
 }
-.settings-row-title { font-size: 13px; color: var(--fg); }
+.settings-row-title { font-size: var(--fs-base); color: var(--fg); }
 .settings-row-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.45;
   color: var(--fg-muted);
 }
 .settings-row-hint code {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   background: var(--bg-elev-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-3xs);
@@ -1006,7 +1010,7 @@
   border: none;
   background: transparent;
   color: var(--fg-muted);
-  font-size: 15px;
+  font-size: calc(15px * var(--fs-scale));
   line-height: 1;
   cursor: pointer;
   display: inline-flex;
@@ -1031,7 +1035,7 @@
   background: transparent;
   text-align: center;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
   -moz-appearance: textfield;
 }
@@ -1041,7 +1045,7 @@
 .stepper-suffix {
   align-self: center;
   padding-right: 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
 }
 
@@ -1060,7 +1064,7 @@
   background: transparent;
   border: none;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   cursor: pointer;
   position: relative;
@@ -1164,7 +1168,7 @@
 }
 .settings-advanced summary {
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   user-select: none;
 }
@@ -1182,7 +1186,7 @@
   border: none;
   border-bottom: 2px solid transparent;
   padding: 6px 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   cursor: pointer;
   transition:
@@ -1297,7 +1301,7 @@
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.modal-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.modal-header h3 { margin: 0; font-size: var(--fs-md); font-weight: 600; }
 .modal-toolbar {
   display: flex;
   gap: 6px;
@@ -1310,7 +1314,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   cursor: pointer;
 }
@@ -1327,7 +1331,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
   gap: 2px;
@@ -1347,7 +1351,7 @@
   padding: 8px 16px;
   background: var(--msg-error-bg);
   color: var(--msg-error-fg);
-  font-size: 13px;
+  font-size: var(--fs-base);
   border-bottom: 1px solid var(--msg-error-border);
 }
 .modal-create-row {
@@ -1400,7 +1404,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .modal-empty {
   padding: 40px 20px;
@@ -1417,7 +1421,7 @@
   gap: 10px;
   flex-wrap: wrap;
 }
-.modal-footer .hint { font-size: 12px; color: var(--fg-muted); }
+.modal-footer .hint { font-size: var(--fs-sm); color: var(--fg-muted); }
 
 /* Global settings modal */
 .global-settings-modal {
@@ -1447,7 +1451,7 @@
   border-bottom: 2px solid transparent;
   padding: 8px 12px;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 500;
   color: var(--fg-muted);
   cursor: pointer;
@@ -1492,7 +1496,7 @@
   width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .shortcut-table td:last-child {
   overflow-wrap: anywhere;
@@ -1501,7 +1505,7 @@
 .shortcut-table th {
   text-align: left;
   font-weight: 600;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--fg-muted);
@@ -1524,7 +1528,7 @@
   border-radius: var(--radius-xs);
   padding: 1px 6px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--fg);
   overflow-wrap: anywhere;
@@ -1542,7 +1546,7 @@
   overflow-y: auto;
 }
 .perm-headline {
-  font-size: 15px;
+  font-size: calc(15px * var(--fs-scale));
   font-weight: 600;
   line-height: 1.4;
 }
@@ -1562,7 +1566,7 @@
   border: 1px solid var(--border);
   color: var(--accent);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 3px 8px;
   border-radius: var(--radius-xs);
 }
@@ -1577,7 +1581,7 @@
 }
 .perm-row { display: flex; gap: 10px; align-items: baseline; }
 .perm-row-label {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.07em;
   color: var(--fg-muted);
@@ -1593,7 +1597,7 @@
   background: transparent;
   border: none;
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-decoration: underline;
   padding: 2px 0;
   align-self: flex-start;
@@ -1607,7 +1611,7 @@
   max-height: 260px;
   overflow: auto;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   margin: 0;
 }
 
@@ -1620,10 +1624,11 @@
        - it re-enables pointer-events (the stack turns it off so clicks fall
          through its empty area);
        - `--chat-reading-inset` keeps its edges on the transcript's reading
-         column, and the 18px bottom margin matches .streaming-footer-wrapper's
-         bottom padding — that wrapper carried the "room off the composer" gap
-         when the live bubble was bottom-most in this slot, so the cards inherit
-         the same rhythm now that they are;
+         column, and the --chat-row-gap bottom margin matches
+         .streaming-footer-wrapper's bottom padding — that wrapper carried the
+         "room off the composer" gap when the live bubble was bottom-most in
+         this slot, so the cards inherit the same shared rhythm now that they
+         are;
        - it is a column flex box with `min-height: 0` so it can SHRINK when the
          stack hits its height cap (see .chat-bottom-stack). The chain runs on
          through .animated-collapse to the scrolling list — without it the stack
@@ -1634,9 +1639,9 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  margin: 0 var(--chat-reading-inset) 18px;
+  margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
   padding: 10px 14px;
-  font-size: 13px;
+  font-size: var(--fs-base);
   /* One-shot entrance when the card mounts (a visible task list appears at
      turn start). Plays per insertion only — the card is a single non-
      virtualized element, so there is no scroll-back remount to worry about.
@@ -1676,7 +1681,7 @@
   margin-bottom: 6px;
 }
 .todo-panel-title {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1684,7 +1689,7 @@
 }
 .todo-panel-count {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   background: var(--bg);
   padding: 1px 6px;
@@ -1738,7 +1743,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   padding: 2px 0 4px;
 }
@@ -1746,7 +1751,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--accent);
   background: transparent;
   border: none;
@@ -1842,7 +1847,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   /* Optical nudge: Latin glyphs sit on-centre at 0, CJK ink rides ~1px
      high in the em box so the icon looks ~1px low. No single value
      satisfies both — 0.5px splits the difference (sub-pixel on 1x,
@@ -1955,18 +1960,18 @@
 
 /* Monitor bar — surfaces currently-running Monitor background tasks. It is
    the second card in the transcript's bottom overlay stack, sharing
-   .todo-panel's shell (glass.css), its 18px bottom rhythm, and its shrinkable
-   column-flex role; only the accent differs (--warn, so it reads as distinct
-   from the Checklist). */
+   .todo-panel's shell (glass.css), its --chat-row-gap bottom rhythm, and its
+   shrinkable column-flex role; only the accent differs (--warn, so it reads
+   as distinct from the Checklist). */
 .monitor-bar {
   pointer-events: auto;
   flex: 0 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  margin: 0 var(--chat-reading-inset) 18px;
+  margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
   padding: 10px 14px;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .monitor-bar-header {
   display: flex;
@@ -1975,7 +1980,7 @@
   margin-bottom: 6px;
 }
 .monitor-bar-title {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1983,7 +1988,7 @@
 }
 .monitor-bar-count {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   background: var(--bg);
   padding: 1px 6px;
@@ -2082,7 +2087,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   /* Match the first text line's box height so the centred icon lands on
      that line's optical middle, then the same 0.5px CJK/Latin nudge as
      the sticky panel. */
@@ -2261,7 +2266,7 @@ button.tool-chip.tool-chip-copyable.copied {
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.45;
 }
@@ -2285,7 +2290,7 @@ details.bash-tool-collapsible > summary {
 }
 details.bash-tool-collapsible > summary::-webkit-details-marker { display: none; }
 .bash-tool-fold-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-style: italic;
   margin-left: 14px; /* align with command after the $ prompt + gap */
@@ -2297,7 +2302,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--fg);
   white-space: pre-wrap;
@@ -2345,7 +2350,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   font-size: var(--fs-sm);
 }
 .grep-tool-icon {
-  font-size: 13px;
+  font-size: var(--fs-base);
   flex-shrink: 0;
 }
 .grep-tool-pattern {
@@ -2378,7 +2383,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   min-width: 0;
 }
 .web-tool-icon {
-  font-size: 13px;
+  font-size: var(--fs-base);
   flex-shrink: 0;
 }
 .web-tool-url {
@@ -2399,7 +2404,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.45;
 }
@@ -2442,7 +2447,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--fg-muted);
@@ -2525,7 +2530,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   background: var(--bg-elev-2);
   padding: 1px 5px;
   border-radius: var(--radius-3xs);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg);
 }
 
@@ -2561,10 +2566,10 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid color-mix(in srgb, var(--warn) 25%, var(--border));
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .plan-card-icon {
-  font-size: 14px;
+  font-size: var(--fs-md);
 }
 .plan-card-title {
   font-weight: 600;
@@ -2573,7 +2578,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 .plan-card-status {
   margin-left: auto;
   padding: 2px 8px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-family: var(--mono);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -2637,7 +2642,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   background: color-mix(in srgb, var(--warn) 4%, transparent);
 }
 .plan-card-allowed-label {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--fg-muted);
   text-transform: uppercase;
@@ -2647,7 +2652,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 .plan-card-allowed-list {
   margin: 0;
   padding-left: 16px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg);
 }
 .plan-card-allowed-item {
@@ -2658,7 +2663,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   background: var(--bg-elev-2);
   padding: 1px 4px;
   border-radius: var(--radius-3xs);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 /* Collapsible variant — used by Chat to wrap the plan card in a <details>
    so long plans fold by default. The summary doubles as the header. */
@@ -2725,7 +2730,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.07em;
   color: var(--fg-muted);
@@ -2738,7 +2743,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   font-family: var(--mono);
   text-transform: none;
   letter-spacing: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   /* Header chips come straight from the model and can be path-like mono
      tokens; without a wrap rule a long chip refuses to shrink as a flex
      item (min-width: auto) and stretches the whole .question-header row. */
@@ -2751,7 +2756,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   color: var(--warn);
 }
 .question-text {
-  font-size: 14px;
+  font-size: var(--fs-md);
   color: var(--fg);
   line-height: 1.45;
   font-weight: 500;
@@ -2789,7 +2794,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
 }
 .question-option-marker {
-  font-size: 16px;
+  font-size: var(--fs-lg);
   color: var(--fg-muted);
   line-height: 1.2;
   display: inline-flex;
@@ -2822,7 +2827,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   background: var(--bg);
   border: 1px dashed var(--border);
   border-radius: var(--radius-xs);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   max-height: 160px;
   overflow: auto;
@@ -2841,7 +2846,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   border-radius: var(--radius-xs);
   color: var(--fg);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   outline: none;
 }
 .question-other-input:focus {
@@ -2865,7 +2870,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
   border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
   border-radius: var(--radius-xs);
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
   overflow-wrap: anywhere;
 }
@@ -2895,7 +2900,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   align-items: center;
   gap: 6px;
   color: var(--accent);
-  font-size: 13px;
+  font-size: var(--fs-base);
   word-break: break-all;
   text-decoration: none;
 }
@@ -2909,14 +2914,14 @@ details.plan-card-collapsible > summary > .plan-card-header {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .elicit-model-name {
   padding: 2px 8px;
   background: var(--btn-hover-bg);
   border-radius: var(--radius-xs);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg);
   word-break: break-all;
 }
@@ -2941,7 +2946,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   color: var(--warn);
 }
 .elicit-field-desc {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .elicit-input {
@@ -2951,7 +2956,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   border-radius: var(--radius-xs);
   color: var(--fg);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-base);
   outline: none;
   width: 100%;
   box-sizing: border-box;
@@ -2963,7 +2968,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
   cursor: pointer;
 }
@@ -3000,10 +3005,10 @@ details.question-inline-card[data-state="open"] > summary {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 .question-inline-icon {
-  font-size: 14px;
+  font-size: var(--fs-md);
 }
 .question-inline-title {
   font-weight: 600;
@@ -3012,7 +3017,7 @@ details.question-inline-card[data-state="open"] > summary {
 .question-inline-status {
   margin-left: auto;
   padding: 2px 8px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-family: var(--mono);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -3035,7 +3040,7 @@ details.question-inline-card[data-state="open"] > summary {
    the status chip (which has margin-left:auto). */
 .question-inline-reopen {
   padding: 2px 10px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   border-radius: var(--radius-pill);
   cursor: pointer;
@@ -3056,7 +3061,7 @@ details.question-inline-card-minimized {
 /* "Review plan" pill on a minimized pending plan card. Mirrors question-inline-reopen. */
 .plan-card-reopen {
   padding: 2px 10px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   border-radius: var(--radius-pill);
   cursor: pointer;
@@ -3073,7 +3078,7 @@ details.question-inline-card-minimized {
    theme color is introduced. */
 .tool-card-perm-reopen {
   padding: 2px 10px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   border-radius: var(--radius-pill);
   cursor: pointer;
@@ -3112,7 +3117,7 @@ details.plan-card-minimized {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.07em;
   color: var(--fg-muted);
@@ -3120,7 +3125,7 @@ details.plan-card-minimized {
 .question-inline-skipped-badge {
   margin-left: auto;
   padding: 1px 6px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-family: var(--mono);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -3152,7 +3157,7 @@ details.plan-card-minimized {
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev));
 }
 .question-inline-option-marker {
-  font-size: 14px;
+  font-size: var(--fs-md);
   color: var(--fg-muted);
   line-height: 1.2;
   margin-top: 1px;
@@ -3205,13 +3210,13 @@ details.plan-card-minimized {
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--fg);
 }
 .findings-card-title { font-weight: 600; }
 .findings-level-badge {
   padding: 2px 8px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-family: var(--mono);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -3222,13 +3227,13 @@ details.plan-card-minimized {
 }
 .findings-count {
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
   font-family: var(--mono);
 }
 .findings-empty {
   padding: 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-style: italic;
 }
@@ -3270,7 +3275,7 @@ details.plan-card-minimized {
 .findings-chip {
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .findings-verdict-confirmed {
   background: color-mix(in srgb, var(--danger) 18%, transparent);
@@ -3311,7 +3316,7 @@ details.plan-card-minimized {
   border-radius: var(--radius-xs);
 }
 .finding-loc {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--mono);
   color: var(--accent);
   margin-left: auto;
@@ -3329,7 +3334,7 @@ details.plan-card-minimized {
   list-style: none;
   cursor: pointer;
   margin-top: 4px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   user-select: none;
 }
 .finding-scenario-details > summary::-webkit-details-marker { display: none; }
@@ -3339,7 +3344,7 @@ details.plan-card-minimized {
 }
 .finding-scenario-details > summary:hover .finding-scenario-label { color: var(--accent); }
 .finding-scenario-body {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.5;
   padding: 6px 0 2px 10px;

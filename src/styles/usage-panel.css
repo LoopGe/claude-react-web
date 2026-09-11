@@ -18,7 +18,7 @@
 
 .usage-section-title {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--mono);
   font-weight: 600;
   text-transform: uppercase;
@@ -34,14 +34,14 @@
 
 .usage-cost {
   font-family: var(--mono);
-  font-size: 22px;
+  font-size: calc(22px * var(--fs-scale));
   font-weight: 700;
   color: var(--fg);
   font-variant-numeric: tabular-nums;
 }
 
 .usage-cost-caption {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 
@@ -50,13 +50,13 @@
   flex-wrap: wrap;
   gap: 4px 12px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .usage-sub-badge {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: var(--mono);
   padding: 1px 6px;
   border-radius: var(--radius-3xs);
@@ -76,7 +76,7 @@
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   min-width: 0;
 }
 
@@ -84,7 +84,7 @@
   flex-shrink: 0;
   width: 44px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg-muted);
@@ -103,7 +103,7 @@
   width: 100%;
   border-collapse: collapse;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
 }
 
@@ -145,7 +145,7 @@
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .usage-window-label { color: var(--fg); }
@@ -182,19 +182,19 @@
 .usage-meter-fill-danger { background: var(--danger); }
 
 .usage-window-resets {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
 }
 
 .usage-extra {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .usage-muted {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--fg-muted);
   margin: 0;
 }
@@ -204,7 +204,7 @@
   justify-content: center;
   padding: 24px 0;
   color: var(--fg-muted);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 
 .usage-empty p { margin: 0; }
@@ -228,7 +228,7 @@
   border: 1px solid var(--border);
   background: var(--bg-elev-2);
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 4px 10px;
   border-radius: var(--radius-xs);
   cursor: pointer;

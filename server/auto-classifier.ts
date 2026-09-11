@@ -18,6 +18,7 @@
 
 import { callAnthropicMessages } from './anthropic-api.js'
 import { createLogger } from './log.js'
+import { metrics } from './metrics.js'
 import { config } from './config.js'
 
 const log = createLogger('classifier')
@@ -209,9 +210,11 @@ export async function classifyToolAction(params: {
       maxTokens: 32,
       temperature: 0,
       signal: mergedSignal,
+      caller: 'auto-classifier',
     })
 
     const elapsed = Date.now() - startMs
+    metrics.observe('auto_classify_ms', elapsed)
     const block = parseBlockDecision(response)
 
     if (block === null) {

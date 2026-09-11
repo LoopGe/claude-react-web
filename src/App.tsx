@@ -89,6 +89,12 @@ import {
   clampMaxOpen,
 } from './constants/storageKeys'
 import type { Defaults, ConfigResponse } from './types/config'
+import type { RowGapPreset } from '../shared/row-gap'
+import { DEFAULT_ROW_GAP, ROW_GAP_PX } from '../shared/row-gap'
+import type { TextSpacingPreset } from '../shared/text-spacing'
+import { DEFAULT_TEXT_SPACING, TEXT_SPACING_CSS } from '../shared/text-spacing'
+import type { FontSizePreset } from '../shared/font-size'
+import { DEFAULT_FONT_SIZE, FONT_SIZE_SCALE } from '../shared/font-size'
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
@@ -217,8 +223,39 @@ export function App() {
     autoRecap: boolean
     toolGroupCards: boolean
     showMessageHeaders: boolean
+    rowGap: RowGapPreset
+    textSpacing: TextSpacingPreset
+    fontSize: FontSizePreset
     firstPartyTools?: Record<string, { enabled: boolean }>
-  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, showMessageHeaders: true })
+  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP, textSpacing: DEFAULT_TEXT_SPACING, fontSize: DEFAULT_FONT_SIZE })
+
+  // Apply the global transcript spacing to a CSS variable. Set on
+  // documentElement, it overrides the `.chat`-scoped default, so message rows,
+  // the folded tool-group body, and the floating bottom cards (todo/monitor)
+  // all follow the chosen density preset live.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--chat-row-gap', `${ROW_GAP_PX[globalPrefs.rowGap]}px`)
+  }, [globalPrefs.rowGap])
+
+  // Apply the global message text density to the intra-card CSS variables
+  // (`--md-*` prose rhythm + `--msg-pad-*` card padding). Written against the
+  // values cached in TEXT_SPACING_CSS for the chosen preset; every consumer
+  // falls back to the `spacious` hardcoded values when a var is unset, so an
+  // unconfigured app renders identically to before.
+  useEffect(() => {
+    const vars = TEXT_SPACING_CSS[globalPrefs.textSpacing]
+    for (const [name, value] of Object.entries(vars)) {
+      document.documentElement.style.setProperty(`--${name}`, value)
+    }
+  }, [globalPrefs.textSpacing])
+
+  // Apply the global font size as the --fs-scale multiplier. Every --fs-* token
+  // is calc(base * var(--fs-scale)), so scaling this one var resizes the whole
+  // app's typography in lockstep. Standard = 1 (the shipped default = unchanged).
+  useEffect(() => {
+    document.documentElement.style.setProperty('--fs-scale', String(FONT_SIZE_SCALE[globalPrefs.fontSize]))
+  }, [globalPrefs.fontSize])
+
   const {
     settingsOpenFor,
     settingsTabRequest,
@@ -472,6 +509,9 @@ export function App() {
           autoRecap: r.autoRecap ?? true,
           toolGroupCards: r.toolGroupCards ?? true,
           showMessageHeaders: r.showMessageHeaders ?? true,
+          rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
+          textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
+          fontSize: r.fontSize ?? DEFAULT_FONT_SIZE,
           firstPartyTools: r.firstPartyTools,
         })
       })
@@ -3607,6 +3647,9 @@ export function App() {
       autoRecap: r.autoRecap ?? true,
       toolGroupCards: r.toolGroupCards ?? true,
       showMessageHeaders: r.showMessageHeaders ?? true,
+      rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
+      textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
+      fontSize: r.fontSize ?? DEFAULT_FONT_SIZE,
       firstPartyTools: r.firstPartyTools,
     })
   }, [])

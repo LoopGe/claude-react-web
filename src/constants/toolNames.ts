@@ -43,6 +43,24 @@ export const ENTER_PLAN_MODE_TOOL_NAME = 'EnterPlanMode'
 export const ENTER_WORKTREE_TOOL_NAME = 'EnterWorktree'
 export const EXIT_WORKTREE_TOOL_NAME = 'ExitWorktree'
 
+/** The worktree pair as one set, so modules that need "is this a worktree
+ *  signal?" (transcript grouping, status maps) pair them here instead of
+ *  re-pairing the scalars locally. */
+export const WORKTREE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ENTER_WORKTREE_TOOL_NAME,
+  EXIT_WORKTREE_TOOL_NAME,
+])
+
+/** Every tool that renders as a thin inline marker (tool-views/markers.tsx)
+ *  instead of a full tool card: EnterPlanMode plus the worktree pair. The
+ *  transcript's tool-group fold treats all of them as run boundaries — a
+ *  collapsed group would hide the mode-transition cue the marker exists to
+ *  show. */
+export const MARKER_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ENTER_PLAN_MODE_TOOL_NAME,
+  ...WORKTREE_TOOL_NAMES,
+])
+
 /** Structured code-review findings report. The agent calls this with
  *  `{ level, findings: [{ file, line, summary, failure_scenario, category,
  *  verdict?, outcome? }] }`. Rendered by a bespoke FindingsCard (severity /

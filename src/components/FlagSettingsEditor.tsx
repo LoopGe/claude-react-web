@@ -225,7 +225,7 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
         {tab === 'permissions' && (
           <div className="fse-permissions">
             <div className="settings-field" style={{ marginBottom: 8 }}>
-              <label style={{ fontSize: 12 }} htmlFor={uid + '-default-mode'}>Default mode</label>
+              <label style={{ fontSize: 'var(--fs-sm)' }} htmlFor={uid + '-default-mode'}>Default mode</label>
               <select
                 className="select"
                 id={uid + '-default-mode'}
@@ -240,7 +240,7 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12, display: 'block', marginBottom: 4 }} htmlFor={uid + '-allow'}>
+                <label style={{ fontSize: 'var(--fs-sm)', display: 'block', marginBottom: 4 }} htmlFor={uid + '-allow'}>
                   Allow rules
                   <span className="hint" style={{ marginLeft: 6 }}>one per line</span>
                 </label>
@@ -252,11 +252,11 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
                   onChange={(e) => handleAllowChange(e.target.value)}
                   disabled={disabled}
                   placeholder={'Bash(npm test)\nRead(~/**)'}
-                  style={{ fontSize: 12 }}
+                  style={{ fontSize: 'var(--fs-sm)' }}
                 />
               </div>
               <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12, display: 'block', marginBottom: 4 }} htmlFor={uid + '-deny'}>
+                <label style={{ fontSize: 'var(--fs-sm)', display: 'block', marginBottom: 4 }} htmlFor={uid + '-deny'}>
                   Deny rules
                   <span className="hint" style={{ marginLeft: 6 }}>one per line</span>
                 </label>
@@ -268,7 +268,7 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
                   onChange={(e) => handleDenyChange(e.target.value)}
                   disabled={disabled}
                   placeholder={'Bash(rm -rf *)'}
-                  style={{ fontSize: 12 }}
+                  style={{ fontSize: 'var(--fs-sm)' }}
                 />
               </div>
             </div>
@@ -284,7 +284,7 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
                 <div key={row.id} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                   <input
                     className="input"
-                    style={{ flex: 1, fontSize: 12 }}
+                    style={{ flex: 1, fontSize: 'var(--fs-sm)' }}
                     aria-label="Environment variable key"
                     placeholder="key"
                     value={row.key}
@@ -293,7 +293,7 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
                   />
                   <input
                     className="input"
-                    style={{ flex: 1, fontSize: 12 }}
+                    style={{ flex: 1, fontSize: 'var(--fs-sm)' }}
                     aria-label="Environment variable value"
                     placeholder="value"
                     value={row.value}
@@ -303,7 +303,7 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
                   <button
                     type="button"
                     className="btn btn-icon"
-                    style={{ fontSize: 11, padding: '2px 6px' }}
+                    style={{ fontSize: 'var(--fs-xs)', padding: '2px 6px' }}
                     onClick={() => removeEnvRow(row.id)}
                     disabled={disabled}
                     title="Remove row"
@@ -317,7 +317,7 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
             <button
               type="button"
               className="btn"
-              style={{ marginTop: 6, fontSize: 12, padding: '2px 8px' }}
+              style={{ marginTop: 6, fontSize: 'var(--fs-sm)', padding: '2px 8px' }}
               onClick={addEnvRow}
               disabled={disabled}
             >
@@ -338,7 +338,7 @@ export function FlagSettingsEditor({ value, onChange, disabled }: Props) {
               disabled={disabled}
               aria-label="Flag settings JSON"
               placeholder={'{"permissions": {...}, "env": {...}}'}
-              style={{ fontFamily: 'var(--mono)', fontSize: 12 }}
+              style={{ fontFamily: 'var(--mono)', fontSize: 'var(--fs-sm)' }}
             />
             <span className="hint">
               Calls <code>Query.applyFlagSettings()</code>. Top-level keys are shallow-merged across calls.

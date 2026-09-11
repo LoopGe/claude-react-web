@@ -10,6 +10,12 @@
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import type { SkillLoadMode } from '../shared/skills.js'
+import type { RowGapPreset } from '../shared/row-gap.js'
+import { isRowGapPreset, DEFAULT_ROW_GAP } from '../shared/row-gap.js'
+import type { TextSpacingPreset } from '../shared/text-spacing.js'
+import { isTextSpacingPreset, DEFAULT_TEXT_SPACING } from '../shared/text-spacing.js'
+import type { FontSizePreset } from '../shared/font-size.js'
+import { isFontSizePreset, DEFAULT_FONT_SIZE } from '../shared/font-size.js'
 import {
   enableFileLogging, disableFileLogging, setLogConfig,
   LOG_LEVELS, LOG_LEVEL_FROM_ENV, LOG_SCOPES_FROM_ENV, type LogLevel,
@@ -128,6 +134,15 @@ interface ConfigFile {
    *  override inherit this value. When false, user bubbles and assistant
    *  cards render as bare content with no header row. */
   showMessageHeaders: boolean
+  /** Global transcript spacing (`--chat-row-gap`) density preset. A personal
+   *  UI preference — global only, never per-session. */
+  rowGap?: string
+  /** Global message text density preset. A personal UI preference — global
+   *  only, never per-session. */
+  textSpacing?: string
+  /** Global font-size preset. A personal UI preference — global only, never
+   *  per-session. */
+  fontSize?: string
   /** Global default for per-session CLI debug logging (Options.debug +
    *  debugFile). SessionMeta.cliDebug overrides when set. Default: false. */
   cliDebug?: boolean
@@ -201,6 +216,15 @@ export interface ServerConfig {
   /** Global default for message-card header rows. Sessions without an
    *  explicit override inherit this. */
   readonly showMessageHeaders: boolean
+  /** Global transcript spacing (`--chat-row-gap`) density preset. Not a
+   *  per-session thing — a personal UI preference applied globally. */
+  readonly rowGap: RowGapPreset
+  /** Global message text density (`--md-*` / `--msg-pad-*`) preset. Sibling of
+   *  rowGap (intra-card vs inter-card rhythm). Applied globally. */
+  readonly textSpacing: TextSpacingPreset
+  /** Global font-size (`--fs-scale`) preset. Sibling of rowGap/textSpacing
+   *  but controls size, not spacing. Applied globally. */
+  readonly fontSize: FontSizePreset
   /** Global default for per-session CLI debug logging (spawn-time only). */
   readonly cliDebug: boolean
   /** Global default for the per-session `apptools` git MCP server. Sessions
@@ -253,6 +277,9 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   autoRecap: true,
   toolGroupCards: true,
   showMessageHeaders: true,
+  rowGap: DEFAULT_ROW_GAP,
+  textSpacing: DEFAULT_TEXT_SPACING,
+  fontSize: DEFAULT_FONT_SIZE,
   cliDebug: false,
   appToolsGit: true,
   firstPartyTools: Object.freeze({ apptools: Object.freeze({ enabled: true }) }),
@@ -513,6 +540,18 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { showMessageHeaders: boolean }).showMessageHeaders = file_.showMessageHeaders
   }
 
+  if (typeof file_.rowGap === 'string' && isRowGapPreset(file_.rowGap)) {
+    ;(merged as { rowGap: RowGapPreset }).rowGap = file_.rowGap
+  }
+
+  if (typeof file_.textSpacing === 'string' && isTextSpacingPreset(file_.textSpacing)) {
+    ;(merged as { textSpacing: TextSpacingPreset }).textSpacing = file_.textSpacing
+  }
+
+  if (typeof file_.fontSize === 'string' && isFontSizePreset(file_.fontSize)) {
+    ;(merged as { fontSize: FontSizePreset }).fontSize = file_.fontSize
+  }
+
   if (typeof file_.cliDebug === 'boolean') {
     ;(merged as { cliDebug: boolean }).cliDebug = file_.cliDebug
     log.info(`cliDebug: ${file_.cliDebug}`)
@@ -620,6 +659,9 @@ export const WRITABLE_CONFIG_KEYS = [
   'autoRecap',
   'toolGroupCards',
   'showMessageHeaders',
+  'rowGap',
+  'textSpacing',
+  'fontSize',
   'cliDebug',
   'appToolsGit',
   'firstPartyTools',

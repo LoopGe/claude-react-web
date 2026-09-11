@@ -27,6 +27,7 @@ import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { HooksPanel } from './HooksPanel'
 import { UsagePanel } from './UsagePanel'
 import { DiagnosticsPanel } from './DiagnosticsPanel'
+import { PerformancePanel } from './PerformancePanel'
 import { SessionProfileSelect } from './SessionProfileSelect'
 import { Overlay } from './Overlay'
 import { Switch } from './Switch'
@@ -48,7 +49,7 @@ import { formatTokens, formatJson } from '../utils/format'
 import { pluginTagOf } from '../utils/text'
 import type { ContextUsage } from '../hooks/useChatStream'
 
-type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents' | 'tools' | 'diagnostics'
+type SettingsTab = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents' | 'tools' | 'diagnostics' | 'performance'
 
 interface Props {
   session: SessionInfo
@@ -854,6 +855,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     { key: 'agents', label: 'Agents' },
     { key: 'tools', label: 'Tools' },
     { key: 'usage', label: 'Usage' },
+    { key: 'performance', label: 'Performance' },
     { key: 'diagnostics', label: 'Diagnostics' },
   ]
 
@@ -1631,6 +1633,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
 
       {tab === 'diagnostics' && (
         <DiagnosticsPanel sessionId={session.id} />
+      )}
+
+      {tab === 'performance' && (
+        <PerformancePanel />
       )}
         </div>
       </div>

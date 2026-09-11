@@ -25,7 +25,7 @@
 
 .uploads-stats {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 
@@ -94,7 +94,7 @@
 }
 
 .uploads-missing-badge {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   text-transform: uppercase;
   color: var(--danger);
   border: 1px solid var(--danger);
@@ -105,7 +105,7 @@
 
 .uploads-meta {
   color: var(--fg-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -550,7 +550,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
             </div>
 
             <details style={{ marginTop: 8 }}>
-              <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--fg-muted)', userSelect: 'none' }}>
+              <summary style={{ cursor: 'pointer', fontSize: 'var(--fs-base)', color: 'var(--fg-muted)', userSelect: 'none' }}>
                 Advanced options
               </summary>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
@@ -671,7 +671,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                     <label style={{ margin: 0 }}>MCP servers</label>
                     <button
                       className="btn"
-                      style={{ fontSize: 11, padding: '2px 8px' }}
+                      style={{ fontSize: 'var(--fs-xs)', padding: '2px 8px' }}
                       onClick={() => { setMcpInstallerEdit(undefined); setShowMcpInstaller(true) }}
                     >
                       + Add server
@@ -689,7 +689,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                         return (
                           <label
                             key={srv.name}
-                            style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}
+                            style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', cursor: 'pointer' }}
                           >
                             <input
                               type="checkbox"
@@ -699,16 +699,16 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                             <span style={{ flex: 1 }}>{srv.name}</span>
                             {globallyOff && (
                               <span
-                                style={{ fontSize: 10, color: 'var(--fg-muted)' }}
+                                style={{ fontSize: 'var(--fs-2xs)', color: 'var(--fg-muted)' }}
                                 title="Globally disabled — opt in by checking the box"
                               >
                                 off
                               </span>
                             )}
-                            <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{srv.type}</span>
+                            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)' }}>{srv.type}</span>
                             <button
                               className="btn"
-                              style={{ fontSize: 10, padding: '1px 5px' }}
+                              style={{ fontSize: 'var(--fs-2xs)', padding: '1px 5px' }}
                               onClick={(e) => {
                                 e.preventDefault()
                                 e.stopPropagation()
@@ -742,7 +742,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                       return (
                         <label
                           key={name}
-                          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', cursor: 'pointer' }}
                         >
                           <input
                             type="checkbox"
@@ -769,7 +769,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                       return (
                         <label
                           key={key}
-                          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)', cursor: 'pointer' }}
                         >
                           <input
                             type="checkbox"
@@ -777,7 +777,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                             onChange={() => togglePlugin(key)}
                           />
                           <span style={{ flex: 1 }}>{pluginName}</span>
-                          <span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{marketplace}</span>
+                          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)' }}>{marketplace}</span>
                         </label>
                       )
                     })}
@@ -802,7 +802,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                       <div key={row.id} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                         <input
                           className="input"
-                          style={{ flex: 1, fontSize: 12 }}
+                          style={{ flex: 1, fontSize: 'var(--fs-sm)' }}
                           aria-label="Environment variable key"
                           placeholder="key"
                           value={row.key}
@@ -813,7 +813,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                         />
                         <input
                           className="input"
-                          style={{ flex: 1, fontSize: 12 }}
+                          style={{ flex: 1, fontSize: 'var(--fs-sm)' }}
                           aria-label="Environment variable value"
                           placeholder="value"
                           value={row.value}
@@ -825,7 +825,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                         <button
                           type="button"
                           className="btn btn-icon"
-                          style={{ fontSize: 11, padding: '2px 6px' }}
+                          style={{ fontSize: 'var(--fs-xs)', padding: '2px 6px' }}
                           onClick={() => {
                             const next = envRows.filter((r) => r.id !== row.id)
                             setEnvRows(next)
@@ -841,7 +841,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                   <button
                     type="button"
                     className="btn"
-                    style={{ marginTop: 6, fontSize: 12, padding: '2px 8px' }}
+                    style={{ marginTop: 6, fontSize: 'var(--fs-sm)', padding: '2px 8px' }}
                     onClick={() => setEnvRows((prev) => [...prev, { id: `env-${Date.now()}-${prev.length}`, key: '', value: '' }])}
                   >
                     + Add variable

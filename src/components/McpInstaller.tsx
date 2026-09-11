@@ -265,7 +265,7 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
           )}
 
           {/* alwaysLoad */}
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)' }}>
             <input
               type="checkbox"
               checked={alwaysLoad}
@@ -276,7 +276,7 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
 
           {/* Errors */}
           {errors.length > 0 && (
-            <div style={{ color: 'var(--danger)', fontSize: 13 }}>
+            <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-base)' }}>
               {errors.map((e, i) => <div key={i}>{e}</div>)}
             </div>
           )}
@@ -325,7 +325,7 @@ function KvEditor({
               <input
                 id={keyId}
                 className="input"
-                style={{ flex: 1, fontSize: 12 }}
+                style={{ flex: 1, fontSize: 'var(--fs-sm)' }}
                 placeholder="key"
                 value={row.key}
                 onChange={(e) => onUpdate(row.id, 'key', e.target.value)}
@@ -335,14 +335,14 @@ function KvEditor({
                 id={valueId}
                 className="input"
                 type="password"
-                style={{ flex: 1, fontSize: 12 }}
+                style={{ flex: 1, fontSize: 'var(--fs-sm)' }}
                 placeholder={valuePlaceholder ?? 'value'}
                 value={row.value}
                 onChange={(e) => onUpdate(row.id, 'value', e.target.value)}
               />
               <button
                 className="btn"
-                style={{ padding: '2px 6px', fontSize: 11, flexShrink: 0 }}
+                style={{ padding: '2px 6px', fontSize: 'var(--fs-xs)', flexShrink: 0 }}
                 onClick={() => onRemove(row.id)}
                 title="Remove"
                 aria-label="Remove"
@@ -354,7 +354,7 @@ function KvEditor({
         })}
         <button
           className="btn"
-          style={{ fontSize: 11, alignSelf: 'flex-start', padding: '2px 8px' }}
+          style={{ fontSize: 'var(--fs-xs)', alignSelf: 'flex-start', padding: '2px 8px' }}
           onClick={onAdd}
         >
           + Add
