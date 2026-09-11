@@ -452,11 +452,10 @@ export interface Session {
    *  Map's values as an array) on every task-state change. Same shape as
    *  contextUsageSubscribers; snapshot semantics make reconnects trivial. */
   taskSubscribers: Set<Pushable<import('../shared/tasks.js').TaskRecordUi[]>>
-  /** Per-subscriber pushables for `git-status-changed` signal frames.
-   *  Same shape as contextUsageSubscribers but carries a signal-only
-   *  payload (no GitStatus snapshot — clients refetch). Driven by
-   *  session-pump on mutating tool_results and by git-write routes on
-   *  user-initiated mutations. */
+  /** Per-subscriber pushables for `git-snapshot` frames carrying full
+   *  status + branches + stashes. Same shape as contextUsageSubscribers.
+   *  Driven by session-pump on mutating tool_results and by git-write
+   *  routes on user-initiated mutations. */
   gitStatusSubscribers: Set<Pushable<unknown>>
   /** Per-subscriber pushables for input-queue message-status signal frames.
    *  Carries either a full `message-consumed` frame each time the SDK reads

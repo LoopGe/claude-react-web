@@ -578,6 +578,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       </Section>
 
       <BranchesSection
+        cwd={cwd}
         sessionId={sessionId}
         currentBranch={status.detached ? null : status.branch}
         writeOps={writeOps}
@@ -586,6 +587,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       />
 
       <StashesSection
+        cwd={cwd}
         sessionId={sessionId}
         writeOps={writeOps}
         onError={(label, err) => toast.error(`${label}: ${err}`)}
@@ -1114,6 +1116,7 @@ function CommitBar({
 // ── Branches section ─────────────────────────────────────────────────
 
 interface BranchesSectionProps {
+  cwd: string | undefined
   sessionId: string
   currentBranch: string | null
   writeOps: ReturnType<typeof useGitWrite>
@@ -1121,9 +1124,9 @@ interface BranchesSectionProps {
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
 }
 
-function BranchesSection({ sessionId, currentBranch, writeOps, onError, askConfirm }: BranchesSectionProps) {
+function BranchesSection({ cwd, sessionId, currentBranch, writeOps, onError, askConfirm }: BranchesSectionProps) {
   const [open, setOpen] = useState(false)
-  const branches = useGitBranches(sessionId, open)
+  const branches = useGitBranches(cwd, sessionId, open)
   const [newBranchOpen, setNewBranchOpen] = useState(false)
   const [newName, setNewName] = useState('')
 
@@ -1274,15 +1277,16 @@ function BranchesSection({ sessionId, currentBranch, writeOps, onError, askConfi
 // ── Stashes section ──────────────────────────────────────────────────
 
 interface StashesSectionProps {
+  cwd: string | undefined
   sessionId: string
   writeOps: ReturnType<typeof useGitWrite>
   onError: (label: string, err: string) => void
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
 }
 
-function StashesSection({ sessionId, writeOps, onError, askConfirm }: StashesSectionProps) {
+function StashesSection({ cwd, sessionId, writeOps, onError, askConfirm }: StashesSectionProps) {
   const [open, setOpen] = useState(false)
-  const stashes = useGitStashes(sessionId, open)
+  const stashes = useGitStashes(cwd, sessionId, open)
 
   return (
     <AnimatedDetails

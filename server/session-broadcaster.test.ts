@@ -12,9 +12,6 @@ vi.mock('./git.js', () => ({
   })),
   listBranches: vi.fn(async () => [{ name: 'main', current: true, upstream: null }]),
   listStashes: vi.fn(async () => []),
-  // broadcaster no longer calls invalidateStatusCache, but the mock
-  // must satisfy the import so vi.mock doesn't produce a missing export.
-  invalidateStatusCache: vi.fn(),
 }))
 import { getStatus, listBranches, listStashes } from './git.js'
 

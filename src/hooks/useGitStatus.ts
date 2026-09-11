@@ -1,20 +1,20 @@
 // React hooks for the read-only /api/git/* surface.
 //
-// Three independent hooks cover the three endpoints (status / diff / log)
-// because their fetch lifetimes diverge: status is mounted long-running
-// alongside the panel header chip, while diff and log only fetch when
-// their corresponding accordion is expanded. Sharing one super-hook would
-// either over-fetch (always pulling diffs) or under-fetch (lazily pulling
-// status when the chip needs it for first paint).
+// Three families of hooks cover status, branches/stashes, and diff/log.
 //
-// Each hook owns an AbortController so a fast cwd switch / unmount doesn't
-// leave a stale response in flight that resolves into a unmounted setter.
+// Status, branches, and stashes are **git-snapshot sinks**: the server
+// pushes complete `WsGitSnapshot` frames (status + branches + stashes)
+// fanned out by repo group. Each hook fetches once on mount (or cwd
+// change) for ground truth, then applies incoming frames directly —
+// zero refetch. Manual refresh() still hits HTTP.
 //
-// useGitStatus subscribes to the per-session `git-status-changed` WS
-// frame and bumps its refresh tick whenever one arrives — so the chip
-// and panel update automatically after Claude edits files. Diff and log
-// hooks have no auto-refresh channel; callers invoke their `refresh()`
-// imperatively when they want a re-fetch.
+// Diff, range-diff, range-diff-file, and log hooks have no WS channel;
+// callers invoke their `refresh()` imperatively when they want a
+// re-fetch (e.g. accordion expand).
+//
+// Each hook owns an AbortController so a fast cwd switch / unmount
+// doesn't leave a stale response in flight that resolves into an
+// unmounted setter.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
@@ -27,6 +27,7 @@ import type {
   GitStashEntry,
   GitRangeDiffResponse,
 } from '../../shared/git-types'
+import type { WsGitSnapshot } from '../../shared/ws-protocol'
 
 interface BaseFetchState<T> {
   data: T | null
@@ -34,30 +35,32 @@ interface BaseFetchState<T> {
   error: string | null
 }
 
-// ── WS auto-refresh helper ────────────────────────────────────────────
+// ── WS git-snapshot listener ────────────────────────────────────────
 //
-// Subscribes to `git-status-changed` frames for a session and calls
-// `refresh` when one arrives. Shared by useGitStatus, useGitBranches,
-// and useGitStashes — each previously duplicated this subscribe /
-// listen / cleanup pattern independently.
+// Subscribes to a session's channel and invokes `onFrame` for each
+// `git-snapshot` frame (server pushes these fanned out by repo group).
+// The onFrame ref pattern keeps the effect independent of callback
+// identity so per-render closures don't churn the subscription.
 
-function useGitWsRefresh(
+function useGitSnapshotListener(
   sessionId: string | undefined,
   enabled: boolean,
-  refresh: () => void,
+  onFrame: (frame: WsGitSnapshot) => void,
 ): void {
   const hub = useWsHub()
+  const onFrameRef = useRef(onFrame)
+  onFrameRef.current = onFrame
   useEffect(() => {
     if (!enabled || !sessionId) return
     const offSub = hub.subscribe(sessionId)
     const offListener = hub.addSessionListener(sessionId, (frame) => {
-      if (frame.kind === 'git-status-changed') refresh()
+      if (frame.kind === 'git-snapshot') onFrameRef.current(frame)
     })
     return () => {
       offSub()
       offListener()
     }
-  }, [enabled, sessionId, hub, refresh])
+  }, [enabled, sessionId, hub])
 }
 
 // ── useGitStatus ──────────────────────────────────────────────────────
@@ -82,12 +85,13 @@ export interface UseGitStatusReturn extends BaseFetchState<GitStatusResponse> {
  *  `cwd` is undefined (no session cwd configured) or when `enabled` is
  *  false (e.g. session not yet running). The returned `refresh()` is
  *  stable and bumps an internal counter so callers can imperatively
- *  re-fetch (e.g. from a "⟳" button or a WS-driven event).
+ *  re-fetch (e.g. from a "⟳" button).
  *
- *  When `sessionId` is provided, the hook also subscribes to the
- *  session's `git-status-changed` WS frame and bumps `refresh()`
- *  whenever one lands — that's how Claude's edits or another tab's
- *  stage/commit propagate without polling. */
+ *  The hook is a git-snapshot sink: it fetches once on mount for
+ *  ground truth, then applies `git-snapshot` WS frames directly —
+ *  zero refetch. A repoRoot guard ensures frames from a different
+ *  repo (e.g. a linked worktree) are dropped once the data is
+ *  authoritative. */
 export function useGitStatus(
   cwd: string | undefined,
   sessionId: string | undefined,
@@ -147,11 +151,25 @@ export function useGitStatus(
     setTick((n) => n + 1)
   }, [])
 
-  // WS subscription: when a `git-status-changed` frame arrives for this
-  // session, bump the tick to refetch. The hub's subscribe() is
-  // ref-counted so multiple consumers (chip + open GitPanel) share one
-  // server-side stream without duplication.
-  useGitWsRefresh(sessionId, enabled, refresh)
+  // Sink: apply pushed snapshots directly — zero refetch. Guard once the
+  // data is authoritative (isRepo with repoRoot, from mount fetch): only
+  // same-repo frames apply, so a WorktreeChanges overlay (hook cwd =
+  // worktree path, subscribed to the main session's channel) never
+  // receives main-repo state. Pre-authoritative (first frame beats the
+  // mount fetch, or isRepo:false): match on cwd/repoRoot equality; a
+  // mismatched frame is dropped in favor of the in-flight HTTP truth.
+  useGitSnapshotListener(sessionId, enabled, (frame) => {
+    setData((prev) => {
+      if (prev && prev.isRepo) {
+        if (prev.repoRoot !== frame.repoRoot) return prev
+        return sameStatus(prev, frame.status) ? prev : frame.status
+      }
+      if (frame.cwd !== cwd && frame.repoRoot !== cwd) return prev
+      return sameStatus(prev, frame.status) ? prev : frame.status
+    })
+    setLoading(false)
+    setError(null)
+  })
 
   return { data, loading, error, refresh }
 }
@@ -397,16 +415,18 @@ export function useGitLog(
 
 // ── Branches & stashes ────────────────────────────────────────────────
 //
-// Both hooks follow the same lazy-fetch + WS-refresh pattern as
-// useGitStatus: only fetch when `enabled` flips on, then refetch on
-// every `git-status-changed` frame so a Claude-driven branch switch
-// or a sibling-tab's commit propagates here.
+// Both hooks are git-snapshot sinks: they fetch once on enable via the
+// cwd-scoped read routes, then apply incoming `git-snapshot` WS frames
+// directly (no guard — branches/stashes only run inside GitPanel where
+// hook cwd == session cwd, and the server only fans out same-group
+// frames).
 
 export interface UseGitBranchesReturn extends BaseFetchState<GitBranch[]> {
   refresh: () => void
 }
 
 export function useGitBranches(
+  cwd: string | undefined,
   sessionId: string | undefined,
   enabled: boolean,
 ): UseGitBranchesReturn {
@@ -417,7 +437,7 @@ export function useGitBranches(
   const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    if (!enabled || !sessionId) {
+    if (!enabled || !cwd) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
       setData(null)
       setError(null)
@@ -429,7 +449,7 @@ export function useGitBranches(
     setLoading(true)
     setError(null)
     api
-      .get<{ branches: GitBranch[] }>(`/sessions/${encodeURIComponent(sessionId)}/git/branches`, { signal: ctrl.signal })
+      .get<{ branches: GitBranch[] }>(`/git/branches?cwd=${encodeURIComponent(cwd)}`, { signal: ctrl.signal })
       .then((res) => {
         if (ctrl.signal.aborted) return
         setData(res.branches)
@@ -442,11 +462,20 @@ export function useGitBranches(
         setLoading(false)
       })
     return () => { ctrl.abort() }
-  }, [sessionId, enabled, tick])
+  }, [cwd, enabled, tick])
 
   const refresh = useCallback(() => { setTick((n) => n + 1) }, [])
 
-  useGitWsRefresh(sessionId, enabled, refresh)
+  // No guard: branches/stashes only run inside GitPanel where hook cwd ==
+  // session cwd, and the server only fans out same-group frames.
+  useGitSnapshotListener(sessionId, enabled, (frame) => {
+    setData((prev) => {
+      const next = frame.branches
+      return JSON.stringify(prev) === JSON.stringify(next) ? prev : next
+    })
+    setLoading(false)
+    setError(null)
+  })
 
   return { data, loading, error, refresh }
 }
@@ -456,6 +485,7 @@ export interface UseGitStashesReturn extends BaseFetchState<GitStashEntry[]> {
 }
 
 export function useGitStashes(
+  cwd: string | undefined,
   sessionId: string | undefined,
   enabled: boolean,
 ): UseGitStashesReturn {
@@ -466,7 +496,7 @@ export function useGitStashes(
   const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    if (!enabled || !sessionId) {
+    if (!enabled || !cwd) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
       setData(null)
       setError(null)
@@ -478,7 +508,7 @@ export function useGitStashes(
     setLoading(true)
     setError(null)
     api
-      .get<{ stashes: GitStashEntry[] }>(`/sessions/${encodeURIComponent(sessionId)}/git/stashes`, { signal: ctrl.signal })
+      .get<{ stashes: GitStashEntry[] }>(`/git/stashes?cwd=${encodeURIComponent(cwd)}`, { signal: ctrl.signal })
       .then((res) => {
         if (ctrl.signal.aborted) return
         setData(res.stashes)
@@ -491,11 +521,20 @@ export function useGitStashes(
         setLoading(false)
       })
     return () => { ctrl.abort() }
-  }, [sessionId, enabled, tick])
+  }, [cwd, enabled, tick])
 
   const refresh = useCallback(() => { setTick((n) => n + 1) }, [])
 
-  useGitWsRefresh(sessionId, enabled, refresh)
+  // No guard: branches/stashes only run inside GitPanel where hook cwd ==
+  // session cwd, and the server only fans out same-group frames.
+  useGitSnapshotListener(sessionId, enabled, (frame) => {
+    setData((prev) => {
+      const next = frame.stashes
+      return JSON.stringify(prev) === JSON.stringify(next) ? prev : next
+    })
+    setLoading(false)
+    setError(null)
+  })
 
   return { data, loading, error, refresh }
 }

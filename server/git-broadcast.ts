@@ -2,8 +2,8 @@
 //
 // When Claude runs a tool that mutates the filesystem, the session-pump
 // detects the matching tool_result and asks us to broadcast a
-// `git-status-changed` frame (now a full git-snapshot frame fanned out by
-// group key). A long-running plan can run 5+ Edit/Write calls back-to-back;
+// `git-snapshot` frame fanned out by group key. A long-running plan can
+// run 5+ Edit/Write calls back-to-back;
 // if we broadcast each one immediately, the chip (which refetches `git
 // status`) gets hammered with redundant requests.
 //

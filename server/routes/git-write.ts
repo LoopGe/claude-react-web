@@ -159,12 +159,6 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
 
   // ── Stash ─────────────────────────────────────────────────────────
 
-  app.get('/sessions/:id/git/stashes', async (c) => {
-    const id = c.req.param('id')
-    const cwd = getSessionCwd(id)
-    return c.json({ stashes: await listStashes(cwd) })
-  })
-
   app.post('/sessions/:id/git/stash', async (c) => {
     const id = c.req.param('id')
     const cwd = getSessionCwd(id)
@@ -208,12 +202,6 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
   })
 
   // ── Branches ──────────────────────────────────────────────────────
-
-  app.get('/sessions/:id/git/branches', async (c) => {
-    const id = c.req.param('id')
-    const cwd = getSessionCwd(id)
-    return c.json({ branches: await listBranches(cwd) })
-  })
 
   app.post('/sessions/:id/git/branch', async (c) => {
     const id = c.req.param('id')

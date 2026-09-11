@@ -258,16 +258,6 @@ export interface WsTasksSnapshot {
   tasks: import('./tasks.js').TaskRecordUi[]
 }
 
-/** Signal-only frame: "git status for this session changed, please
- *  refetch". The server intentionally does NOT pack the GitStatus
- *  payload here so the WS protocol stays decoupled from git-types and
- *  the frame stays small even on bursty mutations. Clients respond by
- *  bumping their useGitStatus refresh counter. */
-export interface WsGitStatusChanged {
-  kind: 'git-status-changed'
-  sessionId: string
-}
-
 /** Full git-state snapshot for one work tree, pushed after any
  *  filesystem-mutating event (Claude tool runs, user write routes).
  *  Replaces the old signal-only git-status-changed frame: the payload IS
@@ -457,7 +447,6 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsContextUsage
   | WsPromptSuggestion
   | WsTasksSnapshot
-  | WsGitStatusChanged
   | WsGitSnapshot
   | WsMessageConsumed
   | WsMessagesWithdrawn
