@@ -1039,19 +1039,32 @@ button.tool-group-failed-jump:focus-visible {
 .tool-group-body > * + * {
   margin-top: var(--chat-row-gap);
 }
-/* The base `.tool-card` carries a `margin-top: 6px` (its own); `.tool-group-body`
-   children are the thin `.tool-group-member` wrappers, not the cards, so the
-   `> *` rule above cannot catch it. Untamed, that 6px collapses out of the
-   first wrapper and grows the header gap by a ragged 6px while the bottom
-   stays clean — visibly asymmetric. Descend to the card itself so top, bottom
-   and inter-card gaps all stay at --chat-row-gap. Resolves because the group
-   card only ever renders inside a .chat transcript. */
-.tool-group-body .tool-card {
-  margin-top: 0;
-}
 /* The group's own card sits inside a .virtuoso-item-wrapper that owns the
    --chat-row-gap between-rows rhythm — the same rhythm a lone tool-card
    message used. */
+
+/* The body's children are the thin `.tool-group-member` wrappers, not the
+   cards, so the `> *` rules above cannot neutralize a margin the card carries
+   itself: the wrapper is a plain block box (no padding, no border, no BFC), so
+   the card's margin collapses through it and is then trapped by the body's own
+   padding — extra space below the group header, and again above the body's
+   bottom edge. Measured on the `margin: 6px 0` families (.subagent-card /
+   .workflow-card): 18px at both ends against the intended 12px --chat-row-gap,
+   while a `.tool-card` member sat at 12px. A MIDDLE member's margin collapses
+   into the larger `> * + *` gap instead, so the artifacts concentrate at the
+   two ends (only there at the shipped density).
+
+   Match by POSITION, not by card class: each card family brings its own
+   margin from whichever stylesheet it lives in (`.tool-card` 6px,
+   `.subagent-card` / `.workflow-card` 6px, `details.plan-card-collapsible` /
+   `.findings-card` 8px), so the old `.tool-card`-only selector silently missed
+   the subagent and workflow cards. Every member root is exactly one element
+   today (ToolGroupCard renders one BlockView per `.tool-group-member`) and
+   this rule depends on that — a wrapper inserted between the two puts the card
+   out of its reach. */
+.tool-group-body > .tool-group-member > * {
+  margin-block: 0;
+}
 
 /* Plan-card-style left accent: quieter than a header box-shadow and
    still visible when the group is collapsed. Amber, so the stripe agrees with
@@ -1066,7 +1079,8 @@ button.tool-group-failed-jump:focus-visible {
 
 /* Wrapper around each folded tool call: the anchor the failed badge scrolls to
    and the thing it tints. Layout-neutral (a block box around a block card), so
-   the sibling margin rules above still supply the 8px rhythm. */
+   the member-child reset above plus the sibling `> * + *` gap supply the whole
+   rhythm. */
 .tool-group-member-flash {
   border-radius: var(--radius-sm);
   animation: tool-group-member-flash 1400ms var(--motion-ease-standard) both;
