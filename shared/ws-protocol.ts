@@ -10,6 +10,8 @@
 // - Inbound: subscribe / unsubscribe / ping. User turns go through REST.
 // - Outbound: self-describing frames with no stream-order dependency.
 
+import type { GitStatusResponse, GitBranch, GitStashEntry } from './git-types.js'
+
 // --- inbound (client → server) -----------------------------------------------
 
 /** Ask the server to start streaming events for `sessionId` on this
@@ -266,6 +268,25 @@ export interface WsGitStatusChanged {
   sessionId: string
 }
 
+/** Full git-state snapshot for one work tree, pushed after any
+ *  filesystem-mutating event (Claude tool runs, user write routes).
+ *  Replaces the old signal-only git-status-changed frame: the payload IS
+ *  the fresh state, so clients apply it directly with zero refetch.
+ *  `repoRoot` is the fan-out group key (spawn-captured work-tree top
+ *  level, falling back to cwd for non-repo sessions); subscribers whose
+ *  session shares that key receive the frame. `sessionId` is the
+ *  trigger — clients must not route on it. Frames are idempotent and
+ *  droppable: losing one self-heals on the next mutation. */
+export interface WsGitSnapshot {
+  kind: 'git-snapshot'
+  sessionId: string
+  cwd: string
+  repoRoot: string
+  status: GitStatusResponse
+  branches: GitBranch[]
+  stashes: GitStashEntry[]
+}
+
 /** Signal frame: "the SDK just read this user message off the input
  *  queue". Fires the moment a queued turn is actually consumed (begins
  *  processing), as opposed to when it was accepted over HTTP. The client
@@ -437,6 +458,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsPromptSuggestion
   | WsTasksSnapshot
   | WsGitStatusChanged
+  | WsGitSnapshot
   | WsMessageConsumed
   | WsMessagesWithdrawn
   | WsSessionRecapUpdate<Recap>
