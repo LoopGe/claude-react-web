@@ -241,11 +241,14 @@ export class SessionEventBroadcaster {
     const s = this.sessions.get(id)
     if (!s || !s.cwd) return
     const key = gitGroupKey(s)
-    const [status, branches, stashes] = await Promise.all([
-      partial?.status ?? getStatus(s.cwd),
-      partial?.branches ?? listBranches(s.cwd),
-      partial?.stashes ?? listStashes(s.cwd),
-    ])
+    const status = await (partial?.status ?? getStatus(s.cwd))
+    const isRepo = 'isRepo' in status && status.isRepo
+    const [branches, stashes] = isRepo
+      ? await Promise.all([
+        partial?.branches ?? listBranches(s.cwd),
+        partial?.stashes ?? listStashes(s.cwd),
+      ])
+      : [partial?.branches ?? [], partial?.stashes ?? []]
     const frame: WsGitSnapshot = { kind: 'git-snapshot', sessionId: id, cwd: s.cwd, repoRoot: key, status, branches, stashes }
     this.gitSnapshots.set(key, frame)
     this.pruneGitSnapshots()

@@ -151,4 +151,27 @@ describe('SessionEventBroadcaster git-snapshot', () => {
     const bc2 = new SessionEventBroadcaster(new Map([['x', alone]]))
     expect(bc2.gitGroupLivePeer('x')).toBeNull()
   })
+
+  it('pushes isRepo:false with empty lists for a non-repo cwd without calling listBranches/listStashes', async () => {
+    vi.mocked(getStatus).mockResolvedValueOnce({ isRepo: false } as unknown as Awaited<ReturnType<typeof getStatus>>)
+    const a = makeSession('a', '/not-a-repo', undefined)
+    const bc = new SessionEventBroadcaster(new Map([['a', a]]))
+    const sub = bc.subscribeGitStatus('a')!
+    const it = sub.iterable[Symbol.asyncIterator]()
+    void it.next() // park waiter
+    bc.broadcastGitStatusChanged('a')
+    await vi.waitFor(() => expect(getStatus).toHaveBeenCalled())
+    // give the async path time to NOT throw
+    await new Promise((r) => setTimeout(r, 20))
+    expect(listBranches).not.toHaveBeenCalled()
+    expect(listStashes).not.toHaveBeenCalled()
+    // seed now holds the frame — a fresh subscriber gets it
+    const fresh = bc.subscribeGitStatus('a')!
+    const first = await fresh.iterable[Symbol.asyncIterator]().next()
+    const frame = first.value as { kind: string; status: { isRepo: boolean }; branches: unknown[]; stashes: unknown[] }
+    expect(frame.kind).toBe('git-snapshot')
+    expect(frame.status.isRepo).toBe(false)
+    expect(frame.branches).toEqual([])
+    expect(frame.stashes).toEqual([])
+  })
 })

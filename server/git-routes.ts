@@ -21,7 +21,7 @@ export function buildGitRouter(): Hono {
   const app = new Hono()
   app.onError(createErrorHandler('[git]'))
 
-  // Validation shared by all three routes. Throws HttpError on failure
+  // Validation shared by all routes here. Throws HttpError on failure
   // so the caller can early-return with a single line.
   function requireCwd(raw: string | undefined): string {
     if (!raw) throw new HttpError(400, 'cwd query param is required')
