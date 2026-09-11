@@ -16,6 +16,8 @@ import { IconX, IconArrowLeft, IconSendInterruptToggle, IconLoader, IconPapercli
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { usePastedImages } from '../hooks/usePastedImages'
+import { usePastedTexts } from '../hooks/usePastedTexts'
+import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 
@@ -65,7 +67,14 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const pastedImages = usePastedImages()
+  // Collapsed pastes: a long clipboard is replaced in the input by a
+  // `[Pasted text #N]` reference whose body lives here and is spliced back in
+  // on send, same as the main composer.
+  const { add: addPastedText, expand: expandPastedText } = usePastedTexts()
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // Same reference-editing rules as the main composer (see the hook).
+  const { handleRefKeyDown, widenToRef, handlePaste: handleRefPaste } =
+    usePastedTextEditing({ input, setInput, textareaRef, addPastedText })
   /** Waiting = a background subagent is still in flight after the side-chat
    *  turn ended. Mirrors Chat.tsx's derivation (checks both `pending` and
    *  `background` — the latter survives a server-restart replay where no
@@ -82,7 +91,8 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const { insertUserMessage, ackUserMessage, rollbackUserMessage } = stream
 
   const handleSend = useCallback(async () => {
-    const text = input.trim()
+    // Expand first so no bare `[Pasted text #N]` can reach the model.
+    const text = expandPastedText(input.trim())
     if ((!text && pastedImages.images.length === 0) || sending) return
     setSending(true)
     // Optimistic insert — message appears immediately in the transcript.
@@ -108,7 +118,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     } finally {
       setSending(false)
     }
-  }, [input, sending, session.id, insertUserMessage, ackUserMessage, rollbackUserMessage, pastedImages])
+  }, [input, sending, session.id, insertUserMessage, ackUserMessage, rollbackUserMessage, pastedImages, expandPastedText])
 
   const handleInterrupt = useCallback(async () => {
     try { await api.post(`/sessions/${session.id}/interrupt`, {}) } catch { /* */ }
@@ -292,6 +302,9 @@ export const SideChatDrawer = memo(function SideChatDrawer({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
+              // A `[Pasted text #N]` reference is one unit: Backspace/Delete
+              // remove it whole and the arrows step over it.
+              if (handleRefKeyDown(e)) return
               // Skip Enter while an IME composition is active — Enter in
               // that context confirms the candidate, not submission. Without
               // this check Chinese/Japanese/Korean users would send partial
@@ -301,17 +314,8 @@ export const SideChatDrawer = memo(function SideChatDrawer({
                 void handleSend()
               }
             }}
-            onPaste={(e) => {
-              const items = e.clipboardData?.items
-              if (!items) return
-              for (const item of items) {
-                if (item.type.startsWith('image/') && item.type !== 'image/svg+xml') {
-                  const file = item.getAsFile()
-                  if (file) void pastedImages.addImage(file)
-                  return
-                }
-              }
-            }}
+            onDoubleClick={widenToRef}
+            onPaste={(e) => handleRefPaste(e, (file) => void pastedImages.addImage(file))}
             placeholder={session.terminated ? 'Session ended' : 'Ask something...'}
             disabled={session.terminated || sending}
             rows={1}

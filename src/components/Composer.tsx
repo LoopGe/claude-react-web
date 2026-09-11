@@ -12,6 +12,7 @@ import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useToast } from '../hooks/useToast'
+import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker, pickerFlatCommands } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
@@ -75,6 +76,10 @@ interface Props {
   pastedImages: PastedImage[]
   onPasteImage: (file: File) => Promise<void>
   onRemovePastedImage: (id: string) => void
+  /** Store a collapsed paste's full text and return the id its
+   *  `[Pasted text #N]` reference should carry. Nothing else sees the body
+   *  until the message is sent, when the parent expands the reference. */
+  onAddPastedText: (content: string) => number
   onSend: () => void
   onInterrupt: () => void
   /** True only while there's an outstanding turn the server can interrupt.
@@ -143,6 +148,7 @@ export const Composer = memo(function Composer({
   pastedImages,
   onPasteImage,
   onRemovePastedImage,
+  onAddPastedText,
   onSend,
   onInterrupt,
   canInterrupt,
@@ -382,6 +388,26 @@ export const Composer = memo(function Composer({
     [input, savedSelection, setInput],
   )
 
+  // The native insert/delete, the atomic reference keys, the double-click
+  // widening and the paste routing all live in one hook so this composer and
+  // the side-chat drawer cannot drift apart on them.
+  const onFallbackEdit = useCallback(() => {
+    if (history.isBrowsing()) history.reset()
+  }, [history])
+  const {
+    insertAtCaret,
+    placePastedText,
+    handleRefKeyDown,
+    widenToRef,
+    handlePaste: handleRefPaste,
+  } = usePastedTextEditing({
+    input,
+    setInput,
+    textareaRef,
+    addPastedText: onAddPastedText,
+    onFallbackEdit,
+  })
+
   const handleCut = useCallback(async () => {
     const { start, end } = savedSelection
     if (start === end) return
@@ -407,12 +433,16 @@ export const Composer = memo(function Composer({
 
   const handlePaste = useCallback(async () => {
     try {
-      const text = await navigator.clipboard.readText()
-      if (text) insertAtSavedSelection(text)
+      const raw = await navigator.clipboard.readText()
+      if (!raw) return
+      // Goes to the range snapshotted when the menu opened, not the live
+      // caret: the menu holds focus, so the textarea is blurred while this
+      // runs. insertAtSavedSelection also restores focus afterwards.
+      placePastedText(raw, insertAtSavedSelection)
     } catch {
       toast.error('Paste failed — use Ctrl+V instead.')
     }
-  }, [insertAtSavedSelection, toast])
+  }, [insertAtSavedSelection, placePastedText, toast])
 
   const handleSelectAll = useCallback(() => {
     requestAnimationFrame(() => {
@@ -712,20 +742,8 @@ export const Composer = memo(function Composer({
           onCompositionEnd={() => { composingRef.current = false }}
           onBlur={() => { composingRef.current = false }}
           onContextMenu={handleTextareaContextMenu}
-          onPaste={(e) => {
-            const items = e.clipboardData?.items
-            if (!items) return
-            for (const item of items) {
-              if (item.type.startsWith('image/') && item.type !== 'image/svg+xml') {
-                // Don't call e.preventDefault() — the browser's default
-                // paste inserts any text/plain content into the textarea.
-                // We additionally process the image as an attachment.
-                const file = item.getAsFile()
-                if (file) void onPasteImage(file)
-                return
-              }
-            }
-          }}
+          onPaste={(e) => handleRefPaste(e, onPasteImage)}
+          onDoubleClick={widenToRef}
           onChange={(e) => {
             const val = e.target.value
             setInput(val)
@@ -783,6 +801,12 @@ export const Composer = memo(function Composer({
               // All other keys (letters, backspace, etc.) fall through to
               // onChange which will re-filter or close the picker.
             }
+            // A `[Pasted text #N]` reference is one unit, not two dozen
+            // characters: Backspace/Delete remove it whole and the arrows step
+            // over it. Handled here, before the history/send paths below, so an
+            // arrow at a reference edge is consumed instead of starting a walk;
+            // suppressed while the picker owns the arrow keys.
+            if (!pickerOpen && handleRefKeyDown(e)) return
             // Bare Tab with an empty input fills the predicted prompt
             // suggestion (if any). Modifiers keep the default behaviour
             // (focus traversal / shift-tab). `recall` sets the input and
@@ -805,31 +829,9 @@ export const Composer = memo(function Composer({
               !e.nativeEvent.isComposing
             ) {
               e.preventDefault()
-              const el = textareaRef.current
-              if (el) {
-                // Prefer execCommand('insertText') so the newline goes in the
-                // same way Shift+Enter's native insert does — it keeps the
-                // browser's undo stack intact AND scrolls the caret into view.
-                // A manual splice (below) only moves the caret via
-                // setSelectionRange, which never scrolls, so on this fixed-
-                // height textarea the new line ends up hidden below the fold.
-                // execCommand fires a native input event, so onChange already
-                // runs setInput + history.reset() for us.
-                const inserted =
-                  el.ownerDocument?.execCommand?.('insertText', false, '\n')
-                if (!inserted) {
-                  // Fallback for engines without execCommand (e.g. jsdom).
-                  const start = el.selectionStart
-                  const end = el.selectionEnd
-                  const next = input.slice(0, start) + '\n' + input.slice(end)
-                  setInput(next)
-                  if (history.isBrowsing()) history.reset()
-                  const caret = start + 1
-                  requestAnimationFrame(() => {
-                    el.setSelectionRange(caret, caret)
-                  })
-                }
-              }
+              // Same native-first insert Shift+Enter gets, so the newline
+              // keeps the browser's undo stack and scrolls the caret into view.
+              insertAtCaret('\n')
               return
             }
             // Alt+Enter: toggle expanded mode (enlarge textarea + show

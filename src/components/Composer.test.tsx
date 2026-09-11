@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { render as rtlRender, cleanup, fireEvent } from '@testing-library/react'
+import { render as rtlRender, cleanup, createEvent, fireEvent } from '@testing-library/react'
 import { Composer } from './Composer'
 import { ToastProvider } from './ToastProvider'
 import type { SlashCommand } from '../types'
@@ -56,6 +56,8 @@ const defaultProps = {
   pastedImages: [] as never[],
   onPasteImage: noopAsync,
   onRemovePastedImage: noop,
+  // Allocates the reference id for a collapsed paste and stores its content.
+  onAddPastedText: () => 1,
   onSend: noop,
   onInterrupt: noop,
   canInterrupt: false,
@@ -593,5 +595,136 @@ describe('Composer', () => {
       expect(container.querySelector('.scheduled-chip')).toBeNull()
       expect(container.querySelector('.scheduled-chip-failed')).toBeNull()
     })
+  })
+})
+
+describe('Composer pasted-text references', () => {
+  // 30 lines → 29 newlines, comfortably past the collapse threshold.
+  const LONG_PASTE = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n')
+  const REF = '[Pasted text #1 +29 lines]'
+
+  /** Controlled harness: most assertions are about the resulting input value. */
+  function Harness({
+    initial,
+    onAddPastedText,
+  }: {
+    initial: string
+    onAddPastedText: (content: string) => number
+  }) {
+    const [value, setValue] = useState(initial)
+    return (
+      <Composer {...defaultProps} input={value} setInput={setValue} onAddPastedText={onAddPastedText} />
+    )
+  }
+
+  function setup(initial: string, onAddPastedText: (content: string) => number = () => 1) {
+    const utils = render(<Harness initial={initial} onAddPastedText={onAddPastedText} />)
+    const ta = utils.container.querySelector('textarea')!
+    return { ...utils, ta }
+  }
+
+  it('collapses a long paste into a reference and hands over the content', () => {
+    const onAddPastedText = vi.fn(() => 1)
+    const { ta } = setup('', onAddPastedText)
+
+    fireEvent.paste(ta, { clipboardData: { getData: () => LONG_PASTE } })
+
+    expect(onAddPastedText).toHaveBeenCalledWith(LONG_PASTE)
+    expect(ta.value).toBe(REF)
+  })
+
+  it('leaves a short paste to the browser instead of collapsing it', () => {
+    const onAddPastedText = vi.fn(() => 1)
+    const { ta } = setup('', onAddPastedText)
+
+    const event = createEvent.paste(ta, { clipboardData: { getData: () => 'one\ntwo' } })
+    fireEvent(ta, event)
+
+    // Not prevented → the browser performs its own inline insert.
+    expect(event.defaultPrevented).toBe(false)
+    expect(onAddPastedText).not.toHaveBeenCalled()
+  })
+
+  it('deletes the whole reference on Backspace at its end', () => {
+    const { ta } = setup(`hi ${REF}`)
+    const end = ta.value.length
+    ta.setSelectionRange(end, end)
+
+    fireEvent.keyDown(ta, { key: 'Backspace' })
+
+    expect(ta.value).toBe('hi ')
+  })
+
+  it('leaves an ordinary Backspace to the browser', () => {
+    const { ta } = setup('hello')
+    ta.setSelectionRange(5, 5)
+
+    const event = createEvent.keyDown(ta, { key: 'Backspace' })
+    fireEvent(ta, event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(ta.value).toBe('hello')
+  })
+
+  it('deletes the whole reference on Delete at its start', () => {
+    const { ta } = setup(`${REF} hi`)
+    ta.setSelectionRange(0, 0)
+
+    fireEvent.keyDown(ta, { key: 'Delete' })
+
+    expect(ta.value).toBe(' hi')
+  })
+
+  it('jumps over the whole reference on ArrowLeft from its end', () => {
+    const { ta } = setup(`hi ${REF}`)
+    const end = ta.value.length
+    ta.setSelectionRange(end, end)
+
+    fireEvent.keyDown(ta, { key: 'ArrowLeft' })
+
+    expect(ta.selectionStart).toBe('hi '.length)
+  })
+
+  it('jumps over the whole reference on ArrowRight from its start', () => {
+    const { ta } = setup(`${REF} hi`)
+    ta.setSelectionRange(0, 0)
+
+    fireEvent.keyDown(ta, { key: 'ArrowRight' })
+
+    expect(ta.selectionStart).toBe(REF.length)
+  })
+
+  it('widens a double-click inside a reference to the whole reference', () => {
+    const { ta } = setup(`hi ${REF}`)
+    // Stand in for the browser's word-select landing inside the token.
+    ta.setSelectionRange(6, 10)
+
+    fireEvent.doubleClick(ta)
+
+    expect(ta.selectionStart).toBe('hi '.length)
+    expect(ta.selectionEnd).toBe(ta.value.length)
+  })
+
+  it('leaves Shift+Delete to the browser so Cut still copies', () => {
+    const { ta } = setup(`${REF} hi`)
+    ta.setSelectionRange(0, 0)
+
+    const event = createEvent.keyDown(ta, { key: 'Delete', shiftKey: true })
+    fireEvent(ta, event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(ta.value).toBe(`${REF} hi`)
+  })
+
+  it('leaves Shift+ArrowLeft to the browser so it extends the selection', () => {
+    const { ta } = setup(`hi ${REF}`)
+    const end = ta.value.length
+    ta.setSelectionRange(end, end)
+
+    const event = createEvent.keyDown(ta, { key: 'ArrowLeft', shiftKey: true })
+    fireEvent(ta, event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(ta.selectionStart).toBe(end)
   })
 })
