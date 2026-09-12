@@ -120,6 +120,9 @@ function snapshot(): MetricsSnapshot {
       p95: round1(quantile(s, 0.95)),
       p99: round1(quantile(s, 0.99)),
       max: round1(s.max),
+      // Per-bucket (non-cumulative) counts for the panel's distribution
+      // bars; the +Inf overflow is implicit (count minus these).
+      buckets: s.buckets.map((le, i) => ({ le, count: s.counts[i]! })),
     }
   }
   return {
