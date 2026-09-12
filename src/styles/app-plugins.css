@@ -277,8 +277,8 @@
 }
 .plugin-popover[data-loading] .plugin-content-text::after {
   content: '';
-  width: 14px;
-  height: 14px;
+  width: var(--size-14px);
+  height: var(--size-14px);
   border: 2px solid var(--border);
   border-top-color: var(--accent);
   border-radius: var(--radius-circle);
@@ -361,7 +361,7 @@
 /* ── Status indicator override ───────────────────────────────────── */
 
 .plugin-status-indicator {
-  height: 20px;
+  height: var(--size-20px);
   width: auto;
   vertical-align: middle;
   border-radius: var(--radius-xs);

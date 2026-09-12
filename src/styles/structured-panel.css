@@ -15,7 +15,7 @@
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 /* A field caption above a control. Mirrors `.field-label` used across other
@@ -23,13 +23,13 @@
 .structured-panel .field-label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   color: var(--fg-muted);
   font-size: 11.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 
 .structured-panel .structured-schema {
@@ -49,8 +49,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-top: 6px;
+  gap: var(--space-2);
+  margin-top: var(--space-1-5);
 }
 
 .structured-panel .structured-subrow .field-label {
@@ -61,16 +61,16 @@
 .structured-panel .structured-advanced {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2-5);
   border-top: 1px solid var(--border);
-  padding-top: 10px;
-  margin-top: 4px;
+  padding-top: var(--space-2-5);
+  margin-top: var(--space-1);
 }
 
 .structured-panel .structured-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 
 @media (max-width: 560px) {
@@ -95,8 +95,8 @@
   white-space: pre;
   font-family: var(--mono);
   font-size: var(--fs-sm);
-  margin: 8px 0 0;
-  padding: 10px 12px;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2-5) var(--space-3);
   border: 1px solid var(--border);
   border-radius: 6px;
   background-color: var(--bg);
@@ -104,5 +104,5 @@
 }
 
 .structured-panel .structured-meta {
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
 }

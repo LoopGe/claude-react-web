@@ -1,18 +1,18 @@
 /* Session list */
 .session-list {
-  padding: 10px;
+  padding: var(--space-2-5);
   overflow-y: auto;
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .session-list-top {
-  padding: 12px;
+  padding: var(--space-3);
   border-bottom: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 /* The "New session" button doubles as a drop target for folders dragged
    from the OS file manager. Dashed outline + slight scale makes the
@@ -67,7 +67,7 @@
   border: none;
   color: var(--fg-muted);
   cursor: pointer;
-  padding: 2px 6px;
+  padding: var(--space-0-5) var(--space-1-5);
   border-radius: var(--radius-xs);
   font-size: var(--fs-xs);
 }
@@ -77,14 +77,14 @@
 .group-pills {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
   align-items: center;
 }
 .group-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
+  gap: var(--space-1);
+  padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-lg);
   font-size: var(--fs-xs);
   font-weight: 500;
@@ -150,7 +150,7 @@
 .group-pill-new:hover { opacity: 1; }
 .group-pill-input {
   font-size: var(--fs-xs);
-  padding: 2px 6px;
+  padding: var(--space-0-5) var(--space-1-5);
   border-radius: var(--radius-lg);
   border: 1px solid var(--accent);
   background: var(--bg-elev-1);
@@ -197,7 +197,7 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--fg-muted);
-  padding: 8px 12px 4px;
+  padding: var(--space-2) var(--space-3) var(--space-1);
   user-select: none;
 }
 
@@ -205,8 +205,8 @@
 .session-group-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-3);
   cursor: pointer;
   user-select: none;
   font-size: var(--fs-sm);
@@ -305,8 +305,8 @@
   background: none;
   border: none;
   padding: 0;
-  width: 16px;
-  height: 16px;
+  width: var(--size-16px);
+  height: var(--size-16px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -327,7 +327,7 @@
   background: var(--bg-elev-2);
   border-radius: var(--radius-md);
   padding: 0 5px;
-  min-width: 16px;
+  min-width: var(--size-16px);
   text-align: center;
 }
 /* Aggregate badges shown on a collapsed group header so the user can tell at a
@@ -340,10 +340,10 @@
   font-weight: 600;
   line-height: 1;
   border-radius: var(--radius-md);
-  padding: 2px 6px;
-  min-width: 16px;
+  padding: var(--space-0-5) var(--space-1-5);
+  min-width: var(--size-16px);
   text-align: center;
-  margin-left: 2px;
+  margin-left: var(--space-0-5);
 }
 .group-header-badge-pending {
   background: var(--accent);
@@ -391,7 +391,7 @@
 .ungrouped-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .ungrouped-header-icon {
   display: inline-flex;
@@ -401,8 +401,8 @@
 .session-item {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-2-5);
   /* Square by default — adjacent cards sit flush (no gap in
      .group-sessions / Virtuoso), so rounding is applied only at the ends
      of each contiguous run via .session-item-shell.list-first/.list-last. */
@@ -525,14 +525,14 @@
 .session-item.resuming { cursor: progress; opacity: 0.5; }
 .session-resuming-spinner {
   display: inline-block;
-  width: 10px;
-  height: 10px;
+  width: var(--size-10px);
+  height: var(--size-10px);
   border: 1.5px solid var(--fg-muted);
   border-top-color: var(--accent);
   border-radius: var(--radius-circle);
   animation: msg-sending-spin 0.8s linear infinite;
   vertical-align: middle;
-  margin-right: 4px;
+  margin-right: var(--space-1);
 }
 
 /* Error summary line — truncated one-liner under the title, full text
@@ -540,12 +540,12 @@
 .session-item-error {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: var(--fs-sm);
   color: var(--danger);
   overflow: hidden;
   white-space: nowrap;
-  margin-top: 2px;
+  margin-top: var(--space-0-5);
 }
 .session-item-error svg {
   flex-shrink: 0;
@@ -564,7 +564,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  padding: var(--space-4);
   background: color-mix(in srgb, var(--bg) 65%, transparent);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
@@ -617,7 +617,7 @@
   width: 100%;
   resize: vertical;
   min-height: 44px;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   font-family: inherit;
   font-size: var(--fs-sm, 13px);
   color: var(--fg);
@@ -639,8 +639,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: var(--size-28px);
+  height: var(--size-28px);
   padding: 0;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -663,7 +663,7 @@
 .ctx-menu {
   position: fixed;
   min-width: 180px;
-  padding: 4px;
+  padding: var(--space-1);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -686,9 +686,9 @@
 .ctx-menu-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
-  padding: 6px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   background: none;
   border: none;
   color: var(--fg);
@@ -708,14 +708,14 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
+  width: var(--size-14px);
   opacity: 0.75;
 }
 .ctx-menu-label { flex: 1; }
 .ctx-menu-sep {
   height: 1px;
   background: var(--border);
-  margin: 4px 2px;
+  margin: var(--space-1) var(--space-0-5);
 }
 
 /* ── Model picker — searchable dropdown anchored under the header chip ──
@@ -744,10 +744,10 @@
   position: fixed;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-3-5);
   width: 264px;
   max-width: calc(100vw - 24px);
-  padding: 14px;
+  padding: var(--space-3-5);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -759,7 +759,7 @@
 .appearance-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .appearance-heading {
   font-size: var(--fs-2xs);
@@ -773,12 +773,12 @@
 .appearance-accent-locked {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 2px;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-0-5);
 }
 .appearance-accent-locked-swatch {
-  width: 20px;
-  height: 20px;
+  width: var(--size-20px);
+  height: var(--size-20px);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   flex: none;
@@ -790,18 +790,18 @@
 .appearance-skin-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: var(--space-2);
 }
 .appearance-skin-card {
   position: relative;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 10px;
+  gap: var(--space-0-5);
+  padding: var(--space-2-5);
   /* Reserve room on the right so the active check mark never overlaps the
      label/desc text — matters now that three skins share the row. */
-  padding-right: 24px;
+  padding-right: var(--space-6);
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-elev-1);
@@ -840,15 +840,15 @@
 }
 .appearance-mode-row {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .appearance-mode-btn {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 8px 4px;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-1);
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--bg-elev-1);
@@ -869,8 +869,8 @@
 .model-picker-search {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: var(--space-1-5);
+  padding: var(--space-2) var(--space-2-5);
   border-bottom: 1px solid var(--border);
   color: var(--fg-muted);
 }
@@ -890,16 +890,16 @@
 .model-picker-list {
   flex: 1;
   overflow-y: auto;
-  padding: 4px;
+  padding: var(--space-1);
 }
 .model-picker-empty {
-  padding: 20px;
+  padding: var(--space-5);
   text-align: center;
   color: var(--fg-muted);
   font-size: var(--fs-base);
 }
 .model-picker-heading {
-  padding: 6px 8px 2px;
+  padding: var(--space-1-5) var(--space-2) var(--space-0-5);
   font-size: var(--fs-2xs);
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -910,7 +910,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   padding: 7px 8px;
   background: transparent;
@@ -963,7 +963,7 @@
   max-width: 420px;
   max-height: 320px;
   overflow-y: auto;
-  padding: 4px;
+  padding: var(--space-1);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -977,9 +977,9 @@
 .cmd-picker-item {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
-  padding: 6px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   background: none;
   border: none;
   color: var(--fg);
@@ -1015,13 +1015,13 @@
   margin-left: auto;
 }
 .cmd-picker-empty {
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   color: var(--fg-muted);
   font-size: var(--fs-sm);
   text-align: center;
 }
 .cmd-picker-group-header {
-  padding: 6px 10px 2px;
+  padding: var(--space-1-5) var(--space-2-5) var(--space-0-5);
   font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
@@ -1119,9 +1119,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  margin-right: 6px;
+  width: var(--size-18px);
+  height: var(--size-18px);
+  margin-right: var(--space-1-5);
   border-radius: var(--radius-xs);
   border: 1px solid var(--accent);
   color: var(--accent);
@@ -1155,14 +1155,14 @@
    them and stays static. */
 @keyframes session-slot-in {
   from { width: 0; margin-right: 0; opacity: 0; }
-  to   { width: 18px; margin-right: 6px; opacity: 1; }
+  to   { width: var(--size-18px); margin-right: var(--space-1-5); opacity: 1; }
 }
 .session-item-slot.slot-in {
   animation: session-slot-in var(--motion-duration-base) var(--motion-ease-enter) both;
   overflow: hidden;
 }
 @keyframes session-slot-out {
-  from { width: 18px; margin-right: 6px; opacity: 1; }
+  from { width: var(--size-18px); margin-right: var(--space-1-5); opacity: 1; }
   to   { width: 0; margin-right: 0; opacity: 0; }
 }
 .session-item-slot.slot-out {
@@ -1199,9 +1199,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
+  min-width: var(--size-18px);
+  height: var(--size-18px);
+  padding: 0 var(--space-1);
   /* Rounded-square family shared with .session-item-slot (the other numeric
      title-row badge it aligns with via `.session-item-title > .tt-wrap:has(…)`). */
   border-radius: var(--radius-xs);
@@ -1211,7 +1211,7 @@
   font-size: var(--fs-2xs);
   font-weight: 700;
   line-height: 1;
-  margin-right: 6px;
+  margin-right: var(--space-1-5);
   vertical-align: middle;
   /* Pulsing = opacity-ONLY breathing (no transform, no outward box-shadow).
      Both of the alternatives paint beyond the badge's own box — an outward
@@ -1236,7 +1236,7 @@
   0%, 100% { opacity: 0.4; transform: scale(0.85); }
   50% { opacity: 1; transform: scale(1.1); }
 }
-.session-item-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0; }
+.session-item-row { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); min-width: 0; }
 .session-item-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Rename: dedicated full-width row so the input isn't squeezed next to
    badges. Hides the normal title row; takes its visual slot. */
@@ -1255,7 +1255,7 @@
   caret-color: var(--accent);
   font: inherit;
   font-weight: 600;
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   outline: none;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard),
               box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
@@ -1272,7 +1272,7 @@
 .session-item-model { color: color-mix(in srgb, var(--fg) 65%, var(--fg-muted)); }
 .session-item-cwd {
   display: flex;
-  gap: 5px;
+  gap: var(--space-1);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-family: var(--mono);
@@ -1291,7 +1291,7 @@
 .session-item-badge {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
   flex-shrink: 0;
   font-size: var(--fs-xs);
   line-height: 1;
@@ -1339,8 +1339,8 @@
    Slightly larger than the sibling 7px state dots so it reads as a badge on
    its own at the row's right edge. */
 .session-status-dot.status-unread {
-  width: 8px;
-  height: 8px;
+  width: var(--size-8px);
+  height: var(--size-8px);
   background: var(--accent);
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1352,7 +1352,7 @@
   background: transparent;
   border: none;
   color: var(--fg-muted);
-  padding: 0 4px;
+  padding: 0 var(--space-1);
 }
 /* Always-visible action cluster (sleep + delete) on the meta row. */
 .session-item-actions {
@@ -1365,7 +1365,7 @@
   background: transparent;
   border: none;
   color: var(--fg-muted);
-  padding: 0 4px;
+  padding: 0 var(--space-1);
 }
 .session-item-sleep:disabled { cursor: not-allowed; opacity: 0.4; }
 
@@ -1373,7 +1373,7 @@
 .appearance-bg {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .appearance-bg-body,
 .appearance-bg-opacity,
@@ -1381,7 +1381,7 @@
 .appearance-bg-surface {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .appearance-bg-label {
   font-size: var(--fs-sm);
@@ -1391,7 +1391,7 @@
 }
 .appearance-bg-url-row {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .appearance-bg-url {
   flex: 1;
@@ -1400,13 +1400,13 @@
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   font-size: var(--fs-sm);
 }
 .appearance-bg-upload-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .appearance-bg-hint {
   font-size: var(--fs-sm);

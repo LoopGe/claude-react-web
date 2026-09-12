@@ -140,6 +140,28 @@
   --space-5: 20px;
   --space-6: 24px;
   --space-8: 32px;
+  /* Control-geometry tokens: fixed small dimensions for icons, status dots,
+     badge thumbs, scrollbar bars — the DOT/ICON/BAR sizes that keep recurring
+     as width/height. Kept as a SEPARATE family from --space-* (which is about
+     gaps/padding/margins) so a future density knob targeting spacing can never
+     accidentally shrink layout geometry. px-named for self-documentation:
+     --size-14px means exactly 14px. Only the values seen in use are defined
+     (YAGNI); hairline sub-scale (1-3px) stays inline. These are IDENTICAL
+     to the literals they replace — unlike the --space family, whose gap
+     migration deliberately snaps a handful of off-scale values (5/7/9/11px)
+     to the nearest step (≤1px deviation, see the spacing block). */
+  --size-4px: 4px;
+  --size-6px: 6px;
+  --size-8px: 8px;
+  --size-10px: 10px;
+  --size-12px: 12px;
+  --size-14px: 14px;
+  --size-16px: 16px;
+  --size-18px: 18px;
+  --size-20px: 20px;
+  --size-24px: 24px;
+  --size-26px: 26px;
+  --size-28px: 28px;
   --app-header-height: 43px;
   --msg-tool-bg: #101820;
   --msg-tool-border: #1c2a36;
@@ -224,6 +246,11 @@
   --z-panel-overlay: 6;
   --z-drawer-backdrop: 40;
   --z-drawer: 50;
+  /* --z-scheduler (60): the Schedule-time popover's fixed layer — it must
+     clear the whole chat area (above --z-drawer/50) but sit BELOW --z-popover
+     (100) so tooltips/dropdowns still surface above it. The +1 sibling
+     (picker over backdrop) is calc(var(--z-scheduler) + 1). */
+  --z-scheduler: 60;
   --z-popover: 100;
   --z-overlay: 1000;
   --z-modal: 2000;

@@ -2,7 +2,7 @@
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   color: var(--fg);
-  padding: 6px 12px;
+  padding: var(--space-1-5) var(--space-3);
   border-radius: var(--radius-sm);
   transition:
     background var(--motion-duration-fast) var(--motion-ease-standard),
@@ -14,7 +14,7 @@
    (Apple HIG / Material scale-feedback). transform-only, GPU-composited. */
 .btn:active:not(:disabled) { transform: scale(var(--motion-scale-press)); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-sm { padding: 2px 8px; font-size: var(--fs-xs); }
+.btn-sm { padding: var(--space-0-5) var(--space-2); font-size: var(--fs-xs); }
 .btn-primary {
   background: var(--accent-strong);
   border-color: var(--accent);
@@ -47,7 +47,7 @@
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   color: var(--fg);
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   min-width: 34px;
   height: 30px;
   font-size: calc(15px * var(--fs-scale));
@@ -111,12 +111,12 @@
 .accent-picker {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 4px;
+  gap: var(--space-1);
+  padding: 0 var(--space-1);
 }
 .accent-swatch {
-  width: 16px;
-  height: 16px;
+  width: var(--size-16px);
+  height: var(--size-16px);
   border-radius: var(--radius-circle);
   border: 2px solid transparent;
   background: var(--swatch);
@@ -201,8 +201,8 @@
   border-color: var(--fg-muted);
 }
 .accent-trigger .accent-swatch {
-  width: 18px;
-  height: 18px;
+  width: var(--size-18px);
+  height: var(--size-18px);
   pointer-events: none;
 }
 .accent-trigger:hover .accent-swatch {
@@ -214,7 +214,7 @@
    + custom wrap into two tidy rows. */
 .accent-popover {
   position: fixed;
-  padding: 10px;
+  padding: var(--space-2-5);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -228,12 +228,12 @@
 .accent-popover .accent-picker {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 10px;
+  gap: var(--space-2-5);
   padding: 0;
 }
 .accent-popover .accent-swatch {
-  width: 26px;
-  height: 26px;
+  width: var(--size-26px);
+  height: var(--size-26px);
 }
 /* Full-width section break inside the swatch grid (e.g. before "Recent").
    Spans every column so the swatches after it start on a fresh row. */
@@ -241,11 +241,11 @@
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 2px;
+  gap: var(--space-2);
+  margin-top: var(--space-0-5);
   /* Hairline rule to the right of the label. */
   border-top: 1px solid var(--border);
-  padding-top: 8px;
+  padding-top: var(--space-2);
 }
 .accent-picker-label {
   font-size: var(--fs-2xs);
@@ -263,19 +263,19 @@
 .appearance-section .accent-picker {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  gap: 10px;
+  gap: var(--space-2-5);
   padding: 0;
 }
 .appearance-section .accent-swatch {
-  width: 26px;
-  height: 26px;
+  width: var(--size-26px);
+  height: var(--size-26px);
 }
 
 .input, .textarea, .select {
   background-color: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   color: var(--fg);
   width: 100%;
 }

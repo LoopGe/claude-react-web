@@ -34,7 +34,7 @@
   position: absolute;
   top: 0;
   right: -2px;
-  width: 4px;
+  width: var(--size-4px);
   height: 100%;
   cursor: col-resize;
   z-index: 5;
@@ -72,16 +72,16 @@ body.resizing-col .app {
 
 .brand {
   min-height: var(--app-header-height);
-  padding: 0 16px;
+  padding: 0 var(--space-4);
   font-weight: 600;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .brand-dot {
-  width: 10px; height: 10px; border-radius: var(--radius-circle);
+  width: var(--size-10px); height: var(--size-10px); border-radius: var(--radius-circle);
   background: radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--accent) 60%, white), var(--accent));
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent);
 }
@@ -101,14 +101,14 @@ body.resizing-col .app {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 8px;
-  padding: 6px 12px;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-3);
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
 }
 .main-toolbar {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
   margin-left: auto;
 }
@@ -120,9 +120,9 @@ body.resizing-col .app {
 .profile-switcher__trigger {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 30px;
-  padding: 0 8px;
+  padding: 0 var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-elev-2);
@@ -143,8 +143,8 @@ body.resizing-col .app {
   transform: scale(var(--motion-scale-press));
 }
 .profile-switcher__dot {
-  width: 8px;
-  height: 8px;
+  width: var(--size-8px);
+  height: var(--size-8px);
   border-radius: var(--radius-circle);
   background: var(--accent);
   flex-shrink: 0;
@@ -169,7 +169,7 @@ body.resizing-col .app {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--card-shadow);
-  padding: 4px 0;
+  padding: var(--space-1) 0;
   z-index: var(--z-popover);
 }
 .profile-switcher__item {
@@ -177,7 +177,7 @@ body.resizing-col .app {
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding: 6px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   border: none;
   background: transparent;
   color: var(--fg);
@@ -197,15 +197,15 @@ body.resizing-col .app {
   color: var(--accent);
   font-size: var(--fs-sm);
   flex-shrink: 0;
-  margin-left: 8px;
+  margin-left: var(--space-2);
 }
 .profile-switcher__separator {
   height: 1px;
-  margin: 4px 0;
+  margin: var(--space-1) 0;
   background: var(--border);
 }
 .profile-switcher__empty {
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   color: var(--fg-muted);
   font-size: var(--fs-sm);
 }
@@ -311,15 +311,15 @@ body.resizing-col .app {
 .chat-panel-header-row1 {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-2-5);
   min-width: 0;
 }
 .chat-panel-header-row2 {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 2px 10px 6px;
+  gap: var(--space-3);
+  padding: var(--space-0-5) var(--space-2-5) var(--space-1-5);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   min-width: 0;
@@ -338,7 +338,7 @@ body.resizing-col .app {
 .chat-panel-title.clickable {
   cursor: pointer;
   border-radius: var(--radius-xs);
-  padding: 0 4px;
+  padding: 0 var(--space-1);
   margin: 0 -4px;
 }
 .chat-panel-title.clickable:hover {
@@ -352,8 +352,8 @@ body.resizing-col .app {
    always gets visible feedback even when generation is quick. */
 .chat-panel-title-spinner {
   display: inline-block;
-  width: 10px;
-  height: 10px;
+  width: var(--size-10px);
+  height: var(--size-10px);
   border: 1.5px solid var(--border);
   border-top-color: var(--accent);
   border-radius: var(--radius-circle);
@@ -368,8 +368,8 @@ body.resizing-col .app {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: var(--size-18px);
+  height: var(--size-18px);
   border-radius: var(--radius-xs);
   border: 1px solid var(--accent);
   color: var(--accent);
@@ -388,8 +388,8 @@ body.resizing-col .app {
    shows its own unread in the status slot at the row's right end.) */
 .chat-panel-unread {
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: var(--size-8px);
+  height: var(--size-8px);
   border-radius: var(--radius-circle);
   background: var(--accent);
   flex-shrink: 0;
@@ -415,8 +415,8 @@ body.resizing-col .app {
    animation map to statusClass() in App.tsx. */
 .chat-panel-status {
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: var(--size-8px);
+  height: var(--size-8px);
   border-radius: var(--radius-circle);
   flex-shrink: 0;
   background: var(--fg-muted);
@@ -491,7 +491,7 @@ body.resizing-col .app {
      padding-left (4px when expanded) so a collapsed label leaves no
      phantom gap and the chip stays symmetric. */
   gap: 0;
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--mono);
@@ -578,7 +578,7 @@ body.resizing-col .app {
 .chat-panel-mode-badge.mode-expanded .chat-panel-mode-label {
   grid-template-columns: 1fr;
   opacity: 1;
-  padding-left: 4px;
+  padding-left: var(--space-1);
   transition-delay: 0s;
 }
 /* The outgoing slide-out badge keeps its label collapsed even while the
@@ -606,7 +606,7 @@ body.resizing-col .app {
      padding-left (4px when expanded) so a collapsed label leaves no
      phantom gap and the chip stays symmetric. */
   gap: 0;
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--mono);
@@ -663,7 +663,7 @@ body.resizing-col .app {
 .chat-panel-fast-badge:focus-within .chat-panel-fast-label {
   grid-template-columns: 1fr;
   opacity: 1;
-  padding-left: 4px;
+  padding-left: var(--space-1);
   transition-delay: 0s;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -682,7 +682,7 @@ body.resizing-col .app {
      padding-left (4px when expanded) so a collapsed label leaves no
      phantom gap and the chip stays symmetric. */
   gap: 0;
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--mono);
@@ -740,7 +740,7 @@ body.resizing-col .app {
 .chat-panel-effort-badge.effort-expanded .chat-panel-effort-label {
   grid-template-columns: 1fr;
   opacity: 1;
-  padding-left: 4px;
+  padding-left: var(--space-1);
   transition-delay: 0s;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -759,7 +759,7 @@ body.resizing-col .app {
      padding-left (4px when expanded) so a collapsed label leaves no
      phantom gap and the chip stays symmetric. */
   gap: 0;
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--mono);
@@ -812,7 +812,7 @@ body.resizing-col .app {
 .chat-panel-thinking-badge.thinking-expanded .chat-panel-thinking-label {
   grid-template-columns: 1fr;
   opacity: 1;
-  padding-left: 4px;
+  padding-left: var(--space-1);
   transition-delay: 0s;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -826,7 +826,7 @@ body.resizing-col .app {
 .effort-slider {
   position: fixed;
   width: 240px;
-  padding: 12px 14px 10px;
+  padding: var(--space-3) var(--space-3-5) var(--space-2-5);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -841,7 +841,7 @@ body.resizing-col .app {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 .effort-slider-title {
   font-size: var(--fs-sm);
@@ -861,7 +861,7 @@ body.resizing-col .app {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 4px;
+  height: var(--size-4px);
   border-radius: var(--radius-2xs);
   background: var(--bg-elev-2);
   outline: none;
@@ -871,8 +871,8 @@ body.resizing-col .app {
 .effort-slider-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
-  height: 14px;
+  width: var(--size-14px);
+  height: var(--size-14px);
   border-radius: var(--radius-circle);
   background: var(--accent);
   border: 2px solid var(--bg-elev);
@@ -881,8 +881,8 @@ body.resizing-col .app {
   cursor: pointer;
 }
 .effort-slider-range::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
+  width: var(--size-14px);
+  height: var(--size-14px);
   border-radius: var(--radius-circle);
   background: var(--accent);
   border: 2px solid var(--bg-elev);
@@ -897,12 +897,12 @@ body.resizing-col .app {
 .effort-slider-ticks {
   display: flex;
   justify-content: space-between;
-  margin-top: 8px;
-  gap: 2px;
+  margin-top: var(--space-2);
+  gap: var(--space-0-5);
 }
 .effort-slider-tick {
   flex: 1;
-  padding: 2px 0;
+  padding: var(--space-0-5) 0;
   font-size: var(--fs-2xs);
   font-family: var(--mono);
   color: var(--fg-muted);
@@ -930,9 +930,9 @@ body.resizing-col .app {
 .chat-panel-git-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: 180px;
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-xs);
   font-weight: 600;
   font-family: var(--mono);
@@ -1019,7 +1019,7 @@ body.resizing-col .app {
 .chat-panel-worktree-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: 160px;
   padding-top: 1px;
   padding-bottom: 1px;
@@ -1091,7 +1091,7 @@ body.resizing-col .app {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
+  width: var(--size-20px);
   height: 64px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -1120,8 +1120,8 @@ body.resizing-col .app {
   position: absolute;
   top: 4px;
   right: 2px;
-  width: 6px;
-  height: 6px;
+  width: var(--size-6px);
+  height: var(--size-6px);
   border-radius: var(--radius-circle);
   background: var(--accent);
   box-shadow: 0 0 0 2px var(--bg-elev);
@@ -1144,7 +1144,7 @@ body.resizing-col .app {
 .chat-panel-cwd {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   font-family: var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1155,15 +1155,15 @@ body.resizing-col .app {
 .chat-panel-working-indicator {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   color: var(--accent);
   margin-left: auto;
   flex-shrink: 0;
 }
 .chat-panel-working-dot {
   display: inline-block;
-  width: 6px;
-  height: 6px;
+  width: var(--size-6px);
+  height: var(--size-6px);
   border-radius: var(--radius-circle);
   background: var(--accent);
   animation: session-working-pulse 1s ease-in-out infinite;
@@ -1185,7 +1185,7 @@ body.resizing-col .app {
 }
 .chat-panel-stderr-details {
   background: var(--btn-hover-bg);
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2-5);
   font-size: var(--fs-sm);
 }
 .chat-panel-stderr-details summary {
@@ -1201,7 +1201,7 @@ body.resizing-col .app {
 .chat-panel-meta {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   margin: 0 0 0 auto;
   min-width: 0;
   flex-shrink: 1;
@@ -1216,7 +1216,7 @@ body.resizing-col .app {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 16px;
+  padding: var(--space-4);
   background: color-mix(in srgb, var(--bg) 65%, transparent);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
@@ -1270,9 +1270,9 @@ body.resizing-col .app {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  margin-right: 4px;
+  width: var(--size-18px);
+  height: var(--size-18px);
+  margin-right: var(--space-1);
   border-radius: var(--radius-xs);
   background: color-mix(in srgb, var(--mode-color, var(--fg-muted)) 15%, transparent);
   color: var(--mode-color, var(--fg-muted));
@@ -1295,7 +1295,7 @@ body.resizing-col .app {
 .empty-state h2 { color: var(--fg); font-weight: 600; }
 /* "Resume session" button on the dormant empty-state. */
 .chat-panel-resume-btn {
-  margin-top: 16px;
+  margin-top: var(--space-4);
   padding: 8px 18px;
   border-radius: var(--radius-md);
   border: 1px solid var(--btn-border, var(--border));
@@ -1318,7 +1318,7 @@ body.resizing-col .app {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .empty-state-loading p { margin: 0; }
 .app-empty-state {
@@ -1341,7 +1341,7 @@ body.resizing-col .app {
   line-height: 1.6;
 }
 .app-empty-state-eyebrow {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
   color: var(--accent);
   font-size: var(--fs-sm);
   font-weight: 700;
@@ -1351,14 +1351,14 @@ body.resizing-col .app {
 .app-empty-state-actions {
   display: flex;
   justify-content: center;
-  gap: 10px;
+  gap: var(--space-2-5);
   flex-wrap: wrap;
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 .empty-state code {
   font-family: var(--mono);
   background: var(--bg-elev);
-  padding: 2px 6px;
+  padding: var(--space-0-5) var(--space-1-5);
   border-radius: var(--radius-xs);
 }
 .empty-state-cta {
@@ -1367,7 +1367,7 @@ body.resizing-col .app {
   font-weight: 600;
 }
 .empty-state-hint {
-  margin-top: 14px;
+  margin-top: var(--space-3-5);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
@@ -1383,7 +1383,7 @@ body.resizing-col .app {
 /* ── Prompt dialog input ─────────────────────────────────────── */
 
 .prompt-dialog-input {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 /* ── Initial app loading spinner ─────────────────────────────── */
@@ -1395,16 +1395,16 @@ body.resizing-col .app {
   /* See `.app` height comment — 100vh fallback for Safari < 15.4. */
   height: 100vh;
   height: 100dvh;
-  padding: 24px;
+  padding: var(--space-6);
   background: var(--bg);
 }
 .app-loading-card {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   width: min(340px, calc(100vw - 48px));
-  padding: 14px 16px;
+  padding: var(--space-3-5) var(--space-4);
   background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
   background-image: var(--surface-gradient);
   border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
@@ -1413,8 +1413,8 @@ body.resizing-col .app {
   animation: app-loading-card-in var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
 .app-loading-dot {
-  width: 12px;
-  height: 12px;
+  width: var(--size-12px);
+  height: var(--size-12px);
 }
 .app-loading-copy {
   min-width: 0;
@@ -1426,7 +1426,7 @@ body.resizing-col .app {
   font-weight: 700;
 }
 .app-loading-subtitle {
-  margin: 2px 0 0;
+  margin: var(--space-0-5) 0 0;
   color: var(--fg-muted);
   font-size: var(--fs-sm);
 }
@@ -1460,7 +1460,7 @@ body.resizing-col .app {
    without a spinner so the existing modal frame stays calm while the
    chunk hydrates. */
 .lazy-tab-loading {
-  padding: 24px 16px;
+  padding: var(--space-6) var(--space-4);
   color: var(--fg-muted);
   font-size: var(--fs-base);
   text-align: center;
