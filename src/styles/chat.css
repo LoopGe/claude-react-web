@@ -360,8 +360,8 @@
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 11px;
-  padding: 0 20px;
+  gap: var(--space-3);
+  padding: 0 var(--space-5);
 }
 /* Entrance: the stack fades and rises in, with icon/title/subtitle staggered
    so the eye lands on them in reading order. Tokens keep it consistent with
@@ -396,8 +396,8 @@
   color: var(--fg-muted);
 }
 .chat-empty-icon svg {
-  width: 18px;
-  height: 18px;
+  width: var(--size-18px);
+  height: var(--size-18px);
 }
 .chat-empty-title {
   font-size: var(--fs-md);
@@ -432,7 +432,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .easter-egg-game canvas {
   width: 100%;
@@ -446,7 +446,7 @@
 .easter-egg-game-toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
@@ -455,7 +455,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--fg-muted);
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-sm);
   cursor: pointer;
 }
@@ -470,9 +470,9 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   max-width: 320px;
-  padding: 0 20px;
+  padding: 0 var(--space-5);
 }
 .chat-messages-empty-title {
   font-size: var(--fs-base);
@@ -490,7 +490,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 10px 12px;
+  padding: var(--space-2-5) var(--space-3);
   min-height: 32px;
   font-size: var(--fs-sm);
   color: var(--fg-muted);
@@ -499,7 +499,7 @@
 .chat-older-history-loading {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .chat-older-history-hint {
@@ -512,8 +512,8 @@
   bottom: 16px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-3);
   border-radius: var(--radius-pill);
   background: var(--accent);
   color: var(--on-accent);
@@ -538,8 +538,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 18px;
+  min-width: var(--size-18px);
+  height: var(--size-18px);
   padding: 0 5px;
   background: var(--bg);
   color: var(--accent);
@@ -571,8 +571,8 @@
 .runasagent-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 10px;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2-5);
 }
 .runasagent-label {
   font-size: var(--fs-sm);
@@ -582,7 +582,7 @@
 .runasagent-hint {
   font-size: var(--fs-sm);
   color: var(--fg-muted);
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
 }
 .ctx-bar {
   padding: 6px var(--chat-reading-inset) 4px;
@@ -590,7 +590,7 @@
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .ctx-bar-label {
   display: flex;
@@ -672,7 +672,7 @@
 .ctx-bar-stat-warn { color: var(--warn); }
 .ctx-bar-stat-danger { color: var(--danger); }
 .ctx-bar-model {
-  margin-left: 6px;
+  margin-left: var(--space-1-5);
   font-size: var(--fs-xs);
   color: var(--fg-muted);
   opacity: 0.7;
@@ -683,7 +683,7 @@
   vertical-align: baseline;
 }
 .ctx-bar-track {
-  height: 4px;
+  height: var(--size-4px);
   background: var(--bg);
   border-radius: var(--radius-2xs);
   overflow: hidden;
@@ -712,7 +712,7 @@
    (see .ctx-bar-marker-interactive below) so the progress bar reads clean. */
 .ctx-bar-track-wrap {
   position: relative;
-  height: 4px;
+  height: var(--size-4px);
 }
 .ctx-bar-track-editable {
   cursor: ew-resize;
@@ -727,8 +727,8 @@
      position:relative (paints after this earlier-DOM element), so without a
      positive z-index it would cover the lower half of the handle/glow. */
   z-index: 1;
-  width: 14px;
-  height: 14px;
+  width: var(--size-14px);
+  height: var(--size-14px);
   box-sizing: border-box;
   border-radius: var(--radius-circle);
   transform: translate(-50%, -50%);
@@ -801,13 +801,13 @@
 .composer-expanded-tabs {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 0;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
 }
 .composer-expanded-tab {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 3px 8px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
@@ -833,8 +833,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: var(--size-24px);
+  height: var(--size-24px);
   margin-left: auto;
   border: none;
   border-radius: var(--radius-sm);
@@ -856,7 +856,7 @@
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 10px 12px;
+  padding: var(--space-2-5) var(--space-3);
   background: var(--bg);
 }
 .composer-preview-empty {
@@ -875,7 +875,7 @@
   padding: 12px var(--chat-reading-inset);
   background: var(--bg-elev);
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   position: relative;
   transition: background var(--motion-duration-fast) var(--motion-ease-standard), outline-color var(--motion-duration-fast) var(--motion-ease-standard);
   outline: 2px dashed transparent;
@@ -897,7 +897,7 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 /* `!` bash-mode indicator shown above the textarea when the input starts
@@ -905,7 +905,7 @@
 .composer-bash-indicator {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 3px 8px;
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
@@ -917,8 +917,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: var(--size-16px);
+  height: var(--size-16px);
   border-radius: var(--radius-xs);
   background: var(--accent);
   color: var(--on-accent);
@@ -963,7 +963,7 @@
       min-height var(--motion-duration-base) var(--motion-ease-standard);
   }
 }
-.chat-composer-actions { display: flex; flex-direction: column; gap: 6px; }
+.chat-composer-actions { display: flex; flex-direction: column; gap: var(--space-1-5); }
 /* The send/interrupt button always stretches to fill the actions column
    height (which follows the textarea via flex row align-items:stretch).
    When the textarea's max-height transitions on expand/collapse, the
@@ -1019,12 +1019,12 @@
 .attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .attachment-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
@@ -1047,7 +1047,7 @@
   background: transparent;
   border: none;
   color: var(--fg-muted);
-  padding: 0 2px;
+  padding: 0 var(--space-0-5);
   font-size: var(--fs-sm);
 }
 .attachment-chip-remove:hover { color: var(--danger); }
@@ -1060,12 +1060,12 @@
 .scheduled-sends {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .scheduled-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
@@ -1084,7 +1084,7 @@
   background: transparent;
   border: none;
   color: var(--fg-muted);
-  padding: 0 2px;
+  padding: 0 var(--space-0-5);
   font-size: var(--fs-sm);
 }
 .scheduled-chip-cancel:hover { color: var(--danger); }
@@ -1099,25 +1099,25 @@
 .schedule-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--z-scheduler);
 }
 .schedule-picker {
   position: fixed;
-  z-index: 61;
+  z-index: calc(var(--z-scheduler) + 1);
   width: 300px;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
-  padding: 10px;
+  padding: var(--space-2-5);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .schedule-picker-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   font-size: var(--fs-base);
   font-weight: 600;
 }
@@ -1126,18 +1126,18 @@
   background: transparent;
   border: none;
   color: var(--fg-muted);
-  padding: 2px;
+  padding: var(--space-0-5);
 }
 .schedule-picker-presets {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .schedule-preset {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   font-size: var(--fs-sm);
   color: var(--fg);
 }
@@ -1145,7 +1145,7 @@
 .schedule-custom {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
@@ -1154,13 +1154,13 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--fg);
-  padding: 4px 6px;
+  padding: var(--space-1) var(--space-1-5);
   font-size: var(--fs-base);
 }
 .schedule-picker-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .msg {
@@ -1181,10 +1181,10 @@
 .msg.recap {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2-5);
   border: none;
   background: none;
-  padding: 2px 0;
+  padding: var(--space-0-5) 0;
   color: var(--fg-muted);
   font-family: var(--mono);
   font-size: var(--fs-sm);
@@ -1196,7 +1196,7 @@
   flex: 1;
   height: 1px;
   background: color-mix(in srgb, var(--accent) 50%, var(--border));
-  min-width: 12px;
+  min-width: var(--size-12px);
 }
 .recap-label {
   color: var(--accent);
@@ -1218,8 +1218,8 @@
 .enter-plan-marker {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 0;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
   color: var(--fg-muted);
   font-family: var(--mono);
   font-size: var(--fs-sm);
@@ -1246,8 +1246,8 @@
 .worktree-marker {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 0;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
   color: var(--fg-muted);
   font-family: var(--mono);
   font-size: var(--fs-sm);
@@ -1282,7 +1282,7 @@
 .msg.compact-summary {
   background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev));
   border: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--border));
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
   color: var(--fg-muted);
   align-self: stretch;
@@ -1318,13 +1318,13 @@
   color: var(--fg-muted);
   /* margin-top only (not `4px 0`) to match .tool-result-details, so the
      bottom gap between a thinking card and the next block is consistent. */
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 .thinking-summary {
   cursor: pointer;
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 .thinking-label {
@@ -1353,8 +1353,8 @@
    `.thinking-details` wrapper — matching `.tool-result-details` — instead of
    a bottom margin the collapse's flow-root would trap inside the card. */
 .thinking-body {
-  margin: 6px 0 0;
-  padding: 10px 12px;
+  margin: var(--space-1-5) 0 0;
+  padding: var(--space-2-5) var(--space-3);
   background: var(--code-bg);
   border: 1px solid var(--code-block-border);
   border-radius: var(--radius-sm);
@@ -1368,11 +1368,11 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--fg-muted);
-  margin-bottom: 6px;
+  margin-bottom: var(--space-1-5);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 /* Inline message timestamp ?pushed to the right edge of the header.
    Tabular figures so the seconds digit doesn't shift the layout as it
@@ -1399,7 +1399,7 @@
 .msg-sending-indicator {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: var(--fs-2xs);
   text-transform: none;
   letter-spacing: 0;
@@ -1408,8 +1408,8 @@
 }
 .msg-sending-spinner {
   display: inline-block;
-  width: 10px;
-  height: 10px;
+  width: var(--size-10px);
+  height: var(--size-10px);
   border: 1.5px solid var(--border);
   border-top-color: var(--accent);
   border-radius: var(--radius-circle);
@@ -1434,7 +1434,7 @@
 .msg-queued-indicator {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: var(--fs-2xs);
   text-transform: none;
   letter-spacing: 0;
@@ -1469,7 +1469,7 @@
 .msg-processing-indicator {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: var(--fs-2xs);
   text-transform: none;
   letter-spacing: 0;
@@ -1506,7 +1506,7 @@
   border-bottom-right-radius: var(--radius-3xs);
 }
 .msg.user .msg-header { color: var(--msg-user-header-fg); font-weight: 600; }
-.msg.user .msg-header > span:first-child { display: inline-flex; align-items: center; gap: 4px; }
+.msg.user .msg-header > span:first-child { display: inline-flex; align-items: center; gap: var(--space-1); }
 .msg.user .md a { color: var(--msg-user-link-fg); }
 .msg.user .md code { background: var(--msg-user-code-bg); }
 .msg.user .md pre {
@@ -1550,7 +1550,7 @@
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--bg) 75%, transparent);
   backdrop-filter: var(--glass-blur);
-  margin: 0 0 4px;
+  margin: 0 0 var(--space-1);
   /* Dynamic breathing glow: a slow accent inset rim that pulses to signal
      the live turn. Only inset box-shadow is animated — the glow is fully
      contained inside the border, so it never overflows the bubble or gets
@@ -1681,12 +1681,12 @@
   /* Vertical padding lives on the scroll container (not the .msg bubble) so
      scrolled-away content fades against internal padding instead of being
      clipped flush at the viewport edge. */
-  padding-top: 10px;
-  padding-bottom: 10px;
+  padding-top: var(--space-2-5);
+  padding-bottom: var(--space-2-5);
   /* The bubble drops its right padding (.streaming-msg padding-right: 0) to
      reclaim horizontal space, so re-apply a small right inset here ?inside
      the scroll viewport ?to keep text and the scrollbar off the border. */
-  padding-right: 8px;
+  padding-right: var(--space-2);
   /* Cap the live bubble's height so a long in-progress turn doesn't push
      the whole transcript off-screen. Past the cap the body scrolls
      internally; StreamingFooter pins it to the latest line as text flows
@@ -1712,7 +1712,7 @@
   width: 2px;
   height: 1.1em;
   background: var(--fg);
-  margin-left: 2px;
+  margin-left: var(--space-0-5);
   vertical-align: text-bottom;
   animation: cursor-blink 0.8s step-end infinite;
 }
@@ -1767,8 +1767,8 @@
 .image-previews {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 4px 0;
+  gap: var(--space-1-5);
+  padding: var(--space-1) 0;
 }
 .image-preview-card {
   position: relative;
@@ -1792,8 +1792,8 @@
   background: color-mix(in srgb, var(--bg) 76%, transparent);
   border: none;
   color: var(--fg);
-  min-width: 24px;
-  min-height: 24px;
+  min-width: var(--size-24px);
+  min-height: var(--size-24px);
   border-radius: var(--radius-circle);
   font-size: var(--fs-xs);
   cursor: pointer;
@@ -1819,14 +1819,14 @@
      "pops" by a few pixels at decode time, that's preferable to a
      screenshot of a small icon being padded with empty whitespace. */
   border-radius: var(--radius-xs);
-  margin: 4px 0;
+  margin: var(--space-1) 0;
   object-fit: contain;
 }
 .msg-image-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 4px;
+  gap: var(--space-1-5);
+  margin-bottom: var(--space-1);
 }
 
 /* Fallback for markdown image references that can't be rendered as <img>
@@ -1845,8 +1845,8 @@
 .tool-result-images {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
+  gap: var(--space-1-5);
+  margin-top: var(--space-1);
 }
 
 /* "Thinking" bar ?compact status strip shown above the context bar
@@ -1860,7 +1860,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
@@ -1939,7 +1939,7 @@
 .working-tasks {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   color: var(--accent);
   font-family: var(--mono);
   font-size: var(--fs-sm);
@@ -1972,12 +1972,12 @@
 .working-dots {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px 0;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
 }
 .working-dots > span {
-  width: 6px;
-  height: 6px;
+  width: var(--size-6px);
+  height: var(--size-6px);
   border-radius: var(--radius-circle);
   background: var(--accent);
   opacity: 0.35;
@@ -2024,7 +2024,7 @@
   background: transparent;
   border: none;
   cursor: pointer;
-  padding: 2px;
+  padding: var(--space-0-5);
   border-radius: var(--radius-sm);
 }
 .working-dismiss:hover {
@@ -2035,14 +2035,14 @@
 /* ?? Subagent chips in the working bar ??????????????????????????????? */
 .working-bar-sep {
   width: 1px;
-  height: 14px;
+  height: var(--size-14px);
   background: color-mix(in srgb, var(--fg-muted) 25%, transparent);
   flex-shrink: 0;
 }
 .subagent-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
   border-radius: var(--radius-pill);
@@ -2059,8 +2059,8 @@
   gap: 3px;
 }
 .subagent-chip-dots > span {
-  width: 4px;
-  height: 4px;
+  width: var(--size-4px);
+  height: var(--size-4px);
   border-radius: var(--radius-circle);
   background: var(--accent);
   opacity: 0.5;
@@ -2085,7 +2085,7 @@
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   flex-shrink: 0;
-  margin-left: 2px;
+  margin-left: var(--space-0-5);
   display: inline-flex;
   align-items: center;
 }
@@ -2126,7 +2126,7 @@
 .subagent-swarm {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
   border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
   border-radius: var(--radius-pill);
@@ -2158,7 +2158,7 @@
 }
 .subagent-swarm-split::before {
   content: '·';
-  margin-right: 6px;
+  margin-right: var(--space-1-5);
 }
 .subagent-swarm-caret {
   display: inline-flex;
@@ -2206,8 +2206,8 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px 6px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2-5) var(--space-1-5);
   border-bottom: 1px solid var(--border);
 }
 .subagent-swarm-pop-title {
@@ -2226,14 +2226,14 @@
 .subagent-swarm-pop-list {
   flex: 1;
   overflow-y: auto;
-  padding: 4px;
+  padding: var(--space-1);
 }
 .subagent-swarm-row {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
-  padding: 6px 8px;
+  padding: var(--space-1-5) var(--space-2);
   background: transparent;
   border: none;
   border-radius: var(--radius-xs);
@@ -2250,8 +2250,8 @@
 /* Status dot. Running pulses on the shared chip-dot keyframe; a `pending`
    row goes muted + slow, matching .subagent-chip-pending. */
 .subagent-swarm-row-dot {
-  width: 6px;
-  height: 6px;
+  width: var(--size-6px);
+  height: var(--size-6px);
   margin-top: 5px;
   flex-shrink: 0;
   border-radius: var(--radius-circle);
@@ -2266,7 +2266,7 @@
 .subagent-swarm-row-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
   flex: 1;
 }
@@ -2274,7 +2274,7 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 .subagent-swarm-row-label {
@@ -2334,7 +2334,7 @@
    click target consistent with how the chip works in WorkingBubble. */
 .subagent-card {
   width: 100%;
-  margin: 6px 0;
+  margin: var(--space-1-5) 0;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -2348,9 +2348,9 @@
 .subagent-card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   background: transparent;
   border: none;
   font: inherit;
@@ -2384,7 +2384,7 @@
 .subagent-card-meta {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-shrink: 0;
   font-size: var(--fs-sm);
   font-family: var(--mono);
@@ -2437,7 +2437,7 @@
 .subagent-card-actions {
   display: flex;
   justify-content: flex-end;
-  padding: 0 12px 8px;
+  padding: 0 var(--space-3) var(--space-2);
 }
 
 /* ─── Subagent child-call list ──────────────────────────────────────
@@ -2453,8 +2453,8 @@
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-3);
   user-select: none;
   transition: background var(--motion-duration-fast) var(--motion-ease-standard);
 }
@@ -2468,7 +2468,7 @@
 .subagent-children-summary {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   min-width: 0;
 }
@@ -2502,7 +2502,7 @@
   color: var(--fg-muted);
 }
 .subagent-children-count-live { color: var(--accent); }
-.subagent-children-content { padding: 2px 0 4px; }
+.subagent-children-content { padding: var(--space-0-5) 0 var(--space-1); }
 
 /* Child tool-call rows — one list, in place. A running row pulses its
    accent dot; the same row flips to a success/error dot when the result
@@ -2524,7 +2524,7 @@
 .subagent-child-row-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--space-2-5);
   width: 100%;
   text-align: left;
   padding: 5px 12px;
@@ -2675,8 +2675,8 @@
 .subagent-overlay-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-3);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -2687,7 +2687,7 @@
   color: var(--fg-muted);
   cursor: pointer;
   font-size: var(--fs-md);
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-xs);
   flex-shrink: 0;
 }
@@ -2702,7 +2702,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .subagent-overlay-breadcrumb {
   font-size: var(--fs-sm);
@@ -2773,7 +2773,7 @@
    two-column WorkflowOverlay. */
 .workflow-card {
   width: 100%;
-  margin: 6px 0;
+  margin: var(--space-1-5) 0;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -2785,9 +2785,9 @@
 .workflow-card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   background: transparent;
   border: none;
   font: inherit;
@@ -2820,7 +2820,7 @@
 .workflow-card-meta {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-shrink: 0;
   font-size: var(--fs-sm);
   font-family: var(--mono);
@@ -2863,8 +2863,8 @@
 .workflow-card-remote-link {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-3);
   border-top: 1px solid var(--border);
   font-size: var(--fs-sm);
   font-family: var(--mono);
@@ -2930,8 +2930,8 @@
 .workflow-overlay-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-3);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -2941,7 +2941,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .workflow-overlay-current-label {
   font-size: var(--fs-base);
@@ -2966,7 +2966,7 @@
   color: var(--fg-muted);
   cursor: pointer;
   font-size: var(--fs-md);
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-xs);
   flex-shrink: 0;
 }
@@ -2978,8 +2978,8 @@
 .workflow-overlay-breadcrumb {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-3);
   border-bottom: 1px solid var(--border);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
@@ -2991,7 +2991,7 @@
   font: inherit;
   color: var(--fg-muted);
   cursor: pointer;
-  padding: 2px 4px;
+  padding: var(--space-0-5) var(--space-1);
   border-radius: var(--radius-3xs);
   max-width: 200px;
   overflow: hidden;
@@ -3016,13 +3016,13 @@
   border-right: 1px solid var(--border);
   background: var(--bg-elev);
   overflow-y: auto;
-  padding: 6px;
+  padding: var(--space-1-5);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .workflow-phase-empty {
-  padding: 16px 8px;
+  padding: var(--space-4) var(--space-2);
   text-align: center;
   color: var(--fg-muted);
   font-size: var(--fs-sm);
@@ -3036,8 +3036,8 @@
 .workflow-phase-group-summary {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-2);
   cursor: pointer;
   font-size: var(--fs-sm);
   list-style: none;
@@ -3046,7 +3046,7 @@
 .workflow-phase-summary {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex: 1;
   min-width: 0;
 }
@@ -3065,10 +3065,10 @@
   font-variant-numeric: tabular-nums;
 }
 .workflow-phase-group-content {
-  padding: 0 6px 6px;
+  padding: 0 var(--space-1-5) var(--space-1-5);
 }
 .workflow-phase-no-children {
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   font-size: var(--fs-xs);
   color: var(--fg-muted);
   font-style: italic;
@@ -3079,12 +3079,12 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .workflow-child-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 100%;
   padding: 5px 8px;
   background: transparent;
@@ -3106,8 +3106,8 @@
   background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .workflow-child-status {
-  width: 8px;
-  height: 8px;
+  width: var(--size-8px);
+  height: var(--size-8px);
   border-radius: var(--radius-circle);
   flex-shrink: 0;
   background: var(--fg-muted);
@@ -3146,11 +3146,11 @@
 }
 .workflow-child-chevron { color: var(--fg-muted); flex-shrink: 0; }
 .workflow-phase-detail {
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   font-size: var(--fs-xs);
   color: var(--fg-muted);
   border-top: 1px solid var(--border);
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 .workflow-message-column {
   flex: 1;
@@ -3195,8 +3195,8 @@
 .side-chat-drawer-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -3230,16 +3230,16 @@
 .side-chat-drawer-footer {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 12px;
+  gap: var(--space-1-5);
+  padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
 .side-chat-drawer-footer .image-previews {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex-wrap: wrap;
-  padding-bottom: 2px;
+  padding-bottom: var(--space-0-5);
 }
 .side-chat-drawer-footer .image-preview-card {
   position: relative;
@@ -3259,8 +3259,8 @@
   position: absolute;
   top: 2px;
   right: 2px;
-  min-width: 24px;
-  min-height: 24px;
+  min-width: var(--size-24px);
+  min-height: var(--size-24px);
   border-radius: var(--radius-circle);
   background: color-mix(in srgb, var(--bg) 76%, transparent);
   color: var(--fg);
@@ -3284,7 +3284,7 @@
 .side-chat-drawer-actions {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex-shrink: 0;
 }
 /* Stretch (not flex-end) so the action column and textarea share one
@@ -3293,7 +3293,7 @@
 .side-chat-drawer-input-row {
   display: flex;
   align-items: stretch;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .side-chat-drawer-input {
   flex: 1;
@@ -3304,7 +3304,7 @@
   color: var(--fg);
   font: inherit;
   font-size: var(--fs-sm);
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   outline: none;
   min-height: 40px;
   max-height: 180px;

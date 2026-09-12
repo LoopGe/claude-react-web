@@ -41,7 +41,7 @@
   flex: 1 1 auto;
   overflow: auto;
   margin: 0;
-  padding: 10px 12px;
+  padding: var(--space-2-5) var(--space-3);
   background: var(--code-bg);
   border: 1px solid var(--code-block-border);
   border-top: none;
@@ -55,5 +55,5 @@
 
 .file-viewer-truncated {
   flex: 0 0 auto;
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
 }

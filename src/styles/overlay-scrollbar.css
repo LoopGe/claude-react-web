@@ -28,13 +28,13 @@
   top: 0;
   right: 0;
   bottom: 0;
-  width: 6px;
+  width: var(--size-6px);
 }
 .os-track-horizontal {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 6px;
+  height: var(--size-6px);
 }
 .os-track.os-track-hidden {
   display: none;
@@ -50,7 +50,7 @@
   background-clip: padding-box;
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--fg-muted) 35%, transparent);
-  transition: opacity 160ms ease;
+  transition: opacity var(--motion-duration-base) ease;
   /* touch-action none so a thumb drag doesn't also trigger native scroll. */
   touch-action: none;
 }

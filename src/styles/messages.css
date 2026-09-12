@@ -6,14 +6,14 @@
 .msg.assistant.subagent {
   opacity: 0.78;
   border-left: 3px dashed color-mix(in srgb, var(--fg-muted) 55%, transparent);
-  padding-left: 8px;
+  padding-left: var(--space-2);
 }
 .msg.assistant.subagent .msg-header > span:first-child::before { content: '↳ '; }
 /* model_not_found error card — the CLI's "Run /model" text doesn't apply to
    a web UI, so we style the card as an actionable error and surface a
    "Switch model" button (see MessageList assistant branch). */
 .msg.msg-error-card { border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
-.msg-switch-model-btn { margin-top: 8px; }
+.msg-switch-model-btn { margin-top: var(--space-2); }
 .msg.system { background: var(--msg-system-bg); border-color: var(--msg-system-border); font-family: var(--mono); font-size: var(--fs-sm); }
 /* Turn-complete marker. NOT a card — a centered hairline divider with a
    success tick and de-emphasised tabular metadata. Shares the .msg.recap
@@ -23,10 +23,10 @@
 .msg.result {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   border: none;
   background: none;
-  padding: 2px 0;
+  padding: var(--space-0-5) 0;
   color: var(--fg-muted);
   font-family: var(--mono);
   font-size: var(--fs-sm);
@@ -37,7 +37,7 @@
   flex: 1;
   height: 1px;
   background: var(--border);
-  min-width: 12px;
+  min-width: var(--size-12px);
 }
 .result-mark {
   color: var(--ok, var(--accent));
@@ -105,14 +105,14 @@
    body is assistant-style Markdown. Reuses the .msg.system silhouette but
    with a readable (non-mono, non-muted) body so tables / lists in /usage
    output land properly. */
-.msg.local-command-output { padding: 8px 10px; }
+.msg.local-command-output { padding: var(--space-2) var(--space-2-5); }
 .msg.local-command-output .msg-header {
   font-family: var(--mono);
   font-size: var(--fs-xs);
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 .local-command-output-body {
   font-size: var(--fs-base);
@@ -124,14 +124,14 @@
    filename + scope badge (no body — the CLI lazy-loads content);
    synthesized summaries and organization-scope entries render their body
    as Markdown. */
-.msg.memory-recall { padding: 8px 10px; }
+.msg.memory-recall { padding: var(--space-2) var(--space-2-5); }
 .msg.memory-recall .msg-header {
   font-family: var(--mono);
   font-size: var(--fs-xs);
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 .memory-recall-list {
   list-style: none;
@@ -139,10 +139,10 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .memory-recall-entry {
-  padding: 4px 6px;
+  padding: var(--space-1) var(--space-1-5);
   border: 1px solid var(--border);
   border-radius: var(--radius-2xs);
   background: var(--bg-elev-2);
@@ -151,7 +151,7 @@
 .memory-recall-entry-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 .memory-recall-name {
@@ -169,13 +169,13 @@
   color: var(--fg-muted);
   border: 1px solid var(--border);
   border-radius: var(--radius-3xs);
-  padding: 0 4px;
+  padding: 0 var(--space-1);
 }
 .memory-recall-source {
   font-family: var(--mono);
   font-size: var(--fs-xs);
   color: var(--fg-muted);
-  margin-top: 2px;
+  margin-top: var(--space-0-5);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -183,11 +183,11 @@
 .memory-recall-body {
   font-size: var(--fs-base);
   color: var(--fg);
-  margin-top: 4px;
+  margin-top: var(--space-1);
   word-wrap: break-word;
 }
 .memory-recall-more {
-  margin-top: 4px;
+  margin-top: var(--space-1);
   font-size: var(--fs-xs);
   font-family: var(--mono);
   color: var(--fg-muted);
@@ -209,8 +209,8 @@
 .msg.informational {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 2px 10px;
+  gap: var(--space-2);
+  padding: var(--space-0-5) var(--space-2-5);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   word-wrap: break-word;
@@ -220,8 +220,8 @@
 .msg.informational.informational--suggestion {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2-5);
   border: 1px solid var(--border);
   border-left: 3px solid var(--warn);
   border-radius: var(--radius-2xs);
@@ -235,8 +235,8 @@
 .msg.plugin-install {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-2-5);
   border: 1px solid var(--border);
   border-left: 3px solid var(--fg-muted);
   border-radius: var(--radius-2xs);
@@ -244,7 +244,7 @@
   color: var(--fg);
   font-size: var(--fs-sm);
 }
-.msg.plugin-install .msg-header { gap: 8px; display: flex; align-items: baseline; min-width: 0; }
+.msg.plugin-install .msg-header { gap: var(--space-2); display: flex; align-items: baseline; min-width: 0; }
 .msg.plugin-install .plugin-install-name {
   color: var(--fg-muted);
   font-size: var(--fs-xs);
@@ -260,7 +260,7 @@
    retried once on the fallback model. Card treatment — this frame is the
    canonical record of the swap (the refused leg's messages are evicted). */
 .msg.refusal-fallback {
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   border: 1px solid var(--border);
   border-left: 3px solid var(--warn);
   border-radius: var(--radius-2xs);
@@ -272,7 +272,7 @@
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 .refusal-fallback-body {
   font-size: var(--fs-base);
@@ -280,7 +280,7 @@
   word-wrap: break-word;
 }
 .refusal-fallback-detail {
-  margin-top: 4px;
+  margin-top: var(--space-1);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   overflow: hidden;
@@ -293,8 +293,8 @@
 .msg.tool-use-summary {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 2px 10px;
+  gap: var(--space-2);
+  padding: var(--space-0-5) var(--space-2-5);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   word-wrap: break-word;
@@ -326,7 +326,7 @@
   background: var(--code-bg);
   border: 1px solid var(--code-block-border);
   border-radius: var(--radius-sm);
-  padding: 10px 12px;
+  padding: var(--space-2-5) var(--space-3);
   overflow-x: auto;
   font-family: var(--mono);
   font-size: var(--fs-sm);
@@ -345,7 +345,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2-5);
   background: var(--code-bar-bg);
   border: 1px solid var(--code-block-border);
   border-bottom: none;
@@ -392,10 +392,10 @@
    .md pre base rule above does not match it — font-family and margin
    are declared here. */
 .md-fallback {
-  margin: 8px 0;
+  margin: var(--space-2) 0;
   border-left: 2px solid color-mix(in srgb, var(--danger) 50%, transparent);
   background: color-mix(in srgb, var(--danger) 6%, transparent);
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
   font-family: var(--mono);
   font-size: var(--fs-sm);
@@ -468,12 +468,12 @@
 }
 .md p { margin: var(--md-p-mt, 6px) 0 var(--md-p-mb, 6px); line-height: var(--md-lh-p, 1.55); }
 .md h1, .md h2, .md h3, .md h4 { margin: var(--md-head-mt, 14px) 0 var(--md-head-mb, 6px); font-weight: 600; line-height: var(--md-lh-head, 1.3); }
-.md h1 { font-size: 1.4em; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.md h1 { font-size: 1.4em; border-bottom: 1px solid var(--border); padding-bottom: var(--space-1); }
 .md h2 { font-size: 1.22em; }
 .md h3 { font-size: 1.08em; }
 .md h4 { font-size: 1em; color: var(--fg-muted); }
-.md ul, .md ol { margin: var(--md-list-mt, 6px) 0 var(--md-list-mb, 6px); padding-left: 24px; }
-.md li { margin: 2px 0; line-height: var(--md-lh-list, 1.5); }
+.md ul, .md ol { margin: var(--md-list-mt, 6px) 0 var(--md-list-mb, 6px); padding-left: var(--space-6); }
+.md li { margin: var(--space-0-5) 0; line-height: var(--md-lh-list, 1.5); }
 /* A paragraph *inside* a list item is intentionally tighter than a top-level
    paragraph (1/3 the paragraph margin — loose/multi-paragraph list items are
    rare in chat). Scale it off the same --md-p-* vars so the text-density
@@ -481,13 +481,13 @@
 .md li > p { margin: calc(var(--md-p-mt, 6px) / 3) 0 calc(var(--md-p-mb, 6px) / 3); }
 .md blockquote {
   border-left: 3px solid var(--border);
-  padding: 2px 10px;
+  padding: var(--space-0-5) var(--space-2-5);
   margin: var(--md-block-mt, 8px) 0 var(--md-block-mb, 8px);
   color: var(--fg-muted);
 }
 .md a { color: var(--accent); text-decoration: none; }
 .md a:hover { text-decoration: underline; }
-.md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+.md hr { border: none; border-top: 1px solid var(--border); margin: var(--space-3-5) 0; }
 .md table {
   border-collapse: collapse;
   margin: var(--md-block-mt, 8px) 0 var(--md-block-mb, 8px);
@@ -497,21 +497,21 @@
 }
 .md table th, .md table td {
   border: 1px solid var(--border);
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2-5);
   text-align: left;
 }
 .md table th { background: var(--bg-elev-2); font-weight: 600; }
 .md img { max-width: 100%; border-radius: var(--radius-xs); }
-.md input[type="checkbox"] { margin-right: 6px; }
+.md input[type="checkbox"] { margin-right: var(--space-1-5); }
 .tool-input {
   font-family: var(--mono);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   /* margin shorthand (not margin-top) so the UA <pre> margin (1em 0) is
      fully defeated on the <pre> variant; harmless on the <div> variant. */
-  margin: 4px 0 0;
+  margin: var(--space-1) 0 0;
   background: var(--bg);
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   border-radius: var(--radius-xs);
   overflow-x: auto;
   white-space: pre-wrap;
@@ -519,7 +519,7 @@
 }
 /* Collapsed-by-default wrapper for individual tool_result blocks. */
 .tool-result-details {
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 .tool-result-details[data-state="open"] {
   background: var(--bg);
@@ -530,7 +530,7 @@
   font-family: var(--mono);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-xs);
   white-space: nowrap;
   overflow: hidden;
@@ -552,14 +552,14 @@
 .tool-result-details[data-state="open"] .tool-input {
   margin-top: 0;
   background: transparent;
-  padding-top: 4px;
+  padding-top: var(--space-1);
 }
 
 /* Diff view for Edit / Write tool_use blocks */
 .diff-block {
   font-family: var(--mono);
   font-size: var(--fs-sm);
-  margin-top: 4px;
+  margin-top: var(--space-1);
   background: var(--bg);
   border-radius: var(--radius-xs);
   overflow-x: auto;
@@ -568,8 +568,8 @@
 .diff-file-path {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-2-5);
   background: var(--bg-elev-2);
   border-bottom: 1px solid var(--border);
   color: var(--fg);
@@ -579,12 +579,12 @@
      here so the header bg covers the full content width. */
   min-width: max-content;
 }
-.diff-lines { padding: 4px 0; }
+.diff-lines { padding: var(--space-1) 0; }
 .diff-line {
   display: flex;
   padding: 1px 10px;
   white-space: pre;
-  min-height: 18px;
+  min-height: var(--size-18px);
   /* `min-width: max-content` makes each row grow to its widest text so
      the row's background colour (red for del, green for add) follows the
      full horizontal scroll. Without it, the row is clipped to .diff-block's
@@ -602,7 +602,7 @@
   color: var(--ok);
 }
 .diff-line-marker {
-  width: 16px;
+  width: var(--size-16px);
   flex-shrink: 0;
   text-align: center;
   user-select: none;
@@ -625,7 +625,7 @@
   box-sizing: content-box;
 }
 .diff-line-gutter-old {
-  padding-right: 6px;
+  padding-right: var(--space-1-5);
   /* Faint divider between the old-line and new-line columns. */
   border-right: 1px solid var(--border);
 }
@@ -634,12 +634,12 @@
      same 6px breathing room from the divider — without it the right-aligned
      digit (content = Mch = the min-width) fills the content box and sits
      flush against the divider line. */
-  padding-left: 6px;
-  padding-right: 8px;
+  padding-left: var(--space-1-5);
+  padding-right: var(--space-2);
 }
 .diff-line-text { flex: 1; }
 .diff-truncation {
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2-5);
   color: var(--fg-muted);
   font-style: italic;
   border-top: 1px dashed var(--border);
@@ -680,7 +680,7 @@
   .settings-panel-content[data-animate] { animation: none; }
 }
 .settings-panel-header {
-  padding: 14px 16px;
+  padding: var(--space-3-5) var(--space-4);
   border-bottom: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
@@ -692,11 +692,11 @@
   font-weight: 600;
 }
 .settings-section {
-  padding: 14px 16px;
+  padding: var(--space-3-5) var(--space-4);
   border-bottom: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 .settings-section h4 {
   margin: 0;
@@ -705,7 +705,7 @@
   letter-spacing: 0.08em;
   color: var(--fg-muted);
 }
-.settings-field { display: flex; flex-direction: column; gap: 4px; }
+.settings-field { display: flex; flex-direction: column; gap: var(--space-1); }
 .settings-field label { font-size: var(--fs-sm); color: var(--fg-muted); }
 /* Standalone `.hint` base — muted helper text used directly (not inside a
    .settings-field) across dialogs and settings tabs. Matches the scoped
@@ -729,7 +729,7 @@
 /* Header + error banner aren't wrapped in a .settings-section (the list view
    is), so pad them to match the section's 14px/16px inset. */
 .agent-def-form > .settings-section-head {
-  padding: 14px 16px 0;
+  padding: var(--space-3-5) var(--space-4) 0;
 }
 .agent-def-form .settings-section-head h4 {
   margin: 0;
@@ -739,7 +739,7 @@
   color: var(--fg-muted);
 }
 .agent-def-form > .settings-card-error {
-  margin: 8px 16px 0;
+  margin: var(--space-2) var(--space-4) 0;
 }
 .agent-def-form fieldset.settings-section {
   border: none;
@@ -749,7 +749,7 @@
 }
 .agent-def-form legend {
   padding: 0;
-  margin: 0 0 2px;
+  margin: 0 0 var(--space-0-5);
   font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -759,7 +759,7 @@
    legend, so style its heading to match the other section headings (the
    disclosure triangle stays as the collapse affordance). */
 .agent-def-form details.settings-section > summary {
-  margin: 0 0 2px;
+  margin: 0 0 var(--space-0-5);
   font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -776,7 +776,7 @@
 .agent-def-form .settings-field-inline {
   flex-direction: row;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .agent-def-form .settings-field-inline > span {
   font-size: var(--fs-base);
@@ -791,7 +791,7 @@
   background-color: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   color: var(--fg);
   width: 100%;
 }
@@ -820,13 +820,13 @@
 .agent-def-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .agent-def-form .tag {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
+  gap: var(--space-1);
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-sm);
   color: var(--fg);
   background: var(--bg-elev-2);
@@ -841,8 +841,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
+  width: var(--size-14px);
+  height: var(--size-14px);
   padding: 0;
   margin: 0;
   border: none;
@@ -882,7 +882,7 @@
   background-color: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   color: var(--fg);
   width: 100%;
 }
@@ -916,7 +916,7 @@
 .settings-reset-link {
   background: none;
   border: none;
-  padding: 0 0 0 4px;
+  padding: 0 0 0 var(--space-1);
   margin: 0;
   font: inherit;
   font-size: var(--fs-sm);
@@ -936,7 +936,7 @@
 .settings-stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .settings-group {
   border: 1px solid var(--border);
@@ -945,7 +945,7 @@
   overflow: hidden;
 }
 .settings-group-head {
-  padding: 10px 14px 8px;
+  padding: var(--space-2-5) var(--space-3-5) var(--space-2);
   border-bottom: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -968,8 +968,8 @@
 .settings-row {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 10px 14px;
+  gap: var(--space-4);
+  padding: var(--space-2-5) var(--space-3-5);
 }
 .settings-row + .settings-row { border-top: 1px solid var(--border); }
 .settings-row-text {
@@ -977,7 +977,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .settings-row-title { font-size: var(--fs-base); color: var(--fg); }
 .settings-row-hint {
@@ -999,14 +999,14 @@
 .stepper {
   display: inline-flex;
   align-items: stretch;
-  height: 28px;
+  height: var(--size-28px);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-elev-1);
   overflow: hidden;
 }
 .stepper-btn {
-  width: 26px;
+  width: var(--size-26px);
   border: none;
   background: transparent;
   color: var(--fg-muted);
@@ -1044,7 +1044,7 @@
 .stepper-input:focus { outline: none; }
 .stepper-suffix {
   align-self: center;
-  padding-right: 8px;
+  padding-right: var(--space-2);
   font-size: var(--fs-xs);
   color: var(--fg-muted);
 }
@@ -1059,7 +1059,7 @@
   background: var(--bg-elev-1);
 }
 .segmented-btn {
-  min-width: 28px;
+  min-width: var(--size-28px);
   padding: 5px 9px;
   background: transparent;
   border: none;
@@ -1097,7 +1097,7 @@
 .settings-switch {
   position: relative;
   width: 34px;
-  height: 20px;
+  height: var(--size-20px);
   padding: 0;
   border: none;
   border-radius: var(--radius-pill);
@@ -1110,8 +1110,8 @@
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 14px;
-  height: 14px;
+  width: var(--size-14px);
+  height: var(--size-14px);
   border-radius: var(--radius-circle);
   background: var(--bg);
   transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
@@ -1133,16 +1133,16 @@
 .settings-row.stack {
   flex-direction: column;
   align-items: stretch;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 /* Block content inside a settings group that isn't a row (e.g. the flag
    settings editor + Apply button, or the sandbox Advanced disclosure). */
 .settings-group-body {
-  padding: 12px 14px;
+  padding: var(--space-3) var(--space-3-5);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2-5);
 }
 .settings-group-body + .settings-row,
 .settings-row + .settings-group-body,
@@ -1154,14 +1154,14 @@
    session settings panel content has no padding of its own — sections used
    to supply it. Pad the stack so the cards aren't flush to the panel edge. */
 .settings-panel-content > .settings-stack {
-  padding: 12px;
+  padding: var(--space-3);
 }
 
 /* Sandbox advanced (network / filesystem) overrides — a bordered, muted
    collapsible so the extra fields don't crowd the three primary toggles. */
 .settings-advanced {
-  margin-top: 8px;
-  padding: 8px 10px 4px;
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-2-5) var(--space-1);
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-elev);
@@ -1179,13 +1179,13 @@
   display: flex;
   gap: 0;
   border-bottom: 1px solid var(--border);
-  margin-bottom: 10px;
+  margin-bottom: var(--space-2-5);
 }
 .fse-tab {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  padding: 6px 12px;
+  padding: var(--space-1-5) var(--space-3);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   cursor: pointer;
@@ -1202,7 +1202,7 @@
 .fse-body {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 
@@ -1210,8 +1210,8 @@
 .recent-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 2px;
+  gap: var(--space-1);
+  margin-top: var(--space-0-5);
 }
 .recent-chip {
   display: inline-flex;
@@ -1298,14 +1298,14 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
 }
 .modal-header h3 { margin: 0; font-size: var(--fs-md); font-weight: 600; }
 .modal-toolbar {
   display: flex;
-  gap: 6px;
-  padding: 10px 16px;
+  gap: var(--space-1-5);
+  padding: var(--space-2-5) var(--space-4);
   border-bottom: 1px solid var(--border);
   align-items: center;
 }
@@ -1313,19 +1313,19 @@
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   cursor: pointer;
 }
 .modal-path {
   display: flex;
-  gap: 6px;
-  padding: 10px 16px;
+  gap: var(--space-1-5);
+  padding: var(--space-2-5) var(--space-4);
   border-bottom: 1px solid var(--border);
 }
 .modal-crumbs {
-  padding: 8px 16px;
+  padding: var(--space-2) var(--space-4);
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   display: flex;
@@ -1334,13 +1334,13 @@
   font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .crumb {
   background: none;
   border: none;
   color: var(--accent);
-  padding: 2px 4px;
+  padding: var(--space-0-5) var(--space-1);
   border-radius: var(--radius-3xs);
   font: inherit;
   cursor: pointer;
@@ -1348,7 +1348,7 @@
 .crumb:hover { background: var(--bg-elev-2); }
 .crumb-sep { color: var(--fg-muted); }
 .modal-error {
-  padding: 8px 16px;
+  padding: var(--space-2) var(--space-4);
   background: var(--msg-error-bg);
   color: var(--msg-error-fg);
   font-size: var(--fs-base);
@@ -1356,10 +1356,10 @@
 }
 .modal-create-row {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   align-items: center;
-  padding: 6px 8px;
-  margin: 0 0 6px;
+  padding: var(--space-1-5) var(--space-2);
+  margin: 0 0 var(--space-1-5);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-elev-2);
@@ -1372,7 +1372,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 6px;
+  padding: var(--space-1-5);
 }
 .modal-list.auto-height-animating {
   flex: 0 0 auto;
@@ -1381,18 +1381,18 @@
 .modal-list-content {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 4px;
+  gap: var(--space-1);
 }
 .modal-list-item {
   background: transparent;
   border: 1px solid transparent;
   text-align: left;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   border-radius: var(--radius-sm);
   font: inherit;
   color: inherit;
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
   cursor: pointer;
   overflow: hidden;
@@ -1413,12 +1413,12 @@
   grid-column: 1 / -1;
 }
 .modal-footer {
-  padding: 10px 16px;
+  padding: var(--space-2-5) var(--space-4);
   border-top: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2-5);
   flex-wrap: wrap;
 }
 .modal-footer .hint { font-size: var(--fs-sm); color: var(--fg-muted); }
@@ -1442,14 +1442,14 @@
   display: flex;
   flex-wrap: wrap;
   border-bottom: 1px solid var(--border);
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   gap: 0;
 }
 .global-settings-tab {
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   font: inherit;
   font-size: var(--fs-base);
   font-weight: 500;
@@ -1471,7 +1471,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px;
+  padding: var(--space-4);
 }
 .global-settings-body.auto-height-animating {
   flex: 0 0 auto;
@@ -1509,11 +1509,11 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--fg-muted);
-  padding: 4px 0 8px;
+  padding: var(--space-1) 0 var(--space-2);
   border-bottom: 1px solid var(--border);
 }
 .shortcut-table td {
-  padding: 6px 0;
+  padding: var(--space-1-5) 0;
   border-bottom: 1px solid var(--border-light, var(--border));
 }
 .shortcut-table td:first-child {
@@ -1540,7 +1540,7 @@
   padding: 16px 18px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2-5);
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -1557,9 +1557,9 @@
 }
 .perm-summary {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex-wrap: wrap;
-  margin-top: 2px;
+  margin-top: var(--space-0-5);
 }
 .perm-badge {
   background: var(--bg-elev-2);
@@ -1574,12 +1574,12 @@
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 10px 12px;
+  padding: var(--space-2-5) var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
-.perm-row { display: flex; gap: 10px; align-items: baseline; }
+.perm-row { display: flex; gap: var(--space-2-5); align-items: baseline; }
 .perm-row-label {
   font-size: var(--fs-xs);
   text-transform: uppercase;
@@ -1599,7 +1599,7 @@
   color: var(--fg-muted);
   font-size: var(--fs-sm);
   text-decoration: underline;
-  padding: 2px 0;
+  padding: var(--space-0-5) 0;
   align-self: flex-start;
   cursor: pointer;
 }
@@ -1607,7 +1607,7 @@
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 10px 12px;
+  padding: var(--space-2-5) var(--space-3);
   max-height: 260px;
   overflow: auto;
   font-family: var(--mono);
@@ -1642,7 +1642,7 @@
   display: flex;
   flex-direction: column;
   margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
-  padding: 10px 14px;
+  padding: var(--space-2-5) var(--space-3-5);
   font-size: var(--fs-base);
   /* One-shot entrance when the card mounts (a visible task list appears at
      turn start). Plays per insertion only — the card is a single non-
@@ -1700,7 +1700,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 6px;
+  margin-bottom: var(--space-1-5);
 }
 .todo-panel-title {
   font-size: var(--fs-xs);
@@ -1720,7 +1720,7 @@
 .todo-panel-header-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 /* Collapse toggle — reuses the pinned-user-message history-chevron style
    (borderless, fg-muted → hover bg, chevron rotates 180° when open) but at a
@@ -1730,8 +1730,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: var(--size-20px);
+  height: var(--size-20px);
   padding: 0;
   border: none;
   background: transparent;
@@ -1764,20 +1764,20 @@
 .todo-panel-undo {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-xs);
   color: var(--fg-muted);
-  padding: 2px 0 4px;
+  padding: var(--space-0-5) 0 var(--space-1);
 }
 .todo-panel-undo-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: var(--fs-xs);
   color: var(--accent);
   background: transparent;
   border: none;
-  padding: 2px 4px;
+  padding: var(--space-0-5) var(--space-1);
   border-radius: var(--radius-xs);
   cursor: pointer;
 }
@@ -1816,7 +1816,7 @@
      reads as sitting too high. center aligns the icon box to the line
      box's vertical middle. Safe here because .todo-text is nowrap. */
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   line-height: 1.4;
   /* Anchors the long-press progress fill (.todo-item::after). */
   position: relative;
@@ -1873,7 +1873,7 @@
 }
 .todo-icon {
   flex-shrink: 0;
-  width: 14px;
+  width: var(--size-14px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2000,14 +2000,14 @@
   display: flex;
   flex-direction: column;
   margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
-  padding: 10px 14px;
+  padding: var(--space-2-5) var(--space-3-5);
   font-size: var(--fs-base);
 }
 .monitor-bar-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1-5);
 }
 .monitor-bar-title {
   font-size: var(--fs-xs);
@@ -2045,13 +2045,13 @@
 .monitor-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   line-height: 1.4;
   color: var(--fg);
 }
 .monitor-icon {
   flex-shrink: 0;
-  width: 14px;
+  width: var(--size-14px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2096,11 +2096,11 @@
    Replaces the raw JSON dump with a compact, readable checklist. */
 .inline-todo-list {
   list-style: none;
-  margin: 6px 0;
+  margin: var(--space-1-5) 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   font-size: var(--fs-sm);
 }
 .inline-todo-item {
@@ -2111,12 +2111,12 @@
      wrapped block instead of the first line. flex-start + a first-line-
      height icon box keeps the icon aligned to line 1. */
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--space-1-5);
   line-height: 1.45;
 }
 .inline-todo-icon {
   flex-shrink: 0;
-  width: 14px;
+  width: var(--size-14px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2262,19 +2262,19 @@ button.tool-chip.tool-chip-copyable.copied {
 
 /* --- Bash inline view ------------------------------------------------ */
 .bash-tool {
-  margin-top: 4px;
+  margin-top: var(--space-1);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  padding: 6px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .bash-tool-line {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
   font-family: var(--mono);
   font-size: var(--fs-sm);
@@ -2298,7 +2298,7 @@ button.tool-chip.tool-chip-copyable.copied {
 .bash-tool-desc {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--space-1-5);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.45;
@@ -2311,7 +2311,7 @@ button.tool-chip.tool-chip-copyable.copied {
 details.bash-tool-collapsible {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 details.bash-tool-collapsible > summary {
   list-style: none;
@@ -2319,18 +2319,18 @@ details.bash-tool-collapsible > summary {
   user-select: none;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 details.bash-tool-collapsible > summary::-webkit-details-marker { display: none; }
 .bash-tool-fold-hint {
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-style: italic;
-  margin-left: 14px; /* align with command after the $ prompt + gap */
+  margin-left: var(--space-3-5); /* align with command after the $ prompt + gap */
 }
 .bash-tool-full {
-  margin: 4px 0 0;
-  padding: 8px 10px;
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2) var(--space-2-5);
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
@@ -2352,7 +2352,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 
 /* --- Read inline view ----------------------------------------------- */
 .read-tool {
-  margin-top: 4px;
+  margin-top: var(--space-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   overflow: hidden;
@@ -2360,7 +2360,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 /* The Read view reuses .diff-file-path for the header — the existing
    styling already covers what we need. The range subline lives below. */
 .read-tool-range {
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2-5);
   font-size: var(--fs-xs);
   font-family: var(--mono);
   color: var(--fg-muted);
@@ -2369,16 +2369,16 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 
 /* --- Grep inline view ----------------------------------------------- */
 .grep-tool {
-  margin-top: 4px;
+  margin-top: var(--space-1);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  padding: 6px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
 }
 .grep-tool-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
   font-size: var(--fs-sm);
 }
@@ -2390,7 +2390,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   font-family: var(--mono);
   color: var(--fg);
   background: var(--bg-elev-2);
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-xs);
   border: 1px solid var(--border);
   font-size: var(--fs-sm);
@@ -2399,19 +2399,19 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 
 /* --- WebFetch inline view ------------------------------------------- */
 .web-tool {
-  margin-top: 4px;
+  margin-top: var(--space-1);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  padding: 6px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .web-tool-line {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-sm);
   min-width: 0;
 }
@@ -2436,7 +2436,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 .web-tool-prompt {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--space-1-5);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.45;
@@ -2450,14 +2450,14 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 /* --- NotebookEdit inline view --------------------------------------- */
 .notebook-edit-meta {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex-wrap: wrap;
-  padding: 6px 10px;
+  padding: var(--space-1-5) var(--space-2-5);
   border-bottom: 1px dashed var(--border);
   background: var(--bg);
 }
 .notebook-edit-deleted {
-  padding: 10px 12px;
+  padding: var(--space-2-5) var(--space-3);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-style: italic;
@@ -2466,19 +2466,19 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 
 /* --- TaskCreate / TaskUpdate inline view ---------------------------- */
 .task-mutation {
-  margin-top: 4px;
+  margin-top: var(--space-1);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .task-mutation-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
   font-size: var(--fs-xs);
   text-transform: uppercase;
@@ -2553,7 +2553,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 }
 .task-mutation-deps {
   display: flex;
-  gap: 14px;
+  gap: var(--space-3-5);
   flex-wrap: wrap;
   font-size: var(--fs-xs);
   color: var(--fg-muted);
@@ -2578,7 +2578,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   border-left: 3px solid var(--warn);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--warn) 6%, var(--bg-elev));
-  margin: 8px 0;
+  margin: var(--space-2) 0;
   /* overflow:clip clips to the border-radius (so .plan-card-allowed's
      bottom background respects the rounded corners) without establishing
      a new BFC.
@@ -2596,8 +2596,8 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 .plan-card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid color-mix(in srgb, var(--warn) 25%, var(--border));
   font-size: var(--fs-base);
 }
@@ -2610,7 +2610,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 }
 .plan-card-status {
   margin-left: auto;
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-2xs);
   font-family: var(--mono);
   text-transform: uppercase;
@@ -2656,21 +2656,21 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   border-color: color-mix(in srgb, var(--danger) 35%, transparent);
 }
 .plan-card-body {
-  padding: 4px 14px;
+  padding: var(--space-1) var(--space-3-5);
   font-size: var(--fs-base);
   /* The Markdown component's first/last children carry their own margins;
      trim them so the body sits flush inside the card. */
 }
-.plan-card-body > :first-child { margin-top: 8px; }
-.plan-card-body > :last-child { margin-bottom: 10px; }
+.plan-card-body > :first-child { margin-top: var(--space-2); }
+.plan-card-body > :last-child { margin-bottom: var(--space-2-5); }
 .plan-card-empty {
-  padding: 8px 0;
+  padding: var(--space-2) 0;
   color: var(--fg-muted);
   font-style: italic;
   font-size: var(--fs-sm);
 }
 .plan-card-allowed {
-  padding: 8px 14px 10px;
+  padding: var(--space-2) var(--space-3-5) var(--space-2-5);
   border-top: 1px dashed color-mix(in srgb, var(--warn) 25%, var(--border));
   background: color-mix(in srgb, var(--warn) 4%, transparent);
 }
@@ -2680,16 +2680,16 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 .plan-card-allowed-list {
   margin: 0;
-  padding-left: 16px;
+  padding-left: var(--space-4);
   font-size: var(--fs-sm);
   color: var(--fg);
 }
 .plan-card-allowed-item {
-  margin: 2px 0;
+  margin: var(--space-0-5) 0;
 }
 .plan-card-allowed-item code {
   font-family: var(--mono);
@@ -2705,13 +2705,13 @@ details.plan-card-collapsible {
   border-left: 3px solid var(--warn);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--warn) 6%, var(--bg-elev));
-  margin: 8px 0;
+  margin: var(--space-2) 0;
   overflow: clip;
 }
 details.plan-card-collapsible > summary {
   list-style: none;
   cursor: pointer;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   user-select: none;
 }
 details.plan-card-collapsible > summary::-webkit-details-marker { display: none; }
@@ -2748,13 +2748,13 @@ details.plan-card-collapsible > summary > .plan-card-header {
 .question-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-3-5);
 }
 .question-block {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
+  gap: var(--space-2);
+  padding: var(--space-3);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -2762,7 +2762,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
 .question-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -2801,13 +2801,13 @@ details.plan-card-collapsible > summary > .plan-card-header {
 .question-options {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .question-option {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: var(--space-2-5);
+  padding: var(--space-2-5) var(--space-3);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -2841,7 +2841,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .question-option-label {
   font-weight: 500;
@@ -2855,8 +2855,8 @@ details.plan-card-collapsible > summary > .plan-card-header {
   overflow-wrap: anywhere;
 }
 .question-option-preview {
-  margin-top: 4px;
-  padding: 8px 10px;
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-2-5);
   background: var(--bg);
   border: 1px dashed var(--border);
   border-radius: var(--radius-xs);
@@ -2872,8 +2872,8 @@ details.plan-card-collapsible > summary > .plan-card-header {
    * aligned with the "Other" label and the other options' content. */
   width: calc(100% - 38px);
   margin-left: 38px;
-  margin-top: 4px;
-  padding: 6px 8px;
+  margin-top: var(--space-1);
+  padding: var(--space-1-5) var(--space-2);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
@@ -2896,10 +2896,10 @@ details.plan-card-collapsible > summary > .plan-card-header {
   letter-spacing: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .question-answer-display {
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2-5);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
   border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
   border-radius: var(--radius-xs);
@@ -2914,16 +2914,16 @@ details.plan-card-collapsible > summary > .plan-card-header {
    dialog's modal-header/section/footer chrome; these rules cover the
    url link box, form fields, and inline errors. */
 .elicit-description {
-  margin-bottom: 6px;
+  margin-bottom: var(--space-1-5);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
 .elicit-url-box {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 10px;
-  padding: 10px 12px;
+  gap: var(--space-1-5);
+  margin-top: var(--space-2-5);
+  padding: var(--space-2-5) var(--space-3);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
@@ -2931,7 +2931,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
 .elicit-url-link {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--accent);
   font-size: var(--fs-base);
   word-break: break-all;
@@ -2946,11 +2946,11 @@ details.plan-card-collapsible > summary > .plan-card-header {
 .elicit-model-migration {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-base);
 }
 .elicit-model-name {
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   background: var(--btn-hover-bg);
   border-radius: var(--radius-xs);
   font-family: var(--mono);
@@ -2961,13 +2961,13 @@ details.plan-card-collapsible > summary > .plan-card-header {
 .elicit-form {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-top: 10px;
+  gap: var(--space-2-5);
+  margin-top: var(--space-2-5);
 }
 .elicit-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .elicit-field-label {
   font-size: var(--fs-sm);
@@ -2983,7 +2983,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   color: var(--fg-muted);
 }
 .elicit-input {
-  padding: 6px 8px;
+  padding: var(--space-1-5) var(--space-2);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
@@ -3000,7 +3000,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
 .elicit-checkbox {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-base);
   color: var(--fg);
   cursor: pointer;
@@ -3021,13 +3021,13 @@ details.question-inline-card {
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent) 5%, var(--bg-elev));
-  margin: 8px 0;
+  margin: var(--space-2) 0;
   overflow: clip;
 }
 details.question-inline-card > summary {
   list-style: none;
   cursor: pointer;
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   user-select: none;
 }
 details.question-inline-card > summary::-webkit-details-marker { display: none; }
@@ -3037,7 +3037,7 @@ details.question-inline-card[data-state="open"] > summary {
 .question-inline-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-base);
 }
 .question-inline-icon {
@@ -3049,7 +3049,7 @@ details.question-inline-card[data-state="open"] > summary {
 }
 .question-inline-status {
   margin-left: auto;
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-2xs);
   font-family: var(--mono);
   text-transform: uppercase;
@@ -3072,7 +3072,7 @@ details.question-inline-card[data-state="open"] > summary {
 /* "Click to answer" pill on a minimized pending question card. Sits after
    the status chip (which has margin-left:auto). */
 .question-inline-reopen {
-  padding: 2px 10px;
+  padding: var(--space-0-5) var(--space-2-5);
   font-size: var(--fs-xs);
   font-weight: 600;
   border-radius: var(--radius-pill);
@@ -3093,7 +3093,7 @@ details.question-inline-card-minimized {
 }
 /* "Review plan" pill on a minimized pending plan card. Mirrors question-inline-reopen. */
 .plan-card-reopen {
-  padding: 2px 10px;
+  padding: var(--space-0-5) var(--space-2-5);
   font-size: var(--fs-xs);
   font-weight: 600;
   border-radius: var(--radius-pill);
@@ -3110,7 +3110,7 @@ details.question-inline-card-minimized {
    the user has minimized. Mirrors .plan-card-reopen — reuses --warn so no new
    theme color is introduced. */
 .tool-card-perm-reopen {
-  padding: 2px 10px;
+  padding: var(--space-0-5) var(--space-2-5);
   font-size: var(--fs-xs);
   font-weight: 600;
   border-radius: var(--radius-pill);
@@ -3128,10 +3128,10 @@ details.plan-card-minimized {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent);
 }
 .question-inline-body {
-  padding: 10px 14px 12px;
+  padding: var(--space-2-5) var(--space-3-5) var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .question-inline-empty {
   color: var(--fg-muted);
@@ -3141,7 +3141,7 @@ details.plan-card-minimized {
 .question-inline-item {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .question-inline-item.skipped {
   opacity: 0.65;
@@ -3149,7 +3149,7 @@ details.plan-card-minimized {
 .question-inline-item-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -3173,13 +3173,13 @@ details.plan-card-minimized {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .question-inline-option {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 6px 10px;
+  gap: var(--space-2-5);
+  padding: var(--space-1-5) var(--space-2-5);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
@@ -3205,7 +3205,7 @@ details.plan-card-minimized {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .question-inline-option-label {
   font-weight: 500;
@@ -3222,7 +3222,7 @@ details.plan-card-minimized {
   font-size: var(--fs-2xs);
   color: var(--fg-muted);
   font-weight: 400;
-  margin-left: 4px;
+  margin-left: var(--space-1);
 }
 
 /* ── FindingsCard ── bespoke rendering for the ReportFindings tool_use.
@@ -3234,21 +3234,21 @@ details.plan-card-minimized {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-elev);
-  margin: 8px 0;
+  margin: var(--space-2) 0;
   overflow: clip;
 }
 .findings-card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
   font-size: var(--fs-base);
   color: var(--fg);
 }
 .findings-card-title { font-weight: 600; }
 .findings-level-badge {
-  padding: 2px 8px;
+  padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-2xs);
   font-family: var(--mono);
   text-transform: uppercase;
@@ -3265,7 +3265,7 @@ details.plan-card-minimized {
   font-family: var(--mono);
 }
 .findings-empty {
-  padding: 12px;
+  padding: var(--space-3);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   font-style: italic;
@@ -3276,14 +3276,14 @@ details.plan-card-minimized {
   padding: 0;
 }
 .finding-row {
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
 }
 .finding-row:last-child { border-bottom: none; }
 .finding-row-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
   margin-bottom: 3px;
 }
@@ -3366,7 +3366,7 @@ details.plan-card-minimized {
 .finding-scenario-details > summary {
   list-style: none;
   cursor: pointer;
-  margin-top: 4px;
+  margin-top: var(--space-1);
   font-size: var(--fs-xs);
   user-select: none;
 }
@@ -3380,8 +3380,8 @@ details.plan-card-minimized {
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   line-height: 1.5;
-  padding: 6px 0 2px 10px;
+  padding: var(--space-1-5) 0 var(--space-0-5) var(--space-2-5);
   border-left: 2px solid color-mix(in srgb, var(--border) 80%, transparent);
-  margin-top: 4px;
+  margin-top: var(--space-1);
   white-space: pre-wrap;
 }

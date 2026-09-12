@@ -7,13 +7,13 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-3-5);
 }
 
 .usage-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .usage-section-title {
@@ -29,7 +29,7 @@
 .usage-cost-row {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .usage-cost {
@@ -48,7 +48,7 @@
 .usage-totals {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 12px;
+  gap: var(--space-1) var(--space-3);
   font-family: var(--mono);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
@@ -75,7 +75,7 @@
 .usage-account-row {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-sm);
   min-width: 0;
 }
@@ -111,7 +111,7 @@
   text-align: right;
   font-weight: 600;
   color: var(--fg-muted);
-  padding: 2px 6px;
+  padding: var(--space-0-5) var(--space-1-5);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
@@ -202,7 +202,7 @@
 .usage-empty {
   display: flex;
   justify-content: center;
-  padding: 24px 0;
+  padding: var(--space-6) 0;
   color: var(--fg-muted);
   font-size: var(--fs-base);
 }
@@ -213,8 +213,8 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 16px 0;
+  gap: var(--space-2);
+  padding: var(--space-4) 0;
 }
 
 .usage-error p {
@@ -229,7 +229,7 @@
   background: var(--bg-elev-2);
   color: var(--fg);
   font-size: var(--fs-sm);
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-2-5);
   border-radius: var(--radius-xs);
   cursor: pointer;
 }
