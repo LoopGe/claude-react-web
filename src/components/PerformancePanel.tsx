@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { useMetrics } from '../hooks/useMetrics'
 import { Skeleton } from './Skeleton'
+import { PerfSparkline } from './PerfSparkline'
 import { formatElapsed } from '../utils/format'
-import type { MetricsHistogramSnapshot, MetricsSnapshot } from '../../shared/metrics.js'
+import type { MetricsBucketSnapshot, MetricsHistogramSnapshot, MetricsSnapshot } from '../../shared/metrics.js'
 
 /** Millisecond formatting: integers once large, one decimal below. */
 function fmtMs(v: number): string {
@@ -10,11 +12,53 @@ function fmtMs(v: number): string {
 
 type MetricEntry = { name: string; h?: MetricsHistogramSnapshot; c?: number }
 
-/** One stat table: histogram rows (count / p50 / p95 / p99 / max) plus
- *  plain counter rows (count only, percentile cells dashed). A histogram
- *  p95 over 100ms gets the perf-hot highlight (theme variable, works in
- *  both themes). An empty group renders a muted "no data yet" row. */
-function HistTable({ entries }: { entries: MetricEntry[] }) {
+/** Expandable per-bucket distribution strip for one histogram series.
+ *  One bar per finite bucket, width proportional to that bucket's share of
+ *  the series' peak bucket (linear — the shape is the signal). The
+ *  implicit +Inf overflow is shown as a trailing hatched segment when
+ *  non-zero. Pure CSS flex, no chart library. */
+function BucketBars({ h }: { h: MetricsHistogramSnapshot }) {
+  const peak = Math.max(1, ...h.buckets.map((b) => b.count))
+  const overflow = h.count - h.buckets.reduce((acc, b) => acc + b.count, 0)
+  return (
+    <div className="perf-bars">
+      {h.buckets.map((b: MetricsBucketSnapshot) => (
+        <div key={b.le} className="perf-bar-slot" title={`≤${b.le}ms: ${b.count}`}>
+          <div className="perf-bar" style={{ width: `${(b.count / peak) * 100}%` }} />
+          <span className="perf-bar-le">{b.le}</span>
+        </div>
+      ))}
+      {overflow > 0 && (
+        <div className="perf-bar-slot perf-bar-overflow" title={`> ${h.buckets[h.buckets.length - 1]?.le ?? 0}ms: ${overflow}`}>
+          <div className="perf-bar" style={{ width: '100%' }} />
+          <span className="perf-bar-le">∞</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** One stat table: histogram rows (count / p50 / p95 / p99 / max + inline
+ *  sparkline + expandable distribution) and plain counter rows. A p95 over
+ *  100ms gets the perf-hot highlight (theme variable, works in both
+ *  themes). An empty group renders a muted "no data yet" row. */
+function HistTable({
+  entries,
+  history,
+}: {
+  entries: MetricEntry[]
+  history: MetricsSnapshot[]
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const toggle = (name: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
+
   return (
     <table className="perf-table">
       <thead>
@@ -24,26 +68,72 @@ function HistTable({ entries }: { entries: MetricEntry[] }) {
       </thead>
       <tbody>
         {entries.map(({ name, h, c }) => (
-          <tr key={name}>
-            <td className="perf-name">{name}</td>
-            <td>{h ? h.count : c}</td>
-            {h ? (
-              <>
-                <td>{fmtMs(h.p50)}</td>
-                <td className={h.p95 > 100 ? 'perf-hot' : undefined}>{fmtMs(h.p95)}</td>
-                <td>{fmtMs(h.p99)}</td>
-                <td>{fmtMs(h.max)}</td>
-              </>
-            ) : (
-              <td colSpan={4} className="perf-empty">counter</td>
-            )}
-          </tr>
+          <HistRow key={name} name={name} h={h} c={c} history={history} expanded={expanded.has(name)} onToggle={h ? () => toggle(name) : undefined} />
         ))}
         {entries.length === 0 && (
           <tr><td colSpan={6} className="perf-empty">no data yet</td></tr>
         )}
       </tbody>
     </table>
+  )
+}
+
+function HistRow({
+  name, h, c, history, expanded, onToggle,
+}: {
+  name: string
+  h?: MetricsHistogramSnapshot
+  c?: number
+  history: MetricsSnapshot[]
+  expanded: boolean
+  onToggle?: () => void
+}) {
+  // p95 trend across the history ring; series may be absent from older
+  // samples (process just started) — skip those samples.
+  const p95Series = history
+    .map((s) => (h && s.histograms[name])?.p95)
+    .filter((v): v is number => typeof v === 'number')
+
+  if (!h) {
+    return (
+      <tr>
+        <td className="perf-name">{name}</td>
+        <td>{c}</td>
+        <td colSpan={4} className="perf-empty">counter</td>
+      </tr>
+    )
+  }
+  return (
+    <>
+      <tr>
+        <td className="perf-name">
+          {onToggle && (
+            <button
+              type="button"
+              className={`perf-caret${expanded ? ' perf-caret-open' : ''}`}
+              aria-label={expanded ? 'Collapse distribution' : 'Expand distribution'}
+              onClick={onToggle}
+            >
+              ▸
+            </button>
+          )}
+          {name}
+        </td>
+        <td>{h.count}</td>
+        <td>{fmtMs(h.p50)}</td>
+        <td className={h.p95 > 100 ? 'perf-hot' : undefined}>{fmtMs(h.p95)}</td>
+        <td>{fmtMs(h.p99)}</td>
+        <td className="perf-max-cell">
+          {fmtMs(h.max)}
+          <PerfSparkline values={p95Series} hotAbove={100} />
+        </td>
+      </tr>
+      {expanded && (
+        <tr className="perf-bars-row">
+          <td colSpan={6}>{h && <BucketBars h={h} />}</td>
+        </tr>
+      )}
+    </>
   )
 }
 
@@ -62,7 +152,7 @@ function fmtUptime(sec: number): string {
 }
 
 export function PerformancePanel() {
-  const { data, loading, error, refresh, auto, setAuto } = useMetrics()
+  const { data, loading, error, refresh, auto, setAuto, history } = useMetrics()
 
   if (loading && !data) {
     return (
@@ -114,7 +204,7 @@ export function PerformancePanel() {
             <h4>Event loop</h4>
             <span className="settings-group-desc">Blocked-loop window maxima, one row per 5s probe window. A healthy loop sits near the probe's 20ms resolution.</span>
           </div>
-          <HistTable entries={eventLoop} />
+          <HistTable entries={eventLoop} history={history} />
         </section>
 
         <section className="settings-group">
@@ -122,7 +212,7 @@ export function PerformancePanel() {
             <h4>WebSocket</h4>
             <span className="settings-group-desc">Fanout cost, pump cadence, replay size/time, frame volume.</span>
           </div>
-          <HistTable entries={ws} />
+          <HistTable entries={ws} history={history} />
         </section>
 
         <section className="settings-group">
@@ -130,7 +220,7 @@ export function PerformancePanel() {
             <h4>HTTP</h4>
             <span className="settings-group-desc">Per-route request durations, sorted by p95.</span>
           </div>
-          <HistTable entries={http} />
+          <HistTable entries={http} history={history} />
         </section>
 
         <section className="settings-group">
@@ -138,7 +228,7 @@ export function PerformancePanel() {
             <h4>Sessions</h4>
             <span className="settings-group-desc">Spawn-to-init, interrupt, SDK control round-trips, classifier and recap/commit API calls.</span>
           </div>
-          <HistTable entries={sessions} />
+          <HistTable entries={sessions} history={history} />
         </section>
       </div>
     </div>
