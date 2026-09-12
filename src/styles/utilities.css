@@ -3099,6 +3099,9 @@ select.input {
   cursor: pointer;
 }
 .perf-gauges {
+  /* .settings-group carries no padding of its own — every direct child
+     supplies its own (same inset as .settings-group-head / .settings-row). */
+  padding: var(--space-3) var(--space-3-5);
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-4);
