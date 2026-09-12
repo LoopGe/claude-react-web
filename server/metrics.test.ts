@@ -83,6 +83,31 @@ describe('metrics', () => {
   it('reports uptimeSec as a number', () => {
     expect(typeof metrics.snapshot().uptimeSec).toBe('number')
   })
+
+  it('exposes per-bucket counts in the snapshot', () => {
+    metrics.observe('t_ms', 3)   // bucket le=5
+    metrics.observe('t_ms', 7)   // bucket le=10
+    metrics.observe('t_ms', 8)   // bucket le=10
+    metrics.observe('t_ms', 99)  // bucket le=100
+    metrics.observe('t_ms', 99_999) // above all finite buckets — not listed
+    const h = metrics.snapshot().histograms['t_ms']!
+    // Finite buckets only, in ascending order; counts are per-bucket (not
+    // cumulative) and exclude the implicit +Inf overflow.
+    expect(h.buckets).toEqual([
+      { le: 5, count: 1 },
+      { le: 10, count: 2 },
+      { le: 25, count: 0 },
+      { le: 50, count: 0 },
+      { le: 100, count: 1 },
+      { le: 250, count: 0 },
+      { le: 500, count: 0 },
+      { le: 1000, count: 0 },
+      { le: 2500, count: 0 },
+      { le: 5000, count: 0 },
+      { le: 10000, count: 0 },
+      { le: 30000, count: 0 },
+    ])
+  })
 })
 
 describe('metrics with METRICS=0', () => {

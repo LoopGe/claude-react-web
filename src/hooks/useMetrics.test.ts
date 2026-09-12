@@ -57,6 +57,41 @@ describe('useMetrics', () => {
     expect(result.current.error).toBe('boom')
   })
 
+  it('accumulates a snapshot history ring, capped at 60', async () => {
+    getMock.mockResolvedValue(snap)
+    const { result } = renderHook(() => useMetrics())
+    await act(async () => {})
+    expect(result.current.history).toHaveLength(1)
+    // 72 throttled (≥1s apart) refreshes → ring fills to the cap of 60.
+    for (let i = 0; i < 72; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(1_100)
+        await result.current.refresh()
+      })
+    }
+    expect(result.current.history).toHaveLength(60)
+    // The oldest sample is evicted — history[-1] is always the newest.
+    expect(result.current.history[result.current.history.length - 1]).toEqual(snap)
+  })
+
+  it('rapid manual refreshes do not flood the history ring', async () => {
+    getMock.mockResolvedValue(snap)
+    const { result } = renderHook(() => useMetrics())
+    await act(async () => {})
+    // Five back-to-back refreshes within the 1s sample gap → no appends.
+    for (let i = 0; i < 5; i++) {
+      await act(async () => { await result.current.refresh() })
+    }
+    expect(result.current.history).toHaveLength(1)
+  })
+
+  it('failed fetches do not append to history', async () => {
+    getMock.mockRejectedValue(new Error('boom'))
+    const { result } = renderHook(() => useMetrics())
+    await act(async () => {})
+    expect(result.current.history).toHaveLength(0)
+  })
+
   it('a superseded (aborted) refresh does not clobber the newer call', async () => {
     // Deferred promises so we control resolution order.
     const stale = { reject: (undefined as unknown as (e: Error) => void) }

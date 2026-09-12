@@ -3109,3 +3109,67 @@ select.input {
   color: inherit;
   font-family: var(--mono);
 }
+
+/* Performance panel: distribution bars + sparkline. */
+.perf-caret {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0 4px 0 0;
+  font-size: 10px;
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+.perf-caret-open {
+  transform: rotate(90deg);
+}
+.perf-bars-row td {
+  padding-top: 4px;
+  padding-bottom: 8px;
+}
+.perf-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 420px;
+}
+.perf-bar-slot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 8px;
+}
+.perf-bar {
+  height: 100%;
+  min-width: 1px;
+  background: var(--accent);
+  opacity: 0.65;
+  border-radius: 1px;
+}
+.perf-bar-overflow .perf-bar {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--warn),
+    var(--warn) 2px,
+    transparent 2px,
+    transparent 4px
+  );
+}
+.perf-bar-le {
+  font-size: 9px;
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  min-width: 36px;
+}
+.perf-sparkline {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.perf-sparkline polyline {
+  stroke: var(--accent);
+  stroke-width: 1.2;
+}
+.perf-spark-hot {
+  fill: var(--warn);
+}
