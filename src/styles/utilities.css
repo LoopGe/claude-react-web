@@ -3053,6 +3053,11 @@ select.input {
 }
 
 /* Performance panel (SettingsPanel → Performance tab): metric tables. */
+.perf-table-wrap {
+  /* .settings-group clips (overflow: hidden) and long nowrap series names
+     blow the table past the group edge — the wrap provides the scrollbar. */
+  overflow-x: auto;
+}
 .perf-table {
   width: 100%;
   border-collapse: collapse;

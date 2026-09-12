@@ -56,7 +56,8 @@ function HistTable({
   history: MetricsSnapshot[]
 }) {
   return (
-    <table className="perf-table">
+    <div className="perf-table-wrap">
+      <table className="perf-table">
       <thead>
         <tr>
           <th>series</th><th>count</th><th>p50</th><th>p95</th><th>p99</th><th>max</th>
@@ -70,7 +71,8 @@ function HistTable({
           <tr><td colSpan={6} className="perf-empty">no data yet</td></tr>
         )}
       </tbody>
-    </table>
+      </table>
+    </div>
   )
 }
 
