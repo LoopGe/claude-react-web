@@ -3173,6 +3173,3 @@ select.input {
 .perf-spark-hot {
   fill: var(--warn);
 }
-.perf-max-cell {
-  white-space: nowrap;
-}

@@ -34,7 +34,9 @@ function BucketBars({ h }: { h: MetricsHistogramSnapshot }) {
       ))}
       {overflow > 0 && (
         <div className="perf-bar-slot perf-bar-overflow" title={`> ${h.buckets[h.buckets.length - 1]?.le ?? 0}ms: ${overflow}`}>
-          <div className="perf-bar" style={{ width: '100%' }} />
+          {/* Scaled like the finite bars (share of the peak bucket), capped
+              at full width so a rare overflow can't read as the modal outcome. */}
+          <div className="perf-bar" style={{ width: `${Math.min(100, (overflow / peak) * 100)}%` }} />
           <span className="perf-bar-le">∞</span>
         </div>
       )}
@@ -83,11 +85,6 @@ function HistRow({
   // Row-local expand state: no cross-row coupling, and the counter branch
   // below never renders a caret so no guard is needed.
   const [expanded, setExpanded] = useState(false)
-  // p95 trend across the history ring; series may be absent from older
-  // samples (process just started) — skip those samples.
-  const p95Series = history
-    .map((s) => (h && s.histograms[name])?.p95)
-    .filter((v): v is number => typeof v === 'number')
 
   if (!h) {
     return (
@@ -98,6 +95,13 @@ function HistRow({
       </tr>
     )
   }
+  // p95 trend across the history ring; series may be absent from older
+  // samples (process just started) — skip those samples. Histogram-only:
+  // computed after the counter early-return so counter rows don't pay for
+  // the scan at auto-refresh cadence.
+  const p95Series = history
+    .map((s) => s.histograms[name]?.p95)
+    .filter((v): v is number => typeof v === 'number')
   return (
     <>
       <tr>
@@ -105,6 +109,7 @@ function HistRow({
           <button
             type="button"
             className={`perf-caret${expanded ? ' perf-caret-open' : ''}`}
+            aria-expanded={expanded}
             aria-label={expanded ? 'Collapse distribution' : 'Expand distribution'}
             onClick={() => setExpanded((v) => !v)}
           >
@@ -114,12 +119,14 @@ function HistRow({
         </td>
         <td>{h.count}</td>
         <td>{fmtMs(h.p50)}</td>
-        <td className={h.p95 > PERF_HOT_MS ? 'perf-hot' : undefined}>{fmtMs(h.p95)}</td>
-        <td>{fmtMs(h.p99)}</td>
-        <td className="perf-max-cell">
-          {fmtMs(h.max)}
+        <td className={h.p95 > PERF_HOT_MS ? 'perf-hot' : undefined}>
+          {fmtMs(h.p95)}
+          {/* The trend line plots p95, so it lives in the p95 cell — the
+              number beside the line must be the series it draws. */}
           <PerfSparkline values={p95Series} hotAbove={PERF_HOT_MS} />
         </td>
+        <td>{fmtMs(h.p99)}</td>
+        <td>{fmtMs(h.max)}</td>
       </tr>
       {expanded && (
         <tr className="perf-bars-row">

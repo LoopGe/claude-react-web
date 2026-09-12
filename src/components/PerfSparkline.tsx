@@ -8,18 +8,20 @@ export function PerfSparkline({ values, hotAbove }: { values: number[]; hotAbove
 
   const W = 80
   const H = 18
-  const PAD = 1
+  // PAD leaves room for the 2px hot dot: y stays within [PAD, H-PAD], so
+  // the circle never crosses the viewBox edge and gets clipped.
+  const PAD = 3
   const min = Math.min(...values)
   const max = Math.max(...values)
-  // `|| 1` only guards division by zero on a flat series — such a series
-  // still renders as a single line pinned at the bottom edge (every value
-  // maps to y = H - PAD), which is an honest picture of "no variance".
+  const flat = max === min
+  // `|| 1` only guards division by zero — a flat series maps to the mid
+  // line (a centered, honest picture of "no variance").
   const range = max - min || 1
   const stepX = (W - 2 * PAD) / (values.length - 1)
   const points = values
     .map((v, i) => {
       const x = PAD + i * stepX
-      const y = H - PAD - ((v - min) / range) * (H - 2 * PAD)
+      const y = flat ? H / 2 : H - PAD - ((v - min) / range) * (H - 2 * PAD)
       return `${x.toFixed(1)},${y.toFixed(1)}`
     })
     .join(' ')

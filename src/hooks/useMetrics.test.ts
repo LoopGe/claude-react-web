@@ -62,16 +62,27 @@ describe('useMetrics', () => {
     const { result } = renderHook(() => useMetrics())
     await act(async () => {})
     expect(result.current.history).toHaveLength(1)
-    await act(async () => { await result.current.refresh() })
-    await act(async () => { await result.current.refresh() })
-    expect(result.current.history).toHaveLength(3)
-    // Cap: fire 70 more refreshes.
-    for (let i = 0; i < 70; i++) {
-      await act(async () => { await result.current.refresh() })
+    // 72 throttled (≥1s apart) refreshes → ring fills to the cap of 60.
+    for (let i = 0; i < 72; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(1_100)
+        await result.current.refresh()
+      })
     }
     expect(result.current.history).toHaveLength(60)
     // The oldest sample is evicted — history[-1] is always the newest.
     expect(result.current.history[result.current.history.length - 1]).toEqual(snap)
+  })
+
+  it('rapid manual refreshes do not flood the history ring', async () => {
+    getMock.mockResolvedValue(snap)
+    const { result } = renderHook(() => useMetrics())
+    await act(async () => {})
+    // Five back-to-back refreshes within the 1s sample gap → no appends.
+    for (let i = 0; i < 5; i++) {
+      await act(async () => { await result.current.refresh() })
+    }
+    expect(result.current.history).toHaveLength(1)
   })
 
   it('failed fetches do not append to history', async () => {

@@ -3,10 +3,14 @@ import { api } from './useApi'
 import type { MetricsSnapshot } from '../../shared/metrics.js'
 
 const AUTO_REFRESH_MS = 5000
-/** Sparkline window: at most this many successful fetches (auto-refresh
- *  appends every AUTO_REFRESH_MS; manual refreshes append too, so the
+/** Sparkline window: at most this many samples (auto-refresh appends every
+ *  AUTO_REFRESH_MS; manual refreshes are throttled, see below, so the
  *  wall-clock span depends on how often samples land). */
 const HISTORY_CAP = 60
+/** Minimum wall-clock gap between two history samples. Without it, spamming
+ *  the Refresh button would fill the ring with seconds of data and evict
+ *  the real trend window. */
+const SAMPLE_MIN_GAP_MS = 1000
 
 /** Fetch the server metrics snapshot. Snapshot + refresh interaction,
  *  matching the Diagnostics tab; optional 5s auto-refresh. Successful
@@ -20,6 +24,7 @@ export function useMetrics() {
   const [auto, setAuto] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const mountedRef = useRef(true)
+  const lastSampledAtRef = useRef(0)
 
   const refresh = useCallback(async () => {
     abortRef.current?.abort()
@@ -32,8 +37,13 @@ export function useMetrics() {
       if (!ctrl.signal.aborted && mountedRef.current) {
         setData(res)
         // Append-only ring: failed fetches never enter, oldest evicted at
-        // the cap. New array each time so React sees a changed reference.
-        setHistory((prev) => [...prev.slice(-(HISTORY_CAP - 1)), res])
+        // the cap. Throttled by wall-clock so refresh spam can't flood the
+        // trend window. New array each time so React sees a new reference.
+        const now = Date.now()
+        if (now - lastSampledAtRef.current >= SAMPLE_MIN_GAP_MS) {
+          lastSampledAtRef.current = now
+          setHistory((prev) => [...prev.slice(-(HISTORY_CAP - 1)), res])
+        }
       }
     } catch (e) {
       // A superseded (aborted) request must not clobber the newer call's
