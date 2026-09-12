@@ -57,6 +57,30 @@ describe('useMetrics', () => {
     expect(result.current.error).toBe('boom')
   })
 
+  it('accumulates a snapshot history ring, capped at 60', async () => {
+    getMock.mockResolvedValue(snap)
+    const { result } = renderHook(() => useMetrics())
+    await act(async () => {})
+    expect(result.current.history).toHaveLength(1)
+    await act(async () => { await result.current.refresh() })
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.history).toHaveLength(3)
+    // Cap: fire 70 more refreshes.
+    for (let i = 0; i < 70; i++) {
+      await act(async () => { await result.current.refresh() })
+    }
+    expect(result.current.history).toHaveLength(60)
+    // The oldest sample is evicted — history[-1] is always the newest.
+    expect(result.current.history[result.current.history.length - 1]).toEqual(snap)
+  })
+
+  it('failed fetches do not append to history', async () => {
+    getMock.mockRejectedValue(new Error('boom'))
+    const { result } = renderHook(() => useMetrics())
+    await act(async () => {})
+    expect(result.current.history).toHaveLength(0)
+  })
+
   it('a superseded (aborted) refresh does not clobber the newer call', async () => {
     // Deferred promises so we control resolution order.
     const stale = { reject: (undefined as unknown as (e: Error) => void) }

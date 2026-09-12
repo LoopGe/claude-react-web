@@ -3,11 +3,16 @@ import { api } from './useApi'
 import type { MetricsSnapshot } from '../../shared/metrics.js'
 
 const AUTO_REFRESH_MS = 5000
+/** Sparkline window: 60 samples × 5s auto-refresh ≈ 5 minutes of trend. */
+const HISTORY_CAP = 60
 
 /** Fetch the server metrics snapshot. Snapshot + refresh interaction,
- *  matching the Diagnostics tab; optional 5s auto-refresh. */
+ *  matching the Diagnostics tab; optional 5s auto-refresh. Successful
+ *  fetches also append to a capped history ring so the panel can draw
+ *  p95 sparklines. */
 export function useMetrics() {
   const [data, setData] = useState<MetricsSnapshot | null>(null)
+  const [history, setHistory] = useState<MetricsSnapshot[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [auto, setAuto] = useState(false)
@@ -22,7 +27,12 @@ export function useMetrics() {
     setError(null)
     try {
       const res = await api.get<MetricsSnapshot>('/metrics', { signal: ctrl.signal })
-      if (!ctrl.signal.aborted && mountedRef.current) setData(res)
+      if (!ctrl.signal.aborted && mountedRef.current) {
+        setData(res)
+        // Append-only ring: failed fetches never enter, oldest evicted at
+        // the cap. New array each time so React sees a changed reference.
+        setHistory((prev) => [...prev.slice(-(HISTORY_CAP - 1)), res])
+      }
     } catch (e) {
       // A superseded (aborted) request must not clobber the newer call's
       // in-flight state — aborting is not an unmount, so mountedRef alone
@@ -51,5 +61,5 @@ export function useMetrics() {
     return () => clearInterval(id)
   }, [auto, refresh])
 
-  return { data, loading, error, refresh, auto, setAuto }
+  return { data, loading, error, refresh, auto, setAuto, history }
 }
