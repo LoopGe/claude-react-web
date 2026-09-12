@@ -131,8 +131,6 @@ describe('PerformancePanel', () => {
     fireEvent.click(caret)
     const bars = container.querySelector('.perf-bars')!
     expect(bars).toBeTruthy()
-    // Sample histogram 'ws_fanout_ms' has no buckets in the fixture — fixture
-    // needs them; assert on the http series instead, which we give buckets.
     expect(bars.querySelectorAll('.perf-bar').length).toBeGreaterThan(0)
     // Clicking again collapses.
     fireEvent.click(caret)

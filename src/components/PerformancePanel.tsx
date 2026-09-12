@@ -10,6 +10,10 @@ function fmtMs(v: number): string {
   return v >= 100 ? Math.round(v).toString() : v.toFixed(1)
 }
 
+/** "Hot" threshold (ms): a p95 above this highlights the cell and dots
+ *  the sparkline's latest sample. One constant so the two can't drift. */
+const PERF_HOT_MS = 100
+
 type MetricEntry = { name: string; h?: MetricsHistogramSnapshot; c?: number }
 
 /** Expandable per-bucket distribution strip for one histogram series.
@@ -49,16 +53,6 @@ function HistTable({
   entries: MetricEntry[]
   history: MetricsSnapshot[]
 }) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const toggle = (name: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
-      return next
-    })
-  }
-
   return (
     <table className="perf-table">
       <thead>
@@ -68,7 +62,7 @@ function HistTable({
       </thead>
       <tbody>
         {entries.map(({ name, h, c }) => (
-          <HistRow key={name} name={name} h={h} c={c} history={history} expanded={expanded.has(name)} onToggle={h ? () => toggle(name) : undefined} />
+          <HistRow key={name} name={name} h={h} c={c} history={history} />
         ))}
         {entries.length === 0 && (
           <tr><td colSpan={6} className="perf-empty">no data yet</td></tr>
@@ -79,15 +73,16 @@ function HistTable({
 }
 
 function HistRow({
-  name, h, c, history, expanded, onToggle,
+  name, h, c, history,
 }: {
   name: string
   h?: MetricsHistogramSnapshot
   c?: number
   history: MetricsSnapshot[]
-  expanded: boolean
-  onToggle?: () => void
 }) {
+  // Row-local expand state: no cross-row coupling, and the counter branch
+  // below never renders a caret so no guard is needed.
+  const [expanded, setExpanded] = useState(false)
   // p95 trend across the history ring; series may be absent from older
   // samples (process just started) — skip those samples.
   const p95Series = history
@@ -107,30 +102,28 @@ function HistRow({
     <>
       <tr>
         <td className="perf-name">
-          {onToggle && (
-            <button
-              type="button"
-              className={`perf-caret${expanded ? ' perf-caret-open' : ''}`}
-              aria-label={expanded ? 'Collapse distribution' : 'Expand distribution'}
-              onClick={onToggle}
-            >
-              ▸
-            </button>
-          )}
+          <button
+            type="button"
+            className={`perf-caret${expanded ? ' perf-caret-open' : ''}`}
+            aria-label={expanded ? 'Collapse distribution' : 'Expand distribution'}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            ▸
+          </button>
           {name}
         </td>
         <td>{h.count}</td>
         <td>{fmtMs(h.p50)}</td>
-        <td className={h.p95 > 100 ? 'perf-hot' : undefined}>{fmtMs(h.p95)}</td>
+        <td className={h.p95 > PERF_HOT_MS ? 'perf-hot' : undefined}>{fmtMs(h.p95)}</td>
         <td>{fmtMs(h.p99)}</td>
         <td className="perf-max-cell">
           {fmtMs(h.max)}
-          <PerfSparkline values={p95Series} hotAbove={100} />
+          <PerfSparkline values={p95Series} hotAbove={PERF_HOT_MS} />
         </td>
       </tr>
       {expanded && (
         <tr className="perf-bars-row">
-          <td colSpan={6}>{h && <BucketBars h={h} />}</td>
+          <td colSpan={6}><BucketBars h={h} /></td>
         </tr>
       )}
     </>

@@ -3,7 +3,9 @@ import { api } from './useApi'
 import type { MetricsSnapshot } from '../../shared/metrics.js'
 
 const AUTO_REFRESH_MS = 5000
-/** Sparkline window: 60 samples × 5s auto-refresh ≈ 5 minutes of trend. */
+/** Sparkline window: at most this many successful fetches (auto-refresh
+ *  appends every AUTO_REFRESH_MS; manual refreshes append too, so the
+ *  wall-clock span depends on how often samples land). */
 const HISTORY_CAP = 60
 
 /** Fetch the server metrics snapshot. Snapshot + refresh interaction,

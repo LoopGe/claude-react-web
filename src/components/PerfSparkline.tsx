@@ -11,7 +11,10 @@ export function PerfSparkline({ values, hotAbove }: { values: number[]; hotAbove
   const PAD = 1
   const min = Math.min(...values)
   const max = Math.max(...values)
-  const range = max - min || 1 // flat series still get a mid line
+  // `|| 1` only guards division by zero on a flat series — such a series
+  // still renders as a single line pinned at the bottom edge (every value
+  // maps to y = H - PAD), which is an honest picture of "no variance".
+  const range = max - min || 1
   const stepX = (W - 2 * PAD) / (values.length - 1)
   const points = values
     .map((v, i) => {
