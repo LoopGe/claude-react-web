@@ -40,29 +40,21 @@ describe('offsetOf DOM measurement', () => {
     expect(off).toBe(5)
   })
 
-  it('maps a chip to its serialized reference length, not its DOM text length', () => {
-    // This is the critical bridge test.  The chip's DOM text content is
-    // "[Pasted text #1]" (18 chars of text nodes).  A measurement that just
-    // summed text-node lengths (or called Range.toString().length) would
-    // produce 21, but the serialized value is "[Pasted text #1] /mod" where
-    // the chip counts as exactly 1 reference whose label is 18 chars —
-    // offset 18.  If the measurement used DOM text length instead of the
-    // serialized token length, the test must fail.
+  it('counts a <br> as one character, matching serializeTokens', () => {
+    // serializeTokens reads <br> as '\n' (one character).  Range.toString()
+    // returns '' for <br>, so a measurement built on Range.toString().length
+    // would miss it.  This test pins the real divergence between DOM and
+    // serialized value.
     const el = makeEditor()
-    // Chip comes first so its text contribution is counted before /mod.
-    const chip = document.createElement('span')
-    chip.className = 'pasted-text-chip'
-    chip.setAttribute('contenteditable', 'false')
-    chip.textContent = '[Pasted text #1]'
-    el.appendChild(chip)
+    el.appendChild(document.createTextNode('line1'))
+    el.appendChild(document.createElement('br'))
+    const after = document.createTextNode('line2')
+    el.appendChild(after)
 
-    const textAfter = document.createTextNode(' /mod')
-    el.appendChild(textAfter)
-
-    // Caret at start of ' /mod' (right after chip).
-    // Serialized: "[Pasted text #1] /mod"  →  offset 16
-    const off = offsetOf(el, textAfter, 0)
-    expect(off).toBe(16)
+    // Serialized value: "line1\nline2"  →  offset of "line2" start = 6
+    // A naive Range.toString().length would give 5 (misses the \n).
+    const off = offsetOf(el, after, 0)
+    expect(off).toBe(6)
   })
 
   it('handles a chip at the end of text', () => {

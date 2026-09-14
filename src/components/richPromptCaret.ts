@@ -54,7 +54,14 @@ export function offsetOf(
       return false
     }
 
-    // Element node (non-chip) -- walk children.
+    // <br> is serialized as '\n' (one character) by serializeTokens, but
+    // Range.toString() returns '' for it.  Count it explicitly.
+    if (node.nodeType === Node.ELEMENT_NODE && (node as Element).tagName === 'BR') {
+      count += 1
+      return false
+    }
+
+    // Element node (non-chip, non-br) -- walk children.
     let found = false
     for (const child of Array.from(node.childNodes)) {
       if (found) break
@@ -65,6 +72,58 @@ export function offsetOf(
 
   walk(root)
   return count
+}
+
+/**
+ * Place the caret at a given serialized character offset within `root`.
+ *
+ * This is the inverse of `offsetOf`: given a character position in the
+ * serialized value, walk the DOM using the same chip/br rules and collapse
+ * the selection at the corresponding DOM node+offset.
+ *
+ * @returns `true` if the caret was placed, `false` if `target` exceeds the
+ *          serialized length.
+ */
+export function placeCaretAtOffset(root: Element, target: number): boolean {
+  let remaining = target
+
+  const walk = (node: Node): boolean => {
+    if (
+      node.nodeType === Node.ELEMENT_NODE &&
+      (node as Element).hasAttribute(CHIP_ATTR)
+    ) {
+      // Chip: opaque, same count as offsetOf.
+      remaining -= (node.textContent ?? '').length
+      return false
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      const len = (node.nodeValue ?? '').length
+      if (len >= remaining) {
+        const sel = root.ownerDocument.getSelection()
+        if (!sel) return false
+        sel.collapse(node, remaining)
+        return true
+      }
+      remaining -= len
+      return false
+    }
+
+    if (node.nodeType === Node.ELEMENT_NODE && (node as Element).tagName === 'BR') {
+      remaining -= 1
+      return false
+    }
+
+    // Element node (non-chip, non-br) -- walk children.
+    let found = false
+    for (const child of Array.from(node.childNodes)) {
+      if (found) break
+      if (walk(child)) found = true
+    }
+    return found
+  }
+
+  return walk(root)
 }
 
 // ---------------------------------------------------------------------------

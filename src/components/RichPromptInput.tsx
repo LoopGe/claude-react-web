@@ -1,9 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 import { joinTokens, tokenize } from '../utils/pastedText'
 import { renderTokens, serializeTokens } from '../utils/richPromptDom'
-import { offsetOf, slashWordBefore, caretOnFirstLine } from './richPromptCaret'
+import { offsetOf, slashWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
 
-/** Methods attached to the editor DOM element by RichPromptInput. */
+/**
+ * Methods attached to the editor DOM element by RichPromptInput.
+ *
+ * Reach them via `editorRef.current` -- the ref points to the editor `<div>`,
+ * which also carries these methods.  Callers must treat the ref as a
+ * `RichPromptHandle`, not a plain DOM node.
+ */
 export interface RichPromptHandle {
   getSlashWordAtCaret(): string | null
   caretOnFirstLine(): boolean
@@ -99,27 +105,7 @@ export function RichPromptInput({
     requestAnimationFrame(() => {
       const el = ref.current
       if (!el) return
-      const doc = el.ownerDocument
-      const sel = doc.getSelection()
-      if (!sel) return
-      // Walk text nodes to find the position.
-      let remaining = start + text.length
-      const walk = (node: Node): boolean => {
-        if (node.nodeType === Node.TEXT_NODE) {
-          const len = (node.nodeValue ?? '').length
-          if (len >= remaining) {
-            sel.collapse(node, remaining)
-            return true
-          }
-          remaining -= len
-          return false
-        }
-        for (const child of node.childNodes) {
-          if (walk(child)) return true
-        }
-        return false
-      }
-      walk(el)
+      placeCaretAtOffset(el, start + text.length)
     })
   }
 
@@ -213,8 +199,7 @@ export function RichPromptInput({
 
   // Attach caret-query methods directly to the DOM element so callers holding
   // editorRef can use them (e.g. `ref.current.getSlashWordAtCaret()`).
-  // value+ref are the real deps; the functions are redefined each render and
-  // already close over them.
+  // The closures close over value, ref, and onChange -- all present in deps.
   /* eslint-disable react-hooks/exhaustive-deps */
   useLayoutEffect(() => {
     const el = ref.current
@@ -223,7 +208,7 @@ export function RichPromptInput({
     handle.getSlashWordAtCaret = getSlashWordAtCaret
     handle.caretOnFirstLine = isCaretOnFirstLine
     handle.replaceSlashWord = replaceSlashWord
-  }, [value, ref])
+  }, [value, ref, onChange])
   /* eslint-enable react-hooks/exhaustive-deps */
 
   return (

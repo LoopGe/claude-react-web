@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, cleanup, fireEvent, createEvent } from '@testing-library/react'
-import { RichPromptInput } from './RichPromptInput'
+import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
 import { CHIP_CLASS } from '../utils/richPromptDom'
 
 afterEach(() => cleanup())
@@ -211,5 +211,28 @@ describe('RichPromptInput paste', () => {
     const el = editor(container)
     paste(el, { 'text/plain': 'small' })
     expect(el.textContent).toBe('small')
+  })
+})
+
+describe('RichPromptInput replaceSlashWord', () => {
+  it('replaces the /word before the caret and calls onChange', () => {
+    const onChange = vi.fn()
+    const { container } = render(
+      <RichPromptInput value="hello /mod" onChange={onChange} ariaLabel="M" />,
+    )
+    const el = editor(container)
+    // Place caret at end of text so slashWordBefore sees "/mod".
+    const textNode = el.firstChild as Text
+    const sel = window.getSelection()!
+    const range = document.createRange()
+    range.setStart(textNode, textNode.length)
+    range.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(range)
+
+    // The methods are attached to the DOM element by the component.
+    ;(el as unknown as RichPromptHandle).replaceSlashWord('/cmd')
+
+    expect(onChange).toHaveBeenCalledWith('hello /cmd')
   })
 })
