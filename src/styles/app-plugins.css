@@ -71,16 +71,6 @@
 .app-plugins-name {
   font-weight: 600;
 }
-.app-plugins-state {
-  font-size: var(--fs-xs);
-  padding: 1px 6px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border);
-  color: var(--fg-muted);
-}
-.app-plugins-state.state-ok { color: var(--ok); border-color: var(--ok); }
-.app-plugins-state.state-err { color: var(--danger); border-color: var(--danger); }
-.app-plugins-state.state-warn { color: var(--warn); border-color: var(--warn); }
 .app-plugins-row-actions {
   display: flex;
   gap: var(--space-1-5);

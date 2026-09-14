@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, apiRequest } from '../hooks/useApi'
 import type { AppPluginMarketplaceInfo, AppPluginMarketplacePlugin } from '../../shared/app-plugins/marketplace.js'
+import { StatusBadge } from './StatusBadge'
 
 export function AppPluginMarketplaceSection() {
   const [marketplaces, setMarketplaces] = useState<AppPluginMarketplaceInfo[]>([])
@@ -296,8 +297,8 @@ function MarketplaceRow(props: {
       <div className="app-plugins-row-head">
         <button className="app-plugins-row-toggle" onClick={props.onToggle} aria-expanded={expanded}>
           <span className="app-plugins-name">{mp.displayName}</span>
-          {mp.sourceType === 'local' && <span className="app-plugins-state state-muted">Bundled</span>}
-          <span className="app-plugins-state state-muted">{mp.pluginCount} plugins</span>
+          {mp.sourceType === 'local' && <StatusBadge tone="muted">Bundled</StatusBadge>}
+          <StatusBadge tone="muted">{mp.pluginCount} plugins</StatusBadge>
         </button>
         <div className="app-plugins-row-actions">
           <button className="btn" disabled={props.busy} onClick={props.onRefresh}>Refresh</button>

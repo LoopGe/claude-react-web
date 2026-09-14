@@ -15,6 +15,7 @@ import type { ModelGroupConfig, ProviderProfile } from '../types/config'
 import { randomId } from '../utils/uuid'
 import { IconArrowUp, IconArrowDown, IconChevronDown, IconChevronRight, IconCheck, IconX } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
+import { StatusBadge } from './StatusBadge'
 
 /** Inline result of POST /profiles/:id/test. `ok` true means the token and
  *  baseUrl are valid; otherwise `error` describes the failure. */
@@ -259,7 +260,7 @@ function ProfileCard({
             {expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
           </span>
           <span className="settings-card-name">{profile.name}</span>
-          {profile.isActive && <span className="settings-card-badge global">Active</span>}
+          {profile.isActive && <StatusBadge tone="accent">Active</StatusBadge>}
         </button>
         <div className="settings-mcp-actions">
           <button className="btn" onClick={() => void handleTest()} disabled={testing || saving || !canTest}

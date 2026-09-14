@@ -13,6 +13,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Mutable
 import { createPortal } from 'react-dom'
 import { api, apiRequest } from '../hooks/useApi'
 import { usePluginRegistry } from '../app-plugins/usePluginRegistry'
+import { StatusBadge, type StatusTone } from './StatusBadge'
 import { AppPluginMarketplaceSection } from './AppPluginMarketplaceSection'
 import { DirectoryPicker } from './DirectoryPicker'
 import { IconFolder } from './icons/ToolIcons'
@@ -177,16 +178,21 @@ function PluginRow(props: {
   onRegisterDirtySave: (key: string, save: (() => Promise<void>) | null) => void
 }) {
   const { plugin: p, expanded } = props
-  const stateColor = p.runtimeState === 'active' ? 'ok'
-    : p.runtimeState === 'quarantined' || p.runtimeState === 'crashed' ? 'err'
-    : p.runtimeState === 'permission-required' || p.runtimeState === 'incompatible' || p.runtimeState === 'corrupted' ? 'warn'
-    : 'muted'
+  // Map the plugin runtime state onto the shared status tones so the App
+  // Plugin state chip uses the same visual set as the profile "Active" badge.
+  const stateTone: StatusTone = p.runtimeState === 'active'
+    ? 'accent' // match the Setting-Profiles "Active" badge colour
+    : p.runtimeState === 'quarantined' || p.runtimeState === 'crashed'
+      ? 'danger'
+      : p.runtimeState === 'permission-required' || p.runtimeState === 'incompatible' || p.runtimeState === 'corrupted'
+        ? 'warn'
+        : 'muted'
   return (
     <li className="app-plugins-row">
       <div className="app-plugins-row-head">
         <button className="app-plugins-row-toggle" onClick={props.onToggleExpand} aria-expanded={expanded}>
           <span className="app-plugins-name">{p.name}</span>
-          <span className={`app-plugins-state state-${stateColor}`}>{p.runtimeState}</span>
+          <StatusBadge tone={stateTone}>{p.runtimeState}</StatusBadge>
         </button>
         <div className="app-plugins-row-actions">
           {p.enabled ? (
