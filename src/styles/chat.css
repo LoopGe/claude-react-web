@@ -3331,3 +3331,33 @@
     min-width: 0;
   }
 }
+
+/* Rich composer: a contenteditable that renders `[Pasted text #N]` as chips.
+   `pre-wrap` keeps literal \n as the only line-break mechanism, so the
+   serializer never has to understand <br>. */
+.rich-prompt {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  outline: none;
+  cursor: text;
+}
+
+.rich-prompt:empty::before,
+.rich-prompt[data-placeholder]:not(:focus):empty::before {
+  content: attr(data-placeholder);
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
+.pasted-text-chip {
+  display: inline-block;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--msg-user-border);
+  border-radius: var(--radius-3xs);
+  background: var(--msg-user-bg);
+  color: var(--msg-user-header-fg);
+  font-weight: 600;
+  white-space: pre;
+  user-select: none;
+}
