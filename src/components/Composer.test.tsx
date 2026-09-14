@@ -256,13 +256,13 @@ describe('Composer', () => {
     expect(active()?.textContent).toContain('clear')
   })
 
-  it('shows session ended instead of textarea when terminated', () => {
+  it('shows session ended instead of the editor when terminated', () => {
     const { container } = render(
       <Composer {...defaultProps} terminated />,
     )
-    // When terminated, Composer renders a "session ended" div instead of a textarea.
+    // When terminated, Composer renders a "session ended" div instead of the editor.
     expect(container.textContent).toContain('session has ended')
-    expect(container.querySelector('textarea')).toBeNull()
+    expect(container.querySelector('[contenteditable="true"]')).toBeNull()
   })
 
   it('calls setInput on textarea change', () => {

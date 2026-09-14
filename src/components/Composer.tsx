@@ -1,4 +1,4 @@
-// Chat composer: textarea + attachments + send/interrupt buttons.
+// Chat composer: rich-text editor + attachments + send/interrupt buttons.
 //
 // Pure UI — all side-effecting bits (upload, send, interrupt, history
 // persistence) are passed in. The keyboard handling is deliberately
@@ -175,11 +175,11 @@ export const Composer = memo(function Composer({
 
   /** Character offset of the caret in the editor. */
   const getCaretOffset = (): number => {
-    const h = editorRef.current
-    if (!h) return 0
-    const sel = h.ownerDocument.getSelection()
-    if (!sel || sel.rangeCount === 0 || !h.contains(sel.anchorNode)) return 0
-    const offsets = selectionOffsets(h)
+    const el = editorRef.current
+    if (!el) return 0
+    const sel = el.ownerDocument.getSelection()
+    if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) return 0
+    const offsets = (el as unknown as RichPromptHandle).selectionOffsets()
     return offsets?.start ?? 0
   }
   /** Interrupt-button suffix naming the queued turns the Stop click will
@@ -191,12 +191,12 @@ export const Composer = memo(function Composer({
 
   // ── Right-click context menu state ─────────────────────────────
   //
-  // The textarea's native context menu is replaced with our own so we can
+  // The editor's native context menu is replaced with our own so we can
   // mix application-level actions (recap, snippets) with the standard
   // edit operations. Because clicking a menu item moves focus off the
-  // textarea, we snapshot the selection at the moment of right-click —
+  // editor, we snapshot the selection at the moment of right-click —
   // every Cut / Copy / Paste / Insert action references THAT range, not
-  // whatever the textarea reports later.
+  // whatever the editor reports later.
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [savedSelection, setSavedSelection] = useState<{ start: number; end: number }>({ start: 0, end: 0 })
   // Clipboard hint failures (cut/copy/paste from the context menu) now
@@ -377,7 +377,7 @@ export const Composer = memo(function Composer({
   // ── Context menu helpers ──────────────────────────────────────
   //
   // All edits operate on the snapshot taken when the menu opened, never
-  // on the live textarea selection (which is gone the moment the menu
+  // on the live editor selection (which is gone the moment the menu
   // takes focus). insertAtSavedSelection replaces the snapshot range with
   // `text` and moves the caret to the end of the inserted text.
   const insertAtSavedSelection = useCallback(
@@ -429,7 +429,7 @@ export const Composer = memo(function Composer({
       const raw = await navigator.clipboard.readText()
       if (!raw) return
       // Goes to the range snapshotted when the menu opened, not the live
-      // caret: the menu holds focus, so the textarea is blurred while this
+      // caret: the menu holds focus, so the editor is blurred while this
       // runs. insertAtSavedSelection also restores focus afterwards.
       placePastedText(raw, insertAtSavedSelection)
     } catch {
@@ -457,7 +457,7 @@ export const Composer = memo(function Composer({
     onSaveCurrentAsSnippet(input)
   }, [input, onSaveCurrentAsSnippet])
 
-  const handleTextareaContextMenu = useCallback(
+  const handleEditorContextMenu = useCallback(
     (e: React.MouseEvent<HTMLElement>) => {
       // The slash-command picker is its own keyboard-routed UI; popping a
       // second floating panel on top of it is confusing. Defer to the
@@ -755,7 +755,7 @@ export const Composer = memo(function Composer({
               setInput,
               placePastedText,
             )}
-            onContextMenu={handleTextareaContextMenu}
+            onContextMenu={handleEditorContextMenu}
             onNewline={() => {
               // Insert at the live caret (not the context-menu snapshot).
               // execCommand is a jsdom no-op (it does not exist there) but

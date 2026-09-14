@@ -1,16 +1,13 @@
 import { offsetOf, placeCaretAtOffset } from './richPromptCaret'
 
 /**
- * Offset-based selection helpers over a rich-prompt editor element.
+ * Offset-based selection helpers over the rich-prompt contenteditable editor.
  *
  * The context menu needs offsets because it acts on a snapshot taken when it
  * opened, not on live DOM state -- see Composer's savedSelection.
  *
- * All functions work on any `HTMLElement`: contenteditable editors (the rich
- * prompt) and textareas (the current textarea path).  Textarea offsets are
- * read from `selectionStart`/`selectionEnd`; contenteditable offsets are
- * measured via `offsetOf` from `richPromptCaret`, which is consistent with
- * `serializeTokens` for chips and `<br>` elements.
+ * Offsets are measured via `offsetOf` from `richPromptCaret`, which is
+ * consistent with `serializeTokens` for chips and `<br>` elements.
  */
 
 /**
@@ -25,12 +22,7 @@ import { offsetOf, placeCaretAtOffset } from './richPromptCaret'
 export function selectionOffsets(
   el: HTMLElement,
 ): { start: number; end: number } | null {
-  // Textarea: read native selection offsets directly.
-  if (el instanceof HTMLTextAreaElement) {
-    return { start: el.selectionStart, end: el.selectionEnd }
-  }
-
-  // Contenteditable: measure from the live DOM selection.
+  // Measure from the live DOM selection.
   const selection = el.ownerDocument.getSelection()
   if (!selection || selection.rangeCount === 0) return null
   const range = selection.getRangeAt(0)
@@ -43,8 +35,7 @@ export function selectionOffsets(
 
 /**
  * Focus the element and place a collapsed caret at `offset` characters into
- * its serialized text.  For textareas this is `setSelectionRange`; for
- * contenteditable elements it delegates to `placeCaretAtOffset` from
+ * its serialized text.  Delegates to `placeCaretAtOffset` from
  * `richPromptCaret`.
  *
  * This is the only deferred-action primitive the context menu needs: the
@@ -53,21 +44,11 @@ export function selectionOffsets(
  */
 export function placeCaretIn(el: HTMLElement, offset: number): void {
   el.focus()
-  if (el instanceof HTMLTextAreaElement) {
-    el.setSelectionRange(offset, offset)
-    return
-  }
   placeCaretAtOffset(el, offset)
 }
 
 /** Select the whole editor contents. */
 export function selectAll(el: HTMLElement): void {
-  if (el instanceof HTMLTextAreaElement) {
-    el.focus()
-    el.setSelectionRange(0, el.value.length)
-    return
-  }
-
   const doc = el.ownerDocument
   const range = doc.createRange()
   range.selectNodeContents(el)

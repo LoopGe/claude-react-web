@@ -2413,7 +2413,7 @@ button.tool-group-failed-jump:focus-visible {
      the whole page when a focused input's font-size is < 16px, so every tap
      into the box jolts the layout. 16px is the documented threshold that
      suppresses that zoom — only raised on mobile to keep the desktop density. */
-  .chat-composer textarea {
+  .chat-composer .rich-prompt {
     font-size: var(--fs-lg);
   }
 
@@ -2445,7 +2445,7 @@ button.tool-group-failed-jump:focus-visible {
 @media (max-height: 480px) {
   /* Shorter composer so the textarea can't eat the whole height; the
      message list keeps the remaining space. */
-  .chat-composer textarea {
+  .chat-composer .rich-prompt {
     max-height: 96px;
   }
   /* Tighten the top toolbar to buy back a row of content. */

@@ -287,7 +287,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         )}
         <div className="side-chat-drawer-input-row">
           <RichPromptInput
-            editorRef={editorRef as unknown as React.RefObject<HTMLDivElement | null>}
+            editorRef={editorRef}
             value={input}
             onChange={setInput}
             ariaLabel="Message"
