@@ -15,6 +15,9 @@ interface Props {
   onSubmit?: () => void
   /** Shift+Enter or Ctrl/Cmd+Enter. */
   onNewline?: () => void
+  /** Called with a raw paste. When it returns true the paste was handled
+   *  (collapsed); when false the caller inserted it verbatim. */
+  onPasteText?: (raw: string) => boolean
 }
 
 /**
@@ -38,6 +41,7 @@ export function RichPromptInput({
   editorRef,
   onSubmit,
   onNewline,
+  onPasteText,
 }: Props) {
   const localRef = useRef<HTMLDivElement>(null)
   const ref = editorRef ?? localRef
@@ -56,6 +60,43 @@ export function RichPromptInput({
     }
     e.preventDefault()
     onSubmit?.()
+  }
+
+  const insertPlainTextAtCaret = (text: string) => {
+    const el = ref.current
+    if (!el) return
+    const doc = el.ownerDocument
+    const selection = doc.getSelection()
+    const range =
+      selection && selection.rangeCount > 0 && el.contains(selection.anchorNode)
+        ? selection.getRangeAt(0)
+        : null
+    const node = doc.createTextNode(text)
+    if (range) {
+      range.deleteContents()
+      range.insertNode(node)
+      range.setStartAfter(node)
+      range.collapse(true)
+      selection!.removeAllRanges()
+      selection!.addRange(range)
+    } else {
+      el.appendChild(node)
+    }
+    onChange(joinTokens(serializeTokens(el)))
+  }
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    // Take the paste over unconditionally. Left to itself a contenteditable
+    // accepts text/html, which would put arbitrary markup (an <img onerror>,
+    // say) inside the editor — and our serializer would then flatten it into
+    // text we never intended to accept.
+    e.preventDefault()
+    const raw = e.clipboardData?.getData('text/plain') ?? ''
+    if (!raw) return
+    // The collapse policy gets first refusal so it stays the single owner of
+    // the threshold and normalization.
+    if (onPasteText?.(raw)) return
+    insertPlainTextAtCaret(raw)
   }
 
   // Push `value` into the DOM only when it actually differs from what the DOM
@@ -109,6 +150,7 @@ export function RichPromptInput({
       data-placeholder={placeholder ?? ''}
       className={className}
       onKeyDown={handleKeyDown}
+      onPaste={handlePaste}
       onInput={(e) => onChange(joinTokens(serializeTokens(e.currentTarget)))}
     />
   )

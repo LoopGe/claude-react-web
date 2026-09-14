@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, cleanup, fireEvent } from '@testing-library/react'
+import { render, cleanup, fireEvent, createEvent } from '@testing-library/react'
 import { RichPromptInput } from './RichPromptInput'
 import { CHIP_CLASS } from '../utils/richPromptDom'
 
@@ -156,5 +156,55 @@ describe('RichPromptInput keyboard', () => {
       <RichPromptInput value="" onChange={vi.fn()} ariaLabel="M" placeholder="Send a message" />,
     )
     expect(editor(container).getAttribute('data-placeholder')).toBe('Send a message')
+  })
+})
+
+describe('RichPromptInput paste', () => {
+  function paste(el: HTMLElement, data: Record<string, string>) {
+    const event = createEvent.paste(el, {
+      clipboardData: { getData: (t: string) => data[t] ?? '' },
+    })
+    fireEvent(el, event)
+    return event
+  }
+
+  it('inserts pasted plain text at the caret', () => {
+    const onChange = vi.fn()
+    const { container } = render(
+      <RichPromptInput value="" onChange={onChange} ariaLabel="M" />,
+    )
+    const el = editor(container)
+    paste(el, { 'text/plain': 'pasted' })
+    expect(el.textContent).toContain('pasted')
+  })
+
+  it('never lets HTML from the clipboard into the DOM', () => {
+    const { container } = render(
+      <RichPromptInput value="" onChange={vi.fn()} ariaLabel="M" />,
+    )
+    const el = editor(container)
+    // Only text/plain is ever read; text/html must be ignored outright.
+    paste(el, { 'text/html': '<img src=x onerror=alert(1)>', 'text/plain': 'safe' })
+    expect(el.querySelector('img')).toBeNull()
+    expect(el.textContent).toBe('safe')
+  })
+
+  it('gives the collapse policy first refusal', () => {
+    const onPasteText = vi.fn(() => true)
+    const { container } = render(
+      <RichPromptInput value="" onChange={vi.fn()} ariaLabel="M" onPasteText={onPasteText} />,
+    )
+    paste(editor(container), { 'text/plain': 'anything' })
+    expect(onPasteText).toHaveBeenCalledWith('anything')
+  })
+
+  it('inserts verbatim when the policy declines', () => {
+    const onPasteText = vi.fn(() => false)
+    const { container } = render(
+      <RichPromptInput value="" onChange={vi.fn()} ariaLabel="M" onPasteText={onPasteText} />,
+    )
+    const el = editor(container)
+    paste(el, { 'text/plain': 'small' })
+    expect(el.textContent).toBe('small')
   })
 })
