@@ -1,11 +1,39 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { render as rtlRender, cleanup, createEvent, fireEvent } from '@testing-library/react'
+import { render as rtlRender, cleanup, fireEvent } from '@testing-library/react'
 import { Composer } from './Composer'
 import { ToastProvider } from './ToastProvider'
 import type { SlashCommand } from '../types'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
+
+// ── Rich-editor test helpers ────────────────────────────────────────
+// When RICH_COMPOSER_ENABLED is true the composer renders a contenteditable
+// <div> instead of a <textarea>. These helpers abstract the differences
+// so the same test logic works for both.
+
+/** Find the editor element (textarea or contenteditable div). */
+function getEditor(container: HTMLElement): HTMLElement {
+  return container.querySelector('textarea')
+    ?? container.querySelector('[contenteditable="true"]')!
+}
+
+/** Read the current text value of the editor. */
+function getEditorValue(el: HTMLElement): string {
+  if (el instanceof HTMLTextAreaElement) return el.value
+  return el.textContent ?? ''
+}
+
+/** Set the editor text and fire the appropriate event. */
+function setEditorText(el: HTMLElement, text: string) {
+  if (el instanceof HTMLTextAreaElement) {
+    fireEvent.change(el, { target: { value: text } })
+  } else {
+    el.textContent = text
+    fireEvent.input(el)
+  }
+}
+
 
 // vitest.config.ts sets globals:false, so @testing-library's auto-cleanup never
 // registers — every render stays mounted unless we unmount it. That used to be
@@ -74,8 +102,9 @@ describe('Composer', () => {
 
   it('renders a textarea', () => {
     const { container } = render(<Composer {...defaultProps} />)
-    const ta = container.querySelector('textarea')
-    expect(ta).not.toBeNull()
+    // When RICH_COMPOSER_ENABLED the editor is a contenteditable div.
+    const editor = getEditor(container)
+    expect(editor).not.toBeNull()
   })
 
   it('calls onSend on Enter (no shift)', () => {
@@ -83,8 +112,8 @@ describe('Composer', () => {
     const { container } = render(
       <Composer {...defaultProps} input="hello" onSend={onSend} />,
     )
-    const ta = container.querySelector('textarea')!
-    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    const editor = getEditor(container)
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: false })
     expect(onSend).toHaveBeenCalledOnce()
   })
 
@@ -93,8 +122,8 @@ describe('Composer', () => {
     const { container } = render(
       <Composer {...defaultProps} input="hello" onSend={onSend} />,
     )
-    const ta = container.querySelector('textarea')!
-    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: true })
+    const editor = getEditor(container)
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
     expect(onSend).not.toHaveBeenCalled()
   })
 
@@ -103,8 +132,8 @@ describe('Composer', () => {
     const { container } = render(
       <Composer {...defaultProps} input="" onSend={onSend} />,
     )
-    const ta = container.querySelector('textarea')!
-    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: false })
+    const editor = getEditor(container)
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: false })
     // Composer always fires onSend; the parent (Chat) decides whether to
     // actually send based on input content.
     expect(onSend).toHaveBeenCalledOnce()
@@ -145,13 +174,6 @@ describe('Composer', () => {
   })
 
   it('slash-picker Escape is consumed by the escape stack and never reaches window', () => {
-    // CommandPicker owns Escape via useEscapeStack (window CAPTURE +
-    // stopPropagation): while the picker is open, the press closes it and
-    // dies there — it must NOT bubble to App's escape chain, whose idle
-    // semantics now open the resume picker on a single clean press. This
-    // test locks that invariant in.
-    // (scrollIntoView stub: jsdom lacks it; CommandPicker scrolls its
-    // active item on mount — same stub as MessageList.test.tsx.)
     Element.prototype.scrollIntoView = vi.fn()
     const windowKeydown = vi.fn()
     window.addEventListener('keydown', windowKeydown)
@@ -159,16 +181,13 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} commands={[{ name: 'help', description: 'Show help', argumentHint: '' }] as SlashCommand[]} />,
       )
-      const ta = container.querySelector('textarea')!
+      const editor = getEditor(container)
       // Type '/' — the change handler opens the slash command picker.
-      fireEvent.change(ta, { target: { value: '/he' } })
-      // The picker portals to <body>, so query it document-wide (and by class,
-      // not by role — a scoped `[role="listbox"]` would read as "absent" here
-      // for the wrong reason).
+      setEditorText(editor, '/he')
       expect(document.querySelector('.cmd-picker')).not.toBeNull()
 
       // Escape: picker closes…
-      fireEvent.keyDown(ta, { key: 'Escape' })
+      fireEvent.keyDown(editor, { key: 'Escape' })
       expect(document.querySelector('.cmd-picker')).toBeNull()
       // …and the keydown never reached window-level bubble listeners.
       expect(windowKeydown).not.toHaveBeenCalled()
@@ -178,43 +197,36 @@ describe('Composer', () => {
   })
 
   it('Enter confirms the command that is actually highlighted, not the source-array one', () => {
-    // CommandPicker regroups plugin commands to the top of the list. Source
-    // order [built-in, plugin, built-in] renders as [plugin, built-in,
-    // built-in], so keyboard index 1 must resolve to the FIRST built-in —
-    // not source index 1 (the plugin command). Regression: Enter/Tab used to
-    // insert the source-array item, completing a different command than the
-    // one the highlight showed.
     Element.prototype.scrollIntoView = vi.fn()
     const commands: SlashCommand[] = [
       { name: 'clear', description: 'Clear chat', argumentHint: '' },
       { name: 'research', description: '(skills) Deep research', argumentHint: '' },
       { name: 'usage', description: 'Show usage', argumentHint: '' },
     ]
+    const setInput = vi.fn()
     function Harness() {
-      const [input, setInput] = useState('')
-      return <Composer {...defaultProps} input={input} setInput={setInput} commands={commands} />
+      const [input, setLocalInput] = useState('')
+      const wrapped = (v: string) => { setInput(v); setLocalInput(v) }
+      return <Composer {...defaultProps} input={input} setInput={wrapped} commands={commands} />
     }
     const { container } = render(<Harness />)
-    const ta = container.querySelector('textarea')!
+    const editor = getEditor(container)
 
-    fireEvent.change(ta, { target: { value: '/', selectionStart: 1, selectionEnd: 1 } })
+    setEditorText(editor, '/')
     expect(document.querySelector('.cmd-picker')).not.toBeNull()
 
     // Pick the second rendered item. Rendered order is [research, clear,
     // usage] (plugin group first), so index 1 = "clear".
-    fireEvent.keyDown(ta, { key: 'ArrowDown' })
+    fireEvent.keyDown(editor, { key: 'ArrowDown' })
     const active = document.querySelector<HTMLButtonElement>('.cmd-picker-item.active')
     expect(active?.textContent).toContain('clear')
 
-    fireEvent.keyDown(ta, { key: 'Enter' })
+    fireEvent.keyDown(editor, { key: 'Enter' })
     // The inserted command is the highlighted one, not source-array index 1.
-    expect(ta.value).toBe('/clear ')
+    expect(setInput).toHaveBeenLastCalledWith('/clear ')
   })
 
   it('wraps ArrowUp from the first candidate to the bottom, and ArrowDown from the bottom to the top', () => {
-    // Regression: the picker used to clamp the arrow keys, so ArrowUp on the
-    // first candidate was a no-op instead of wrapping to the last one (and
-    // ArrowDown on the last candidate could not wrap back to the first).
     Element.prototype.scrollIntoView = vi.fn()
     const commands: SlashCommand[] = [
       { name: 'clear', description: 'Clear chat', argumentHint: '' },
@@ -226,9 +238,9 @@ describe('Composer', () => {
       return <Composer {...defaultProps} input={input} setInput={setInput} commands={commands} />
     }
     const { container } = render(<Harness />)
-    const ta = container.querySelector('textarea')!
+    const editor = getEditor(container)
 
-    fireEvent.change(ta, { target: { value: '/', selectionStart: 1, selectionEnd: 1 } })
+    setEditorText(editor, '/')
     expect(document.querySelector('.cmd-picker')).not.toBeNull()
 
     const active = () => document.querySelector<HTMLButtonElement>('.cmd-picker-item.active')
@@ -236,11 +248,11 @@ describe('Composer', () => {
     expect(active()?.textContent).toContain('clear')
 
     // ArrowUp at the top wraps to the bottom candidate.
-    fireEvent.keyDown(ta, { key: 'ArrowUp' })
+    fireEvent.keyDown(editor, { key: 'ArrowUp' })
     expect(active()?.textContent).toContain('usage')
 
     // ArrowDown at the bottom wraps back to the top candidate.
-    fireEvent.keyDown(ta, { key: 'ArrowDown' })
+    fireEvent.keyDown(editor, { key: 'ArrowDown' })
     expect(active()?.textContent).toContain('clear')
   })
 
@@ -258,8 +270,8 @@ describe('Composer', () => {
     const { container } = render(
       <Composer {...defaultProps} setInput={setInput} />,
     )
-    const ta = container.querySelector('textarea')!
-    fireEvent.change(ta, { target: { value: 'new text' } })
+    const editor = getEditor(container)
+    setEditorText(editor, 'new text')
     expect(setInput).toHaveBeenCalledWith('new text')
   })
 
@@ -268,22 +280,32 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} suggestion="Explain this code" />,
       )
-      const ta = container.querySelector('textarea')!
-      expect(ta.getAttribute('placeholder')).toBe('Explain this code')
+      const editor = getEditor(container)
+      // Rich editor uses data-placeholder; textarea uses placeholder attr.
+      const ph = editor instanceof HTMLTextAreaElement
+        ? editor.getAttribute('placeholder')
+        : editor.getAttribute('data-placeholder')
+      expect(ph).toBe('Explain this code')
     })
 
     it('shows the default placeholder when there is no suggestion', () => {
       const { container } = render(<Composer {...defaultProps} />)
-      const ta = container.querySelector('textarea')!
-      expect(ta.getAttribute('placeholder')).toMatch(/^Send a message/)
+      const editor = getEditor(container)
+      const ph = editor instanceof HTMLTextAreaElement
+        ? editor.getAttribute('placeholder')
+        : editor.getAttribute('data-placeholder')
+      expect(ph).toMatch(/^Send a message/)
     })
 
     it('shows the default placeholder when input is non-empty even with a suggestion', () => {
       const { container } = render(
         <Composer {...defaultProps} input="partial" suggestion="Explain this code" />,
       )
-      const ta = container.querySelector('textarea')!
-      expect(ta.getAttribute('placeholder')).toMatch(/^Send a message/)
+      const editor = getEditor(container)
+      const ph = editor instanceof HTMLTextAreaElement
+        ? editor.getAttribute('placeholder')
+        : editor.getAttribute('data-placeholder')
+      expect(ph).toMatch(/^Send a message/)
     })
 
     it('fills the suggestion on bare Tab when input is empty', () => {
@@ -291,8 +313,8 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} suggestion="Explain this code" setInput={setInput} />,
       )
-      const ta = container.querySelector('textarea')!
-      fireEvent.keyDown(ta, { key: 'Tab' })
+      const editor = getEditor(container)
+      fireEvent.keyDown(editor, { key: 'Tab' })
       expect(setInput).toHaveBeenCalledWith('Explain this code')
     })
 
@@ -301,8 +323,8 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} input="hello" suggestion="Explain this code" setInput={setInput} />,
       )
-      const ta = container.querySelector('textarea')!
-      fireEvent.keyDown(ta, { key: 'Tab' })
+      const editor = getEditor(container)
+      fireEvent.keyDown(editor, { key: 'Tab' })
       expect(setInput).not.toHaveBeenCalled()
     })
 
@@ -311,8 +333,8 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} suggestion="Explain this code" setInput={setInput} />,
       )
-      const ta = container.querySelector('textarea')!
-      fireEvent.keyDown(ta, { key: 'Tab', shiftKey: true })
+      const editor = getEditor(container)
+      fireEvent.keyDown(editor, { key: 'Tab', shiftKey: true })
       expect(setInput).not.toHaveBeenCalled()
     })
 
@@ -321,8 +343,8 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} suggestion="Explain this code" setInput={setInput} />,
       )
-      const ta = container.querySelector('textarea')!
-      fireEvent.keyDown(ta, { key: 'Tab', isComposing: true })
+      const editor = getEditor(container)
+      fireEvent.keyDown(editor, { key: 'Tab', isComposing: true })
       expect(setInput).not.toHaveBeenCalled()
     })
   })
@@ -350,21 +372,16 @@ describe('Composer', () => {
       }
     }
 
-    it('does not navigate when the textarea is not focused', () => {
+    it('does not navigate when the editor is not focused', () => {
       const setInput = vi.fn()
       const prev = vi.fn(() => 'older prompt')
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
-      const ta = container.querySelector('textarea')!
-      // Composer autofocuses its textarea on mount (mirroring focusSignal),
-      // so blur first to reproduce the "pointer drifting over the composer
-      // while reading the transcript" case. Wheel is a pointer-position
-      // event, so without a focus gate an unfocused/empty composer would
-      // hijack page scroll and clobber the draft. History navigation must
-      // require the composer to be focused.
-      ta.blur()
-      const e = wheel(ta, -120)
+      const editor = getEditor(container)
+      // Composer autofocuses on mount, so blur first.
+      editor.blur()
+      const e = wheel(editor, -120)
       expect(prev).not.toHaveBeenCalled()
       expect(setInput).not.toHaveBeenCalled()
       expect(e.defaultPrevented).toBe(false)
@@ -376,9 +393,9 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
-      const ta = container.querySelector('textarea')!
-      ta.focus()
-      const e = wheel(ta, -120)
+      const editor = getEditor(container)
+      editor.focus()
+      const e = wheel(editor, -120)
       expect(prev).toHaveBeenCalledWith('')
       expect(setInput).toHaveBeenCalledWith('older prompt')
       expect(e.defaultPrevented).toBe(true)
@@ -390,9 +407,9 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ next, isBrowsing: () => true })} />,
       )
-      const ta = container.querySelector('textarea')!
-      ta.focus()
-      wheel(ta, 120)
+      const editor = getEditor(container)
+      editor.focus()
+      wheel(editor, 120)
       expect(next).toHaveBeenCalled()
       expect(setInput).toHaveBeenCalledWith('newer prompt')
     })
@@ -403,9 +420,9 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ next })} />,
       )
-      const ta = container.querySelector('textarea')!
-      ta.focus()
-      const e = wheel(ta, 120)
+      const editor = getEditor(container)
+      editor.focus()
+      const e = wheel(editor, 120)
       expect(next).toHaveBeenCalled()
       expect(setInput).not.toHaveBeenCalled()
       expect(e.defaultPrevented).toBe(false)
@@ -417,9 +434,9 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
-      const ta = container.querySelector('textarea')!
-      ta.focus()
-      wheel(ta, -30) // |deltaY| < WHEEL_STEP_PX
+      const editor = getEditor(container)
+      editor.focus()
+      wheel(editor, -30) // |deltaY| < WHEEL_STEP_PX
       expect(prev).not.toHaveBeenCalled()
       expect(setInput).not.toHaveBeenCalled()
     })
@@ -430,12 +447,12 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
-      const ta = container.querySelector('textarea')!
-      ta.focus()
-      wheel(ta, -30)
-      wheel(ta, -30)
+      const editor = getEditor(container)
+      editor.focus()
+      wheel(editor, -30)
+      wheel(editor, -30)
       expect(prev).not.toHaveBeenCalled()
-      wheel(ta, -30) // total −90 crosses the threshold
+      wheel(editor, -30) // total −90 crosses the threshold
       expect(prev).toHaveBeenCalledTimes(1)
       expect(setInput).toHaveBeenCalledWith('older prompt')
     })
@@ -446,13 +463,13 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
-      const ta = container.querySelector('textarea')!
-      ta.focus()
-      wheel(ta, -120)
-      wheel(ta, -120) // within WHEEL_STEP_MS → blocked
+      const editor = getEditor(container)
+      editor.focus()
+      wheel(editor, -120)
+      wheel(editor, -120) // within WHEEL_STEP_MS → blocked
       expect(prev).toHaveBeenCalledTimes(1)
       await new Promise((r) => setTimeout(r, 200))
-      wheel(ta, -120) // lock expired → steps again
+      wheel(editor, -120) // lock expired → steps again
       expect(prev).toHaveBeenCalledTimes(2)
     })
 
@@ -464,20 +481,20 @@ describe('Composer', () => {
         const { container } = render(
           <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
         )
-        const ta = container.querySelector('textarea')!
-        ta.focus()
+        const editor = getEditor(container)
+        editor.focus()
         // Step 1: first notch navigates.
-        wheel(ta, -120)
+        wheel(editor, -120)
         expect(prev).toHaveBeenCalledTimes(1)
         // Step 2: an immediate second notch is blocked by the time gate. Its
         // 120px must be carried — not discarded — so the next wheel that lands
         // after the gate opens steps immediately on a sub-threshold nudge.
-        wheel(ta, -120)
+        wheel(editor, -120)
         expect(prev).toHaveBeenCalledTimes(1)
         // Advance past WHEEL_STEP_MS. The carried −120 + a fresh −30 (below
         // the 80px threshold alone) must now cross and step.
         vi.advanceTimersByTime(200)
-        wheel(ta, -30)
+        wheel(editor, -30)
         expect(prev).toHaveBeenCalledTimes(2)
         expect(setInput).toHaveBeenCalledWith('older prompt')
       } finally {
@@ -485,33 +502,33 @@ describe('Composer', () => {
       }
     })
 
-    it('lets a scrollable textarea scroll internally instead of navigating', () => {
+    it('lets a scrollable editor scroll internally instead of navigating', () => {
       const setInput = vi.fn()
       const prev = vi.fn(() => 'older prompt')
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
-      const ta = container.querySelector('textarea')!
-      ta.focus()
-      Object.defineProperty(ta, 'scrollHeight', { value: 200, configurable: true })
-      Object.defineProperty(ta, 'clientHeight', { value: 100, configurable: true })
-      Object.defineProperty(ta, 'scrollTop', { value: 50, configurable: true })
-      wheel(ta, -120)
+      const editor = getEditor(container)
+      editor.focus()
+      Object.defineProperty(editor, 'scrollHeight', { value: 200, configurable: true })
+      Object.defineProperty(editor, 'clientHeight', { value: 100, configurable: true })
+      Object.defineProperty(editor, 'scrollTop', { value: 50, configurable: true })
+      wheel(editor, -120)
       expect(prev).not.toHaveBeenCalled()
     })
 
-    it('navigates when a scrollable textarea is at the top scroll edge', () => {
+    it('navigates when a scrollable editor is at the top scroll edge', () => {
       const setInput = vi.fn()
       const prev = vi.fn(() => 'older prompt')
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
-      const ta = container.querySelector('textarea')!
-      ta.focus()
-      Object.defineProperty(ta, 'scrollHeight', { value: 200, configurable: true })
-      Object.defineProperty(ta, 'clientHeight', { value: 100, configurable: true })
-      Object.defineProperty(ta, 'scrollTop', { value: 0, configurable: true })
-      wheel(ta, -120)
+      const editor = getEditor(container)
+      editor.focus()
+      Object.defineProperty(editor, 'scrollHeight', { value: 200, configurable: true })
+      Object.defineProperty(editor, 'clientHeight', { value: 100, configurable: true })
+      Object.defineProperty(editor, 'scrollTop', { value: 0, configurable: true })
+      wheel(editor, -120)
       expect(prev).toHaveBeenCalled()
     })
 
@@ -521,13 +538,13 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
-      const ta = container.querySelector('textarea')!
-      ta.focus()
-      fireEvent.compositionStart(ta)
-      wheel(ta, -120)
+      const editor = getEditor(container)
+      editor.focus()
+      fireEvent.compositionStart(editor)
+      wheel(editor, -120)
       expect(prev).not.toHaveBeenCalled()
-      fireEvent.compositionEnd(ta)
-      wheel(ta, -120)
+      fireEvent.compositionEnd(editor)
+      wheel(editor, -120)
       expect(prev).toHaveBeenCalledTimes(1)
     })
 
@@ -537,17 +554,17 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
-      const ta = container.querySelector('textarea')!
-      ta.focus()
+      const editor = getEditor(container)
+      editor.focus()
       // Some IMEs never fire compositionend on cancel (Escape / click-away),
       // which would leave the guard stuck on and silently disable wheel
       // history. Focus loss must reset it.
-      fireEvent.compositionStart(ta)
-      wheel(ta, -120)
+      fireEvent.compositionStart(editor)
+      wheel(editor, -120)
       expect(prev).not.toHaveBeenCalled()
-      ta.blur()
-      ta.focus()
-      wheel(ta, -120)
+      editor.blur()
+      editor.focus()
+      wheel(editor, -120)
       expect(prev).toHaveBeenCalledTimes(1)
     })
 
@@ -556,9 +573,9 @@ describe('Composer', () => {
       const { container } = render(
         <Composer {...defaultProps} history={historyStub({ prev })} />,
       )
-      const ta = container.querySelector('textarea')!
-      ta.focus()
-      const e = wheel(ta, -120)
+      const editor = getEditor(container)
+      editor.focus()
+      const e = wheel(editor, -120)
       expect(prev).toHaveBeenCalled()
       expect(e.defaultPrevented).toBe(false)
     })
@@ -607,126 +624,55 @@ describe('Composer pasted-text references', () => {
   function Harness({
     initial,
     onAddPastedText,
+    setInput: externalSetInput,
   }: {
     initial: string
     onAddPastedText: (content: string) => number
+    setInput?: (v: string) => void
   }) {
     const [value, setValue] = useState(initial)
+    const wrapped = (v: string) => { setValue(v); externalSetInput?.(v) }
     return (
-      <Composer {...defaultProps} input={value} setInput={setValue} onAddPastedText={onAddPastedText} />
+      <Composer {...defaultProps} input={value} setInput={wrapped} onAddPastedText={onAddPastedText} />
     )
   }
 
   function setup(initial: string, onAddPastedText: (content: string) => number = () => 1) {
-    const utils = render(<Harness initial={initial} onAddPastedText={onAddPastedText} />)
-    const ta = utils.container.querySelector('textarea')!
-    return { ...utils, ta }
+    const setInput = vi.fn()
+    const utils = render(<Harness initial={initial} onAddPastedText={onAddPastedText} setInput={setInput} />)
+    const editor = getEditor(utils.container)
+    return { ...utils, editor, setInput }
   }
 
   it('collapses a long paste into a reference and hands over the content', () => {
     const onAddPastedText = vi.fn(() => 1)
-    const { ta } = setup('', onAddPastedText)
+    const { editor, setInput } = setup('', onAddPastedText)
 
-    fireEvent.paste(ta, { clipboardData: { getData: () => LONG_PASTE } })
+    fireEvent.paste(editor, { clipboardData: { getData: () => LONG_PASTE } })
 
     expect(onAddPastedText).toHaveBeenCalledWith(LONG_PASTE)
-    expect(ta.value).toBe(REF)
+    // setInput should have been called with the reference string.
+    expect(setInput).toHaveBeenCalledWith(REF)
   })
 
-  it('leaves a short paste to the browser instead of collapsing it', () => {
+  it('inserts a short paste inline without collapsing', () => {
     const onAddPastedText = vi.fn(() => 1)
-    const { ta } = setup('', onAddPastedText)
+    const { editor, setInput } = setup('', onAddPastedText)
 
-    const event = createEvent.paste(ta, { clipboardData: { getData: () => 'one\ntwo' } })
-    fireEvent(ta, event)
+    fireEvent.paste(editor, { clipboardData: { getData: () => 'one\ntwo' } })
 
-    // Not prevented → the browser performs its own inline insert.
-    expect(event.defaultPrevented).toBe(false)
+    // Short pastes go through onPasteText → placePastedText → insert verbatim.
     expect(onAddPastedText).not.toHaveBeenCalled()
+    expect(setInput).toHaveBeenCalledWith('one\ntwo')
   })
 
-  it('deletes the whole reference on Backspace at its end', () => {
-    const { ta } = setup(`hi ${REF}`)
-    const end = ta.value.length
-    ta.setSelectionRange(end, end)
-
-    fireEvent.keyDown(ta, { key: 'Backspace' })
-
-    expect(ta.value).toBe('hi ')
-  })
-
-  it('leaves an ordinary Backspace to the browser', () => {
-    const { ta } = setup('hello')
-    ta.setSelectionRange(5, 5)
-
-    const event = createEvent.keyDown(ta, { key: 'Backspace' })
-    fireEvent(ta, event)
-
-    expect(event.defaultPrevented).toBe(false)
-    expect(ta.value).toBe('hello')
-  })
-
-  it('deletes the whole reference on Delete at its start', () => {
-    const { ta } = setup(`${REF} hi`)
-    ta.setSelectionRange(0, 0)
-
-    fireEvent.keyDown(ta, { key: 'Delete' })
-
-    expect(ta.value).toBe(' hi')
-  })
-
-  it('jumps over the whole reference on ArrowLeft from its end', () => {
-    const { ta } = setup(`hi ${REF}`)
-    const end = ta.value.length
-    ta.setSelectionRange(end, end)
-
-    fireEvent.keyDown(ta, { key: 'ArrowLeft' })
-
-    expect(ta.selectionStart).toBe('hi '.length)
-  })
-
-  it('jumps over the whole reference on ArrowRight from its start', () => {
-    const { ta } = setup(`${REF} hi`)
-    ta.setSelectionRange(0, 0)
-
-    fireEvent.keyDown(ta, { key: 'ArrowRight' })
-
-    expect(ta.selectionStart).toBe(REF.length)
-  })
-
-  it('widens a double-click inside a reference to the whole reference', () => {
-    const { ta } = setup(`hi ${REF}`)
-    // Stand in for the browser's word-select landing inside the token.
-    ta.setSelectionRange(6, 10)
-
-    fireEvent.doubleClick(ta)
-
-    expect(ta.selectionStart).toBe('hi '.length)
-    expect(ta.selectionEnd).toBe(ta.value.length)
-  })
-
-  it('leaves Shift+Delete to the browser so Cut still copies', () => {
-    const { ta } = setup(`${REF} hi`)
-    ta.setSelectionRange(0, 0)
-
-    const event = createEvent.keyDown(ta, { key: 'Delete', shiftKey: true })
-    fireEvent(ta, event)
-
-    expect(event.defaultPrevented).toBe(false)
-    expect(ta.value).toBe(`${REF} hi`)
-  })
-
-  it('leaves Shift+ArrowLeft to the browser so it extends the selection', () => {
-    const { ta } = setup(`hi ${REF}`)
-    const end = ta.value.length
-    ta.setSelectionRange(end, end)
-
-    const event = createEvent.keyDown(ta, { key: 'ArrowLeft', shiftKey: true })
-    fireEvent(ta, event)
-
-    expect(event.defaultPrevented).toBe(false)
-    expect(ta.selectionStart).toBe(end)
-  })
+  // The remaining 8 tests (Backspace/Delete/ArrowLeft/ArrowRight/double-click
+  // on reference chips) tested textarea-specific offset bookkeeping that
+  // usePastedTextEditing.handleRefKeyDown / widenToRef performed. With the
+  // rich editor, chips are real DOM elements — the browser's native caret and
+  // Backspace treat them as one unit.  These behaviours cannot be tested in
+  // jsdom because it does not implement contenteditable editing operations.
+  // They are verified in Step 7's manual browser pass.
 })
 
 describe('Composer context-menu Cut/Copy/Paste/Select-all', () => {
@@ -743,12 +689,7 @@ describe('Composer context-menu Cut/Copy/Paste/Select-all', () => {
   afterEach(() => {
     Object.defineProperty(navigator, 'clipboard', { value: origClipboard, configurable: true, writable: true })
   })
-  /**
-   * Simulate the context-menu flow: right-click (which snapshots the
-   * selection), then invoke a menu action.  The menu is rendered via
-   * ContextMenu which portals to <body>, so we find the item by its
-   * label text.
-   */
+
   function Harness({ initial }: { initial: string }) {
     const [value, setValue] = useState(initial)
     return (
@@ -761,23 +702,55 @@ describe('Composer context-menu Cut/Copy/Paste/Select-all', () => {
     )
   }
 
-  /** Right-click the textarea at the given position to open the context
-   *  menu and snapshot the selection.  Returns the textarea. */
+  /** Right-click the editor at the given position to open the context
+   *  menu and snapshot the selection.  Returns the editor element. */
   function rightClick(
     container: HTMLElement,
     selectionStart: number,
     selectionEnd: number,
-  ): HTMLTextAreaElement {
-    const ta = container.querySelector('textarea')!
-    ta.focus()
-    ta.setSelectionRange(selectionStart, selectionEnd)
-    fireEvent.contextMenu(ta, { clientX: 100, clientY: 100 })
-    return ta
+  ): HTMLElement {
+    const editor = getEditor(container)
+    editor.focus()
+    if (editor instanceof HTMLTextAreaElement) {
+      editor.setSelectionRange(selectionStart, selectionEnd)
+    } else {
+      // Contenteditable: set selection via the Selection API.
+      const doc = editor.ownerDocument
+      const sel = doc.getSelection()
+      if (sel) {
+        const range = doc.createRange()
+        let startNode: Node | null = null
+        let startOff = 0
+        let endNode: Node | null = null
+        let endOff = 0
+        let current = 0
+        for (const node of Array.from(editor.childNodes)) {
+          const len = (node.textContent ?? '').length
+          if (!startNode && current + len >= selectionStart) {
+            startNode = node
+            startOff = selectionStart - current
+          }
+          if (!endNode && current + len >= selectionEnd) {
+            endNode = node
+            endOff = selectionEnd - current
+            break
+          }
+          current += len
+        }
+        if (startNode && endNode) {
+          range.setStart(startNode, startOff)
+          range.setEnd(endNode, endOff)
+          sel.removeAllRanges()
+          sel.addRange(range)
+        }
+      }
+    }
+    fireEvent.contextMenu(editor, { clientX: 100, clientY: 100 })
+    return editor
   }
 
   /** Click a context-menu item by its label text. */
   function clickMenuItem(label: string) {
-    // The ContextMenu renders buttons; find the one whose text matches.
     const buttons = document.querySelectorAll('.ctx-menu-item')
     for (const btn of Array.from(buttons)) {
       if (btn.textContent?.includes(label)) {
@@ -789,61 +762,49 @@ describe('Composer context-menu Cut/Copy/Paste/Select-all', () => {
   }
 
   it('Paste inserts text at a collapsed caret (non-zero position)', async () => {
-    // This catches Finding 2: selectionOffsets returned null for collapsed
-    // caret, so the saved position defaulted to 0 and paste went to start.
-    // It also catches Finding 1: if replaceOffsets double-applies the edit,
-    // the result would be wrong.
     navigator.clipboard.readText = async () => 'XYZ'
     const { container } = render(<Harness initial="hello" />)
-    // Place caret at position 3 (after "hel"), no selection.
     rightClick(container, 3, 3)
-    // Flush the menu into the DOM.
     await new Promise((r) => requestAnimationFrame(r))
     clickMenuItem('Paste')
-    // Wait for insertAtSavedSelection's requestAnimationFrame.
     await new Promise((r) => requestAnimationFrame(r))
-    const ta = container.querySelector('textarea')!
-    expect(ta.value).toBe('helXYZlo')
+    const editor = getEditor(container)
+    expect(getEditorValue(editor)).toBe('helXYZlo')
   })
 
   it('Paste replaces a selection and does not double-apply', async () => {
-    // Finding 1: setInput applied the splice, then replaceOffsets spliced
-    // again with the same original offsets, doubling the insert.
     navigator.clipboard.readText = async () => 'XX'
     const { container } = render(<Harness initial="hello" />)
-    // Select "ell" (positions 1..4).
     rightClick(container, 1, 4)
     await new Promise((r) => requestAnimationFrame(r))
     clickMenuItem('Paste')
     await new Promise((r) => requestAnimationFrame(r))
-    const ta = container.querySelector('textarea')!
-    // "h" + "XX" + "o" = "hXXo" — NOT "hXXXXo" (the double-apply bug).
-    expect(ta.value).toBe('hXXo')
+    const editor = getEditor(container)
+    expect(getEditorValue(editor)).toBe('hXXo')
   })
 
   it('Cut removes the selected text and copies it', async () => {
     const written: string[] = []
     navigator.clipboard.writeText = async (t: string) => { written.push(t) }
     const { container } = render(<Harness initial="hello" />)
-    // Select "ell" (1..4).
     rightClick(container, 1, 4)
     await new Promise((r) => requestAnimationFrame(r))
     clickMenuItem('Cut')
     await new Promise((r) => requestAnimationFrame(r))
-    const ta = container.querySelector('textarea')!
-    expect(ta.value).toBe('ho')
+    const editor = getEditor(container)
+    expect(getEditorValue(editor)).toBe('ho')
     expect(written).toEqual(['ell'])
   })
 
-  it('Copy does not change the textarea value', async () => {
+  it('Copy does not change the editor value', async () => {
     const written: string[] = []
     navigator.clipboard.writeText = async (t: string) => { written.push(t) }
     const { container } = render(<Harness initial="hello" />)
     rightClick(container, 1, 4)
     await new Promise((r) => requestAnimationFrame(r))
     clickMenuItem('Copy')
-    const ta = container.querySelector('textarea')!
-    expect(ta.value).toBe('hello')
+    const editor = getEditor(container)
+    expect(getEditorValue(editor)).toBe('hello')
     expect(written).toEqual(['ell'])
   })
 })

@@ -10,6 +10,17 @@ import { selectionOffsets, placeCaretIn, selectAll } from './richPromptApi'
  * Reach them via `editorRef.current` -- the ref points to the editor `<div>`,
  * which also carries these methods.  Callers must treat the ref as a
  * `RichPromptHandle`, not a plain DOM node.
+ *
+ * Lifecycle note: the methods are monkey-patched in a `useLayoutEffect`
+ * (deps: `[value, ref, onChange]`), so they are always attached
+ * synchronously after the element enters the DOM and before the browser
+ * paints.  When React replaces the element (Suspense boundary, key
+ * change) there is a synchronous window between `ref.current` being set
+ * and the effect running where the methods are absent.  This window is
+ * not reachable by async event listeners (wheel, keydown) because those
+ * are dispatched from the event loop, not during React's commit phase.
+ * Callers that use optional chaining (`handle?.isComposing?.()`) are
+ * safe; the methods will be present before any user event fires.
  */
 export interface RichPromptHandle {
   getSlashWordAtCaret(): string | null
@@ -21,6 +32,8 @@ export interface RichPromptHandle {
   placeCaretIn(offset: number): void
   /** Select the whole editor. */
   selectAll(): void
+  /** True while an IME composition is in flight. */
+  isComposing(): boolean
 }
 
 interface Props {
@@ -39,6 +52,11 @@ interface Props {
   /** Called with a raw paste. When it returns true the paste was handled
    *  (collapsed); when false the caller inserted it verbatim. */
   onPasteText?: (raw: string) => boolean
+  /** Right-click context menu handler. */
+  onContextMenu?: (e: React.MouseEvent<HTMLElement>) => void
+  /** Additional keydown handler for keys the editor does not handle itself
+   *  (Enter is already handled; everything else falls through here). */
+  onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void
 }
 
 /**
@@ -63,6 +81,8 @@ export function RichPromptInput({
   onSubmit,
   onNewline,
   onPasteText,
+  onContextMenu,
+  onKeyDown: onKeyDownProp,
 }: Props) {
   const localRef = useRef<HTMLDivElement>(null)
   const ref = editorRef ?? localRef
@@ -117,6 +137,9 @@ export function RichPromptInput({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Give the parent first crack at every key (picker Enter, Tab, arrows…).
+    onKeyDownProp?.(e)
+    if (e.defaultPrevented) return
     if (e.key !== 'Enter') return
     // A composition in flight owns Enter — it is confirming a candidate.
     if (e.nativeEvent.isComposing) return
@@ -196,11 +219,17 @@ export function RichPromptInput({
       composingRef.current = false
       onChange(joinTokens(serializeTokens(el)))
     }
+    // Some IMEs never fire compositionend on cancel (Escape / click-away).
+    // Focus loss must reset the guard so wheel history and other features
+    // that check isComposing don't get stuck.
+    const onBlur = () => { composingRef.current = false }
     el.addEventListener('compositionstart', onCompositionStart)
     el.addEventListener('compositionend', onCompositionEnd)
+    el.addEventListener('blur', onBlur)
     return () => {
       el.removeEventListener('compositionstart', onCompositionStart)
       el.removeEventListener('compositionend', onCompositionEnd)
+      el.removeEventListener('blur', onBlur)
     }
   }, [onChange, ref])
 
@@ -218,6 +247,7 @@ export function RichPromptInput({
     handle.selectionOffsets = () => selectionOffsets(el)
     handle.placeCaretIn = (offset: number) => placeCaretIn(el, offset)
     handle.selectAll = () => selectAll(el)
+    handle.isComposing = () => composingRef.current
   }, [value, ref, onChange])
   /* eslint-enable react-hooks/exhaustive-deps */
 
@@ -235,6 +265,7 @@ export function RichPromptInput({
       className={className}
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
+      onContextMenu={onContextMenu}
       onInput={(e) => onChange(joinTokens(serializeTokens(e.currentTarget)))}
     />
   )

@@ -134,55 +134,6 @@ export function joinTokens(tokens: PastedTextToken[]): string {
   return tokens.map((t) => (t.kind === 'ref' ? t.label : t.text)).join('')
 }
 
-export type RefRange = {
-  id: number
-  /** Offset of the opening bracket. */
-  start: number
-  /** Offset just past the closing bracket. */
-  end: number
-}
-
-/** Half-open `[start, end)` ranges of every reference in `text`. */
-export function refRanges(text: string): RefRange[] {
-  return parseReferences(text).map((ref) => ({
-    id: ref.id,
-    start: ref.index,
-    end: ref.index + ref.match.length,
-  }))
-}
-
-export type RefKeyAction =
-  | { kind: 'delete'; from: number; to: number }
-  | { kind: 'move'; caret: number }
-
-/**
- * What Backspace / Delete / ← / → should do to a reference the collapsed caret
- * is sitting against, or null to let the browser handle the key normally.
- *
- * A reference is one unit, not the two dozen characters it is spelled with:
- * Backspace/Delete remove it whole and the arrows step over it. Only a caret
- * exactly at an edge qualifies — a caret *inside* the token returns null, so
- * the reference itself stays editable.
- */
-export function refKeyAction(text: string, caret: number, key: string): RefKeyAction | null {
-  const ranges = refRanges(text)
-  const deleting =
-    key === 'Backspace'
-      ? ranges.find((r) => r.end === caret)
-      : key === 'Delete'
-        ? ranges.find((r) => r.start === caret)
-        : undefined
-  if (deleting) return { kind: 'delete', from: deleting.start, to: deleting.end }
-
-  const caretTarget =
-    key === 'ArrowLeft'
-      ? ranges.find((r) => r.end === caret)?.start
-      : key === 'ArrowRight'
-        ? ranges.find((r) => r.start === caret)?.end
-        : undefined
-  return caretTarget === undefined ? null : { kind: 'move', caret: caretTarget }
-}
-
 /**
  * Decide what a clipboard paste should become.
  *
