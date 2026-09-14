@@ -80,6 +80,17 @@ describe('parseHookBackgroundTasks', () => {
     })
     expect(out).toEqual([{ id: 't-3' }])
   })
+
+  it('returns null (unknown) when a non-empty list loses ALL entries to the id filter', () => {
+    // [] means "the CLI positively reports nothing in flight" — the strongest
+    // claim in the pause/finish discriminator. A present-but-unparseable list
+    // must degrade to unknown, never to that claim, or a wire-shape drift
+    // would settle every paused subagent as final.
+    expect(parseHookBackgroundTasks({ background_tasks: [{ status: 'running' }, { id: 7 }] })).toBeNull()
+    expect(parseHookBackgroundTasks({ background_tasks: ['nope', 42] })).toBeNull()
+    // One usable entry survives → the list is trusted as narrowed.
+    expect(parseHookBackgroundTasks({ background_tasks: [{ id: 'ok' }, { status: 'running' }] })).toEqual([{ id: 'ok' }])
+  })
 })
 
 describe('Stop hook task snapshot routing', () => {
@@ -167,6 +178,28 @@ describe('parseSubagentStopInput', () => {
       sessionId: 's1', agentId: 'a1',
     })
   })
+
+  it('carries background_tasks through: non-empty, empty, and absent', () => {
+    // The SDK's SubagentStopHookInput.background_tasks is THE discriminator
+    // between "subagent is done" and "subagent paused, waiting for its own
+    // background work to wake it" — the settle path must see all three states.
+    const base = { hook_event_name: 'SubagentStop', session_id: 's1', agent_id: 'a1' }
+    // Non-empty: the subagent stopped with live background children.
+    expect(parseSubagentStopInput({ ...base, background_tasks: [{ id: 'bash-1', status: 'running' }] })).toEqual({
+      sessionId: 's1',
+      agentId: 'a1',
+      backgroundTasks: [{ id: 'bash-1', status: 'running' }],
+    })
+    // Empty array: the CLI positively reports "nothing is in flight" — a real
+    // final stop. Must survive as [], not collapse into the absent case.
+    expect(parseSubagentStopInput({ ...base, background_tasks: [] })).toEqual({
+      sessionId: 's1',
+      agentId: 'a1',
+      backgroundTasks: [],
+    })
+    // Absent (older CLI): key omitted — "unknown", NOT "empty".
+    expect(parseSubagentStopInput({ ...base })).toEqual({ sessionId: 's1', agentId: 'a1' })
+  })
 })
 
 describe('SubagentStop hook registration', () => {
@@ -193,6 +226,19 @@ describe('SubagentStop hook registration', () => {
       agentId: 'a1',
       transcriptPath: '/tmp/agent-a1.jsonl',
       lastAssistantMessage: 'done',
+    })
+  })
+
+  it('routes background_tasks alongside the completion edge', async () => {
+    const onSubagentStop = vi.fn()
+    await subagentCb(onSubagentStop as InProcessSubagentStop)({
+      session_id: 's1',
+      agent_id: 'a1',
+      background_tasks: [{ id: 'bash-1', status: 'running' }],
+    })
+    expect(onSubagentStop).toHaveBeenCalledWith('s1', {
+      agentId: 'a1',
+      backgroundTasks: [{ id: 'bash-1', status: 'running' }],
     })
   })
 

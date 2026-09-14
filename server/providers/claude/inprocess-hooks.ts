@@ -20,10 +20,22 @@ export type InProcessTaskSnapshot = (
  *  earliest completion edge for one subagent (probe-verified to arrive BEFORE
  *  the CLI's own task_updated / task_notification frames). `transcriptPath` is
  *  the hook's `agent_transcript_path`, which spares the host from
- *  reconstructing the CLI's on-disk layout. Fire-and-forget. */
+ *  reconstructing the CLI's on-disk layout. Fire-and-forget.
+ *
+ *  `backgroundTasks` is the hook input's `background_tasks` (SDK
+ *  `SubagentStopHookInput.background_tasks`), the CLI's documented
+ *  discriminator between "subagent is done" and "subagent paused, waiting for
+ *  its own background work to wake it" ("Empty array when nothing is in
+ *  flight"). `undefined` means the field was absent (older CLI) — "unknown",
+ *  NOT "empty"; the settle path keeps its legacy behaviour there. */
 export type InProcessSubagentStop = (
   sessionId: string,
-  info: { agentId: string; transcriptPath?: string; lastAssistantMessage?: string },
+  info: {
+    agentId: string
+    transcriptPath?: string
+    lastAssistantMessage?: string
+    backgroundTasks?: Array<{ id: string; status?: string }>
+  },
 ) => void
 
 const DEFAULT_CAP = 4096
@@ -52,7 +64,11 @@ function defensiveHook(fn: (input: unknown) => void): (input: unknown, toolUseID
  *  the fields the host reconciliation consumes. Returns null when the field is
  *  absent or not an array — distinct from `[]`, which is the CLI positively
  *  reporting an empty in-flight set. Entries without a string `id` are
- *  dropped (defensive: the wire shape can gain fields without a bump). */
+ *  dropped (defensive: the wire shape can gain fields without a bump) — and a
+ *  NON-empty array that loses ALL its entries to that filter returns null too:
+ *  "present but wholly unparseable" must degrade to unknown, never to the
+ *  strongest claim (`[]` = positively nothing in flight), or a wire-shape
+ *  drift would flip every paused subagent to "final stop". */
 export function parseHookBackgroundTasks(input: unknown): Array<{ id: string; status?: string }> | null {
   const raw = (input as { background_tasks?: unknown } | null | undefined)?.background_tasks
   if (!Array.isArray(raw)) return null
@@ -63,23 +79,31 @@ export function parseHookBackgroundTasks(input: unknown): Array<{ id: string; st
     if (typeof e.id !== 'string' || e.id === '') continue
     out.push(typeof e.status === 'string' ? { id: e.id, status: e.status } : { id: e.id })
   }
+  if (out.length === 0 && raw.length > 0) return null
   return out
 }
 
 /** Narrow a `SubagentStop` hook input to the completion edge we act on.
  *  Returns null without a usable `agent_id` (nothing can be matched to a
  *  watcher without it). `agent_transcript_path` / `last_assistant_message` are
- *  optional — the settle path degrades to an empty summary rather than failing. */
+ *  optional — the settle path degrades to an empty summary rather than failing.
+ *
+ *  `background_tasks` is forwarded with its three states intact: non-empty
+ *  (subagent paused with live background children), `[]` (positively nothing
+ *  in flight — a real final stop), and absent/`undefined` (older CLI — the
+ *  settle path keeps its legacy semantics). */
 export function parseSubagentStopInput(input: unknown): {
   sessionId: string
   agentId: string
   transcriptPath?: string
   lastAssistantMessage?: string
+  backgroundTasks?: Array<{ id: string; status?: string }>
 } | null {
   if (!input || typeof input !== 'object') return null
   const o = input as Record<string, unknown>
   if (typeof o.session_id !== 'string' || o.session_id === '') return null
   if (typeof o.agent_id !== 'string' || o.agent_id === '') return null
+  const backgroundTasks = parseHookBackgroundTasks(o)
   return {
     sessionId: o.session_id,
     agentId: o.agent_id,
@@ -89,6 +113,7 @@ export function parseSubagentStopInput(input: unknown): {
     ...(typeof o.last_assistant_message === 'string' && o.last_assistant_message
       ? { lastAssistantMessage: o.last_assistant_message }
       : {}),
+    ...(backgroundTasks !== null ? { backgroundTasks } : {}),
   }
 }
 
@@ -100,6 +125,7 @@ function buildSubagentStop(onSubagentStop: InProcessSubagentStop): (input: unkno
       agentId: parsed.agentId,
       transcriptPath: parsed.transcriptPath,
       lastAssistantMessage: parsed.lastAssistantMessage,
+      backgroundTasks: parsed.backgroundTasks,
     })
   }
 }
