@@ -17,8 +17,11 @@ interface Props {
   query: string
   /** Index of the keyboard-highlighted item (after filtering). */
   selectedIndex: number
-  /** Ref to the textarea — used to position the picker above it. */
-  anchorRef: React.RefObject<HTMLTextAreaElement | null>
+  /** Ref to the editor the picker anchors against — used to position the
+   *  picker above it. Only `getBoundingClientRect()` is ever called on it,
+   *  so an `HTMLElement` view is enough and the caller need not lie about
+   *  the element type. */
+  anchorRef: React.RefObject<HTMLElement | null>
   /** Called when the user confirms a selection (Enter / Tab / click). */
   onSelect: (command: SlashCommand) => void
   /** Called on outside-click or Escape. */

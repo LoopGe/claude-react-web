@@ -13,7 +13,7 @@ import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
 import { MessageList, WorkingBubble } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
 import { RichPromptInput } from './RichPromptInput'
-import { selectionOffsets } from './richPromptApi'
+import { pasteAtCaret } from './richPromptApi'
 import { IconX, IconArrowLeft, IconSendInterruptToggle, IconLoader, IconPaperclip } from './icons/ToolIcons'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
@@ -295,21 +295,22 @@ export const SideChatDrawer = memo(function SideChatDrawer({
             placeholder={session.terminated ? 'Session ended' : 'Ask something...'}
             disabled={session.terminated || sending}
             onSubmit={() => void handleSend()}
-            onPasteText={(raw) => {
-              let textToInsert: string | null = null
-              placePastedText(raw, (text) => { textToInsert = text })
-              if (textToInsert === null) return false
-              // Splice at the live caret position using the shared
-              // selectionOffsets helper, which correctly walks into chip
-              // inner text nodes (unlike a flat childNodes walk).
-              const el = editorRef.current
-              if (!el) { setInput(prev => prev + textToInsert!); return true }
-              const offsets = selectionOffsets(el)
-              const pos = offsets?.start ?? input.length
-              const next = input.slice(0, pos) + textToInsert + input.slice(offsets?.end ?? pos)
-              setInput(next)
-              return true
+            onPasteImage={(file) => void pastedImages.addImage(file)}
+            onNewline={() => {
+              // Insert a literal \n at the live caret. execCommand is a jsdom
+              // no-op (it does not exist there) but works in real browsers;
+              // the onInput handler then reports the serialized DOM back
+              // through onChange. Matches the main Composer's onNewline.
+              if (typeof document.execCommand === 'function') {
+                document.execCommand('insertText', false, '\n')
+              }
             }}
+            onPasteText={pasteAtCaret(
+              () => editorRef.current,
+              input,
+              setInput,
+              placePastedText,
+            )}
           />
           <div className="side-chat-drawer-actions">
             <button

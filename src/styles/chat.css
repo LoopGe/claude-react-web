@@ -3308,6 +3308,16 @@
   outline: none;
   min-height: 40px;
   max-height: 180px;
+  /* The editor is now a contenteditable, not a textarea. Literal `\n` in
+     text nodes needs `pre-wrap` to render as line breaks (the serializer
+     never materialises <br>), and content past max-height must scroll
+     instead of spilling into the footer — the old textarea did both
+     natively. */
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+  cursor: text;
   transition:
     border-color var(--motion-duration-fast) var(--motion-ease-standard),
     box-shadow var(--motion-duration-fast) var(--motion-ease-standard);

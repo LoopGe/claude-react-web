@@ -13,7 +13,7 @@ import type { InputHistoryApi } from '../hooks/useInputHistory'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useToast } from '../hooks/useToast'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
-import { selectionOffsets, placeCaretIn } from './richPromptApi'
+import { selectionOffsets, placeCaretIn, pasteAtCaret } from './richPromptApi'
 import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker, pickerFlatCommands } from './CommandPicker'
@@ -148,7 +148,7 @@ export const Composer = memo(function Composer({
   history,
   commands,
   pastedImages,
-  onPasteImage: _onPasteImage,
+  onPasteImage,
   onRemovePastedImage,
   onAddPastedText,
   onSend,
@@ -165,6 +165,11 @@ export const Composer = memo(function Composer({
   scheduled,
   onSendScheduled,
 }: Props) {
+  // RichPromptInput monkey-patches the RichPromptHandle methods onto this
+  // div in a useLayoutEffect (deps: [value, ref, onChange]).  The ref's
+  // type already carries the `& RichPromptHandle` intersection, so the
+  // `as unknown as RichPromptHandle | null` casts below are safe narrowing
+  // no-ops — they document that the methods are attached dynamically.
   const editorRef = useRef<HTMLDivElement & RichPromptHandle>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -712,8 +717,9 @@ export const Composer = memo(function Composer({
           </div>
         ) : (
           <RichPromptInput
-            editorRef={editorRef as unknown as React.RefObject<HTMLDivElement | null>}
+            editorRef={editorRef}
             value={input}
+            onPasteImage={(file) => void onPasteImage(file)}
             onChange={(val) => {
               setInput(val)
               if (history.isBrowsing()) history.reset()
@@ -743,28 +749,21 @@ export const Composer = memo(function Composer({
             }
             disabled={disabled}
             onSubmit={onSend}
-            onPasteText={(raw) => {
-              // placePastedText decides collapse policy; the insert callback
-              // receives whatever text should land in the editor.
-              let textToInsert: string | null = null
-              placePastedText(raw, (text) => { textToInsert = text })
-              if (textToInsert === null) return false
-              // Splice into the controlled value at the live caret position.
-              const h = editorRef.current as unknown as RichPromptHandle | null
-              const offsets = h?.selectionOffsets()
-              const pos = offsets?.start ?? input.length
-              const endPos = offsets?.end ?? pos
-              const next = input.slice(0, pos) + textToInsert + input.slice(endPos)
-              setInput(next)
-              requestAnimationFrame(() => {
-                h?.placeCaretIn(pos + textToInsert!.length)
-              })
-              return true
-            }}
+            onPasteText={pasteAtCaret(
+              () => editorRef.current as HTMLElement | null,
+              input,
+              setInput,
+              placePastedText,
+            )}
             onContextMenu={handleTextareaContextMenu}
             onNewline={() => {
               // Insert at the live caret (not the context-menu snapshot).
-              document.execCommand('insertText', false, '\n')
+              // execCommand is a jsdom no-op (it does not exist there) but
+              // works in real browsers; the onInput handler then reports the
+              // serialized DOM back through onChange.
+              if (typeof document.execCommand === 'function') {
+                document.execCommand('insertText', false, '\n')
+              }
             }}
             onKeyDown={(e) => {
               // Alt+Enter: toggle expanded mode. Must be checked before
@@ -859,7 +858,7 @@ export const Composer = memo(function Composer({
             commands={filteredCommands}
             query={pickerQuery}
             selectedIndex={pickerIndex}
-            anchorRef={editorRef as unknown as React.RefObject<HTMLTextAreaElement | null>}
+            anchorRef={editorRef}
             onSelect={() => {
               confirmPicker()
             }}

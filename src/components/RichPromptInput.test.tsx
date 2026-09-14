@@ -213,6 +213,37 @@ describe('RichPromptInput paste', () => {
     paste(el, { 'text/plain': 'small' })
     expect(el.textContent).toBe('small')
   })
+
+  it('routes image items to onPasteImage and still inserts the text body', () => {
+    // Regression: the old textarea path iterated clipboardData.items and
+    // handed each image/* file to onPasteImage. RichPromptInput must do the
+    // same — and must keep doing it when the clipboard ALSO carries a text
+    // body (a screenshot copied from a rich editor, say).
+    const onPasteImage = vi.fn()
+    const onChange = vi.fn()
+    const { container } = render(
+      <RichPromptInput
+        value=""
+        onChange={onChange}
+        ariaLabel="M"
+        onPasteImage={onPasteImage}
+      />,
+    )
+    const el = editor(container)
+    const file = new File(['data'], 'shot.png', { type: 'image/png' })
+    const event = createEvent.paste(el, {
+      clipboardData: {
+        getData: (t: string) => (t === 'text/plain' ? 'caption' : ''),
+        items: [{ type: 'image/png', getAsFile: () => file }],
+      },
+    })
+    fireEvent(el, event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(onPasteImage).toHaveBeenCalledOnce()
+    expect(onPasteImage).toHaveBeenCalledWith(file)
+    // The text body still landed in the editor.
+    expect(el.textContent).toBe('caption')
+  })
 })
 
 describe('RichPromptInput replaceSlashWord', () => {

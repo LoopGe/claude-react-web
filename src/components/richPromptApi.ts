@@ -77,3 +77,45 @@ export function selectAll(el: HTMLElement): void {
   selection.addRange(range)
 }
 
+/**
+ * Build an `onPasteText` callback that splices the inserted text at the live
+ * caret and restores the caret afterwards. Shared by the main Composer and
+ * the SideChatDrawer so the two can't diverge on caret handling — they once
+ * did (the drawer appended to the end instead of splicing, and did not
+ * restore the caret).
+ *
+ * `getEl` reads the element lazily (at paste time) so a ref's `.current` is
+ * always current. `input`/`setInput` are captured at the render that
+ * produces the callback, which is correct because the paste event fires
+ * after the render commits.
+ *
+ * Returns the callback for `RichPromptInput.onPasteText`: it returns `true`
+ * when the paste was collapsed into a reference (the editor should not
+ * insert anything itself) and `false` when the caller declined (the editor
+ * falls back to inserting the verbatim text).
+ */
+export function pasteAtCaret(
+  getEl: () => HTMLElement | null,
+  input: string,
+  setInput: (v: string) => void,
+  placePastedText: (raw: string, insert: (text: string) => void) => void,
+): (raw: string) => boolean {
+  return (raw: string) => {
+    let textToInsert: string | null = null
+    placePastedText(raw, (text) => { textToInsert = text })
+    if (textToInsert === null) return false
+    const text: string = textToInsert
+    const el = getEl()
+    const offsets = el ? selectionOffsets(el) : null
+    const pos = offsets?.start ?? input.length
+    const endPos = offsets?.end ?? pos
+    const next = input.slice(0, pos) + text + input.slice(endPos)
+    setInput(next)
+    if (el) {
+      const caretPos = pos + text.length
+      requestAnimationFrame(() => placeCaretIn(el, caretPos))
+    }
+    return true
+  }
+}
+

@@ -52,6 +52,13 @@ interface Props {
   /** Called with a raw paste. When it returns true the paste was handled
    *  (collapsed); when false the caller inserted it verbatim. */
   onPasteText?: (raw: string) => boolean
+  /** Image handler — each `image/*` item on the clipboard is handed here
+   *  (the `getAsFile()` result). The editor never accepts image bytes itself;
+   *  the parent attaches them as preview chips the way the old textarea path
+   *  did. A single paste can carry BOTH an image and a text/plain body (e.g.
+   *  copying a selection from a rich editor), so images are collected before
+   *  the text path runs and neither path bails the other. */
+  onPasteImage?: (file: File) => void
   /** Right-click context menu handler. */
   onContextMenu?: (e: React.MouseEvent<HTMLElement>) => void
   /** Additional keydown handler for keys the editor does not handle itself
@@ -69,6 +76,15 @@ interface Props {
  *
  * The DOM is never the source of truth: every change is serialized back to a
  * string, so `value`/`onChange` match what the textarea took.
+ *
+ * Paste trade-off: `handlePaste` always calls `e.preventDefault()` and inserts
+ * text manually.  This is the load-bearing defence against arbitrary clipboard
+ * HTML (an `<img onerror>`, say) entering the editor; without it the browser
+ * would accept `text/html` and our serializer would flatten it into text we
+ * never intended.  The cost is that a paste is NOT on the browser's native
+ * undo stack — Ctrl+Z will not step back over a paste.  Removing
+ * `preventDefault` to restore undo would re-open the HTML injection surface,
+ * so the trade is deliberate.
  */
 export function RichPromptInput({
   value,
@@ -81,6 +97,7 @@ export function RichPromptInput({
   onSubmit,
   onNewline,
   onPasteText,
+  onPasteImage,
   onContextMenu,
   onKeyDown: onKeyDownProp,
 }: Props) {
@@ -180,7 +197,29 @@ export function RichPromptInput({
     // accepts text/html, which would put arbitrary markup (an <img onerror>,
     // say) inside the editor — and our serializer would then flatten it into
     // text we never intended to accept.
+    //
+    // Trade-off: because we always preventDefault and insert text manually,
+    // a paste is NOT on the browser's native undo stack — Ctrl+Z will not
+    // step back over a paste. That is the load-bearing defence against
+    // arbitrary clipboard HTML; the alternative (letting the browser paste
+    // and rewriting after) re-introduces the markup-injection surface.
     e.preventDefault()
+    // Collect image items first — a clipboard can carry BOTH an image and a
+    // text/plain body, and bailing here would let the text body through
+    // uncollapsed. The editor never holds image bytes; the parent attaches
+    // them as preview chips, the same collection the textarea path did.
+    const items = e.clipboardData?.items
+    if (items && onPasteImage) {
+      for (const item of items) {
+        if (
+          item.type.startsWith('image/') &&
+          item.type !== 'image/svg+xml'
+        ) {
+          const file = item.getAsFile()
+          if (file) onPasteImage(file)
+        }
+      }
+    }
     const raw = e.clipboardData?.getData('text/plain') ?? ''
     if (!raw) return
     // The collapse policy gets first refusal so it stays the single owner of

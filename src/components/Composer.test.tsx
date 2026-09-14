@@ -8,9 +8,9 @@ import type { SlashCommand } from '../types'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 
 // ── Rich-editor test helpers ────────────────────────────────────────
-// When RICH_COMPOSER_ENABLED is true the composer renders a contenteditable
-// <div> instead of a <textarea>. These helpers abstract the differences
-// so the same test logic works for both.
+// The composer renders a contenteditable <div> (RichPromptInput) rather
+// than a <textarea>. These helpers abstract the editor lookup so the same
+// test logic works regardless.
 
 /** Find the editor element (textarea or contenteditable div). */
 function getEditor(container: HTMLElement): HTMLElement {
@@ -102,7 +102,7 @@ describe('Composer', () => {
 
   it('renders a textarea', () => {
     const { container } = render(<Composer {...defaultProps} />)
-    // When RICH_COMPOSER_ENABLED the editor is a contenteditable div.
+    // The editor is a contenteditable div.
     const editor = getEditor(container)
     expect(editor).not.toBeNull()
   })
@@ -672,7 +672,8 @@ describe('Composer pasted-text references', () => {
   // rich editor, chips are real DOM elements — the browser's native caret and
   // Backspace treat them as one unit.  These behaviours cannot be tested in
   // jsdom because it does not implement contenteditable editing operations.
-  // They are verified in Step 7's manual browser pass.
+  // They are UNVERIFIED until the Step 7 manual browser pass runs — the pass
+  // is outstanding, not done. Do not treat them as already covered.
 })
 
 describe('Composer context-menu Cut/Copy/Paste/Select-all', () => {
