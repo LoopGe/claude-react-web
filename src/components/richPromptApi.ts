@@ -16,29 +16,31 @@ import { renderTokens, serializeTokens } from '../utils/richPromptDom'
  */
 
 /**
- * Offset pair for the current selection, or null when nothing is selected
- * (collapsed caret or no selection).
+ * Offset pair for the current selection or caret.
+ *
+ * For a non-collapsed selection `{ start, end }` marks the selected range.
+ * For a collapsed caret `{ start: N, end: N }` where both values are the same
+ * — the context menu needs this to paste at the right position.  Returns
+ * `null` only when there is no selection at all (e.g. the element is not
+ * focused).
  */
 export function selectionOffsets(
   el: HTMLElement,
 ): { start: number; end: number } | null {
   // Textarea: read native selection offsets directly.
   if (el instanceof HTMLTextAreaElement) {
-    if (el.selectionStart === el.selectionEnd) return null
     return { start: el.selectionStart, end: el.selectionEnd }
   }
 
   // Contenteditable: measure from the live DOM selection.
   const selection = el.ownerDocument.getSelection()
-  if (!selection || selection.rangeCount === 0 || selection.isCollapsed)
-    return null
+  if (!selection || selection.rangeCount === 0) return null
   const range = selection.getRangeAt(0)
   if (!el.contains(range.startContainer) || !el.contains(range.endContainer))
     return null
-  return {
-    start: offsetOf(el, range.startContainer, range.startOffset),
-    end: offsetOf(el, range.endContainer, range.endOffset),
-  }
+  const start = offsetOf(el, range.startContainer, range.startOffset)
+  const end = offsetOf(el, range.endContainer, range.endOffset)
+  return { start, end }
 }
 
 /**
@@ -46,8 +48,12 @@ export function selectionOffsets(
  *
  * For contenteditable elements the DOM is rebuilt from the serialized value
  * (same path `RichPromptInput` uses on every `onChange`).  For textareas
- * the value is patched directly; the caller must still call `setInput` so
- * React's controlled state stays in sync.
+ * only the caret is restored -- the value has already been patched by the
+ * caller via `setInput`.
+ *
+ * **Does not fire `onChange`.**  Callers that use this outside the Composer's
+ * `insertAtSavedSelection` flow must ensure React's controlled state is
+ * updated separately or the parent will desync.
  */
 export function replaceOffsets(
   el: HTMLElement,
@@ -56,9 +62,8 @@ export function replaceOffsets(
   text: string,
 ): void {
   if (el instanceof HTMLTextAreaElement) {
-    // Textarea: patch the value and re-sync React's selection.
-    const full = el.value
-    el.value = full.slice(0, start) + text + full.slice(end)
+    // Textarea: the caller already patched the value via setInput; only
+    // restore focus and place the caret after the inserted text.
     const caret = start + text.length
     el.setSelectionRange(caret, caret)
     return
@@ -69,7 +74,7 @@ export function replaceOffsets(
   const next = full.slice(0, start) + text + full.slice(end)
   el.replaceChildren(renderTokens(el.ownerDocument, tokenize(next)))
   // Place the caret after the inserted text.
-  placeCaretAfter(el, start + text.length)
+  placeCaretAtOffset(el, start + text.length)
 }
 
 /** Select the whole editor contents. */
@@ -89,15 +94,3 @@ export function selectAll(el: HTMLElement): void {
   selection.addRange(range)
 }
 
-// ---------------------------------------------------------------------------
-// Internal
-// ---------------------------------------------------------------------------
-
-/**
- * Place the collapsed caret at `target` offset within the editor's serialized
- * value.  Uses `placeCaretAtOffset` from `richPromptCaret` which handles
- * chips (opaque) and `<br>` (one character) consistently with `offsetOf`.
- */
-function placeCaretAfter(el: HTMLElement, target: number): void {
-  placeCaretAtOffset(el, target)
-}

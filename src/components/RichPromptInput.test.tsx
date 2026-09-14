@@ -258,13 +258,13 @@ describe('RichPromptInput selection', () => {
     expect(selectionOffsets(ref.current!)).toEqual({ start: 0, end: 5 })
   })
 
-  it('reports null for a collapsed caret', () => {
+  it('reports the collapsed caret position', () => {
     const ref = { current: null as HTMLDivElement | null }
     const { container } = render(
       <RichPromptInput value="hello" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
     )
     select(editor(container), 2, 2)
-    expect(selectionOffsets(ref.current!)).toBeNull()
+    expect(selectionOffsets(ref.current!)).toEqual({ start: 2, end: 2 })
   })
 
   it('replaces a range and updates the DOM', () => {

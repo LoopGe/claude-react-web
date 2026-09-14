@@ -728,3 +728,122 @@ describe('Composer pasted-text references', () => {
     expect(ta.selectionStart).toBe(end)
   })
 })
+
+describe('Composer context-menu Cut/Copy/Paste/Select-all', () => {
+  // jsdom has no navigator.clipboard — mock it for the context-menu tests.
+  let origClipboard: typeof navigator.clipboard
+  beforeEach(() => {
+    origClipboard = navigator.clipboard
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { readText: async () => '', writeText: async () => {} },
+      configurable: true,
+      writable: true,
+    })
+  })
+  afterEach(() => {
+    Object.defineProperty(navigator, 'clipboard', { value: origClipboard, configurable: true, writable: true })
+  })
+  /**
+   * Simulate the context-menu flow: right-click (which snapshots the
+   * selection), then invoke a menu action.  The menu is rendered via
+   * ContextMenu which portals to <body>, so we find the item by its
+   * label text.
+   */
+  function Harness({ initial }: { initial: string }) {
+    const [value, setValue] = useState(initial)
+    return (
+      <Composer
+        {...defaultProps}
+        input={value}
+        setInput={setValue}
+        onAddPastedText={() => 1}
+      />
+    )
+  }
+
+  /** Right-click the textarea at the given position to open the context
+   *  menu and snapshot the selection.  Returns the textarea. */
+  function rightClick(
+    container: HTMLElement,
+    selectionStart: number,
+    selectionEnd: number,
+  ): HTMLTextAreaElement {
+    const ta = container.querySelector('textarea')!
+    ta.focus()
+    ta.setSelectionRange(selectionStart, selectionEnd)
+    fireEvent.contextMenu(ta, { clientX: 100, clientY: 100 })
+    return ta
+  }
+
+  /** Click a context-menu item by its label text. */
+  function clickMenuItem(label: string) {
+    // The ContextMenu renders buttons; find the one whose text matches.
+    const buttons = document.querySelectorAll('.ctx-menu-item')
+    for (const btn of Array.from(buttons)) {
+      if (btn.textContent?.includes(label)) {
+        fireEvent.click(btn)
+        return
+      }
+    }
+    throw new Error(`Menu item "${label}" not found`)
+  }
+
+  it('Paste inserts text at a collapsed caret (non-zero position)', async () => {
+    // This catches Finding 2: selectionOffsets returned null for collapsed
+    // caret, so the saved position defaulted to 0 and paste went to start.
+    // It also catches Finding 1: if replaceOffsets double-applies the edit,
+    // the result would be wrong.
+    navigator.clipboard.readText = async () => 'XYZ'
+    const { container } = render(<Harness initial="hello" />)
+    // Place caret at position 3 (after "hel"), no selection.
+    rightClick(container, 3, 3)
+    // Flush the menu into the DOM.
+    await new Promise((r) => requestAnimationFrame(r))
+    clickMenuItem('Paste')
+    // Wait for insertAtSavedSelection's requestAnimationFrame.
+    await new Promise((r) => requestAnimationFrame(r))
+    const ta = container.querySelector('textarea')!
+    expect(ta.value).toBe('helXYZlo')
+  })
+
+  it('Paste replaces a selection and does not double-apply', async () => {
+    // Finding 1: setInput applied the splice, then replaceOffsets spliced
+    // again with the same original offsets, doubling the insert.
+    navigator.clipboard.readText = async () => 'XX'
+    const { container } = render(<Harness initial="hello" />)
+    // Select "ell" (positions 1..4).
+    rightClick(container, 1, 4)
+    await new Promise((r) => requestAnimationFrame(r))
+    clickMenuItem('Paste')
+    await new Promise((r) => requestAnimationFrame(r))
+    const ta = container.querySelector('textarea')!
+    // "h" + "XX" + "o" = "hXXo" — NOT "hXXXXo" (the double-apply bug).
+    expect(ta.value).toBe('hXXo')
+  })
+
+  it('Cut removes the selected text and copies it', async () => {
+    const written: string[] = []
+    navigator.clipboard.writeText = async (t: string) => { written.push(t) }
+    const { container } = render(<Harness initial="hello" />)
+    // Select "ell" (1..4).
+    rightClick(container, 1, 4)
+    await new Promise((r) => requestAnimationFrame(r))
+    clickMenuItem('Cut')
+    await new Promise((r) => requestAnimationFrame(r))
+    const ta = container.querySelector('textarea')!
+    expect(ta.value).toBe('ho')
+    expect(written).toEqual(['ell'])
+  })
+
+  it('Copy does not change the textarea value', async () => {
+    const written: string[] = []
+    navigator.clipboard.writeText = async (t: string) => { written.push(t) }
+    const { container } = render(<Harness initial="hello" />)
+    rightClick(container, 1, 4)
+    await new Promise((r) => requestAnimationFrame(r))
+    clickMenuItem('Copy')
+    const ta = container.querySelector('textarea')!
+    expect(ta.value).toBe('hello')
+    expect(written).toEqual(['ell'])
+  })
+})

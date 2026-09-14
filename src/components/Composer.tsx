@@ -473,7 +473,7 @@ export const Composer = memo(function Composer({
       e.preventDefault()
       const el = textareaRef.current
       if (el) {
-        setSavedSelection(selectionOffsets(el) ?? { start: 0, end: 0 })
+        setSavedSelection(selectionOffsets(el) ?? { start: el.selectionStart, end: el.selectionEnd })
       }
       // Pull the latest snippets from the server so the menu reflects edits
       // made in another tab/panel (cheap; matches the "refetch on open"
