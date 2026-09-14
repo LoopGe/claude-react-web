@@ -11,6 +11,10 @@ interface Props {
   className?: string
   /** Forwarded ref to the editor element (later tasks need it for ranges). */
   editorRef?: RefObject<HTMLDivElement | null>
+  /** Enter, no modifier, not composing. */
+  onSubmit?: () => void
+  /** Shift+Enter or Ctrl/Cmd+Enter. */
+  onNewline?: () => void
 }
 
 /**
@@ -32,12 +36,27 @@ export function RichPromptInput({
   disabled,
   className,
   editorRef,
+  onSubmit,
+  onNewline,
 }: Props) {
   const localRef = useRef<HTMLDivElement>(null)
   const ref = editorRef ?? localRef
   // Set while an IME composition is in flight. Re-rendering the DOM from
   // `value` mid-composition moves the caret and can drop the candidate.
   const composingRef = useRef(false)
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Enter') return
+    // A composition in flight owns Enter — it is confirming a candidate.
+    if (e.nativeEvent.isComposing) return
+    if (e.shiftKey || e.ctrlKey || e.metaKey) {
+      e.preventDefault()
+      onNewline?.()
+      return
+    }
+    e.preventDefault()
+    onSubmit?.()
+  }
 
   // Push `value` into the DOM only when it actually differs from what the DOM
   // already serializes to. On the typing path they always match, so this is a
@@ -48,6 +67,15 @@ export function RichPromptInput({
     if (composingRef.current) return
     if (joinTokens(serializeTokens(el)) === value) return
     el.replaceChildren(renderTokens(el.ownerDocument, tokenize(value)))
+  }, [value, ref])
+
+  // Grow instead of scrolling: measure the editor's content box. `scrollHeight`
+  // on a contenteditable reflects its content, so reset to auto first.
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
   }, [value, ref])
 
   useEffect(() => {
@@ -80,6 +108,7 @@ export function RichPromptInput({
       spellCheck={false}
       data-placeholder={placeholder ?? ''}
       className={className}
+      onKeyDown={handleKeyDown}
       onInput={(e) => onChange(joinTokens(serializeTokens(e.currentTarget)))}
     />
   )

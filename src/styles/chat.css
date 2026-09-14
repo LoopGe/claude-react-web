@@ -3341,6 +3341,7 @@
   overflow-wrap: anywhere;
   outline: none;
   cursor: text;
+  overflow: hidden;
 }
 
 .rich-prompt:empty::before,

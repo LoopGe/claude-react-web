@@ -107,3 +107,50 @@ describe('RichPromptInput', () => {
     expect(onChange).toHaveBeenCalledWith('abxyz')
   })
 })
+
+describe('RichPromptInput keyboard', () => {
+  it('submits on Enter', () => {
+    const onSubmit = vi.fn()
+    const { container } = render(
+      <RichPromptInput value="hi" onChange={vi.fn()} ariaLabel="M" onSubmit={onSubmit} />,
+    )
+    fireEvent.keyDown(editor(container), { key: 'Enter' })
+    expect(onSubmit).toHaveBeenCalledOnce()
+  })
+
+  it('does not submit on Shift+Enter', () => {
+    const onSubmit = vi.fn()
+    const { container } = render(
+      <RichPromptInput value="hi" onChange={vi.fn()} ariaLabel="M" onSubmit={onSubmit} />,
+    )
+    fireEvent.keyDown(editor(container), { key: 'Enter', shiftKey: true })
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not submit while an IME composition is active', () => {
+    // Enter confirms a CJK candidate; sending here ships a half-typed word.
+    const onSubmit = vi.fn()
+    const { container } = render(
+      <RichPromptInput value="ni" onChange={vi.fn()} ariaLabel="M" onSubmit={onSubmit} />,
+    )
+    const el = editor(container)
+    fireEvent.keyDown(el, { key: 'Enter', isComposing: true })
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('reports a newline request on Ctrl+Enter', () => {
+    const onNewline = vi.fn()
+    const { container } = render(
+      <RichPromptInput value="hi" onChange={vi.fn()} ariaLabel="M" onNewline={onNewline} />,
+    )
+    fireEvent.keyDown(editor(container), { key: 'Enter', ctrlKey: true })
+    expect(onNewline).toHaveBeenCalledOnce()
+  })
+
+  it('shows the placeholder only while empty', () => {
+    const { container } = render(
+      <RichPromptInput value="" onChange={vi.fn()} ariaLabel="M" placeholder="Send a message" />,
+    )
+    expect(editor(container).getAttribute('data-placeholder')).toBe('Send a message')
+  })
+})
