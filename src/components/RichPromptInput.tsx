@@ -1,6 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 import { joinTokens, tokenize } from '../utils/pastedText'
 import { renderTokens, serializeTokens } from '../utils/richPromptDom'
+import { offsetOf, slashWordBefore, caretOnFirstLine } from './richPromptCaret'
+
+/** Methods attached to the editor DOM element by RichPromptInput. */
+export interface RichPromptHandle {
+  getSlashWordAtCaret(): string | null
+  caretOnFirstLine(): boolean
+  replaceSlashWord(text: string): void
+}
 
 interface Props {
   value: string
@@ -48,6 +56,72 @@ export function RichPromptInput({
   // Set while an IME composition is in flight. Re-rendering the DOM from
   // `value` mid-composition moves the caret and can drop the candidate.
   const composingRef = useRef(false)
+
+  // ------------------------------------------------------------------
+  // Caret queries -- bridge the pure helpers to the live DOM selection.
+  // ------------------------------------------------------------------
+
+  /** Character offset of the caret within the serialized value. */
+  const caretOffset = (): number | null => {
+    const el = ref.current
+    const selection = el?.ownerDocument.getSelection()
+    if (!el || !selection || selection.rangeCount === 0) return null
+    const range = selection.getRangeAt(0)
+    if (!el.contains(range.startContainer)) return null
+    return offsetOf(el, range.startContainer, range.startOffset)
+  }
+
+  /** The `/word` immediately before the caret, or null. */
+  const getSlashWordAtCaret = (): string | null => {
+    const off = caretOffset()
+    if (off === null) return null
+    return slashWordBefore(value, off)
+  }
+
+  /** True when the caret sits on the first line (for history). */
+  const isCaretOnFirstLine = (): boolean => {
+    const off = caretOffset()
+    if (off === null) return true
+    return caretOnFirstLine(value, off)
+  }
+
+  /** Replace the `/word` before the caret with `text`, restoring caret at
+   *  the end of the replacement. */
+  const replaceSlashWord = (text: string) => {
+    const off = caretOffset()
+    if (off === null) return
+    const word = slashWordBefore(value, off)
+    if (word === null) return
+    const start = off - word.length
+    const next = value.slice(0, start) + text + value.slice(off)
+    onChange(next)
+    // Restore caret to end of replacement in the next frame.
+    requestAnimationFrame(() => {
+      const el = ref.current
+      if (!el) return
+      const doc = el.ownerDocument
+      const sel = doc.getSelection()
+      if (!sel) return
+      // Walk text nodes to find the position.
+      let remaining = start + text.length
+      const walk = (node: Node): boolean => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          const len = (node.nodeValue ?? '').length
+          if (len >= remaining) {
+            sel.collapse(node, remaining)
+            return true
+          }
+          remaining -= len
+          return false
+        }
+        for (const child of node.childNodes) {
+          if (walk(child)) return true
+        }
+        return false
+      }
+      walk(el)
+    })
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'Enter') return
@@ -136,6 +210,21 @@ export function RichPromptInput({
       el.removeEventListener('compositionend', onCompositionEnd)
     }
   }, [onChange, ref])
+
+  // Attach caret-query methods directly to the DOM element so callers holding
+  // editorRef can use them (e.g. `ref.current.getSlashWordAtCaret()`).
+  // value+ref are the real deps; the functions are redefined each render and
+  // already close over them.
+  /* eslint-disable react-hooks/exhaustive-deps */
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const handle = el as unknown as RichPromptHandle
+    handle.getSlashWordAtCaret = getSlashWordAtCaret
+    handle.caretOnFirstLine = isCaretOnFirstLine
+    handle.replaceSlashWord = replaceSlashWord
+  }, [value, ref])
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   return (
     <div
