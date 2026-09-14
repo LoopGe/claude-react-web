@@ -1,6 +1,4 @@
 import { offsetOf, placeCaretAtOffset } from './richPromptCaret'
-import { joinTokens, tokenize } from '../utils/pastedText'
-import { renderTokens, serializeTokens } from '../utils/richPromptDom'
 
 /**
  * Offset-based selection helpers over a rich-prompt editor element.
@@ -44,37 +42,22 @@ export function selectionOffsets(
 }
 
 /**
- * Replace `[start, end)` with `text` and leave the caret after it.
+ * Focus the element and place a collapsed caret at `offset` characters into
+ * its serialized text.  For textareas this is `setSelectionRange`; for
+ * contenteditable elements it delegates to `placeCaretAtOffset` from
+ * `richPromptCaret`.
  *
- * For contenteditable elements the DOM is rebuilt from the serialized value
- * (same path `RichPromptInput` uses on every `onChange`).  For textareas
- * only the caret is restored -- the value has already been patched by the
- * caller via `setInput`.
- *
- * **Does not fire `onChange`.**  Callers that use this outside the Composer's
- * `insertAtSavedSelection` flow must ensure React's controlled state is
- * updated separately or the parent will desync.
+ * This is the only deferred-action primitive the context menu needs: the
+ * caller has already applied the text edit via `setInput` / React re-render,
+ * so the DOM is up to date — only the caret needs restoring.
  */
-export function replaceOffsets(
-  el: HTMLElement,
-  start: number,
-  end: number,
-  text: string,
-): void {
+export function placeCaretIn(el: HTMLElement, offset: number): void {
+  el.focus()
   if (el instanceof HTMLTextAreaElement) {
-    // Textarea: the caller already patched the value via setInput; only
-    // restore focus and place the caret after the inserted text.
-    const caret = start + text.length
-    el.setSelectionRange(caret, caret)
+    el.setSelectionRange(offset, offset)
     return
   }
-
-  // Contenteditable: rebuild from serialized value, same as onChange path.
-  const full = joinTokens(serializeTokens(el))
-  const next = full.slice(0, start) + text + full.slice(end)
-  el.replaceChildren(renderTokens(el.ownerDocument, tokenize(next)))
-  // Place the caret after the inserted text.
-  placeCaretAtOffset(el, start + text.length)
+  placeCaretAtOffset(el, offset)
 }
 
 /** Select the whole editor contents. */

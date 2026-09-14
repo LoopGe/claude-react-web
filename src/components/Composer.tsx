@@ -13,7 +13,7 @@ import type { InputHistoryApi } from '../hooks/useInputHistory'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useToast } from '../hooks/useToast'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
-import { selectionOffsets, replaceOffsets, selectAll as selectAllEditor } from './richPromptApi'
+import { selectionOffsets, placeCaretIn, selectAll as selectAllEditor } from './richPromptApi'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker, pickerFlatCommands } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
@@ -381,8 +381,7 @@ export const Composer = memo(function Composer({
       requestAnimationFrame(() => {
         const el = textareaRef.current
         if (!el) return
-        el.focus()
-        replaceOffsets(el, start, end, text)
+        placeCaretIn(el, start + text.length)
       })
     },
     [input, savedSelection, setInput],

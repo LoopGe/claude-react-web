@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 import { joinTokens, tokenize } from '../utils/pastedText'
 import { renderTokens, serializeTokens } from '../utils/richPromptDom'
 import { offsetOf, slashWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
-import { selectionOffsets, replaceOffsets, selectAll } from './richPromptApi'
+import { selectionOffsets, placeCaretIn, selectAll } from './richPromptApi'
 
 /**
  * Methods attached to the editor DOM element by RichPromptInput.
@@ -17,8 +17,8 @@ export interface RichPromptHandle {
   replaceSlashWord(text: string): void
   /** Offset pair for the current selection, or null when nothing is selected. */
   selectionOffsets(): { start: number; end: number } | null
-  /** Replace `[start, end)` with `text` and leave the caret after it. */
-  replaceOffsets(start: number, end: number, text: string): void
+  /** Focus the element and place a collapsed caret at the given character offset. */
+  placeCaretIn(offset: number): void
   /** Select the whole editor. */
   selectAll(): void
 }
@@ -216,7 +216,7 @@ export function RichPromptInput({
     handle.caretOnFirstLine = isCaretOnFirstLine
     handle.replaceSlashWord = replaceSlashWord
     handle.selectionOffsets = () => selectionOffsets(el)
-    handle.replaceOffsets = (start: number, end: number, text: string) => replaceOffsets(el, start, end, text)
+    handle.placeCaretIn = (offset: number) => placeCaretIn(el, offset)
     handle.selectAll = () => selectAll(el)
   }, [value, ref, onChange])
   /* eslint-enable react-hooks/exhaustive-deps */

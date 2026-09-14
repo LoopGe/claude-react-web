@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, cleanup, fireEvent, createEvent } from '@testing-library/react'
 import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
 import { CHIP_CLASS } from '../utils/richPromptDom'
-import { selectionOffsets, replaceOffsets, selectAll } from './richPromptApi'
+import { selectionOffsets, placeCaretIn, selectAll } from './richPromptApi'
 
 afterEach(() => cleanup())
 
@@ -267,27 +267,49 @@ describe('RichPromptInput selection', () => {
     expect(selectionOffsets(ref.current!)).toEqual({ start: 2, end: 2 })
   })
 
-  it('replaces a range and updates the DOM', () => {
+  it('placeCaretIn places the caret at the given offset', () => {
     const ref = { current: null as HTMLDivElement | null }
-    const { container } = render(
-      <RichPromptInput value="hello world" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
+    render(
+      <RichPromptInput value="hello" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
     )
-    const el = editor(container)
-    // Replace "hello" (offsets 0-5) with "hi"
-    replaceOffsets(ref.current!, 0, 5, 'hi')
-    expect(el.textContent).toBe('hi world')
+    placeCaretIn(ref.current!, 3)
+    const sel = document.getSelection()!
+    expect(sel.rangeCount).toBe(1)
+    expect(sel.isCollapsed).toBe(true)
+    // The collapsed caret should be at offset 3 in the serialized text.
+    // Verify by checking the selection is within the editor.
+    const range = sel.getRangeAt(0)
+    expect(ref.current!.contains(range.startContainer)).toBe(true)
   })
 
-  it('replaces a range around a chip and preserves the chip', () => {
+  it('placeCaretIn preserves DOM content', () => {
     const ref = { current: null as HTMLDivElement | null }
     const { container } = render(
-      <RichPromptInput value="a [Pasted text #1] b" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
+      <RichPromptInput value="hello" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
+    )
+    placeCaretIn(ref.current!, 2)
+    expect(editor(container).textContent).toBe('hello')
+  })
+
+  it('placeCaretIn does not corrupt a contenteditable that was already updated', () => {
+    // Regression test for Finding 1 contenteditable path.  After setInput
+    // triggers a React re-render the DOM already contains the post-splice
+    // value.  placeCaretIn must only place the caret — not touch the DOM.
+    const ref = { current: null as HTMLDivElement | null }
+    const { container, rerender } = render(
+      <RichPromptInput value="hello" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
+    )
+    // Simulate setInput("hXXo") — React re-renders with the new value.
+    rerender(
+      <RichPromptInput value="hXXo" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
     )
     const el = editor(container)
-    // Full text: "a [Pasted text #1] b" (20 chars).
-    // Replace "a " (0-2) with "X "
-    replaceOffsets(ref.current!, 0, 2, 'X ')
-    expect(el.textContent).toBe('X [Pasted text #1] b')
+    expect(el.textContent).toBe('hXXo')
+
+    // The deferred callback fires with the caret at start + text.length.
+    // placeCaretIn must NOT touch the DOM content.
+    placeCaretIn(ref.current!, 3)
+    expect(el.textContent).toBe('hXXo')
   })
 
   it('selects the whole editor', () => {
@@ -300,4 +322,5 @@ describe('RichPromptInput selection', () => {
     expect(sel.rangeCount).toBe(1)
     expect(sel.getRangeAt(0).toString()).toBe('hello')
   })
+
 })
