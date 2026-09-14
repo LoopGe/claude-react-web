@@ -320,6 +320,10 @@ function ToolGroupCardInner({
           aria-controls={bodyId}
           aria-label={`${summary.count} tool call${summary.count === 1 ? '' : 's'}${summary.fullSummary ? `: ${summary.fullSummary}` : ''}`}
           onClick={() => dispatch({ type: 'toggle', open: !open })}
+          // Hover on the WHOLE title row (not just the names text) surfaces
+          // the full summary — a nowrap ellipsis line whose tail the budget
+          // may have dropped. AT gets the same list via aria-label above.
+          title={summary.fullSummary}
         >
           <span className="tool-group-chevron" aria-hidden>
             {open ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
@@ -332,10 +336,7 @@ function ToolGroupCardInner({
               {summary.count}
             </span>
           )}
-          {/* `title` only where it earns its keep: this is a nowrap ellipsis
-              line AND the budget may have dropped a tail, so hover is the way
-              to see the rest. AT gets the same list via aria-label above. */}
-          <span className="tool-group-names" title={summary.fullSummary}>
+          <span className="tool-group-names">
             {summary.entries.map((entry, i) => (
               <span key={`${entry.name}-${i}`}>
                 {i > 0 ? ' · ' : ''}

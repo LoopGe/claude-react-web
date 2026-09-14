@@ -928,10 +928,12 @@
   overflow: hidden;
   font-size: var(--fs-base);
 }
-/* The header row is a plain flex container holding TWO controls: the toggle
-   (everything up to the badge) and, when a member failed, the badge itself as
-   a jump button. Hence no role/hover on the row — each control owns its own
-   affordance, and a hover wash spanning both would imply one target. */
+/* The header row is a flex container holding the toggle (everything up to the
+   badge) and, when a member failed, the failed badge as a right-hand jump
+   button. Hover washes the WHOLE row as one unit — hovering wherever in the
+   title bar (toggle or the right-hand badge) lights the whole bar together,
+   so the two controls read as a single header. The failed badge keeps its red
+   affordance on top of that wash so the error jump still reads as distinct. */
 .tool-group-summary-inner {
   display: flex;
   align-items: center;
@@ -940,9 +942,11 @@
   color: var(--fg-muted);
   min-width: 0;
 }
+.tool-group-summary-inner:hover {
+  background: var(--btn-hover-bg);
+}
 /* Fills the row minus the badge, so the click target stays nearly as large as
-   the old whole-row one. Padding lives here (not on the row) so the hover wash
-   covers the full area the user is aiming at. */
+   the old whole-row one. Transparent so the row's hover wash shows through. */
 .tool-group-toggle {
   flex: 1 1 auto;
   min-width: 0;
@@ -955,9 +959,6 @@
   border: 0;
   text-align: left;
   user-select: none;
-}
-.tool-group-toggle:hover {
-  background: var(--btn-hover-bg);
 }
 .tool-group-toggle:focus-visible {
   outline: 2px solid var(--accent);
