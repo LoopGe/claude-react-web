@@ -318,6 +318,15 @@ export interface Session {
   /** Epoch ms when the first pending turn started. Cleared when all turns
    *  complete (pendingTurns drops to 0) or the session terminates. */
   workingSince?: number
+  /** True while a dispatched turn has actually STARTED on the CLI side — set
+   *  by onPromptEcho when the SDK echoes a sent prompt back (the echo is the
+   *  proof the CLI took the message), cleared on `result` (the turn is done;
+   *  with moreQueued the next turn hasn't started yet) and on every teardown
+   *  that zeroes pendingTurns. pendingTurns alone can't distinguish "queued,
+   *  no turn running" from "turn in flight" — interrupt()'s cancelQueued
+   *  clear (see session-manager) needs that discriminator to avoid clearing
+   *  the working state while an aborted result is still owed. Runtime-only. */
+  turnActive?: boolean
   /** Epoch ms of the last auto-interrupt the GC fired against this session.
    *  Used to throttle: we don't re-fire interrupt on every tick. Cleared
    *  when state actually progresses (lastActivityAt moves) or the turn

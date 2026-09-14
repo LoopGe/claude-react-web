@@ -3752,6 +3752,55 @@ describe('SessionManager', () => {
       expect(result.interrupted).toBe(true)
     })
   })
+
+  describe('local `!` working-state reset', () => {
+    const turnStateOf = (sid: string): { pendingTurns: number; workingSince?: number; turnActive?: boolean } => {
+      const smAny = sm as unknown as {
+        sessions: Map<string, { pendingTurns: number; workingSince?: number; turnActive?: boolean }>
+      }
+      return smAny.sessions.get(sid)!
+    }
+    const waitFor = async (cond: () => boolean, ticks = 60): Promise<boolean> => {
+      for (let i = 0; i < ticks; i++) {
+        if (cond()) return true
+        await new Promise((r) => setImmediate(r))
+      }
+      return cond()
+    }
+
+    it('resets to idle when no turn was pending (the local path triggers no SDK turn, so no result will ever arrive)', async () => {
+      const info = sm.create({ cwd: dir, model: 'm1' })
+      vi.mocked(mockExecCommand).mockResolvedValueOnce({ stdout: 'out', stderr: '', exitCode: 0, interrupted: false, truncated: false })
+      await sm.execInSession(info.id, 'local-cmd')
+      const s = turnStateOf(info.id)
+      expect(s.pendingTurns).toBe(0)
+      expect(s.workingSince).toBeUndefined()
+      expect(sm.list().find((x) => x.id === info.id)!.working).toBe(false)
+    })
+
+    it('preserves an in-flight turn’s working state (requireRunnable permits exec mid-turn)', async () => {
+      // Regression: pushToSession caps pendingTurns at 1, so the old
+      // unconditional reset after a mid-turn local `!` wiped a genuinely
+      // running SDK turn's state — WorkingBubble vanished, phase-gated
+      // routes opened, and the health monitor stopped watching the session.
+      const info = sm.create({ cwd: dir, model: 'm1' })
+      const h = mockHandles.at(-1)!
+      sm.send(info.id, 'in-flight turn')
+      const s = turnStateOf(info.id)
+      expect(s.pendingTurns).toBe(1)
+
+      vi.mocked(mockExecCommand).mockResolvedValueOnce({ stdout: 'out', stderr: '', exitCode: 0, interrupted: false, truncated: false })
+      await sm.execInSession(info.id, 'local-cmd')
+
+      // The turn's state survives — its result stays the authority.
+      expect(s.pendingTurns).toBe(1)
+      expect(sm.list().find((x) => x.id === info.id)!.working).toBe(true)
+
+      h.emit({ type: 'result', subtype: 'success' })
+      expect(await waitFor(() => turnStateOf(info.id).pendingTurns === 0)).toBe(true)
+      expect(turnStateOf(info.id).workingSince).toBeUndefined()
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -5002,6 +5051,110 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(lateFrames[0].kind).toBe('messages-withdrawn')
       expect(lateFrames[0].uuids).toContain(queuedUuids[0])
       late!.unsubscribe()
+    })
+
+    /** Read live turn-tracking fields off the manager's internal session. */
+    const turnStateOf = (sid: string): { pendingTurns: number; workingSince?: number; turnActive?: boolean } => {
+      const smAny = sm as unknown as {
+        sessions: Map<string, { pendingTurns: number; workingSince?: number; turnActive?: boolean }>
+      }
+      return smAny.sessions.get(sid)!
+    }
+
+    it('clears the stuck working state when the withdrawn turns were the only pending work (no result will ever arrive)', async () => {
+      // Regression for the stuck-WorkingBubble bug: send a message, hit Stop
+      // before the CLI starts the turn. The mock SDK has already dequeued the
+      // message into its internal queue (spawn-time direct hand-off, so
+      // queueDepth is 0) but never echoes or starts it — mirroring the
+      // production log where the interrupt receipt cancels it
+      // (withdrawn=1, receipt=1). No turn ran, so no `result` frame will ever
+      // clear pendingTurns; before this fix the session stayed working=true
+      // forever (WorkingBubble pinned, phase-gated routes 409ing, health
+      // check only after workingStuckMs).
+      const info = sm.create({ cwd: dir })
+      const h = mockHandles.at(-1)!
+      const sent = sm.send(info.id, 'stop me before the CLI starts') as { uuid: string }
+      h.interrupt.mockResolvedValueOnce({ cancelled: [sent.uuid] })
+      const s = turnStateOf(info.id)
+      expect(s.pendingTurns).toBe(1)
+      expect(typeof s.workingSince).toBe('number')
+      expect(s.turnActive).toBeFalsy()
+
+      const updates: Array<{ kind?: string; session?: { id?: string; working?: boolean } }> = []
+      const sub = sm.subscribeGlobal()
+      void (async () => {
+        for await (const v of sub.iterable) updates.push(v as (typeof updates)[number])
+      })()
+
+      await sm.interrupt(info.id, { cancelQueued: true })
+
+      expect(s.pendingTurns).toBe(0)
+      expect(s.workingSince).toBeUndefined()
+      // The session list must report the idle phase again — the client's
+      // WorkingBubble and phase-gated routes (rewindFiles/compact) both
+      // read it.
+      const listed = sm.list().find((x) => x.id === info.id)!
+      expect(listed.working).toBe(false)
+      expect(listed.phase).toBe('idle')
+      // And live tabs get the session-update so the UI flips without a reload.
+      await waitFor(() =>
+        updates.some((u) => u.kind === 'update' && u.session?.id === info.id && u.session?.working === false),
+      )
+      sub.unsubscribe()
+    })
+
+    it('leaves working state alone while an echoed in-flight turn is owed its result', async () => {
+      // The safety half of the fix, in the PRODUCTION shape: the seed turn's
+      // echo has already landed (onPromptEcho paired it and set turnActive),
+      // so the CLI is mid-turn and an aborted `result` is still owed. Only
+      // the 2 queued turns withdraw. The fix must NOT preemptively clear
+      // pendingTurns here — the owed result stays the authority. (Guarding
+      // on unpaired entries alone would miss this: the in-flight turn's
+      // entry is PAIRED.)
+      const { info, h } = setupQueued(2)
+      // Land the seed's echo: the pump's top-level-user drop-filter hands the
+      // SDK uuid to onPromptEcho, which pairs the oldest unpaired entry.
+      h.emit({
+        type: 'user',
+        uuid: 'sdk-on-disk-uuid-seed',
+        parent_tool_use_id: null,
+        message: { role: 'user', content: [{ type: 'text', text: 'in-flight turn seed' }] },
+      })
+      await waitFor(() => turnStateOf(info.id).turnActive === true)
+      const s = turnStateOf(info.id)
+      expect(s.pendingTurns).toBe(1)
+
+      const removed = await sm.interrupt(info.id, { cancelQueued: true })
+      expect(removed).toBe(2)
+      // No clear: the in-flight turn is still owed its result.
+      expect(s.pendingTurns).toBe(1)
+      expect(s.turnActive).toBe(true)
+      expect(typeof s.workingSince).toBe('number')
+
+      // The owed result (aborted turn) lands and the pump clears the state
+      // through the normal path — the pre-existing clear path still works
+      // with the fix in place.
+      h.emit({ type: 'result', subtype: 'success' })
+      await waitFor(() => turnStateOf(info.id).pendingTurns === 0)
+      expect(turnStateOf(info.id).workingSince).toBeUndefined()
+      expect(turnStateOf(info.id).turnActive).toBe(false)
+    })
+
+    it('heals an already-stuck session on a repeat Stop (state probe, not withdrawal count)', async () => {
+      // A session stuck by the pre-fix bug (pendingTurns=1 with no turn ever
+      // started, nothing queued, no unpaired entries) must unstick on the
+      // next Stop — the probe reads the live state, not `removed > 0`, so a
+      // zero-withdrawal interrupt still clears it without a server restart.
+      const info = sm.create({ cwd: dir })
+      const s = turnStateOf(info.id)
+      s.pendingTurns = 1
+      s.workingSince = Date.now()
+
+      await sm.interrupt(info.id) // plain stop — nothing to withdraw
+
+      expect(s.pendingTurns).toBe(0)
+      expect(s.workingSince).toBeUndefined()
+      expect(sm.list().find((x) => x.id === info.id)!.working).toBe(false)
     })
   })
 

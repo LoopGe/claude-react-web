@@ -725,6 +725,7 @@ export class SessionManager {
     s.recovering = true
     s.pendingTurns = 0
     s.workingSince = undefined
+    s.turnActive = false
     this.permBroker.denyAll(s)
     this.elicitBroker.cancelAll(s)
     this.dialogBroker.cancelAll(s)
@@ -840,6 +841,7 @@ export class SessionManager {
     s.lastCrash = undefined
     s.pendingTurns = 0
     s.workingSince = undefined
+    s.turnActive = false
     this.permBroker.denyAll(s)
     this.elicitBroker.cancelAll(s)
     this.dialogBroker.cancelAll(s)
@@ -2591,6 +2593,11 @@ export class SessionManager {
     if (idx === -1) return // no unpaired send (resume replay, or echo for a non-send frame)
     if (list.some((e) => e.v === echoUuid)) return // already paired (defensive against a double echo)
     list[idx] = { ...list[idx], v: echoUuid }
+    // The echo proves the CLI took the message and the turn is under way —
+    // flag it so interrupt()'s cancelQueued clear can tell "queued, nothing
+    // running" from "turn in flight, aborted result still owed". Cleared on
+    // `result` (pump) and every teardown that zeroes pendingTurns.
+    s.turnActive = true
     void this.promptUuidStore.save(s.id, list)
   }
 
@@ -2712,6 +2719,39 @@ export class SessionManager {
           s.withdrawnUuids.splice(0, s.withdrawnUuids.length - WITHDRAWN_UUIDS_CAP)
         }
         this.pushMessageStatus(id, { kind: 'messages-withdrawn', sessionId: id, uuids: [...uuids] })
+      }
+      // If the interrupt left the session in a DEAD working state — nothing
+      // queued (no unpaired promptUuids, empty input queue) and no turn in
+      // flight (`turnActive` is only set by onPromptEcho when the CLI takes a
+      // message, cleared on `result`) — then NO `result` frame will ever
+      // arrive: the pending turns were cancelled before the CLI started them
+      // (their echoes never landed). pendingTurns was set at dispatch
+      // (pushToSession) and its only normal clear path is the pump's result
+      // handler, so without this reset the session sticks at working=true
+      // forever (WorkingBubble pinned, phase-gated routes 409ing, health
+      // check only after workingStuckMs). Deliberately NOT gated on
+      // `removed > 0`: the state probe is the source of truth — it also
+      // heals an already-stuck session on a repeat Stop, and covers a
+      // withdrawal whose ring entry was evicted (removeFromHistory counts
+      // ring hits, not withdrawals). While `turnActive` we leave the state
+      // alone: an aborted (or newly-started) turn's result stays the
+      // authority and the pump's moreQueued check re-evaluates then.
+      if (
+        s.pendingTurns > 0 &&
+        s.handle.queueDepth === 0 &&
+        !s.turnActive &&
+        !(s.promptUuids ?? []).some((e) => e.v == null)
+      ) {
+        log.info(
+          `[session ${id}] interrupt left no pending or in-flight turn — ` +
+          `clearing working state (pendingTurns was ${s.pendingTurns})`,
+        )
+        s.pendingTurns = 0
+        s.workingSince = undefined
+        // No explicit broadcastGlobal here: the persist(s) on the success
+        // path below emits the session-update with this fresh idle state —
+        // broadcasting here too would send every global subscriber two
+        // identical {kind:'update'} frames per heal.
       }
       const receiptNote = receipt?.cancelledQueued == null
         ? 'absent (older CLI, or nothing was CLI-queued)'
@@ -2897,16 +2937,26 @@ export class SessionManager {
       // `!` — local only: record in our history ring + broadcast to live
       // subscribers, but NEVER push into the SDK input queue. The model
       // never sees this command; zero spurious turns.
+      // Capture BEFORE pushToSession: requireRunnable permits exec mid-turn,
+      // and an unconditional reset would wipe a genuinely in-flight SDK
+      // turn's working state (WorkingBubble vanishes, phase-gated routes
+      // open, health check stops watching the session).
+      const wasMidTurn = s.pendingTurns > 0 || s.turnActive === true
       this.pushToSession(s, userMsg)
       // pushToSession marks the session mid-turn (pendingTurns=1, workingSince)
       // expecting an SDK `result` to clear it — but the local path triggers no
       // SDK turn, so no result ever arrives. Reset immediately: a local `!`
       // command is done the moment its output is broadcast, and leaving
       // working=true would stick the UI (WorkingBubble, header dot) forever
-      // and trip the stuck-session health check after the idle timeout.
-      s.pendingTurns = 0
-      s.workingSince = undefined
-      this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+      // and trip the stuck-session health check after the idle timeout. When
+      // a real turn was already in flight, leave its state alone — its
+      // result stays the authority (and the session SHOULD read working).
+      if (!wasMidTurn) {
+        s.pendingTurns = 0
+        s.workingSince = undefined
+        s.turnActive = false
+        this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+      }
     }
     return { ...result, message: userMsg }
   }

@@ -1206,6 +1206,11 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             `[session ${session.id}] result received — total msgs: ${msgCount}, ` +
             `input.queueDepth=${session.handle.queueDepth}, moreQueued=${moreQueued}`,
           )
+          // The turn this result closes is done. With moreQueued the next
+          // turn hasn't STARTED yet (its echo hasn't landed), so turnActive
+          // is false either way — interrupt()'s dead-working-state probe
+          // reads it as "no turn in flight".
+          session.turnActive = false
           if (moreQueued) {
             // Keep pendingTurns=1 and workingSince anchored at its existing
             // value so the UI continues to show "working" without flicker.
@@ -1339,6 +1344,7 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
     // queued turn.
     session.pendingTurns = 0
     session.workingSince = undefined
+    session.turnActive = false
     deps.denyPendingPermissions(session)
     endAllSubscribers(session)
     // Persist the terminal state so the UI shows the transcript as
