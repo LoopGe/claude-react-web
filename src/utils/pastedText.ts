@@ -102,6 +102,38 @@ export function parseReferences(input: string): PastedRef[] {
     .filter((ref) => ref.id > 0)
 }
 
+/**
+ * One piece of composer content: literal text, or a reference the rich editor
+ * draws as a chip.
+ */
+export type PastedTextToken =
+  | { kind: 'text'; text: string }
+  | { kind: 'ref'; id: number; label: string }
+
+/**
+ * Split composer text into literal runs and reference tokens.
+ *
+ * `joinTokens` is its exact inverse, which is what lets a DOM editor round-trip
+ * through markup without the canonical string ever losing information: the
+ * string stays the single source of truth, and the editor is only a view.
+ */
+export function tokenize(text: string): PastedTextToken[] {
+  const tokens: PastedTextToken[] = []
+  let cursor = 0
+  for (const ref of parseReferences(text)) {
+    if (ref.index > cursor) tokens.push({ kind: 'text', text: text.slice(cursor, ref.index) })
+    tokens.push({ kind: 'ref', id: ref.id, label: ref.match })
+    cursor = ref.index + ref.match.length
+  }
+  if (cursor < text.length) tokens.push({ kind: 'text', text: text.slice(cursor) })
+  return tokens
+}
+
+/** Inverse of `tokenize`: `joinTokens(tokenize(s)) === s` for any `s`. */
+export function joinTokens(tokens: PastedTextToken[]): string {
+  return tokens.map((t) => (t.kind === 'ref' ? t.label : t.text)).join('')
+}
+
 export type RefRange = {
   id: number
   /** Offset of the opening bracket. */

@@ -4,12 +4,14 @@ import {
   expandPastedTextRefs,
   formatPastedTextRef,
   getPastedTextRefNumLines,
+  joinTokens,
   normalizePastedText,
   parseReferences,
   planPaste,
   refKeyAction,
   refRanges,
   shouldCollapsePaste,
+  tokenize,
   type PastedTextMap,
 } from './pastedText'
 
@@ -217,6 +219,67 @@ describe('refKeyAction', () => {
 
   it('returns null for a caret in the middle of a reference', () => {
     expect(refKeyAction(text, 10, 'Backspace')).toBeNull()
+  })
+})
+
+describe('tokenize', () => {
+  it('splits literal text from references', () => {
+    expect(tokenize('hi [Pasted text #1 +2 lines] there')).toEqual([
+      { kind: 'text', text: 'hi ' },
+      { kind: 'ref', id: 1, label: '[Pasted text #1 +2 lines]' },
+      { kind: 'text', text: ' there' },
+    ])
+  })
+
+  it('yields one text token when there is no reference', () => {
+    expect(tokenize('plain')).toEqual([{ kind: 'text', text: 'plain' }])
+  })
+
+  it('yields nothing for empty text', () => {
+    expect(tokenize('')).toEqual([])
+  })
+
+  it('handles references at either end with no surrounding text', () => {
+    expect(tokenize('[Pasted text #2]')).toEqual([
+      { kind: 'ref', id: 2, label: '[Pasted text #2]' },
+    ])
+    expect(tokenize('[Pasted text #2]tail')).toEqual([
+      { kind: 'ref', id: 2, label: '[Pasted text #2]' },
+      { kind: 'text', text: 'tail' },
+    ])
+  })
+
+  it('handles adjacent references with no text between them', () => {
+    expect(tokenize('[Pasted text #1][Pasted text #2]')).toEqual([
+      { kind: 'ref', id: 1, label: '[Pasted text #1]' },
+      { kind: 'ref', id: 2, label: '[Pasted text #2]' },
+    ])
+  })
+
+  it('treats an id-0 pseudo-reference as plain text, matching parseReferences', () => {
+    expect(tokenize('[Pasted text #0]')).toEqual([
+      { kind: 'text', text: '[Pasted text #0]' },
+    ])
+  })
+})
+
+describe('joinTokens', () => {
+  // The editor round-trips through the DOM, so this has to hold exactly —
+  // anything lossy here silently corrupts the composer contents.
+  it('round-trips every shape of text', () => {
+    const samples = [
+      '',
+      'plain',
+      '[Pasted text #1]',
+      'hi [Pasted text #1 +2 lines] there',
+      'a[Pasted text #1]b',
+      '[Pasted text #1][Pasted text #2]',
+      'multi\nline [Pasted text #3 +9 lines]\ntail',
+      '[Pasted text #0]',
+    ]
+    for (const text of samples) {
+      expect(joinTokens(tokenize(text))).toBe(text)
+    }
   })
 })
 
