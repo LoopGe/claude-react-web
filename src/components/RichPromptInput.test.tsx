@@ -184,7 +184,12 @@ describe('RichPromptInput paste', () => {
     )
     const el = editor(container)
     // Only text/plain is ever read; text/html must be ignored outright.
-    paste(el, { 'text/html': '<img src=x onerror=alert(1)>', 'text/plain': 'safe' })
+    const event = paste(el, { 'text/html': '<img src=x onerror=alert(1)>', 'text/plain': 'safe' })
+    // The handler must call preventDefault() to block the browser's native
+    // contenteditable paste (which would inject the HTML). In jsdom this is
+    // the only reliable signal — the DOM assertions alone are vacuous because
+    // jsdom does not perform real contenteditable clipboard insertion.
+    expect(event.defaultPrevented).toBe(true)
     expect(el.querySelector('img')).toBeNull()
     expect(el.textContent).toBe('safe')
   })
