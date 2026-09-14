@@ -129,12 +129,16 @@ describe('RichPromptInput keyboard', () => {
 
   it('does not submit while an IME composition is active', () => {
     // Enter confirms a CJK candidate; sending here ships a half-typed word.
+    // jsdom's KeyboardEventInit doesn't reliably carry isComposing, so define
+    // it on the instance (matching useKeyboardShortcuts.test.ts's pattern).
     const onSubmit = vi.fn()
     const { container } = render(
       <RichPromptInput value="ni" onChange={vi.fn()} ariaLabel="M" onSubmit={onSubmit} />,
     )
     const el = editor(container)
-    fireEvent.keyDown(el, { key: 'Enter', isComposing: true })
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    Object.defineProperty(event, 'isComposing', { value: true })
+    el.dispatchEvent(event)
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
