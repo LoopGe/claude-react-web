@@ -13,6 +13,7 @@ import type { InputHistoryApi } from '../hooks/useInputHistory'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useToast } from '../hooks/useToast'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
+import { selectionOffsets, replaceOffsets, selectAll as selectAllEditor } from './richPromptApi'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker, pickerFlatCommands } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
@@ -377,12 +378,11 @@ export const Composer = memo(function Composer({
       const { start, end } = savedSelection
       const next = input.slice(0, start) + text + input.slice(end)
       setInput(next)
-      const caret = start + text.length
       requestAnimationFrame(() => {
         const el = textareaRef.current
         if (!el) return
         el.focus()
-        el.setSelectionRange(caret, caret)
+        replaceOffsets(el, start, end, text)
       })
     },
     [input, savedSelection, setInput],
@@ -448,10 +448,9 @@ export const Composer = memo(function Composer({
     requestAnimationFrame(() => {
       const el = textareaRef.current
       if (!el) return
-      el.focus()
-      el.setSelectionRange(0, input.length)
+      selectAllEditor(el)
     })
-  }, [input.length])
+  }, [])
 
   const handleInsertSnippet = useCallback(
     (s: ComposerSnippet) => {
@@ -474,7 +473,7 @@ export const Composer = memo(function Composer({
       e.preventDefault()
       const el = textareaRef.current
       if (el) {
-        setSavedSelection({ start: el.selectionStart, end: el.selectionEnd })
+        setSavedSelection(selectionOffsets(el) ?? { start: 0, end: 0 })
       }
       // Pull the latest snippets from the server so the menu reflects edits
       // made in another tab/panel (cheap; matches the "refetch on open"

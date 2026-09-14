@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, cleanup, fireEvent, createEvent } from '@testing-library/react'
 import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
 import { CHIP_CLASS } from '../utils/richPromptDom'
+import { selectionOffsets, replaceOffsets, selectAll } from './richPromptApi'
 
 afterEach(() => cleanup())
 
@@ -234,5 +235,69 @@ describe('RichPromptInput replaceSlashWord', () => {
     ;(el as unknown as RichPromptHandle).replaceSlashWord('/cmd')
 
     expect(onChange).toHaveBeenCalledWith('hello /cmd')
+  })
+})
+
+describe('RichPromptInput selection', () => {
+  function select(el: HTMLElement, start: number, end: number) {
+    const range = document.createRange()
+    const node = el.firstChild!
+    range.setStart(node, start)
+    range.setEnd(node, end)
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+  }
+
+  it('reports the selected offsets', () => {
+    const ref = { current: null as HTMLDivElement | null }
+    const { container } = render(
+      <RichPromptInput value="hello world" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
+    )
+    select(editor(container), 0, 5)
+    expect(selectionOffsets(ref.current!)).toEqual({ start: 0, end: 5 })
+  })
+
+  it('reports null for a collapsed caret', () => {
+    const ref = { current: null as HTMLDivElement | null }
+    const { container } = render(
+      <RichPromptInput value="hello" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
+    )
+    select(editor(container), 2, 2)
+    expect(selectionOffsets(ref.current!)).toBeNull()
+  })
+
+  it('replaces a range and updates the DOM', () => {
+    const ref = { current: null as HTMLDivElement | null }
+    const { container } = render(
+      <RichPromptInput value="hello world" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
+    )
+    const el = editor(container)
+    // Replace "hello" (offsets 0-5) with "hi"
+    replaceOffsets(ref.current!, 0, 5, 'hi')
+    expect(el.textContent).toBe('hi world')
+  })
+
+  it('replaces a range around a chip and preserves the chip', () => {
+    const ref = { current: null as HTMLDivElement | null }
+    const { container } = render(
+      <RichPromptInput value="a [Pasted text #1] b" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
+    )
+    const el = editor(container)
+    // Full text: "a [Pasted text #1] b" (20 chars).
+    // Replace "a " (0-2) with "X "
+    replaceOffsets(ref.current!, 0, 2, 'X ')
+    expect(el.textContent).toBe('X [Pasted text #1] b')
+  })
+
+  it('selects the whole editor', () => {
+    const ref = { current: null as HTMLDivElement | null }
+    render(
+      <RichPromptInput value="hello" onChange={vi.fn()} ariaLabel="M" editorRef={ref} />,
+    )
+    selectAll(ref.current!)
+    const sel = document.getSelection()!
+    expect(sel.rangeCount).toBe(1)
+    expect(sel.getRangeAt(0).toString()).toBe('hello')
   })
 })

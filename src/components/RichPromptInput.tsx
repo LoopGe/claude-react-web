@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 import { joinTokens, tokenize } from '../utils/pastedText'
 import { renderTokens, serializeTokens } from '../utils/richPromptDom'
 import { offsetOf, slashWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
+import { selectionOffsets, replaceOffsets, selectAll } from './richPromptApi'
 
 /**
  * Methods attached to the editor DOM element by RichPromptInput.
@@ -14,6 +15,12 @@ export interface RichPromptHandle {
   getSlashWordAtCaret(): string | null
   caretOnFirstLine(): boolean
   replaceSlashWord(text: string): void
+  /** Offset pair for the current selection, or null when nothing is selected. */
+  selectionOffsets(): { start: number; end: number } | null
+  /** Replace `[start, end)` with `text` and leave the caret after it. */
+  replaceOffsets(start: number, end: number, text: string): void
+  /** Select the whole editor. */
+  selectAll(): void
 }
 
 interface Props {
@@ -208,6 +215,9 @@ export function RichPromptInput({
     handle.getSlashWordAtCaret = getSlashWordAtCaret
     handle.caretOnFirstLine = isCaretOnFirstLine
     handle.replaceSlashWord = replaceSlashWord
+    handle.selectionOffsets = () => selectionOffsets(el)
+    handle.replaceOffsets = (start: number, end: number, text: string) => replaceOffsets(el, start, end, text)
+    handle.selectAll = () => selectAll(el)
   }, [value, ref, onChange])
   /* eslint-enable react-hooks/exhaustive-deps */
 
