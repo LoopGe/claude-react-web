@@ -436,6 +436,20 @@ export function IconPencil(props: IconProps) {
   )
 }
 
+/** Theatre mask — the main thread's PERSONA (custom agent). Deliberately not
+ *  IconBot: that glyph is already the `auto` permission mode's, and the two
+ *  chips sit side by side in the panel header. */
+export function IconMask(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 5h16v6a8 8 0 0 1-8 8 8 8 0 0 1-8-8V5Z" />
+      <path d="M8.5 10.5c.7-.7 1.8-.7 2.5 0" />
+      <path d="M13 10.5c.7-.7 1.8-.7 2.5 0" />
+      <path d="M9.5 14.5c1.5 1.2 3.5 1.2 5 0" />
+    </Icon>
+  )
+}
+
 export function IconBot(props: IconProps) {
   return (
     <Icon {...props}>

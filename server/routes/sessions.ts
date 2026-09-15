@@ -6,7 +6,7 @@ import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-age
 import { SessionManager } from '../session-manager.js'
 import { safeJson } from './index.js'
 import type { MpStore } from '../mp-store.js'
-import type { AgentDefinitionStore } from '../agent-definition-store.js'
+import { agentUnusableReason, normalizeAgentName, type AgentDefinitionStore } from '../agent-definition-store.js'
 import { isUserSelectablePermissionMode, permissionModeList } from '../permission-modes.js'
 import { formatHooksValidationErrors, toSdkHooksSettings, validateSessionHooksConfig } from '../../shared/hooks.js'
 import { coerceThinkingSetting } from '../../shared/session-info.js'
@@ -266,17 +266,15 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     // Start-as custom agent (`agent` = an AgentDefinitionStore name). It must be
     // a string AND refer to an enabled definition — an unknown or disabled name
     // (or any non-null agent when no store is mounted) is a 400 here: we won't
-    // spin the session up under a persona we can't honour.
+    // spin the session up under a persona we can't honour. The reason string is
+    // shared with the mid-session switch route so the two can't drift.
     const rawAgent = rest.agent
     if (rawAgent != null) {
       if (typeof rawAgent !== 'string') {
         return c.json({ error: 'agent must be a string' }, 400)
       }
-      const def = agentDefinitionStore?.get(rawAgent)
-      if (!def?.enabled) {
-        const why = agentDefinitionStore?.has(rawAgent) ? 'is disabled' : 'is not defined'
-        return c.json({ error: `agent "${rawAgent}" ${why}` }, 400)
-      }
+      const reason = agentUnusableReason(agentDefinitionStore, rawAgent)
+      if (reason) return c.json({ error: reason }, 400)
     }
     if (rest.settings && typeof rest.settings === 'object' && !Array.isArray(rest.settings) && 'hooks' in rest.settings) {
       const settings = rest.settings as Record<string, unknown>
@@ -630,6 +628,27 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
   app.post('/sessions/:id/fast-mode', async (c) => {
     const body = await safeJson<{ enabled?: boolean }>(c.req)
     const info = await sm.setFastMode(c.req.param('id'), body.enabled === true)
+    return c.json({ session: info })
+  })
+
+  // Switch the MAIN-THREAD agent (persona) mid-session. Body
+  // `{ agent?: string | null }`: a name pins that persona, `null` clears it
+  // back to a plain session. Forwarded to the SDK via
+  // applyFlagSettings({ agent }) and persisted so re-spawns keep it.
+  //
+  // Only the SHAPE is normalized here; existence / enabled-ness is validated in
+  // SessionManager.setAgent, which the raw-`Settings.agent` door
+  // (POST /sessions/:id/settings) routes through too — so neither door can set
+  // a persona the store doesn't back.
+  //
+  // Scope: names must be AgentDefinitionStore entries. SDK built-ins and
+  // filesystem agents (which GET /sessions/:id/agents also lists) are NOT
+  // accepted as personas — same restriction as create.
+  app.post('/sessions/:id/agent', async (c) => {
+    const body = await safeJson<{ agent?: unknown }>(c.req)
+    const parsed = normalizeAgentName(body.agent)
+    if (!parsed.ok) return c.json({ error: parsed.error }, 400)
+    const info = await sm.setAgent(c.req.param('id'), parsed.name)
     return c.json({ session: info })
   })
 

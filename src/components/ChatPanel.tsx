@@ -27,7 +27,8 @@ import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { shortenPath } from '../utils/paths'
 import { gitChipText } from '../utils/git-chip'
-import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff } from './icons/ToolIcons'
+import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff, IconMask } from './icons/ToolIcons'
+import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
 import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingSetting } from '../types'
 import type { Skin } from '../utils/theme'
@@ -381,6 +382,8 @@ export const ChatPanel = memo(function ChatPanel({
   /** Anchor for the effort-level menu. Non-null = menu visible. */
   const [effortMenu, setEffortMenu] = useState<{ x: number; y: number } | null>(null)
   const [thinkingMenu, setThinkingMenu] = useState<{ x: number; y: number } | null>(null)
+  /** Anchor for the persona (main-thread agent) menu. Non-null = visible. */
+  const [personaMenu, setPersonaMenu] = useState<{ x: number; y: number } | null>(null)
   // Confirmation dialog for destructive panel-menu actions (Delete session).
   // Mirrors SessionList's confirm plumbing so the panel menu's Delete uses
   // the same ConfirmDialog + busy state as the sidebar's.
@@ -424,6 +427,15 @@ export const ChatPanel = memo(function ChatPanel({
   // localStorage as a fallback so the list isn't empty during the brief
   // fetch window.
   const modelOptions = useModelOptions(session.id, !!modelMenu && !!session.running, session.profileId)
+  // Custom agent definitions, for the persona chip's menu. Fetched once on
+  // mount (a small list) and re-fetched when the menu opens, so a definition
+  // added or toggled elsewhere in the app shows up without a remount.
+  const { agents: agentDefs, refresh: refreshAgentDefs } = useAgentDefinitions()
+  const enabledAgentDefs = useMemo(() => agentDefs.filter((a) => a.enabled), [agentDefs])
+  // Hidden when there's nothing to pick AND no persona to show — an empty
+  // menu would be a dead control. A session whose persona was later disabled
+  // still shows the chip so the user can see (and clear) what it's running as.
+  const personaVisible = enabledAgentDefs.length > 0 || !!session.agent
   const chipsDisabled = !session.running || session.terminated
   // Click-to-regenerate the session title. Mirrors chipsDisabled so the
   // affordance only exists on a live session — the server's autoGenerateTitle
@@ -600,6 +612,26 @@ export const ChatPanel = memo(function ChatPanel({
       toast.error,
     )
   }
+  /** Switch the MAIN-THREAD agent (persona) — its system prompt, model and
+   *  tool restrictions. `null` clears it back to a plain session.
+   *
+   *  Not the same thing as "Run as agent" (RunAsAgentControl), which asks the
+   *  model to DELEGATE a task to a subagent. This changes who the main
+   *  conversation itself is. */
+  const commitAgent = (name: string | null) => {
+    setPersonaMenu(null)
+    if ((name ?? '') === (session.agent ?? '')) return
+    commitWithRollback(
+      session,
+      `/sessions/${session.id}/agent`,
+      { agent: name },
+      { agent: session.agent },
+      `Couldn't change agent`,
+      onSessionUpdate,
+      toast.error,
+    )
+  }
+
   const effortLevel = session.effortLevel ?? DEFAULT_EFFORT_LEVEL
   /** Current thinking display mode, or undefined when unset / thinking off. */
   const displayOf = (t: ThinkingSetting | undefined): 'summarized' | 'omitted' | undefined =>
@@ -943,6 +975,41 @@ export const ChatPanel = memo(function ChatPanel({
             </button>
           </Tooltip>
         )}
+        {/* Persona control — the custom agent driving the MAIN thread (its
+            system prompt, model and tool restrictions). Distinct from "Run as
+            agent" in the panel menu, which delegates a task to a SUBagent.
+            Tinted only when a persona is active, so a plain session reads as
+            a quiet, opt-in control. */}
+        {personaVisible && (
+          <Tooltip
+            label={
+              session.agent
+                ? `Persona: ${session.agent} · its prompt, model and tool limits drive the main thread · click to change`
+                : 'Persona: none · run the main thread as a custom agent · click to pick'
+            }
+            placement="bottom"
+          >
+            <button
+              type="button"
+              key={`persona-${session.agent ?? 'none'}`}
+              className={`chat-panel-persona-badge${session.agent ? ' persona-on' : ''}${personaMenu ? ' persona-expanded' : ''}`}
+              disabled={chipsDisabled}
+              aria-haspopup="menu"
+              aria-expanded={!!personaMenu}
+              aria-label={`Persona: ${session.agent ?? 'none'} · click to change`}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation()
+                void refreshAgentDefs()
+                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+                setPersonaMenu({ x: rect.left, y: rect.bottom + 4 })
+              }}
+            >
+              <IconMask size={13} aria-hidden />
+              <span className="chat-panel-persona-label"><span>{session.agent ?? 'persona'}</span></span>
+            </button>
+          </Tooltip>
+        )}
         {/* Extended-thinking control. Shown unless the model is known to not
             support thinking (thinkingSupported === false → chip hidden);
             undefined capability fails open. Menu offers Auto (model decides),
@@ -1016,6 +1083,32 @@ export const ChatPanel = memo(function ChatPanel({
                 icon: (session.permissionMode ?? 'default') === m ? <IconCheck size={14} /> : ' ',
                 onClick: () => commitPermissionMode(m),
               }))}
+            />
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {personaMenu && (
+            <ContextMenu
+              key="persona"
+              x={personaMenu.x}
+              y={personaMenu.y}
+              onClose={() => setPersonaMenu(null)}
+              items={[
+                {
+                  label: 'none',
+                  icon: session.agent ? ' ' : <IconCheck size={14} />,
+                  onClick: () => commitAgent(null),
+                },
+                // Only ENABLED definitions are offered — the server 400s on a
+                // disabled name, so listing one would dead-end. A persona that
+                // was disabled after being set therefore isn't in this list;
+                // the chip still shows it and "none" clears it.
+                ...enabledAgentDefs.map((a) => ({
+                  label: a.name,
+                  icon: session.agent === a.name ? <IconCheck size={14} /> : ' ',
+                  onClick: () => commitAgent(a.name),
+                })),
+              ]}
             />
           )}
         </AnimatePresence>

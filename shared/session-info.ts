@@ -115,6 +115,15 @@ export interface SessionInfoBase<PM = string> {
   messageCount: number
   cwd?: string
   model?: string
+  /** Name of the custom agent definition driving the MAIN thread (the SDK's
+   *  `Options.agent` at spawn, `Settings.agent` in the flag layer after a
+   *  mid-session switch). Undefined = no agent (plain session).
+   *
+   *  Not to be confused with delegating work to a SUBagent via the Agent
+   *  tool — this is the persona the main conversation itself runs as: its
+   *  system prompt, tool restrictions and model. Persisted; survives
+   *  resume/restart/fork; runtime-switchable via POST /sessions/:id/agent. */
+  agent?: string
   /** Active model group id. When set, the session was created with a
    *  modelGroupId that resolves to a ModelGroupConfig, and `model` is the
    *  group's resolved main slot model. */

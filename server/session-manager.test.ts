@@ -309,7 +309,7 @@ import { SessionManager, resolveConfiguredModel } from './session-manager.js'
 import type { Session } from './session-types.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
-import type { AgentDefinitionStore } from './agent-definition-store.js'
+import { AgentDefinitionStore } from './agent-definition-store.js'
 import { __setConfigForTest, config as defaultConfig } from './config.js'
 import { McpConfigStore } from './mcp-config.js'
 import { MpStore } from './mp-store.js'
@@ -5504,5 +5504,202 @@ describe('getDiagnostics', () => {
   it('throws 404 for unknown session', async () => {
     const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
     await expect(smLocal.getDiagnostics('nonexistent')).rejects.toThrow(/not found/)
+  })
+})
+
+describe('setAgent (mid-session persona switch)', () => {
+  async function makeAgentStore() {
+    const store = new AgentDefinitionStore({ stateDir: makeTmpDir() })
+    await store.load()
+    store.upsert({ name: 'reviewer', description: 'Reviews', prompt: 'P', enabled: true, createdAt: 1, updatedAt: 1 })
+    store.upsert({ name: 'off', description: 'Disabled', prompt: 'P', enabled: false, createdAt: 1, updatedAt: 1 })
+    return store
+  }
+
+  async function setup() {
+    const sessionStore = new SessionStore({ stateDir: makeTmpDir() })
+    await sessionStore.load()
+    const agentStore = await makeAgentStore()
+    const smLocal = new SessionManager({ store: sessionStore, agentStore })
+    return { sessionStore, agentStore, smLocal }
+  }
+
+  it('forwards the name through applyFlagSettings and reports it on SessionInfo', async () => {
+    const { smLocal, sessionStore } = await setup()
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const handle = mockHandles[mockHandles.length - 1]
+    handle.applyFlagSettings.mockClear()
+
+    const next = await smLocal.setAgent(info.id, 'reviewer')
+
+    expect(handle.applyFlagSettings).toHaveBeenCalledWith({ agent: 'reviewer' })
+    expect(next.agent).toBe('reviewer')
+    // Persisted, so every re-spawn path picks it up (see the respawn test).
+    expect(sessionStore.get(info.id)?.agent).toBe('reviewer')
+    await smLocal.shutdown()
+  })
+
+  it('sends null (not undefined) when clearing, so the flag layer is emptied', async () => {
+    const { smLocal, sessionStore } = await setup()
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model', agent: 'reviewer' })
+    const handle = mockHandles[mockHandles.length - 1]
+    handle.applyFlagSettings.mockClear()
+
+    const next = await smLocal.setAgent(info.id, null)
+
+    // `undefined` would be dropped by JSON serialization and silently no-op.
+    expect(handle.applyFlagSettings).toHaveBeenCalledWith({ agent: null })
+    expect(next.agent).toBeUndefined()
+    expect(sessionStore.get(info.id)?.agent).toBeUndefined()
+    await smLocal.shutdown()
+  })
+
+  it('rejects an unknown or disabled name without touching the SDK', async () => {
+    const { smLocal, sessionStore } = await setup()
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const handle = mockHandles[mockHandles.length - 1]
+    handle.applyFlagSettings.mockClear()
+
+    await expect(smLocal.setAgent(info.id, 'ghost')).rejects.toThrow('agent "ghost" is not defined')
+    await expect(smLocal.setAgent(info.id, 'off')).rejects.toThrow('agent "off" is disabled')
+
+    expect(handle.applyFlagSettings).not.toHaveBeenCalled()
+    expect(sessionStore.get(info.id)?.agent).toBeUndefined()
+    await smLocal.shutdown()
+  })
+
+  it('rejects every name when no agent store is mounted', async () => {
+    const sessionStore = new SessionStore({ stateDir: makeTmpDir() })
+    await sessionStore.load()
+    const smLocal = new SessionManager({ store: sessionStore }) // no agentStore
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    await expect(smLocal.setAgent(info.id, 'reviewer')).rejects.toThrow('agent "reviewer" is not defined')
+    // Clearing is still fine — it needs no definition to resolve.
+    await expect(smLocal.setAgent(info.id, null)).resolves.toMatchObject({ agent: undefined })
+    await smLocal.shutdown()
+  })
+
+  it('carries the switched persona into a respawn without any explicit replay', async () => {
+    // This is the behaviour that makes setAgent cheaper than setFastMode:
+    // `agent` is a real Options field, so persisting s.agent is enough for
+    // resume / fork / crash-respawn to come up in the new persona.
+    const { smLocal } = await setup()
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    await smLocal.setAgent(info.id, 'reviewer')
+
+    await smLocal.unload(info.id)
+    await smLocal.resume(info.id)
+
+    expect(mockHandles[mockHandles.length - 1].options.agent).toBe('reviewer')
+    await smLocal.shutdown()
+  })
+
+  it('carries a SWITCHED persona through fork (not just the create-time one)', async () => {
+    // fork reads `live ?? store.get(id)`, a different branch from resume's
+    // meta lookup — so resume passing doesn't imply fork does.
+    const { smLocal } = await setup()
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    await smLocal.setAgent(info.id, 'reviewer')
+    // fork refuses a session with no completed turn, so land one first.
+    const sourceHandle = mockHandles[mockHandles.length - 1]
+    smLocal.send(info.id, 'hi')
+    sourceHandle.emit({ type: 'result' })
+    await tick()
+
+    await smLocal.fork(info.id)
+
+    expect(mockHandles[mockHandles.length - 1].options.agent).toBe('reviewer')
+    await smLocal.shutdown()
+  })
+
+  it('carries the persona across /clear', async () => {
+    // /clear (and compact, same path) resets the conversation, not the
+    // session's configuration — the persona must survive like skillOverride
+    // and toolProfile do.
+    const { smLocal } = await setup()
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    await smLocal.setAgent(info.id, 'reviewer')
+
+    await smLocal.clear(info.id)
+
+    expect(mockHandles[mockHandles.length - 1].options.agent).toBe('reviewer')
+    await smLocal.shutdown()
+  })
+
+  it('drops the persona on respawn once its definition is disabled', async () => {
+    const { smLocal, agentStore } = await setup()
+    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    await smLocal.setAgent(info.id, 'reviewer')
+
+    // effectiveStartAsAgent's drop-guard: a persona the user turned off must
+    // not be resurrected by a respawn.
+    agentStore.upsert({ name: 'reviewer', description: 'Reviews', prompt: 'P', enabled: false, createdAt: 1, updatedAt: 2 })
+    await smLocal.unload(info.id)
+    await smLocal.resume(info.id)
+
+    expect(mockHandles[mockHandles.length - 1].options.agent).toBeUndefined()
+    await smLocal.shutdown()
+  })
+
+  it('404s on an unknown session', async () => {
+    const { smLocal } = await setup()
+    await expect(smLocal.setAgent('nope', 'reviewer')).rejects.toThrow(/not found/)
+    await smLocal.shutdown()
+  })
+
+  describe('via the generic /settings door', () => {
+    it('validates a raw Settings.agent and mirrors it onto the session', async () => {
+      const { smLocal, sessionStore } = await setup()
+      const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+      const handle = mockHandles[mockHandles.length - 1]
+      handle.applyFlagSettings.mockClear()
+
+      const next = await smLocal.applySettings(info.id, { agent: 'reviewer' } as never)
+
+      expect(handle.applyFlagSettings).toHaveBeenCalledWith(expect.objectContaining({ agent: 'reviewer' }))
+      // Without the mirror, SessionInfo.agent would disagree with the live
+      // process forever — the exact desync this feature exists to avoid.
+      expect(next.agent).toBe('reviewer')
+      expect(sessionStore.get(info.id)?.agent).toBe('reviewer')
+      await smLocal.shutdown()
+    })
+
+    it('rejects an unknown / disabled name instead of forwarding it', async () => {
+      const { smLocal } = await setup()
+      const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+      const handle = mockHandles[mockHandles.length - 1]
+      handle.applyFlagSettings.mockClear()
+
+      await expect(smLocal.applySettings(info.id, { agent: 'ghost' } as never))
+        .rejects.toThrow('agent "ghost" is not defined')
+      await expect(smLocal.applySettings(info.id, { agent: 'off' } as never))
+        .rejects.toThrow('agent "off" is disabled')
+
+      expect(handle.applyFlagSettings).not.toHaveBeenCalled()
+      await smLocal.shutdown()
+    })
+
+    it('normalizes a blank name to null so the CLI never sees an empty agent', async () => {
+      const { smLocal } = await setup()
+      const info = smLocal.create({ cwd: '/tmp', model: 'test-model', agent: 'reviewer' })
+      const handle = mockHandles[mockHandles.length - 1]
+      handle.applyFlagSettings.mockClear()
+
+      const next = await smLocal.applySettings(info.id, { agent: '  ' } as never)
+
+      expect(handle.applyFlagSettings).toHaveBeenCalledWith(expect.objectContaining({ agent: null }))
+      expect(next.agent).toBeUndefined()
+      await smLocal.shutdown()
+    })
+
+    it('leaves the persona untouched when the payload has no agent key', async () => {
+      const { smLocal } = await setup()
+      const info = smLocal.create({ cwd: '/tmp', model: 'test-model', agent: 'reviewer' })
+
+      const next = await smLocal.applySettings(info.id, { autoCompactEnabled: true } as never)
+
+      expect(next.agent).toBe('reviewer')
+      await smLocal.shutdown()
+    })
   })
 })

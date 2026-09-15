@@ -30,7 +30,7 @@ import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type 
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
 import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
 import { McpConfigStore } from './mcp-config.js'
-import type { AgentDefinitionStore } from './agent-definition-store.js'
+import { agentUnusableReason, normalizeAgentName, type AgentDefinitionStore } from './agent-definition-store.js'
 import { RecapManager } from './recap.js'
 import { summarizeForCompact } from './compact-summary.js'
 import type { SessionActivity, SessionPhase, SessionRecap } from './session-types.js'
@@ -1349,6 +1349,11 @@ export class SessionManager {
       enabledPlugins: meta.enabledPlugins,
       cliDebug: meta.cliDebug,
     })
+    // Carry the main-thread persona, same drop-guard as resume/fork. Without
+    // this a turn-less dormant session comes back plain AND snapshotMeta
+    // persists that as the new truth — silently clearing a persona the user
+    // set, with nothing to restore it from.
+    freshOpts.agent = this.effectiveStartAsAgent(meta, 'respawnFresh', id)
     // Re-apply globally configured MCP servers (same as resume / clear).
     await this.applyGlobalMcpServers(freshOpts)
     log.info(
@@ -3072,6 +3077,11 @@ export class SessionManager {
         // Carry X's tool-surface profile onto Y the same way (tool surface is
         // spawn-time, so a fresh spawn would lose a configured tool set).
         toolProfile: s.toolProfile,
+        // Carry X's main-thread persona onto Y for the same reason: /clear
+        // (and compact, which shares this path) resets the CONVERSATION, not
+        // the session's configuration. Dropping it here would silently hand
+        // back a plain session after twenty turns as a custom agent.
+        agent: s.agent,
       }
 
       // Spawn a fresh session Y under a new id, same settings, no `resume:`.
@@ -3097,6 +3107,9 @@ export class SessionManager {
       freshOpts.memory = settings.memory
       // Carry the sandbox intent likewise.
       freshOpts.sandbox = settings.sandbox
+      // Carry the persona, through the same drop-guard resume/fork use: a
+      // definition deleted or disabled meanwhile must not be resurrected.
+      freshOpts.agent = this.effectiveStartAsAgent({ agent: settings.agent }, 'clear', id)
       if (settings.parentId) {
         freshOpts.systemPrompt = {
           type: 'preset',
@@ -3339,6 +3352,63 @@ export class SessionManager {
     return this.info(s)
   }
 
+  /** Switch the MAIN-THREAD agent (persona) on a live session. `name` must
+   *  name an enabled AgentDefinitionStore entry; `null` clears the agent so
+   *  the main thread runs plain.
+   *
+   *  Forwarded as `applyFlagSettings({ agent })` — the flag-settings layer,
+   *  which probe-verified (CLI 2.1.270) applies the definition's system
+   *  prompt, model AND tool restrictions to the main thread mid-session, and
+   *  wins over the spawn-time `Options.agent`. The switch takes effect on the
+   *  next turn; the in-flight one (if any) finishes under the old persona.
+   *
+   *  Four things worth knowing:
+   *
+   *  1. Unlike fastMode / effortLevel, this needs no post-spawn replay call.
+   *     `agent` is a real `Options` field, so persisting it is what carries
+   *     the persona forward — but each re-spawn builder still has to pass it
+   *     through `effectiveStartAsAgent` itself (doResume, respawnFresh, fork,
+   *     clear, respawnInPlace all do). Note respawnInPlace gets it via
+   *     `createSession`'s top-level `agent` argument, NOT via
+   *     `buildResumeOpts`, which carries no `agent` field.
+   *  2. `null` means NO agent, not "revert to the create-time agent" —
+   *     probe-verified: clearing the flag drops to the session's base model
+   *     and full tool set rather than resurrecting `Options.agent`. Persisting
+   *     `undefined` keeps re-spawns consistent with that.
+   *  3. The store check here is not the only gate. `Options.agents` is
+   *     injected once per spawn (injectAgentDefinitions) with no dynamic
+   *     equivalent of setMcpServers, so a definition CREATED after this
+   *     session spawned passes the store check but the live CLI can't resolve
+   *     it — probe-verified, the CLI rejects with `Agent "x" not found`.
+   *     Because applyFlagSettingAndPersist awaits the SDK before mutating,
+   *     that surfaces as an error and `s.agent` is left alone; we never
+   *     persist a persona the CLI didn't take. Such a definition becomes
+   *     usable after the session re-spawns. Same caveat for an EDITED
+   *     definition: the switch applies the spawn-time copy.
+   *  4. `s.model` is deliberately left alone even though the persona pins the
+   *     model CLI-side. `s.model` is the session's BASE model (what a respawn
+   *     starts from and what clearing the persona returns to); the persona's
+   *     model is an override on top, and the ContextBar already reports the
+   *     SDK's real per-turn model. Mirroring it into `s.model` would need a
+   *     separate "model before the persona" slot to restore on clear.
+   *
+   *  No capability gate: `applyFlagSettings` on the handle is the only
+   *  prerequisite (same as setSandbox / setMemorySettings). Deliberately NOT
+   *  gated on `supportsAgents`, whose meaning is "can enumerate agents", not
+   *  "can switch the main-thread one". */
+  async setAgent(id: string, name: string | null): Promise<SessionInfo> {
+    if (name != null) {
+      const reason = agentUnusableReason(this.agentStore, name)
+      if (reason) throw new HttpError(400, reason)
+    }
+    return this.applyFlagSettingAndPersist(
+      id,
+      { agent: name ?? null },
+      'agent',
+      (s) => { s.agent = name ?? undefined },
+    )
+  }
+
   async setModel(id: string, model?: string): Promise<SessionInfo> {
     const s = this.requireLive(id)
     const wasGroup = !!s.modelGroupId
@@ -3571,6 +3641,25 @@ export class SessionManager {
     const hooksResult = 'hooks' in forwarded
       ? validateSessionHooksConfig(forwarded.hooks ?? {})
       : null
+    // `agent` is a legitimate Settings key, so this generic route is a SECOND
+    // door onto the main-thread persona (the raw-JSON settings box can send
+    // it). Left unhandled it would forward an unvalidated name to the SDK and
+    // never touch `s.agent`, leaving the live process and the broadcast
+    // SessionInfo permanently disagreeing. So: same normalisation and same
+    // store check as setAgent, and mirror the result onto the session below.
+    let agentIntent: { next: string | null } | undefined
+    if ('agent' in forwarded) {
+      const parsed = normalizeAgentName(forwarded.agent)
+      if (!parsed.ok) throw new HttpError(400, parsed.error)
+      if (parsed.name != null) {
+        const reason = agentUnusableReason(this.agentStore, parsed.name)
+        if (reason) throw new HttpError(400, reason)
+      }
+      // Normalised so the flag layer receives the same `null`-means-clear
+      // value setAgent sends (a blank string would otherwise reach the CLI).
+      forwarded.agent = parsed.name
+      agentIntent = { next: parsed.name }
+    }
     let normalizedHooks: SessionHooksConfig | undefined
     if (hooksResult && !hooksResult.ok) {
       throw new HttpError(400, `invalid hooks settings: ${formatHooksValidationErrors(hooksResult.errors)}`)
@@ -3581,6 +3670,9 @@ export class SessionManager {
     }
     return this.applyFlagSettingAndPersist(id, forwarded, 'flag settings', (s) => {
       if (normalizedHooks) s.hooks = normalizedHooks
+      // Mirror the persona onto the session so SessionInfo / the persisted
+      // meta / every re-spawn path agree with what the CLI was just told.
+      if (agentIntent) s.agent = agentIntent.next ?? undefined
       // Keep the session's persisted auto-compact window in sync when the
       // generic /settings route forwards it directly (the dedicated
       // setAutoCompactWindow route is the primary path). `autoCompactEnabled`
@@ -5197,6 +5289,7 @@ export class SessionManager {
     lastActivityAt: number
     cwd?: string
     model?: string
+    agent?: string
     modelGroupId?: string
     profileId?: string
     permissionMode?: PermissionMode
@@ -5228,6 +5321,11 @@ export class SessionManager {
       lastActivityAt: x.lastActivityAt,
       cwd: x.cwd,
       model: x.model,
+      // Main-thread agent. Projected here (not in info()) so a DORMANT
+      // session reports its persona too — infoFromMeta passes SessionMeta,
+      // which persists it, and the sidebar/panel must not show a resumable
+      // session as agent-less.
+      agent: x.agent,
       modelGroupId: x.modelGroupId,
       profileId: x.profileId,
       profileName: this.profileNameFor(x.profileId),
@@ -5567,9 +5665,12 @@ export class SessionManager {
    *  Each call site still explicitly sets its own purpose-specific extras on
    *  top of this (agent, `resume`/`forkSession`/`resumeSessionAt`, `memory`/
    *  `sandbox`, the Side Chat systemPrompt) — which of those apply genuinely
-   *  differs per path (e.g. respawnFresh/clear never carry `agent`; only
-   *  fork/clear carry `memory`/`sandbox`), so folding them in here would
-   *  hide at each call site which fields it actually carries forward.
+   *  differs per path (e.g. only fork/clear carry `memory`/`sandbox`), so
+   *  folding them in here would hide at each call site which fields it
+   *  actually carries forward. `agent` is deliberately NOT folded in either:
+   *  all four builders carry it, but each must run it through
+   *  `effectiveStartAsAgent` (the deleted/disabled drop-guard) rather than
+   *  copying the raw value.
    *  Centralizing just the truly-identical base fields removes the ~10-line
    *  duplicate block from each of the four builders without obscuring the
    *  real per-path differences. NOT used by buildResumeOpts below, which

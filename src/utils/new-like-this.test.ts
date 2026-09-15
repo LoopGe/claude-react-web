@@ -31,6 +31,16 @@ describe('buildNewLikeThisForm', () => {
     })
   })
 
+  it('copies the main-thread persona', () => {
+    const form = buildNewLikeThisForm(mkSource({ id: 's1', agent: 'reviewer' }), undefined, 10)
+    expect(form.agent).toBe('reviewer')
+  })
+
+  it('omits agent when the source has no persona', () => {
+    const form = buildNewLikeThisForm(mkSource({ id: 's1' }), undefined, 10)
+    expect(form.agent).toBeUndefined()
+  })
+
   it('leaves the title undefined when the source has none', () => {
     const form = buildNewLikeThisForm(mkSource({ id: 's1' }), undefined, 10)
     expect(form.title).toBeUndefined()

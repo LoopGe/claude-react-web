@@ -73,6 +73,47 @@ export class AgentDefinitionStore extends JsonFileStore<StoredAgentDefinition> {
   }
 }
 
+/** Why `name` can't be used as a main-thread agent, or null when it can.
+ *
+ *  Both write edges that accept an agent NAME share this: `POST /sessions`
+ *  (start-as, → `Options.agent`) and `POST /sessions/:id/agent` (mid-session
+ *  switch, → `applyFlagSettings({ agent })`). Only ENABLED definitions pass —
+ *  a disabled or unknown name would leave the CLI resolving an agent that
+ *  isn't in the spawn's `Options.agents`, so we reject rather than spin the
+ *  session under a persona we can't honour. A missing store rejects every
+ *  name for the same reason.
+ *
+ *  Returns a reason STRING rather than throwing so each caller maps it to its
+ *  own transport (a Hono 400 at the route, an HttpError in the manager)
+ *  without this module knowing about HTTP. */
+export function agentUnusableReason(
+  store: AgentDefinitionStore | undefined,
+  name: string,
+): string | null {
+  if (store?.get(name)?.enabled === true) return null
+  const why = store?.has(name) ? 'is disabled' : 'is not defined'
+  return `agent "${name}" ${why}`
+}
+
+/** Coerce a raw `agent` value from a request body into a switch intent.
+ *
+ *  `null` / absent / blank-or-whitespace all collapse to `null` = "no agent".
+ *  Blank matters: an empty string reaching `agentUnusableReason` would produce
+ *  a baffling `agent "" is not defined` instead of just clearing the persona.
+ *
+ *  Shared by the two doors that can set a main-thread agent on a LIVE session —
+ *  `POST /sessions/:id/agent` and the raw `Settings.agent` key accepted by
+ *  `POST /sessions/:id/settings` — so the two can't drift on what counts as
+ *  "clear" or on the error message. */
+export function normalizeAgentName(
+  raw: unknown,
+): { ok: true; name: string | null } | { ok: false; error: string } {
+  if (raw == null) return { ok: true, name: null }
+  if (typeof raw !== 'string') return { ok: false, error: 'agent must be a string or null' }
+  const trimmed = raw.trim()
+  return { ok: true, name: trimmed ? trimmed : null }
+}
+
 const STRING_OPTIONAL: readonly string[] = ['model', 'initialPrompt', 'observer', 'observerMessage', 'criticalSystemReminder_EXPERIMENTAL']
 const STRING_ARRAY_OPTIONAL: readonly string[] = ['tools', 'disallowedTools', 'mcpServers', 'skills']
 const MEMORY_VALUES = ['user', 'project', 'local']

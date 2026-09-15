@@ -2,8 +2,8 @@ import type { NewSessionForm, SessionGroup, SessionInfo } from '../types'
 import { firstPartyOverridesForCreate } from '../../shared/session-info'
 
 /** Build the "New like this" create form for a source session. Copies the
- *  working context (cwd / model / permission mode / betas / title) AND the
- *  per-first-party-server tool overrides (`firstPartyOverridesForCreate` —
+ *  working context (cwd / model / persona / permission mode / betas / title)
+ *  AND the per-first-party-server tool overrides (`firstPartyOverridesForCreate` —
  *  a copy with apptools silently re-enabled would surprise the user), and
  *  inherits the source's group only. A full source group drops the group
  *  (`undefined` → the copy is created ungrouped): the context menu already
@@ -18,6 +18,12 @@ export function buildNewLikeThisForm(
   const form: NewSessionForm = {
     cwd: source.cwd,
     model: source.model,
+    // Main-thread persona. A copy that silently drops it would be a different
+    // kind of session than the one the user pointed at — the same reason the
+    // first-party tool overrides are carried below. The create route rejects a
+    // name whose definition has since been disabled, which is the intended
+    // failure: better a visible 400 than a quietly plain session.
+    agent: source.agent,
     permissionMode: source.permissionMode,
     title: source.title ? `${source.title} (copy)` : undefined,
     betas: source.betas,
