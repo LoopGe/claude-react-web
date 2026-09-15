@@ -76,27 +76,14 @@ export function selectAll(el: HTMLElement): void {
  * falls back to inserting the verbatim text).
  */
 export function pasteAtCaret(
-  getEl: () => HTMLElement | null,
-  input: string,
-  setInput: (v: string) => void,
   placePastedText: (raw: string, insert: (text: string) => void) => void,
-): (raw: string) => boolean {
+): (raw: string) => string | null {
   return (raw: string) => {
     let textToInsert: string | null = null
-    placePastedText(raw, (text) => { textToInsert = text })
-    if (textToInsert === null) return false
-    const text: string = textToInsert
-    const el = getEl()
-    const offsets = el ? selectionOffsets(el) : null
-    const pos = offsets?.start ?? input.length
-    const endPos = offsets?.end ?? pos
-    const next = input.slice(0, pos) + text + input.slice(endPos)
-    setInput(next)
-    if (el) {
-      const caretPos = pos + text.length
-      requestAnimationFrame(() => placeCaretIn(el, caretPos))
-    }
-    return true
+    placePastedText(raw, (text) => {
+      textToInsert = text
+    })
+    return textToInsert
   }
 }
 

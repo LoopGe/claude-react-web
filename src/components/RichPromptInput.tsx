@@ -51,7 +51,7 @@ interface Props {
   onNewline?: () => void
   /** Called with a raw paste. When it returns true the paste was handled
    *  (collapsed); when false the caller inserted it verbatim. */
-  onPasteText?: (raw: string) => boolean
+  onPasteText?: (raw: string) => string | null
   /** Image handler — each `image/*` item on the clipboard is handed here
    *  (the `getAsFile()` result). The editor never accepts image bytes itself;
    *  the parent attaches them as preview chips the way the old textarea path
@@ -173,21 +173,35 @@ export function RichPromptInput({
     const el = ref.current
     if (!el) return
     const doc = el.ownerDocument
-    const selection = doc.getSelection()
-    const range =
-      selection && selection.rangeCount > 0 && el.contains(selection.anchorNode)
-        ? selection.getRangeAt(0)
-        : null
-    const node = doc.createTextNode(text)
-    if (range) {
-      range.deleteContents()
-      range.insertNode(node)
-      range.setStartAfter(node)
-      range.collapse(true)
-      selection!.removeAllRanges()
-      selection!.addRange(range)
-    } else {
-      el.appendChild(node)
+    // Prefer the native command. It inserts PLAIN TEXT — so the HTML defence
+    // that motivates preventDefault is untouched — and, unlike a manual DOM
+    // insert, it lands on the browser's undo stack. Rebuilding the DOM from
+    // React state (the other way to place text here) is invisible to that
+    // stack, which is why every paste used to be un-undoable.
+    let inserted = false
+    try {
+      inserted = doc.execCommand?.('insertText', false, text) ?? false
+    } catch {
+      // jsdom has no editing implementation; fall through to the manual path.
+      inserted = false
+    }
+    if (!inserted) {
+      const selection = doc.getSelection()
+      const range =
+        selection && selection.rangeCount > 0 && el.contains(selection.anchorNode)
+          ? selection.getRangeAt(0)
+          : null
+      const node = doc.createTextNode(text)
+      if (range) {
+        range.deleteContents()
+        range.insertNode(node)
+        range.setStartAfter(node)
+        range.collapse(true)
+        selection!.removeAllRanges()
+        selection!.addRange(range)
+      } else {
+        el.appendChild(node)
+      }
     }
     onChange(joinTokens(serializeTokens(el)))
   }
@@ -224,7 +238,17 @@ export function RichPromptInput({
     if (!raw) return
     // The collapse policy gets first refusal so it stays the single owner of
     // the threshold and normalization.
-    if (onPasteText?.(raw)) return
+    //
+    // The callback returns WHAT to insert rather than placing it itself: the
+    // editor has to perform the insert for it to land on the browser's undo
+    // stack, and a caller that spliced its own state instead would make every
+    // paste invisible to Ctrl+Z.
+    if (onPasteText) {
+      const toInsert = onPasteText(raw)
+      if (toInsert === null) return
+      insertPlainTextAtCaret(toInsert)
+      return
+    }
     insertPlainTextAtCaret(raw)
   }
 

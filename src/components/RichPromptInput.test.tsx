@@ -196,16 +196,22 @@ describe('RichPromptInput paste', () => {
   })
 
   it('gives the collapse policy first refusal', () => {
-    const onPasteText = vi.fn(() => true)
+    // Returning null means the callback placed the text itself; the editor
+    // must insert nothing on top of it.
+    const onPasteText = vi.fn(() => null)
     const { container } = render(
       <RichPromptInput value="" onChange={vi.fn()} ariaLabel="M" onPasteText={onPasteText} />,
     )
-    paste(editor(container), { 'text/plain': 'anything' })
+    const el = editor(container)
+    paste(el, { 'text/plain': 'anything' })
     expect(onPasteText).toHaveBeenCalledWith('anything')
+    expect(el.textContent).toBe('')
   })
 
-  it('inserts verbatim when the policy declines', () => {
-    const onPasteText = vi.fn(() => false)
+  it('inserts what the policy returns', () => {
+    // The callback hands back the text to place — verbatim for an ordinary
+    // paste. The editor performs the insert so it lands on the undo stack.
+    const onPasteText = vi.fn((raw: string) => raw)
     const { container } = render(
       <RichPromptInput value="" onChange={vi.fn()} ariaLabel="M" onPasteText={onPasteText} />,
     )

@@ -749,12 +749,7 @@ export const Composer = memo(function Composer({
             }
             disabled={disabled}
             onSubmit={onSend}
-            onPasteText={pasteAtCaret(
-              () => editorRef.current as HTMLElement | null,
-              input,
-              setInput,
-              placePastedText,
-            )}
+            onPasteText={pasteAtCaret(placePastedText)}
             onContextMenu={handleEditorContextMenu}
             onNewline={() => {
               // Insert at the live caret (not the context-menu snapshot).

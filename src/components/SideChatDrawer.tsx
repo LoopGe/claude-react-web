@@ -305,12 +305,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
                 document.execCommand('insertText', false, '\n')
               }
             }}
-            onPasteText={pasteAtCaret(
-              () => editorRef.current,
-              input,
-              setInput,
-              placePastedText,
-            )}
+            onPasteText={pasteAtCaret(placePastedText)}
           />
           <div className="side-chat-drawer-actions">
             <button
