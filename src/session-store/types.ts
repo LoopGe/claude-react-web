@@ -254,6 +254,56 @@ export interface WorkflowRecord {
   remote?: boolean
 }
 
+/** Lifecycle status of a Skill tool call. Mirrors WorkflowStatus (which
+ *  mirrors SubagentStatus) so the record can be adapted to an ActiveSubagent
+ *  when handed to SubagentOverlay. Only 'running' / 'done' / 'interrupted'
+ *  occur in practice — a skill has no async/dismissible lifecycle. */
+export type SkillStatus = SubagentStatus
+
+/** Index record for a Skill tool call — keyed by the Skill's tool_use_id.
+ *
+ *  Exists for ONE reason: a forked skill's inner conversation arrives as
+ *  frames whose `parent_tool_use_id` is this id (see SKILL_TOOL_NAME), and the
+ *  main transcript renders root frames only. Without a record naming that id
+ *  as a sidechain parent, every tool call and nested subagent the fork ran is
+ *  dropped from the row model with no way to reach it.
+ *
+ *  `childCalls` is what distinguishes the two shapes at runtime, and the card
+ *  branches on it:
+ *   - empty    → an ordinary context-only skill (the common case). No sidechain
+ *                exists, so the card renders exactly as it did before this
+ *                record type was introduced: no drill-in, no counts.
+ *   - non-empty → a fork. The card offers drill-in and SubagentOverlay renders
+ *                the sidechain with parentToolUseIdFilter = toolUseId.
+ *
+ *  Kept after completion (like ActiveSubagent / WorkflowRecord) so the overlay
+ *  stays reopenable once the skill's tool_result has landed. */
+export interface SkillRecord {
+  toolUseId: string
+  /** Raw `input.skill`, namespace included (e.g. 'superpowers:brainstorming'). */
+  rawName: string
+  /** Bare skill name with the namespace stripped — the card's title. */
+  name: string
+  /** Namespace / plugin prefix, '' when the raw name carries none. */
+  namespace: string
+  /** Optional `input.args` string, trimmed. Undefined when absent/empty. */
+  args?: string
+  startedAt?: number
+  endedAt?: number
+  status: SkillStatus
+  /** Tool calls made inside the fork's sidechain, in arrival order. Reuses
+   *  SubagentChildCall (identical shape and lifecycle: seeded 'running' by the
+   *  child tool_use, flipped by the matching child tool_result) so the row
+   *  rendering can be shared with SubagentCard. Nested Agent/Task/Explore
+   *  launches appear here too — they additionally get their OWN
+   *  ActiveSubagent record, so they stay drillable from inside the overlay. */
+  childCalls: SubagentChildCall[]
+  /** The skill's own tool_result — lands on the thread that called it. Kept so
+   *  the drill-in overlay can show the fork's final report as its closing row
+   *  (ToolCard already merges it into the card itself via `toolResults`). */
+  result?: ToolResultEntry
+}
+
 export type PlanStatus = 'pending' | 'approved' | 'rejected'
 
 /** Tool execution lifecycle.
@@ -438,6 +488,11 @@ export interface ServerMirror {
    *  `activeSubagents`, the Map reference is identity-compared in the store
    *  so snapshots only reallocate when a Workflow record actually changes. */
   activeWorkflows: Map<string, WorkflowRecord>
+  /** Skill tool_use index, keyed by the Skill's tool_use_id. Same role as
+   *  `activeWorkflows`: it names an id as a sidechain parent so a forked
+   *  skill's inner frames have somewhere to belong. Identity-compared in the
+   *  store like the other two, so snapshots only reallocate on real change. */
+  activeSkills: Map<string, SkillRecord>
 }
 
 /** Authoritative CLI session state reported by `system/session_state_changed`
@@ -607,6 +662,11 @@ export interface SessionSnapshot {
    *  Workflow stays inspectable after its tool_result lands. Mirrors
    *  subagentIndex. */
   workflowIndex: ReadonlyMap<string, WorkflowRecord>
+  /** Full Skill index (running + completed) keyed by the Skill's tool_use_id.
+   *  Read by the Skill card for its status / child counts / drill-in gate, and
+   *  by Chat to adapt a forked skill into the record SubagentOverlay expects.
+   *  No running-only sibling: skills drive no chip row. */
+  skillIndex: ReadonlyMap<string, SkillRecord>
   lastMessageUuid: string | null
   /** Transient `api_retry` frame mirrored from ServerMirror (see there). */
   apiRetry: SdkMessage | null
@@ -646,6 +706,7 @@ export function createInitialServerMirror(): ServerMirror {
     toolResults: new Map(),
     activeSubagents: new Map(),
     activeWorkflows: new Map(),
+    activeSkills: new Map(),
   }
 }
 

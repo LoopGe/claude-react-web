@@ -140,6 +140,7 @@ export default defineConfig({
       ['src/session-store/reducer.test.ts', 'node'],
       ['src/session-store/normalize.test.ts', 'node'],
       ['src/session-store/tool-status.test.ts', 'node'],
+      ['src/session-store/skill-index.test.ts', 'node'],
       ['src/session-store/extract-plan-content.test.ts', 'node'],
       // top-level pure helpers.
       ['src/local-commands.test.ts', 'node'],

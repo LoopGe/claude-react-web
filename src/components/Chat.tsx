@@ -59,6 +59,7 @@ import { SubagentOverlay } from './SubagentOverlay'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import { WorkflowOverlay } from './WorkflowOverlay'
 import { WorkflowProvider } from '../hooks/useWorkflowContext'
+import { SkillProvider, skillRecordAsSubagent } from '../hooks/useSkillContext'
 import { WorktreeChanges } from './WorktreeChanges'
 import { ReopenQuestionProvider } from '../hooks/useReopenQuestion'
 import { useMinimizedSet } from '../hooks/useMinimizedSet'
@@ -994,6 +995,31 @@ export const Chat = memo(function Chat({
     () => ({ index: stream.workflowIndex, open: openWorkflow }),
     [stream.workflowIndex, openWorkflow],
   )
+
+  // ── Skill drill-in ──────────────────────────────────────────────────────
+  // A forked skill is a sidechain parent (its inner frames carry
+  // parent_tool_use_id = the Skill's tool_use id), and that is exactly what
+  // SubagentOverlay renders — so the drill-in reuses the subagent stack rather
+  // than growing a third overlay. The only adaptation needed is the record
+  // shape: the overlay reads label/status/timing/result off an ActiveSubagent.
+  const skillCtxValue = useMemo(
+    () => ({ index: stream.skillIndex, open: openSubagent }),
+    [stream.skillIndex, openSubagent],
+  )
+  /** The subagent index plus every skill record adapted into it, so one lookup
+   *  serves both kinds of drill-in. Returns the subagent index UNCHANGED when
+   *  no skill has been seen (the common case), keeping the overlay's memo
+   *  intact — a fresh Map every render would defeat it. */
+  const overlayIndex = useMemo(() => {
+    if (stream.skillIndex.size === 0) return stream.subagentIndex
+    const merged = new Map(stream.subagentIndex)
+    for (const [id, record] of stream.skillIndex) merged.set(id, skillRecordAsSubagent(record))
+    return merged
+  }, [stream.subagentIndex, stream.skillIndex])
+  /** A skill fork has no chip to dismiss, so the overlay's × must not offer
+   *  "dismiss and close" while one is on top of the stack (DISMISS_SUBAGENT
+   *  keys off the subagent index and would find nothing anyway). */
+  const overlayTopIsSkill = stream.skillIndex.has(subagentStack[subagentStack.length - 1] ?? '')
 
   // 鈹€鈹€ AskUserQuestion minimize / re-open 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // A minimized question dialog is hidden (not resolved) so the user can
@@ -2093,6 +2119,7 @@ export const Chat = memo(function Chat({
 
       <SubagentProvider value={subagentCtxValue}>
         <WorkflowProvider value={workflowCtxValue}>
+        <SkillProvider value={skillCtxValue}>
         <ReopenQuestionProvider value={reopenCtxValue}>
         <div
           className="chat-messages-area"
@@ -2248,6 +2275,7 @@ export const Chat = memo(function Chat({
           />
         )}
         </ReopenQuestionProvider>
+        </SkillProvider>
         </WorkflowProvider>
       </SubagentProvider>
 
@@ -2615,13 +2643,18 @@ export const Chat = memo(function Chat({
 
       {subagentStack.length > 0 && (
         <SubagentProvider value={subagentCtxValue}>
+        {/* A skill can be called from inside a subagent (or from inside another
+            skill's fork), so the drill-in has to be reachable from the overlay
+            too — otherwise a nested fork is unreachable for the same reason the
+            top-level one was. `open` pushes onto this same stack. */}
+        <SkillProvider value={skillCtxValue}>
           <SubagentOverlay
             stack={subagentStack}
             items={stream.items}
-            index={stream.subagentIndex}
+            index={overlayIndex}
             onClose={closeSubagent}
             onPop={popSubagent}
-            onDismiss={stream.dismissSubagent}
+            onDismiss={overlayTopIsSkill ? undefined : stream.dismissSubagent}
             isExiting={subagentClosing}
             transitionDirection={subagentTransitionDirection}
             onExited={handleSubagentExited}
@@ -2634,6 +2667,7 @@ export const Chat = memo(function Chat({
             toolGroupCards={effectiveToolGroupCards}
             showMessageHeaders={effectiveShowMessageHeaders}
           />
+        </SkillProvider>
         </SubagentProvider>
       )}
 
@@ -2644,6 +2678,7 @@ export const Chat = memo(function Chat({
       {workflowOpenId && workflowCtxValue.index.get(workflowOpenId) && (
         <SubagentProvider value={subagentCtxValue}>
           <WorkflowProvider value={workflowCtxValue}>
+          <SkillProvider value={skillCtxValue}>
             <WorkflowOverlay
               record={workflowCtxValue.index.get(workflowOpenId)!}
               items={stream.items}
@@ -2658,6 +2693,7 @@ export const Chat = memo(function Chat({
               toolGroupCards={effectiveToolGroupCards}
               showMessageHeaders={effectiveShowMessageHeaders}
             />
+          </SkillProvider>
           </WorkflowProvider>
         </SubagentProvider>
       )}

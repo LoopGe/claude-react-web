@@ -1074,6 +1074,10 @@ export class SessionStore {
       subagentIndex: mirror.activeSubagents,
       activeWorkflows: this.getRunningWorkflows(mirror.activeWorkflows),
       workflowIndex: mirror.activeWorkflows,
+      // Exposed unfiltered — a Skill card must still find its record after the
+      // call settles (the drill-in stays open/reopenable), and skills feed no
+      // running-only chip row, so there is nothing to filter for.
+      skillIndex: mirror.activeSkills,
       lastMessageUuid: mirror.lastMessageUuid,
     }
   }

@@ -2,13 +2,14 @@ import type { Block, SdkMessage } from '../types'
 import type {
   ActiveSubagent,
   PlanStatus,
+  SkillRecord,
   SubagentChildCall,
   TranscriptItem,
   WorkflowChildAgent,
   WorkflowPhaseMeta,
   WorkflowRecord,
 } from './types'
-import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME, ENTER_WORKTREE_TOOL_NAME, EXIT_WORKTREE_TOOL_NAME } from '../constants/toolNames'
+import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, SKILL_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME, ENTER_WORKTREE_TOOL_NAME, EXIT_WORKTREE_TOOL_NAME } from '../constants/toolNames'
 import { extractMessagePlainText } from '../search'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 /** Strings the SDK / canUseTool deny path uses to mean "user said no".
@@ -715,6 +716,59 @@ export function getActiveWorktree(messages: readonly SdkMessage[]): ActiveWorktr
     }
   }
   return active
+}
+
+/** Split a raw `input.skill` value into its namespace prefix and bare name.
+ *
+ *  Plugin-qualified skills arrive as `plugin:skill`
+ *  (`superpowers:brainstorming`); project/user skills arrive bare
+ *  (`code-review`). Only the FIRST colon separates — a name containing further
+ *  colons keeps them. Shared by the record builder and the card so the chip
+ *  and the title can't disagree about where the prefix ends. */
+export function splitSkillName(raw: string): { namespace: string; name: string } {
+  const colon = raw.indexOf(':')
+  if (colon <= 0) return { namespace: '', name: raw }
+  return { namespace: raw.slice(0, colon), name: raw.slice(colon + 1) }
+}
+
+/** Extract the Skill tool_use starts from an assistant message — the Skill
+ *  analogue of `getSubagentStarts` / `getWorkflowStarts`.
+ *
+ *  Deliberately does NOT filter on `parent_tool_use_id`: a subagent (or a
+ *  forked skill) can itself call a Skill, and such a call is a sidechain
+ *  parent for its own fork just like a top-level one. The reducer keys records
+ *  by tool_use id, so nesting needs no special case.
+ *
+ *  `input.skill` is the documented field; `input.name` is accepted as a
+ *  fallback because the SDK's tool schema has drifted on this before (the
+ *  existing Skill card already reads both). A block with neither yields no
+ *  record — the card falls back to its raw-JSON rendering, unchanged. */
+export function getSkillStarts(msg: SdkMessage): SkillRecord[] {
+  if (msg.type !== 'assistant') return []
+  const out: SkillRecord[] = []
+  for (const block of getBlocks(msg)) {
+    if (block.type !== 'tool_use' || block.name !== SKILL_TOOL_NAME) continue
+    const id = extractToolUseId(block)
+    if (!id) continue
+    const input = block.input as Record<string, unknown> | undefined
+    const raw =
+      typeof input?.skill === 'string' && input.skill.trim() ? input.skill.trim()
+      : typeof input?.name === 'string' && input.name.trim() ? input.name.trim()
+      : null
+    if (!raw) continue
+    const args = typeof input?.args === 'string' ? input.args.trim() : ''
+    const { namespace, name } = splitSkillName(raw)
+    out.push({
+      toolUseId: id,
+      rawName: raw,
+      name,
+      namespace,
+      ...(args ? { args } : {}),
+      status: 'running',
+      childCalls: [],
+    })
+  }
+  return out
 }
 
 /** Extract the Workflow tool_use starts from an assistant message — the

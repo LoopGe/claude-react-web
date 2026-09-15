@@ -701,6 +701,62 @@
   opacity: 0.6;
   flex-shrink: 0;
 }
+/* Forked skill drill-in row. Only rendered when the call actually forked a
+ * sidechain, so the ordinary context-only Skill card keeps its two-line shape.
+ * Reads as a footer action rather than a second header: full-width, muted, and
+ * separated from the args line by a hairline. */
+.tool-card-skill .skill-tool-fork {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  width: 100%;
+  padding: var(--space-1-5) var(--space-2-5);
+  border: none;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.tool-card-skill .skill-tool-fork:hover:not(:disabled) {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.tool-card-skill .skill-tool-fork:disabled {
+  cursor: default;
+}
+.tool-card-skill .skill-tool-fork-marker {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+  opacity: 0.6;
+}
+.tool-card-skill .skill-tool-fork-label {
+  flex-shrink: 0;
+}
+.tool-card-skill .skill-tool-fork-meta {
+  color: var(--fg-muted);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-card-skill .skill-tool-fork-elapsed {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  opacity: 0.75;
+}
+.tool-card-skill .skill-tool-fork-open {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+  opacity: 0.6;
+}
 
 /* Todo card body — inline checklist sits flush against the header. */
 .tool-card-todo .tool-card-body {

@@ -8,6 +8,7 @@ import {
   type ServerMirror,
   type SessionAction,
   type SessionState,
+  type SubagentChildCall,
   type SubagentChildStatus,
   type TranscriptItem,
   type WorkflowStatus,
@@ -18,6 +19,7 @@ import {
   extractPlanContent,
   getPlanResultDecisions,
   getPlanToolUseIds,
+  getSkillStarts,
   getSubagentChildStarts,
   getSubagentStarts,
   getToolResultEntries,
@@ -1071,10 +1073,26 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
  *  mid-inference with no child frames for >30 min) is rare and recoverable. */
 const PENDING_TIMEOUT_MS = 30 * 60 * 1000
 
+/** Flip every still-`running` row of a SubagentChildCall list to `error`,
+ *  returning the SAME array reference when nothing needed sweeping (so the
+ *  caller's identity checks stay meaningful). Shared by the subagent sweep and
+ *  the skill sweep — both hold the same row type with the same lifecycle. */
+function sweepRunningChildCalls(
+  calls: SubagentChildCall[] | undefined,
+): SubagentChildCall[] | undefined {
+  if (!calls || !calls.some((c) => c.status === 'running')) return calls
+  return calls.map((c) =>
+    c.status === 'running'
+      ? { ...c, status: 'error' as const, endedAt: c.endedAt ?? c.startedAt }
+      : c,
+  )
+}
+
 function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
   let toolStatus = mirror.toolStatus
   let activeSubagents = mirror.activeSubagents
   let activeWorkflows = mirror.activeWorkflows
+  let activeSkills = mirror.activeSkills
 
   // toolStatus: running → error
   const swept = toolDebugEnabled() ? [] as string[] : null
@@ -1108,15 +1126,8 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
   // moves to `pending`/`background` is still live (its async work continues),
   // so its running children are left alone — a later child tool_result still
   // flips them. Mirrors the Workflow sweep flipping still-running children.
-  const sweepChildCalls = (sub: ActiveSubagent): ActiveSubagent['childToolCalls'] => {
-    const calls = sub.childToolCalls
-    if (!calls || !calls.some((c) => c.status === 'running')) return calls
-    return calls.map((c) =>
-      c.status === 'running'
-        ? { ...c, status: 'error' as const, endedAt: c.endedAt ?? c.startedAt }
-        : c,
-    )
-  }
+  const sweepChildCalls = (sub: ActiveSubagent): ActiveSubagent['childToolCalls'] =>
+    sweepRunningChildCalls(sub.childToolCalls)
   for (const [id, sub] of activeSubagents) {
     if (sub.status === 'running') {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
@@ -1186,10 +1197,31 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
     }
   }
 
-  if (toolStatus === mirror.toolStatus && activeSubagents === mirror.activeSubagents && activeWorkflows === mirror.activeWorkflows) {
+  // skills: running → interrupted; flip still-running child calls too. Only a
+  // safety net — a skill's tool_result lands on the calling thread and settles
+  // the record through the normal path. This catches the turn that ends without
+  // one (interrupt, crash, evicted frame) so the card can't spin forever.
+  for (const [id, sk] of activeSkills) {
+    const sweptCalls = sweepRunningChildCalls(sk.childCalls)
+    if (sk.status !== 'running' && sweptCalls === sk.childCalls) continue
+    if (activeSkills === mirror.activeSkills) activeSkills = new Map(activeSkills)
+    activeSkills.set(id, {
+      ...sk,
+      status: sk.status === 'running' ? 'interrupted' : sk.status,
+      endedAt: sk.endedAt ?? sk.startedAt,
+      childCalls: sweptCalls ?? sk.childCalls,
+    })
+  }
+
+  if (
+    toolStatus === mirror.toolStatus &&
+    activeSubagents === mirror.activeSubagents &&
+    activeWorkflows === mirror.activeWorkflows &&
+    activeSkills === mirror.activeSkills
+  ) {
     return mirror
   }
-  return { ...mirror, toolStatus, activeSubagents, activeWorkflows }
+  return { ...mirror, toolStatus, activeSubagents, activeWorkflows, activeSkills }
 }
 
 function applyMessage(state: SessionState, message: SdkMessage): SessionState {
@@ -1449,6 +1481,7 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
   let toolResults = mirror.toolResults
   let activeSubagents = mirror.activeSubagents
   let activeWorkflows = mirror.activeWorkflows
+  let activeSkills = mirror.activeSkills
 
   // Generic tool status — seed 'running' for every tool_use the assistant
   // emits (excluding ones with their own status map: Plan/Subagent/Question).
@@ -2092,8 +2125,138 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     }
   }
 
+  // ── Skill index ───────────────────────────────────────────────────────
+  // A Skill tool_use is usually context-only and this index is then just a
+  // status/label record. But a FORKED skill is a sidechain parent: the CLI runs
+  // it as its own agent and forwards the whole inner conversation as frames
+  // whose parent_tool_use_id is the Skill's tool_use id. Those frames are
+  // dropped by the main row model (root-only), so without the record below the
+  // fork's work — tool calls AND nested subagent launches — has no owner and
+  // no way to be reached. Same shape as the Workflow block above.
+
+  // Seed / refresh Skill records from the Skill tool_use blocks.
+  const skillStarts = getSkillStarts(message)
+  if (skillStarts.length > 0) {
+    if (activeSkills === mirror.activeSkills) activeSkills = new Map(activeSkills)
+    // Server-stamped wall-clock survives replay; falls back to now for
+    // disk-restored frames without receivedAt.
+    const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
+    for (const sk of skillStarts) {
+      const existing = activeSkills.get(sk.toolUseId)
+      activeSkills.set(sk.toolUseId, {
+        ...sk,
+        // Identity fields (name/namespace/args) are re-derived from input each
+        // time — static, so re-deriving is harmless. Everything the lifecycle
+        // wrote is preserved across a replay re-encounter.
+        startedAt: existing?.startedAt ?? stamp,
+        endedAt: existing?.endedAt,
+        status: existing?.status ?? 'running',
+        childCalls: existing?.childCalls ?? [],
+        result: existing?.result,
+      })
+    }
+    changed = true
+  }
+
+  // Capture the Skill's OWN tool_result and settle the record. It arrives on
+  // whichever thread made the call, so — unlike the child branch below — this
+  // must NOT require a parent_tool_use_id.
+  if (message.type === 'user' && activeSkills.size > 0) {
+    const skillResults = getToolResultEntries(message)
+    if (skillResults.length > 0) {
+      let touched = false
+      const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
+      for (const { toolUseId, content, isError } of skillResults) {
+        const existing = activeSkills.get(toolUseId)
+        if (!existing || existing.status !== 'running') continue
+        if (!touched) {
+          if (activeSkills === mirror.activeSkills) activeSkills = new Map(activeSkills)
+          touched = true
+        }
+        activeSkills.set(toolUseId, {
+          ...existing,
+          status: isError ? 'interrupted' : 'done',
+          endedAt: stamp,
+          result: { content, isError },
+          // The fork is over, so any child row still marked running lost its
+          // result (evicted / interrupted frame) — settle it rather than leave
+          // a spinner inside a finished card.
+          childCalls: sweepRunningChildCalls(existing.childCalls) ?? existing.childCalls,
+        })
+      }
+      changed = changed || touched
+    }
+  }
+
+  // Index the fork's tool calls. An assistant frame inside the fork's sidechain
+  // carries parent_tool_use_id = the Skill id; every tool_use block in it is
+  // one of the fork's calls. Reuses getSubagentChildStarts (it returns ALL
+  // tool_use blocks with the frame's parent id, which is exactly this shape) so
+  // the two sidechain owners can't drift on what counts as a child.
+  //
+  // Nested Agent/Task/Explore launches land here as ordinary rows AND get their
+  // own ActiveSubagent record from getSubagentStarts (which ignores parentage),
+  // so they stay drillable once the overlay renders them.
+  if (message.type === 'assistant' && activeSkills.size > 0) {
+    const { parentId, children } = getSubagentChildStarts(message)
+    if (parentId && children.length > 0) {
+      const sk = activeSkills.get(parentId)
+      // Settled records are left alone: a late frame must not reopen a finished
+      // card or advance its frozen elapsed time.
+      if (sk && sk.status === 'running') {
+        const byId = new Map(sk.childCalls.map((c) => [c.toolUseId, c]))
+        let added = false
+        const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
+        for (const child of children) {
+          if (byId.has(child.toolUseId)) continue // preserve status/result
+          byId.set(child.toolUseId, { ...child, startedAt: stamp })
+          added = true
+        }
+        if (added) {
+          if (activeSkills === mirror.activeSkills) activeSkills = new Map(activeSkills)
+          activeSkills.set(parentId, { ...sk, childCalls: Array.from(byId.values()) })
+          changed = true
+        }
+      }
+    }
+  }
+
+  // Flip a fork child's status when its tool_result lands (a user frame inside
+  // the same sidechain). No live-status guard, for the reason spelled out on
+  // the subagent equivalent: a child result carries no timing that could
+  // corrupt the parent, and letting it through is what resolves a row that the
+  // parent settled first.
+  if (message.type === 'user' && activeSkills.size > 0) {
+    const parentId = typeof message.parent_tool_use_id === 'string' ? message.parent_tool_use_id : ''
+    const sk = parentId ? activeSkills.get(parentId) : undefined
+    if (sk && sk.childCalls.length > 0) {
+      const childResults = getToolResultEntries(message)
+      if (childResults.length > 0) {
+        const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
+        let childChanged = false
+        const updated = sk.childCalls.map((c) => {
+          if (c.status !== 'running') return c
+          const match = childResults.find((r) => r.toolUseId === c.toolUseId)
+          if (!match) return c
+          childChanged = true
+          return {
+            ...c,
+            status: (match.isError ? 'error' : 'success') as SubagentChildStatus,
+            endedAt: stamp,
+            result: { content: match.content, isError: match.isError },
+          }
+        })
+        if (childChanged) {
+          if (activeSkills === mirror.activeSkills) activeSkills = new Map(activeSkills)
+          activeSkills.set(parentId, { ...sk, childCalls: updated })
+          changed = true
+        }
+      }
+    }
+  }
+
   return changed
-    ? { ...mirror, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, activeWorkflows }
+    ? { ...mirror, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, activeWorkflows, activeSkills }
     : mirror
 }
 

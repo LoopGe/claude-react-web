@@ -104,6 +104,10 @@ export interface ChatStream {
    *  after their tool_result lands — same keep-on-complete discipline as
    *  subagentIndex. */
   workflowIndex: ReadonlyMap<string, import('../session-store/types').WorkflowRecord>
+  /** Full Skill index (running + completed) keyed by toolUseId. Read by the
+   *  Skill card for its child counts + drill-in gate, and by Chat to adapt a
+   *  forked skill into the record SubagentOverlay renders. */
+  skillIndex: ReadonlyMap<string, import('../session-store/types').SkillRecord>
   replayReady: boolean
   /** Optimistically insert the user's message into the transcript so it
    *  appears immediately, before the server echoes it back. Returns the
@@ -194,6 +198,7 @@ export function useChatStream(
   const activeSubagents = useSessionField(sessionId, 'activeSubagents')
   const subagentIndex = useSessionField(sessionId, 'subagentIndex')
   const workflowIndex = useSessionField(sessionId, 'workflowIndex')
+  const skillIndex = useSessionField(sessionId, 'skillIndex')
   const replayReady = useSessionField(sessionId, 'replayReady')
   // True once the store's deferred localStorage hydrate has completed. The
   // subscribe effect gates on it so the WS subscribe carries the cached
@@ -713,6 +718,7 @@ export function useChatStream(
       activeSubagents,
       subagentIndex,
       workflowIndex,
+      skillIndex,
       replayReady,
       insertUserMessage,
       ackUserMessage,
@@ -724,6 +730,6 @@ export function useChatStream(
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
   )
 }

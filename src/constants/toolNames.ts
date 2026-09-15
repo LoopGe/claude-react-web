@@ -19,6 +19,26 @@ export const SUBAGENT_TOOL_NAMES = new Set(['Agent', 'Task', 'Explore'])
  *  single-conversation subagent drawer. */
 export const WORKFLOW_TOOL_NAME = 'Workflow'
 
+/** Skill invocation tool. Usually a context-only call: the CLI loads SKILL.md
+ *  into the current conversation and the model keeps working on the main
+ *  thread, so the card has nothing to drill into.
+ *
+ *  But a skill can also run FORKED — the CLI executes it as its own agent and
+ *  returns only a final report (`Skill "x" completed (forked execution)`). The
+ *  fork's whole inner conversation is forwarded to the host as frames whose
+ *  `parent_tool_use_id` is this tool_use id (verified against a live session:
+ *  one `code-review` call carried 64 frames — 13 Bash, 10 Read and 9 nested
+ *  Agent launches — under its id). That makes a forked Skill a sidechain
+ *  parent exactly like Agent and Workflow, and it needs the same treatment:
+ *  without a record + drill-in, the row model drops every one of those frames
+ *  (it renders root messages only) and the work is unreachable.
+ *
+ *  Kept a separate constant from SUBAGENT_TOOL_NAMES for the reason documented
+ *  on WORKFLOW_TOOL_NAME: the WorkingBubble chip row and the dismiss path key
+ *  off the subagent index, and a skill is not a subagent chip. It gets its own
+ *  index (`activeSkills`) and reuses SubagentOverlay for the drill-in. */
+export const SKILL_TOOL_NAME = 'Skill'
+
 /** Plan-mode PROPOSAL tool — the model submits a finished plan and asks to
  *  exit plan mode and start executing. Carries the plan body / allowedPrompts.
  *  This is the only name that should drive PlanCard / plan-review rendering.
