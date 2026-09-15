@@ -84,6 +84,7 @@ import { HttpError } from './errors.js'
 import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
 import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
+import { isTerminalTaskStatus } from '../shared/tasks.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
 import { coerceRewindResult, type RewindFilesResult } from '../shared/rewind.js'
@@ -779,17 +780,26 @@ export class SessionManager {
   /** Settle a background subagent's watcher from the CLI's `SubagentStop` hook
    *  — the earliest authoritative completion edge (it beats the CLI's own
    *  task_notification). No-op for an unloaded session or an agent with no
-   *  armed watcher (a sync or nested subagent). See
+   *  armed watcher (a sync or nested subagent). The hook also fires when the
+   *  subagent merely PAUSED with in-flight background work of its own; the
+   *  hook input's `background_tasks` list is the discriminator and is forwarded
+   *  verbatim — the registry holds the watcher open on a non-empty list. See
    *  BackgroundWatcherRegistry.settleByAgentId. */
   private settleBackgroundSubagentFromHook(
     sessionId: string,
-    info: { agentId: string; transcriptPath?: string; lastAssistantMessage?: string },
+    info: {
+      agentId: string
+      transcriptPath?: string
+      lastAssistantMessage?: string
+      backgroundTasks?: Array<{ id: string; status?: string }>
+    },
   ): void {
     const session = this.sessions.get(sessionId)
     if (!session) return
     this.backgroundWatchers.settleByAgentId(session, info.agentId, {
       transcriptPath: info.transcriptPath,
       lastAssistantMessage: info.lastAssistantMessage,
+      backgroundTasks: info.backgroundTasks,
     })
   }
 
@@ -3308,7 +3318,7 @@ export class SessionManager {
     if (this.phaseOf(s) !== 'idle') {
       // The parent turn may have already finished while a background
       // subagent is still running — blame the real blocker, not the turn.
-      const hasBackgroundSubagent = this.backgroundWatchers.count(s.id) > 0
+      const hasBackgroundSubagent = this.backgroundSubagentCount(s) > 0
       throw new HttpError(
         409,
         hasBackgroundSubagent
@@ -4509,11 +4519,29 @@ export class SessionManager {
   /** Reconcile a session's folded task map against the authoritative in-flight
    *  list the CLI hands to the Stop hook at turn end. No-op for a session that
    *  was unloaded between the hook firing and this callback. See
-   *  reconcileTasksFromStopHook in session-pump.ts for the sweep rules. */
+   *  reconcileTasksFromStopHook in session-pump.ts for the sweep rules.
+   *
+   *  Before the generic sweep, background-subagent watchers whose agent has
+   *  LEFT the in-flight list are settled from their transcripts — the CLI's
+   *  list is the only reliable finality signal for async subagents (their
+   *  SubagentStop hook also fires at pauses, so settling there prematurely
+   *  completed paused subagents; the list cannot lie about membership). The
+   *  settlement re-broadcasts the sidebar count when it changed: each agent
+   *  transition (pause, wake, finish) injects a notification turn whose end
+   *  fires this hook, so the count self-corrects within one turn cycle. */
   reconcileTasksFromStopHook(id: string, tasks: StopHookTaskSummary[]): void {
     const s = this.sessions.get(id)
     if (!s) return
-    reconcileTaskMapFromStopHook(s, tasks)
+    const live = new Set(tasks.map((t) => t.id))
+    const settled = this.backgroundWatchers.settleUnlisted(s, live)
+    const swept = reconcileTaskMapFromStopHook(s, tasks)
+    if (settled || swept) {
+      // The task map (and with it the sidebar's backgroundSubagentCount)
+      // changed — re-broadcast the info frame so the count dot updates in
+      // the same tick as the CLI's authoritative list. One frame per Stop
+      // hook, after both the settlement and the sweep have touched the map.
+      this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+    }
   }
 
   broadcastCommandsChanged(id: string, commands: unknown[]): void {
@@ -5247,12 +5275,42 @@ export class SessionManager {
       // Background (async) subagents still in flight. The parent turn may
       // have completed (working=false) while these keep running; the sidebar
       // uses the count to show a 'waiting' state instead of plain 'live'.
-      backgroundSubagentCount: this.backgroundWatchers.count(s.id),
+      //
+      // Counted from the folded task map, NOT from the background-watcher
+      // registry: the CLI's SubagentStop hook fires BOTH at a subagent's
+      // final stop and at a pause where it still has live background work of
+      // its own (probe-verified — the hook's background_tasks list is the
+      // parent session's in-flight set and lags the stop edge, so it cannot
+      // discriminate). Settling the watcher on a pause deleted its registry
+      // entry early and let this count hit 0 while subagents were still
+      // pending — the sidebar's waiting → live flicker. The task map instead
+      // tracks liveness from the CLI's own authoritative in-flight list
+      // (reconcileTasksFromStopHook) and stays correct across pauses.
+      backgroundSubagentCount: this.backgroundSubagentCount(s),
       pendingPermissionCount: s.pending.size,
       phase: this.phaseOf(s),
       recap: s.recap,
       skillOverride: s.skillOverride,
     }
+  }
+
+  /** Number of background subagents currently in flight, derived from the
+   *  folded task map (CLI-authoritative liveness — see the backgroundSubagentCount
+   *  note in info()). Feeds the sidebar's 'waiting' dot and phaseOf.
+   *
+   *  Exclusions: ambient / skipTranscript records are CLI housekeeping, not
+   *  user-visible background subagents (and the sweep never settles them, so
+   *  counting them would strand phaseOf at 'working' forever); records with
+   *  isBackgrounded === false are FOREGROUND subagents (the turn itself waits
+   *  on them — `working` already covers those). */
+  private backgroundSubagentCount(s: Session): number {
+    let n = 0
+    for (const rec of s.tasks.values()) {
+      if (rec.taskType !== 'subagent') continue
+      if (rec.isBackgrounded === false || rec.ambient === true || rec.skipTranscript === true) continue
+      if (!isTerminalTaskStatus(rec.status)) n++
+    }
+    return n
   }
 
   /** Coarse-grained lifecycle phase. Single source of truth for
@@ -5272,7 +5330,7 @@ export class SessionManager {
     if (s.pendingTurns > 0) return 'working'
     if (s.handle.queueDepth > 0) return 'working'
     if (s.pending.size > 0) return 'working'
-    if (this.backgroundWatchers.count(s.id) > 0) return 'working'
+    if (this.backgroundSubagentCount(s) > 0) return 'working'
     return 'idle'
   }
 

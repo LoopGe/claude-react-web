@@ -411,9 +411,9 @@ describe('ToolGroupCard', () => {
     expect(
       Array.from(container.querySelectorAll('.tool-group-entry-target')).map((e) => e.textContent),
     ).toEqual(['MessageList.tsx', '\u201cuseWsHub\u201d'])
-    // Hover and AT see the same list as the eye. `title` sits on the ellipsis
-    // line (that's what it explains), the accessible name on the button.
-    expect(container.querySelector('.tool-group-names')?.getAttribute('title'))
+    // Hover and AT see the same list as the eye. `title` sits on the whole
+    // toggle button (the full hovered title), the accessible name on it too.
+    expect(container.querySelector('.tool-group-toggle')?.getAttribute('title'))
       .toContain('MessageList.tsx')
     expect(container.querySelector('.tool-group-toggle')?.getAttribute('aria-label'))
       .toContain('\u201cuseWsHub\u201d')

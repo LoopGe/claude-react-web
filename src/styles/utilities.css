@@ -928,10 +928,12 @@
   overflow: hidden;
   font-size: var(--fs-base);
 }
-/* The header row is a plain flex container holding TWO controls: the toggle
-   (everything up to the badge) and, when a member failed, the badge itself as
-   a jump button. Hence no role/hover on the row — each control owns its own
-   affordance, and a hover wash spanning both would imply one target. */
+/* The header row is a flex container holding the toggle (everything up to the
+   badge) and, when a member failed, the failed badge as a right-hand jump
+   button. Hover washes the WHOLE row as one unit — hovering wherever in the
+   title bar (toggle or the right-hand badge) lights the whole bar together,
+   so the two controls read as a single header. The failed badge keeps its red
+   affordance on top of that wash so the error jump still reads as distinct. */
 .tool-group-summary-inner {
   display: flex;
   align-items: center;
@@ -940,9 +942,11 @@
   color: var(--fg-muted);
   min-width: 0;
 }
+.tool-group-summary-inner:hover {
+  background: var(--btn-hover-bg);
+}
 /* Fills the row minus the badge, so the click target stays nearly as large as
-   the old whole-row one. Padding lives here (not on the row) so the hover wash
-   covers the full area the user is aiming at. */
+   the old whole-row one. Transparent so the row's hover wash shows through. */
 .tool-group-toggle {
   flex: 1 1 auto;
   min-width: 0;
@@ -955,9 +959,6 @@
   border: 0;
   text-align: left;
   user-select: none;
-}
-.tool-group-toggle:hover {
-  background: var(--btn-hover-bg);
 }
 .tool-group-toggle:focus-visible {
   outline: 2px solid var(--accent);
@@ -1617,6 +1618,24 @@ button.tool-group-failed-jump:focus-visible {
   border: 1px solid var(--border);
   border-radius: var(--radius-3xs);
 }
+/* Shared status/state chip (<StatusBadge>): the single implementation for
+   both the Setting-Profiles "Active" and the App-Plugin runtime-state
+   indicators (and the plugin marketplace "Bundled"/"N plugins" tags). Tones
+   are the semantic status tokens, so light/dark parity is automatic. */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  padding: 1px 6px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.status-badge-warn { color: var(--warn); border-color: var(--warn); }
+.status-badge-danger { color: var(--danger); border-color: var(--danger); }
+.status-badge-accent { color: var(--accent); border-color: var(--accent); }
 .settings-card-badge.global {
   color: var(--accent);
   border-color: var(--accent);
@@ -2147,6 +2166,14 @@ button.tool-group-failed-jump:focus-visible {
 }
 .settings-profile-card .settings-card-toggle:hover .settings-card-chevron {
   color: var(--fg);
+}
+/* Keep the "Active" badge hugging the profile name instead of flex-grow
+   pushing it against the action buttons. The min-width override is also
+   required: .settings-mcp-card-head pads the name box to 120px even for a
+   short name, which left a large gap between the text and the badge. */
+.settings-profile-card .settings-card-name {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 /* Pending profile-change actions in the per-session settings panel
    (SessionProfileSelect): shown only while the picker differs from the

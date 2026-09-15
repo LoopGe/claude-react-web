@@ -10,13 +10,32 @@
 //
 // PRIMARY PATH (added later, probe-verified on SDK 0.3.252 / CLI 2.1.252): the
 // CLI's `SubagentStop` hook fires with `agent_id` + `agent_transcript_path` the
-// moment an agent stops — BEFORE any task_* frame it may emit — and
-// `BackgroundWatcherRegistry.settleByAgentId` settles the watcher from it with
-// zero poll latency. The polling described below is now the FALLBACK, retained
-// for what the hook cannot cover: an agent killed together with its host
-// process, a CLI too old to deliver the hook, or a hook that never arrives.
-// Whichever path resolves first deletes the watcher entry, so the other becomes
-// a no-op.
+// moment an agent stops — BEFORE any task_* frame it may emit. HOWEVER, the
+// hook is NOT a final-completion edge: it fires at BOTH kinds of stop — the
+// final one AND a pause where the subagent still has live background work of
+// its own — and the hook's `background_tasks` list is the PARENT session's
+// in-flight set that LAGS the stop edge (probe-verified: at a subagent's own
+// final stop, its own entry still reads 'running'), so it cannot discriminate
+// either. Both probe results live in server/subagent-watcher.test.ts.
+//
+// Therefore the resolution model is:
+//   - SubagentStop with `background_tasks` PRESENT → hold the watcher (do not
+//     settle, suppress the poll's transcript path — the pause writes a
+//     terminal-shaped line too). The authoritative finality signal is the
+//     parent Stop hook's in-flight list: `BackgroundWatcherRegistry
+//     .settleUnlisted` (called from the Stop-hook reconcile) settles watchers
+//     whose agent LEFT the list, with the transcript's real final text.
+//   - SubagentStop with `background_tasks` ABSENT (old CLI) → settle
+//     immediately (legacy behaviour; the poll's transcript path stays active).
+//   - maxMs backstop → synthesize `stopped` (never-strand guarantee; also the
+//     last resort for a held watcher that never gets swept).
+//
+// The sidebar's backgroundSubagentCount derives from the folded task map (CLI
+// task-list liveness), not from this registry — see SessionManager.info().
+//
+// The polling described below is the FALLBACK for what the hook cannot cover:
+// a CLI too old to deliver the hook, or a hook that never arrives. Whichever
+// path resolves first deletes the watcher entry, so the others become no-ops.
 //
 // SOLUTION (fallback): the CLI DOES write the subagent's transcript to
 //   <cliHome>/projects/<encodedCwd>/<sessionId>/subagents/agent-<agentId>.jsonl
@@ -47,6 +66,12 @@ import { pushBounded, stampReceivedAt } from './history-utils.js'
 import { isTerminalTaskStatus } from '../shared/tasks.js'
 
 const log = createLogger('subagent-watcher')
+
+/** Poll cadence while a watcher is hold-latched (SubagentStop reported the
+ *  subagent paused with in-flight work of its own). The transcript path is
+ *  dead while latched, so the tick only services the maxMs backstop — no
+ *  point burning the fast/steady cadence on it. */
+const SUPPRESSED_POLL_INTERVAL_MS = 30_000
 
 /** The CLI's config dir: $CLAUDE_CONFIG_DIR if set, else ~/.claude. The CLI
  *  stores transcripts under <cliHome>/projects/. */
@@ -228,6 +253,11 @@ export interface WatchOptions {
    *  assertion cannot distinguish from a watcher stuck at the fast cadence.
    *  Never set in production. */
   onPoll?: (info: { pollCount: number; delayMs: number }) => void
+  /** Hold the transcript-completion path open (the maxMs backstop is NOT
+   *  suppressed). Latched by the registry after a SubagentStop hook reported
+   *  in-flight background work — see the module header for why the hook
+   *  cannot act as a completion edge, and settleByAgentId for the latch. */
+  isSettleSuppressed?: () => boolean
 }
 
 /** Poll a background subagent's transcript until it reaches completion, then
@@ -294,6 +324,31 @@ export function watchBackgroundSubagent(opts: WatchOptions): () => void {
 
   const tick = () => {
     if (done) return
+    // The never-strand guarantee, shared by both branches below.
+    const backstopFinish = () =>
+      finish(
+        { status: 'stopped', summary: '' },
+        'warn',
+        `reached ${maxMs}ms backstop with no completion; synthesizing stopped`,
+      )
+    // While the hold is latched the poll cannot settle anything: the pause
+    // writes a terminal stop_reason into the transcript, indistinguishable on
+    // disk from the final stop, so any read's result is dead weight — the
+    // watcher resolves via the Stop-hook list sweep (settleUnlisted) or the
+    // backstop below. Skip the read entirely and relax the cadence: the only
+    // job left here is backstop bookkeeping. (The latch is never cleared by
+    // design — a resumed-and-finished subagent is resolved by the sweep, and
+    // the poller is stopped with it.)
+    if (opts.isSettleSuppressed?.()) {
+      const remaining = maxMs - (Date.now() - startMs)
+      if (remaining <= 0) {
+        backstopFinish()
+        return
+      }
+      // Cap at the remaining backstop budget so the deadline stays precise.
+      timer = setTimeout(tick, Math.min(Math.max(nextDelay(), SUPPRESSED_POLL_INTERVAL_MS), remaining))
+      return
+    }
     // 1. Real terminal completion?
     const completion = readSubagentCompletion(filePath)
     if (completion) {
@@ -302,11 +357,7 @@ export function watchBackgroundSubagent(opts: WatchOptions): () => void {
     }
     // 2. Hard backstop (wall-clock).
     if (Date.now() - startMs >= maxMs) {
-      finish(
-        { status: 'stopped', summary: '' },
-        'warn',
-        `reached ${maxMs}ms backstop with no completion; synthesizing stopped`,
-      )
+      backstopFinish()
       return
     }
     // Not done — reschedule at the current adaptive cadence. A
@@ -374,10 +425,14 @@ export interface BackgroundWatcherRegistryDeps {
 
 /** One armed watcher's runtime handle. `stop()` cancels its poller; `agentId`
  *  is retained so a settle-on-process-exit can locate the subagent's on-disk
- *  transcript (the transcript path is keyed by agentId, not toolUseId). */
+ *  transcript (the transcript path is keyed by agentId, not toolUseId).
+ *  `settleGate.paused` latches the poller's transcript path while the
+ *  subagent is pause-held — see the module header; resolution comes from
+ *  settleUnlisted / the backstop / stop(). */
 interface WatcherEntry {
   stop: () => void
   agentId: string
+  settleGate: { paused: boolean }
 }
 
 export class BackgroundWatcherRegistry {
@@ -389,8 +444,12 @@ export class BackgroundWatcherRegistry {
   constructor(private deps: BackgroundWatcherRegistryDeps) {}
 
   /** Number of background subagents currently being watched for a session.
-   *  Feeds `SessionInfo.backgroundSubagentCount` (sidebar 'waiting' dot) and
-   *  `phaseOf`'s working-vs-idle check. */
+   *  OBSERVABILITY ONLY — the sidebar's backgroundSubagentCount and phaseOf
+   *  derive from the folded task map instead (SessionManager.backgroundSubagent
+   *  Count): the registry's entry lifetime tracks the watcher (held through
+   *  pauses, settled by the list sweep), not the subagent's visible liveness.
+   *  Do NOT wire new UI/state gates to this — a registry entry can outlive the
+   *  subagent's completion or vice versa. */
   count(sessionId: string): number {
     return this.watchers.get(sessionId)?.size ?? 0
   }
@@ -412,11 +471,13 @@ export class BackgroundWatcherRegistry {
     }
     if (perSession.has(toolUseId)) return
     if (!session.cwd) return // without a cwd the subagent transcript path can't be computed
+    const settleGate = { paused: false }
     const stop = watchBackgroundSubagent({
       cwd: session.cwd,
       sessionId,
       agentId,
       toolUseId,
+      isSettleSuppressed: () => settleGate.paused,
       onCompleted: (completion) => {
         // Remove the watcher entry before broadcasting so the unload guard
         // can't race a concurrent stop. onCompleted fires on EVERY resolution
@@ -433,7 +494,7 @@ export class BackgroundWatcherRegistry {
         this.broadcastSynthesizedTaskNotification(session, toolUseId, agentId, completion)
       },
     })
-    perSession.set(toolUseId, { stop, agentId })
+    perSession.set(toolUseId, { stop, agentId, settleGate })
     // Seed a TaskRecord for this watcher-tracked subagent. CLI versions that
     // emit no task_* frames for background Agent dispatches (the watcher's
     // reason to exist) would otherwise never surface in session.tasks /
@@ -576,7 +637,16 @@ export class BackgroundWatcherRegistry {
   settleByAgentId(
     session: Session,
     agentId: string,
-    opts: { transcriptPath?: string; lastAssistantMessage?: string } = {},
+    opts: {
+      transcriptPath?: string
+      lastAssistantMessage?: string
+      /** The hook input's `background_tasks`: non-empty = hold (the list is
+       *  the parent session's in-flight set and lags the stop edge, so this
+       *  stop may be a pause); `[]` = the CLI positively reports nothing in
+       *  flight — settle; `undefined` = field absent (older CLI) — legacy
+       *  settle-on-hook behaviour. */
+      backgroundTasks?: Array<{ id: string; status?: string }>
+    } = {},
   ): boolean {
     const perSession = this.watchers.get(session.id)
     if (!perSession) return false
@@ -585,6 +655,20 @@ export class BackgroundWatcherRegistry {
       if (entry.agentId === agentId) { match = { toolUseId, entry }; break }
     }
     if (!match) return false
+    // HOLD, not completion: the list is the parent session's in-flight set and
+    // lags the stop edge (probe-verified: a subagent's own entry still reads
+    // 'running' at its FINAL stop), so it cannot discriminate pause from
+    // final — but either way this hook is not a settle edge when the field is
+    // present. Latch the poller's transcript path too (the pause writes a
+    // terminal-shaped line) and let settleUnlisted / the backstop resolve.
+    if (opts.backgroundTasks !== undefined && opts.backgroundTasks.length > 0) {
+      match.entry.settleGate.paused = true
+      log.info(
+        `[${session.id}] background subagent agentId=${agentId} toolUseId=${match.toolUseId} ` +
+        `stop held open — in-flight list non-empty [${opts.backgroundTasks.map((t) => t.id).join(', ')}]`,
+      )
+      return false
+    }
     try { match.entry.stop() } catch { /* ignore */ }
     perSession.delete(match.toolUseId)
     // Prefer the transcript's own final text (same source the poll path uses,
@@ -625,6 +709,64 @@ export class BackgroundWatcherRegistry {
     this.watchers.delete(sessionId)
   }
 
+  /** Settle every armed watcher whose agent has LEFT the CLI's authoritative
+   *  in-flight list (the parent Stop hook's `background_tasks`). This is the
+   *  finality signal for async subagents on CLIs that deliver the hook: the
+   *  SubagentStop hook itself also fires at pauses (where the agent stays
+   *  listed), so it cannot be trusted as a completion edge — but list
+   *  membership can. Called from the Stop-hook reconcile before the generic
+   *  sweep, so the synthesized 'completed' (with the transcript's real final
+   *  text) lands before the sweep would have marked the record 'stopped'.
+   *  Watchers whose agent is still listed stay armed (the subagent merely
+   *  paused, or is mid-run). Does NOT broadcast the sidebar info frame itself —
+   *  the caller (the Stop-hook reconcile) broadcasts once after both the
+   *  settlement and the sweep have touched the task map. Returns true when
+   *  anything was settled. */
+  settleUnlisted(session: Session, live: Set<string>): boolean {
+    const perSession = this.watchers.get(session.id)
+    if (!perSession || perSession.size === 0) return false
+    // Id-space guard, mirroring the generic sweep's bail (session-pump.ts):
+    // a non-empty list that matches NO known task record is more likely an
+    // id-space mismatch than ground truth — acting on it would kill running
+    // watchers. Matching a record (any task, not just a watcher's) proves the
+    // list shares our id space, so zero watcher-matches then legitimately
+    // means "those agents left the in-flight set". An empty list needs no such
+    // guard ("nothing is in flight" is id-space independent).
+    if (live.size > 0) {
+      let anyKnown = false
+      for (const id of live) {
+        if (session.tasks.has(id)) { anyKnown = true; break }
+      }
+      if (!anyKnown) {
+        for (const entry of perSession.values()) {
+          if (live.has(entry.agentId)) { anyKnown = true; break }
+        }
+      }
+      if (!anyKnown) {
+        log.warn(`[session ${session.id}] in-flight list matches no known task record — skipping watcher sweep (id-space mismatch?)`)
+        return false
+      }
+    }
+    let settled = false
+    for (const [toolUseId, entry] of Array.from(perSession.entries())) {
+      if (live.has(entry.agentId)) continue
+      try { entry.stop() } catch { /* ignore */ }
+      perSession.delete(toolUseId)
+      const completion: SubagentCompletion = (session.cwd
+        ? readSubagentCompletion(subagentTranscriptPath(session.cwd, session.id, entry.agentId))
+        : null) ?? { status: 'stopped', summary: '' }
+      log.info(
+        `[${session.id}] background subagent agentId=${entry.agentId} toolUseId=${toolUseId} ` +
+        `left the CLI's in-flight list (status=${completion.status})`,
+      )
+      if (this.deps.isLive(session.id)) {
+        this.broadcastSynthesizedTaskNotification(session, toolUseId, entry.agentId, completion)
+      }
+      settled = true
+    }
+    return settled
+  }
+
   /** Settle every armed watcher for a session because its CLI subprocess just
    *  exited (crash / kill / unexpected exit — detected by ProcessMonitor in
    *  ms). This is the CERTAIN completion signal the transcript-poll fallback
@@ -660,7 +802,10 @@ export class BackgroundWatcherRegistry {
       perSession.delete(toolUseId)
       // Path 1: the subagent may have finished a terminal frame just before
       // the crash — prefer its real output over a synthesized `stopped`.
-      const completion: SubagentCompletion = (session.cwd
+      // EXCEPT for a latched (pause-held) watcher: its transcript's terminal
+      // line is the PAUSE narration, not a result, and with the host process
+      // gone the subagent can never resume to produce a real one.
+      const completion: SubagentCompletion = (!entry.settleGate.paused && session.cwd
         ? readSubagentCompletion(subagentTranscriptPath(session.cwd, session.id, entry.agentId))
         : null) ?? { status: 'stopped', summary: '' }
       log.info(

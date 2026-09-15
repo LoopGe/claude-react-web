@@ -278,6 +278,38 @@ describe('subagent-watcher', () => {
       expect(result.summary).toBe('')
     })
 
+    it('isSettleSuppressed holds the transcript-completion path (paused subagent) but NOT the maxMs backstop', async () => {
+      // A paused subagent's transcript is terminal-SHAPED (its pause stop wrote
+      // stop_reason 'end_turn') but is NOT a final completion — the SubagentStop
+      // hook said background work is still in flight. The poll must therefore
+      // hold off: only the backstop (or the CLI in-flight-list sweep, which
+      // stops this poller outright) may resolve it. While held, the read is
+      // skipped entirely and the cadence relaxes to the suppressed interval.
+      const cwd = '/proj'
+      const sessionId = 'sess-paused'
+      const agentId = 'agent-paused'
+      const f = subagentTranscriptPath(cwd, sessionId, agentId)
+      mkdirSync(path.dirname(f), { recursive: true })
+      writeFileSync(
+        f,
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'still waiting for the 150-second timer' }], stop_reason: 'end_turn' } }) + '\n',
+      )
+      const result = await new Promise<SubagentCompletion>((resolve) => {
+        watchBackgroundSubagent({
+          cwd,
+          sessionId,
+          agentId,
+          toolUseId: 'tu_paused',
+          onCompleted: resolve,
+          intervalMs: 5,
+          maxMs: 60,
+          isSettleSuppressed: () => true,
+        })
+      })
+      // NOT the transcript's premature 'completed' — the backstop's 'stopped'.
+      expect(result.status).toBe('stopped')
+    })
+
     it('polls at the fast cadence during the fast phase (short subagents settle quickly)', async () => {
       // A short subagent finishes within the fast phase. With a tiny
       // fastIntervalMs and a huge steady intervalMs, completion is only picked
@@ -489,6 +521,67 @@ describe('BackgroundWatcherRegistry.settleByAgentId', () => {
     expect(notification(pushed)).toMatchObject({ status: 'completed', summary: '' })
   })
 
+  it('does NOT settle when the hook reports in-flight background work (paused subagent)', () => {
+    // ROOT-CAUSE REGRESSION TEST (sidebar flickers waiting → live): the CLI
+    // fires SubagentStop both at a FINAL stop and at a pause where the
+    // subagent still has live background children of its own and will be
+    // woken again (verified: a subagent that detached a `sleep 150` bash task
+    // stopped with stop_reason 'end_turn' at 31s, resumed at 150s, and only
+    // truly finished at 183s). The hook input's background_tasks is the CLI's
+    // documented discriminator; settling on a pause deleted the watcher
+    // early, backgroundSubagentCount hit 0, and the sidebar flipped to 'live'
+    // while the subagent was still pending.
+    const { registry, session, pushed, broadcasts } = setup()
+    // The transcript is already terminal-shaped at a pause (identical on-disk
+    // form to a final stop), so the settle path must not fall through to it.
+    const file = terminalTranscript('still waiting for the 150-second timer')
+    registry.start(session, TOOL_USE, AGENT)
+    expect(registry.count('s1')).toBe(1)
+    const broadcastsAtStart = broadcasts.length
+
+    expect(registry.settleByAgentId(session, AGENT, {
+      transcriptPath: file,
+      lastAssistantMessage: 'still waiting for the 150-second timer',
+      backgroundTasks: [{ id: 'bash-child-1', status: 'running' }],
+    })).toBe(false)
+
+    // Watcher stays armed (sidebar keeps 'waiting'), no completion frame.
+    // start() seeded one arm-time update broadcast; the skipped settle adds none.
+    expect(registry.count('s1')).toBe(1)
+    expect(notification(pushed)).toBeUndefined()
+    expect(broadcasts).toHaveLength(broadcastsAtStart)
+    expect(session.tasks.get(AGENT)?.status).toBe('running')
+  })
+
+  it('settles a previously-paused subagent on its FINAL stop (background_tasks empty)', () => {
+    const { registry, session, pushed } = setup()
+    const file = terminalTranscript('AGENT_DONE')
+    registry.start(session, TOOL_USE, AGENT)
+    expect(registry.settleByAgentId(session, AGENT, {
+      transcriptPath: file,
+      backgroundTasks: [{ id: 'bash-child-1', status: 'running' }],
+    })).toBe(false)
+    // The subagent was woken by its child, finished, and stopped again —
+    // this time with an empty in-flight set. The same watcher must settle.
+    expect(registry.settleByAgentId(session, AGENT, {
+      transcriptPath: file,
+      lastAssistantMessage: 'AGENT_DONE',
+      backgroundTasks: [],
+    })).toBe(true)
+    expect(registry.count('s1')).toBe(0)
+    expect(notification(pushed)).toMatchObject({ status: 'completed', summary: 'AGENT_DONE' })
+  })
+
+  it('settles when background_tasks is absent (older CLI) — documented legacy behaviour', () => {
+    // A CLI without the background_tasks field gives no pause/finish
+    // discriminator; keep the pre-existing settle-on-hook semantics there.
+    const { registry, session, pushed } = setup()
+    registry.start(session, TOOL_USE, AGENT)
+    expect(registry.settleByAgentId(session, AGENT, { lastAssistantMessage: 'done' })).toBe(true)
+    expect(registry.count('s1')).toBe(0)
+    expect(notification(pushed)).toMatchObject({ status: 'completed', summary: 'done' })
+  })
+
   it('is a no-op for an agent with no armed watcher (sync / nested / already settled)', () => {
     const { registry, session, pushed, broadcasts } = setup()
     expect(registry.settleByAgentId(session, 'unknown-agent', {})).toBe(false)
@@ -524,5 +617,78 @@ describe('BackgroundWatcherRegistry.settleByAgentId', () => {
     registry.cancel('s1', TOOL_USE, session)
     expect(pushed).toHaveLength(after)
     expect(session.tasks.get(AGENT)?.status).toBe('completed')
+  })
+
+  describe('settleUnlisted', () => {
+    let tmp: string
+    beforeEach(() => {
+      tmp = mkdtempSync(path.join(os.tmpdir(), 'sw-sweep-'))
+      process.env.CLAUDE_CONFIG_DIR = tmp
+    })
+    afterEach(() => {
+      delete process.env.CLAUDE_CONFIG_DIR
+      rmSync(tmp, { recursive: true, force: true })
+    })
+
+    it('settles a watcher whose agent left the CLI in-flight list, with the transcript text', () => {
+      // The CLI's in-flight list (parent Stop hook's background_tasks) is the
+      // only reliable finality signal: the SubagentStop hook also fires at
+      // pauses, where the agent STAYS listed. Leaving the list = final.
+      const { registry, session, pushed } = setup()
+      ;(session as { cwd?: string }).cwd = '/proj'
+      const f = subagentTranscriptPath('/proj', 's1', AGENT)
+      mkdirSync(path.dirname(f), { recursive: true })
+      writeFileSync(
+        f,
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'the real final answer' }] } }) + '\n',
+      )
+      registry.start(session, TOOL_USE, AGENT)
+      expect(registry.count('s1')).toBe(1)
+      // A sibling task the CLI still lists — proves the list shares our id
+      // space, so AGENT's absence is a genuine departure, not a mismatch.
+      session.tasks.set('some-other-task', {
+        taskId: 'some-other-task', description: 'sibling', status: 'running', updatedAt: 1,
+      } as never)
+
+      expect(registry.settleUnlisted(session, new Set(['some-other-task']))).toBe(true)
+
+      expect(registry.count('s1')).toBe(0)
+      expect(notification(pushed)).toMatchObject({
+        subtype: 'task_notification',
+        task_id: AGENT,
+        status: 'completed',
+        summary: 'the real final answer',
+      })
+    })
+
+    it('leaves watchers whose agent is still listed (paused / mid-run)', () => {
+      const { registry, session, pushed } = setup()
+      registry.start(session, TOOL_USE, AGENT)
+      expect(registry.settleUnlisted(session, new Set([AGENT, 'other']))).toBe(false)
+      expect(registry.count('s1')).toBe(1)
+      expect(notification(pushed)).toBeUndefined()
+      registry.stopAll('s1')
+    })
+
+    it('bails (settles nothing) when a non-empty list matches no armed agentId', () => {
+      // Id-space guard, mirroring the generic sweep's bail: a list whose ids
+      // match nothing known is more likely a shape mismatch than "every
+      // tracked agent finished" — acting on it would kill running watchers.
+      const { registry, session, pushed } = setup()
+      registry.start(session, TOOL_USE, AGENT)
+      expect(registry.settleUnlisted(session, new Set(['task-1', 'task-2']))).toBe(false)
+      expect(registry.count('s1')).toBe(1)
+      expect(notification(pushed)).toBeUndefined()
+      registry.stopAll('s1')
+    })
+
+    it('synthesizes stopped (not completed) when the transcript has no terminal frame', () => {
+      // It left the in-flight set, which is not proof it succeeded — same
+      // semantics as the generic task-map sweep.
+      const { registry, session, pushed } = setup()
+      registry.start(session, TOOL_USE, AGENT)
+      expect(registry.settleUnlisted(session, new Set())).toBe(true)
+      expect(notification(pushed)).toMatchObject({ status: 'stopped', summary: '' })
+    })
   })
 })
