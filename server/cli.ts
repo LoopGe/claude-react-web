@@ -364,14 +364,32 @@ async function runServer(args: CliArgs): Promise<void> {
       log.error('ws shutdown error:', err)
     }
     disableFileLogging()
-    await uiStateStore.flush()
-    // App Plugins: flush the registry + marketplace store + tear down any
-    // subprocesses (Stage B2). Runs before sessionManager.shutdown() so a
-    // plugin mid-Host-call doesn't race the session pool teardown.
+    // Flush every debounced JSON store. A write scheduled inside the debounce
+    // window before this signal would otherwise die with the process — the
+    // timer is unref'd, so nothing else keeps it alive. flush() is a no-op
+    // for a clean store (`!dirty` early-return), so the common case costs
+    // nothing. Includes the app-plugin stores; the manager teardown below
+    // must stay AFTER this so a plugin mid-Host-call doesn't race the
+    // session pool teardown (Stage B2).
     try {
-      await appPluginMarketplaceStore.flush()
+      // allSettled, not all: one failing store must not mask the others or
+      // strand sibling flushes as unhandled rejections during teardown.
+      const results = await Promise.allSettled([
+        store.flush(), // SessionStore
+        mcpStore.flush(),
+        mpStore.flush(),
+        snippetStore.flush(),
+        uiStateStore.flush(),
+        agentDefinitionStore.flush(),
+        uploadStore.flush(),
+        appPluginStore.flush(),
+        appPluginMarketplaceStore.flush(),
+      ])
+      for (const r of results) {
+        if (r.status === 'rejected') log.error('store flush error:', r.reason)
+      }
     } catch (err) {
-      log.error('app plugins marketplace flush error:', err)
+      log.error('store flush error:', err)
     }
     try {
       await appPluginManager.shutdown()
