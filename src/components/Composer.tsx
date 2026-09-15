@@ -1,4 +1,4 @@
-// Chat composer: textarea + attachments + send/interrupt buttons.
+// Chat composer: rich-text editor + attachments + send/interrupt buttons.
 //
 // Pure UI — all side-effecting bits (upload, send, interrupt, history
 // persistence) are passed in. The keyboard handling is deliberately
@@ -13,6 +13,8 @@ import type { InputHistoryApi } from '../hooks/useInputHistory'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useToast } from '../hooks/useToast'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
+import { selectionOffsets, placeCaretIn, pasteAtCaret } from './richPromptApi'
+import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker, pickerFlatCommands } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
@@ -163,8 +165,23 @@ export const Composer = memo(function Composer({
   scheduled,
   onSendScheduled,
 }: Props) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // RichPromptInput monkey-patches the RichPromptHandle methods onto this
+  // div in a useLayoutEffect (deps: [value, ref, onChange]).  The ref's
+  // type already carries the `& RichPromptHandle` intersection, so the
+  // `as unknown as RichPromptHandle | null` casts below are safe narrowing
+  // no-ops — they document that the methods are attached dynamically.
+  const editorRef = useRef<HTMLDivElement & RichPromptHandle>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  /** Character offset of the caret in the editor. */
+  const getCaretOffset = (): number => {
+    const el = editorRef.current
+    if (!el) return 0
+    const sel = el.ownerDocument.getSelection()
+    if (!sel || sel.rangeCount === 0 || !el.contains(sel.anchorNode)) return 0
+    const offsets = (el as unknown as RichPromptHandle).selectionOffsets()
+    return offsets?.start ?? 0
+  }
   /** Interrupt-button suffix naming the queued turns the Stop click will
    *  withdraw — interpolated into both the tooltip and the aria-label so the
    *  pluralization can't drift between them. Empty when nothing is queued. */
@@ -174,12 +191,12 @@ export const Composer = memo(function Composer({
 
   // ── Right-click context menu state ─────────────────────────────
   //
-  // The textarea's native context menu is replaced with our own so we can
+  // The editor's native context menu is replaced with our own so we can
   // mix application-level actions (recap, snippets) with the standard
   // edit operations. Because clicking a menu item moves focus off the
-  // textarea, we snapshot the selection at the moment of right-click —
+  // editor, we snapshot the selection at the moment of right-click —
   // every Cut / Copy / Paste / Insert action references THAT range, not
-  // whatever the textarea reports later.
+  // whatever the editor reports later.
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [savedSelection, setSavedSelection] = useState<{ start: number; end: number }>({ start: 0, end: 0 })
   // Clipboard hint failures (cut/copy/paste from the context menu) now
@@ -229,21 +246,12 @@ export const Composer = memo(function Composer({
   const confirmPicker = useCallback(() => {
     const cmd = pickerCommands[pickerIndex]
     if (!cmd) return
-    const caret = textareaRef.current?.selectionStart ?? input.length
-    const before = input.slice(0, caret)
-    const wordStart = before.lastIndexOf(' ') + 1
-    const after = input.slice(caret)
-    const newText = input.slice(0, wordStart) + '/' + cmd.name + ' ' + after
-    setInput(newText)
+    // RichPromptHandle.replaceSlashWord does the splice and caret restore.
+    const h = editorRef.current as unknown as RichPromptHandle | null
+    if (!h) return
+    h.replaceSlashWord('/' + cmd.name + ' ')
     setPickerOpen(false)
-    requestAnimationFrame(() => {
-      const el = textareaRef.current
-      if (!el) return
-      const newPos = wordStart + cmd.name.length + 2 // '/' + name + ' '
-      el.focus()
-      el.setSelectionRange(newPos, newPos)
-    })
-  }, [input, setInput, pickerIndex, pickerCommands])
+  }, [pickerIndex, pickerCommands])
 
   // After a history step the textarea's caret is still where it was,
   // which on a multi-line recall puts you in the middle of the prompt.
@@ -253,27 +261,26 @@ export const Composer = memo(function Composer({
     (text: string) => {
       setInput(text)
       requestAnimationFrame(() => {
-        const el = textareaRef.current
-        if (!el) return
-        el.focus()
-        el.setSelectionRange(text.length, text.length)
+        const h = editorRef.current as unknown as RichPromptHandle | null
+        if (!h) return
+        h.placeCaretIn(text.length)
       })
     },
     [setInput],
   )
 
-  // Focus the textarea when the composer (re)mounts for a new session.
+  // Focus the editor when the composer (re)mounts for a new session.
   useEffect(() => {
-    textareaRef.current?.focus()
+    editorRef.current?.focus()
   }, [])
 
   // Refocus on parent request (e.g. after send, where clicking the Send
-  // button moved focus off the textarea). A number signal instead of a
+  // button moved focus off the editor). A number signal instead of a
   // boolean so repeated identical requests still fire — every increment
   // is a distinct event even if the previous one hadn't settled.
   useEffect(() => {
     if (focusSignal == null) return
-    textareaRef.current?.focus()
+    editorRef.current?.focus()
   }, [focusSignal])
 
   // ── Mouse-wheel history navigation ─────────────────────────────
@@ -287,7 +294,6 @@ export const Composer = memo(function Composer({
   const wheelLockRef = useRef(-Infinity) // Date.now() of the last history step
   const wheelAccumRef = useRef(0) // |deltaY| accumulated toward a step
   const wheelAtRef = useRef(-Infinity) // Date.now() of the last wheel event
-  const composingRef = useRef(false) // IME composition in progress
 
   // `history` (a new object literal each render) / `input` / `recall` change
   // every keystroke, and `pickerOpen` / `disabled` flip on interaction; read
@@ -300,13 +306,13 @@ export const Composer = memo(function Composer({
   const disabledRef = useRef(disabled)
   disabledRef.current = disabled
 
-  // The textarea is swapped for a preview div in preview mode and gone when
+  // The editor is swapped for a preview div in preview mode and gone when
   // terminated; re-attach the listener whenever its on-screen presence
   // changes (the effect bails out on identical derived booleans otherwise).
-  const textareaShown = !terminated && !(expanded && previewMode)
+  const editorShown = !terminated && !(expanded && previewMode)
   useEffect(() => {
-    if (!textareaShown) return
-    const el = textareaRef.current
+    if (!editorShown) return
+    const el = editorRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
       // Wheel is a pointer-position event (unlike the keyboard history keys,
@@ -317,7 +323,9 @@ export const Composer = memo(function Composer({
       // Wheel events don't carry isComposing; track IME via composition
       // events (mirrors the Enter/Tab guards). Focus loss ends composition
       // even when some IMEs skip compositionend, so onBlur resets it too.
-      if (pickerOpenRef.current || disabledRef.current || composingRef.current) return
+      if (pickerOpenRef.current || disabledRef.current) return
+      // Check IME composition state via the RichPromptHandle.
+      if ((el as unknown as RichPromptHandle).isComposing?.()) return
 
       // deltaMode: 0 = pixels, 1 = lines, 2 = pages → normalize to px.
       let dy = e.deltaY
@@ -360,16 +368,16 @@ export const Composer = memo(function Composer({
       e.preventDefault()
       recall(next)
     }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [textareaShown])
+    el.addEventListener('wheel', onWheel as EventListener, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel as EventListener)
+  }, [editorShown])
 
   const openFilePicker = () => fileInputRef.current?.click()
 
   // ── Context menu helpers ──────────────────────────────────────
   //
   // All edits operate on the snapshot taken when the menu opened, never
-  // on the live textarea selection (which is gone the moment the menu
+  // on the live editor selection (which is gone the moment the menu
   // takes focus). insertAtSavedSelection replaces the snapshot range with
   // `text` and moves the caret to the end of the inserted text.
   const insertAtSavedSelection = useCallback(
@@ -377,35 +385,20 @@ export const Composer = memo(function Composer({
       const { start, end } = savedSelection
       const next = input.slice(0, start) + text + input.slice(end)
       setInput(next)
-      const caret = start + text.length
       requestAnimationFrame(() => {
-        const el = textareaRef.current
+        const el = editorRef.current
         if (!el) return
-        el.focus()
-        el.setSelectionRange(caret, caret)
+        placeCaretIn(el, start + text.length)
       })
     },
     [input, savedSelection, setInput],
   )
 
-  // The native insert/delete, the atomic reference keys, the double-click
-  // widening and the paste routing all live in one hook so this composer and
-  // the side-chat drawer cannot drift apart on them.
-  const onFallbackEdit = useCallback(() => {
-    if (history.isBrowsing()) history.reset()
-  }, [history])
-  const {
-    insertAtCaret,
-    placePastedText,
-    handleRefKeyDown,
-    widenToRef,
-    handlePaste: handleRefPaste,
-  } = usePastedTextEditing({
-    input,
-    setInput,
-    textareaRef,
+  // Paste policy — collapse long pastes into `[Pasted text #N]` references.
+  // The rich editor handles the DOM side (Backspace/Delete/arrow atomics,
+  // double-click widening, paste routing) natively on its chip elements.
+  const { placePastedText } = usePastedTextEditing({
     addPastedText: onAddPastedText,
-    onFallbackEdit,
   })
 
   const handleCut = useCallback(async () => {
@@ -436,7 +429,7 @@ export const Composer = memo(function Composer({
       const raw = await navigator.clipboard.readText()
       if (!raw) return
       // Goes to the range snapshotted when the menu opened, not the live
-      // caret: the menu holds focus, so the textarea is blurred while this
+      // caret: the menu holds focus, so the editor is blurred while this
       // runs. insertAtSavedSelection also restores focus afterwards.
       placePastedText(raw, insertAtSavedSelection)
     } catch {
@@ -446,12 +439,11 @@ export const Composer = memo(function Composer({
 
   const handleSelectAll = useCallback(() => {
     requestAnimationFrame(() => {
-      const el = textareaRef.current
-      if (!el) return
-      el.focus()
-      el.setSelectionRange(0, input.length)
+      const h = editorRef.current as unknown as RichPromptHandle | null
+      if (!h) return
+      h.selectAll()
     })
-  }, [input.length])
+  }, [])
 
   const handleInsertSnippet = useCallback(
     (s: ComposerSnippet) => {
@@ -465,16 +457,16 @@ export const Composer = memo(function Composer({
     onSaveCurrentAsSnippet(input)
   }, [input, onSaveCurrentAsSnippet])
 
-  const handleTextareaContextMenu = useCallback(
-    (e: React.MouseEvent<HTMLTextAreaElement>) => {
+  const handleEditorContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLElement>) => {
       // The slash-command picker is its own keyboard-routed UI; popping a
       // second floating panel on top of it is confusing. Defer to the
       // browser default in that case (cheap escape hatch).
       if (pickerOpen) return
       e.preventDefault()
-      const el = textareaRef.current
+      const el = editorRef.current
       if (el) {
-        setSavedSelection({ start: el.selectionStart, end: el.selectionEnd })
+        setSavedSelection(selectionOffsets(el) ?? { start: 0, end: 0 })
       }
       // Pull the latest snippets from the server so the menu reflects edits
       // made in another tab/panel (cheap; matches the "refetch on open"
@@ -724,195 +716,151 @@ export const Composer = memo(function Composer({
             )}
           </div>
         ) : (
-        <textarea
-          ref={textareaRef}
-          className={`textarea${expanded ? ' textarea-expanded' : ''}`}
-          aria-label="Message input"
-          placeholder={
-            dragOver
-              ? 'Drop files to attach…'
-              : bashMode
-                ? 'Run a shell command in the session cwd (Enter = run)'
-                : suggestion && input === ''
-                  ? suggestion
-                  : 'Send a message (Enter = send, Shift/Ctrl+Enter = newline, ↑/↓ or scroll history)'
-          }
-          value={input}
-          onCompositionStart={() => { composingRef.current = true }}
-          onCompositionEnd={() => { composingRef.current = false }}
-          onBlur={() => { composingRef.current = false }}
-          onContextMenu={handleTextareaContextMenu}
-          onPaste={(e) => handleRefPaste(e, onPasteImage)}
-          onDoubleClick={widenToRef}
-          onChange={(e) => {
-            const val = e.target.value
-            setInput(val)
-            if (history.isBrowsing()) history.reset()
-
-            // Slash command trigger: detect if the caret is inside a
-            // word that starts with "/" (at a word boundary). Suppressed
-            // in `!` bash mode — there, `/` is shell syntax, not a command.
-            const caret = e.target.selectionStart
-            const before = val.slice(0, caret)
-            const wordStart = before.lastIndexOf(' ') + 1
-            const word = before.slice(wordStart)
-            if (!val.startsWith('!') && word.startsWith('/') && !word.includes(' ') && commands && commands.length > 0) {
-              setPickerOpen(true)
-              setPickerQuery(word.slice(1))
-              setPickerIndex(0)
-            } else if (pickerOpen) {
-              setPickerOpen(false)
-            }
-          }}
-          onKeyDown={(e) => {
-            // When the slash command picker is open, route arrow/enter/escape
-            // to the picker instead of the existing history/send handlers.
-            if (pickerOpen) {
-              if (e.key === 'ArrowUp') {
-                e.preventDefault()
-                // Wrap: ArrowUp on the first candidate jumps to the bottom one.
-                setPickerIndex((i) => {
-                  const n = pickerCommands.length
-                  if (n <= 1) return 0
-                  return i > 0 ? i - 1 : n - 1
-                })
-                return
-              }
-              if (e.key === 'ArrowDown') {
-                e.preventDefault()
-                // Wrap: ArrowDown on the bottom candidate jumps back to the first.
-                setPickerIndex((i) => {
-                  const n = pickerCommands.length
-                  if (n <= 1) return 0
-                  return i < n - 1 ? i + 1 : 0
-                })
-                return
-              }
-              if (e.key === 'Enter' || e.key === 'Tab') {
-                e.preventDefault()
-                confirmPicker()
-                return
-              }
-              if (e.key === 'Escape') {
-                e.preventDefault()
+          <RichPromptInput
+            editorRef={editorRef}
+            value={input}
+            onPasteImage={(file) => void onPasteImage(file)}
+            onChange={(val) => {
+              setInput(val)
+              if (history.isBrowsing()) history.reset()
+              // Slash command trigger.
+              const caret = getCaretOffset()
+              const before = val.slice(0, caret)
+              const wordStart = before.lastIndexOf(' ') + 1
+              const word = before.slice(wordStart)
+              if (!val.startsWith('!') && word.startsWith('/') && !word.includes(' ') && commands && commands.length > 0) {
+                setPickerOpen(true)
+                setPickerQuery(word.slice(1))
+                setPickerIndex(0)
+              } else if (pickerOpen) {
                 setPickerOpen(false)
+              }
+            }}
+            ariaLabel="Message input"
+            className={`textarea${expanded ? ' textarea-expanded' : ''} rich-prompt`}
+            placeholder={
+              dragOver
+                ? 'Drop files to attach…'
+                : bashMode
+                  ? 'Run a shell command in the session cwd (Enter = run)'
+                  : suggestion && input === ''
+                    ? suggestion
+                    : 'Send a message (Enter = send, Shift/Ctrl+Enter = newline, ↑/↓ or scroll history)'
+            }
+            disabled={disabled}
+            onSubmit={onSend}
+            onPasteText={pasteAtCaret(
+              () => editorRef.current as HTMLElement | null,
+              input,
+              setInput,
+              placePastedText,
+            )}
+            onContextMenu={handleEditorContextMenu}
+            onNewline={() => {
+              // Insert at the live caret (not the context-menu snapshot).
+              // execCommand is a jsdom no-op (it does not exist there) but
+              // works in real browsers; the onInput handler then reports the
+              // serialized DOM back through onChange.
+              if (typeof document.execCommand === 'function') {
+                document.execCommand('insertText', false, '\n')
+              }
+            }}
+            onKeyDown={(e) => {
+              // Alt+Enter: toggle expanded mode. Must be checked before
+              // the picker routing below.
+              if (e.key === 'Enter' && e.altKey) {
+                e.preventDefault()
+                e.stopPropagation()
+                setExpanded((v) => !v)
+                setPreviewMode(false)
                 return
               }
-              // All other keys (letters, backspace, etc.) fall through to
-              // onChange which will re-filter or close the picker.
-            }
-            // A `[Pasted text #N]` reference is one unit, not two dozen
-            // characters: Backspace/Delete remove it whole and the arrows step
-            // over it. Handled here, before the history/send paths below, so an
-            // arrow at a reference edge is consumed instead of starting a walk;
-            // suppressed while the picker owns the arrow keys.
-            if (!pickerOpen && handleRefKeyDown(e)) return
-            // Bare Tab with an empty input fills the predicted prompt
-            // suggestion (if any). Modifiers keep the default behaviour
-            // (focus traversal / shift-tab). `recall` sets the input and
-            // moves the caret to the end, keeping focus in the textarea.
-            if (
-              e.key === 'Tab' &&
-              !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey &&
-              input === '' && suggestion &&
-              !e.nativeEvent.isComposing
-            ) {
-              e.preventDefault()
-              recall(suggestion)
-              return
-            }
-            // Ctrl/Cmd+Enter inserts a newline (same as Shift+Enter). The
-            // browser doesn't do this for us, so we insert '\n' at the caret.
-            if (
-              e.key === 'Enter' &&
-              (e.ctrlKey || e.metaKey) &&
-              !e.nativeEvent.isComposing
-            ) {
-              e.preventDefault()
-              // Same native-first insert Shift+Enter gets, so the newline
-              // keeps the browser's undo stack and scrolls the caret into view.
-              insertAtCaret('\n')
-              return
-            }
-            // Alt+Enter: toggle expanded mode (enlarge textarea + show
-            // Edit/Preview tabs). Checked BEFORE the Enter-send guard below
-            // (alt doesn't affect shiftKey, so the send guard would catch it
-            // first). stopPropagation prevents the key from bubbling further.
-            if (e.key === 'Enter' && e.altKey) {
-              e.preventDefault()
-              e.stopPropagation()
-              setExpanded((v) => !v)
-              setPreviewMode(false)
-              return
-            }
-            // Skip Enter while an IME composition is active — CJK input
-            // methods fire Enter to confirm a candidate, and we'd otherwise
-            // treat that as "send" and ship a half-finished message.
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault()
-              onSend()
-              return
-            }
-            // Ctrl/Cmd+P / Ctrl/Cmd+N — unconditional history nav, matches
-            // bash / emacs bindings. Works even mid-line.
-            if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'n')) {
-              e.preventDefault()
-              const next = e.key === 'p' ? history.prev(input) : history.next()
-              if (next != null) recall(next)
-              return
-            }
-            // Bare ↑ / ↓ only recall history when the caret is at a line
-            // edge that would otherwise do nothing useful (first line for
-            // up, last line for down) — so editing a multi-line draft
-            // still works naturally.
-            const el = textareaRef.current
-            if (!el) return
-            if (e.key === 'ArrowUp' && !e.shiftKey && !e.altKey) {
-              const caretAtTop = el.selectionStart === 0 || !input.slice(0, el.selectionStart).includes('\n')
-              if (caretAtTop) {
-                const next = history.prev(input)
-                if (next != null) {
+              // When the slash command picker is open, route arrow/enter/escape
+              // to the picker instead of the existing history/send handlers.
+              if (pickerOpen) {
+                if (e.key === 'ArrowUp') {
                   e.preventDefault()
-                  recall(next)
+                  setPickerIndex((i) => {
+                    const n = pickerCommands.length
+                    if (n <= 1) return 0
+                    return i > 0 ? i - 1 : n - 1
+                  })
+                  return
+                }
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault()
+                  setPickerIndex((i) => {
+                    const n = pickerCommands.length
+                    if (n <= 1) return 0
+                    return i < n - 1 ? i + 1 : 0
+                  })
+                  return
+                }
+                if (e.key === 'Enter' || e.key === 'Tab') {
+                  e.preventDefault()
+                  confirmPicker()
+                  return
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setPickerOpen(false)
+                  return
                 }
               }
-            } else if (e.key === 'ArrowDown' && !e.shiftKey && !e.altKey) {
-              const caretAtBottom =
-                el.selectionEnd === input.length || !input.slice(el.selectionEnd).includes('\n')
-              if (caretAtBottom && history.isBrowsing()) {
-                const next = history.next()
-                if (next != null) {
-                  e.preventDefault()
-                  recall(next)
+              // Bare Tab with an empty input fills the predicted prompt
+              // suggestion (if any).
+              if (
+                e.key === 'Tab' &&
+                !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey &&
+                input === '' && suggestion &&
+                !e.nativeEvent.isComposing
+              ) {
+                e.preventDefault()
+                recall(suggestion)
+                return
+              }
+              // Ctrl/Cmd+P / Ctrl/Cmd+N — unconditional history nav.
+              if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'n')) {
+                e.preventDefault()
+                const next = e.key === 'p' ? history.prev(input) : history.next()
+                if (next != null) recall(next)
+                return
+              }
+              // Bare ↑ / ↓ recall history at line edges.
+              const h = editorRef.current as unknown as RichPromptHandle | null
+              if (!h) return
+              if (e.key === 'ArrowUp' && !e.shiftKey && !e.altKey) {
+                if (h.caretOnFirstLine()) {
+                  const next = history.prev(input)
+                  if (next != null) {
+                    e.preventDefault()
+                    recall(next)
+                  }
+                }
+              } else if (e.key === 'ArrowDown' && !e.shiftKey && !e.altKey) {
+                const offsets = h.selectionOffsets()
+                const caretAtBottom = offsets
+                  ? (offsets.end === input.length || !input.slice(offsets.end).includes('\n'))
+                  : true
+                if (caretAtBottom && history.isBrowsing()) {
+                  const next = history.next()
+                  if (next != null) {
+                    e.preventDefault()
+                    recall(next)
+                  }
                 }
               }
-            }
-          }}
-          disabled={disabled}
-        />
+            }}
+          />
         )}
         {pickerOpen && filteredCommands.length > 0 && (
           <CommandPicker
             commands={filteredCommands}
             query={pickerQuery}
             selectedIndex={pickerIndex}
-            anchorRef={textareaRef}
-            onSelect={(cmd) => {
-              // Confirm directly with the clicked command.
-              const caret = textareaRef.current?.selectionStart ?? input.length
-              const before = input.slice(0, caret)
-              const wordStart = before.lastIndexOf(' ') + 1
-              const after = input.slice(caret)
-              const newText = input.slice(0, wordStart) + '/' + cmd.name + ' ' + after
-              setInput(newText)
-              setPickerOpen(false)
-              requestAnimationFrame(() => {
-                const el = textareaRef.current
-                if (!el) return
-                const newPos = wordStart + cmd.name.length + 2
-                el.focus()
-                el.setSelectionRange(newPos, newPos)
-              })
+            anchorRef={editorRef}
+            onSelect={() => {
+              confirmPicker()
             }}
             onClose={() => setPickerOpen(false)}
           />

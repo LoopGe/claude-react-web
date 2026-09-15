@@ -8,8 +8,6 @@ import {
   normalizePastedText,
   parseReferences,
   planPaste,
-  refKeyAction,
-  refRanges,
   shouldCollapsePaste,
   tokenize,
   type PastedTextMap,
@@ -178,50 +176,6 @@ describe('planPaste', () => {
   })
 })
 
-describe('refKeyAction', () => {
-  const text = `hi ${'[Pasted text #1 +2 lines]'}`
-  const START = 3
-  const END = text.length
-
-  it('deletes the whole reference on Backspace at its end', () => {
-    expect(refKeyAction(text, END, 'Backspace')).toEqual({
-      kind: 'delete',
-      from: START,
-      to: END,
-    })
-  })
-
-  it('deletes the whole reference on Delete at its start', () => {
-    expect(refKeyAction(text, START, 'Delete')).toEqual({
-      kind: 'delete',
-      from: START,
-      to: END,
-    })
-  })
-
-  it('steps the caret over the whole reference on ArrowLeft from its end', () => {
-    expect(refKeyAction(text, END, 'ArrowLeft')).toEqual({ kind: 'move', caret: START })
-  })
-
-  it('steps the caret over the whole reference on ArrowRight from its start', () => {
-    expect(refKeyAction(text, START, 'ArrowRight')).toEqual({ kind: 'move', caret: END })
-  })
-
-  it('returns null when the caret is not against a reference', () => {
-    expect(refKeyAction('hello', 5, 'Backspace')).toBeNull()
-    expect(refKeyAction(text, 1, 'Backspace')).toBeNull()
-    expect(refKeyAction(text, 1, 'ArrowLeft')).toBeNull()
-  })
-
-  it('returns null for a key it does not own', () => {
-    expect(refKeyAction(text, END, 'ArrowUp')).toBeNull()
-  })
-
-  it('returns null for a caret in the middle of a reference', () => {
-    expect(refKeyAction(text, 10, 'Backspace')).toBeNull()
-  })
-})
-
 describe('tokenize', () => {
   it('splits literal text from references', () => {
     expect(tokenize('hi [Pasted text #1 +2 lines] there')).toEqual([
@@ -280,18 +234,6 @@ describe('joinTokens', () => {
     for (const text of samples) {
       expect(joinTokens(tokenize(text))).toBe(text)
     }
-  })
-})
-
-describe('refRanges', () => {
-  it('reports the half-open range of each reference', () => {
-    expect(refRanges('ab [Pasted text #1 +2 lines] cd')).toEqual([
-      { id: 1, start: 3, end: 3 + '[Pasted text #1 +2 lines]'.length },
-    ])
-  })
-
-  it('reports nothing for text with no references', () => {
-    expect(refRanges('plain text')).toEqual([])
   })
 })
 

@@ -6,12 +6,14 @@
 // subscription stays alive during collapse. This component receives them
 // as props and focuses purely on rendering + input.
 
-import { memo, useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
+import { memo, useEffect, useRef, useState, useCallback } from 'react'
 import type { SessionInfo } from '../types'
 import type { ChatStream } from '../hooks/useChatStream'
 import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
 import { MessageList, WorkingBubble } from './MessageList'
 import { PermissionDialog } from './PermissionDialog'
+import { RichPromptInput } from './RichPromptInput'
+import { pasteAtCaret } from './richPromptApi'
 import { IconX, IconArrowLeft, IconSendInterruptToggle, IconLoader, IconPaperclip } from './icons/ToolIcons'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
@@ -63,7 +65,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   // only shows a thumb when the body itself scrolls (e.g. empty drawer).
   const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
   const bodyRefMerged = useMergedRef(bodyRef, setBodyOs)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const editorRef = useRef<HTMLDivElement>(null)
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const pastedImages = usePastedImages()
@@ -72,9 +74,8 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   // on send, same as the main composer.
   const { add: addPastedText, expand: expandPastedText } = usePastedTexts()
   const fileInputRef = useRef<HTMLInputElement>(null)
-  // Same reference-editing rules as the main composer (see the hook).
-  const { handleRefKeyDown, widenToRef, handlePaste: handleRefPaste } =
-    usePastedTextEditing({ input, setInput, textareaRef, addPastedText })
+  // Paste policy — the rich editor handles Backspace/Delete/arrows natively.
+  const { placePastedText } = usePastedTextEditing({ addPastedText })
   /** Waiting = a background subagent is still in flight after the side-chat
    *  turn ended. Mirrors Chat.tsx's derivation (checks both `pending` and
    *  `background` — the latter survives a server-restart replay where no
@@ -144,18 +145,8 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     if (el) el.scrollTop = el.scrollHeight
   }, [stream.items.length, stream.streamingContent])
 
-  // Auto-focus the textarea on mount.
-  useEffect(() => { textareaRef.current?.focus() }, [])
-
-  // Auto-grow the textarea up to the CSS max-height (180px), then become
-  // scrollable. Reset to 'auto' first so it can also shrink when the
-  // user deletes lines — otherwise it would only ever grow.
-  useLayoutEffect(() => {
-    const el = textareaRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 180)}px`
-  }, [input])
+  // Auto-focus the editor on mount.
+  useEffect(() => { editorRef.current?.focus() }, [])
 
   // When the user prefers reduced motion, CSS animations are disabled
   // (animation: none) so onAnimationEnd never fires. Skip straight to
@@ -295,30 +286,31 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           <div className="side-chat-image-error">{pastedImages.error}</div>
         )}
         <div className="side-chat-drawer-input-row">
-          <textarea
-            ref={textareaRef}
-            className="side-chat-drawer-input"
-            aria-label="Message"
+          <RichPromptInput
+            editorRef={editorRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              // A `[Pasted text #N]` reference is one unit: Backspace/Delete
-              // remove it whole and the arrows step over it.
-              if (handleRefKeyDown(e)) return
-              // Skip Enter while an IME composition is active — Enter in
-              // that context confirms the candidate, not submission. Without
-              // this check Chinese/Japanese/Korean users would send partial
-              // candidate strings.
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault()
-                void handleSend()
-              }
-            }}
-            onDoubleClick={widenToRef}
-            onPaste={(e) => handleRefPaste(e, (file) => void pastedImages.addImage(file))}
+            onChange={setInput}
+            ariaLabel="Message"
+            className="side-chat-drawer-input"
             placeholder={session.terminated ? 'Session ended' : 'Ask something...'}
             disabled={session.terminated || sending}
-            rows={1}
+            onSubmit={() => void handleSend()}
+            onPasteImage={(file) => void pastedImages.addImage(file)}
+            onNewline={() => {
+              // Insert a literal \n at the live caret. execCommand is a jsdom
+              // no-op (it does not exist there) but works in real browsers;
+              // the onInput handler then reports the serialized DOM back
+              // through onChange. Matches the main Composer's onNewline.
+              if (typeof document.execCommand === 'function') {
+                document.execCommand('insertText', false, '\n')
+              }
+            }}
+            onPasteText={pasteAtCaret(
+              () => editorRef.current,
+              input,
+              setInput,
+              placePastedText,
+            )}
           />
           <div className="side-chat-drawer-actions">
             <button
