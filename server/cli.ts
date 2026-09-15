@@ -19,6 +19,7 @@ import { loadConfig, config } from './config.js'
 import { disableFileLogging, getLogFilePath, createLogger, setLogToStderr } from './log.js'
 import { SessionStore, defaultStateDir } from './persistence.js'
 import { McpConfigStore } from './mcp-config.js'
+import { AgentDefinitionStore } from './agent-definition-store.js'
 import { SessionManager } from './session-manager.js'
 import { SnippetStore } from './snippet-store.js'
 import { UiStateStore } from './ui-state-store.js'
@@ -136,6 +137,9 @@ async function runServer(args: CliArgs): Promise<void> {
   const uiStateStore = new UiStateStore({ stateDir })
   await uiStateStore.load()
 
+  const agentDefinitionStore = new AgentDefinitionStore({ stateDir })
+  await agentDefinitionStore.load()
+
   const uploadStore = new UploadStore({ stateDir })
   const uploadEntries = await uploadStore.load()
   if (uploadEntries.length) {
@@ -167,6 +171,7 @@ async function runServer(args: CliArgs): Promise<void> {
     store,
     mcpConfigStore: mcpStore,
     mpStore,
+    agentStore: agentDefinitionStore,
     claudeBinary,
     autoResume: true,
     crashRecovery: true,
@@ -228,6 +233,7 @@ async function runServer(args: CliArgs): Promise<void> {
     snippetStore,
     uploadStore,
     uiStateStore,
+    agentDefinitionStore,
     mpStore,
     appPluginManager: args.disableAppPlugins ? undefined : appPluginManager,
     appPluginMarketplaceStore: args.disableAppPlugins ? undefined : appPluginMarketplaceStore,
