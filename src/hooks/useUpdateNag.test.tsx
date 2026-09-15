@@ -9,6 +9,7 @@ import {
   readNagDismiss,
   writeNagDismiss,
   useUpdateNag,
+  type UpdateNagMode,
 } from './useUpdateNag'
 import type { UpdateInfo } from '../../shared/update-info'
 
@@ -30,11 +31,22 @@ function baseInfo(over: Partial<UpdateInfo> = {}): UpdateInfo {
   }
 }
 
+// renderHook's callback has to be a top-level use* function, passed as the hook
+// itself: useHarness is a custom hook, and inside one the rule treats an inline
+// arrow as a plain callback and reports every hook the arrow calls.
+function useNagHarness({
+  info,
+  onOpenDialog,
+}: {
+  info: UpdateInfo | null
+  onOpenDialog: (mode: UpdateNagMode) => void
+}) {
+  useUpdateNag(info, onOpenDialog)
+  return useToastList()
+}
+
 function useHarness(info: UpdateInfo | null, onOpenDialog = vi.fn()) {
-  const nag = renderHook(() => {
-    useUpdateNag(info, onOpenDialog)
-    return useToastList()
-  }, { wrapper })
+  const nag = renderHook(useNagHarness, { wrapper, initialProps: { info, onOpenDialog } })
   return { ...nag, onOpenDialog }
 }
 
@@ -81,16 +93,21 @@ describe('useUpdateNag', () => {
   })
 
   it('does not re-push on an info identity change with the same values', () => {
-    const { result, rerender } = renderHook(
-      ({ info }: { info: UpdateInfo }) => {
-        useUpdateNag(info, vi.fn())
-        return useToastList()
-      },
-      { wrapper, initialProps: { info: baseInfo() } },
-    )
+    const first = vi.fn()
+    const { result, rerender } = useHarness(baseInfo(), first)
     expect(result.current).toHaveLength(1)
-    rerender({ info: baseInfo({ latest: '0.8.0' }) }) // new object, same version
+    // A new info object with the same version, plus a fresh callback identity —
+    // what an inline arrow from the caller amounts to.
+    const second = vi.fn()
+    rerender({ info: baseInfo({ latest: '0.8.0' }), onOpenDialog: second })
     expect(result.current).toHaveLength(1)
+    // The toast still on screen was pushed by the FIRST render; its action must
+    // call the LATEST opener — that is what the synced ref is for.
+    act(() => {
+      result.current[0].onClick?.()
+    })
+    expect(second).toHaveBeenCalledWith('update')
+    expect(first).not.toHaveBeenCalled()
   })
 
   it('action click opens the dialog and dismissal persists the key', () => {

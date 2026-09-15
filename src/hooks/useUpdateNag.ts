@@ -54,10 +54,16 @@ export function useUpdateNag(
   onOpenDialog: (mode: UpdateNagMode) => void,
 ): void {
   const toast = useToast()
-  // Stable identity so the effect doesn't re-run (and re-push) when the
-  // caller's inline arrow changes every render.
+  // The toast's action button fires long after the effect that registered it has
+  // returned, so the opener is read at CLICK time — while the effect that pushes
+  // the toast must not re-run (and re-push) just because the caller's inline
+  // arrow changed identity every render. A ref synced in its own effect gives
+  // both: a stable identity whose value is always the latest callback. (Writing
+  // it during render instead is what react-hooks/refs forbids.)
   const onOpenRef = useRef(onOpenDialog)
-  onOpenRef.current = onOpenDialog
+  useEffect(() => {
+    onOpenRef.current = onOpenDialog
+  }, [onOpenDialog])
   const toastedRef = useRef<string | null>(null)
 
   useEffect(() => {

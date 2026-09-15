@@ -23,8 +23,8 @@ describe('useDiagnostics', () => {
     await waitFor(() => expect(result.current.data).toEqual(data))
     expect(mocks.get).toHaveBeenCalledWith('/sessions/s1/diagnostics', expect.anything())
     mocks.get.mockResolvedValue({ ...data, stderrTail: ['x'] })
-    await act(async () => { await result.current.refresh() })
-    expect(result.current.data?.stderrTail).toEqual(['x'])
+    act(() => { result.current.refresh() })
+    await waitFor(() => expect(result.current.data?.stderrTail).toEqual(['x']))
   })
   it('put sends a boolean override and null clears it', async () => {
     const { result } = renderHook(() => useDiagnostics('s1'))
@@ -68,11 +68,32 @@ describe('useDiagnostics', () => {
     expect(result.current.loading).toBe(true)
     // Trigger a second refresh — should abort the first
     mocks.get.mockResolvedValueOnce({ ...data, stderrTail: ['second'] })
-    await act(async () => { await result.current.refresh() })
-    expect(result.current.data?.stderrTail).toEqual(['second'])
+    act(() => { result.current.refresh() })
+    await waitFor(() => expect(result.current.data?.stderrTail).toEqual(['second']))
     // Resolve the first fetch — should be a no-op because it was aborted
     resolveFirst!(data)
     await new Promise((r) => setTimeout(r, 10))
     expect(result.current.data?.stderrTail).toEqual(['second'])
+  })
+  // DiagnosticsPanel swaps itself for a skeleton on `loading && !data` and for an
+  // error card on `error && !data`, so a refresh must not blank `data` the user is
+  // already reading — and once data has loaded, a failed refresh keeps painting it
+  // (the error card only ever renders while nothing has loaded).
+  it('keeps the loaded data on screen while a refresh is in flight', async () => {
+    const { result } = renderHook(() => useDiagnostics('s1'))
+    await waitFor(() => expect(result.current.data).toEqual(data))
+    mocks.get.mockReturnValueOnce(new Promise<DiagnosticsData>(() => {}))
+    act(() => { result.current.refresh() })
+    expect(result.current.loading).toBe(true)
+    expect(result.current.data).toEqual(data)
+  })
+  it('keeps the last good data when a refresh fails', async () => {
+    const { result } = renderHook(() => useDiagnostics('s1'))
+    await waitFor(() => expect(result.current.data).toEqual(data))
+    mocks.get.mockRejectedValueOnce(new Error('boom'))
+    act(() => { result.current.refresh() })
+    await waitFor(() => expect(result.current.error).toBe('boom'))
+    expect(result.current.data).toEqual(data)
+    expect(result.current.loading).toBe(false)
   })
 })
