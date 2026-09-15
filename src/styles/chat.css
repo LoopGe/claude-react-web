@@ -1314,11 +1314,19 @@
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
+/* Spacing on a thinking card comes from INSIDE its own box, never from a
+   margin. A thinking-only message leaves this card the sole child of .msg-body,
+   which is every case that occurs (119/119 assistant messages with a thinking
+   block carry nothing else), so a top margin is a gap to a previous block that
+   isn't there: it separated nothing and pushed the single line down inside the
+   bubble — 4.7px above the text vs 0.7px below, against the bubble's symmetric
+   9px padding. The 4px lives on `.thinking-summary` instead (padding, not
+   margin), which is also where .tool-result-summary keeps its own: symmetric,
+   inside the box, and part of the click target. Row height 23.3px vs that
+   card's 22px — the same family as every other collapsed card in the
+   transcript (.tool-group-toggle is a fixed 36px). */
 .thinking-details {
   color: var(--fg-muted);
-  /* margin-top only (not `4px 0`) to match .tool-result-details, so the
-     bottom gap between a thinking card and the next block is consistent. */
-  margin-top: var(--space-1);
 }
 .thinking-summary {
   cursor: pointer;
@@ -1326,6 +1334,11 @@
   align-items: baseline;
   gap: var(--space-2);
   min-width: 0;
+  /* Vertical padding on the <summary>, matching .tool-result-summary: it is the
+     click target, so the padded strip stays clickable (padding on the wrapper
+     would leave a dead band above and below the text). See the note on
+     .thinking-details for why this is padding and not a margin. */
+  padding: var(--space-1) 0;
 }
 .thinking-label {
   flex: none;
@@ -1366,9 +1379,10 @@
 /* Thinking-text <pre>. Self-sufficient: carries its own code-block chrome
    (background, border, radius, padding, overflow, mono font, size) so it no
    longer leans on a shared `.msg-body pre` base. Only a small top gap below
-   the summary; the bottom is zeroed so bottom spacing is governed by the
-   `.thinking-details` wrapper — matching `.tool-result-details` — instead of
-   a bottom margin the collapse's flow-root would trap inside the card. */
+   the summary; the bottom is zeroed so no bottom margin is trapped inside the
+   collapse's flow-root. The gap below the card comes from the next block and
+   the transcript row gap — nothing in this card carries spacing of its own any
+   more (see the note on .thinking-details). */
 .thinking-body {
   margin: var(--space-1-5) 0 0;
   padding: var(--space-2-5) var(--space-3);
