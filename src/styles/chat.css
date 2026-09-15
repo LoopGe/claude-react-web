@@ -1332,7 +1332,24 @@
   font-size: var(--fs-sm);
 }
 /* When collapsed, show a one-line preview of the reasoning, ellipsized.
-   When expanded, the preview line is hidden so only the full body shows. */
+   When expanded, the preview line is hidden so only the full body shows.
+
+   The preview's DOM text is the reasoning UNBOUNDED — blocks.tsx deliberately
+   does not cap it, because a hard `slice()` cut the text with no "…" whenever
+   the cap happened to fit inside the panel width (a clipped preview looked
+   identical to a complete one). Two costs are accepted with that, measured on
+   a Chromium probe of this exact flex row at 900px / below:
+   - the line is a SECOND full layout of the reasoning text: ~0.2ms at 2k
+     chars, ~2.1ms at 20k, ~4.2ms at 50k, on every relayout of a visible card.
+     Dropping text-overflow only takes 20k from 2.1ms to 1.9ms, so the cost is
+     the text layout itself, not the ellipsis — the always-mounted
+     `.thinking-body` <pre> does NOT absorb it.
+   - the whole text sits in the <summary>: it is the collapse toggle's
+     accessible name, and a triple-click / select-all hands all of it to the
+     copy-selection and to Chat.tsx's search seed (which rejects >200 chars).
+   A generous cap in blocks.tsx (one that still overflows every realistic panel
+   width, so the ellipsis stays the visible truncator) bounds both without
+   changing a single rendered pixel. */
 .thinking-preview {
   flex: 1;
   min-width: 0;

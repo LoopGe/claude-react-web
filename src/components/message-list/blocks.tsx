@@ -37,7 +37,19 @@ export const BlockView = memo(function BlockView({ block, searchQuery, activeMat
   }
   if (block.type === 'thinking' && typeof block.thinking === 'string') {
     if (block.thinking.trim().length === 0) return null
-    const preview = block.thinking.replace(/\s+/g, ' ').trim().slice(0, 120)
+    // Whitespace is collapsed because the preview renders as one `nowrap` line
+    // (`.thinking-preview`). The length is deliberately NOT capped: the old
+    // `slice(0, 120)` cut the text with no ellipsis whenever the cap happened
+    // to fit inside the panel width, so a clipped preview looked identical to a
+    // complete one. Truncation is left entirely to the CSS ellipsis, which
+    // always marks itself with "…".
+    //
+    // Accepted costs of dropping the cap — see the note on `.thinking-preview`
+    // in styles/chat.css for the measurements: the preview line is a second
+    // full layout of the reasoning text, and the whole text sits in the
+    // <summary> (the toggle's accessible name, and what a triple-click /
+    // select-all hands to copy and to the search seed).
+    const preview = block.thinking.replace(/\s+/g, ' ').trim()
     return (
       <AnimatedDetails
         className="thinking-details"
