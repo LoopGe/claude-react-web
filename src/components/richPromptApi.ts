@@ -59,21 +59,20 @@ export function selectAll(el: HTMLElement): void {
 }
 
 /**
- * Build an `onPasteText` callback that splices the inserted text at the live
- * caret and restores the caret afterwards. Shared by the main Composer and
- * the SideChatDrawer so the two can't diverge on caret handling — they once
- * did (the drawer appended to the end instead of splicing, and did not
- * restore the caret).
+ * Build the `onPasteText` callback shared by the main Composer and the
+ * SideChatDrawer, so the two can't diverge on what a paste becomes — they once
+ * did (the drawer appended to the end instead of honouring the caret).
  *
- * `getEl` reads the element lazily (at paste time) so a ref's `.current` is
- * always current. `input`/`setInput` are captured at the render that
- * produces the callback, which is correct because the paste event fires
- * after the render commits.
+ * It applies the paste-collapse policy and answers with the text to insert:
+ * the verbatim clipboard text for an ordinary paste, or a
+ * `[Pasted text #N]` reference when the paste was collapsed. `null` means
+ * insert nothing.
  *
- * Returns the callback for `RichPromptInput.onPasteText`: it returns `true`
- * when the paste was collapsed into a reference (the editor should not
- * insert anything itself) and `false` when the caller declined (the editor
- * falls back to inserting the verbatim text).
+ * It deliberately does NOT place the text itself. `RichPromptInput` performs
+ * the insert with `execCommand('insertText')`, which is what keeps the paste
+ * on the browser's undo stack — a caller that wrote the value through React
+ * state instead would rebuild the DOM behind the browser's back and make every
+ * paste un-undoable.
  */
 export function pasteAtCaret(
   placePastedText: (raw: string, insert: (text: string) => void) => void,

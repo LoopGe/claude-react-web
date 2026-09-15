@@ -57,6 +57,29 @@ describe('RichPromptInput', () => {
     expect(onChange).toHaveBeenCalledWith('[Pasted text #1] tail')
   })
 
+  it('builds the chip when the DOM already holds the reference as plain text', () => {
+    // What a paste does: the reference text lands in the DOM, and `value`
+    // becomes that same string. The two then serialize identically, so a
+    // string-equality check calls the DOM "in sync" and skips the rebuild —
+    // the reference stays ordinary text, Backspace eats it a character at a
+    // time, and a half-deleted one no longer matches `parseReferences`, so the
+    // pasted body silently never reaches the model.
+    const { container, rerender } = render(
+      <RichPromptInput value="hello" onChange={vi.fn()} ariaLabel="M" />,
+    )
+    editor(container).textContent = '[Pasted text #1 +2 lines]'
+    rerender(
+      <RichPromptInput
+        value="[Pasted text #1 +2 lines]"
+        onChange={vi.fn()}
+        ariaLabel="M"
+      />,
+    )
+    const chip = container.querySelector(`.${CHIP_CLASS}`)
+    expect(chip).not.toBeNull()
+    expect(chip!.getAttribute('data-pasted-ref')).toBe('1')
+  })
+
   it('does not touch the DOM when the incoming value already matches it', () => {
     // Re-rendering identical content would move the caret on every keystroke.
     const { container, rerender } = render(

@@ -67,6 +67,37 @@ describe('serializeTokens', () => {
     expect(serializeTokens(host)).toEqual([{ kind: 'text', text: 'a\nb' }])
   })
 
+  it('reads a block container as a line break', () => {
+    // `execCommand('insertText')` materialises a '\n' as a block element in
+    // Chromium. Flattening blocks with no separator silently JOINS the lines,
+    // so a multi-line paste reached the model as one run-on line.
+    const host = document.createElement('div')
+    host.innerHTML = 'one<div>two</div><div>three</div>'
+    expect(joinTokens(serializeTokens(host))).toBe('one\ntwo\nthree')
+  })
+
+  it('does not open a leading break for a block that starts the value', () => {
+    const host = document.createElement('div')
+    host.innerHTML = '<div>one</div><div>two</div>'
+    expect(joinTokens(serializeTokens(host))).toBe('one\ntwo')
+  })
+
+  it('keeps an empty line held by a block-wrapped <br>', () => {
+    // `<div><br></div>` is an EMPTY LINE: the block supplies the break and the
+    // <br> is only how the empty line renders. Skipping both would join the
+    // lines on either side of it.
+    const host = document.createElement('div')
+    host.innerHTML = '<div>line1</div><div><br></div><div>line2</div>'
+    expect(joinTokens(serializeTokens(host))).toBe('line1\n\nline2')
+  })
+
+  it('treats a trailing block-wrapped <br> as a trailing newline', () => {
+    // "abc" then Shift+Enter: Chromium produces abc<div><br></div>.
+    const host = document.createElement('div')
+    host.innerHTML = 'abc<div><br></div>'
+    expect(joinTokens(serializeTokens(host))).toBe('abc\n')
+  })
+
   it('recurses into plain wrappers', () => {
     const host = document.createElement('div')
     const inner = document.createElement('span')

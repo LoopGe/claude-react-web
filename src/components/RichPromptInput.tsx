@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 import { joinTokens, tokenize } from '../utils/pastedText'
-import { renderTokens, serializeTokens } from '../utils/richPromptDom'
+import { renderTokens, serializeTokens, domRepresentsValue } from '../utils/richPromptDom'
 import { offsetOf, slashWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
 import { selectionOffsets, placeCaretIn, selectAll } from './richPromptApi'
 
@@ -49,8 +49,14 @@ interface Props {
   onSubmit?: () => void
   /** Shift+Enter or Ctrl/Cmd+Enter. */
   onNewline?: () => void
-  /** Called with a raw paste. When it returns true the paste was handled
-   *  (collapsed); when false the caller inserted it verbatim. */
+  /** Called with a raw paste; returns WHAT to insert. A string is inserted
+   *  (usually the raw clipboard text, or a `[Pasted text #N]` reference for a
+   *  collapsed paste); `null` means insert nothing.
+   *
+   *  The callback answers with the text rather than placing it, because the
+   *  editor has to perform the insert: that is what puts it on the browser's
+   *  undo stack. A caller that spliced its own state instead would make every
+   *  paste un-undoable. */
   onPasteText?: (raw: string) => string | null
   /** Image handler — each `image/*` item on the clipboard is handed here
    *  (the `getAsFile()` result). The editor never accepts image bytes itself;
@@ -202,8 +208,12 @@ export function RichPromptInput({
       } else {
         el.appendChild(node)
       }
+      // Only the manual path reports: it is a direct DOM mutation, so nothing
+      // else will. The native path above already fired an `input` event, which
+      // `onInput` forwards — reporting again would run the parent's onChange
+      // (history reset, slash-command scan) twice per paste.
+      onChange(joinTokens(serializeTokens(el)))
     }
-    onChange(joinTokens(serializeTokens(el)))
   }
 
   const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
@@ -212,11 +222,9 @@ export function RichPromptInput({
     // say) inside the editor — and our serializer would then flatten it into
     // text we never intended to accept.
     //
-    // Trade-off: because we always preventDefault and insert text manually,
-    // a paste is NOT on the browser's native undo stack — Ctrl+Z will not
-    // step back over a paste. That is the load-bearing defence against
-    // arbitrary clipboard HTML; the alternative (letting the browser paste
-    // and rewriting after) re-introduces the markup-injection surface.
+    // The insert below goes through execCommand('insertText'), which carries
+    // no markup AND lands on the browser's undo stack, so Ctrl+Z still steps
+    // back over a paste.
     e.preventDefault()
     // Collect image items first — a clipboard can carry BOTH an image and a
     // text/plain body, and bailing here would let the text body through
@@ -252,14 +260,20 @@ export function RichPromptInput({
     insertPlainTextAtCaret(raw)
   }
 
-  // Push `value` into the DOM only when it actually differs from what the DOM
-  // already serializes to. On the typing path they always match, so this is a
-  // no-op and the caret is left alone.
+  // Reconcile the DOM with `value`, but only when the DOM does not already
+  // REPRESENT it. On the typing path it does, so this is a no-op and the caret
+  // is left alone.
+  //
+  // The check is structural rather than a string comparison. A
+  // `[Pasted text #N]` reference inserted as literal text serializes back to
+  // exactly `value`, so comparing strings would report "already in sync" and
+  // skip the rebuild — leaving the reference as plain text with no chip, which
+  // loses the atomic Backspace and makes a partial delete unexpandable on send.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
     if (composingRef.current) return
-    if (joinTokens(serializeTokens(el)) === value) return
+    if (domRepresentsValue(el, tokenize(value))) return
     el.replaceChildren(renderTokens(el.ownerDocument, tokenize(value)))
   }, [value, ref])
 

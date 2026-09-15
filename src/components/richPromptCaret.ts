@@ -3,11 +3,14 @@
  * `(text, offset)`.
  *
  * The offsets come from a DOM Range measured against the editor's serialized
- * text -- the same string `RichPromptInput` keeps as its value -- so these can
- * be tested without a DOM and cannot drift from the serializer.
+ * text -- the same string `RichPromptInput` keeps as its value. The
+ * measurement is built on `collectSegments`, the ONE DOM → text walk, so it
+ * cannot drift from the serializer; an earlier version walked the DOM with its
+ * own rules and promptly did (it counted a lone `<br>` that the serializer had
+ * learned to ignore).
  */
 
-const CHIP_ATTR = 'data-pasted-ref'
+import { collectSegments } from '../utils/richPromptDom'
 
 // ---------------------------------------------------------------------------
 // DOM-position -> serialized-offset measurement
@@ -17,113 +20,59 @@ const CHIP_ATTR = 'data-pasted-ref'
  * Map a `(container, offset)` DOM position to a character offset within the
  * editor's serialized text.
  *
- * Text nodes inside chip elements (spans with `data-pasted-ref`) are ignored
- * for offset counting -- a chip is a single reference in the serialized value,
- * so its DOM text length does not contribute to the character offset.  This is
- * the measurement the slash-command picker and history navigation rely on.
+ * Stops the shared walk at the given position and sums what came before it, so
+ * the answer is by construction the number of characters ahead of the caret in
+ * the value the caret arithmetic is about to index into.
  *
  * @param root   The editor root element.
  * @param container  The DOM node containing the caret.
- * @param offset     The caret offset within `container` (text node offset).
+ * @param offset     The caret offset within `container`.
  */
-export function offsetOf(
-  root: Element,
-  container: Node,
-  offset: number,
-): number {
+export function offsetOf(root: Element, container: Node, offset: number): number {
   let count = 0
-
-  const walk = (node: Node): boolean => {
-    // A chip is a single reference token: count its full label text, but
-    // do not descend into its children (which could contain arbitrary
-    // DOM text that is irrelevant to the serialized offset).
-    if (
-      node.nodeType === Node.ELEMENT_NODE &&
-      (node as Element).hasAttribute(CHIP_ATTR)
-    ) {
-      count += (node.textContent ?? '').length
-      return false
-    }
-
-    if (node.nodeType === Node.TEXT_NODE) {
-      if (node === container) {
-        count += offset
-        return true
-      }
-      count += (node.nodeValue ?? '').length
-      return false
-    }
-
-    // <br> is serialized as '\n' (one character) by serializeTokens, but
-    // Range.toString() returns '' for it.  Count it explicitly.
-    if (node.nodeType === Node.ELEMENT_NODE && (node as Element).tagName === 'BR') {
-      count += 1
-      return false
-    }
-
-    // Element node (non-chip, non-br) -- walk children.
-    let found = false
-    for (const child of Array.from(node.childNodes)) {
-      if (found) break
-      if (walk(child)) found = true
-    }
-    return found
+  for (const segment of collectSegments(root, { container, offset })) {
+    count += segment.text.length
   }
-
-  walk(root)
   return count
 }
 
 /**
  * Place the caret at a given serialized character offset within `root`.
  *
- * This is the inverse of `offsetOf`: given a character position in the
- * serialized value, walk the DOM using the same chip/br rules and collapse
- * the selection at the corresponding DOM node+offset.
+ * The inverse of `offsetOf`: walk the same segments and collapse the selection
+ * in the one the offset lands in.
  *
  * @returns `true` if the caret was placed, `false` if `target` exceeds the
  *          serialized length.
  */
 export function placeCaretAtOffset(root: Element, target: number): boolean {
+  const doc = root.ownerDocument
+  const selection = doc.getSelection()
+  if (!selection) return false
+
   let remaining = target
-
-  const walk = (node: Node): boolean => {
-    if (
-      node.nodeType === Node.ELEMENT_NODE &&
-      (node as Element).hasAttribute(CHIP_ATTR)
-    ) {
-      // Chip: opaque, same count as offsetOf.
-      remaining -= (node.textContent ?? '').length
-      return false
+  for (const segment of collectSegments(root)) {
+    if (remaining > segment.text.length) {
+      remaining -= segment.text.length
+      continue
     }
-
-    if (node.nodeType === Node.TEXT_NODE) {
-      const len = (node.nodeValue ?? '').length
-      if (len >= remaining) {
-        const sel = root.ownerDocument.getSelection()
-        if (!sel) return false
-        sel.collapse(node, remaining)
-        return true
-      }
-      remaining -= len
-      return false
+    if (segment.textNode) {
+      selection.collapse(segment.textNode, remaining)
+      return true
     }
-
-    if (node.nodeType === Node.ELEMENT_NODE && (node as Element).tagName === 'BR') {
-      remaining -= 1
-      return false
+    // A chip or a break the browser materialised as an element: there is no
+    // text node to sit in, so collapse against that element.
+    if (segment.element) {
+      const range = doc.createRange()
+      range.setStartBefore(segment.element)
+      range.collapse(true)
+      selection.removeAllRanges()
+      selection.addRange(range)
+      return true
     }
-
-    // Element node (non-chip, non-br) -- walk children.
-    let found = false
-    for (const child of Array.from(node.childNodes)) {
-      if (found) break
-      if (walk(child)) found = true
-    }
-    return found
+    return false
   }
-
-  return walk(root)
+  return false
 }
 
 // ---------------------------------------------------------------------------

@@ -28,10 +28,23 @@ function getEditorValue(el: HTMLElement): string {
 function setEditorText(el: HTMLElement, text: string) {
   if (el instanceof HTMLTextAreaElement) {
     fireEvent.change(el, { target: { value: text } })
-  } else {
-    el.textContent = text
-    fireEvent.input(el)
+    return
   }
+  el.textContent = text
+  // Put the caret where typing would leave it — inside the last text node, at
+  // its end. Without this jsdom keeps its default selection at (root, 0),
+  // which is a position no user can reach by typing, and offset-based logic
+  // (the slash picker, the history edges) reads the wrong caret.
+  const last = el.lastChild
+  if (last !== null && last.nodeType === 3) {
+    const range = document.createRange()
+    range.setStart(last, (last.nodeValue ?? '').length)
+    range.collapse(true)
+    const selection = document.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+  }
+  fireEvent.input(el)
 }
 
 
