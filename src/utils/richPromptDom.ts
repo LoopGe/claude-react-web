@@ -103,16 +103,11 @@ export function collectSegments(root: Node, stop?: StopPoint): DomSegment[] {
   // handled here rather than in `walkNode`: an editor emptied by
   // select-all + delete is exactly `<div><br></div>`, and it holds no content.
   if (isLoneBrContainer(root)) return out
-  // Whether anything has been emitted yet. A block container opens a new line,
-  // but only if a line came before it — otherwise every value would start with
-  // a spurious '\n'.
-  let emitted = false
   let reached = false
 
   const push = (text: string, textNode: Text | null, element: Element | null) => {
     if (text === '') return
     out.push({ text, textNode, element })
-    emitted = true
   }
 
   const walkNode = (node: Node) => {
@@ -131,35 +126,63 @@ export function collectSegments(root: Node, stop?: StopPoint): DomSegment[] {
     if (node.nodeType !== ELEMENT_NODE) return
     const element = node as Element
     if (element.hasAttribute(CHIP_ATTR)) {
-      // Opaque: one reference, whatever the chip renders.
-      push(element.textContent ?? '', null, element)
+      const label = element.textContent ?? ''
+      // Opaque: one reference, whatever the chip renders. A stop point inside
+      // it still has to be honoured — a real double-click on a chip selects
+      // INSIDE it (its text node), and ignoring that made `offsetOf` report
+      // the offset past the whole value instead of the caret's.
+      if (stop !== undefined && (stop.container === element || element.contains(stop.container))) {
+        const inner = stop.container === element ? 0 : stop.offset
+        push(label.slice(0, inner), null, element)
+        reached = true
+        return
+      }
+      push(label, null, element)
       return
     }
     if (element.tagName === 'BR') {
       push('\n', null, element)
       return
     }
-    // A block container opens a line, then contributes its content. Order
-    // matters: the break is emitted BEFORE the lone-`<br>` skip below, because
-    // `<div><br></div>` is an EMPTY LINE — the block supplies the break, and
-    // the `<br>` inside is only how the empty line is rendered. Skipping the
-    // break too would join the lines on either side of it.
-    if (BLOCK_TAGS.has(element.tagName) && emitted) push('\n', null, element)
+    // A lone `<br>` holds no content: it is the host a contenteditable keeps
+    // so the caret has somewhere to sit. Nested, it is an EMPTY LINE — the
+    // break that makes it a line of its own was already emitted by
+    // `walkChildren` above (see there), so nothing more is contributed here.
     if (isLoneBrContainer(element)) return
     walkChildren(element)
   }
 
   const walkChildren = (parent: Node) => {
-    const kids = Array.from(parent.childNodes)
+    const kids = parent.childNodes
+    // A block element IS a line. Lines are joined by '\n', which is why the
+    // break is decided by the SIBLING structure rather than by "has anything
+    // been emitted yet" — that older rule made a leading empty line vanish
+    // (`<div><br></div><div>foo</div>` is '\nfoo', not 'foo'), which is
+    // exactly the shape `execCommand('insertText')` builds for a paste that
+    // begins with a blank line.
+    let previousWasBlock = false
     for (let i = 0; i < kids.length; i++) {
       if (reached) return
-      if (stop && stop.container === parent && stop.offset === i) {
+      if (stop !== undefined && stop.container === parent && stop.offset === i) {
         reached = true
         return
       }
-      walkNode(kids[i]!)
+      const child = kids[i]!
+      const childElement = child.nodeType === ELEMENT_NODE ? (child as Element) : null
+      const childIsBlock =
+        childElement !== null &&
+        BLOCK_TAGS.has(childElement.tagName) &&
+        !childElement.hasAttribute(CHIP_ATTR)
+      // A block opens a line (so a break before it), and anything after a
+      // block starts a new line too.
+      if (i > 0 && childIsBlock) push('\n', null, childElement)
+      else if (previousWasBlock && !childIsBlock) push('\n', null, childElement)
+      walkNode(child)
+      previousWasBlock = childIsBlock
     }
-    if (stop && stop.container === parent && stop.offset === kids.length) reached = true
+    if (stop !== undefined && stop.container === parent && stop.offset === kids.length) {
+      reached = true
+    }
   }
 
   walkChildren(root)

@@ -98,6 +98,30 @@ describe('serializeTokens', () => {
     expect(joinTokens(serializeTokens(host))).toBe('abc\n')
   })
 
+  it('keeps a LEADING empty line', () => {
+    // Chromium's execCommand('insertText') builds exactly this for a paste
+    // that begins with a blank line. The break must follow from the sibling
+    // structure, not from "has anything been emitted yet" — that older rule
+    // dropped the line entirely and the model received different text than
+    // the user pasted.
+    const host = document.createElement('div')
+    host.innerHTML = '<div><br></div><div>foo</div>'
+    expect(joinTokens(serializeTokens(host))).toBe('\nfoo')
+  })
+
+  it('keeps several leading empty lines', () => {
+    const host = document.createElement('div')
+    host.innerHTML = '<div><br></div><div><br></div><div>foo</div>'
+    expect(joinTokens(serializeTokens(host))).toBe('\n\nfoo')
+  })
+
+  it('breaks between a block and the text that follows it', () => {
+    // The block is a line, so text after it starts a new one.
+    const host = document.createElement('div')
+    host.innerHTML = '<div>one</div>two'
+    expect(joinTokens(serializeTokens(host))).toBe('one\ntwo')
+  })
+
   it('recurses into plain wrappers', () => {
     const host = document.createElement('div')
     const inner = document.createElement('span')

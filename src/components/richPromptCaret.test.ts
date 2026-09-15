@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { slashWordBefore, caretOnFirstLine, offsetOf } from './richPromptCaret'
+import { slashWordBefore, caretOnFirstLine, offsetOf, placeCaretAtOffset } from './richPromptCaret'
 
 describe('richPromptCaret pure helpers', () => {
   it('reads the /word ending at the caret', () => {
@@ -70,5 +70,67 @@ describe('offsetOf DOM measurement', () => {
     // Offset 3 = after "hi "
     const off = offsetOf(el, before, 3)
     expect(off).toBe(3)
+  })
+})
+
+describe('offsetOf and placeCaretAtOffset round-trip', () => {
+  /** `x ` + a chip + ` y`, with the chip carrying a real reference id. */
+  function makeChipEditor(): { el: HTMLDivElement; chip: HTMLElement } {
+    const el = document.createElement('div')
+    el.setAttribute('contenteditable', 'true')
+    document.body.appendChild(el)
+    el.appendChild(document.createTextNode('x '))
+    const chip = document.createElement('span')
+    chip.className = 'pasted-text-chip'
+    chip.setAttribute('contenteditable', 'false')
+    chip.setAttribute('data-pasted-ref', '1')
+    chip.textContent = '[Pasted text #1]'
+    el.appendChild(chip)
+    el.appendChild(document.createTextNode(' y'))
+    return { el, chip }
+  }
+
+  it('honours a stop point INSIDE a chip', () => {
+    // A real double-click on a chip selects inside it — its inner text node is
+    // the selection container. Ignoring the stop there made offsetOf sum the
+    // whole value, so the context menu disabled Cut/Copy over a visible
+    // selection and Paste spliced at the very end of the draft.
+    const { el, chip } = makeChipEditor()
+    const chipText = chip.firstChild as Text
+    // 'x ' is 2 chars, so the chip starts at 2; +8 is inside its label.
+    expect(offsetOf(el, chipText, 8)).toBe(10)
+  })
+
+  it('reports the offset AFTER a chip, not the end of the value', () => {
+    const { el } = makeChipEditor()
+    // The caret sits after the chip: container is the editor, offset is the
+    // index just past the chip element.
+    expect(offsetOf(el, el, 2)).toBe(18)
+  })
+
+  it('puts the caret AFTER a chip when the target is the chip segment end', () => {
+    // The end of the chip's text means "after the chip". Placing it before
+    // sends the next keystroke in front of the reference the user just
+    // inserted. `setStartAfter` reports as (parent, indexPastTheChip), and
+    // `setStartBefore` as (parent, indexOfTheChip) — the index is what
+    // distinguishes them.
+    const { el, chip } = makeChipEditor()
+    expect(placeCaretAtOffset(el, 18)).toBe(true)
+    const range = document.getSelection()!.getRangeAt(0)
+    const chipIndex = Array.prototype.indexOf.call(el.childNodes, chip)
+    expect(range.startContainer).toBe(el)
+    expect(range.startOffset).toBe(chipIndex + 1)
+  })
+
+  it('round-trips the offsets that have a reachable DOM position', () => {
+    // Offsets strictly inside a chip have none: a `contenteditable=false`
+    // element cannot hold the caret, so only the boundaries around it are
+    // reachable. Everything else in the value must round-trip exactly.
+    const { el } = makeChipEditor()
+    for (const target of [0, 1, 2, 18, 19, 20]) {
+      expect(placeCaretAtOffset(el, target)).toBe(true)
+      const sel = document.getSelection()!
+      expect(offsetOf(el, sel.anchorNode!, sel.anchorOffset)).toBe(target)
+    }
   })
 })

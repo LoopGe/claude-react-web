@@ -83,14 +83,15 @@ interface Props {
  * The DOM is never the source of truth: every change is serialized back to a
  * string, so `value`/`onChange` match what the textarea took.
  *
- * Paste trade-off: `handlePaste` always calls `e.preventDefault()` and inserts
- * text manually.  This is the load-bearing defence against arbitrary clipboard
- * HTML (an `<img onerror>`, say) entering the editor; without it the browser
- * would accept `text/html` and our serializer would flatten it into text we
- * never intended.  The cost is that a paste is NOT on the browser's native
- * undo stack — Ctrl+Z will not step back over a paste.  Removing
- * `preventDefault` to restore undo would re-open the HTML injection surface,
- * so the trade is deliberate.
+ * Paste: `handlePaste` always calls `e.preventDefault()`, which is the
+ * load-bearing defence against arbitrary clipboard HTML (an `<img onerror>`,
+ * say) entering the editor — without it the browser accepts `text/html` and
+ * our serializer would flatten it into text we never intended.
+ *
+ * The text is then placed with `execCommand('insertText')`, which carries no
+ * markup AND lands on the browser's undo stack, so Ctrl+Z still steps back
+ * over a paste. Rebuilding the DOM from React state instead would be
+ * invisible to that stack, which is why a paste used to be un-undoable.
  */
 export function RichPromptInput({
   value,
@@ -274,7 +275,19 @@ export function RichPromptInput({
     if (!el) return
     if (composingRef.current) return
     if (domRepresentsValue(el, tokenize(value))) return
-    el.replaceChildren(renderTokens(el.ownerDocument, tokenize(value)))
+    // Rebuilding detaches the node the caret sits in, and a detached selection
+    // collapses to the start of the editor — so the next keystroke would be
+    // written in front of the whole draft. Remember where the caret was and
+    // put it back once the new DOM exists.
+    const doc = el.ownerDocument
+    const selection = doc.getSelection()
+    const hadCaret =
+      selection !== null && selection.rangeCount > 0 && el.contains(selection.anchorNode)
+    const caret = hadCaret
+      ? offsetOf(el, selection!.anchorNode!, selection!.anchorOffset)
+      : 0
+    el.replaceChildren(renderTokens(doc, tokenize(value)))
+    if (hadCaret) placeCaretAtOffset(el, caret)
   }, [value, ref])
 
   // Grow instead of scrolling: measure the editor's content box. `scrollHeight`

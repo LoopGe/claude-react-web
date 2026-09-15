@@ -61,10 +61,14 @@ export function placeCaretAtOffset(root: Element, target: number): boolean {
       return true
     }
     // A chip or a break the browser materialised as an element: there is no
-    // text node to sit in, so collapse against that element.
+    // text node to sit in, so collapse against that element. WHICH side
+    // matters — a target landing exactly at the end of this segment means
+    // "after it", and putting the caret before instead sends the next
+    // keystroke to the wrong side of the reference.
     if (segment.element) {
       const range = doc.createRange()
-      range.setStartBefore(segment.element)
+      if (remaining === segment.text.length) range.setStartAfter(segment.element)
+      else range.setStartBefore(segment.element)
       range.collapse(true)
       selection.removeAllRanges()
       selection.addRange(range)
