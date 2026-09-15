@@ -243,6 +243,13 @@ export function serializeTokens(root: Node): PastedTextToken[] {
  * `value` must be an element in the DOM.
  */
 export function domRepresentsValue(root: Node, valueTokens: PastedTextToken[]): boolean {
+  // An empty value is represented ONLY by a truly empty editor. When the
+  // browser's content is deleted it keeps a caret-host element behind — a
+  // lone `<br>` at the root, or nested inside the block container it
+  // materialised for a newline (`<div><br></div>`). The serializer reports ''
+  // for every one of those shapes, so a token-count comparison would call
+  // them in sync and leave the placeholder CSS `:empty` permanently defeated.
+  if (valueTokens.length === 0) return root.childNodes.length === 0
   const domTokens = serializeTokens(root)
   if (domTokens.length !== valueTokens.length) return false
   return domTokens.every((domToken, i) => {

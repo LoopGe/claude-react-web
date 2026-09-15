@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 import { joinTokens, tokenize } from '../utils/pastedText'
 import { renderTokens, serializeTokens, domRepresentsValue } from '../utils/richPromptDom'
 import { offsetOf, slashWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
@@ -287,7 +287,11 @@ export function RichPromptInput({
       ? offsetOf(el, selection!.anchorNode!, selection!.anchorOffset)
       : 0
     el.replaceChildren(renderTokens(doc, tokenize(value)))
-    if (hadCaret) placeCaretAtOffset(el, caret)
+    // On an empty rebuild there are no segments for the caret to sit in, so
+    // placeCaretAtOffset reports failure without placing anything — collapse
+    // explicitly rather than trusting every engine to drop a detached
+    // selection at the editor start.
+    if (hadCaret && !placeCaretAtOffset(el, caret)) selection!.collapse(el, 0)
   }, [value, ref])
 
   // Grow instead of scrolling: measure the editor's content box. `scrollHeight`
@@ -299,6 +303,29 @@ export function RichPromptInput({
     el.style.height = `${el.scrollHeight}px`
   }, [value, ref])
 
+  /**
+   * Drop caret-host residue the browser keeps behind emptied content — a
+   * lone `<br>` at the root, or nested in the block container it materialised
+   * for a newline. All such shapes serialize to '', so this keeps the DOM
+   * matching the value it just reported.
+   *
+   * Runs on the event path, not only in the reconcile effect, because when
+   * the residue appears while `value` is ALREADY '' the parent's re-render
+   * is a no-op and the effect never runs. Skipped mid-composition so an IME
+   * candidate is never disturbed.
+   */
+  const dropEmptyResidue = useCallback((el: HTMLDivElement) => {
+    if (composingRef.current) return
+    if (serializeTokens(el).length > 0) return
+    if (el.childNodes.length === 0) return
+    const doc = el.ownerDocument
+    const sel = doc.getSelection()
+    const hadCaret = sel !== null && sel.rangeCount > 0 && el.contains(sel.anchorNode)
+    el.replaceChildren()
+    // The caret sat in the removed node; re-anchor it deterministically.
+    if (hadCaret) sel.collapse(el, 0)
+  }, [])
+
   useEffect(() => {
     const el = ref.current
     if (!el) return
@@ -307,6 +334,7 @@ export function RichPromptInput({
     }
     const onCompositionEnd = () => {
       composingRef.current = false
+      dropEmptyResidue(el)
       onChange(joinTokens(serializeTokens(el)))
     }
     // Some IMEs never fire compositionend on cancel (Escape / click-away).
@@ -321,7 +349,7 @@ export function RichPromptInput({
       el.removeEventListener('compositionend', onCompositionEnd)
       el.removeEventListener('blur', onBlur)
     }
-  }, [onChange, ref])
+  }, [onChange, ref, dropEmptyResidue])
 
   // Attach caret-query methods directly to the DOM element so callers holding
   // editorRef can use them (e.g. `ref.current.getSlashWordAtCaret()`).
@@ -356,7 +384,11 @@ export function RichPromptInput({
       onKeyDown={handleKeyDown}
       onPaste={handlePaste}
       onContextMenu={onContextMenu}
-      onInput={(e) => onChange(joinTokens(serializeTokens(e.currentTarget)))}
+      onInput={(e) => {
+        const el = e.currentTarget
+        dropEmptyResidue(el)
+        onChange(joinTokens(serializeTokens(el)))
+      }}
     />
   )
 }

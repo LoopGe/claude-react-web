@@ -181,6 +181,64 @@ describe('RichPromptInput keyboard', () => {
     )
     expect(editor(container).getAttribute('data-placeholder')).toBe('Send a message')
   })
+
+  it('clears the browser-kept <br> once the value is empty again', () => {
+    // What Backspace-on-the-last-character does: the browser empties the
+    // editor but keeps a lone `<br>` as the caret's host, then fires `input`.
+    // The serializer correctly reports '' (a lone `<br>` holds no content), so
+    // `value` becomes '' — but if the `<br>` stays in the DOM the CSS
+    // `:empty` placeholder selector never matches again, and the placeholder
+    // (and prompt suggestion, same mechanism) disappears for good.
+    const onChange = vi.fn()
+    const { container, rerender } = render(
+      <RichPromptInput value="a" onChange={onChange} ariaLabel="M" placeholder="Send a message" />,
+    )
+    const el = editor(container)
+    // Simulate the browser's post-delete shape and its `input` event.
+    el.replaceChildren(document.createElement('br'))
+    fireEvent.input(el)
+    expect(onChange).toHaveBeenCalledWith('')
+    expect(el.childNodes.length).toBe(0)
+    // The parent echoes '' back through the value prop; the reconcile pass
+    // must also normalize so `:empty` matches whatever path left residue.
+    rerender(<RichPromptInput value="" onChange={onChange} ariaLabel="M" placeholder="Send a message" />)
+    expect(el.childNodes.length).toBe(0)
+  })
+
+  it('clears a caret-host <br> nested in a materialised block container too', () => {
+    // The serializer treats a lone `<br>` nested inside a block as content-free
+    // (richPromptDom.ts), so a newline-created block emptied by select-all +
+    // delete leaves `<div><div><br></div></div>` — which serializes to '' and
+    // must normalize to truly empty just like the flat shape.
+    const onChange = vi.fn()
+    const { container, rerender } = render(
+      <RichPromptInput value="x" onChange={onChange} ariaLabel="M" />,
+    )
+    const el = editor(container)
+    const inner = document.createElement('div')
+    inner.appendChild(document.createElement('br'))
+    el.replaceChildren(inner)
+    fireEvent.input(el)
+    expect(onChange).toHaveBeenCalledWith('')
+    rerender(<RichPromptInput value="" onChange={onChange} ariaLabel="M" />)
+    expect(el.childNodes.length).toBe(0)
+  })
+
+  it('cleans residue on the input path even when the value is already empty', () => {
+    // When the residue appears while `value` is already '' (browser re-creating
+    // a caret host in an emptied editor, say), the parent's onChange('') is a
+    // no-op — React never re-renders, so the reconcile effect can't run. The
+    // input-event path must therefore clean synchronously.
+    const onChange = vi.fn()
+    const { container } = render(
+      <RichPromptInput value="" onChange={onChange} ariaLabel="M" />,
+    )
+    const el = editor(container)
+    el.replaceChildren(document.createElement('br'))
+    fireEvent.input(el)
+    expect(el.childNodes.length).toBe(0)
+    expect(onChange).toHaveBeenCalledWith('')
+  })
 })
 
 describe('RichPromptInput paste', () => {
