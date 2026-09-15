@@ -60,7 +60,23 @@ export function serializeTokens(root: Node): PastedTextToken[] {
   }
 
   const visit = (node: Node) => {
-    for (const child of Array.from(node.childNodes)) {
+    const children = Array.from(node.childNodes)
+    // A lone <br> is the caret host a contenteditable keeps once its content
+    // has been deleted — the caret needs somewhere to sit. It is structural,
+    // not content. Counting it as a line break injects a newline the user
+    // never typed: that lands in `value`, and the next paste is spliced AFTER
+    // it, so the pasted text arrives with a blank line in front of it.
+    //
+    // A <br> that sits among content is still a real break (see the sibling
+    // test) — only the sole-child case is the caret host.
+    if (
+      children.length === 1 &&
+      children[0]!.nodeType === ELEMENT_NODE &&
+      (children[0] as Element).tagName === 'BR'
+    ) {
+      return
+    }
+    for (const child of children) {
       if (child.nodeType === TEXT_NODE) {
         pushText(child.nodeValue ?? '')
         continue

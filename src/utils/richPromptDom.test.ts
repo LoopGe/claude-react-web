@@ -48,6 +48,17 @@ describe('serializeTokens', () => {
     expect(serializeTokens(host)).toEqual([{ kind: 'text', text: 'abc' }])
   })
 
+  it('treats a lone <br> as an empty editor, not as a newline', () => {
+    // A contenteditable emptied by select-all + delete keeps a <br> in the
+    // DOM as the caret's host — otherwise the caret has nowhere to sit. That
+    // <br> is structural, not content. Serializing it as '\n' puts a newline
+    // the user never typed into the value, and the NEXT paste is spliced
+    // after it, landing as a leading blank line in front of the pasted text.
+    const host = document.createElement('div')
+    host.appendChild(document.createElement('br'))
+    expect(serializeTokens(host)).toEqual([])
+  })
+
   it('reads a stray <br> back as a newline', () => {
     // Browsers and IMEs can still produce one behind our back; dropping it
     // would silently join two lines.
