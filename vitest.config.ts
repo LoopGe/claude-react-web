@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config'
 import { availableParallelism } from 'node:os'
+import { fileURLToPath } from 'node:url'
 // Type-only: erased at runtime, so it pulls nothing from the `vitest` entry.
 import type { Reporter } from 'vitest'
 
@@ -96,7 +97,13 @@ export default defineConfig({
     reporters: ['default', durationReporter()],
     // Client tests need explicit RTL cleanup: `globals: false` below means RTL's
     // auto-cleanup never self-registers. See src/test-setup.ts.
-    setupFiles: ['./src/test-setup.ts'],
+    // Resolved against this file, not `root`: setupFiles otherwise resolve
+    // relative to the vite root (= cwd), so running vitest from a nested
+    // directory would look for <cwd>/src/test-setup.ts and fail collection for
+    // every test file. `import.meta.url` here is the config's own path — vite
+    // injects it when it bundles this file — so `npm test` and a nested-dir
+    // invocation resolve identically.
+    setupFiles: [fileURLToPath(new URL('./src/test-setup.ts', import.meta.url))],
     // Server tests run in Node; client hook tests run in jsdom.
     // Use workspace-style overrides so both share one `vitest run`.
     environment: 'node',
