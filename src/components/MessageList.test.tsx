@@ -223,9 +223,26 @@ function toItems(msgs: SdkMessage[]): TranscriptItem[] {
 // the listener latches a high lastScrollTopRef), then jump it to 0 and fire
 // again — 0 < prev ⇒ 'disable-now' (user-intent), which surfaces the button
 // immediately (no debounce). Wrapped in act so the state update flushes.
+//
+// The `wheel` event comes first because a leave now has to be USER-CAUSED: the
+// handler only latches AWAY when a real gesture preceded the upward move
+// (without one, the same move is read as a displacement and gets re-pinned).
+/** The gesture that makes an upward scrollTop move attributable to the user.
+ *  A follow-drop now requires one: a bare upward move is a displacement and
+ *  gets re-pinned (see the "no user gesture" regression test). `deltaY` is
+ *  negative because only an upward wheel can produce a leave — a scroll-down
+ *  gesture deliberately does not mark intent. Dispatched as a plain Event (the
+ *  handler only reads `deltaY`) because jsdom has no WheelEvent. */
+function userWheel(scroller: HTMLElement) {
+  const event = new Event('wheel', { bubbles: true }) as Event & { deltaY: number }
+  event.deltaY = -120
+  scroller.dispatchEvent(event)
+}
+
 function scrollUpFromBottom(container: HTMLElement) {
   const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
   act(() => {
+    userWheel(scroller)
     virtuosoMockState.scrollTop = 1000
     fireEvent.scroll(scroller)
     virtuosoMockState.scrollTop = 0
@@ -985,6 +1002,145 @@ describe('MessageList', () => {
     expect(scroller.scrollTop).toBe(280)
   })
 
+  it('re-pins while following when the content bottom moves down with no scrollTop change and no observer firing', () => {
+    // Regression guard for "关掉动画效果后 Session 有时候滚动不到最底部".
+    //
+    // Every other backstop in this module re-pins from an ELEMENT-shaped
+    // signal: the item-list ResizeObserver (border-box growth), the spacer
+    // layout effect (committed spacer height) or the scroller ResizeObserver
+    // (viewport shrink). A displacement that resizes none of them slips past
+    // all three. That is what a Virtuoso size correction produces: the content
+    // bottom moves DOWN under a viewport that is still following, scrollTop
+    // does not change, and the only thing that ever sees it is a scroll event
+    // whose geometry read says dist-from-true-bottom > 0. The handler treated
+    // that as pin-lag
+    // ('preserve') and did nothing — so the transcript stayed short with the
+    // jump button hidden, because follow was still on and `canJump` is
+    // `!following`.
+    virtuosoMockState.atBottomReport = true
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 100 // pinned at the true bottom (200 - 100)
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Settled message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
+    )
+
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    expect(scroller).not.toBeNull()
+
+    // The content bottom drops 120px further down with scrollTop untouched and
+    // nothing resized. The scroll event is the only signal — the shape Chromium
+    // anchoring produces, and the shape a growth landing after the backstops'
+    // last fire produces.
+    act(() => {
+      virtuosoMockState.scrollHeight = 320
+      fireEvent.scroll(scroller)
+    })
+
+    // Snap to the new true bottom. The mock's scrollTop setter stores the value
+    // the pin wrote (scrollHeight) rather than clamping the way a real browser
+    // does, which is the same convention the other pin tests use.
+    expect(scroller.scrollTop).toBe(320)
+    // Still following, so the affordance stays hidden: following MEANS "at the
+    // bottom", it does not mean "show the user a button and leave them short".
+    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+  })
+
+  it('lets a user gesture in mid-flight leave while the follow animation is running', () => {
+    // Regression guard: an explicit user leave must survive the ANIMATING
+    // guard. `syncBottomGeometry` short-circuits while `scrollAnimatingRef` is
+    // set (the viewport is intentionally mid-flight), which silently swallowed
+    // the leave latched by BOTH the gesture handlers and the scroll handler's
+    // user-driven exception — and because nothing recorded it, the follow
+    // invariant and the backstops then snapped the viewport back: the gesture
+    // was erased and no jump button appeared.
+    vi.useFakeTimers()
+    try {
+      virtuosoMockState.atBottomReport = true
+      virtuosoMockState.reportBeforeRef = true
+      virtuosoMockState.scrollHeight = 300
+      virtuosoMockState.clientHeight = 100
+      virtuosoMockState.scrollTop = 200 // parked at the true bottom
+
+      const msgs = [
+        makeMsg('assistant', { message: { content: [{ type: 'text', text: 'settled' }] } }),
+      ]
+      const { container, rerender } = render(
+        <MessageList items={toItems(msgs as SdkMessage[])} />,
+      )
+      const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+      expect(scroller).not.toBeNull()
+
+      // An appended message makes the mock call followOutput → the rAF follow
+      // animation starts and holds `scrollAnimatingRef` for its duration (fake
+      // timers keep it in flight until advanced).
+      rerender(
+        <MessageList
+          items={toItems([...msgs, makeMsg('assistant', { message: { content: [{ type: 'text', text: 'new' }] } })] as SdkMessage[])}
+        />,
+      )
+
+      // The user wheels up inside that window.
+      act(() => { userWheel(scroller) })
+
+      // The leave latched: follow is off, so the affordance is offered.
+      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('re-pins an upward displacement no user gesture caused instead of dropping follow', () => {
+    // Regression guard for the live-turn "有时候会滚动不到最底部" report. Mid-turn
+    // the content grows under the viewport continuously, so dist-from-bottom is
+    // large at almost every instant; the transcript's scrollTop is also moved by
+    // our own pins, by Virtuoso's size corrections and by the browser's clamps.
+    // Together those made any transient upward blip satisfy
+    // `isScrollingUp && distTrue > 0`, latch 'disable-now' and drop follow for
+    // the rest of the session — the viewport then never reaches the bottom
+    // again. A leave now requires a real gesture (wheel / touch / overlay-thumb
+    // drag); the same move without one is a displacement, and the follow
+    // invariant snaps it back.
+    virtuosoMockState.atBottomReport = true
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 300
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 200 // at the true bottom (300 - 100)
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Live message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} />,
+    )
+
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    expect(scroller).not.toBeNull()
+
+    // A 100px lift with nothing user-driven about it — the shape a clamp, a pin
+    // correction or a Virtuoso scroll correction produces mid-turn.
+    act(() => {
+      virtuosoMockState.scrollTop = 100
+      fireEvent.scroll(scroller)
+    })
+
+    // Still following ⇒ back at the bottom, and no jump button (the affordance
+    // is for a user who LEFT).
+    expect(scroller.scrollTop).toBe(300)
+    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+  })
+
   it('re-pins to the bottom when settled content grows AFTER the bottom overlay exits', () => {
     // Regression guard for the "当 StreamingFooter 消失，视图向上弹一段" bug.
     //
@@ -1288,7 +1444,7 @@ describe('MessageList', () => {
     // reserves. With the bug this reads as "at bottom" (follow stays on) and
     // the button stays hidden; with the fix the leave is detected immediately.
     virtuosoMockState.scrollTop = contentHeight + virtuosoMockState.streamingSpacerHeight - virtuosoMockState.clientHeight - 50 // 304
-    act(() => { fireEvent.scroll(scroller) })
+    act(() => { userWheel(scroller); fireEvent.scroll(scroller) })
     await waitFor(() => {
       expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
     })
@@ -1346,7 +1502,7 @@ describe('MessageList', () => {
 
     // User wheels up 50px into the dead zone → leave (follow off, button up).
     virtuosoMockState.scrollTop = contentHeight + virtuosoMockState.streamingSpacerHeight - virtuosoMockState.clientHeight - 50
-    act(() => { fireEvent.scroll(scroller) })
+    act(() => { userWheel(scroller); fireEvent.scroll(scroller) })
     await waitFor(() => {
       expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
     })
@@ -1511,6 +1667,7 @@ describe('MessageList', () => {
     // legitimate trigger under the follow-gate.
     act(() => {
       const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+      userWheel(scroller)
       virtuosoMockState.scrollTop = 0
       fireEvent.scroll(scroller)
     })
@@ -1572,6 +1729,7 @@ describe('MessageList', () => {
     // the returned-to-bottom animation plays.
     act(() => {
       const sc = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+      userWheel(sc)
       virtuosoMockState.scrollTop = 0
       fireEvent.scroll(sc)
     })

@@ -3,18 +3,25 @@
  *
  * Everything that reads or writes the scroller's geometry lives here — the
  * bottom-follow gate, the jump-to-bottom button state, the unseen badge, the
- * rAF follow animation, and the three re-pin backstops. It used to be spread
- * across ~600 lines of `MessageList`, interleaved with row derivation and
- * message rendering, which is why each observer's comment had to explain why it
- * doesn't fight the other two.
+ * rAF follow animation, the re-pin backstops and the settle verification pass.
+ * It used to be spread across ~600 lines of `MessageList`, interleaved with row
+ * derivation and message rendering, which is why each observer's comment had to
+ * explain why it doesn't fight the other two.
  *
  * The model, in one place:
  *
  *   FOLLOWING   `shouldFollowRef` true. New content pins the viewport to the
- *               bottom. This is the resting state.
+ *               bottom, and the bottom is an INVARIANT: every pin is verified
+ *               against the geometry for the next few frames, and a viewport
+ *               that ends up away from the true bottom while still following is
+ *               snapped back. This is the resting state.
  *   AWAY        The user scrolled up. Follow is off, the jump button is
  *               visible, and new content increments the unseen badge. Entered
- *               only by a genuine upward scroll ('disable-now') or by the
+ *               only by a USER-CAUSED upward scroll ('disable-now' — the scroll
+ *               handler requires a fresh wheel / touch / scrollbar-drag gesture,
+ *               because the transcript's scrollTop is also moved by our own
+ *               pins, by Virtuoso's size corrections and by the browser, and
+ *               latching on one of those drops follow for good) or by the
  *               follow-disable debounce confirming a settled non-bottom
  *               geometry. Left by scrolling back to the real bottom or by
  *               pressing jump-to-bottom.
@@ -25,18 +32,52 @@
  *               follow-disable debounce fires mid-flight and drops us to AWAY.
  *
  * Writes to `scrollTop` go through exactly two paths: `pinToBottom` (instant
- * snap, used by the three re-pin backstops) and `animateScrollToBottom` (the
- * rAF easing loop). Keeping that list at two is the point of this module — a
- * third writer added elsewhere is how the viewport ends up fighting itself.
+ * snap, used by the re-pin backstops and the follow invariant) and
+ * `animateScrollToBottom` (the rAF easing loop). Keeping that list at two is the
+ * point of this module — a third writer added elsewhere is how the viewport ends
+ * up fighting itself.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { VirtuosoHandle } from 'react-virtuoso'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
+import { scrollDebug as dbg } from './scroll-debug'
 
 /** Pixel tolerance for direct bottom checks. Keep this tiny to cover
  *  fractional scroll values without treating a visibly offset viewport as
  *  being at the bottom. */
 const BOTTOM_EPSILON_PX = 2
+
+/** How long a settle-verification pass keeps watching the viewport after a
+ *  pin (see verifyFollowInvariant). Long enough to outlast Virtuoso's
+ *  post-replay re-measurement storm, short enough that it can never read as a
+ *  permanent frame loop. */
+const SETTLE_VERIFY_MS = 1500
+/** End a verification pass early once the viewport has held the true bottom
+ *  this many consecutive frames. */
+const SETTLE_STABLE_FRAMES = 3
+
+/**
+ * How long a user-scroll gesture keeps a subsequent scrollTop move attributable
+ * to the user (see `userScrollIntentRef`), measured from the LAST event of the
+ * gesture rather than from its start.
+ *
+ * Two measurements shape this number, both taken in the real app under reduced
+ * motion: Chromium pans a wheel scroll over hundreds of ms, and the first
+ * scroll event that actually moves the viewport arrives ~690ms after the wheel
+ * event (the pan starts slow, then emits upward events the whole way). So the
+ * window has to outlast that start latency, and each UPWARD event re-arms it
+ * (the gesture "chains") so an arbitrarily long pan stays attributed. It still
+ * dies 1.2s after the chain's last upward event, so a programmatic move once the
+ * user has stopped (a clamp, a Virtuoso correction) is read as a displacement
+ * and corrected instead of dropping follow.
+ */
+const USER_SCROLL_INTENT_MS = 1200
+
+/** Keys that scroll a focused scroll container UPWARD — the only ones that can
+ *  produce a leave. PageDown / Space / End can't, so they deliberately don't
+ *  mark intent: a keypress that can't scroll up is no evidence that a later
+ *  upward move was the user's. */
+const SCROLL_UP_KEYS = new Set(['PageUp', 'ArrowUp', 'Home'])
 
 /**
  * Height of the bottom-overlay spacer currently rendered in Virtuoso's Footer
@@ -200,6 +241,14 @@ export function useTranscriptScroll({
   // Previous scrollTop, so the scroll handler can detect *user-driven* upward
   // scrolls (scrollTop decreasing) and bypass the follow-disable debounce.
   const lastScrollTopRef = useRef(0)
+  // When the user last did something that scrolls this transcript (0 = never).
+  //
+  // The only evidence that an upward move was the USER's doing. Everything else
+  // that moves scrollTop — our pins, Virtuoso's size corrections, the browser's
+  // clamps — must not be allowed to latch AWAY, so the leave test requires this
+  // to be fresh. Set by the wheel / touch / overlay-thumb-drag listeners in the
+  // scroll-intent effect below.
+  const userScrollIntentRef = useRef(0)
   // Held TRUE for the whole of a programmatic scroll-to-bottom animation. See
   // the ANIMATING state in the module comment: while set, the scroll handler
   // and syncBottomGeometry leave atBottomRef/shouldFollowRef alone. Bounded by
@@ -236,14 +285,108 @@ export function useTranscriptScroll({
    * matters. Snapping ahead of the animation is safe: the loop re-reads its
    * target each frame, finds `remaining ≈ 0`, and finalizes.
    */
+  // Held in a ref (assigned below, once `verifyFollowInvariant` exists) so
+  // `pinToBottom` can stay dependency-free while still kicking off a
+  // verification pass. Declared before it to avoid a use-before-define cycle.
+  const verifyRef = useRef<() => void>(() => {})
+  const settleRafRef = useRef<number | null>(null)
+  // Explicit "a pass is running" flag, NOT the rAF handle. `tick` re-enters
+  // through `pinToBottom` → `verifyRef.current()` (every pin starts a pass by
+  // design), so using the handle as the guard would let a pinning tick start a
+  // SECOND pass whose handle the outer tick then overwrites — an untracked loop
+  // per pinning frame, uncancellable on unmount.
+  const settleRunningRef = useRef(false)
+  // Assigned during render, not in a passive effect: the append pin and the
+  // spacer pin run in LAYOUT effects, i.e. before passive effects, and they
+  // must be able to open a pass on the commit that mounts them.
+
   const pinToBottom = useCallback((
     el: HTMLElement | null = scrollerRef.current,
-    { allowDuringAnimation = false }: { allowDuringAnimation?: boolean } = {},
+    { allowDuringAnimation = false, reason = '?' }: { allowDuringAnimation?: boolean; reason?: string } = {},
   ) => {
-    if (!el) return
-    if (!shouldFollowRef.current) return
-    if (scrollAnimatingRef.current && !allowDuringAnimation) return
+    if (!el) { dbg('pin skip', () => ({ reason, why: 'no-el' })); return }
+    if (!shouldFollowRef.current) { dbg('pin skip', () => ({ reason, why: 'away' })); return }
+    if (scrollAnimatingRef.current && !allowDuringAnimation) { dbg('pin skip', () => ({ reason, why: 'animating' })); return }
+    dbg('pin', () => ({ reason, before: Math.round(el.scrollTop) }))
     el.scrollTop = el.scrollHeight
+    // Every correction is provisional: the layout can keep moving after this
+    // write, so verify the invariant across the next frames (see
+    // verifyFollowInvariant). Handled through a ref so this callback stays
+    // dependency-free and the two can call each other.
+    verifyRef.current()
+  }, [])
+
+  // --- Settle verification -------------------------------------------------
+  //
+  // While FOLLOWING, "at the bottom" is an invariant, not an event: every
+  // correction we make is provisional, because the layout can keep moving
+  // AFTER the last write. Virtuoso re-measures the rendered rows for a few
+  // hundred ms after a bulk replay and expresses those corrections in ways no
+  // observer of ours can see — it rewrites the item list's leading/trailing
+  // padding, and it moves content with MARGINS and offset compensations, which
+  // are not part of any element's border box. The result is a viewport that is
+  // left short of a grown content bottom with: no resize fired (the item-list /
+  // spacer / viewport observers all stay silent), no scrollTop write, and no
+  // scroll event. Nothing re-pins, follow is still on, so the jump button stays
+  // hidden — the "关掉动画效果后 Session 有时候滚动不到最底部" report (a
+  // reduced-motion page has no entrance animations spreading that work over
+  // frames, so the corrections land as one late jump instead of being absorbed).
+  //
+  // So we verify the invariant instead of assuming it: for a short window after
+  // any pin, re-read the distance from the true bottom each frame and re-pin
+  // while it is non-zero, stopping as soon as the viewport has HELD the bottom
+  // for a few consecutive frames (or the window expires). Self-limiting by
+  // construction — it never becomes a permanent frame loop, and it stands down
+  // the moment follow is dropped (the user's call) or a follow animation takes
+  // ownership of the viewport.
+  const verifyFollowInvariant = useCallback(() => {
+    if (settleRunningRef.current) return
+    settleRunningRef.current = true
+    const deadline = Date.now() + SETTLE_VERIFY_MS
+    let stableFrames = 0
+    const finish = () => {
+      settleRunningRef.current = false
+      settleRafRef.current = null
+    }
+    const tick = () => {
+      const el = scrollerRef.current
+      if (!el || !shouldFollowRef.current || Date.now() > deadline) { dbg('verify stop', () => ({ why: !el ? 'no-el' : !shouldFollowRef.current ? 'away' : 'deadline' })); finish(); return }
+      if (scrollAnimatingRef.current) {
+        // The follow animation owns the viewport; it re-reads its target every
+        // frame. Wait it out, then resume verifying.
+        stableFrames = 0
+        settleRafRef.current = requestAnimationFrame(tick)
+        return
+      }
+      const short = getDistanceFromTrueBottom(el)
+      dbg('verify tick', () => ({ stableFrames }))
+      if (short > BOTTOM_EPSILON_PX) {
+        stableFrames = 0
+        // Re-enters verifyFollowInvariant through pinToBottom; settleRunningRef
+        // is what makes that a no-op instead of a second loop.
+        pinToBottom(el)
+      } else {
+        stableFrames++
+        if (stableFrames >= SETTLE_STABLE_FRAMES) { finish(); return }
+      }
+      settleRafRef.current = requestAnimationFrame(tick)
+    }
+    settleRafRef.current = requestAnimationFrame(tick)
+  }, [pinToBottom])
+
+  // Render-time assignment (not an effect): see the comment where verifyRef is
+  // declared — layout-effect pins run before passive effects and must be able
+  // to open a pass. Deliberate render-time ref use, same escape hatch
+  // MessageList's useStableSet takes for its referential memoization.
+  /* eslint-disable-next-line react-hooks/refs -- documented above */
+  verifyRef.current = verifyFollowInvariant
+
+  useEffect(() => () => {
+    if (settleRafRef.current != null) {
+      cancelAnimationFrame(settleRafRef.current)
+      settleRafRef.current = null
+    }
+    settleRunningRef.current = false
   }, [])
 
   // Synchronous bottom-pin for freshly-appended trailing items.
@@ -269,7 +412,7 @@ export function useTranscriptScroll({
     const prevLen = prevPinItemsLenRef.current
     prevPinItemsLenRef.current = itemCount
     if (itemCount <= prevLen) return
-    pinToBottom(scrollerRef.current, { allowDuringAnimation: true })
+    pinToBottom(scrollerRef.current, { allowDuringAnimation: true, reason: 'append' })
   })
 
   const clearFollowTimer = useCallback(() => {
@@ -303,6 +446,7 @@ export function useTranscriptScroll({
     nextAtBottom: boolean,
     followMode: FollowMode,
   ) => {
+    dbg('syncBottomState', () => ({ nextAtBottom, followMode, followBefore: shouldFollowRef.current }))
     if (nextAtBottom || followMode !== 'disable-debounced') {
       setBottomState(nextAtBottom)
     }
@@ -397,9 +541,46 @@ export function useTranscriptScroll({
     // atBottomRef false (which would re-show the jump button and disarm the
     // re-pin paths the animation depends on). Treat the viewport as
     // still-at-bottom until the rAF loop completes and clears the guard.
-    if (scrollAnimatingRef.current) {
+    //
+    // Exception: an explicit 'disable-now' is the user's own leave, latched by
+    // a gesture they just made (the wheel/key handlers call it directly, and
+    // the scroll handler forwards a user-driven upward move with it). Dropping
+    // that here leaves `shouldFollowRef` true, so the follow invariant and the
+    // backstops snap the viewport back and the gesture is erased — the rAF loop
+    // aborts on the same move without syncing (its comment assumes the handler
+    // latched the leave), so nothing else would record it.
+    if (scrollAnimatingRef.current && modeWhenAway !== 'disable-now') {
       return getBottomGeometry(el)
     }
+
+    const following = shouldFollowRef.current
+    const userLeft = modeWhenAway === 'disable-now'
+
+    // FOLLOW INVARIANT — while following, the viewport IS the bottom.
+    //
+    // "Following" is the resting state, so a viewport that is away from the
+    // true bottom while `shouldFollowRef` is still set is not a state the user
+    // asked for; it is a displacement we have not accounted for yet. Enforcing
+    // it here (rather than only in the element-shaped backstops) is what covers
+    // a correction that moves the content bottom under a pinned viewport without
+    // resizing the item-list, the spacer or the viewport and without a scrollTop
+    // write — those slipped past all three backstops and left the transcript
+    // short with the jump button hidden (the "关掉动画效果后 Session 有时候
+    // 滚动不到最底部" bug).
+    //
+    // Safe by construction: a genuine user scroll-up arrives as
+    // `modeWhenAway === 'disable-now'` (the scroll handler latched it as
+    // user-intent BEFORE calling us), so `userLeft` excludes it — follow is
+    // dropped instead, and the button surfaces. Same for an away user:
+    // `following` is false, so nothing here ever yanks them.
+    if (following && !userLeft && !isAtTrueBottom(el)) {
+      dbg('follow-invariant', () => ({ modeWhenAway }))
+      pinToBottom(el, { reason: 'follow-invariant' })
+    }
+
+    // Read the geometry AFTER the invariant pin, so the state below (and the
+    // returned geometry) describes where the viewport IS, not the displacement
+    // we just corrected.
     const geometry = getBottomGeometry(el)
     // The top of the real bottom: the viewport parked at scrollHeight (what
     // pinToBottom targets). Follow re-arms ONLY here. The spacer-aware
@@ -420,10 +601,8 @@ export function useTranscriptScroll({
     // button is always offered — including inside the dead zone, where the
     // spacer-aware `geometry.canJumpToBottom` (false) would otherwise hide it
     // and park an away user with no affordance.
-    const following = shouldFollowRef.current
     const canJump = !following
     setCanJumpToBottom(delayAway ? false : canJump)
-    const userLeft = modeWhenAway === 'disable-now'
     // Follow re-arms ONLY when the user is at the true bottom AND either (a)
     // they were already following (a passive re-read / content fold keeps it
     // on), or (b) this call is the scroll handler reporting an active
@@ -443,7 +622,7 @@ export function useTranscriptScroll({
             : modeWhenAway === 'restore' ? 'preserve' : modeWhenAway
     syncBottomState(geometry.atBottom, followMode)
     return geometry
-  }, [syncBottomState])
+  }, [pinToBottom, syncBottomState])
 
   // Animated scroll-to-bottom driven by a requestAnimationFrame easing loop.
   //
@@ -531,6 +710,7 @@ export function useTranscriptScroll({
     atBottomRef.current = true
     shouldFollowRef.current = true
     lastCountRef.current = 0
+    userScrollIntentRef.current = 0
     // Intentional one-shot reset on a rare event (transcript switch). The
     // cascading-render cost the rule guards against is irrelevant here — it's a
     // single commit after a persisted-owner remount.
@@ -579,6 +759,7 @@ export function useTranscriptScroll({
       const now = current.clientHeight
       const shrunk = now < lastHeight
       lastHeight = now
+      dbg('scroller-RO', () => ({ shrunk, atBottomRef: atBottomRef.current }))
       if (shrunk && atBottomRef.current) {
         scrollScrollerToBottom('auto')
       }
@@ -611,7 +792,8 @@ export function useTranscriptScroll({
     // nothing to re-pin for — skip, to avoid yanking the viewport on mount or
     // after streaming ends when a non-bottom position may be intentional.
     if (bottomStackHeight <= 0) return
-    pinToBottom()
+    dbg('spacer-pin', () => ({ bottomStackHeight, animating: scrollAnimatingRef.current }))
+    pinToBottom(undefined, { reason: 'spacer' })
   }, [bottomStackHeight, pinToBottom])
 
   // Re-pin when SETTLED content grows AFTER the follow animation has already
@@ -667,9 +849,10 @@ export function useTranscriptScroll({
       if (cancelled) return
       const scroller = scrollerRef.current
       if (!scroller) return
-      if (!shouldFollowRef.current || scrollAnimatingRef.current) return
+      if (!shouldFollowRef.current || scrollAnimatingRef.current) { dbg('itemlist-RO skip', () => ({ follow: shouldFollowRef.current, animating: scrollAnimatingRef.current })); return }
       const contentH = contentHeightOf(scroller)
-      if (Math.abs(contentH - lastContentHeight) < 1) return
+      if (Math.abs(contentH - lastContentHeight) < 1) { dbg('itemlist-RO noop', () => ({})); return }
+      dbg('itemlist-RO pin', () => ({ delta: Math.round(contentH - lastContentHeight) }))
       lastContentHeight = contentH
       // Re-pin on shrink as well as growth while following. A group folding
       // ABOVE the viewport reduces scrollHeight; with the viewport pinned to
@@ -753,24 +936,51 @@ export function useTranscriptScroll({
       // must keep tracking it. Only the bottom-follow bookkeeping needs to
       // stand down mid-animation.
       emitVisibleTop()
-      // ANIMATING: skip the geometry sync entirely. Mid-animation the viewport
-      // is intentionally not yet at the bottom; running the sync would see
-      // dist>0, arm the 150ms follow-disable debounce, and fire it
-      // mid-animation — dropping to AWAY and re-showing the jump button,
-      // exactly the race the guard exists to prevent. The rAF loop clears the
-      // guard when it lands (or aborts on user scroll-up).
-      if (scrollAnimatingRef.current) return
       const isScrollingUp = el.scrollTop < prevScrollTop
+      const distTrue = getDistanceFromTrueBottom(el)
+      const userDriven = Date.now() - userScrollIntentRef.current <= USER_SCROLL_INTENT_MS
+      // Chain the gesture: an animated wheel pan (or a thumb drag) emits scroll
+      // events for hundreds of ms, and each upward one re-arms the window so the
+      // whole gesture stays attributable to the user. Only upward events
+      // re-arm, so our own downward pins and a downward gesture can't keep the
+      // window alive.
+      if (userDriven && isScrollingUp) userScrollIntentRef.current = Date.now()
       // A genuine user push-away measures against the TRUE bottom
       // (scrollHeight). The spacer-aware `getDistanceFromBottom` subtracts the
       // task-list / live-bubble reserve, so an up-scroll that stays inside it
       // reads as 0 and follow never turns off — and the re-pin backstops then
-      // keep snapping the viewport back ("wheel-up gets absorbed"). Any net
-      // upward scroll from the true bottom is a user leave; an animated group
-      // FOLD clamps scrollTop down in lockstep with the shrinking content
+      // keep snapping the viewport back ("wheel-up gets absorbed"). An animated
+      // group FOLD clamps scrollTop down in lockstep with the shrinking content
       // bottom, so this distance stays ≈ 0 there and is not a leave.
-      const distTrue = getDistanceFromTrueBottom(el)
-      const isUserLeave = isScrollingUp && distTrue > BOTTOM_EPSILON_PX
+      //
+      // A leave also has to be USER-CAUSED. The transcript's scrollTop is moved
+      // by our own pins, by Virtuoso's size corrections and by the browser's
+      // clamps, and mid-turn the content grows under the viewport continuously,
+      // so `distTrue` is large at almost every instant — which made ANY
+      // transient upward blip satisfy `isScrollingUp && distTrue > 0`. Latching
+      // AWAY on one of those drops follow for the rest of the session and the
+      // transcript never reaches the bottom again: the live-turn
+      // "有时候会滚动不到最底部" report. So require evidence of a real gesture
+      // (wheel / touch / scroll key / overlay-thumb drag — see
+      // userScrollIntentRef); an upward move with no gesture is a displacement
+      // to correct, and it falls through to `preserve` → the follow invariant
+      // re-pins it.
+      //
+      // Residual gap, deliberately accepted: a scroll the browser performs with
+      // no gesture AND no key we can see — native find-in-page jumping to a
+      // match, middle-click/selection edge autoscroll — reads as a displacement
+      // and is re-pinned. Those are the only inputs that can't leave; the app's
+      // own search uses `seekToIndex` (which drops follow explicitly), and the
+      // alternative (treating every upward move as a leave) is the bug above.
+      const isUserLeave = isScrollingUp && distTrue > BOTTOM_EPSILON_PX && userDriven
+      // ANIMATING: stand down mid-flight — the viewport is intentionally not yet
+      // at the bottom, so a geometry sync here would see dist>0, arm the 150ms
+      // follow-disable debounce and fire it mid-animation. Exception: a
+      // USER-driven upward move must not be swallowed. The rAF loop aborts on
+      // that same move, and (with the follow invariant now enforcing the
+      // bottom) dropping it would erase the user's nudge instead of leaving.
+      if (scrollAnimatingRef.current && !(userDriven && isScrollingUp)) return
+      dbg('scroll-handler', () => ({ isScrollingUp, userDriven, isUserLeave, following: shouldFollowRef.current }))
       if (isUserLeave) {
         syncBottomGeometry(el, 'disable-now')
       } else if (!isScrollingUp && distTrue <= BOTTOM_EPSILON_PX) {
@@ -785,8 +995,121 @@ export function useTranscriptScroll({
     }
     syncBottomGeometry(el, 'confirm-away')
     el.addEventListener('scroll', handler, { passive: true })
-    return () => el.removeEventListener('scroll', handler)
-  }, [rowCount, syncBottomGeometry, bottomStackHeight, emitVisibleTop])
+    // Scroll-intent listeners for the same element lifetime. `wheel` +
+    // `touch*` cover mouse/trackpad/touch gestures on the transcript; the
+    // overlay scrollbar's thumb is a SIBLING of the scroller (it floats over
+    // the parent), so its drag never reaches them and has to be caught at the
+    // document — pointer events retarget to the captured thumb mid-drag, which
+    // is what keeps the intent fresh for the whole drag.
+    const markUserScrollIntent = () => { userScrollIntentRef.current = Date.now() }
+    // A gesture that asks the viewport to move UP, seen while FOLLOWING (i.e.
+    // parked at the bottom), IS the leave — and it has to be latched here rather
+    // than from the scroll event the gesture produces. Mid-turn the append pin
+    // re-writes scrollTop = scrollHeight in the same frame the browser pans, so
+    // by the time the scroll event is delivered the position reads as unchanged
+    // (or lower) and `isScrollingUp` is false: the user's wheel-up was erased
+    // before we could see it (measured: a 197px PageUp, and a 1500px wheel pan,
+    // both gone). Waiting for the event means a streaming transcript cannot be
+    // left at all.
+    //
+    // The scrollable guard keeps a nudge on a transcript with nothing above it
+    // from dropping follow — there is no earlier content to go read.
+    const leaveOnUpwardGesture = () => {
+      const scroller = scrollerRef.current
+      if (!scroller || !shouldFollowRef.current) return
+      if (scroller.scrollHeight - scroller.clientHeight <= BOTTOM_EPSILON_PX) return
+      syncBottomGeometry(scroller, 'disable-now')
+    }
+    // True when `node` sits inside a scroll container nested in the transcript
+    // (a Bash card's output block, a code block), i.e. the gesture belongs to
+    // THAT container, not to the transcript. Its scroll events don't bubble, so
+    // latching a leave for it would drop follow while the panel is still parked
+    // at the bottom — and nothing would re-arm it.
+    const isInsideNestedScroller = (node: EventTarget | null): boolean => {
+      let cur = node instanceof HTMLElement ? node : null
+      while (cur && cur !== el) {
+        const overflowY = getComputedStyle(cur).overflowY
+        if ((overflowY === 'auto' || overflowY === 'scroll') && cur.scrollHeight > cur.clientHeight + 1) return true
+        cur = cur.parentElement
+      }
+      return false
+    }
+    // Only UPWARD-capable inputs (see SCROLL_UP_KEYS): a wheel-down, a touch
+    // drag toward the bottom or a PageDown can't produce a leave, and treating
+    // them as intent would let a programmatic displacement landing in the window
+    // latch one.
+    const onWheel = (e: WheelEvent) => {
+      // ctrl+wheel is zoom (trackpad pinch), not scrolling.
+      if (e.deltaY >= 0 || e.ctrlKey || e.metaKey) return
+      if (isInsideNestedScroller(e.target)) return
+      markUserScrollIntent()
+      leaveOnUpwardGesture()
+    }
+    // Scroll keys only reach the scroller when IT holds focus (Virtuoso renders
+    // its scroller with tabIndex 0, so clicking a message focuses it) — and
+    // requiring the scroller itself as the target is what keeps ArrowUp/Home
+    // pressed inside a nested block (or a message's own control) from being
+    // read as a transcript leave. Shift+Space is Chromium's other page-up.
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.target !== el) return
+      if (!SCROLL_UP_KEYS.has(e.key) && !(e.key === ' ' && e.shiftKey)) return
+      markUserScrollIntent()
+      leaveOnUpwardGesture()
+    }
+    // Middle-click starts the browser's autoscroll on the nearest scrollable
+    // ancestor — scoped to `el` so a middle-click on the sidebar can't mark
+    // THIS transcript's intent. Its direction isn't known until it scrolls, so
+    // this one keeps the intent+scroll-event path.
+    const onMiddleDown = (e: PointerEvent) => {
+      if (e.button === 1) markUserScrollIntent()
+    }
+    // The overlay scrollbar's thumb is a SIBLING of the scroller (it floats over
+    // the scroller's parent), so its drag never reaches the listeners above and
+    // has to be caught at the document. Scoped by parent: the thumb's track is
+    // appended to the scroller's own parent, which is what distinguishes this
+    // transcript's thumb from the sidebar's / another panel's — marking on any
+    // `.os-thumb` would let an unrelated drag re-open the false-leave this gate
+    // exists to close. Pointer events retarget to the captured thumb mid-drag,
+    // which is what keeps the intent fresh for the whole drag.
+    const onPointerOnThumb = (e: PointerEvent) => {
+      if (!e.buttons) return // only a held button can be dragging the thumb
+      const target = e.target as HTMLElement | null
+      const track = target?.closest?.('.os-track')
+      if (track && track.parentElement === el.parentElement) markUserScrollIntent()
+    }
+    // Touch is direction-gated like the wheel: dragging the finger DOWN moves the
+    // content up (revealing older messages), which is the leave-capable
+    // direction; a drag the other way can't drop follow and must not mark
+    // intent, or a programmatic displacement inside the window would.
+    let lastTouchY: number | null = null
+    const onTouchStart = (e: TouchEvent) => {
+      lastTouchY = e.touches[0]?.clientY ?? null
+    }
+    const onTouchMove = (e: TouchEvent) => {
+      const y = e.touches[0]?.clientY ?? null
+      if (y == null || lastTouchY == null) { lastTouchY = y; return }
+      const draggedDown = y > lastTouchY
+      lastTouchY = y
+      if (draggedDown) markUserScrollIntent()
+    }
+    el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('touchstart', onTouchStart, { passive: true })
+    el.addEventListener('touchmove', onTouchMove, { passive: true })
+    el.addEventListener('keydown', onKeyDown)
+    el.addEventListener('pointerdown', onMiddleDown, true)
+    document.addEventListener('pointerdown', onPointerOnThumb, true)
+    document.addEventListener('pointermove', onPointerOnThumb, true)
+    return () => {
+      el.removeEventListener('scroll', handler)
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchmove', onTouchMove)
+      el.removeEventListener('keydown', onKeyDown)
+      el.removeEventListener('pointerdown', onMiddleDown, true)
+      document.removeEventListener('pointerdown', onPointerOnThumb, true)
+      document.removeEventListener('pointermove', onPointerOnThumb, true)
+    }
+  }, [rowCount, syncBottomGeometry, bottomStackHeight, emitVisibleTop, transcriptRevealKey])
 
   // Clean up the follow debounce timer on unmount.
   useEffect(() => () => {

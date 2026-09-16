@@ -1076,4 +1076,85 @@ describe('useChatStream', () => {
     // is about to tear the channel down anyway.
     expect(mockResubscribe).not.toHaveBeenCalled()
   })
+
+  it('retries the channel when the server answers "session not found"', async () => {
+    // Regression guard for the blank-transcript-after-opening-a-dormant-session
+    // bug. Opening a slept session mounts the panel, which subscribes
+    // immediately, while the resume that makes the session servable is still in
+    // flight — so the server answers `error: session X not found` + an EMPTY
+    // `replay-done`, and the hub emits nothing further on its own. The panel is
+    // left mounted with an empty transcript until a manual reload. Captured
+    // frame-level: `→ subscribe` … `← error` … `← replay-done` … `← session-update`
+    // (resume done) and no further `→ subscribe`.
+    //
+    // The fix re-requests the channel on a bounded backoff, so it recovers
+    // whether the resume was issued by this client, another panel, or another
+    // tab. The `running` false→true path above only covers the case where the
+    // panel observes the transition in one effect instance — a remount (which
+    // is what a panel-slot shuffle does) resets that, which is why the retry
+    // exists separately.
+    vi.useFakeTimers()
+    try {
+      renderHook(() => useChatStream('s1', noopPerms, false))
+
+      act(() => {
+        dispatchToSession('s1', { kind: 'error', sessionId: 's1', message: 'session s1 not found' })
+      })
+      expect(mockResubscribe).not.toHaveBeenCalled()
+
+      act(() => { vi.advanceTimersByTime(500) })
+      expect(mockResubscribe).toHaveBeenCalledWith('s1', undefined)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops retrying the channel once a replay arrives (and stays bounded)', () => {
+    vi.useFakeTimers()
+    try {
+      renderHook(() => useChatStream('s1', noopPerms, false))
+
+      act(() => {
+        dispatchToSession('s1', { kind: 'error', sessionId: 's1', message: 'session s1 not found' })
+      })
+      act(() => { vi.advanceTimersByTime(500) })
+      const callsAfterFirstRetry = mockResubscribe.mock.calls.length
+      expect(callsAfterFirstRetry).toBe(1)
+
+      // The resume landed: the retried subscribe serves a replay.
+      act(() => {
+        dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
+        dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1', permissions: [] })
+      })
+
+      // No further retries, ever.
+      act(() => { vi.advanceTimersByTime(60_000) })
+      expect(mockResubscribe.mock.calls.length).toBe(callsAfterFirstRetry)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('gives up retrying a session nobody resumes (bounded attempts)', () => {
+    // A slept session that the user never wakes answers "not found" to every
+    // attempt: the retry must exhaust rather than spin forever.
+    vi.useFakeTimers()
+    try {
+      renderHook(() => useChatStream('s1', noopPerms, false))
+      act(() => {
+        dispatchToSession('s1', { kind: 'error', sessionId: 's1', message: 'session s1 not found' })
+      })
+      for (let i = 0; i < 20; i++) {
+        act(() => { vi.advanceTimersByTime(1200) })
+        act(() => {
+          dispatchToSession('s1', { kind: 'error', sessionId: 's1', message: 'session s1 not found' })
+        })
+      }
+      // Bounded: a handful of attempts, not one per error frame.
+      expect(mockResubscribe.mock.calls.length).toBeLessThanOrEqual(6)
+      expect(mockResubscribe.mock.calls.length).toBeGreaterThan(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

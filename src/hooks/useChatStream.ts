@@ -11,6 +11,20 @@ import type { WsServerFrame } from '../ws-types'
 import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter, TaskRecordUi, UserDialogRequestUi, DialogResolved } from '../types'
 import { extractMessagePlainText } from '../../shared/search/extract'
 
+/** Server answer to a subscribe for a session it cannot serve yet — normally
+ *  because the session's resume is still in flight (opening a dormant/slept
+ *  session mounts the panel, which subscribes immediately, while the resume is
+ *  still spawning). Treated as "not ready yet" rather than as a failure: see
+ *  the `error` frame case. */
+const SERVICE_NOT_READY = /\bsession\b[^\n]*\bnot found\b/i
+/** How long to wait before re-requesting the channel after that answer. The
+ *  resume lands within a second or two (spawn + history seed), so a few
+ *  attempts at this spacing is comfortably enough. */
+const RESUBSCRIBE_RETRY_MS = 400
+/** Attempt cap: a slept session nobody wakes answers "not found" to every
+ *  attempt, so the retry has to exhaust instead of spinning. */
+const RESUBSCRIBE_MAX_ATTEMPTS = 5
+
 /** The disk-stable uuid of a message, or null. A message whose uuid matches
  *  between the in-memory ring and the on-disk transcript can anchor the first
  *  history page; plain user PROMPT uuids are minted server-side at send() time
@@ -209,6 +223,11 @@ export function useChatStream(
   // transition (dormant/slept → resumed) so it can force a channel
   // re-subscribe; see the wasDown logic in the subscribe effect.
   const prevRunningRef = useRef<boolean | undefined>(undefined)
+  // Channel re-request state for the "not ready yet" recovery. Held in refs (not
+  // effect-locals) so the attempt budget spans effect re-runs, and a pending
+  // retry survives one — see scheduleResubscribe in the subscribe effect.
+  const resubscribeTimerRef = useRef<number | null>(null)
+  const resubscribeAttemptsRef = useRef(RESUBSCRIBE_MAX_ATTEMPTS)
   // Set true when a `session-cleared` frame lands for this session. Blocks
   // loadOlder() from paging the pre-/clear transcript back in from disk
   // (the on-disk log still holds it; the server only truncated its
@@ -271,6 +290,31 @@ export function useChatStream(
     // the replay-done diagnostic below from misattributing that expected
     // sequence to the discarded-buffer race.
     let errored = false
+    // Bounded channel re-request, armed by the `error` frame case below. The
+    // budget lives OUTSIDE the effect (a ref) so an effect re-run — which a
+    // `running` flip or a remount causes — cannot refill it; a slept session
+    // nobody wakes answers "not found" to every attempt, and that has to
+    // exhaust rather than spin.
+    const scheduleResubscribe = () => {
+      if (resubscribeTimerRef.current != null || resubscribeAttemptsRef.current <= 0) return
+      resubscribeAttemptsRef.current--
+      resubscribeTimerRef.current = window.setTimeout(() => {
+        resubscribeTimerRef.current = null
+        // Clear the "not found" band before re-asking: the error was
+        // "not ready yet", and the same recovery path taken by the `running`
+        // transition (below) clears it for the same reason. Without this a
+        // healed panel keeps rendering the stale error over a full transcript
+        // (REPLAY_REPLACE deliberately preserves `intent.error`).
+        store.dispatch({ type: 'ERROR', message: null })
+        hub.resubscribe(sessionId, getSessionLastMessageUuid(sessionId) ?? undefined)
+      }, RESUBSCRIBE_RETRY_MS)
+    }
+    const stopResubscribing = () => {
+      if (resubscribeTimerRef.current != null) {
+        window.clearTimeout(resubscribeTimerRef.current)
+        resubscribeTimerRef.current = null
+      }
+    }
     // Phase 2 of the layered-state refactor removed the `pendingLive` buffer.
     // Previously, live frames arriving between `replay` and `replay-done` had
     // to be parked because REPLAY_REPLACE's fresh-state branch rebuilt the
@@ -288,6 +332,11 @@ export function useChatStream(
     const off = hub.addSessionListener(sessionId, (frame: WsServerFrame) => {
       switch (frame.kind) {
         case 'replay': {
+          // The channel is live: no more re-requests are needed (a retry armed
+          // by an earlier "not found" must not fire into a working channel),
+          // and the attempt budget is refilled for whatever race comes next.
+          stopResubscribing()
+          resubscribeAttemptsRef.current = RESUBSCRIBE_MAX_ATTEMPTS
           if (!replaying) {
             replaying = true
             replayMessages = []
@@ -488,6 +537,16 @@ export function useChatStream(
             store.dispatch({ type: 'REPLAY_REPLACE', messages: [], permissions: [] })
           }
           store.dispatch({ type: 'ERROR', message: frame.message })
+          // "session X not found" means the session is not servable YET — its
+          // resume is still in flight (see SERVICE_NOT_READY). The hub emits no
+          // further frame on its own, so without this the panel stays mounted
+          // with a BLANK transcript until a manual reload: frame-level capture
+          // of the reported case shows `→ subscribe`, `← error`,
+          // `← replay-done` (empty), `← session-update` (the resume landing) and
+          // then nothing. Re-request on a bounded backoff so the channel is
+          // re-established once the session is up, whoever issued the resume
+          // (this client's sidebar click, another panel, another tab).
+          if (SERVICE_NOT_READY.test(frame.message)) scheduleResubscribe()
           break
         }
         case 'session-cleared': {
@@ -553,6 +612,7 @@ export function useChatStream(
       }
       off()
       release()
+      stopResubscribing()
     }
   }, [hub, sessionId, store, hydrateReady, running])
 
