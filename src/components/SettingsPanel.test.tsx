@@ -362,9 +362,9 @@ describe('SettingsPanel Appearance tab', () => {
   })
 
   // NOTE: scoped to the returned `container`, never document-wide `screen`.
-  // vitest.config.ts sets `globals: false` and this file has no
-  // `afterEach(cleanup)`, so prior renders stay mounted in document.body —
-  // a `screen` query here would match the previous test's panel.
+  // Every test's render is torn down by the global hook in src/test-setup.ts,
+  // so this is house style rather than a workaround — a `screen` query is just
+  // less clear about which panel it means.
   const switchEl = (container: HTMLElement, label: string) =>
     container.querySelector(`button[aria-label="${label}"]`)
 

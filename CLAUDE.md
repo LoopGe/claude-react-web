@@ -21,7 +21,7 @@ npm run preview     # build + start
 
 Launch env: Anthropic credentials live in `~/.claude-react-web/config.json` (`authToken` / `baseUrl`), not env vars — `server/config.ts` reads no `process.env`; the server injects them into each SDK subprocess. The CLI warns at startup if `authToken` is unset. CLI flags: `-p/--port`, `--host`, `--token` (web access token; auto-generated on non-loopback host), `-o/--open` / `--no-open`, `--cwd`, `--model`, `--state-dir`, `--claude-binary`.
 
-Two tsconfigs exist because the browser (`src/`) and Node (`server/`, `build.mjs`, `vite.config.ts`) have different `lib`/`types` needs; always run both when typechecking. Server tests run in Node; client hook tests run with jsdom via vitest workspaces.
+Two tsconfigs exist because the browser (`src/`) and Node (`server/`, `build.mjs`, `vite.config.ts`) have different `lib`/`types` needs; always run both when typechecking. Server tests run in Node; client hook tests run with jsdom via `environmentMatchGlobs` in `vitest.config.ts` (plus per-file `@vitest-environment` docblocks). `setupFiles` points at `src/test-setup.ts`, which registers `afterEach(cleanup)` — `globals: false` means @testing-library/react's own auto-cleanup never self-registers, so without it every `render()` stays mounted past its test and an unmount-cancelled timer can fire inside vitest's jsdom teardown (`ReferenceError: window is not defined`, exit 1 with all assertions green). Don't re-add per-file `afterEach(cleanup)`.
 
 ## Architecture
 

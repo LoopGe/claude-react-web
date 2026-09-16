@@ -3,10 +3,9 @@ import { render, fireEvent, within, cleanup } from '@testing-library/react'
 import { PermissionDialog } from './PermissionDialog'
 import type { PermissionRequest, PermissionMode } from '../types'
 
-// vitest runs with `globals: false`, so @testing-library/react's auto-cleanup
-// (which keys off a global `afterEach`) never registers. Without this explicit
-// cleanup, each test's <PermissionDialog> — and its `useFocusTrap`
-// `document`-level `focusin` listener — stays mounted and accumulates across
+// Cleanup is registered globally in src/test-setup.ts. It matters here: before
+// any of this, each test's <PermissionDialog> — and its `useFocusTrap`
+// `document`-level `focusin` listener — stayed mounted and accumulated across
 // tests. By the second test the leaked DOM + listeners produce an error with a
 // deep stack that overflows vite-node's recursive `prepareStackTrace`
 // source-map rewrite (the `/file:\/\/\/(\w:)?/` regex blows the stack), which

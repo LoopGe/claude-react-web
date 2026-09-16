@@ -3,10 +3,10 @@ import { render, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { NewSessionDialog } from './NewSessionDialog'
 import type { NewSessionForm } from '../../types'
 
-// vitest.config.ts sets globals:false, so @testing-library's auto-cleanup never
-// registers. The dialog portals to <body> and these tests assert against
+// Cleanup is registered globally in src/test-setup.ts. It is load-bearing here
+// regardless: the dialog portals to <body> and these tests assert against
 // document.body, so a dialog left mounted by one test would satisfy the next
-// one's `.not.toContain(...)` — explicit cleanup is load-bearing here.
+// one's `.not.toContain(...)`.
 afterEach(() => cleanup())
 
 vi.mock('../../hooks/useApi', () => ({

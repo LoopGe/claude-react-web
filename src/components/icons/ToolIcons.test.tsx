@@ -2,9 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
 import { IconLoader, IconSidebar } from './ToolIcons'
 
-// vitest runs with `globals: false`, so @testing-library/react's auto-cleanup
-// (via afterEach) doesn't register — rendered DOM would otherwise accumulate
-// across tests.
+// Cleanup is registered globally in src/test-setup.ts; the explicit hook here
+// is redundant but harmless.
 afterEach(() => {
   cleanup()
 })

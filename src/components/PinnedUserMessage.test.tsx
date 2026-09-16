@@ -3,8 +3,8 @@ import { render, cleanup, waitFor, fireEvent } from '@testing-library/react'
 import { AnimatePresence } from 'motion/react'
 import { PinnedUserMessage } from './PinnedUserMessage'
 
-// vitest runs with `globals: false`, so @testing-library/react's auto-cleanup
-// never registers. Tear down between tests to avoid leaked DOM/listeners.
+// Cleanup is registered globally in src/test-setup.ts; the explicit hook here
+// is redundant but harmless.
 afterEach(() => {
   cleanup()
 })

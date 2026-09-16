@@ -48,12 +48,11 @@ function setEditorText(el: HTMLElement, text: string) {
 }
 
 
-// vitest.config.ts sets globals:false, so @testing-library's auto-cleanup never
-// registers — every render stays mounted unless we unmount it. That used to be
-// invisible (all queries were container-scoped). The slash picker now portals
-// to <body> and these tests query it document-wide, so a picker left open by one
-// test would answer the next test's assertions from stale DOM — same explicit
-// cleanup as CommandPicker/ContextMenu/ModelPicker tests.
+// Cleanup is registered globally in src/test-setup.ts. It is load-bearing here
+// regardless: the slash picker portals to <body> and these tests query it
+// document-wide, so a picker left open by one test would answer the next test's
+// assertions from stale DOM — same explicit cleanup as
+// CommandPicker/ContextMenu/ModelPicker tests.
 afterEach(() => cleanup())
 
 // Composer calls useToast() for clipboard-fail hints, so every test

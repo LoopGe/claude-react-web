@@ -4,8 +4,8 @@ import { AnimatePresence } from 'motion/react'
 import { RecapWindow } from './RecapWindow'
 import type { SessionRecap } from '../../shared/session-info'
 
-// vitest runs with `globals: false`, so @testing-library/react's auto-cleanup
-// never registers. Tear down between tests to avoid leaked DOM/listeners.
+// Cleanup is registered globally in src/test-setup.ts; the explicit hook here
+// is redundant but harmless.
 afterEach(() => {
   cleanup()
 })

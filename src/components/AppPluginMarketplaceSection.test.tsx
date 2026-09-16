@@ -10,9 +10,10 @@ vi.mock('../hooks/useApi', () => ({
 
 import { api } from '../hooks/useApi'
 
-// vitest runs with `globals: false`, so @testing-library/react cannot register
-// its own auto-cleanup. Without this, rendered DOM accumulates across tests in
-// this file and unscoped queries (getByLabelText) start matching duplicates.
+// Cleanup is registered globally in src/test-setup.ts (`globals: false` keeps
+// RTL's own auto-cleanup from self-registering). Kept here as well because the
+// unscoped queries in this file (getByLabelText) must not match a sibling
+// test's DOM.
 afterEach(() => cleanup())
 
 const mkMp = (id: string, sourceType: 'https' | 'local'): AppPluginMarketplaceInfo => ({

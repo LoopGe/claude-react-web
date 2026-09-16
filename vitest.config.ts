@@ -94,6 +94,9 @@ function groupKey(filepath: string, root: string): string {
 export default defineConfig({
   test: {
     reporters: ['default', durationReporter()],
+    // Client tests need explicit RTL cleanup: `globals: false` below means RTL's
+    // auto-cleanup never self-registers. See src/test-setup.ts.
+    setupFiles: ['./src/test-setup.ts'],
     // Server tests run in Node; client hook tests run in jsdom.
     // Use workspace-style overrides so both share one `vitest run`.
     environment: 'node',
