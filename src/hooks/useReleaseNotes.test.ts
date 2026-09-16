@@ -52,6 +52,42 @@ describe('useReleaseNotes', () => {
     expect(apiGet).not.toHaveBeenCalled()
   })
 
+  it('appends includeFrom=1 only when the lower bound is inclusive', async () => {
+    apiGet.mockResolvedValue(NOTES)
+    const exclusive = renderHook(() => useReleaseNotes(true, '0.7.3', '0.7.3'))
+    await waitFor(() => expect(exclusive.result.current.loading).toBe(false))
+    expect(apiGet).toHaveBeenLastCalledWith('/release-notes?from=0.7.3&to=0.7.3', expect.anything())
+
+    const inclusive = renderHook(() => useReleaseNotes(true, '0.7.3', '0.7.3', true))
+    await waitFor(() => expect(inclusive.result.current.loading).toBe(false))
+    expect(apiGet).toHaveBeenLastCalledWith(
+      '/release-notes?from=0.7.3&to=0.7.3&includeFrom=1',
+      expect.anything(),
+    )
+  })
+
+  it('refetches when only includeFrom changes (the snapshot key covers it)', async () => {
+    // The snapshot slot is tagged by request key: if the inclusivity were left
+    // out of that key, flipping it would settle on the previous range's answer
+    // and the dialog would render the WRONG range's notes with no refetch.
+    apiGet.mockResolvedValue(NOTES)
+    const { result, rerender } = renderHook(
+      ({ inc }: { inc: boolean }) => useReleaseNotes(true, '0.7.3', '0.7.3', inc),
+      { initialProps: { inc: false } },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(apiGet).toHaveBeenCalledTimes(1)
+
+    rerender({ inc: true })
+    expect(result.current.loading).toBe(true)
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(apiGet).toHaveBeenCalledTimes(2)
+    expect(apiGet).toHaveBeenLastCalledWith(
+      '/release-notes?from=0.7.3&to=0.7.3&includeFrom=1',
+      expect.anything(),
+    )
+  })
+
   it('coalesces concurrent mounts into one request', async () => {
     // Each hook instance fires its own effect and calls apiGet; the SERVER
     // dedupes the actual network request. At the hook level we verify both

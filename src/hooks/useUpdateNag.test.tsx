@@ -5,6 +5,8 @@ import type { ReactNode } from 'react'
 import { ToastProvider } from '../components/ToastProvider'
 import { useToastList } from './useToast'
 import {
+  nagDismissValueFor,
+  nagValueForDeprecated,
   nagValueForUpdate,
   readNagDismiss,
   writeNagDismiss,
@@ -151,5 +153,34 @@ describe('useUpdateNag', () => {
     )
     expect(result.current).toHaveLength(1)
     expect(result.current[0].title).toBe('New version available')
+  })
+})
+
+// The dialog's close handler asks this for the value to persist. The behaviour
+// it protects is subtle and one-directional: writing a key for a NON-nag mode
+// suppresses a real notification later, so the read-only About viewer must
+// return null rather than fall through to the deprecation sentinel.
+describe('nagDismissValueFor', () => {
+  it('returns null for the read-only current viewer', () => {
+    expect(nagDismissValueFor('current', baseInfo())).toBeNull()
+  })
+
+  it('returns null for any mode that is not a nag', () => {
+    expect(nagDismissValueFor('something-new', baseInfo())).toBeNull()
+  })
+
+  it('keys the update branch by the offered latest', () => {
+    expect(nagDismissValueFor('update', baseInfo({ latest: '0.8.0' })))
+      .toBe(nagValueForUpdate('0.8.0'))
+  })
+
+  it('falls back to the deprecation sentinel when update has no latest to key on', () => {
+    expect(nagDismissValueFor('update', baseInfo({ latest: undefined })))
+      .toBe(nagValueForDeprecated('0.7.2'))
+  })
+
+  it('keys the deprecation branch by the running version', () => {
+    expect(nagDismissValueFor('deprecation', baseInfo({ deprecated: 'old' })))
+      .toBe(nagValueForDeprecated('0.7.2'))
   })
 })

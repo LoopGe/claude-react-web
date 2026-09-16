@@ -4,17 +4,20 @@ import { render, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { UpdateDialog } from './UpdateDialog'
 import type { UpdateInfo } from '../../shared/update-info'
 
-const { getNotes, getError } = vi.hoisted(() => ({
+const { getNotes, getError, notesArgs } = vi.hoisted(() => ({
   getNotes: vi.fn(),
   getError: vi.fn().mockReturnValue(null),
+  notesArgs: vi.fn(),
 }))
 const mockToast = { success: vi.fn(), error: vi.fn(), info: vi.fn() }
 
 vi.mock('../hooks/useReleaseNotes', () => ({
-  useReleaseNotes: (enabled: boolean) =>
-    enabled
+  useReleaseNotes: (enabled: boolean, from?: string, to?: string, includeFrom?: boolean) => {
+    notesArgs({ enabled, from, to, includeFrom })
+    return enabled
       ? { releases: getNotes(), loading: false, error: getError() }
-      : { releases: null, loading: false, error: null },
+      : { releases: null, loading: false, error: null }
+  },
 }))
 vi.mock('../hooks/useToast', () => ({
   useToast: () => mockToast,
@@ -37,6 +40,7 @@ function baseInfo(over: Partial<UpdateInfo> = {}): UpdateInfo {
     updateAppliedToDisk: false,
     source: 'npm',
     checkedAt: 1,
+    repoUrl: 'https://github.com/LoopGe/claude-react-web',
     ...over,
   }
 }
@@ -74,6 +78,7 @@ describe('UpdateDialog', () => {
     getNotes.mockReturnValue([NOTE])
     getError.mockReset()
     getError.mockReturnValue(null)
+    notesArgs.mockReset()
   })
 
   it('renders header, release sections, and footer buttons', () => {
@@ -189,5 +194,77 @@ describe('UpdateDialog', () => {
     fireEvent.click(getByText('Copy command'))
     expect(writeText).toHaveBeenCalledWith('npx claude-react-web@latest')
     await waitFor(() => expect(getByText('Copied')).toBeTruthy())
+  })
+
+  // ── mode: 'current' — the About tab's "what did the version I run bring" ──
+
+  const NOTE_CURRENT = {
+    ...NOTE,
+    version: '0.7.2',
+    name: '0.7.2',
+    url: 'https://github.com/LoopGe/claude-react-web/releases/tag/v0.7.2',
+  }
+
+  it("renders the running version's own notes, asked for as an inclusive range", () => {
+    getNotes.mockReturnValue([NOTE_CURRENT])
+    const { getByRole, getByText } = render(<UpdateDialog {...baseProps({ mode: 'current' })} />)
+    expect(getByRole('dialog')).toBeTruthy()
+    expect(getByText(/What's new in 0\.7\.2/)).toBeTruthy()
+    expect(getByText('0.7.2')).toBeTruthy()
+    // from === to with the lower bound made inclusive — that pair is what makes
+    // the running version's own entry survive the range filter.
+    expect(notesArgs).toHaveBeenCalledWith({
+      enabled: true,
+      from: '0.7.2',
+      to: '0.7.2',
+      includeFrom: true,
+    })
+  })
+
+  it('current mode carries no upgrade footer — only Close', () => {
+    const onClose = vi.fn()
+    const { getByText, queryByText } = render(
+      <UpdateDialog {...baseProps({ mode: 'current', onClose })} />,
+    )
+    expect(queryByText('Update now')).toBeNull()
+    expect(queryByText('Copy command')).toBeNull()
+    expect(queryByText('Later')).toBeNull()
+    fireEvent.click(getByText('Close'))
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('current mode with no Release for this version → distinct copy + a releases link', () => {
+    getNotes.mockReturnValue([])
+    const { getByText, queryByText } = render(<UpdateDialog {...baseProps({ mode: 'current' })} />)
+    expect(getByText('This version has no release notes.')).toBeTruthy()
+    expect(queryByText(/Release notes are unavailable/)).toBeNull()
+    const link = getByText('Browse all releases on GitHub')
+    expect(link.getAttribute('href')).toBe('https://github.com/LoopGe/claude-react-web/releases')
+  })
+
+  it('current mode with a transport failure → keeps the unavailable copy, no releases link', () => {
+    getNotes.mockReturnValue(null)
+    getError.mockReturnValue('network down')
+    const { getByText, queryByText } = render(<UpdateDialog {...baseProps({ mode: 'current' })} />)
+    expect(getByText('Release notes are unavailable right now (network down).')).toBeTruthy()
+    // A GitHub hiccup must not be dressed up as "this version has no notes".
+    expect(queryByText('Browse all releases on GitHub')).toBeNull()
+  })
+
+  // ── Layering ──
+  it('mounts every mode on the portalled modal layer', () => {
+    // Not cosmetic, and not the same for both entry points: the About entry
+    // opens this dialog from INSIDE GlobalSettingsModal, whose portalled
+    // .modal-backdrop sits on the z-modal layer (2000), while the panel-scoped
+    // .perm-overlay (absolute, z-index 7) cannot paint above it — on that layer
+    // the dialog rendered underneath the modal that launched it: invisible,
+    // while its focus trap still took focus. The nag toast can likewise be
+    // clicked while that modal is open, so neither mode may use `perm`.
+    for (const mode of ['update', 'deprecation', 'current'] as const) {
+      cleanup()
+      render(<UpdateDialog {...baseProps({ mode })} />)
+      expect(document.querySelector('.modal-backdrop'), mode).toBeTruthy()
+      expect(document.querySelector('.perm-overlay'), mode).toBeNull()
+    }
   })
 })

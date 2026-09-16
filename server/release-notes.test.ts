@@ -99,11 +99,63 @@ describe('getReleaseNotes', () => {
     expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1)
   })
 
-  it('cache is keyed by the (from, to) pair', async () => {
+  it('cache is keyed by the (from, to) pair and the includeFrom flag', async () => {
     const fetchMock = stubGitHub()
-    await getReleaseNotes('0.7.2', '0.8.0')
-    await getReleaseNotes('0.7.0', '0.8.0') // different pair → new fetch
+    await getReleaseNotes('0.7.2', '0.8.0') // fetch 1
+    await getReleaseNotes('0.7.2', '0.8.0') // same key → served from cache
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // Same pair, other inclusivity — a DIFFERENT range, so it must not be
+    // handed the cached exclusive-from result. Deliberately adjacent: an
+    // intervening fetch would disturb a slotted cache and mask a key that
+    // forgot the flag, which is exactly how this assertion used to pass.
+    await getReleaseNotes('0.7.2', '0.8.0', true) // fetch 2
     expect(fetchMock).toHaveBeenCalledTimes(2)
+    // Both ranges stay resident, so re-opening either surface is a hit — the
+    // nag dialog and the About tab take turns, and one must not evict the
+    // other's 6h entry (nor its failure backoff).
+    await getReleaseNotes('0.7.2', '0.8.0')
+    await getReleaseNotes('0.7.2', '0.8.0', true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await getReleaseNotes('0.7.0', '0.8.0') // different pair → fetch 3
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('excludes the `from` version by default (exclusive lower bound)', async () => {
+    stubGitHub()
+    const res = await getReleaseNotes('0.7.2', '0.7.2')
+    expect(res.releases).toEqual([])
+  })
+
+  it('includes the `from` version when includeFrom is true', async () => {
+    stubGitHub()
+    const res = await getReleaseNotes('0.7.2', '0.7.2', true)
+    expect(res.releases.map((r) => r.version)).toEqual(['0.7.2'])
+    expect(res.releases[0]).toMatchObject({ name: 'equal to from', body: 'body text' })
+  })
+
+  it('includeFrom only widens the lower bound — `to` stays inclusive and stable-only', async () => {
+    stubGitHub()
+    const res = await getReleaseNotes('0.7.2', '0.8.0', true)
+    // 0.7.2 joins the list; the prerelease/draft/unparseable/above-`to` rows
+    // are still filtered out exactly as before.
+    expect(res.releases.map((r) => r.version)).toEqual(['0.8.0', '0.7.3', '0.7.2'])
+  })
+
+  it('bounds the cache — an old range is evicted, not retained for the process', async () => {
+    const fetchMock = stubGitHub()
+    await getReleaseNotes('1.0.0', '1.0.0', true) // the oldest entry
+    for (let i = 1; i <= 40; i++) {
+      await getReleaseNotes(`1.0.${i}`, `1.0.${i}`, true)
+    }
+    const before = fetchMock.mock.calls.length
+
+    // A recent range is still resident...
+    await getReleaseNotes('1.0.40', '1.0.40', true)
+    expect(fetchMock.mock.calls.length).toBe(before)
+    // ...while the oldest has been dropped rather than held forever. The old
+    // single-slot cache could not grow, so this is the bound it used to have.
+    await getReleaseNotes('1.0.0', '1.0.0', true)
+    expect(fetchMock.mock.calls.length).toBe(before + 1)
   })
 
   it('short-circuits to an error result when the registry is disabled', async () => {

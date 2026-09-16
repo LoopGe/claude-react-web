@@ -40,16 +40,18 @@ import { createLogger } from '../log.js'
 import { getClaudeHealth } from './health-routes.js'
 import type { UpdateActionResult, UpdateInfo } from '../../shared/update-info.js'
 import { parseSemver } from '../../shared/update-info.js'
-import { getReleaseNotes } from '../release-notes.js'
+import { getReleaseNotes, REPO_URL } from '../release-notes.js'
 
 const log = createLogger('update')
 
-/** Decorate an UpdateInfo with the Claude CLI + agent-SDK version overlays.
- *  Both are best-effort — failure to probe either one leaves the field
- *  undefined rather than poisoning the whole response (the About tab
- *  branches on presence). The CLI probe shares a module-level cache with
- *  GET /health/claude, so calling this on every /update-info request is
- *  cheap (one execFile per process lifetime on the happy path). */
+/** Decorate an UpdateInfo with the Claude CLI + agent-SDK version overlays,
+   *  plus the repo URL the release notes come from. All best-effort — failure
+   *  to probe any one leaves that field undefined rather than poisoning the
+   *  whole response (the About tab branches on presence).
+   *
+   *  The CLI probe shares a module-level cache with GET /health/claude, so
+   *  calling this on every /update-info request is cheap (one execFile per
+   *  process lifetime on the happy path). */
 async function withVersionOverlays(
   info: UpdateInfo,
   claudeBinary: string | undefined,
@@ -59,6 +61,9 @@ async function withVersionOverlays(
   const sdkVersion = getAgentSdkVersion()
   const out: UpdateInfo = {
     ...info,
+    // Derived from the same package.json slug release-notes.ts fetches from,
+    // so the client's links can't name a different repository than the notes.
+    ...(REPO_URL ? { repoUrl: REPO_URL } : {}),
     claudeCli: {
       ok: cli.ok,
       ...(cli.binary !== undefined ? { binary: cli.binary } : {}),
@@ -150,18 +155,23 @@ export function buildUpdateRouter(claudeBinary?: string): Hono {
     return c.json(getCachedVersions()!)
   })
 
-  // What's New release notes for the (from, to] version range. On-demand
-  // (only fetched when the user opens the update dialog), so it has its own
-  // cache in release-notes.ts. Failures resolve to `{ releases: [], error }`
-  // — the dialog degrades to a version-only view; this route never 5xxs on
-  // a GitHub hiccup.
+  // What's New release notes for the (from, to] version range — or
+  // [from, to] with `?includeFrom=1`, which the About tab uses to show the
+  // running version's own notes (from === to). On-demand (only fetched when
+  // the user opens the dialog), so it has its own cache in release-notes.ts.
+  // Failures resolve to `{ releases: [], error }` — the dialog degrades to a
+  // version-only view; this route never 5xxs on a GitHub hiccup.
   app.get('/release-notes', async (c) => {
     const from = c.req.query('from') ?? ''
     const to = c.req.query('to') ?? ''
     if (!parseSemver(from) || !parseSemver(to)) {
       throw new HttpError(400, 'from and to must be semver version strings')
     }
-    return c.json(await getReleaseNotes(from, to))
+    // `includeFrom=1` makes the lower bound INCLUSIVE — the About tab's
+    // "what did the version I'm running bring" query passes from === to.
+    // Only an explicit `1` opts in: absent / `0` / garbage all keep the
+    // default exclusive-from range the What's New dialog relies on.
+    return c.json(await getReleaseNotes(from, to, c.req.query('includeFrom') === '1'))
   })
 
   app.post('/update', async (c) => {

@@ -3,11 +3,11 @@
 //
 // Caching policy mirrors update-checker.ts:
 //   - Successful fetches cached for RELEASES_TTL_MS (6h), keyed by the
-//     full `(from, to)` pair. In practice `from` is always the running
-//     version, so cardinality is one entry per process.
+//     full `(from, to, includeFrom)` triple — the inclusivity is part of
+//     the range, so the two shapes never share a slot.
 //   - Failed fetches cache the error briefly (FAILED_RETRY_MS) so a
 //     transient GitHub hiccup doesn't poison the dialog for 6h.
-//   - In-flight fetches are deduped per (from, to) key.
+//   - In-flight fetches are deduped per the same (from, to, includeFrom) key.
 //   - 5s fetch timeout (FETCH_TIMEOUT_MS).
 //
 // Failure mode: every failure path resolves to `{ releases: [], error }` —
@@ -54,19 +54,33 @@ const REPO_SLUG = parseRepoSlug(
   (pkg as { repository?: unknown }).repository,
 )
 
+/** Browser URL of the repo derived above. Exported so the update-info payload
+ *  and this module name the SAME repository — the client's "browse all
+ *  releases" link must match wherever these notes came from. Null when this
+ *  build declares no parseable GitHub repository. */
+export const REPO_URL: string | null = REPO_SLUG ? `https://github.com/${REPO_SLUG}` : null
+
 interface CacheEntry {
   result: ReleaseNotesResult
   /** Epoch ms after which the entry is stale. */
   expiresAt: number
 }
 
-let cacheKey: string | null = null
-let cache: CacheEntry | null = null
+// Per-KEY, not a single slot: two ranges are routinely live at once now (the
+// nag dialog's `(current, latest]` and the About tab's `[current, current]`),
+// and a single slot would evict one on every open — turning a 6h TTL into a
+// GitHub fetch per dialog, and wiping the failure backoff exactly when a
+// rate-limited registry needs it. Keyed by the same triple as `inFlight`
+// below, and BOUNDED: the old single slot capped this at one result by
+// construction, and `from`/`to` arrive from the query string, so an unbounded
+// Map would retain every distinct range ever requested — each holding up to
+// PER_PAGE release bodies.
+const MAX_CACHE_ENTRIES = 20
+const cache = new Map<string, CacheEntry>()
 const inFlight = new Map<string, Promise<ReleaseNotesResult>>()
 
 export function __resetReleaseNotesForTests(): void {
-  cacheKey = null
-  cache = null
+  cache.clear()
   inFlight.clear()
 }
 
@@ -85,7 +99,7 @@ function errorResult(from: string, to: string, error: string): ReleaseNotesResul
   return { from, to, releases: [], error }
 }
 
-async function fetchReleases(from: string, to: string): Promise<ReleaseNotesResult> {
+async function fetchReleases(from: string, to: string, includeFrom: boolean): Promise<ReleaseNotesResult> {
   if (!config.updateCheckRegistry) {
     return errorResult(from, to, 'update checks are not configured')
   }
@@ -124,8 +138,11 @@ async function fetchReleases(from: string, to: string): Promise<ReleaseNotesResu
     // Stable-only + parseable: same policy as isVersionNewer / the version
     // switcher — a prerelease or garbage tag never reaches the dialog.
     if (!parseSemver(version) || !isStableVersion(version)) continue
-    // Range: exclusive from, inclusive to.
-    if (compareSemver(version, from) <= 0) continue
+    // Range: inclusive `to`, and `from` either exclusive (the default — "what
+    // did I miss since I'm running `from`") or inclusive (`includeFrom`, the
+    // About tab's "what did THIS version bring" query, where from === to).
+    const vsFrom = compareSemver(version, from)
+    if (includeFrom ? vsFrom < 0 : vsFrom <= 0) continue
     if (compareSemver(version, to) > 0) continue
     releases.push({
       version,
@@ -139,25 +156,53 @@ async function fetchReleases(from: string, to: string): Promise<ReleaseNotesResu
   return { from, to, releases, checkedAt: Date.now() }
 }
 
-/** Fetch (or serve from cache) the release notes for `(from, to]`.
- *  Never throws — failures land in `result.error`. */
-export async function getReleaseNotes(from: string, to: string): Promise<ReleaseNotesResult> {
-  const key = `${from}|${to}`
-  if (cache && cacheKey === key && Date.now() < cache.expiresAt) {
-    return cache.result
+/** Fetch (or serve from cache) the release notes for `(from, to]` —
+ *  or `[from, to]` when `includeFrom` is set. Never throws — failures
+ *  land in `result.error`. */
+export async function getReleaseNotes(
+  from: string,
+  to: string,
+  includeFrom = false,
+): Promise<ReleaseNotesResult> {
+  // The inclusivity is part of the key: (0.7.3, 0.7.3] and [0.7.3, 0.7.3]
+  // are different ranges and must never share a cache slot.
+  const key = `${from}|${to}|${includeFrom ? 'inc' : 'exc'}`
+  const hit = cache.get(key)
+  if (hit) {
+    if (Date.now() < hit.expiresAt) {
+      // Refresh its position on hit: eviction below is oldest-first, and
+      // `from`/`to` come off the query string, so without this the two ranges
+      // that actually matter could be pushed out by traffic to unrelated ones.
+      cache.delete(key)
+      cache.set(key, hit)
+      return hit.result
+    }
+    // Expired: drop it rather than leave it resident until the same key is
+    // asked for again, which may never happen.
+    cache.delete(key)
   }
   const pending = inFlight.get(key)
   if (pending) return pending
 
   const p = (async () => {
-    const result = await fetchReleases(from, to)
+    const result = await fetchReleases(from, to, includeFrom)
     const ttl = result.error ? FAILED_RETRY_MS : RELEASES_TTL_MS
-    cacheKey = key
-    cache = { result, expiresAt: Date.now() + ttl }
+    cache.set(key, { result, expiresAt: Date.now() + ttl })
+    // Map iterates in insertion order, so the first key is the oldest.
+    while (cache.size > MAX_CACHE_ENTRIES) {
+      const oldest = cache.keys().next().value
+      if (oldest === undefined) break
+      cache.delete(oldest)
+    }
+    // Both ends of the range alone are ambiguous: `0.7.3→0.7.3` is an empty
+    // (from, to] query for the nag path but a real single-version query for
+    // the About tab, so an empty result and a failure must be distinguishable
+    // in the log by the flag.
+    const range = `${from}→${to}${includeFrom ? ' (inclusive)' : ''}`
     if (result.error) {
-      log.warn(`release notes fetch failed for ${from}→${to}: ${result.error}`)
+      log.warn(`release notes fetch failed for ${range}: ${result.error}`)
     } else {
-      log.debug(`release notes fetched for ${from}→${to}: ${result.releases.length} release(s)`)
+      log.debug(`release notes fetched for ${range}: ${result.releases.length} release(s)`)
     }
     return result
   })()

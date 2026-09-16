@@ -457,6 +457,22 @@ describe('GET /api/update-info?registry= override', () => {
 
     vi.unstubAllGlobals()
   })
+
+  it('reports the repo URL derived from package.json, even when disabled', async () => {
+    // The release-notes links must name the SAME repository the notes come
+    // from (release-notes.ts derives its slug from the same field), and the
+    // About tab gates its entry on this — so it has to be present on a disabled
+    // snapshot too, where the registry probe never runs.
+    __setConfigForTest({ updateCheckRegistry: '' })
+    vi.stubGlobal('fetch', vi.fn())
+
+    const res = await makeApp().request('/update-info')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { repoUrl?: string }
+    expect(body.repoUrl).toBe('https://github.com/LoopGe/claude-react-web')
+
+    vi.unstubAllGlobals()
+  })
 })
 
 describe('GET /api/release-notes', () => {
@@ -517,5 +533,57 @@ describe('GET /api/release-notes', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
     __setConfigForTest({ updateCheckRegistry: TEST_REGISTRY })
+  })
+
+  // A release for the version under test — used by the includeFrom cases.
+  const REL_073 = {
+    tag_name: 'v0.7.3',
+    name: '0.7.3',
+    body: 'notes',
+    published_at: '2026-09-16T00:00:00Z',
+    html_url: 'https://github.com/LoopGe/claude-react-web/releases/tag/v0.7.3',
+    draft: false,
+    prerelease: false,
+  }
+  const stubOne = () =>
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify([REL_073]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    )
+
+  it('includeFrom=1 makes the lower bound inclusive; the default stays exclusive', async () => {
+    const { __resetReleaseNotesForTests } = await import('../release-notes.js')
+    __resetReleaseNotesForTests()
+    stubOne()
+
+    // from === to with the default (exclusive) range → nothing in range.
+    const exclusive = await makeApp().request('/release-notes?from=0.7.3&to=0.7.3')
+    expect(exclusive.status).toBe(200)
+    expect(((await exclusive.json()) as { releases: unknown[] }).releases).toEqual([])
+
+    // includeFrom=1 → the running version's own notes.
+    const inclusive = await makeApp().request('/release-notes?from=0.7.3&to=0.7.3&includeFrom=1')
+    expect(inclusive.status).toBe(200)
+    const body = (await inclusive.json()) as { releases: Array<{ version: string }> }
+    expect(body.releases.map((r) => r.version)).toEqual(['0.7.3'])
+    vi.unstubAllGlobals()
+  })
+
+  it('treats any includeFrom value other than "1" as exclusive', async () => {
+    const { __resetReleaseNotesForTests } = await import('../release-notes.js')
+    for (const qs of ['', '&includeFrom=0', '&includeFrom=true', '&includeFrom=', '&includeFrom=1x']) {
+      __resetReleaseNotesForTests()
+      stubOne()
+      const res = await makeApp().request(`/release-notes?from=0.7.3&to=0.7.3${qs}`)
+      expect(res.status, qs).toBe(200)
+      const body = (await res.json()) as { releases: unknown[] }
+      expect(body.releases, qs).toEqual([])
+      vi.unstubAllGlobals()
+    }
   })
 })

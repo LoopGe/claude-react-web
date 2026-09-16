@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { ToastProvider } from './ToastProvider'
 import { GlobalSettingsModal } from './GlobalSettingsModal'
 import { api } from '../hooks/useApi'
+import type { UpdateInfo } from '../../shared/update-info'
 
 vi.mock('../hooks/useApi', () => ({ api: { get: vi.fn(), put: vi.fn() } }))
 
@@ -240,6 +241,73 @@ describe('GlobalSettingsModal Server tab', () => {
       maxGroupPanels: 5,
       allowSensitivePathEdits: true,
     }))
+  })
+})
+
+describe('GlobalSettingsModal About tab', () => {
+  const INFO: UpdateInfo = {
+    current: '0.7.3',
+    packageName: 'claude-react-web',
+    installMethod: 'global',
+    latest: '0.7.3',
+    hasUpdate: false,
+    source: 'npm',
+    checkedAt: 1,
+    repoUrl: 'https://github.com/LoopGe/claude-react-web',
+  }
+
+  const openAboutTab = async (
+    props: Partial<React.ComponentProps<typeof GlobalSettingsModal>> = {},
+  ) => {
+    mockGet({})
+    render(
+      <ToastProvider>
+        <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} {...props} />
+      </ToastProvider>,
+    )
+    await waitFor(() => expect(screen.getByRole('button', { name: 'About' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'About' }))
+  }
+
+  it("offers the running version's release notes and hands the click to App", async () => {
+    const onOpenCurrentReleaseNotes = vi.fn()
+    await openAboutTab({ updateInfo: INFO, onOpenCurrentReleaseNotes })
+
+    const entry = await waitFor(() =>
+      screen.getByRole('button', { name: "What's new in 0.7.3" }),
+    )
+    fireEvent.click(entry)
+    expect(onOpenCurrentReleaseNotes).toHaveBeenCalledOnce()
+  })
+
+  it('hides the entry whenever it could only be a dead end', async () => {
+    // Four independent gates, each leaving the entry pointing at a guaranteed
+    // failure: a versionless query; a route that refuses while the registry is
+    // unconfigured; a build with no parseable GitHub repository (the route's
+    // OTHER unconditional refusal, which only the server can see); and a
+    // prerelease build, whose notes would be the stable release of the same
+    // major.minor.patch because compareSemver ignores the suffix.
+    const cases: Array<[string, UpdateInfo | null]> = [
+      ['no snapshot yet', null],
+      ['update checks disabled', { ...INFO, disabled: true }],
+      ['no GitHub repository in this build', { ...INFO, repoUrl: undefined }],
+      ['prerelease build', { ...INFO, current: '0.8.0-rc.1' }],
+    ]
+    for (const [label, info] of cases) {
+      cleanup()
+      await openAboutTab({ updateInfo: info, onOpenCurrentReleaseNotes: vi.fn() })
+      // Prove the tab actually mounted before asserting absence.
+      await waitFor(() => expect(screen.getByText('Project')).toBeTruthy())
+      expect(screen.queryByText('Release notes'), label).toBeNull()
+    }
+  })
+
+  it('links the Source row at the server-reported repo, not a build constant', async () => {
+    await openAboutTab({ updateInfo: { ...INFO, repoUrl: 'https://github.com/acme/crw' } })
+    // The server derives the slug the notes are fetched from; a fork must not
+    // be sent to the upstream project's source.
+    const link = await waitFor(() => screen.getByText('github.com/acme/crw'))
+    expect(link.getAttribute('href')).toBe('https://github.com/acme/crw')
   })
 })
 

@@ -29,7 +29,7 @@ import { Overlay } from './Overlay'
 import { McpToolsList, firstPartyToolDefsAsMcpTools } from './McpToolsList'
 import type { FirstPartyToolServerInfo } from '../../shared/first-party'
 import type { PublishedVersions, UpdateActionResult, UpdateInfo } from '../../shared/update-info'
-import { isUpdateNagNeeded, isVersionNewer } from '../../shared/update-info'
+import { isStableVersion, isUpdateNagNeeded, isVersionNewer } from '../../shared/update-info'
 import { reportUpdateResult } from '../utils/update-action'
 
 // MarketplaceTab pulls in catalog-rendering UI; McpInstaller is a heavy
@@ -114,6 +114,10 @@ interface Props {
   versionsError?: string | null
   /** Fetch the published-versions list (on demand when the switcher opens). */
   onFetchVersions?: (force?: boolean) => void
+  /** Open the read-only What's New dialog for the RUNNING version — the About
+   *  tab's "what did this version bring" entry. Owned by <App> (the dialog is
+   *  app-level, one instance across all panels). */
+  onOpenCurrentReleaseNotes?: () => void
 }
 
 export function GlobalSettingsModal({
@@ -130,6 +134,7 @@ export function GlobalSettingsModal({
   versionsLoading,
   versionsError,
   onFetchVersions,
+  onOpenCurrentReleaseNotes,
 }: Props) {
   const [tab, setTab] = useState<Tab>('profiles')
   const settingsBodyRef = useRef<HTMLDivElement | null>(null)
@@ -503,6 +508,7 @@ export function GlobalSettingsModal({
                   versionsLoading={!!versionsLoading}
                   versionsError={versionsError ?? null}
                   onFetchVersions={onFetchVersions}
+                  onOpenCurrentReleaseNotes={onOpenCurrentReleaseNotes}
                   onOpenResetConfig={() => setShowResetConfig(true)}
                 />
               )}
@@ -1796,6 +1802,7 @@ function AboutTab({
   versionsLoading,
   versionsError,
   onFetchVersions,
+  onOpenCurrentReleaseNotes,
   onOpenResetConfig,
 }: {
   info: UpdateInfo | null
@@ -1817,6 +1824,8 @@ function AboutTab({
   versionsLoading: boolean
   versionsError: string | null
   onFetchVersions?: (force?: boolean) => void
+  /** Open the read-only What's New dialog for this version. */
+  onOpenCurrentReleaseNotes?: () => void
   onOpenResetConfig?: () => void
 }) {
   const toast = useToast()
@@ -1947,16 +1956,22 @@ function AboutTab({
       <Field label="Project">
         <div style={{ fontSize: 'var(--fs-base)' }}>claude-react-web</div>
       </Field>
-      <Field label="Source" hint="Source code, issues, and releases.">
-        <a
-          href="https://github.com/LoopGe/claude-react-web"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ fontSize: 'var(--fs-base)', color: 'var(--accent)', textDecoration: 'none' }}
-        >
-          github.com/LoopGe/claude-react-web
-        </a>
-      </Field>
+      {/* The URL is the server's — derived from package.json's `repository`, so it
+          always names the repository the release notes beside it come from.
+          A build-time constant here would be a second source of truth that
+          diverges on a fork; the row waits for the first snapshot instead. */}
+      {info?.repoUrl && (
+        <Field label="Source" hint="Source code, issues, and releases.">
+          <a
+            href={info.repoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: 'var(--fs-base)', color: 'var(--accent)', textDecoration: 'none' }}
+          >
+            {info.repoUrl.replace(/^https?:\/\//, '')}
+          </a>
+        </Field>
+      )}
       <Field
         label="Running version"
         hint={
@@ -1988,6 +2003,32 @@ function AboutTab({
           )}
         </div>
       </Field>
+      {/* Release notes for the RUNNING version — the same dialog the update nag
+          opens, in its read-only `current` mode. Gated four ways, each of which
+          would otherwise leave a one-click dead end:
+          - `current` present: a cold snapshot has no version to ask about;
+          - update checks ON: the release-notes route refuses while the registry
+            is unconfigured;
+          - a `repoUrl`: the route's other unconditional refusal is a build with
+            no parseable GitHub repository ("no GitHub repository configured in
+            this build"), which only the server can see;
+          - a STABLE version: the update stack is stable-only throughout, and
+            compareSemver ignores prerelease suffixes — a `0.8.0-rc.1` build
+            would otherwise be shown stable 0.8.0's notes as its own. */}
+      {info?.current &&
+        !disabled &&
+        !!info.repoUrl &&
+        isStableVersion(info.current) &&
+        onOpenCurrentReleaseNotes && (
+          <Field
+            label="Release notes"
+            hint="What this version changed, from its GitHub Release."
+          >
+            <button className="btn" type="button" onClick={onOpenCurrentReleaseNotes}>
+              {`What's new in ${info.current}`}
+            </button>
+          </Field>
+        )}
       {restartPending && (
         <Field
           label="Installed on disk"

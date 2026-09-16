@@ -91,6 +91,17 @@ export interface UpdateInfo {
    *  Distinct from `error` because "no registry configured" isn't a
    *  failure to surface — it's an explicit opt-out. */
   disabled?: boolean
+  /** Browser URL of the project's GitHub repository, derived server-side from
+   *  the build-time package.json `repository` — the SAME slug
+   *  `server/release-notes.ts` fetches releases from, so a link and the notes
+   *  beside it can never name different repositories (a fork, a rename, or an
+   *  org move changes package.json and both follow).
+   *
+   *  Undefined when this build declares no parseable GitHub repository; the
+   *  release-notes route refuses in that case, so the UI must not offer an
+   *  entry that could only error. Present on every snapshot, including the
+   *  `disabled` one — it does not depend on the update registry. */
+  repoUrl?: string
   /** Claude Code CLI binary detected on this server. Populated by the
    *  About tab so the user can confirm which CLI the SDK will spawn and
    *  diagnose ENOENT/EACCES issues without a separate /health/claude
@@ -336,12 +347,17 @@ export interface ReleaseNote {
 }
 
 export interface ReleaseNotesResult {
-  /** The exclusive lower bound the caller asked for (running version). */
+  /** The lower bound the caller asked for (running version). EXCLUSIVE by
+   *  default; the caller's `includeFrom` flag makes it inclusive, and the
+   *  result does not echo which — so a `releases` list that contains `from`
+   *  (notably when `from === to`) is the tell that it was inclusive. */
   from: string
-  /** The inclusive upper bound (the offered latest version). */
+  /** The inclusive upper bound — the offered latest version, or `from` itself
+   *  for the running version's own notes. */
   to: string
-  /** Releases with version in `(from, to]`, DESC by semver. Empty on
-   *  error — see `error`. Never throws to the caller. */
+  /** Releases with version in `(from, to]`, or `[from, to]` when the caller
+   *  asked for an inclusive lower bound. DESC by semver. Empty on error —
+   *  see `error`. Never throws to the caller. */
   releases: ReleaseNote[]
   /** Human-readable failure reason (GitHub unreachable / rate-limited /
    *  no repo slug). Absent on success. */

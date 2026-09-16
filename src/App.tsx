@@ -43,7 +43,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { BackgroundVideo } from './components/BackgroundVideo'
 import { IconSettings, IconBellToggle, IconMenu, IconSidebar, IconFolderSearch } from './components/icons/ToolIcons'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
-import { useUpdateNag, nagValueForUpdate, nagValueForDeprecated, writeNagDismiss } from './hooks/useUpdateNag'
+import { useUpdateNag, nagDismissValueFor, writeNagDismiss } from './hooks/useUpdateNag'
 import type { UpdateDialogMode } from './components/UpdateDialog'
 import { useUiState } from './hooks/useUiState'
 import { sessionStoreRegistry } from './session-store/registry'
@@ -491,6 +491,9 @@ export function App() {
   const openUpdateNagDialog = useCallback((mode: UpdateDialogMode) => {
     setUpdateNagDialog(mode)
   }, [])
+  // The About tab's "what did this version bring" entry — same dialog, the
+  // read-only `current` mode.
+  const openCurrentReleaseNotes = useCallback(() => setUpdateNagDialog('current'), [])
   useUpdateNag(updateInfo.info, openUpdateNagDialog)
 
   useEffect(() => {
@@ -4221,6 +4224,7 @@ export function App() {
             versionsLoading={updateInfo.versionsLoading}
             versionsError={updateInfo.versionsError}
             onFetchVersions={updateInfo.fetchVersions}
+            onOpenCurrentReleaseNotes={openCurrentReleaseNotes}
           />
         </Suspense>
       )}
@@ -4228,21 +4232,31 @@ export function App() {
       {updateNagDialog && updateInfo.info && (
         <Suspense fallback={null}>
           <UpdateDialog
+            // The dialog's SUBJECT is the version range it shows, and it has
+            // two ways to be re-pointed while open: a mode flip, or the probed
+            // `updateInfo.info.latest` moving under it when a probe lands. request-snapshot's contract is
+            // that such a caller must REMOUNT, because its `data` is "the last
+            // data that ARRIVED, regardless of key" and `snapshotFailed` keeps
+            // the previous key's data rather than clearing it. Without the
+            // remount, a FAILED refetch would leave the previous range's notes
+            // on screen under the new title — the dialog surfaces `error` only
+            // through its empty branch, which a non-empty list suppresses.
+            // Reachable: the nag toast is sticky and paints above every overlay,
+            // so its action can be clicked while this dialog is open.
+            key={`${updateNagDialog}:${updateInfo.info?.current ?? ''}:${updateInfo.info?.latest ?? ''}`}
             open
             mode={updateNagDialog}
             info={updateInfo.info}
             updating={updateInfo.updating}
             onUpdate={updateInfo.update}
             onClose={() => {
-              // One nag per version: any dialog closure counts as "seen".
+              // One nag per version: any closure of a NAG dialog counts as
+              // "seen". The policy for which modes own a key (and why the
+              // read-only `current` viewer does not) lives beside the rest of
+              // the nag logic in useUpdateNag.
               const info = updateInfo.info
-              if (info) {
-                writeNagDismiss(
-                  updateNagDialog === 'update' && info.latest
-                    ? nagValueForUpdate(info.latest)
-                    : nagValueForDeprecated(info.current),
-                )
-              }
+              const seen = info ? nagDismissValueFor(updateNagDialog, info) : null
+              if (seen) writeNagDismiss(seen)
               setUpdateNagDialog(null)
             }}
           />

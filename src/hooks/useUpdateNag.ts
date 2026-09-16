@@ -25,6 +25,30 @@ export const NAG_DISMISS_STORAGE_KEY = 'claude-react-web:update-nag-dismissed-ve
 
 export type UpdateNagMode = 'update' | 'deprecation'
 
+/** True for the modes that actually NAG — i.e. the dialog modes that own a
+ *  dismissal key. `UpdateDialogMode` has a third, read-only member (`current`,
+ *  the About tab's own-version notes); see `nagDismissValueFor`. Written as a
+ *  positive list so a future non-nag mode can't inherit the write by default. */
+function isNagMode(mode: string): mode is UpdateNagMode {
+  return mode === 'update' || mode === 'deprecation'
+}
+
+/** The localStorage value a dialog close should record as "seen" for `mode` —
+ *  or null when this mode must not write one at all.
+ *
+ *  The read-only `current` viewer returns null: that key suppresses the next
+ *  notification for the version it names, and viewing your own version's notes
+ *  says nothing about whether an update exists. Lives here rather than at the
+ *  App call site so the whole "which closures count as seen" policy sits with
+ *  the rest of the nag logic instead of being a negative list next to an
+ *  unrelated onClose. */
+export function nagDismissValueFor(mode: string, info: UpdateInfo): string | null {
+  if (!isNagMode(mode)) return null
+  return mode === 'update' && info.latest
+    ? nagValueForUpdate(info.latest)
+    : nagValueForDeprecated(info.current)
+}
+
 export function nagValueForUpdate(latest: string): string {
   return latest
 }
