@@ -2626,7 +2626,7 @@ button.tool-group-failed-jump:focus-visible {
 .settings-skill-policy-card,
 .settings-skill-import-card {
   border: 1px solid var(--border);
-  background: var(--panel-bg);
+  background: var(--bg-elev);
   border-radius: var(--radius-xl);
   padding: var(--space-3);
 }
@@ -2958,7 +2958,7 @@ input[type="checkbox"]:disabled {
   text-align: left;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--panel-bg);
+  background: var(--bg-elev);
   color: var(--fg);
   padding: var(--space-2-5);
   cursor: pointer;
@@ -3053,7 +3053,7 @@ input[type="checkbox"]:disabled {
 .settings-skill-preview-content {
   margin: var(--space-2) var(--space-3) var(--space-3);
   padding: var(--space-3);
-  background: var(--panel-bg);
+  background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   font-family: var(--mono);
