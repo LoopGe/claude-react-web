@@ -12,15 +12,24 @@
 }
 
 /* Chrome pinned to what the card shipped with on the old panel-scoped `perm`
- * layer (`.perm-card`): today it mounts as `.modal`, whose radius and shadow
- * tokens differ. The selector carries the extra `modal` class because the
- * competing declarations are single-class rules in sheets imported LATER —
- * glass.css re-declares `.modal { box-shadow: … }` last at (0,1,0), so an
- * unqualified `.update-dialog-card` would silently lose that half. (0,2,0) wins
- * outright, independent of index.css's import order. */
+ * layer (`.perm-card`): it now mounts as `.modal`, whose radius and shadow
+ * tokens differ (--radius-lg/--modal-shadow vs --radius-md/--overlay-shadow).
+ *
+ * The selector carries the extra `modal` class because the competing rules are
+ * single-class declarations in sheets imported LATER — glass.css chains the
+ * glass edge onto `.modal`'s shadow last at (0,1,0), so an unqualified
+ * `.update-dialog-card` would silently lose that half. (0,2,0) wins outright,
+ * independent of index.css's import order.
+ *
+ * The shadow chains `--glass-edge-highlight` exactly as the shared sheets do
+ * (`.perm-overlay > .perm-card` in glass.css), so the card keeps the same
+ * highlight it had on the perm layer in every skin. In hc/soft-hc the token is
+ * `none`, which invalidates the whole list and drops the declaration — the same
+ * thing that happens to the shared rule there, and harmless because both
+ * --overlay-shadow and --modal-shadow are `none` in those skins. */
 .modal.update-dialog-card {
   border-radius: var(--radius-md);
-  box-shadow: var(--overlay-shadow);
+  box-shadow: var(--glass-edge-highlight), var(--overlay-shadow);
 }
 
 /* The old perm family pinned header/footer against a tall body
