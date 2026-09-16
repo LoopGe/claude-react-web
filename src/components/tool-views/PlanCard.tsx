@@ -69,7 +69,7 @@ export const PlanCard = memo(function PlanCard({
   return (
     <AnimatedDetails
       key={status}
-      className={`plan-card-collapsible plan-card-status-${status}${isMinimized ? ' plan-card-minimized' : ''}`}
+      className={`plan-card-collapsible${isMinimized ? ' plan-card-minimized' : ''}`}
       defaultOpen={defaultOpen}
       summary={(
         <div className="plan-card-header">

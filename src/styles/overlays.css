@@ -532,7 +532,7 @@
   to   { opacity: 1; }
 }
 .recap-window-error {
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: var(--fs-sm);
 }
 @media (prefers-reduced-motion: reduce) {
@@ -586,7 +586,7 @@
   white-space: nowrap;
 }
 .bash-msg-exit.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
-.bash-msg-exit.err { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.bash-msg-exit.err { color: var(--danger-text); background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2)); }
 .bash-msg-pending { display: inline-flex; align-items: center; gap: var(--space-1-5); }
 /* Stop button for an in-flight `!`/`!!` command (Ctrl-C analogue). Sits next
    to the running spinner in the card header; danger-tinted to read as
@@ -600,8 +600,8 @@
   padding: 1px 7px;
   border-radius: var(--radius-md);
   border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger-text);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2));
   cursor: pointer;
   white-space: nowrap;
   position: relative;
@@ -614,7 +614,11 @@
   position: absolute;
   inset: -4px 0;
 }
-.bash-msg-abort:hover { background: color-mix(in srgb, var(--danger) 20%, transparent); }
+.bash-msg-abort:hover {
+  /* Hover cue rides the border: the background tint is capped at 8% by the
+     ink's AA floor on a danger wash, so there is no second tint level left. */
+  border-color: color-mix(in srgb, var(--danger) 65%, transparent);
+}
 .bash-msg-body { padding: var(--space-2) var(--space-2-5); }
 .bash-msg-pre {
   margin: 0;
@@ -657,8 +661,15 @@
 }
 /* stdout: neutral grey (the default/expected stream — understated). */
 .bash-msg-out--stdout { --out-accent: var(--fg-muted); }
-/* stderr: danger red (errors stand out). */
+/* stderr: danger red (errors stand out). The bar keeps its fill token for the
+   tints; the label's ink is the AA danger-copy token, and its own wash is an
+   opaque mix so that ink sits on a known surface instead of a stack of
+   translucent tints (which measured ~3.8:1). */
 .bash-msg-out--stderr { --out-accent: var(--danger); }
+.bash-msg-out--stderr .bash-msg-out-label {
+  color: var(--danger-text);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2));
+}
 .bash-msg-pending-text { font-size: var(--fs-sm); color: var(--fg-muted); }
 .bash-msg-truncated { font-size: var(--fs-xs); color: var(--fg-muted); margin-top: var(--space-1-5); font-style: italic; }
 

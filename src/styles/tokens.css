@@ -51,6 +51,22 @@
      white on #f06363 is only ~3.1:1 (WCAG AA fail), dark ink ~5.4:1. */
   --danger: #f06363;
   --on-danger: #3a0d0d;
+  /* Ink for danger-coloured COPY — error lines, status labels, counts, badge
+     text. --danger is tuned for fills, borders and icon glyphs; as text it
+     misses AA on the app's darker/lighter surfaces (default light theme:
+     3.27:1 on --btn-hover-bg, 3.42:1 on --bg-elev-3), which is why copy uses
+     this token. Contract: >= 4.5:1 against EVERY flat surface token (--bg,
+     --bg-elev, --bg-elev-1, --bg-elev-2, --bg-elev-3, --btn-hover-bg,
+     --code-bg) in every skin/theme combination that resolves to this value;
+     danger-contrast.test.ts enforces it. Two things ink alone cannot fix, so
+     they are handled at the site: a surface a rule tints with --danger (each
+     tinted site mixes --danger opaquely with the surface it sits on, at an
+     alpha low enough for the ink to clear 4.5:1 on the result — so the pairing
+     is fixed instead of stacked on an unknown parent), and wallpaper
+     translucency (body.has-bg remaps the surface tokens through
+     --app-surface-alpha, which no static check can see). Decoration keeps
+     --danger. */
+  --danger-text: var(--danger);
   --ok: #6cc88b;
   --warn: #e6b450;
   /* Fast-mode accent — electric violet, distinct from accent/warn/ok so the
@@ -308,6 +324,7 @@
   --on-accent: #ffffff;
   --danger: #d93b3b;
   --on-danger: #ffffff;
+  --danger-text: #ba2424;
   --ok: #2e9e56;
   --warn: #c79518;
   --fast: #8b3fd6;
@@ -410,6 +427,7 @@
   --on-accent: #ffffff;
   --danger: #ff4040;
   --on-danger: #1a0000;
+  --danger-text: #ff5353;
   --ok: #00ff00;
   --warn: #ffff00;
   --fast: #ff00ff;
@@ -538,6 +556,7 @@
   --on-accent: #ffffff;
   --danger: #cc0000;
   --on-danger: #ffffff;
+  --danger-text: #bb0000;
   --ok: #006600;
   --warn: #666600;
   --fast: #660066;
@@ -647,6 +666,7 @@
   --on-accent: #0e0e12;
   --danger: #ff6b6b;
   --on-danger: #3a0d0d;
+  --danger-text: var(--danger);
   --ok: #4ade80;
   --warn: #facc15;
   --fast: #c084fc;
@@ -675,6 +695,7 @@
   --on-accent: #ffffff;
   --danger: #d64545;
   --on-danger: #1a0000;
+  --danger-text: #b72828;
   --ok: #1f9d55;
   --warn: #b8860b;
   --fast: #7c3aed;
@@ -1032,6 +1053,7 @@
   --warn: #d9a441;
   --danger: #cf6b5c;
   --on-danger: #3a0d0d;
+  --danger-text: #d8867a;
   /* Official typeface pairing. --font-head is consumed by the heading rule
      below; --sans is the body stack (Lora). Falls back gracefully offline. */
   --font-head: 'Poppins', system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -1064,6 +1086,7 @@
   --warn: #b5841f;
   --danger: #c0392b;
   --on-danger: #ffffff;
+  --danger-text: #af3427;
   --code-bg: #f3f1e9;
   --code-block-border: #e3e0d6;
   /* Anthropic · light: warm-paper glass — keep the surface lifted enough

@@ -110,7 +110,7 @@ export function ProfileSwitcher({ onManageProfiles }: { onManageProfiles?: () =>
           <button
             type="button"
             role="menuitem"
-            className="profile-switcher__item profile-switcher__manage"
+            className="profile-switcher__item"
             onClick={() => { setOpen(false); onManageProfiles?.() }}
           >
             <span className="profile-switcher__item-name">Manage profiles…</span>

@@ -514,7 +514,7 @@ body.resizing-col .app {
 .chat-panel-mode-badge.mode-default { color: var(--fg-muted); }
 .chat-panel-mode-badge.mode-plan { color: var(--warn); }
 .chat-panel-mode-badge.mode-bypassPermissions,
-.chat-panel-mode-badge.mode-dontAsk { color: var(--danger); }
+.chat-panel-mode-badge.mode-dontAsk { color: var(--danger-text); }
 .chat-panel-mode-badge.mode-acceptEdits,
 .chat-panel-mode-badge.mode-auto { color: var(--accent); }
 /* The outgoing badge is positioned absolutely so it overlaps the incoming
@@ -1065,7 +1065,7 @@ body.resizing-col .app {
   color: var(--warn);
 }
 .chat-panel-git-badge.conflict .chat-panel-git-badge-value {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 /* Git chip on header row 2 — right-aligned so it sits opposite the cwd
    path and no longer competes with the row-1 badges. The Tooltip wrapper
@@ -1250,8 +1250,8 @@ body.resizing-col .app {
    is set. Red background, one-line ellipsis, tooltip carries the full
    message if it overflows. */
 .chat-panel-error {
-  background: color-mix(in srgb, var(--danger) 16%, transparent);
-  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 15%, var(--bg-elev));
+  color: var(--danger-text);
   padding: 3px 10px;
   font-size: var(--fs-sm);
   font-family: var(--mono);

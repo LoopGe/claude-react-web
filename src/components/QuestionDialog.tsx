@@ -274,7 +274,7 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
           <textarea
             ref={feedbackRef}
             id="question-clarification"
-            className="composer-textarea"
+            className="textarea question-clarify-input"
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             placeholder="Ask a follow-up or provide context..."

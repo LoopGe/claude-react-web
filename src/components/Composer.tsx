@@ -593,7 +593,7 @@ export const Composer = memo(function Composer({
 
   return (
     <div
-      className={`chat-composer ${dragOver ? 'chat-composer-drag' : ''} ${expanded ? 'chat-composer-expanded' : ''}`}
+      className={`chat-composer ${dragOver ? 'chat-composer-drag' : ''}`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}

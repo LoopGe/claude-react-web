@@ -96,7 +96,7 @@
 .uploads-missing-badge {
   font-size: var(--fs-2xs);
   text-transform: uppercase;
-  color: var(--danger);
+  color: var(--danger-text);
   border: 1px solid var(--danger);
   border-radius: 4px;
   padding: 0 var(--space-1);

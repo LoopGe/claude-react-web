@@ -128,7 +128,7 @@
 }
 .marketplace-error {
   background: color-mix(in srgb, var(--danger) 15%, var(--bg-elev));
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .marketplace-info {
   background: color-mix(in srgb, var(--ok) 12%, var(--bg-elev));
@@ -318,7 +318,7 @@
    button when the user tries to close the manager with dirty edits. */
 .snippets-discard-warning {
   font-size: var(--fs-sm);
-  color: var(--danger);
+  color: var(--danger-text);
   font-weight: 600;
 }
 .snippets-discard-actions {

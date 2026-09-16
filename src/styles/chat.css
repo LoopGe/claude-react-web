@@ -670,7 +670,7 @@
   white-space: pre;
 }
 .ctx-bar-stat-warn { color: var(--warn); }
-.ctx-bar-stat-danger { color: var(--danger); }
+.ctx-bar-stat-danger { color: var(--danger-text); }
 .ctx-bar-model {
   margin-left: var(--space-1-5);
   font-size: var(--fs-xs);
@@ -1050,7 +1050,7 @@
   padding: 0 var(--space-0-5);
   font-size: var(--fs-sm);
 }
-.attachment-chip-remove:hover { color: var(--danger); }
+.attachment-chip-remove:hover { color: var(--danger-text); }
 .attachment-chip-ghost {
   color: var(--fg-muted);
   font-style: italic;
@@ -1087,7 +1087,7 @@
   padding: 0 var(--space-0-5);
   font-size: var(--fs-sm);
 }
-.scheduled-chip-cancel:hover { color: var(--danger); }
+.scheduled-chip-cancel:hover { color: var(--danger-text); }
 .scheduled-chip-failed-reason {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1418,6 +1418,22 @@
   opacity: 0.75;
   font-variant-numeric: tabular-nums;
   cursor: default;
+}
+/* Raw CLI error surfaced in the assistant header (msg.error). The header
+   uppercases and mutes everything, but these strings are diagnostic — undo the
+   transform and colour it as an error so it doesn't read as ordinary chrome. */
+.msg-header-error {
+  color: var(--danger-text);
+  text-transform: none;
+  letter-spacing: 0;
+  /* A raw CLI error can be one long unbreakable token (a quoted absolute path,
+     a URL, a hash). The header is a non-wrapping flex row inside an
+     overflow-x:hidden transcript, so clip + ellipsis here (the span carries a
+     title attribute with the full text) instead of overflowing the header. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* Push the role label hard left so the timestamp (wrapped in a Tooltip's
    .tt-wrap) and any sending indicator settle on the right edge. The header

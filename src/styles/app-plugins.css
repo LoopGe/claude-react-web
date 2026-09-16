@@ -84,7 +84,7 @@
   font-size: var(--fs-xs);
 }
 .app-plugins-err {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .app-plugins-details {
   margin-top: var(--space-2-5);

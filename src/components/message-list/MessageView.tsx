@@ -445,7 +445,7 @@ export const MessageView = memo(function MessageView({
         <div className="msg-header">
           <span>{isSubagent ? 'subagent' : 'assistant'}</span>
           <MessageTimestamp ms={msg.receivedAt} />
-          {msg.error && !modelNotFound && <span className="msg-header-error">{msg.error as string}</span>}
+          {msg.error && !modelNotFound && <span className="msg-header-error" title={msg.error as string}>{msg.error as string}</span>}
         </div>
         )}
         <div className="msg-body">

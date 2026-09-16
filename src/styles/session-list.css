@@ -542,7 +542,7 @@
   align-items: center;
   gap: var(--space-1);
   font-size: var(--fs-sm);
-  color: var(--danger);
+  color: var(--danger-text);
   overflow: hidden;
   white-space: nowrap;
   margin-top: var(--space-0-5);
@@ -699,10 +699,10 @@
 }
 .ctx-menu-item:hover:not(:disabled) { background: var(--bg-elev-2); }
 .ctx-menu-item:disabled { color: var(--fg-muted); cursor: not-allowed; }
-.ctx-menu-item.danger { color: var(--danger); }
+.ctx-menu-item.danger { color: var(--danger-text); }
 .ctx-menu-item.danger:disabled { color: var(--fg-muted); }
 .ctx-menu-item.danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
 }
 .ctx-menu-icon {
   display: inline-flex;
@@ -1327,7 +1327,7 @@
 .session-item-badge.status-waiting .session-status-label { color: color-mix(in srgb, var(--warn) 70%, var(--fg-muted)); }
 /* err → danger */
 .session-status-dot.status-err { background: var(--danger); }
-.session-item-badge.status-err .session-status-label { color: var(--danger); }
+.session-item-badge.status-err .session-status-label { color: var(--danger-text); }
 /* dormant = not running → hollow muted ring */
 .session-status-dot.status-dormant {
   background: transparent;
@@ -1417,7 +1417,7 @@
 .appearance-bg-error {
   margin: 0;
   font-size: var(--fs-sm);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .appearance-bg-slider {
   width: 100%;

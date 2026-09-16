@@ -254,7 +254,7 @@
 }
 .msg.plugin-install--installed { border-left-color: var(--ok); }
 .msg.plugin-install--failed { border-left-color: var(--danger); }
-.msg.plugin-install .plugin-install-error { color: var(--danger); font-size: var(--fs-sm); }
+.msg.plugin-install .plugin-install-error { color: var(--danger-text); font-size: var(--fs-sm); }
 
 /* system/model_refusal_fallback: the primary model refused, the turn was
    retried once on the fallback model. Card treatment — this frame is the
@@ -595,7 +595,7 @@
 }
 .diff-line-del {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .diff-line-add {
   background: color-mix(in srgb, var(--ok) 12%, transparent);
@@ -907,7 +907,7 @@
    its boolean rows onto the shared <Switch>; the global input[type="checkbox"]
    rule in utilities.css draws the boxes those cards still use.) */
 .settings-first-party-error {
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: var(--fs-sm);
 }
 
@@ -1257,7 +1257,7 @@
   position: absolute;
   inset: -2px 0;
 }
-.recent-chip-forget:hover { color: var(--danger); background: var(--bg); }
+.recent-chip-forget:hover { color: var(--danger-text); background: var(--bg); }
 
 /* Modal (directory picker) */
 .modal-backdrop {
@@ -2530,9 +2530,9 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-2));
 }
 .task-mutation-status.status-deleted {
-  color: var(--danger);
+  color: var(--danger-text);
   border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
-  background: color-mix(in srgb, var(--danger) 10%, var(--bg-elev-2));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2));
 }
 .task-mutation-owner {
   font-family: var(--mono);
@@ -2651,8 +2651,8 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   border-color: color-mix(in srgb, var(--ok) 35%, transparent);
 }
 .plan-card-status.rejected {
-  background: color-mix(in srgb, var(--danger) 18%, transparent);
-  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+  color: var(--danger-text);
   border-color: color-mix(in srgb, var(--danger) 35%, transparent);
 }
 .plan-card-body {
@@ -2885,6 +2885,26 @@ details.plan-card-collapsible > summary > .plan-card-header {
 .question-other-input:focus {
   border-color: var(--accent);
 }
+/* Free-text clarification box ("Chat about this"). The shared .textarea face
+   is the code face — mono / --fs-sm (controls.css:313) plus slashed-zero
+   digits (tokens.css:1233) — which is right for the composer and for
+   elicitation's raw JSON, but wrong for prose the user types back to the
+   model. Restore the prose face at base size, the face .question-other-input
+   uses; the surface and radius stay .textarea's so the box still reads as the
+   same control as every other textarea in the app. .textarea's 60px min-height
+   floor is kept deliberately: a textarea is a scroll container, so its flex
+   automatic minimum is 0 — without the floor a short panel squashes the box to
+   a slit instead of scrolling .modal-section. */
+.textarea.question-clarify-input {
+  font-family: inherit;
+  font-size: var(--fs-base);
+  /* Drop the code face's slashed zero (tokens.css:1233). Set on BOTH channels
+     explicitly: the base rule declares the feature via font-feature-settings
+     and font-variant-numeric, and `normal` names no feature, so it cannot
+     clear the longhand. */
+  font-feature-settings: 'zero' 0;
+  font-variant-numeric: normal;
+}
 /* Answered state — question block after the user submits. */
 .question-block-answered {
   opacity: 0.85;
@@ -3006,7 +3026,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   cursor: pointer;
 }
 .elicit-error {
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: var(--fs-sm);
 }
 
@@ -3311,8 +3331,8 @@ details.plan-card-minimized {
   font-size: var(--fs-2xs);
 }
 .findings-verdict-confirmed {
-  background: color-mix(in srgb, var(--danger) 18%, transparent);
-  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--danger-text);
   border-color: color-mix(in srgb, var(--danger) 35%, transparent);
 }
 .findings-verdict-plausible {

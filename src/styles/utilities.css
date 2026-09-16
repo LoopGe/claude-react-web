@@ -186,7 +186,7 @@
   background: color-mix(in srgb, var(--danger) 6%, transparent);
 }
 .tool-card-result-error .tool-result-details > .tool-result-summary {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 /* One-shot entrance for the merged tool_result section. The `-enter` class
    is added by useEnterOnArrival only when the result genuinely lands (the
@@ -409,8 +409,8 @@
   border-color: color-mix(in srgb, var(--ok) 30%, transparent);
 }
 .tool-status-error {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger-text);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
   border-color: color-mix(in srgb, var(--danger) 30%, transparent);
 }
 .tool-status-compact {
@@ -825,7 +825,7 @@
   min-width: 0;
 }
 .diff-stat-del {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 .diff-stat-add {
   color: var(--ok);
@@ -941,9 +941,9 @@
 /* Status chip variant for "danger" — used by NotebookEdit delete chip
  * and other destructive markers. */
 .tool-chip-danger {
-  color: var(--danger);
+  color: var(--danger-text);
   border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
-  background: color-mix(in srgb, var(--danger) 10%, var(--bg-elev-2));
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2));
 }
 .tool-chip-success {
   color: var(--ok);
@@ -958,7 +958,7 @@
   gap: var(--space-1-5);
   padding: var(--space-2-5) var(--space-3);
   font-size: var(--fs-sm);
-  color: var(--danger);
+  color: var(--danger-text);
   font-style: italic;
   background: color-mix(in srgb, var(--danger) 6%, transparent);
 }
@@ -1026,7 +1026,9 @@ button.tool-group-failed-jump {
   text-align: left;
 }
 button.tool-group-failed-jump:hover {
-  background: color-mix(in srgb, var(--danger) 22%, transparent);
+  /* Same reason as .bash-msg-abort:hover — the 8% tint is the AA ceiling, so
+     the hover cue rides the border instead of a second tint level. */
+  border-color: color-mix(in srgb, var(--danger) 70%, transparent);
 }
 button.tool-group-failed-jump:focus-visible {
   outline: 1px solid var(--danger);
@@ -1690,7 +1692,7 @@ button.tool-group-failed-jump:focus-visible {
   white-space: nowrap;
 }
 .status-badge-warn { color: var(--warn); border-color: var(--warn); }
-.status-badge-danger { color: var(--danger); border-color: var(--danger); }
+.status-badge-danger { color: var(--danger-text); border-color: var(--danger); }
 .status-badge-accent { color: var(--accent); border-color: var(--accent); }
 .settings-card-badge.global {
   color: var(--accent);
@@ -1738,7 +1740,7 @@ button.tool-group-failed-jump:focus-visible {
 .settings-card-error {
   padding: var(--space-1) var(--space-2-5);
   font-size: var(--fs-sm);
-  color: var(--danger);
+  color: var(--danger-text);
   background: var(--bg);
 }
 .settings-mcp-head {
@@ -1813,7 +1815,7 @@ button.tool-group-failed-jump:focus-visible {
 }
 .settings-mcp-result.status-connected > span:first-child { color: var(--ok); }
 .settings-mcp-result.status-needs-auth > span:first-child { color: var(--warn); }
-.settings-mcp-result.status-failed > span:first-child { color: var(--danger); }
+.settings-mcp-result.status-failed > span:first-child { color: var(--danger-text); }
 .settings-mcp-result-error {
   min-width: 0;
   overflow: hidden;
@@ -1836,7 +1838,7 @@ button.tool-group-failed-jump:focus-visible {
   color: var(--fg-muted);
 }
 .settings-mcp-tools-error {
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: var(--fs-xs);
 }
 .settings-mcp-tool-item code {
@@ -1844,7 +1846,7 @@ button.tool-group-failed-jump:focus-visible {
 }
 .settings-tag { font-size: var(--fs-2xs); }
 .settings-tag.readonly { color: var(--ok); }
-.settings-tag.destructive { color: var(--danger); }
+.settings-tag.destructive { color: var(--danger-text); }
 .settings-tag.openworld { color: var(--warn); }
 
 /* ── Hooks panel ───────────────────────────────────────────────────── */
@@ -1935,7 +1937,7 @@ button.tool-group-failed-jump:focus-visible {
   font-size: var(--fs-2xs); text-transform: capitalize;
 }
 .hooks-activity-status.success { color: var(--ok); }
-.hooks-activity-status.error { color: var(--danger); }
+.hooks-activity-status.error { color: var(--danger-text); }
 .hooks-activity-status.running { color: var(--accent); }
 .hooks-activity-status.cancelled { color: var(--fg-muted); }
 .hooks-activity-time { font-size: var(--fs-2xs); color: var(--fg-muted); }
@@ -2079,7 +2081,7 @@ button.tool-group-failed-jump:focus-visible {
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev-2));
 }
 .settings-model-action.danger:hover:not(:disabled) {
-  color: var(--danger);
+  color: var(--danger-text);
   border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
   background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2));
 }
@@ -2673,7 +2675,7 @@ button.tool-group-failed-jump:focus-visible {
   font-size: var(--fs-sm);
 }
 .settings-skill-stats strong { color: var(--fg); }
-.settings-skill-stats .warn { color: var(--danger); }
+.settings-skill-stats .warn { color: var(--danger-text); }
 .settings-section-head.compact {
   margin-bottom: var(--space-2-5);
 }
@@ -3076,15 +3078,15 @@ input[type="checkbox"]:disabled {
   border: 1px solid var(--border);
 }
 .settings-error {
-  color: var(--danger);
-  background: var(--panel-bg);
+  color: var(--danger-text);
+  background: var(--bg);
 }
 .settings-success {
   color: var(--ok);
-  background: var(--panel-bg);
+  background: var(--bg);
 }
 .settings-card-badge.warn {
-  color: var(--danger);
+  color: var(--danger-text);
 }
 @media (max-width: 900px) {
   .settings-skill-mode-grid,

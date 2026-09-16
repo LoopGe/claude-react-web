@@ -193,7 +193,7 @@ function QuestionItemView({
         {customAnswers.map((custom) => (
           <li
             key={`custom:${custom}`}
-            className="question-inline-option selected question-inline-option-custom"
+            className="question-inline-option selected"
           >
             <span className="question-inline-option-marker" aria-hidden>
               {isMulti ? <IconCheckSquare size={14} /> : <IconCircleDot size={14} />}

@@ -228,7 +228,7 @@ export function ElicitationDialog({ open = true, request, onDecide }: Props) {
               </label>
               <textarea
                 id="elicit-raw-json"
-                className="composer-textarea"
+                className="textarea"
                 value={rawText}
                 onChange={(e) => setRawText(e.target.value)}
                 placeholder={'{\n  "field": "value"\n}'}

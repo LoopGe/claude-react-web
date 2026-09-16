@@ -379,5 +379,5 @@
 .subagent-transcript-spin { animation: tasks-row-spin 1s linear infinite; }
 .subagent-transcript-error {
   font-size: var(--fs-sm);
-  color: var(--danger);
+  color: var(--danger-text);
 }

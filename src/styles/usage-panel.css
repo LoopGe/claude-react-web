@@ -158,7 +158,7 @@
 
 .usage-window-pct-ok { color: var(--fg-muted); }
 .usage-window-pct-warn { color: var(--warn); }
-.usage-window-pct-danger { color: var(--danger); }
+.usage-window-pct-danger { color: var(--danger-text); }
 
 .usage-meter-track {
   height: 5px;
@@ -219,7 +219,7 @@
 
 .usage-error p {
   margin: 0;
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: var(--fs-sm);
   word-break: break-word;
 }

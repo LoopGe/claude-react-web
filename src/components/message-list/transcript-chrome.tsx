@@ -169,7 +169,7 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
       )}
       <div
         ref={msgRef}
-        className={`msg msg-assistant streaming-msg${supported ? ' liquid-glass' : ''}`}
+        className={`msg streaming-msg${supported ? ' liquid-glass' : ''}`}
       >
         {supported && (
           <span

@@ -39,7 +39,7 @@
 }
 
 .structured-panel .field-error {
-  color: var(--danger);
+  color: var(--danger-text);
   font-size: 12.5px;
   white-space: pre-wrap;
 }
