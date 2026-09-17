@@ -40,7 +40,7 @@
   min-width: var(--size-12px);
 }
 .result-mark {
-  color: var(--ok, var(--accent));
+  color: var(--ok-text, var(--accent));
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -56,7 +56,7 @@
 .msg.result.interrupted { color: var(--msg-rate-limit-fg); }
 .msg.result.interrupted::before,
 .msg.result.interrupted::after { background: color-mix(in srgb, var(--warn, var(--danger)) 45%, var(--border)); }
-.msg.result.interrupted .result-mark { color: var(--warn, var(--danger)); }
+.msg.result.interrupted .result-mark { color: var(--warn-text, var(--danger)); }
 
 /* Transient API retry: amber divider, same vocabulary as .interrupted.
    Replaces the old filled .msg.api-retry card. The mark (⏳ + label) is
@@ -65,7 +65,7 @@
 .msg.result.retry { color: var(--msg-rate-limit-fg); }
 .msg.result.retry::before,
 .msg.result.retry::after { background: color-mix(in srgb, var(--warn) 45%, var(--border)); }
-.msg.result.retry .result-mark { color: var(--warn); }
+.msg.result.retry .result-mark { color: var(--warn-text); }
 
 /* Fatal system error: red divider. Replaces the old filled .msg.error /
    .msg.error.rate-limit cards. The meta carries the raw error string,
@@ -74,7 +74,7 @@
 .msg.result.error { color: var(--msg-error-fg); }
 .msg.result.error::before,
 .msg.result.error::after { background: color-mix(in srgb, var(--danger) 45%, var(--border)); }
-.msg.result.error .result-mark { color: var(--danger); }
+.msg.result.error .result-mark { color: var(--danger-text); }
 .msg.result.error .result-meta {
   flex-shrink: 1;            /* override .result-meta's flex-shrink:0 so it can truncate */
   min-width: 0;
@@ -85,15 +85,15 @@
 /* rate_limit_event: a plan rate-limit state transition. Same divider
    vocabulary as retry/error; tone follows the event status — ok (within
    limit) / warn (near limit) / danger (rejected, requests blocked). */
-.msg.result.rate-limit-card--ok .result-mark { color: var(--ok, var(--accent)); }
+.msg.result.rate-limit-card--ok .result-mark { color: var(--ok-text, var(--accent)); }
 .msg.result.rate-limit-card--warn { color: var(--msg-rate-limit-fg); }
 .msg.result.rate-limit-card--warn::before,
 .msg.result.rate-limit-card--warn::after { background: color-mix(in srgb, var(--warn) 45%, var(--border)); }
-.msg.result.rate-limit-card--warn .result-mark { color: var(--warn); }
+.msg.result.rate-limit-card--warn .result-mark { color: var(--warn-text); }
 .msg.result.rate-limit-card--danger { color: var(--msg-error-fg); }
 .msg.result.rate-limit-card--danger::before,
 .msg.result.rate-limit-card--danger::after { background: color-mix(in srgb, var(--danger) 45%, var(--border)); }
-.msg.result.rate-limit-card--danger .result-mark { color: var(--danger); }
+.msg.result.rate-limit-card--danger .result-mark { color: var(--danger-text); }
 .msg.result.rate-limit-card .result-meta {
   flex-shrink: 1;
   min-width: 0;
@@ -201,7 +201,7 @@
 /* system/permission_denied: tool call auto-denied without an interactive
    prompt (dontAsk / deny rule / auto-mode classifier). Rides the shared
    `.msg.result` divider row — only the mark + meta text are ours. */
-.msg.result.permission-denied .result-mark { color: var(--warn); }
+.msg.result.permission-denied .result-mark { color: var(--warn-text); }
 
 /* system/informational: loop text banner (hook block reason, slash-command
    output, status line). 'info'/'notice' are muted single lines;
@@ -599,7 +599,7 @@
 }
 .diff-line-add {
   background: color-mix(in srgb, var(--ok) 12%, transparent);
-  color: var(--ok);
+  color: var(--ok-text);
 }
 .diff-line-marker {
   width: var(--size-16px);
@@ -2014,7 +2014,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .monitor-bar-count {
   font-family: var(--mono);
@@ -2255,9 +2255,9 @@ button.tool-chip.tool-chip-copyable:focus-visible {
   outline-offset: 1px;
 }
 button.tool-chip.tool-chip-copyable.copied {
-  color: var(--ok);
+  color: var(--ok-text);
   border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
-  background: color-mix(in srgb, var(--ok) 10%, var(--bg-elev-2));
+  background: color-mix(in srgb, var(--ok) 8%, var(--bg-elev-2));
 }
 
 /* --- Bash inline view ------------------------------------------------ */
@@ -2493,9 +2493,9 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   border: 1px solid var(--border);
 }
 .task-mutation-verb.verb-create {
-  color: var(--ok);
+  color: var(--ok-text);
   border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
-  background: color-mix(in srgb, var(--ok) 10%, transparent);
+  background: color-mix(in srgb, var(--ok) 16%, var(--bg-elev));
 }
 .task-mutation-verb.verb-update {
   color: var(--accent);
@@ -2520,9 +2520,9 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   letter-spacing: 0;
 }
 .task-mutation-status.status-completed {
-  color: var(--ok);
+  color: var(--ok-text);
   border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
-  background: color-mix(in srgb, var(--ok) 10%, var(--bg-elev-2));
+  background: color-mix(in srgb, var(--ok) 8%, var(--bg-elev-2));
 }
 .task-mutation-status.status-in_progress {
   color: var(--accent);
@@ -2616,8 +2616,8 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--warn) 18%, transparent);
-  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 18%, var(--bg-elev));
+  color: var(--warn-text);
   border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
   /* Status flips remount the pill (AnimatedDetails key={status}), so this
      entrance pops the new state in; the color transition lets any in-place
@@ -2646,12 +2646,12 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   }
 }
 .plan-card-status.approved {
-  background: color-mix(in srgb, var(--ok) 18%, transparent);
-  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 16%, var(--bg-elev));
+  color: var(--ok-text);
   border-color: color-mix(in srgb, var(--ok) 35%, transparent);
 }
 .plan-card-status.rejected {
-  background: color-mix(in srgb, var(--danger) 9%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-elev));
   color: var(--danger-text);
   border-color: color-mix(in srgb, var(--danger) 35%, transparent);
 }
@@ -2786,7 +2786,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   font-family: var(--mono);
 }
 .question-mode {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .question-text {
   font-size: var(--fs-md);
@@ -2910,7 +2910,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   opacity: 0.85;
 }
 .question-answered-badge {
-  color: var(--ok);
+  color: var(--ok-text);
   font-weight: 600;
   text-transform: none;
   letter-spacing: 0;
@@ -2996,7 +2996,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
 }
 .elicit-required {
   margin-left: 3px;
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .elicit-field-desc {
   font-size: var(--fs-sm);
@@ -3080,8 +3080,8 @@ details.question-inline-card[data-state="open"] > summary {
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .question-inline-status.answered {
-  background: color-mix(in srgb, var(--ok) 18%, transparent);
-  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 16%, var(--bg-elev));
+  color: var(--ok-text);
   border-color: color-mix(in srgb, var(--ok) 35%, transparent);
 }
 .question-inline-status.skipped {
@@ -3331,13 +3331,13 @@ details.plan-card-minimized {
   font-size: var(--fs-2xs);
 }
 .findings-verdict-confirmed {
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-elev));
   color: var(--danger-text);
   border-color: color-mix(in srgb, var(--danger) 35%, transparent);
 }
 .findings-verdict-plausible {
-  background: color-mix(in srgb, var(--warn) 18%, transparent);
-  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 18%, var(--bg-elev));
+  color: var(--warn-text);
   border-color: color-mix(in srgb, var(--warn) 35%, transparent);
 }
 .findings-verdict-none {
@@ -3346,8 +3346,8 @@ details.plan-card-minimized {
   border-color: color-mix(in srgb, var(--fg-muted) 30%, transparent);
 }
 .findings-outcome-fixed {
-  background: color-mix(in srgb, var(--ok) 18%, transparent);
-  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 16%, var(--bg-elev));
+  color: var(--ok-text);
   border-color: color-mix(in srgb, var(--ok) 35%, transparent);
 }
 .findings-outcome-skipped {

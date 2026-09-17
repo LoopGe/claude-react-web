@@ -90,8 +90,8 @@
   color: var(--fg-muted);
   margin-right: 3px;
 }
-.git-panel-syncs .git-panel-sync-up { color: var(--ok); }
-.git-panel-syncs .git-panel-sync-down { color: var(--warn); }
+.git-panel-syncs .git-panel-sync-up { color: var(--ok-text); }
+.git-panel-syncs .git-panel-sync-down { color: var(--warn-text); }
 .git-panel-sync-actions {
   display: inline-flex;
   align-items: center;
@@ -137,8 +137,8 @@
   display: flex;
   align-items: center;
   padding: var(--space-2) var(--space-3);
-  background: color-mix(in srgb, var(--warn) 18%, transparent);
-  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 18%, var(--bg-elev));
+  color: var(--warn-text);
   border-bottom: 1px solid var(--border);
   font-size: var(--fs-sm);
   flex-shrink: 0;
@@ -300,13 +300,13 @@
   flex-shrink: 0;
   color: var(--fg-muted);
 }
-.git-file-status.status-M { color: var(--warn); }
-.git-file-status.status-A { color: var(--ok); }
+.git-file-status.status-M { color: var(--warn-text); }
+.git-file-status.status-A { color: var(--ok-text); }
 .git-file-status.status-D { color: var(--danger-text); }
 .git-file-status.status-R { color: var(--accent); }
 .git-file-status.status-C { color: var(--accent); }
 .git-file-status.status-U { color: var(--danger-text); }
-.git-file-status.status-T { color: var(--warn); }
+.git-file-status.status-T { color: var(--warn-text); }
 .git-file-path {
   flex: 1;
   white-space: nowrap;
@@ -325,7 +325,7 @@
   margin-left: var(--space-1-5);
 }
 .git-file-additions {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 .git-file-deletions {
   color: var(--danger-text);
@@ -406,8 +406,8 @@
   padding-right: var(--space-3);
 }
 .git-diff-row.add  { box-shadow: inset 3px 0 0 var(--ok); }
-.git-diff-row.add .git-diff-sign { color: var(--ok); }
-.git-diff-row.add .git-diff-body { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.git-diff-row.add .git-diff-sign { color: var(--ok-text); }
+.git-diff-row.add .git-diff-body { color: var(--ok-text); background: color-mix(in srgb, var(--ok) 14%, transparent); }
 .git-diff-row.del  { box-shadow: inset 3px 0 0 var(--danger); }
 .git-diff-row.del .git-diff-sign { color: var(--danger-text); }
 .git-diff-row.del .git-diff-body { color: var(--danger-text); background: color-mix(in srgb, var(--danger) 14%, transparent); }

@@ -276,7 +276,7 @@ function McpInstallerForm({ open = true, server, onSave, onClose }: Props) {
 
           {/* Errors */}
           {errors.length > 0 && (
-            <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-base)' }}>
+            <div style={{ color: 'var(--danger-text)', fontSize: 'var(--fs-base)' }}>
               {errors.map((e, i) => <div key={i}>{e}</div>)}
             </div>
           )}

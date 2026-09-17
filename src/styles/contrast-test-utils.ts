@@ -1,5 +1,5 @@
 /** Shared WCAG contrast math for the token-regression tests
- *  (danger-contrast.test.ts, plugin-inactive-contrast.test.ts).
+ *  (status-ink-contrast.test.ts, plugin-inactive-contrast.test.ts).
  *  Kept in one place so a fix to the formulas (e.g. supporting 8-digit hex)
  *  doesn't have to be applied per test file. */
 

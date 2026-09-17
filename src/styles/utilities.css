@@ -303,12 +303,12 @@
   outline-offset: 1px;
 }
 .tool-card-filepath.copied .tool-card-filepath-dir {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 .tool-card-filepath-copied {
   font-family: var(--mono);
   font-size: var(--fs-2xs);
-  color: var(--ok);
+  color: var(--ok-text);
   flex-shrink: 0;
 }
 /* Shared "copied" micro-interaction: the indicator (filepath chip, copy
@@ -399,18 +399,18 @@
    uses --warn), and deliberately NOT animated: nothing is in flight, the turn is
    parked on the user. */
 .tool-status-waiting {
-  color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn-text);
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg-elev-2));
   border-color: color-mix(in srgb, var(--warn) 30%, transparent);
 }
 .tool-status-success {
-  color: var(--ok);
-  background: color-mix(in srgb, var(--ok) 12%, transparent);
+  color: var(--ok-text);
+  background: color-mix(in srgb, var(--ok) 8%, var(--bg-elev-2));
   border-color: color-mix(in srgb, var(--ok) 30%, transparent);
 }
 .tool-status-error {
   color: var(--danger-text);
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2));
   border-color: color-mix(in srgb, var(--danger) 30%, transparent);
 }
 .tool-status-compact {
@@ -449,7 +449,7 @@
   border-color: var(--border);
 }
 .tool-copy-btn.copied {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 .tool-copy-btn:focus-visible {
   outline: 2px solid var(--accent);
@@ -828,7 +828,7 @@
   color: var(--danger-text);
 }
 .diff-stat-add {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 .diff-stat-hint {
   margin-left: auto;
@@ -946,9 +946,9 @@
   background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2));
 }
 .tool-chip-success {
-  color: var(--ok);
+  color: var(--ok-text);
   border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
-  background: color-mix(in srgb, var(--ok) 10%, var(--bg-elev-2));
+  background: color-mix(in srgb, var(--ok) 8%, var(--bg-elev-2));
 }
 
 /* NotebookEdit "deleted" pill, now inside the body of a ToolCard. */
@@ -960,7 +960,7 @@
   font-size: var(--fs-sm);
   color: var(--danger-text);
   font-style: italic;
-  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  background: color-mix(in srgb, var(--danger) 6%, var(--bg-elev-2));
 }
 
 /* ── ToolGroupCard chrome ─────────────────────────────────────────────
@@ -1691,7 +1691,7 @@ button.tool-group-failed-jump:focus-visible {
   color: var(--fg-muted);
   white-space: nowrap;
 }
-.status-badge-warn { color: var(--warn); border-color: var(--warn); }
+.status-badge-warn { color: var(--warn-text); border-color: var(--warn); }
 .status-badge-danger { color: var(--danger-text); border-color: var(--danger); }
 .status-badge-accent { color: var(--accent); border-color: var(--accent); }
 .settings-card-badge.global {
@@ -1813,8 +1813,8 @@ button.tool-group-failed-jump:focus-visible {
   gap: var(--space-1);
   font-weight: 500;
 }
-.settings-mcp-result.status-connected > span:first-child { color: var(--ok); }
-.settings-mcp-result.status-needs-auth > span:first-child { color: var(--warn); }
+.settings-mcp-result.status-connected > span:first-child { color: var(--ok-text); }
+.settings-mcp-result.status-needs-auth > span:first-child { color: var(--warn-text); }
 .settings-mcp-result.status-failed > span:first-child { color: var(--danger-text); }
 .settings-mcp-result-error {
   min-width: 0;
@@ -1845,9 +1845,9 @@ button.tool-group-failed-jump:focus-visible {
   font-family: var(--mono);
 }
 .settings-tag { font-size: var(--fs-2xs); }
-.settings-tag.readonly { color: var(--ok); }
+.settings-tag.readonly { color: var(--ok-text); }
 .settings-tag.destructive { color: var(--danger-text); }
-.settings-tag.openworld { color: var(--warn); }
+.settings-tag.openworld { color: var(--warn-text); }
 
 /* ── Hooks panel ───────────────────────────────────────────────────── */
 .hooks-categories { display: flex; flex-direction: column; gap: var(--space-0-5); }
@@ -1936,7 +1936,7 @@ button.tool-group-failed-jump:focus-visible {
 .hooks-activity-status {
   font-size: var(--fs-2xs); text-transform: capitalize;
 }
-.hooks-activity-status.success { color: var(--ok); }
+.hooks-activity-status.success { color: var(--ok-text); }
 .hooks-activity-status.error { color: var(--danger-text); }
 .hooks-activity-status.running { color: var(--accent); }
 .hooks-activity-status.cancelled { color: var(--fg-muted); }
@@ -2612,7 +2612,7 @@ button.tool-group-failed-jump:focus-visible {
 }
 .share-tab-warn {
   margin: var(--space-3) 0 0;
-  color: var(--warn, var(--fg-muted));
+  color: var(--warn-text, var(--fg-muted));
   font-size: var(--fs-sm);
   line-height: 1.5;
 }
@@ -3082,7 +3082,7 @@ input[type="checkbox"]:disabled {
   background: var(--bg);
 }
 .settings-success {
-  color: var(--ok);
+  color: var(--ok-text);
   background: var(--bg);
 }
 .settings-card-badge.warn {
@@ -3168,7 +3168,7 @@ select.input {
   color: var(--fg-muted);
 }
 .perf-hot {
-  color: var(--warn);
+  color: var(--warn-text);
   font-weight: 600;
 }
 .perf-empty {

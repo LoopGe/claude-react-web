@@ -1241,7 +1241,7 @@ export function SetupPage({ onConfigured }: Props) {
 
 const styles: Record<string, React.CSSProperties> = {
   required: {
-    color: 'var(--danger)',
+    color: 'var(--danger-text)',
   },
   optional: {
     fontWeight: 400,

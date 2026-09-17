@@ -106,7 +106,7 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
         {phase === 'loading' && <div className="hint">Reading file…</div>}
         {phase === 'importing' && <div className="hint">Importing…</div>}
 
-        {phase === 'preview' && error && <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-base)' }}>{error}</div>}
+        {phase === 'preview' && error && <div style={{ color: 'var(--danger-text)', fontSize: 'var(--fs-base)' }}>{error}</div>}
 
         {phase === 'preview' && !error && preview.length === 0 && (
           <div className="hint">No servers found in this file.</div>
@@ -125,7 +125,7 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
 
             {conflicts.length > 0 && (
               <div className="settings-card" style={{ borderColor: 'var(--warn)' }}>
-                <div className="settings-note" style={{ color: 'var(--warn)' }}>
+                <div className="settings-note" style={{ color: 'var(--warn-text)' }}>
                   Already exist — checking a row will overwrite it
                 </div>
                 {conflicts.map((s) => (
@@ -140,12 +140,12 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
 
             {invalid.length > 0 && (
               <>
-                <div className="settings-note" style={{ color: 'var(--danger)' }}>Invalid (skipped)</div>
+                <div className="settings-note" style={{ color: 'var(--danger-text)' }}>Invalid (skipped)</div>
                 {invalid.map((s) => (
                   <div key={s.name} className="settings-card" style={{ borderColor: 'var(--danger)', opacity: 0.7 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--fs-base)' }}>
                       <span style={{ fontWeight: 500 }}>{s.name}</span>
-                      <span style={{ color: 'var(--danger)', fontSize: 'var(--fs-sm)' }}>{s.errors.join('; ')}</span>
+                      <span style={{ color: 'var(--danger-text)', fontSize: 'var(--fs-sm)' }}>{s.errors.join('; ')}</span>
                     </div>
                   </div>
                 ))}
@@ -160,7 +160,7 @@ export function McpImportDialog({ open = true, file, onClose, onImported }: Prop
             <div>Updated: {summary.updated.length}</div>
             <div>Skipped: {summary.skipped.length}</div>
             {summary.failed.length > 0 && (
-              <div style={{ color: 'var(--danger)' }}>
+              <div style={{ color: 'var(--danger-text)' }}>
                 Failed: {summary.failed.map((f) => `${f.name}: ${f.error}`).join('; ')}
               </div>
             )}

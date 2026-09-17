@@ -512,7 +512,7 @@ body.resizing-col .app {
    default stays muted, plan warns, permission-heavy modes signal danger,
    editing/auto modes read as the session accent. */
 .chat-panel-mode-badge.mode-default { color: var(--fg-muted); }
-.chat-panel-mode-badge.mode-plan { color: var(--warn); }
+.chat-panel-mode-badge.mode-plan { color: var(--warn-text); }
 .chat-panel-mode-badge.mode-bypassPermissions,
 .chat-panel-mode-badge.mode-dontAsk { color: var(--danger-text); }
 .chat-panel-mode-badge.mode-acceptEdits,
@@ -625,8 +625,8 @@ body.resizing-col .app {
   background: color-mix(in srgb, var(--fast) 14%, transparent);
 }
 .chat-panel-fast-badge.fast-cooldown {
-  color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn-text);
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg-elev));
 }
 .chat-panel-fast-badge:hover:not(:disabled) {
   background: color-mix(in srgb, var(--fast) 22%, transparent);
@@ -1062,7 +1062,7 @@ body.resizing-col .app {
 }
 /* Git state colour — mirrors the old git-chip variants. */
 .chat-panel-git-badge.dirty .chat-panel-git-badge-value {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .chat-panel-git-badge.conflict .chat-panel-git-badge-value {
   color: var(--danger-text);
@@ -1132,8 +1132,11 @@ body.resizing-col .app {
 /* Unconfirmed: EnterWorktree claimed isolation but git has no matching
    worktree yet (timing gap right after Enter, or a stale claim). */
 .chat-panel-worktree-badge.unconfirmed,
-.chat-panel-worktree-badge.unconfirmed .chat-panel-worktree-badge-icon,
 .chat-panel-worktree-badge.unconfirmed .chat-panel-worktree-badge-value {
+  color: var(--warn-text);
+}
+/* The badge's icon stays on the fill token (glyph, 3:1 bar). */
+.chat-panel-worktree-badge.unconfirmed .chat-panel-worktree-badge-icon {
   color: var(--warn);
 }
 .chat-panel-worktree-badge-value {

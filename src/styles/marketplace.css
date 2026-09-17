@@ -132,7 +132,7 @@
 }
 .marketplace-info {
   background: color-mix(in srgb, var(--ok) 12%, var(--bg-elev));
-  color: var(--ok);
+  color: var(--ok-text);
 }
 /* Inline dismiss button for marketplace error/info banners. Inherits the
    surrounding text colour so it matches the banner's tint without a
@@ -294,7 +294,7 @@
   align-items: center;
   gap: 3px;
 }
-.marketplace-plugin-status.enabled { color: var(--ok); }
+.marketplace-plugin-status.enabled { color: var(--ok-text); }
 .marketplace-plugin-status.disabled { color: var(--fg-muted); }
 .marketplace-plugin-actions {
   margin-left: auto;

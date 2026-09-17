@@ -509,7 +509,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
               </button>
             </>
           ) : (
-            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ok)' }}>All marketplaces up to date</span>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ok-text)' }}>All marketplaces up to date</span>
           )}
           {bulkResult && (
             <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>{bulkResult}</span>
@@ -621,7 +621,7 @@ function MarketplaceCard({
           title={`${item.enabledCount} enabled of ${item.pluginCount} plugin${item.pluginCount === 1 ? '' : 's'}`}
         >
           {item.enabledCount > 0 && (
-            <span style={{ color: 'var(--plugin-active)' }}>{item.enabledCount}</span>
+            <span style={{ color: 'var(--ok-text)' }}>{item.enabledCount}</span>
           )}
           {item.enabledCount > 0 ? ' / ' : ''}
           {item.pluginCount} plugin{item.pluginCount === 1 ? '' : 's'}
@@ -662,7 +662,7 @@ function MarketplaceCard({
         {!confirmRemove ? (
           <button
             className="btn"
-            style={{ color: 'var(--danger)' }}
+            style={{ color: 'var(--danger-text)' }}
             onClick={onRequestRemove}
             disabled={busy || bulkBusy}
           >
@@ -672,7 +672,7 @@ function MarketplaceCard({
           <div style={{ display: 'flex', gap: 2 }}>
             <button
               className="btn"
-              style={{ padding: '2px 6px', fontSize: 'var(--fs-xs)', color: 'var(--danger)' }}
+              style={{ padding: '2px 6px', fontSize: 'var(--fs-xs)', color: 'var(--danger-text)' }}
               onClick={onConfirmRemove}
               disabled={busy || bulkBusy}
             >

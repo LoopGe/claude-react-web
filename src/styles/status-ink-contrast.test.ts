@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { contrast } from './contrast-test-utils'
@@ -45,17 +45,21 @@ describe('danger solid-button ink contrast', () => {
   })
 })
 
-// Guard for the danger-INK token. --danger is tuned for fills, borders and
-// icon glyphs; as text it misses AA on the app's darker/lighter surfaces
-// (default light theme: 3.27:1 on --btn-hover-bg, 3.42:1 on --bg-elev-3),
-// which is why copy uses --danger-text instead.
+// Guard for the status-INK tokens. --danger / --warn / --ok are tuned for
+// fills, borders and icon glyphs; as text they miss AA on the app's
+// darker/lighter surfaces — in the default light theme --danger is 3.27:1 on
+// --btn-hover-bg and 3.42:1 on --bg-elev-3, --warn 1.96:1, --ok 2.47:1 — which
+// is why copy uses the *-text ink instead. Icon glyphs and decoration keep the
+// fill token.
 //
 // The check resolves the custom-property cascade per skin/theme context rather
 // than trusting the block a token is declared in: a skin may override a
 // SURFACE only (both [data-skin="glow"] blocks do) and inherit the ink from a
 // theme block, so keying off "--danger lives in this block" would skip exactly
-// the combinations most likely to drift. Surfaces a rule tints itself with
-// --danger are out of scope — ink alone cannot fix those.
+// the combinations most likely to drift. Surfaces a rule tints itself with the
+// fill token are out of scope — ink alone cannot fix those, so each tinted site
+// keeps the tint light enough (or mixes it opaquely with a named surface) to
+// stay inside the contract.
 
 const SURFACE_TOKENS = [
   '--bg',
@@ -83,6 +87,14 @@ const NAMED_CONTEXTS = [
   '[data-skin="glow"][data-theme="light"]',
   '[data-skin="anthropic"]',
   '[data-skin="anthropic"][data-theme="light"]',
+]
+
+/** The three status families: a fill tuned for tints/borders/glyphs, plus the
+ *  copy ink that has to clear AA wherever text renders. */
+const INK_FAMILIES = [
+  { fill: '--danger', ink: '--danger-text' },
+  { fill: '--warn', ink: '--warn-text' },
+  { fill: '--ok', ink: '--ok-text' },
 ]
 
 interface Block {
@@ -157,15 +169,78 @@ function effective(blocks: Block[], sel: string, token: string, depth = 0): stri
   return depth < 3 ? effective(blocks, sel, ref[1], depth + 1) : undefined
 }
 
-describe('danger text ink contrast', () => {
+const rgbOf = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16))
+
+/** `color-mix(in srgb, a pct%, b)` in sRGB. */
+function mixHex(top: string, bottom: string, pct: number): string {
+  return (
+    '#' +
+    rgbOf(top)
+      .map((c, i) =>
+        Math.round(c * pct + rgbOf(bottom)[i] * (1 - pct))
+          .toString(16)
+          .padStart(2, '0'),
+      )
+      .join('')
+  )
+}
+
+interface StatusPlate {
+  file: string
+  sel: string
+  /** The family fill token, e.g. `--ok`. */
+  fam: string
+  alpha: number
+  /** The surface token the tint is mixed against. */
+  surface: string
+}
+
+/** A status plate: `color: var(--X-text)` over an OPAQUE `color-mix(… var(--X) N%, var(--surface))`.
+ *  Translucent tints are excluded on purpose — their backdrop is whatever sits
+ *  behind them, which a static check cannot know. */
+function statusPlates(): StatusPlate[] {
+  const out: StatusPlate[] = []
+  for (const file of readdirSync(join(process.cwd(), 'src/styles'))) {
+    if (!file.endsWith('.css')) continue
+    const css = readFileSync(join(process.cwd(), 'src/styles', file), 'utf8')
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const body = m[2]
+      const ink = body.match(/color:\s*var\((--(?:danger|warn|ok)-text)\)/)
+      if (!ink) continue
+      const fam = ink[1].replace('-text', '')
+      const bg = body.match(
+        new RegExp(
+          `background(?:-color)?:\\s*color-mix\\(in srgb,\\s*var\\(${fam}\\)\\s*(\\d+)%,\\s*var\\((--[a-z0-9-]+)\\)\\)`,
+        ),
+      )
+      if (!bg) continue
+      out.push({
+        file,
+        sel: m[1]
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .trim()
+          .replace(/\s+/g, ' '),
+        fam,
+        alpha: Number(bg[1]),
+        surface: bg[2],
+      })
+    }
+  }
+  return out
+}
+
+describe('status ink contrast (danger / warn / ok)', () => {
   const blocks = parseBlocks(tokensCss())
   const contexts = contextsOf(blocks)
 
-  it('defines --danger-text wherever --danger is defined', () => {
-    const dangers = blocks.filter((b) => b.tokens['--danger']).length
-    const inks = blocks.filter((b) => b.tokens['--danger-text']).length
-    expect(dangers).toBeGreaterThan(0)
-    expect(inks).toBe(dangers)
+  it('pairs every family fill with its copy ink in the same block', () => {
+    for (const { fill, ink } of INK_FAMILIES) {
+      expect(blocks.filter((b) => b.tokens[fill]).length, `${fill} is declared nowhere`).toBeGreaterThan(0)
+      for (const b of blocks) {
+        if (!b.tokens[fill]) continue
+        expect(b.tokens[ink], `${b.sel} defines ${fill} without ${ink}`).toBeTruthy()
+      }
+    }
   })
 
   it('still names every skin/theme context it is expected to cover', () => {
@@ -174,23 +249,51 @@ describe('danger text ink contrast', () => {
     }
   })
 
-  it('resolves a readable ink for every context in the file', () => {
-    for (const sel of contexts) {
-      const ink = effective(blocks, sel, '--danger-text')
-      expect(ink, `${sel} has no resolvable --danger-text`).toMatch(/^#[0-9a-f]{6}$/i)
+  it('resolves a readable ink for every family in every context', () => {
+    for (const { ink } of INK_FAMILIES) {
+      for (const sel of contexts) {
+        const v = effective(blocks, sel, ink)
+        expect(v, `${sel} has no resolvable ${ink}`).toMatch(/^#[0-9a-f]{6}$/i)
+      }
     }
   })
 
-  it('danger copy clears 4.5:1 on every flat surface of every context', () => {
-    for (const sel of contexts) {
-      const ink = effective(blocks, sel, '--danger-text')!
-      for (const surfaceToken of SURFACE_TOKENS) {
-        const surface = effective(blocks, sel, surfaceToken)
-        expect(surface, `${sel} declares no ${surfaceToken}`).toMatch(/^#[0-9a-f]{6}$/i)
-        const ratio = contrast(ink, surface!)
+  it('each family clears 4.5:1 on every flat surface of every context', () => {
+    for (const { ink } of INK_FAMILIES) {
+      for (const sel of contexts) {
+        const inkValue = effective(blocks, sel, ink)!
+        for (const surfaceToken of SURFACE_TOKENS) {
+          const surface = effective(blocks, sel, surfaceToken)
+          expect(surface, `${sel} declares no ${surfaceToken}`).toMatch(/^#[0-9a-f]{6}$/i)
+          const ratio = contrast(inkValue, surface!)
+          expect(
+            ratio,
+            `${sel}: ${ink} (${inkValue}) on ${surfaceToken} ${surface} = ${ratio.toFixed(2)}:1 (need >= 4.5:1)`,
+          ).toBeGreaterThanOrEqual(4.5)
+        }
+      }
+    }
+  })
+
+  // Status plates are this system's own mechanism (an opaque family tint plus
+  // the family ink), so the ink's real backdrop is the mix — not a flat token —
+  // and each plate needs its own check. Translucent tints are excluded (see
+  // statusPlates): their backdrop is whatever sits behind them.
+  it('keeps every opaque status plate above 4.5:1 in every context', () => {
+    const plates = statusPlates()
+    expect(plates.length, 'no status plates found — the parser or the plates changed').toBeGreaterThan(10)
+    for (const plate of plates) {
+      const ink = `${plate.fam}-text`
+      for (const sel of contexts) {
+        const inkValue = effective(blocks, sel, ink)
+        const fillValue = effective(blocks, sel, plate.fam)
+        const surfaceValue = effective(blocks, sel, plate.surface)
+        if (!inkValue || !fillValue || !surfaceValue) continue
+        const composite = mixHex(fillValue, surfaceValue, plate.alpha / 100)
+        const ratio = contrast(inkValue, composite)
         expect(
           ratio,
-          `${sel}: ${ink} on ${surfaceToken} ${surface} = ${ratio.toFixed(2)}:1 (need >= 4.5:1)`,
+          `${plate.file} ${plate.sel}: ${ink} on ${plate.fam} ${plate.alpha}% over ${plate.surface} = ${ratio.toFixed(2)}:1 (need >= 4.5:1)`,
         ).toBeGreaterThanOrEqual(4.5)
       }
     }

@@ -669,7 +669,7 @@
   color: var(--fg-muted);
   white-space: pre;
 }
-.ctx-bar-stat-warn { color: var(--warn); }
+.ctx-bar-stat-warn { color: var(--warn-text); }
 .ctx-bar-stat-danger { color: var(--danger-text); }
 .ctx-bar-model {
   margin-left: var(--space-1-5);
@@ -1257,7 +1257,7 @@
   color: var(--ok, var(--accent));
 }
 .worktree-marker-label {
-  color: var(--ok, var(--accent));
+  color: var(--ok-text, var(--accent));
   font-weight: 600;
   letter-spacing: 0.04em;
   white-space: nowrap;
@@ -2775,9 +2775,9 @@
 .subagent-overlay-status.status-background { color: var(--accent); }
 .subagent-overlay-status.status-pending { color: var(--fg-muted); }
 .subagent-overlay-status.status-dismissed { color: var(--fg-muted); }
-.subagent-overlay-status.status-done { color: var(--ok); }
+.subagent-overlay-status.status-done { color: var(--ok-text); }
 .subagent-overlay-status.status-rejected,
-.subagent-overlay-status.status-interrupted { color: var(--warn); }
+.subagent-overlay-status.status-interrupted { color: var(--warn-text); }
 .subagent-overlay-body {
   flex: 1;
   min-height: 0;
@@ -3004,9 +3004,9 @@
   color: var(--fg-muted);
 }
 .workflow-overlay-status.status-running { color: var(--accent); }
-.workflow-overlay-status.status-done { color: var(--ok); }
+.workflow-overlay-status.status-done { color: var(--ok-text); }
 .workflow-overlay-status.status-rejected,
-.workflow-overlay-status.status-interrupted { color: var(--warn); }
+.workflow-overlay-status.status-interrupted { color: var(--warn-text); }
 .workflow-overlay-close {
   background: transparent;
   border: 1px solid transparent;

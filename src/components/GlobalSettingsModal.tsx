@@ -1774,7 +1774,7 @@ function LogsTab() {
 
       {err && <div className="modal-error" style={{ marginTop: 12 }}>{err}</div>}
       {savedAt && !err && (
-        <div style={{ marginTop: 8, fontSize: 'var(--fs-sm)', color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <div style={{ marginTop: 8, fontSize: 'var(--fs-sm)', color: 'var(--ok-text)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <IconCheck size={12} /> Updated
         </div>
       )}
@@ -2071,7 +2071,7 @@ function AboutTab({
               {info.claudeCli.ok ? info.claudeCli.version ?? 'unknown' : 'not detected'}
             </span>
             {!info.claudeCli.ok && info.claudeCli.error && (
-              <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--danger)' }}>
+              <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--danger-text)' }}>
                 {info.claudeCli.error}
               </span>
             )}
@@ -2126,7 +2126,7 @@ function AboutTab({
             </span>
           )}
           {upToDate && (
-            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ok)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconCheck size={12} /> up to date</span>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ok-text)', display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconCheck size={12} /> up to date</span>
           )}
           {disabled && (
             <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>

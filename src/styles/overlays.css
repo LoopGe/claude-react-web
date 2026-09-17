@@ -128,7 +128,7 @@
   letter-spacing: 0.03em;
 }
 .resume-badge-running {
-  color: var(--ok);
+  color: var(--ok-text);
   border-color: color-mix(in srgb, var(--ok) 50%, transparent);
 }
 
@@ -585,7 +585,7 @@
   border-radius: var(--radius-md);
   white-space: nowrap;
 }
-.bash-msg-exit.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.bash-msg-exit.ok { color: var(--ok-text); background: color-mix(in srgb, var(--ok) 8%, var(--bg-elev-2)); }
 .bash-msg-exit.err { color: var(--danger-text); background: color-mix(in srgb, var(--danger) 8%, var(--bg-elev-2)); }
 .bash-msg-pending { display: inline-flex; align-items: center; gap: var(--space-1-5); }
 /* Stop button for an in-flight `!`/`!!` command (Ctrl-C analogue). Sits next

@@ -92,7 +92,7 @@ export function McpExportDialog({ open = true, servers, onClose }: Props) {
         {!includeSecrets && (
           <span className="settings-note">Secrets will be blanked — re-enter them on the target machine.</span>
         )}
-        {error && <div style={{ color: 'var(--danger)', fontSize: 'var(--fs-base)' }}>{error}</div>}
+        {error && <div style={{ color: 'var(--danger-text)', fontSize: 'var(--fs-base)' }}>{error}</div>}
       </div>
       <div className="modal-footer">
         <span className="hint">Press Esc to cancel.</span>

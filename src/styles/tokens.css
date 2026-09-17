@@ -58,7 +58,7 @@
      this token. Contract: >= 4.5:1 against EVERY flat surface token (--bg,
      --bg-elev, --bg-elev-1, --bg-elev-2, --bg-elev-3, --btn-hover-bg,
      --code-bg) in every skin/theme combination that resolves to this value;
-     danger-contrast.test.ts enforces it. Two things ink alone cannot fix, so
+     status-ink-contrast.test.ts enforces it. Two things ink alone cannot fix, so
      they are handled at the site: a surface a rule tints with --danger (each
      tinted site mixes --danger opaquely with the surface it sits on, at an
      alpha low enough for the ink to clear 4.5:1 on the result — so the pairing
@@ -68,7 +68,14 @@
      --danger. */
   --danger-text: var(--danger);
   --ok: #6cc88b;
+  /* Ink for warn/ok COPY — status labels, counts, badges, diff marks. Same
+     reason as --danger-text: the fills are tuned for tints, borders and icon
+     glyphs, and as text they miss AA in every light theme (warn #c79518 is
+     1.96:1 on --btn-hover-bg, ok #2e9e56 2.47:1). The contract and the guard
+     are shared with --danger-text; icon glyphs keep the fill token. */
+  --ok-text: var(--ok);
   --warn: #e6b450;
+  --warn-text: var(--warn);
   /* Fast-mode accent — electric violet, distinct from accent/warn/ok so the
      fast-mode chip reads as its own thing. */
   --fast: #c08cff;
@@ -326,7 +333,9 @@
   --on-danger: #ffffff;
   --danger-text: #ba2424;
   --ok: #2e9e56;
+  --ok-text: #1f6e3b;
   --warn: #c79518;
+  --warn-text: #7b5b0c;
   --fast: #8b3fd6;
   --msg-tool-bg: #f0f4f8;
   --msg-tool-border: #c8d4e0;
@@ -429,7 +438,9 @@
   --on-danger: #1a0000;
   --danger-text: #ff5353;
   --ok: #00ff00;
+  --ok-text: var(--ok);
   --warn: #ffff00;
+  --warn-text: var(--warn);
   --fast: #ff00ff;
   /* HC squares corners via the radius tokens — no universal override needed
      (the old `border-radius: 0 !important` in glass.css is removed in a later
@@ -558,7 +569,9 @@
   --on-danger: #ffffff;
   --danger-text: #bb0000;
   --ok: #006600;
+  --ok-text: var(--ok);
   --warn: #666600;
+  --warn-text: #5e5e00;
   --fast: #660066;
   --msg-tool-bg: #ffffff;
   --msg-tool-border: #0000cc;
@@ -668,7 +681,9 @@
   --on-danger: #3a0d0d;
   --danger-text: var(--danger);
   --ok: #4ade80;
+  --ok-text: var(--ok);
   --warn: #facc15;
+  --warn-text: var(--warn);
   --fast: #c084fc;
   --focus-ring: 2px solid #7b8cde;
   /* No glass / translucency — solid surfaces; normal shadows stay default. */
@@ -697,7 +712,9 @@
   --on-danger: #1a0000;
   --danger-text: #b72828;
   --ok: #1f9d55;
+  --ok-text: #146f3b;
   --warn: #b8860b;
+  --warn-text: #7d5a05;
   --fast: #7c3aed;
   --focus-ring: 2px solid #3b5bdb;
   --glass-blur: none;
@@ -1050,7 +1067,9 @@
   --accent-strong: #c25e3f;
   --on-accent: #141413;
   --ok: #97ab78;
+  --ok-text: var(--ok);
   --warn: #d9a441;
+  --warn-text: var(--warn);
   --danger: #cf6b5c;
   --on-danger: #3a0d0d;
   --danger-text: #d8867a;
@@ -1083,7 +1102,9 @@
   --accent-strong: #c25e3f;
   --on-accent: #ffffff;
   --ok: #5c7040;
+  --ok-text: #536639;
   --warn: #b5841f;
+  --warn-text: #7c5a14;
   --danger: #c0392b;
   --on-danger: #ffffff;
   --danger-text: #af3427;

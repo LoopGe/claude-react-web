@@ -157,7 +157,7 @@
 }
 
 .usage-window-pct-ok { color: var(--fg-muted); }
-.usage-window-pct-warn { color: var(--warn); }
+.usage-window-pct-warn { color: var(--warn-text); }
 .usage-window-pct-danger { color: var(--danger-text); }
 
 .usage-meter-track {
