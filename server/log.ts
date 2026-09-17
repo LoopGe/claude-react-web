@@ -119,6 +119,7 @@ export function createLogger(scope: string): Logger {
       : consoleFn
     fn(tag, ...args)
     writeToFile(tag, args)
+    writeToRing(scope, level, args)
   }
   return {
     error: (...args) => emit('error', console.error, args),
@@ -282,4 +283,91 @@ function writeToFile(tag: string, args: unknown[]): void {
   const ts = new Date().toISOString()
   const msg = args.map(formatArg).join(' ')
   fileStream!.write(`[${ts}] ${tag} ${msg}\n`)
+}
+
+// ─ Log ring buffer (opt-in, in-process) ──────────────────────────
+//
+// A bounded in-memory tail of what the server actually PRINTED. Enabled by
+// `enableLogRing` (dev mode only); symmetric with `enableFileLogging`.
+//
+// CAPTURE POINT IS LOAD-BEARING: `writeToRing` is called from `emit()` AFTER
+// `passes()` has already filtered the line, so a muted line costs nothing and
+// the ring never distorts the timings you are trying to measure. The trade-off
+// is that the ring cannot show history that was filtered out — raise the level
+// first, then reproduce.
+
+export interface LogRingLine {
+  ts: number
+  level: LogLevel
+  scope: string
+  msg: string
+}
+
+/** Hard cap on one line's `msg` (INCLUDING the `…` elision marker). An
+ *  unbounded line would let a single fat payload pin memory for the ring's
+ *  whole retention window. */
+const RING_LINE_MAX = 4096
+
+interface RingState {
+  capacity: number
+  lines: LogRingLine[]
+  dropped: number
+}
+
+let ring: RingState | null = null
+
+/** Start collecting. Replaces any existing ring. */
+export function enableLogRing(capacity = 1000): void {
+  ring = { capacity: Math.max(1, capacity), lines: [], dropped: 0 }
+}
+
+/** Stop collecting and release the buffer. */
+export function disableLogRing(): void {
+  ring = null
+}
+
+export function isLogRingEnabled(): boolean {
+  return ring !== null
+}
+
+function writeToRing(scope: string, level: LogLevel, args: unknown[]): void {
+  if (!ring) return
+  const raw = args.map(formatArg).join(' ')
+  const msg = raw.length > RING_LINE_MAX ? `${raw.slice(0, RING_LINE_MAX - 1)}…` : raw
+  ring.lines.push({ ts: Date.now(), level, scope, msg })
+  const excess = ring.lines.length - ring.capacity
+  if (excess > 0) {
+    ring.dropped += excess
+    ring.lines.splice(0, excess)
+  }
+}
+
+export interface LogRingQuery {
+  /** Keep lines AT LEAST this severe (reuses the LEVELS ordering). */
+  level?: LogLevel
+  /** Exact logger-scope match; use `grep` for fuzzy matching. */
+  scope?: string
+  /** Keep lines with `ts >= since` (epoch ms). */
+  since?: number
+  /** Case-insensitive substring match on `msg`. */
+  grep?: string
+  /** Keep the NEWEST N matches, applied after all other filters. */
+  limit?: number
+}
+
+/** Read the ring. Filters are ANDed; `limit` keeps the newest N matches.
+ *  Returns an empty result (not an error) when the ring is disabled. */
+export function readLogRing(opts: LogRingQuery = {}): { lines: LogRingLine[]; total: number; dropped: number } {
+  if (!ring) return { lines: [], total: 0, dropped: 0 }
+  const { level, scope, since, grep, limit } = opts
+  const needle = grep?.toLowerCase()
+  let lines = ring.lines.filter(
+    (l) =>
+      (level === undefined || LEVELS[l.level] <= LEVELS[level]) &&
+      (scope === undefined || l.scope === scope) &&
+      (since === undefined || l.ts >= since) &&
+      (needle === undefined || l.msg.toLowerCase().includes(needle)),
+  )
+  if (limit !== undefined && lines.length > limit) lines = lines.slice(lines.length - limit)
+  return { lines, total: ring.lines.length, dropped: ring.dropped }
 }
