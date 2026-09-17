@@ -78,5 +78,6 @@ describe('enableDevMode', () => {
     enableDevMode({ registry, sm: fakeHost() })
     expect(() => enableDevMode({ registry, sm: fakeHost() })).not.toThrow()
     expect(registry.list()).toHaveLength(1)
+    expect(isLogRingEnabled()).toBe(true)
   })
 })

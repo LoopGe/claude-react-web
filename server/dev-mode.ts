@@ -17,6 +17,12 @@
 // `NODE_ENV` is deliberately NOT consulted: nothing in this repo sets it, so
 // reading it would be a fake interface.
 
+import { createLogger, enableLogRing } from './log.js'
+import { createDebugAppTools, DEBUG_TOOLS_SERVER_NAME, type DebugHost } from './sdk-tools/app-debug.js'
+import type { FirstPartyToolRegistry } from './sdk-tools/registry.js'
+
+const log = createLogger('dev-mode')
+
 /** `dev` or `dev:<anything>` — deliberately not a bare `startsWith('dev')`,
  *  which would match an unrelated script named e.g. `developed`. */
 const DEV_LIFECYCLE = /^dev(:|$)/
@@ -36,12 +42,6 @@ export function isDevRuntime(
   const lifecycle = env.npm_lifecycle_event
   return typeof lifecycle === 'string' && DEV_LIFECYCLE.test(lifecycle)
 }
-
-import { createLogger, enableLogRing } from './log.js'
-import { createDebugAppTools, DEBUG_TOOLS_SERVER_NAME, type DebugHost } from './sdk-tools/app-debug.js'
-import type { FirstPartyToolRegistry } from './sdk-tools/registry.js'
-
-const log = createLogger('dev-mode')
 
 export interface DevModeDeps {
   /** Injected rather than importing the singleton so tests can pass a fresh
