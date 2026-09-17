@@ -1,13 +1,14 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { readCss } from './styles/contrast-test-utils'
 
 describe('chat CSS reading inset fallback', () => {
   it('defines a calc fallback before the CSS round() enhancement', () => {
-    const css = readFileSync(join(process.cwd(), 'src/styles/chat.css'), 'utf8')
+    const css = readCss('chat.css')
 
-    const fallback = '--chat-reading-inset: max(var(--chat-reading-min-inset), calc((100% - var(--chat-reading-max-width)) / 2));'
-    const enhancement = '--chat-reading-inset: max(var(--chat-reading-min-inset), round((100% - var(--chat-reading-max-width)) / 2, 1px));'
+    const fallback =
+      '--chat-reading-inset: max(var(--chat-reading-min-inset), calc((100% - var(--chat-reading-max-width)) / 2));'
+    const enhancement =
+      '--chat-reading-inset: max(var(--chat-reading-min-inset), round((100% - var(--chat-reading-max-width)) / 2, 1px));'
 
     expect(css).toContain(fallback)
     expect(css).toContain('@supports (width: round(1px, 1px))')

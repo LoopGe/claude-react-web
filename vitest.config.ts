@@ -155,6 +155,9 @@ export default defineConfig({
       // top-level pure helpers.
       ['src/local-commands.test.ts', 'node'],
       ['src/types.test.ts', 'node'],
+      // src/styles: token/contrast guards read stylesheets with node:fs and
+      // never touch the DOM.
+      ['src/styles/**/*.test.ts', 'node'],
       // --- jsdom (React render / DOM) -----------------------------------
       // Everything else under src/ mounts components or uses localStorage.
       ['src/**', 'jsdom'],

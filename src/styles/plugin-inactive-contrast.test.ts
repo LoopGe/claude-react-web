@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { contrast, luminance } from './contrast-test-utils'
+import { contrast, luminance, parseBlocks, readCss } from './contrast-test-utils'
 
 // Guard for the inactive status-dot ink: every --plugin-inactive token must
 // carry at least 3:1 WCAG contrast (1.4.11, non-text UI) against every
@@ -19,40 +17,23 @@ import { contrast, luminance } from './contrast-test-utils'
 // History: dark #636873 was ~2.9:1 on --bg-elev-2 and light #9e9e9e was
 // ~2.6:1 on white — both under the 3:1 floor.
 
-interface Block {
-  selector: string
-  body: string
-}
-
-function parseBlocks(css: string): Block[] {
-  return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
-    selector: m[1],
-    body: m[2],
-  }))
-}
-
-function hexVar(body: string, name: string): string | undefined {
-  return body.match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6});`))?.[1].toLowerCase()
-}
-
 describe('plugin inactive status-dot contrast', () => {
   it('every --plugin-inactive token meets WCAG 1.4.11 (3:1) on its theme surfaces', () => {
-    const raw = readFileSync(join(process.cwd(), 'src/styles/tokens.css'), 'utf8')
-    // Strip comments first: a block's captured selector otherwise absorbs the
-    // preceding comment text, and comments reference selectors (e.g. the hc
-    // block's comment mentions `[data-theme="light"]`) which would corrupt
-    // the polarity classification below.
-    const css = raw.replace(/\/\*[\s\S]*?\*\//g, '')
-    const blocks = parseBlocks(css)
+    // readCss blanks comments first: a block's captured selector otherwise
+    // absorbs the preceding comment text, and comments reference selectors
+    // (e.g. the hc block's comment mentions `[data-theme="light"]`) which would
+    // corrupt the polarity classification below.
+    const blocks = parseBlocks(readCss('tokens.css'))
+    const hex = (v: string | undefined) => (v && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : undefined)
 
     const inactiveDefs = blocks
-      .map((b) => ({ selector: b.selector, ink: hexVar(b.body, '--plugin-inactive') }))
+      .map((b) => ({ selector: b.sel, ink: hex(b.tokens['--plugin-inactive']) }))
       .filter((b): b is { selector: string; ink: string } => b.ink != null)
     expect(inactiveDefs.length).toBeGreaterThanOrEqual(2) // :root + light at minimum
 
     const surfaces = blocks.flatMap((b) =>
       ['--bg', '--bg-elev', '--bg-elev-2']
-        .map((name) => hexVar(b.body, name))
+        .map((name) => hex(b.tokens[name]))
         .filter((h): h is string => h != null),
     )
     expect(surfaces.length).toBeGreaterThanOrEqual(6)

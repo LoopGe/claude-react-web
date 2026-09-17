@@ -1355,13 +1355,25 @@ body.resizing-col .app {
   margin-right: var(--space-1);
   border-radius: var(--radius-xs);
   background: color-mix(in srgb, var(--mode-color, var(--fg-muted)) 15%, transparent);
-  color: var(--mode-color, var(--fg-muted));
+  /* The chip's glyph needs --mode-ink where the fill tint itself fails the 3:1
+     non-text bar (mode-plan: --warn on its own 15% tint is 2.31:1); the tint
+     above stays on --mode-color so the chip keeps its amber wash. */
+  color: var(--mode-ink, var(--mode-color, var(--fg-muted)));
   vertical-align: middle;
 }
 .session-item.mode-default { --mode-color: var(--fg-muted); }
-.session-item.mode-plan { --mode-color: var(--warn); }
-.session-item.mode-bypassPermissions { --mode-color: var(--danger); }
-.session-item.mode-dontAsk { --mode-color: var(--danger); }
+.session-item.mode-plan {
+  --mode-color: var(--warn);
+  --mode-ink: var(--warn-text);
+}
+/* danger modes pass 3:1 on their own tint with only ~0.1 to spare, so they take
+   the ink too. The accent modes still use --accent as ink — there is no
+   --accent-text to point at yet (anthropic light measures 2.27:1). */
+.session-item.mode-bypassPermissions,
+.session-item.mode-dontAsk {
+  --mode-color: var(--danger);
+  --mode-ink: var(--danger-text);
+}
 .session-item.mode-acceptEdits { --mode-color: var(--accent); }
 .session-item.mode-auto { --mode-color: var(--accent); }
 .chat-panel-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
