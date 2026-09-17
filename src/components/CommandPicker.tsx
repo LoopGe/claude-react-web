@@ -8,6 +8,7 @@ import { useLayoutEffect, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { SlashCommand } from '../types'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { applyPortaledThemeVars } from '../theme'
 import { pluginTagOf } from '../utils/text'
 
@@ -113,17 +114,9 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   }, [anchorRef, filtered.length])
 
   // --- Outside-click dismissal (Escape is owned by the shared stack below) ---
-  useLayoutEffect(() => {
-    const handleMouseDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        onClose()
-      }
-    }
-    window.addEventListener('mousedown', handleMouseDown, true)
-    return () => {
-      window.removeEventListener('mousedown', handleMouseDown, true)
-    }
-  }, [onClose])
+  // Capture phase, as before: this surface must collapse before any other
+  // mousedown handler sees the press.
+  useOutsideMouseDown({ ref: rootRef, onClose, capture: true })
 
   // Esc closes via the shared escape stack (its dispatch already prevents
   // default + stops propagation), so a typed "/" never bubbles Escape to the

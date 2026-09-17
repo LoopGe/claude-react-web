@@ -365,7 +365,7 @@ export class SessionStore {
   private cachedRunningSubagents: SessionSnapshot['activeSubagents'] = []
   /** Per-instance Workflow filter cache — mirrors cachedSubagentsMap so
    *  the running-workflow list only reallocates when activeWorkflows
-   *  actually changes (drives any future Workflow chip in WorkingBubble). */
+   *  actually changes (drives any future Workflow pill in WorkingBubble). */
   private cachedWorkflowsMap: ServerMirror['activeWorkflows'] | null = null
   private cachedRunningWorkflows: SessionSnapshot['activeWorkflows'] = []
 
@@ -1011,11 +1011,12 @@ export class SessionStore {
    *
    *  Includes `background` (async subagents whose launch ack has landed but
    *  whose real completion hasn't — they're still working in the background
-   *  and must stay in the WorkingBubble chip row) alongside `running`, AND
+   *  and must stay in the WorkingBubble's subagent pill) alongside `running`, AND
    *  `pending` (the post-turn-end form of `background`): the WorkingBubble
    *  stays mounted in its `Waiting` state while any `pending` subagent
    *  remains, so the user sees that background work is still in flight after
-   *  the parent turn ended. `pending` chips are dismissible. */
+   *  the parent turn ended. A `pending` subagent is dismissible (via the × in
+   *  SubagentOverlay — not from the bar itself, whose pill only drills in). */
   private getRunningSubagents(map: ServerMirror['activeSubagents']): SessionSnapshot['activeSubagents'] {
     if (map === this.cachedSubagentsMap) return this.cachedRunningSubagents
     this.cachedSubagentsMap = map
@@ -1026,8 +1027,8 @@ export class SessionStore {
 
   /** Workflow analogue of getRunningSubagents. The Map reference is compared
    *  by identity so the filtered array is only reallocated when activeWorkflows
-   *  actually changes. Drives the WorkingBubble workflow chip row (if/when
-   *  wired); the full index (workflowIndex) is exposed unfiltered so
+   *  actually changes. Reserved for a future Workflow pill (if/when wired); the
+   *  full index (workflowIndex) is exposed unfiltered so
    *  WorkflowCard can read completed records too. */
   private getRunningWorkflows(map: ServerMirror['activeWorkflows']): SessionSnapshot['activeWorkflows'] {
     if (map === this.cachedWorkflowsMap) return this.cachedRunningWorkflows
@@ -1076,7 +1077,7 @@ export class SessionStore {
       workflowIndex: mirror.activeWorkflows,
       // Exposed unfiltered — a Skill card must still find its record after the
       // call settles (the drill-in stays open/reopenable), and skills feed no
-      // running-only chip row, so there is nothing to filter for.
+      // running-only sibling, so there is nothing to filter for.
       skillIndex: mirror.activeSkills,
       lastMessageUuid: mirror.lastMessageUuid,
     }
@@ -1427,8 +1428,9 @@ function dumpToolStatus(): ToolStatusDump[] {
                   `OK (${subRecord.status}) — subagent "${toolName}" is an async subagent mid-flight ` +
                   '(launch ack landed, real completion not yet arrived). Its ack tool_result is ' +
                   'suppressed via the background consumed-set; no result is captured yet by design. ' +
-                  "('pending' = the parent turn ended and the sweep moved it out of the running set; " +
-                  'completion is still expected.)'
+                  "('pending' = the parent turn ended and the sweep flipped it from " +
+                  "'background'; it is still in the running set, so the bar keeps " +
+                  'showing it while completion is still expected.)'
               } else {
                 diagnosis =
                   `REAL ORPHAN — subagent "${toolName}" record exists (status=${subRecord.status}) ` +

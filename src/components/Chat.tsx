@@ -2296,9 +2296,9 @@ export const Chat = memo(function Chat({
           task/subagent terms are gated on !session.terminated — a dead
           session's records are stale and would otherwise read as a live
           "Background tasks running" pill. They keep the count pill (the only
-          entry to TasksPanel) and any subagent chips on screen even when the
-          work is all ambient/skipTranscript or the user dismissed the Waiting
-          banner (the bubble then collapses to the quiet idle state). */}
+          entry to TasksPanel) and the subagent swarm pill on screen even when
+          work is all ambient/skipTranscript or the user dismissed the
+          Waiting          banner (the bubble then collapses to the quiet idle state). */}
       {(turnActive || waiting || (!session.terminated && (taskCount > 0 || hasTranscriptBackground || hasLiveSyncSubagent))) && (
         <WorkingBubble
           active={turnActive}

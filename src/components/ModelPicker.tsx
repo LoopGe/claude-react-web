@@ -18,6 +18,7 @@ import { motion } from 'motion/react'
 import type { ModelOptions } from '../hooks/useModelOptions'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { applyPortaledThemeVars } from '../theme'
 import { useMergedRef } from '../utils/mergedRef'
 import { usePopoverMotion } from '../utils/transitions'
@@ -213,13 +214,9 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
   }, [activeIndex])
 
   // Outside-click dismissal (Escape is owned by the shared stack above).
-  useEffect(() => {
-    const onDocMouseDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
-    }
-    window.addEventListener('mousedown', onDocMouseDown)
-    return () => window.removeEventListener('mousedown', onDocMouseDown)
-  }, [onClose])
+  // No trigger: this picker's chip only opens it (see ChatPanel), so a press
+  // on the chip is an ordinary outside press.
+  useOutsideMouseDown({ ref, onClose })
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {

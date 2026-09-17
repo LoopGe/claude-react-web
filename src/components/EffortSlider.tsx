@@ -14,6 +14,7 @@ import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import { usePopoverMotion } from '../utils/transitions'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { markPortaledSurface } from '../theme'
 import type { EffortLevel } from '../types'
 
@@ -75,13 +76,8 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
   }, [anchor.x, anchor.y])
 
   // Outside-click dismissal (Escape is owned by the shared stack below).
-  useEffect(() => {
-    const onDocMouseDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
-    }
-    window.addEventListener('mousedown', onDocMouseDown)
-    return () => window.removeEventListener('mousedown', onDocMouseDown)
-  }, [onClose])
+  // No trigger: the effort chip only opens this slider.
+  useOutsideMouseDown({ ref, onClose })
 
   // Esc closes via the shared escape stack, so one keypress collapses just the
   // slider — never the panel beneath it.

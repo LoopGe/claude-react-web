@@ -57,3 +57,33 @@ describe('AppearancePanel background section', () => {
     expectPortaledToBody(container, '.appearance-panel')
   })
 })
+
+describe('AppearancePanel trigger toggle', () => {
+  it('closes on a second click of the Theme button — full mousedown → mouseup → click', async () => {
+    // The Theme button is a toggle, so it must be exempt from the outside-press
+    // dismissal: a real click always sends mousedown first, and closing on that
+    // would unmount the panel before the click lands — the click would then
+    // read the stale open=false and re-anchor, so the panel flickered shut and
+    // open and the button could never close it. (`fireEvent.click` alone cannot
+    // catch this: it dispatches no mousedown.)
+    renderPanel('default')
+    const trigger = () => screen.getByRole('button', { name: 'Theme' })
+    const fullClick = () => {
+      fireEvent.mouseDown(trigger())
+      fireEvent.mouseUp(trigger())
+      fireEvent.click(trigger())
+    }
+
+    await openPanel()
+    fullClick()
+    expect(screen.queryByRole('dialog', { name: 'Theme' })).toBeNull()
+    expect(trigger().getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('still closes on a press elsewhere', async () => {
+    renderPanel('default')
+    await openPanel()
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByRole('dialog', { name: 'Theme' })).toBeNull()
+  })
+})

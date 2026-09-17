@@ -161,7 +161,7 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       // Replace the whole task list, then enrich matching subagent records.
       // Joining by toolUseId (not taskId) because activeSubagents are keyed
       // by the Agent tool_use id — TaskRecordUi carries that id on subagent
-      // tasks. Terminal task records clear the summary so a done chip
+      // tasks. Terminal task records clear the summary so a done row
       // doesn't show stale progress text.
       let activeSubagents = state.mirror.activeSubagents
       for (const task of action.tasks) {
@@ -191,7 +191,7 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         // list), so a terminal entry here means the work is over even when no
         // completion signal ever reached the transcript — the CLI does not
         // reliably emit task_notification for Agent-launched background
-        // subagents, which is exactly how a chip ends up spinning forever and
+        // subagents, which is exactly how a row ends up spinning forever and
         // the WorkingBubble sticks on "Waiting...".
         //
         // Restricted to records we know carry no pending transcript payload:
@@ -278,7 +278,7 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     }
     case 'DISMISS_SUBAGENT': {
       // Flip an in-flight subagent (running/background/pending) to `dismissed`
-      // so it leaves the WorkingBubble chip set. Uses a dedicated `dismissed`
+      // so it leaves the WorkingBubble's subagent pill. Uses a dedicated `dismissed`
       // status (NOT `interrupted`) so the inline SubagentCard renders a neutral
       // state instead of a false error. The result merge only processes
       // status === 'running' records, and the completion branch excludes
@@ -1060,10 +1060,11 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
  *  own transcript reaches a terminal stop_reason. But if that watcher is lost
  *  (server restart cleared the in-memory watcher map, the SDK's bounded resume
  *  replay didn't re-include the launch ack, or the subagent transcript path
- *  drifted) the record strands at `pending` forever — the WorkingBubble chip
- *  reappears on every parent turn and never clears. This timeout flips such a
+ *  drifted) the record strands at `pending` forever — the WorkingBubble stays
+ *  mounted in its Waiting state for the rest of the session and never clears,
+ *  because `pending` is part of the running set. This timeout flips such a
  *  stranded record to `interrupted` once its last child-frame activity
- *  (`endedAt`) is older than the threshold, so the chip clears.
+ *  (`endedAt`) is older than the threshold, so the row clears.
  *
  *  Generous (30 min) and RECOVERABLE: a late real completion still overrides
  *  (the task_notification completion branch accepts 'interrupted'). It only
@@ -1147,7 +1148,7 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
   // `interrupted`. `endedAt` is advanced by child frames (the async-detector
   // branch), so a still-running subagent never trips this — only one that has
   // gone quiet long enough to be considered stranded. Runs on every turn end
-  // and on replay, so a stranded chip clears without needing a reload.
+  // and on replay, so a stranded row clears without needing a reload.
   const now = Date.now()
   // Plausibility floor: a real server-stamped receivedAt is always post-2001
   // epoch ms (> 1e12). A value below that is a non-epoch sentinel (a corrupt
@@ -1163,7 +1164,7 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
     // lifetime, and it flows into `mirror.tasks`). The 30-min net exists ONLY
     // for the case where that watcher was LOST (server restart, launch-ack not
     // replayed, transcript path drift) — so while it's provably alive we must
-    // NOT pre-empt it. Firing here anyway makes the chip flap
+    // NOT pre-empt it. Firing here anyway makes the row flap
     // pending→interrupted, then the watcher's real task_notification flips it
     // back to done: a visible interrupted↔done bounce for any legitimately
     // long (>30 min) background subagent. `liveBgToolUseIds` is the same set
@@ -1625,7 +1626,7 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
   const starts = getSubagentStarts(message)
   if (starts.length > 0) {
     activeSubagents = new Map(activeSubagents)
-    // Stamp `startedAt` once per subagent so the chip can show an
+    // Stamp `startedAt` once per subagent so the row can show an
     // elapsed time. Preserve any existing value if we re-encounter the
     // same toolUseId (e.g. duplicate dispatch during replay).
     //
@@ -1659,8 +1660,8 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     // capture the result payload so SubagentCard can merge the
     // subagent's returned output inline at the bottom of the card —
     // mirrors the generic ToolCard merge. The "running"/"background"
-    // filter elsewhere drops completed subagents from the WorkingBubble
-    // chip row automatically.
+    // filter elsewhere drops completed subagents from the WorkingBubble's
+    // subagent pill automatically.
     //
     // EXCEPTION — async/background launch ack: an async subagent's Agent
     // tool_result is a launch acknowledgement, not completion. Skip it
@@ -1711,7 +1712,7 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
   // the record to 'background' and sets isAsync (the sole authority), but
   // does NOT set endedAt (the ack time isn't the real run time). Without
   // this extension the card shows no elapsed at all until completion. Keep
-  // advancing endedAt to each child frame so the chip/card timer reflects
+  // advancing endedAt to each child frame so the card/overlay timer reflects
   // real work. The subagent emits no dedicated end frame of its own, so the
   // last child frame before the <task-notification> is the de-facto completion
   // signal. For a synchronous subagent the tool_result already lands last, so

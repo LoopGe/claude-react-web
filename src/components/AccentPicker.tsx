@@ -22,6 +22,8 @@ import type { CSSProperties } from 'react'
 import { ACCENT_COLORS, isPresetAccent, markPortaledSurface } from '../theme'
 import { useRecentColors } from '../hooks/useRecentColors'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
+import type { RefObject } from 'react'
 
 // --- Custom-colour swatch ---------------------------------------------------
 
@@ -181,6 +183,13 @@ interface AccentPickerPanelProps {
   onClose: () => void
   allowDefault?: boolean
   ariaLabel?: string
+  /** The swatch button that toggles this panel, when the caller owns one
+   *  (the uncontrolled `AccentPicker` below does). Without it, a press on the
+   *  trigger is an ordinary outside press — the panel shuts on the mousedown
+   *  and the trigger's click then re-opens it, so the trigger can never
+   *  dismiss its own panel. Omit it in the controlled flows, where the parent
+   *  (a right-click elsewhere) opens the panel and there is no such button. */
+  triggerRef?: RefObject<Element | null>
 }
 
 export function AccentPickerPanel({
@@ -191,6 +200,7 @@ export function AccentPickerPanel({
   onClose,
   allowDefault,
   ariaLabel = 'Accent colour',
+  triggerRef,
 }: AccentPickerPanelProps) {
   const ref = useRef<HTMLDivElement>(null)
   // Measured position after layout — nudged inward if the panel would
@@ -229,13 +239,7 @@ export function AccentPickerPanel({
   }, [])
 
   // Outside-click dismissal (Escape is owned by the shared stack below).
-  useEffect(() => {
-    const onDocMouseDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
-    }
-    window.addEventListener('mousedown', onDocMouseDown)
-    return () => window.removeEventListener('mousedown', onDocMouseDown)
-  }, [onClose])
+  useOutsideMouseDown({ ref, onClose, triggerRef })
 
   // Esc closes via the shared escape stack. The popover's container is this
   // root, so while it is the topmost layer whose container holds focus, one
@@ -333,6 +337,7 @@ export function AccentPicker({
           y={anchor.y}
           value={value}
           onChange={onChange}
+          triggerRef={triggerRef}
           onClose={() => {
             setAnchor(null)
             // Restore focus to the trigger on close (ref access is fine

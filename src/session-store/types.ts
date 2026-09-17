@@ -79,12 +79,12 @@ export interface ActiveSubagent {
   startedAt?: number
   /** Set when the matching tool_result lands. Undefined while running. */
   endedAt?: number
-  /** Lifecycle status. Drives chip color and overlay header.
+  /** Lifecycle status. Drives the popover-row color and the overlay header.
    *
    *  `background` is exclusive to async/background subagents: their Agent
    *  tool_result is a launch ack (not completion), so instead of flipping to
-   *  `done` they enter `background` and stay there — still shown in the
-   *  WorkingBubble chip row — until the real completion signal (a
+   *  `done` they enter `background` and stay there — still listed in the
+   *  WorkingBubble's subagent pill — until the real completion signal (a
    *  `<task-notification>` user injection or a `system`/`task_notification`
    *  frame carrying this record's tool_use_id) flips them to `done`.
    *
@@ -93,17 +93,21 @@ export interface ActiveSubagent {
    *  `interrupted`) because the async subagent is still running and its
    *  completion signal is expected to arrive later — possibly well after the
    *  parent turn ended. `pending` is INCLUDED in `getRunningSubagents` so the
-   *  WorkingBubble stays mounted in its `Waiting` state (the chip is
+   *  WorkingBubble stays mounted in its `Waiting` state (the pill row is
    *  dismissible); the completion branch STILL accepts it (unlike
    *  `interrupted`/`dismissed`) so a late task_notification can flip it to
    *  `done`.
    *
-   *  `dismissed` is set ONLY by an explicit user action (the Waiting bubble's
-   *  dismiss button on a `pending` chip). It is distinct from `interrupted`
+   *  `dismissed` is set ONLY by an explicit user action — the × in
+   *  SubagentOverlay (`Chat.tsx` → `useChatStream.dismissSubagent` →
+   *  `DISMISS_SUBAGENT`). The Waiting bubble's own ✕ is NOT this action: it
+   *  merely sets Chat's local `waitingDismissed` flag, hiding the banner
+   *  without touching any record. It is distinct from `interrupted`
    *  (which means the subagent was aborted/errored) so the inline
    *  SubagentCard can render a neutral "tracking dismissed" state instead of
    *  a false error. The completion branch excludes `dismissed` (the user gave
-   *  up tracking), and `getRunningSubagents` excludes it (the chip is gone). */
+   *  up tracking), and `getRunningSubagents` excludes it (it leaves the
+   *  pill). */
   status: SubagentStatus
   /** Pre-computed count of tool_use blocks within this subagent's messages.
    *  Incremented during updateIndexes so SubagentCard doesn't need to scan
@@ -140,7 +144,8 @@ export interface ActiveSubagent {
    *  task_progress.summary, ~every 30s). Refreshed by TASKS_SNAPSHOT. */
   progressSummary?: string
   /** Name of the tool the subagent most recently ran (task_progress.
-   *  last_tool_name). Rendered as hover context on the WorkingBubble chip. */
+   *  last_tool_name). Rendered as the secondary line on the subagent's row in
+   *  the WorkingBubble pill's popover. */
   lastToolName?: string
   /** Structured list of the tool calls this subagent ran internally, in
    *  arrival order. Drives SubagentCard's expandable child-call list (方案B)
@@ -533,7 +538,7 @@ export interface ClientIntent {
    *  (running/background/pending). Client-owned and NOT derivable from the
    *  message stream — it is the only record that those ids were dismissed.
    *  Survives mirror rebuilds (REPLAY_REPLACE / hydrate re-derive
-   *  activeSubagents from messages and would otherwise resurrect the chips).
+   *  activeSubagents from messages and would otherwise resurrect the rows).
    *  Re-applied to mirror via reapplyDismissed() after any rebuild. Cleared
    *  by CLEAR_TRANSCRIPT. Persisted in the transcript cache payload. */
   dismissedSubagents: ReadonlySet<string>
@@ -588,7 +593,7 @@ export type SessionAction =
   | { type: 'LIVE_TURN_FLUSH' }
   /** User dismissed an in-flight subagent (running/background/pending) from
    *  the SubagentOverlay's × button. Flips it to `dismissed` so it leaves
-   *  the chip set (the bubble clears) and the inline SubagentCard shows a
+   *  the running set (the bubble clears) and the inline SubagentCard shows a
    *  neutral settled state. For sync (running) the tool_result merge later
    *  overwrites to done/interrupted; for async (background/pending) the
    *  completion branch excludes `dismissed`, so a late task_notification is
@@ -647,14 +652,15 @@ export interface SessionSnapshot {
   /** Captured tool_result payloads by tool_use_id — drives the inline
    *  result section rendered at the bottom of each generic ToolCard. */
   toolResults: ReadonlyMap<string, ToolResultEntry>
-  /** Currently-running subagents only — drives the WorkingBubble chip row. */
+  /** Currently-running subagents only — drives the WorkingBubble's subagent
+   *  pill and its popover list. */
   activeSubagents: ActiveSubagent[]
   /** Full index (running + completed) keyed by toolUseId. Used by the
    *  SubagentCard placeholder and the SubagentOverlay so completed
    *  subagents are still inspectable after their tool_result lands. */
   subagentIndex: ReadonlyMap<string, ActiveSubagent>
   /** Currently-running Workflows only — drives the WorkflowCard status +
-   *  any live chip. Mirrors activeSubagents (running-only filter of the
+   *  any live row. Mirrors activeSubagents (running-only filter of the
    *  full workflowIndex). */
   activeWorkflows: WorkflowRecord[]
   /** Full Workflow index (running + completed) keyed by the Workflow's
@@ -665,7 +671,7 @@ export interface SessionSnapshot {
   /** Full Skill index (running + completed) keyed by the Skill's tool_use_id.
    *  Read by the Skill card for its status / child counts / drill-in gate, and
    *  by Chat to adapt a forked skill into the record SubagentOverlay expects.
-   *  No running-only sibling: skills drive no chip row. */
+   *  No running-only sibling: skills feed no subagent pill. */
   skillIndex: ReadonlyMap<string, SkillRecord>
   lastMessageUuid: string | null
   /** Transient `api_retry` frame mirrored from ServerMirror (see there). */

@@ -14,9 +14,9 @@ export const SUBAGENT_TOOL_NAMES = new Set(['Agent', 'Task', 'Explore'])
  *  plain Agent/Task/Explore call.
  *
  *  Kept a separate constant (not folded into SUBAGENT_TOOL_NAMES) so the
- *  SubagentOverlay / WorkingBubble chip paths stay unchanged — a Workflow
- *  gets a bespoke two-column overlay (phase tree + child messages), not the
- *  single-conversation subagent drawer. */
+ *  SubagentOverlay / WorkingBubble subagent-pill paths stay unchanged — a
+ *  Workflow gets a bespoke two-column overlay (phase tree + child messages),
+ *  not the single-conversation subagent drawer. */
 export const WORKFLOW_TOOL_NAME = 'Workflow'
 
 /** Skill invocation tool. Usually a context-only call: the CLI loads SKILL.md
@@ -34,9 +34,9 @@ export const WORKFLOW_TOOL_NAME = 'Workflow'
  *  (it renders root messages only) and the work is unreachable.
  *
  *  Kept a separate constant from SUBAGENT_TOOL_NAMES for the reason documented
- *  on WORKFLOW_TOOL_NAME: the WorkingBubble chip row and the dismiss path key
- *  off the subagent index, and a skill is not a subagent chip. It gets its own
- *  index (`activeSkills`) and reuses SubagentOverlay for the drill-in. */
+ *  on WORKFLOW_TOOL_NAME: the WorkingBubble's subagent pill and the dismiss
+ *  path key off the subagent index, and a skill is not a subagent. It gets its
+ *  own index (`activeSkills`) and reuses SubagentOverlay for the drill-in. */
 export const SKILL_TOOL_NAME = 'Skill'
 
 /** Plan-mode PROPOSAL tool — the model submits a finished plan and asks to

@@ -20,6 +20,7 @@ import { IconChevronDown, IconUser } from './icons/ToolIcons'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import { useExitPresence } from '../hooks/useExitPresence'
+import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 
 export interface PinnedUserMessageInfo {
   id: string
@@ -158,13 +159,13 @@ export const PinnedUserMessage = memo(function PinnedUserMessage({ text, clearin
   // Dismiss the expanded list on outside mousedown (mirrors ContextMenu's
   // pattern — mousedown beats click, feels snappier and avoids swallowing the
   // click that opened it) and on Escape. Only armed while expanded.
+  //
+  // No trigger: `rootRef` wraps the toggle button AND the list, so a press on
+  // the toggle is already "inside" and needs no exemption.
+  useOutsideMouseDown({ ref: rootRef, onClose: () => setExpanded(false), active: expanded })
+
   useEffect(() => {
     if (!expanded) return
-    const onDocMouseDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setExpanded(false)
-      }
-    }
     const onKey = (e: KeyboardEvent) => {
       // Capture + stopPropagation (same pattern as AppearancePanel's
       // popover): this press collapses the expansion, it must not keep
@@ -178,10 +179,8 @@ export const PinnedUserMessage = memo(function PinnedUserMessage({ text, clearin
         setExpanded(false)
       }
     }
-    window.addEventListener('mousedown', onDocMouseDown)
     window.addEventListener('keydown', onKey, true)
     return () => {
-      window.removeEventListener('mousedown', onDocMouseDown)
       window.removeEventListener('keydown', onKey, true)
     }
   }, [expanded])

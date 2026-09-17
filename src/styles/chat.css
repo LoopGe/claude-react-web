@@ -168,8 +168,12 @@
    *  under an opaque veil — it blurs X as a view-only "clearing" affordance
    *  during the POST and swaps to Y when the response lands. Fading to
    *  opacity 0 would blank a slow POST; blur-only keeps X visible. */
-  from { filter: blur(0); }
-  to   { filter: blur(10px); }
+  from {
+    filter: blur(0);
+  }
+  to {
+    filter: blur(10px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -220,8 +224,12 @@
   padding-right: var(--chat-reading-inset);
   contain: layout style;
 }
-.virtuoso-item-wrapper.transcript-first-item { padding-top: var(--chat-row-gap); }
-.virtuoso-item-wrapper.transcript-last-item { padding-bottom: var(--chat-row-gap); }
+.virtuoso-item-wrapper.transcript-first-item {
+  padding-top: var(--chat-row-gap);
+}
+.virtuoso-item-wrapper.transcript-last-item {
+  padding-bottom: var(--chat-row-gap);
+}
 /* Virtuoso Footer doesn't go through .virtuoso-item-wrapper, so transcript
    metadata needs the same centering padding to align with message rows. */
 .virtuoso-footer-wrapper {
@@ -371,12 +379,24 @@
 .chat-empty-subtitle {
   animation: chat-empty-item-in var(--motion-duration-slow) var(--motion-ease-enter) both;
 }
-.chat-empty-icon { animation-delay: 40ms; }
-.chat-empty-title { animation-delay: 120ms; }
-.chat-empty-subtitle { animation-delay: 200ms; }
+.chat-empty-icon {
+  animation-delay: 40ms;
+}
+.chat-empty-title {
+  animation-delay: 120ms;
+}
+.chat-empty-subtitle {
+  animation-delay: 200ms;
+}
 @keyframes chat-empty-item-in {
-  from { opacity: 0; transform: translateY(var(--motion-distance-md)) scale(var(--motion-scale-enter)); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-md)) scale(var(--motion-scale-enter));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-empty-icon,
@@ -459,7 +479,10 @@
   font-size: var(--fs-sm);
   cursor: pointer;
 }
-.easter-egg-game-btn:hover { color: var(--fg); border-color: var(--fg-muted); }
+.easter-egg-game-btn:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
 
 /* Two-line empty state used by Side Chat (and any caller passing custom
    emptyStateContent in this shape). Title carries primary weight, hint
@@ -526,13 +549,25 @@
   /* (#6) Float up + scale in when it mounts (user scrolled away from the
      bottom) so it appears rather than snapping into place. */
   animation: jump-to-bottom-in var(--motion-duration-base) var(--motion-ease-enter) both;
-  transition: transform var(--motion-duration-instant) var(--motion-ease-standard), filter var(--motion-duration-fast) var(--motion-ease-standard);
+  transition:
+    transform var(--motion-duration-instant) var(--motion-ease-standard),
+    filter var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.chat-jump-to-bottom:hover { filter: brightness(1.08); }
-.chat-jump-to-bottom:active { transform: scale(var(--motion-scale-press)); }
+.chat-jump-to-bottom:hover {
+  filter: brightness(1.08);
+}
+.chat-jump-to-bottom:active {
+  transform: scale(var(--motion-scale-press));
+}
 @keyframes jump-to-bottom-in {
-  from { opacity: 0; transform: translateY(var(--motion-distance-md)) scale(0.92); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-md)) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 .chat-jump-to-bottom-count {
   display: inline-flex;
@@ -612,8 +647,12 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.ctx-bar-out { color: var(--fg-muted); }
-.ctx-bar-cache { color: var(--fg-muted); }
+.ctx-bar-out {
+  color: var(--fg-muted);
+}
+.ctx-bar-cache {
+  color: var(--fg-muted);
+}
 /* The three always-on percentages (used · compact · until), each a label +
    value pair. Positioning is stable whether or not a value exists yet.
    `.ctx-bar-stats` wraps the natural-width readout and is sized to it
@@ -669,8 +708,12 @@
   color: var(--fg-muted);
   white-space: pre;
 }
-.ctx-bar-stat-warn { color: var(--warn-text); }
-.ctx-bar-stat-danger { color: var(--danger-text); }
+.ctx-bar-stat-warn {
+  color: var(--warn-text);
+}
+.ctx-bar-stat-danger {
+  color: var(--danger-text);
+}
 .ctx-bar-model {
   margin-left: var(--space-1-5);
   font-size: var(--fs-xs);
@@ -736,8 +779,9 @@
   border: 2px solid var(--bg-elev);
   /* Soft accent rim (not a harsh full ring) + a small lift so the handle
      reads as a raised, grabbable thumb rather than a flat dot. */
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
-              var(--handle-shadow);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
+    var(--handle-shadow);
 }
 /* Auto (no custom pin): muted, reads as the model-default threshold. */
 .ctx-bar-marker-auto {
@@ -781,15 +825,18 @@
   opacity: 1;
   transform: translate(-50%, -50%) scale(1.3);
   pointer-events: auto;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent),
-              var(--handle-shadow);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent),
+    var(--handle-shadow);
 }
 .ctx-bar-marker:focus-visible {
   outline: var(--focus-ring);
   outline-offset: 2px;
 }
 @media (prefers-reduced-motion: reduce) {
-  .ctx-bar-marker-interactive { transition: none; }
+  .ctx-bar-marker-interactive {
+    transition: none;
+  }
 }
 /* Expanded textarea — Alt+Enter enlarges the composer textarea from its
    default 180px cap to a much larger area. */
@@ -816,9 +863,10 @@
   font: inherit;
   font-size: var(--fs-sm);
   cursor: pointer;
-  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
-              color var(--motion-duration-fast) var(--motion-ease-standard),
-              border-color var(--motion-duration-fast) var(--motion-ease-standard);
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .composer-expanded-tab:hover {
   background: var(--btn-hover-bg);
@@ -841,8 +889,9 @@
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
-              color var(--motion-duration-fast) var(--motion-ease-standard);
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .composer-expanded-close:hover {
   background: var(--btn-hover-bg);
@@ -877,7 +926,9 @@
   display: flex;
   gap: var(--space-2);
   position: relative;
-  transition: background var(--motion-duration-fast) var(--motion-ease-standard), outline-color var(--motion-duration-fast) var(--motion-ease-standard);
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    outline-color var(--motion-duration-fast) var(--motion-ease-standard);
   outline: 2px dashed transparent;
   outline-offset: -8px;
 }
@@ -889,7 +940,9 @@
 }
 /* When a ContextBar is present just above, it owns the divider. */
 .ctx-bar + .chat-composer,
-.ctx-bar-row + .chat-composer { border-top: none; }
+.ctx-bar-row + .chat-composer {
+  border-top: none;
+}
 /* Main column holds attachment chips + textarea; actions column holds the
    paperclip / send / interrupt buttons. Flex-column so chips can sit on
    top of the textarea without disturbing the existing action column. */
@@ -928,7 +981,9 @@
   line-height: 1;
   flex-shrink: 0;
 }
-.composer-bash-label { line-height: 1.3; }
+.composer-bash-label {
+  line-height: 1.3;
+}
 .chat-composer .rich-prompt {
   flex: 1;
   min-height: 40px;
@@ -963,7 +1018,11 @@
       min-height var(--motion-duration-base) var(--motion-ease-standard);
   }
 }
-.chat-composer-actions { display: flex; flex-direction: column; gap: var(--space-1-5); }
+.chat-composer-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
 /* The send/interrupt button always stretches to fill the actions column
    height (which follows the textarea via flex row align-items:stretch).
    When the textarea's max-height transitions on expand/collapse, the
@@ -978,7 +1037,9 @@
    existing msg-sending-spin keyframes ?a load-bearing progress indicator, so
    it deliberately keeps animating under prefers-reduced-motion (see the
    reduced-motion block's note). */
-.composer-send-spinner { animation: msg-sending-spin 0.8s linear infinite; }
+.composer-send-spinner {
+  animation: msg-sending-spin 0.8s linear infinite;
+}
 /* (#5) Send ?Interrupt swap. The two buttons occupy one slot and are
    mutually exclusive, so React remounts the glyph whenever canInterrupt
    flips ?the icon fades + scales in (no rotate) so the change reads as a
@@ -1050,7 +1111,9 @@
   padding: 0 var(--space-0-5);
   font-size: var(--fs-sm);
 }
-.attachment-chip-remove:hover { color: var(--danger-text); }
+.attachment-chip-remove:hover {
+  color: var(--danger-text);
+}
 .attachment-chip-ghost {
   color: var(--fg-muted);
   font-style: italic;
@@ -1087,7 +1150,9 @@
   padding: 0 var(--space-0-5);
   font-size: var(--fs-sm);
 }
-.scheduled-chip-cancel:hover { color: var(--danger-text); }
+.scheduled-chip-cancel:hover {
+  color: var(--danger-text);
+}
 .scheduled-chip-failed-reason {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1141,7 +1206,9 @@
   font-size: var(--fs-sm);
   color: var(--fg);
 }
-.schedule-preset:hover { background: var(--btn-hover-bg); }
+.schedule-preset:hover {
+  background: var(--btn-hover-bg);
+}
 .schedule-custom {
   display: flex;
   flex-direction: column;
@@ -1373,7 +1440,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.thinking-details[data-state="open"] .thinking-preview {
+.thinking-details[data-state='open'] .thinking-preview {
   display: none;
 }
 /* Thinking-text <pre>. Self-sufficient: carries its own code-block chrome
@@ -1439,7 +1506,9 @@
    .tt-wrap) and any sending indicator settle on the right edge. The header
    was previously justify-content: space-between with exactly two children;
    now there are up to three, so an explicit auto margin is clearer. */
-.msg-header > span:first-child { margin-right: auto; }
+.msg-header > span:first-child {
+  margin-right: auto;
+}
 /* "Sending? indicator on the user bubble while the server hasn't
    acknowledged yet. Replaced with no indicator (this entire row is
    removed) the moment the broadcast lands. */
@@ -1467,7 +1536,9 @@
   font-variant-numeric: tabular-nums;
 }
 @keyframes msg-sending-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 /* Subtly soften the bubble while in-flight so it visibly differs from
    the acknowledged state. Restored when the spinner is removed. */
@@ -1501,8 +1572,13 @@
   font-variant-numeric: tabular-nums;
 }
 @keyframes msg-queued-pulse {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 /* Slightly dim a queued bubble so it reads as "not yet being worked on",
    distinct from both the in-flight (sending) and acknowledged states. */
@@ -1536,8 +1612,13 @@
   font-variant-numeric: tabular-nums;
 }
 @keyframes msg-processing-pulse {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 /* User message ?right-aligned chat bubble. We shrink the bubble below
    the column width and pin it to the right edge with align-self, which
@@ -1552,10 +1633,21 @@
   color: var(--msg-user-fg);
   border-bottom-right-radius: var(--radius-3xs);
 }
-.msg.user .msg-header { color: var(--msg-user-header-fg); font-weight: 600; }
-.msg.user .msg-header > span:first-child { display: inline-flex; align-items: center; gap: var(--space-1); }
-.msg.user .md a { color: var(--msg-user-link-fg); }
-.msg.user .md code { background: var(--msg-user-code-bg); }
+.msg.user .msg-header {
+  color: var(--msg-user-header-fg);
+  font-weight: 600;
+}
+.msg.user .msg-header > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.msg.user .md a {
+  color: var(--msg-user-link-fg);
+}
+.msg.user .md code {
+  background: var(--msg-user-code-bg);
+}
 .msg.user .md pre {
   background: var(--msg-user-pre-bg);
   border-color: var(--msg-user-pre-border);
@@ -1572,7 +1664,10 @@
   background: var(--bg-elev);
   border-bottom-left-radius: var(--radius-3xs);
 }
-.msg.assistant .msg-header { color: var(--assistant-header-fg); font-weight: 600; }
+.msg.assistant .msg-header {
+  color: var(--assistant-header-fg);
+  font-weight: 600;
+}
 
 /* Live streaming bubble ?rendered outside Virtuoso while a turn is
    in progress. Matches assistant card styling but without the header.
@@ -1624,13 +1719,12 @@
    border-color made the border feel too loud). Peak alpha is bumped so the
    breath is clearly visible against both dark and light themes. */
 @keyframes streaming-breathe {
-  0%, 100% {
-    box-shadow:
-      inset 0 0 10px color-mix(in srgb, var(--accent) 5%, transparent);
+  0%,
+  100% {
+    box-shadow: inset 0 0 10px color-mix(in srgb, var(--accent) 5%, transparent);
   }
   50% {
-    box-shadow:
-      inset 0 0 22px color-mix(in srgb, var(--accent) 18%, transparent);
+    box-shadow: inset 0 0 22px color-mix(in srgb, var(--accent) 18%, transparent);
   }
 }
 /* High Contrast skin: the streaming bubble must be fully opaque (HC
@@ -1640,8 +1734,8 @@
    over flourish. The .liquid-glass variant below has equal specificity and
    later source order, so it is listed explicitly to win the background
    override. [data-skin="hc"] covers both the dark and light HC variants. */
-[data-skin="hc"] .streaming-msg,
-[data-skin="hc"] .streaming-msg.liquid-glass {
+[data-skin='hc'] .streaming-msg,
+[data-skin='hc'] .streaming-msg.liquid-glass {
   background: var(--bg-elev);
   backdrop-filter: none;
   animation: none;
@@ -1703,7 +1797,9 @@
   }
 }
 
-.streaming-msg .assistant-body { position: relative; }
+.streaming-msg .assistant-body {
+  position: relative;
+}
 /* The scroll container is .streaming-plain (below), not the .msg bubble, so
    the bubble's own padding lives OUTSIDE the scroll viewport and can't keep
    the first/last lines off the clipped edges. Drop the bubble's vertical
@@ -1749,7 +1845,13 @@
      vertical padding (10px) exactly, so stationary text — which begins at
      the padding inner edge — is never dimmed; only lines that scroll under
      the edge fade out. #000 = fully visible, transparent = masked out. */
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 10px,
+    #000 calc(100% - 10px),
+    transparent 100%
+  );
   mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
@@ -1764,7 +1866,9 @@
   animation: cursor-blink 0.8s step-end infinite;
 }
 @keyframes cursor-blink {
-  50% { opacity: 0; }
+  50% {
+    opacity: 0;
+  }
 }
 
 /* ============================================================
@@ -1917,19 +2021,22 @@
      clip, but the bar's own content is what has to stay short — a hard clip
      silently ate whatever landed past it, and because the "+N more" badge
      rendered LAST it was the first thing to disappear. Height is now bounded
-     at the source: a wide subagent fan-out collapses into a single
-     constant-height pill (SUBAGENT_INLINE_LIMIT / SubagentSwarmPill), so the
-     bar can only ever reach ~2 rows. overflow stays for the BFC + to keep a
-     pathological single token from bleeding past the border. */
+     at the source: the subagent group is ALWAYS a single constant-height pill
+     (SubagentSwarmPill), so no fan-out width can grow the bar. overflow stays
+     for the BFC + to keep a pathological single token from bleeding past the
+     border. */
   overflow: hidden;
 }
-/* Slightly tighter spacing when subagent chips are present. */
+/* Slightly tighter spacing when the subagent group is present (the swarm
+   pill below). */
 .working-bar-with-agents {
   row-gap: 6px;
 }
 /* When immediately followed by ctx-bar, collapse the double border. */
 .working-bar + .ctx-bar,
-.working-bar + .ctx-bar-row { border-top: none; }
+.working-bar + .ctx-bar-row {
+  border-top: none;
+}
 .working-bar-label {
   color: var(--accent-text);
   font-weight: 600;
@@ -2030,16 +2137,33 @@
   opacity: 0.35;
   animation: working-dot-bounce 1.2s ease-in-out infinite;
 }
-.working-dots > span:nth-child(2) { animation-delay: 0.15s; }
-.working-dots > span:nth-child(3) { animation-delay: 0.3s; }
+.working-dots > span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.working-dots > span:nth-child(3) {
+  animation-delay: 0.3s;
+}
 
 @keyframes working-dot-bounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
-  30% { transform: translateY(calc(-1 * var(--motion-distance-sm))); opacity: 1; }
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  30% {
+    transform: translateY(calc(-1 * var(--motion-distance-sm)));
+    opacity: 1;
+  }
 }
 @keyframes working-bubble-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
-  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
 }
 /* Waiting state: the parent turn has ended but background subagents are
    still in flight. Calm the dots (slower, muted) so it reads as "waiting"
@@ -2049,7 +2173,9 @@
   animation-duration: 2.4s;
   opacity: 0.3;
 }
-.working-bar-waiting .working-bar-label { color: var(--fg-muted); }
+.working-bar-waiting .working-bar-label {
+  color: var(--fg-muted);
+}
 
 /* Idle-with-tasks: the turn has fully ended and the only remnant is a
    background-task count pill (ambient/housekeeping tasks still in flight,
@@ -2079,33 +2205,20 @@
   background: var(--btn-hover-bg);
 }
 
-/* ?? Subagent chips in the working bar ??????????????????????????????? */
+/* ?? Subagent swarm pill ????????????????????????????????????????????????
+   The working bar's only subagent surface, at every fan-out width. */
 .working-bar-sep {
   width: 1px;
   height: var(--size-14px);
   background: color-mix(in srgb, var(--fg-muted) 25%, transparent);
   flex-shrink: 0;
 }
-.subagent-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
-  border-radius: var(--radius-pill);
-  padding: 2px 10px 2px 7px;
-  font-size: var(--fs-sm);
-  font-family: var(--mono);
-  color: var(--fg-muted);
-  white-space: nowrap;
-  max-width: 300px;
-}
-.subagent-chip-dots {
+.subagent-swarm-dots {
   display: inline-flex;
   align-items: center;
   gap: 3px;
 }
-.subagent-chip-dots > span {
+.subagent-swarm-dots > span {
   width: var(--size-4px);
   height: var(--size-4px);
   border-radius: var(--radius-circle);
@@ -2113,63 +2226,22 @@
   opacity: 0.5;
   animation: working-dot-bounce 1.2s ease-in-out infinite;
 }
-.subagent-chip-dots > span:nth-child(2) { animation-delay: 0.15s; }
-.subagent-chip-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--accent-text);
-  font-weight: 500;
-  letter-spacing: 0.01em;
+.subagent-swarm-dots > span:nth-child(2) {
+  animation-delay: 0.15s;
 }
-.subagent-chip-timer {
+/* The pill's timer and the popover rows' timers are one skin — merged so a
+   retune of the timer type can't leave the two surfaces disagreeing. */
+.subagent-swarm-timer,
+.subagent-swarm-row-time {
   font-family: var(--mono);
   font-size: var(--fs-xs);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
-.subagent-chip-open {
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
-  flex-shrink: 0;
-  margin-left: var(--space-0-5);
-  display: inline-flex;
-  align-items: center;
-}
-/* Subagent chips enter with a lightweight stagger (per-chip --stagger set by
-   MessageList, capped at ~12 chips so a big fan-out never drags the total
-   past ~360ms). Keyed by toolUseId, so only genuinely-new chips animating;
-   persisted chips skip replay on re-render. */
-.subagent-chip {
-  animation: chip-enter var(--motion-duration-base) var(--motion-ease-enter) both;
-  animation-delay: var(--stagger, 0ms);
-}
-.subagent-chip-clickable {
-  border: 1px solid transparent;
-  cursor: pointer;
-  font: inherit;
-}
-.subagent-chip-clickable:hover {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-/* A `pending` chip (background subagent outliving its parent turn). Muted
-   accent so it reads as waiting, not actively in-this-turn. Dismiss is in
-   the overlay's × button, not on the chip itself. */
-.subagent-chip-pending {
-  background: color-mix(in srgb, var(--fg-muted) 8%, var(--bg-elev));
-  border-color: color-mix(in srgb, var(--fg-muted) 24%, var(--border));
-}
-.subagent-chip-pending .subagent-chip-label { color: var(--fg); }
-.subagent-chip-pending .subagent-chip-dots > span {
-  background: var(--fg-muted);
-  animation-duration: 2.4s;
-}
-/* ?? Subagent swarm pill + popover ?????????????????????????????????????
-   Shown instead of the per-agent chips once the fan-out passes
-   SUBAGENT_INLINE_LIMIT. Deliberately styled as a chip (same dots, radius,
-   accent tint) so the switch from chips to pill reads as a collapse rather
-   than a different widget appearing. */
+/* ?? Subagent swarm pill + popover ????????????????????????????????????
+   Deliberately styled as a chip (same dots, radius, accent tint) so it reads
+   as the bar's subagent widget rather than a different one. */
 .subagent-swarm {
   display: inline-flex;
   align-items: center;
@@ -2222,8 +2294,10 @@
   background: color-mix(in srgb, var(--fg-muted) 8%, var(--bg-elev));
   border-color: color-mix(in srgb, var(--fg-muted) 24%, var(--border));
 }
-.subagent-swarm-waiting .subagent-swarm-count { color: var(--fg); }
-.subagent-swarm-waiting .subagent-chip-dots > span {
+.subagent-swarm-waiting .subagent-swarm-count {
+  color: var(--fg);
+}
+.subagent-swarm-waiting .subagent-swarm-dots > span {
   background: var(--fg-muted);
   animation-duration: 2.4s;
 }
@@ -2295,7 +2369,7 @@
   background: var(--bg-elev-2);
 }
 /* Status dot. Running pulses on the shared chip-dot keyframe; a `pending`
-   row goes muted + slow, matching .subagent-chip-pending. */
+   row goes muted + slow, matching .subagent-swarm-waiting. */
 .subagent-swarm-row-dot {
   width: var(--size-6px);
   height: var(--size-6px);
@@ -2333,13 +2407,8 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.subagent-swarm-row-waiting .subagent-swarm-row-label { color: var(--fg); }
-.subagent-swarm-row-time {
-  font-size: var(--fs-xs);
-  font-family: var(--mono);
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
+.subagent-swarm-row-waiting .subagent-swarm-row-label {
+  color: var(--fg);
 }
 /* The progress line — task_progress.summary, or the last tool name as a
    fallback. Two lines max: these are model-authored sentences with no length
@@ -2366,11 +2435,11 @@
 .subagent-swarm-row.selected .subagent-swarm-row-open {
   opacity: 1;
 }
-/* Reduced motion: skip the phase crossfade + chip/pill stagger, render final
-   states immediately. The dots/elapsed timer keep their (essential) motion. */
+/* Reduced motion: skip the phase crossfade + the swarm pill's entrance,
+   render final states immediately. The dots/elapsed timer keep their
+   (essential) motion. */
 @media (prefers-reduced-motion: reduce) {
   .working-bar-label,
-  .subagent-chip,
   .subagent-swarm {
     animation: none;
   }
@@ -2378,7 +2447,7 @@
 
 /* Inline subagent placeholder card ?replaces the raw tool_use JSON
    for Agent / Task / Explore. Whole card is a button to keep a single
-   click target consistent with how the chip works in WorkingBubble. */
+   click target, matching the swarm pill's popover rows in WorkingBubble. */
 .subagent-card {
   width: 100%;
   margin: var(--space-1-5) 0;
@@ -2409,8 +2478,16 @@
 .subagent-card-header:hover {
   background: var(--bg-elev-2);
 }
-.subagent-card-header:disabled { cursor: default; opacity: 0.6; }
-.subagent-card-marker { color: var(--fg-muted); flex-shrink: 0; display: inline-flex; align-items: center; }
+.subagent-card-header:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.subagent-card-marker {
+  color: var(--fg-muted);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
 .subagent-card-title {
   font-size: var(--fs-xs);
   font-weight: 600;
@@ -2444,18 +2521,31 @@
   display: inline-flex;
   align-items: center;
 }
-.subagent-card-running .subagent-card-status { color: var(--accent-text); }
-.subagent-card-background .subagent-card-status { color: var(--accent-text); }
-/* 'pending' = async subagent still running after the parent turn ended; the
-   bubble chip is gone but the inline card waits for the completion signal.
-   Muted (not accent) so it reads as waiting, not actively in-this-turn. */
-.subagent-card-pending .subagent-card-status { color: var(--fg-muted); }
-/* 'dismissed' = user stopped tracking a pending chip; neutral (not the warn
+.subagent-card-running .subagent-card-status {
+  color: var(--accent-text);
+}
+.subagent-card-background .subagent-card-status {
+  color: var(--accent-text);
+}
+/* 'pending' = async subagent still running after the parent turn ended; its
+   row is only in the bar's subagent pill (muted there) but the inline card
+   waits for the completion signal. Muted (not accent) so it reads as waiting,
+   not actively in-this-turn. */
+.subagent-card-pending .subagent-card-status {
+  color: var(--fg-muted);
+}
+/* 'dismissed' = user stopped tracking a pending subagent; neutral (not the warn
    error color used by interrupted/rejected) so it doesn't read as a failure. */
-.subagent-card-dismissed .subagent-card-status { color: var(--fg-muted); }
-.subagent-card-done    .subagent-card-status { color: var(--ok); }
+.subagent-card-dismissed .subagent-card-status {
+  color: var(--fg-muted);
+}
+.subagent-card-done .subagent-card-status {
+  color: var(--ok);
+}
 .subagent-card-rejected .subagent-card-status,
-.subagent-card-interrupted .subagent-card-status { color: var(--warn); }
+.subagent-card-interrupted .subagent-card-status {
+  color: var(--warn);
+}
 /* async/sync mode chip — distinguishes background (returns immediately,
    runs independently) from synchronous (parent waits) subagents. */
 .subagent-card-mode {
@@ -2466,8 +2556,13 @@
   border: 1px solid var(--border);
   text-transform: lowercase;
 }
-.subagent-card-mode-async { color: var(--accent-text); border-color: var(--accent-soft, var(--border)); }
-.subagent-card-mode-sync  { color: var(--fg-muted); }
+.subagent-card-mode-async {
+  color: var(--accent-text);
+  border-color: var(--accent-soft, var(--border));
+}
+.subagent-card-mode-sync {
+  color: var(--fg-muted);
+}
 .subagent-card-open {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
@@ -2505,9 +2600,15 @@
   user-select: none;
   transition: background var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.subagent-children-summary-btn::-webkit-details-marker { display: none; }
-.subagent-children-summary-btn::marker { content: ''; }
-.subagent-children-summary-btn:hover { background: var(--bg-elev-2); }
+.subagent-children-summary-btn::-webkit-details-marker {
+  display: none;
+}
+.subagent-children-summary-btn::marker {
+  content: '';
+}
+.subagent-children-summary-btn:hover {
+  background: var(--bg-elev-2);
+}
 .subagent-children-summary-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -2526,7 +2627,9 @@
   flex-shrink: 0;
   transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.subagent-children[data-state="open"] .subagent-children-marker { transform: rotate(90deg); }
+.subagent-children[data-state='open'] .subagent-children-marker {
+  transform: rotate(90deg);
+}
 /* Section-label grammar, matching .subagent-card-title / .workflow-card-title. */
 .subagent-children-label {
   font-size: var(--fs-xs);
@@ -2548,8 +2651,12 @@
   background: var(--bg-elev-2);
   color: var(--fg-muted);
 }
-.subagent-children-count-live { color: var(--accent-text); }
-.subagent-children-content { padding: var(--space-0-5) 0 var(--space-1); }
+.subagent-children-count-live {
+  color: var(--accent-text);
+}
+.subagent-children-content {
+  padding: var(--space-0-5) 0 var(--space-1);
+}
 
 /* Child tool-call rows — one list, in place. A running row pulses its
    accent dot; the same row flips to a success/error dot when the result
@@ -2563,8 +2670,12 @@
    class. Running rows tint name/arg toward the accent so in-flight work is
    scannable; success/error stay neutral (the dot carries the status) so the
    list doesn't fight the card's own status border. */
-.subagent-child-row { margin: 0; }
-.subagent-child-row-running .subagent-child-name { color: var(--accent-text); }
+.subagent-child-row {
+  margin: 0;
+}
+.subagent-child-row-running .subagent-child-name {
+  color: var(--accent-text);
+}
 .subagent-child-row-running .subagent-child-arg {
   color: color-mix(in srgb, var(--accent-text) 70%, var(--fg-muted));
 }
@@ -2583,8 +2694,12 @@
   min-width: 0;
   transition: background var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.subagent-child-row-head:disabled { cursor: default; }
-.subagent-child-row-head:not(:disabled):hover { background: var(--bg-elev-2); }
+.subagent-child-row-head:disabled {
+  cursor: default;
+}
+.subagent-child-row-head:not(:disabled):hover {
+  background: var(--bg-elev-2);
+}
 .subagent-child-row-head:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -2596,17 +2711,33 @@
   flex: none;
   transition: background var(--motion-duration-base) var(--motion-ease-standard);
 }
-.subagent-child-dot-running { background: var(--accent); }
-.subagent-child-dot-success { background: var(--ok); }
-.subagent-child-dot-error   { background: var(--warn); }
+.subagent-child-dot-running {
+  background: var(--accent);
+}
+.subagent-child-dot-success {
+  background: var(--ok);
+}
+.subagent-child-dot-error {
+  background: var(--warn);
+}
 /* Pulse only while the parent subagent is live — a stranded running row on a
    settled record gets the class without this modifier, so it stays static. */
 .subagent-child-dot-pulse {
   animation: subagent-child-pulse 1.4s var(--motion-ease-standard) infinite;
 }
-@keyframes subagent-child-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes subagent-child-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
-  .subagent-child-dot-pulse { animation: none; }
+  .subagent-child-dot-pulse {
+    animation: none;
+  }
 }
 .subagent-child-name {
   font-family: var(--mono);
@@ -2631,8 +2762,12 @@
   flex: none;
   transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.subagent-child-row-head[data-expanded="true"] .subagent-child-chevron { transform: rotate(90deg); }
-.subagent-child-result { padding: 0 12px 4px 29px; }
+.subagent-child-row-head[data-expanded='true'] .subagent-child-chevron {
+  transform: rotate(90deg);
+}
+.subagent-child-result {
+  padding: 0 12px 4px 29px;
+}
 
 /* Subagent overlay — same per-panel pattern as .settings-overlay but
    pinned to the right half of the column instead of centred. Backdrop
@@ -2675,7 +2810,7 @@
   -webkit-backdrop-filter: var(--glass-blur);
   animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) backwards;
 }
-.subagent-overlay[data-state="closing"] .subagent-overlay-scrim {
+.subagent-overlay[data-state='closing'] .subagent-overlay-scrim {
   /* `forwards` on the way out: the scrim must stay faded once the animation
      ends, until React unmounts the overlay. */
   animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
@@ -2700,24 +2835,48 @@
      transitions below use `backwards`. */
   animation: subagent-drawer-in var(--motion-duration-base) var(--motion-ease-enter) backwards;
 }
-.subagent-overlay[data-state="closing"] .subagent-overlay-panel {
+.subagent-overlay[data-state='closing'] .subagent-overlay-panel {
   animation: subagent-drawer-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
 }
 @keyframes subagent-drawer-in {
-  from { opacity: 0; transform: translateX(24px); }
-  to   { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 @keyframes subagent-drawer-out {
-  from { opacity: 1; transform: translateX(0); }
-  to   { opacity: 0; transform: translateX(24px); }
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
 }
 @keyframes subagent-sheet-in {
-  from { opacity: 0; transform: translateY(var(--motion-distance-lg)); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-lg));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 @keyframes subagent-sheet-out {
-  from { opacity: 1; transform: translateY(0); }
-  to   { opacity: 0; transform: translateY(var(--motion-distance-lg)); }
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-lg));
+  }
 }
 .subagent-overlay-header {
   display: flex;
@@ -2771,13 +2930,25 @@
   font-family: var(--mono);
   color: var(--fg-muted);
 }
-.subagent-overlay-status.status-running { color: var(--accent-text); }
-.subagent-overlay-status.status-background { color: var(--accent-text); }
-.subagent-overlay-status.status-pending { color: var(--fg-muted); }
-.subagent-overlay-status.status-dismissed { color: var(--fg-muted); }
-.subagent-overlay-status.status-done { color: var(--ok-text); }
+.subagent-overlay-status.status-running {
+  color: var(--accent-text);
+}
+.subagent-overlay-status.status-background {
+  color: var(--accent-text);
+}
+.subagent-overlay-status.status-pending {
+  color: var(--fg-muted);
+}
+.subagent-overlay-status.status-dismissed {
+  color: var(--fg-muted);
+}
+.subagent-overlay-status.status-done {
+  color: var(--ok-text);
+}
 .subagent-overlay-status.status-rejected,
-.subagent-overlay-status.status-interrupted { color: var(--warn-text); }
+.subagent-overlay-status.status-interrupted {
+  color: var(--warn-text);
+}
 .subagent-overlay-body {
   flex: 1;
   min-height: 0;
@@ -2798,12 +2969,24 @@
   animation: subagent-body-back-in var(--motion-duration-base) var(--motion-ease-enter) backwards;
 }
 @keyframes subagent-body-forward-in {
-  from { opacity: 0; transform: translateX(var(--motion-distance-lg)); }
-  to   { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(var(--motion-distance-lg));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 @keyframes subagent-body-back-in {
-  from { opacity: 0; transform: translateX(calc(-1 * var(--motion-distance-lg))); }
-  to   { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(calc(-1 * var(--motion-distance-lg)));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 .subagent-overlay-empty {
   margin: auto;
@@ -2828,7 +3011,9 @@
   overflow: hidden;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.workflow-card:hover { border-color: var(--accent); }
+.workflow-card:hover {
+  border-color: var(--accent);
+}
 .workflow-card-header {
   display: flex;
   align-items: center;
@@ -2843,10 +3028,25 @@
   color: inherit;
   transition: background var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.workflow-card-header:hover { background: var(--bg-elev-2); }
-.workflow-card-header:disabled { cursor: default; opacity: 0.6; }
-.workflow-card-marker { color: var(--fg-muted); flex-shrink: 0; display: inline-flex; align-items: center; }
-.workflow-card-icon { color: var(--accent-text); flex-shrink: 0; display: inline-flex; align-items: center; }
+.workflow-card-header:hover {
+  background: var(--bg-elev-2);
+}
+.workflow-card-header:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.workflow-card-marker {
+  color: var(--fg-muted);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.workflow-card-icon {
+  color: var(--accent-text);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
 .workflow-card-title {
   font-size: var(--fs-xs);
   font-weight: 600;
@@ -2888,10 +3088,16 @@
   display: inline-flex;
   align-items: center;
 }
-.workflow-card-running .workflow-card-status { color: var(--accent-text); }
-.workflow-card-done    .workflow-card-status { color: var(--ok); }
+.workflow-card-running .workflow-card-status {
+  color: var(--accent-text);
+}
+.workflow-card-done .workflow-card-status {
+  color: var(--ok);
+}
 .workflow-card-rejected .workflow-card-status,
-.workflow-card-interrupted .workflow-card-status { color: var(--warn); }
+.workflow-card-interrupted .workflow-card-status {
+  color: var(--warn);
+}
 .workflow-card-open {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
@@ -2920,8 +3126,12 @@
   background: transparent;
   transition: background var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.workflow-card-remote-link:hover { background: var(--bg-elev-2); }
-.workflow-card-remote-link:visited { color: var(--accent-text); }
+.workflow-card-remote-link:hover {
+  background: var(--bg-elev-2);
+}
+.workflow-card-remote-link:visited {
+  color: var(--accent-text);
+}
 
 /* ─── Workflow overlay ──────────────────────────────────────────── */
 /* Two-column layout: phase-tree sidebar (left) + message stream (right).
@@ -2947,7 +3157,7 @@
   -webkit-backdrop-filter: var(--glass-blur);
   animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) backwards;
 }
-.workflow-overlay[data-state="closing"] .workflow-overlay-scrim {
+.workflow-overlay[data-state='closing'] .workflow-overlay-scrim {
   animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
 }
 .workflow-overlay-panel {
@@ -2963,16 +3173,28 @@
   box-shadow: var(--drawer-shadow);
   animation: workflow-drawer-in var(--motion-duration-base) var(--motion-ease-enter) backwards;
 }
-.workflow-overlay[data-state="closing"] .workflow-overlay-panel {
+.workflow-overlay[data-state='closing'] .workflow-overlay-panel {
   animation: workflow-drawer-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
 }
 @keyframes workflow-drawer-in {
-  from { opacity: 0; transform: translateX(24px); }
-  to   { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 @keyframes workflow-drawer-out {
-  from { opacity: 1; transform: translateX(0); }
-  to   { opacity: 0; transform: translateX(24px); }
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
 }
 .workflow-overlay-header {
   display: flex;
@@ -2982,7 +3204,12 @@
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.workflow-overlay-icon { color: var(--accent-text); flex-shrink: 0; display: inline-flex; align-items: center; }
+.workflow-overlay-icon {
+  color: var(--accent-text);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
 .workflow-overlay-title {
   flex: 1;
   min-width: 0;
@@ -3003,10 +3230,16 @@
   font-family: var(--mono);
   color: var(--fg-muted);
 }
-.workflow-overlay-status.status-running { color: var(--accent-text); }
-.workflow-overlay-status.status-done { color: var(--ok-text); }
+.workflow-overlay-status.status-running {
+  color: var(--accent-text);
+}
+.workflow-overlay-status.status-done {
+  color: var(--ok-text);
+}
 .workflow-overlay-status.status-rejected,
-.workflow-overlay-status.status-interrupted { color: var(--warn-text); }
+.workflow-overlay-status.status-interrupted {
+  color: var(--warn-text);
+}
 .workflow-overlay-close {
   background: transparent;
   border: 1px solid transparent;
@@ -3045,9 +3278,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.workflow-overlay-crumb:hover { color: var(--fg); background: var(--bg-elev); }
-.workflow-overlay-crumb-current { color: var(--fg); font-weight: 500; cursor: default; }
-.workflow-overlay-crumb-current:hover { background: transparent; }
+.workflow-overlay-crumb:hover {
+  color: var(--fg);
+  background: var(--bg-elev);
+}
+.workflow-overlay-crumb-current {
+  color: var(--fg);
+  font-weight: 500;
+  cursor: default;
+}
+.workflow-overlay-crumb-current:hover {
+  background: transparent;
+}
 .workflow-overlay-body {
   flex: 1;
   min-height: 0;
@@ -3089,7 +3331,9 @@
   font-size: var(--fs-sm);
   list-style: none;
 }
-.workflow-phase-group-summary::-webkit-details-marker { display: none; }
+.workflow-phase-group-summary::-webkit-details-marker {
+  display: none;
+}
 .workflow-phase-summary {
   display: flex;
   align-items: center;
@@ -3144,7 +3388,9 @@
   color: var(--fg);
   transition: background var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.workflow-child-row:hover { background: var(--bg-elev-2); }
+.workflow-child-row:hover {
+  background: var(--bg-elev-2);
+}
 .workflow-child-row-focused {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
@@ -3159,13 +3405,25 @@
   flex-shrink: 0;
   background: var(--fg-muted);
 }
-.workflow-child-status-running { background: var(--accent); animation: workflow-pulse 1.4s var(--motion-ease-standard) infinite; }
-.workflow-child-status-done { background: var(--ok); }
+.workflow-child-status-running {
+  background: var(--accent);
+  animation: workflow-pulse 1.4s var(--motion-ease-standard) infinite;
+}
+.workflow-child-status-done {
+  background: var(--ok);
+}
 .workflow-child-status-interrupted,
-.workflow-child-status-rejected { background: var(--warn); }
+.workflow-child-status-rejected {
+  background: var(--warn);
+}
 @keyframes workflow-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 .workflow-child-toolname {
   font-family: var(--mono);
@@ -3191,7 +3449,10 @@
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
-.workflow-child-chevron { color: var(--fg-muted); flex-shrink: 0; }
+.workflow-child-chevron {
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
 .workflow-phase-detail {
   padding: var(--space-1) var(--space-2);
   font-size: var(--fs-xs);
@@ -3228,12 +3489,24 @@
   pointer-events: none;
 }
 @keyframes side-chat-drawer-in {
-  from { opacity: 0; transform: translateX(24px); }
-  to   { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 @keyframes side-chat-drawer-out {
-  from { opacity: 1; transform: translateX(0); }
-  to   { opacity: 0; transform: translateX(24px); }
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
 }
 .side-chat-drawer.collapsing {
   animation: side-chat-drawer-out var(--motion-duration-base) var(--motion-ease-exit) both;
@@ -3380,7 +3653,9 @@
 @media (prefers-reduced-motion: reduce) {
   .side-chat-drawer,
   .side-chat-drawer.exiting,
-  .side-chat-drawer.collapsing { animation: none; }
+  .side-chat-drawer.collapsing {
+    animation: none;
+  }
 }
 @media (max-width: 640px) {
   .side-chat-drawer {

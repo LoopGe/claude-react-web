@@ -566,13 +566,13 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     // reliably emitted for Agent-launched background subagents in all
     // environments, and even when emitted it often arrives AFTER the parent
     // turn ended. A 'background' record that is still mid-flight at the
-    // parent's result frame must leave the running set (so its WorkingBubble
-    // chip doesn't reappear on every subsequent turn), but it must NOT be
-    // marked 'interrupted' — that would conflate "turn ended, completion
-    // pending" with "user interrupted" and the completion branch (which
-    // excludes 'interrupted') would silently drop the real completion. It
-    // flips to 'pending', which getRunningSubagents excludes (chip gone) but
-    // the completion branch still accepts.
+    // parent's result frame must NOT be marked 'interrupted' — that would
+    // conflate "turn ended, completion pending" with "user interrupted", and
+    // the completion branch (which excludes 'interrupted') would silently drop
+    // the real completion. It flips to 'pending' instead: still in the running
+    // set (`getRunningSubagents` includes 'pending'), so the bar keeps the
+    // bubble mounted in its Waiting state with the row muted, and the
+    // completion branch still accepts it once the signal finally lands.
     const toolUse: SdkMessage = {
       type: 'assistant',
       uuid: 'a-1',
@@ -609,7 +609,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     })
     expect(state.mirror.activeSubagents.get('tu_bg')?.status).toBe('background')
     state = reduceSessionState(state, { type: 'MESSAGE', message: result })
-    // Swept to 'pending' (out of the running set, but NOT interrupted).
+    // Swept to 'pending' (still in the running set, but NOT interrupted).
     expect(state.mirror.activeSubagents.get('tu_bg')?.status).toBe('pending')
   })
 
@@ -1203,7 +1203,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     // the SDK's resume replay didn't re-include the launch ack, …) the record
     // strands at `pending` forever. The sweep's stale-pending safety net flips
     // such a record to `interrupted` once its last child-frame activity is
-    // older than PENDING_TIMEOUT_MS (30 min), so the WorkingBubble chip clears.
+    // older than PENDING_TIMEOUT_MS (30 min), so the WorkingBubble row clears.
     // A late real completion still overrides (the completion branch accepts
     // 'interrupted').
     const recent = Date.now()
@@ -3572,7 +3572,7 @@ describe('reducer: TASKS_SNAPSHOT', () => {
   //
   // The task map is the liveness authority; a terminal entry means the work
   // is over even when no completion signal reached the transcript. Without
-  // this the chip spins forever and the WorkingBubble sticks on "Waiting..."
+  // this the row spins forever and the WorkingBubble sticks on "Waiting..."
   // (the CLI does not reliably emit task_notification for Agent-launched
   // background subagents — see server/subagent-watcher.ts).
 

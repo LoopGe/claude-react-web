@@ -1,18 +1,18 @@
 // The "working" bubble (L4).
 //
 // Rendered by the panel BELOW the transcript, not as a row inside it: it is
-// turn-scoped chrome (elapsed timer, active subagent chips, background task
+// turn-scoped chrome (elapsed timer, subagent swarm pill, background task
 // pill), so it must not participate in virtualization.
 //
 // Split out of MessageList so the container is readable; no logic changed.
 
-import { memo, useState, type CSSProperties } from 'react'
+import { memo } from 'react'
 import type { ActiveSubagent } from '../../session-store/types'
 import { formatTokens } from '../../utils/format'
 import { ElapsedTimer } from '../ElapsedTimer'
 import { useCountUp } from '../../hooks/useCountUp'
-import { IconListTodo, IconX, IconZap, IconExternalLink } from '../icons/ToolIcons'
-import { SUBAGENT_INLINE_LIMIT, SubagentSwarmPill } from './SubagentSwarm'
+import { IconListTodo, IconX, IconZap } from '../icons/ToolIcons'
+import { SubagentSwarmPill } from './SubagentSwarm'
 
 /** Stable empty fallback so the `activeSubagents ?? …` default doesn't hand a
  *  fresh array identity to the memoized pill on every render. */
@@ -67,8 +67,8 @@ export const WorkingBubble = memo(function WorkingBubble({
   totalTaskCount?: number
   /** Opens the Tasks overlay. Wired by the host (Chat) to open TasksPanel. */
   onOpenTasks?: () => void
-  /** When provided, each subagent chip becomes a button that calls this
-   *  with the chip's toolUseId — the host (Chat) opens the overlay
+  /** When provided, each row of the pill's popover becomes a button that calls
+   *  this with that subagent's toolUseId — the host (Chat) opens the overlay
    *  pointed at that subagent. */
   onOpenSubagent?: (toolUseId: string) => void
   /** Whether a turn is currently running in this panel. Defaults to true
@@ -84,8 +84,7 @@ export const WorkingBubble = memo(function WorkingBubble({
   onDismissWaiting?: () => void
 }) {
   const subagents = activeSubagents ?? EMPTY_SUBAGENTS
-  const subagentCount = subagents.length
-  const hasSubagents = subagentCount > 0
+  const hasSubagents = subagents.length > 0
   const taskCount = runningTaskCount ?? 0
   // Ambient-only work: nothing to report as activity, but the panel entry must
   // stay reachable. Falls back to taskCount when the host doesn't pass a total
@@ -95,21 +94,6 @@ export const WorkingBubble = memo(function WorkingBubble({
   const active = _active ?? true
   const idle = !active && !waiting
 
-  // Aggregate/inline choice is made on the fan-out's PEAK width, not its
-  // current width, and only resets once every subagent has settled. Two
-  // reasons it can't just be `subagentCount > SUBAGENT_INLINE_LIMIT`:
-  //   - the bar's height would oscillate as agents finish (5 chips → pill →
-  //     2 chips), which is the viewport churn Chat's pendingTurnSince bridge
-  //     exists to prevent;
-  //   - the pill owns the popover's open state, so dropping back to chips
-  //     while the user is reading the list would yank it away.
-  // Adjusted during render (not in an effect) so the very first commit of a
-  // wide fan-out already renders the pill — an effect would paint one frame
-  // of the wrapping chip wall first, which is the bug this replaces.
-  const [peakSubagents, setPeakSubagents] = useState(0)
-  const peak = subagentCount === 0 ? 0 : Math.max(peakSubagents, subagentCount)
-  if (peak !== peakSubagents) setPeakSubagents(peak)
-  const aggregateSubagents = peak > SUBAGENT_INLINE_LIMIT
   // Per-phase key so the working-bar-label span remounts (and its entrance
   // animation replays) when the SDK crosses a thinking/writing/tool_use
   // boundary — a soft crossfade instead of a hard label swap. Distinct from
@@ -161,9 +145,8 @@ export const WorkingBubble = memo(function WorkingBubble({
         </span>
       )}
       {/* The turn timer is only meaningful while the turn is active; hide it
-          in the Waiting state (the parent turn has ended). The subagent chip /
-          swarm-pill timers below still show how long the background work has
-          run. */}
+          in the Waiting state (the parent turn has ended). The swarm pill's
+          timer below still shows how long the background work has run. */}
       {!waiting && !idle && (
         // The turn is active whenever this renders, so it always ticks; the
         // mount-time fallback covers the first frame, before the server has
@@ -213,47 +196,12 @@ export const WorkingBubble = memo(function WorkingBubble({
       {hasSubagents && (
         <span className="working-bar-sep" aria-hidden />
       )}
-      {/* Wide fan-out: one aggregate pill of constant height, with the
-          per-agent detail (label, progress summary, elapsed) in its popover.
-          See SubagentSwarm.tsx for why a per-chip row can't just get a
-          bigger cap. */}
-      {hasSubagents && aggregateSubagents && (
-        <SubagentSwarmPill subagents={subagents} onOpenSubagent={onOpenSubagent} />
-      )}
-      {/* Narrow fan-out (≤ SUBAGENT_INLINE_LIMIT): individual chips still read
-          better than a count. Each chip's elapsed self-ticks via its own
-          ElapsedTimer, so the bubble itself doesn't re-render every second.
-          Pending chips (background subagent outliving its parent turn) get a
-          muted visual via the subagent-chip-pending class; dismiss is in the
-          overlay, not here. */}
-      {!aggregateSubagents && subagents.map((a, i) => {
-        const clickable = !!onOpenSubagent
-        const Tag = clickable ? 'button' : 'span'
-        return (
-          <Tag
-            key={a.toolUseId}
-            type={clickable ? 'button' : undefined}
-            style={{ '--stagger': `${Math.min(i, 12) * 30}ms` } as CSSProperties}
-            className={`subagent-chip${clickable ? ' subagent-chip-clickable' : ''}${a.status === 'pending' ? ' subagent-chip-pending' : ''}`}
-            title={
-              (clickable ? `Open subagent details - ${a.label}` : a.label) +
-              (a.progressSummary ? ` — ${a.progressSummary}` : '')
-            }
-            onClick={clickable ? () => onOpenSubagent(a.toolUseId) : undefined}
-          >
-            <span className="subagent-chip-dots" aria-hidden>
-              <span />
-              <span />
-            </span>
-            <span className="subagent-chip-label">{a.label}</span>
-            {a.startedAt != null && (
-              // Chips only render for in-flight subagents, so they always tick.
-              <ElapsedTimer startedAt={a.startedAt} live className="subagent-chip-timer" />
-            )}
-            {clickable && <span className="subagent-chip-open" aria-hidden><IconExternalLink size={12} /></span>}
-          </Tag>
-        )
-      })}
+      {/* One aggregate pill for ANY fan-out width — a lone subagent included.
+          The subagent group is therefore one row's worth of chrome at any
+          agent count, instead of growing a row per agent. The per-agent detail
+          (label, progressSummary, lastToolName, elapsed) lives in the pill's
+          popover, which is also the drill-in path to SubagentOverlay. */}
+      {hasSubagents && <SubagentSwarmPill subagents={subagents} onOpenSubagent={onOpenSubagent} />}
       {/* Dismiss ✕ for the Waiting state. The SDK exposes no task-list query
           and the server only evicts terminal records, so a task record that
           never folds to terminal would otherwise leave the Waiting banner

@@ -14,9 +14,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
+import type { RefObject } from 'react'
 import type { Skin, Theme } from '../utils/theme'
 import { isBackgroundLocked } from '../utils/theme'
 import { ACCENT_COLORS, markPortaledSurface } from '../theme'
+import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import type { BackgroundSetting } from '../theme'
 import { AccentSwatchGrid } from './AccentPicker'
 import { BackgroundPicker } from './BackgroundPicker'
@@ -76,6 +78,7 @@ function AppearancePopover({
   background = BACKGROUND_DEFAULT,
   onBackgroundChange = () => {},
   anchor,
+  triggerRef,
   onClose,
 }: {
   skin: Skin
@@ -87,6 +90,9 @@ function AppearancePopover({
   background?: BackgroundSetting
   onBackgroundChange?: (next: BackgroundSetting) => void
   anchor: { x: number; y: number }
+  /** The Theme button — a TOGGLE, so it must be exempt from the outside-press
+   *  dismissal or it can never close this popover (see the hook). */
+  triggerRef: RefObject<HTMLButtonElement | null>
   onClose: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -110,21 +116,22 @@ function AppearancePopover({
     setPos({ x: Math.max(margin, nx), y: Math.max(margin, ny) })
   }, [anchor.x, anchor.y])
 
-  // Outside-click + capture-phase Escape.
+  // Outside-click dismissal. The trigger is exempt because it toggles: closing
+  // on its own mousedown would unmount this popover before the click lands, and
+  // that click would read a stale open=false and re-anchor — the Theme button
+  // could never close its own popover.
+  useOutsideMouseDown({ ref, onClose, triggerRef })
+
+  // Capture-phase Escape.
   useEffect(() => {
-    const onDocMouseDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
-    }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation()
         onClose()
       }
     }
-    window.addEventListener('mousedown', onDocMouseDown)
     window.addEventListener('keydown', onKey, true)
     return () => {
-      window.removeEventListener('mousedown', onDocMouseDown)
       window.removeEventListener('keydown', onKey, true)
     }
   }, [onClose])
@@ -289,6 +296,7 @@ export function AppearancePanel({
           background={background}
           onBackgroundChange={onBackgroundChange}
           anchor={anchor}
+          triggerRef={triggerRef}
           onClose={() => {
             setAnchor(null)
             triggerRef.current?.focus()

@@ -5,12 +5,13 @@
 // this component only handles the rendering, outside-click / Esc dismissal,
 // and a small nudge to stay within the viewport.
 
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import { usePopoverMotion } from '../utils/transitions'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { markPortaledSurface } from '../theme'
 
 export interface ContextMenuItem {
@@ -59,22 +60,15 @@ export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: P
     setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
   }, [x, y])
 
-  useEffect(() => {
-    const onDocMouseDown = (e: MouseEvent) => {
-      // Only dismiss on left-click. Right-click (button 2) should NOT
-      // close the menu — the browser fires `contextmenu` next, which
-      // the owning component uses to open a replacement menu. Closing
-      // on mousedown would cause a visible close→reopen flash.
-      if (e.button !== 0) return
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
-    }
-    // `mousedown` beats `click` — feels snappier and avoids swallowing
-    // a subsequent click on another interactive element.
-    window.addEventListener('mousedown', onDocMouseDown)
-    return () => {
-      window.removeEventListener('mousedown', onDocMouseDown)
-    }
-  }, [onClose])
+  // Only left-click dismisses: right-click (button 2) must NOT close the
+  // menu — the browser fires `contextmenu` next, which the owning component
+  // uses to open a replacement menu, and closing on mousedown would be a
+  // visible close→reopen flash. That policy lives on the hook's
+  // `nonPrimary: 'ignore'`.
+  //
+  // `mousedown` beats `click` — feels snappier and avoids swallowing a
+  // subsequent click on another interactive element (the hook's default).
+  useOutsideMouseDown({ ref, onClose, nonPrimary: 'ignore' })
 
   // Esc closes via the shared escape stack, so a context menu above a modal
   // or panel collapses only itself on the first keypress.
