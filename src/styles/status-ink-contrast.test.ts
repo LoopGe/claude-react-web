@@ -221,7 +221,6 @@ describe('status ink contrast', () => {
     expect(headerWashMatch, 'the header wash declaration moved or was reshaped').not.toBeNull()
     const badgeWash = Number(badgeWashMatch![1])
     const headerWash = Number(headerWashMatch![1])
-    const badgeBlocks = parseBlocks(layout).filter((b) => b.sel.includes('.chat-panel-mode-badge.mode-'))
     const MODES: Array<[string, string]> = [
       ['default', '--fg'],
       ['plan', '--warn-text'],
