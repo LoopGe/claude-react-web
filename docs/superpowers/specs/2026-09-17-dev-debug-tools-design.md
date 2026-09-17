@@ -64,7 +64,8 @@
 `id, title, phase('live'|'dormant'|'terminated'), terminatedReason?, cwd?, model?, permissionMode?, running, terminated, subscribers, messageCount, pendingTurns, pendingPermissions, queuedInputs, gitStartSha?, firstPartyErrors?`
 
 - `phase` **是派生量，不是字段**：`terminated === true` → `'terminated'`；否则 `running === true` → `'live'`；否则 `'dormant'`。
-- `queuedInputs` **是派生量**：扫 `s.history`（主环，不是 `getHistory` 的合并排序结果——排队输入一定是顶层 user 消息）中 `receivedAt != null && consumedAt == null` 的条目数。这是客户端渲染「排队中」的同一判据。
+- `queuedInputs` **是派生量**：扫 `s.history`（主环，不是 `getHistory` 的合并排序结果）后按**与客户端完全相同的判据**计数——即复刻 `src/session-store/normalize.ts` 的 `deriveDeliveryStatus`：只分类**顶层 user 帧**（`type === 'user'` 且 `parent_tool_use_id == null`），`consumedAt` 已盖 → 已消费；否则 `receivedAt` 已盖 → 排队中；两者皆无 → 不计。实现为 `server/history-utils.ts` 里导出的 `countQueuedUserTurns`（与客户端同名导出，便于 grep 到这层跨端重复）。
+  **为什么必须带那两道 guard**：`receivedAt` 被 pump 盖在**每一帧**上（`server/session-pump.ts:957`），而 `consumedAt` 只盖在顶层 user 消息上。所以只看时间戳的判据会把每一条 assistant / system / tool_result / 子代理帧都算成「排队中」，在真实 transcript 上给出一个无意义的数字——正好是这个字段的反面。
 - `messageCount` 直接取 `SessionInfo`，**不再另出 `historyLength`**（`SessionInfo.messageCount` 就是 `history.length + subagentHistory.length`，重复暴露等于制造两个真值源）。
 - `pendingPermissions` = `s.pending.size`；`pendingTurns` = `s.pendingTurns`（二者都不在 `SessionInfo` 里，是本次新增的可见性）。
 

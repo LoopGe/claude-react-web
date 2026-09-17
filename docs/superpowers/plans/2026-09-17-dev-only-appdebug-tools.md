@@ -43,6 +43,7 @@
 | `server/dev-mode.ts` *(create)* | Dev-runtime detection (`isDevRuntime`, pure) and the wiring function (`enableDevMode`: turn the ring on + register the server). Knows nothing about tool definitions. |
 | `server/sdk-tools/app-debug.ts` *(create)* | The `appdebug` tool definitions and its `FirstPartyToolServer` factory. Bound to a `DebugHost`. Knows nothing about how the host is built. |
 | `server/session-types.ts` *(modify)* | Snapshot types (`DebugSessionSummary`, `DebugSessionDetail`) + extraction of two named types for shapes currently written inline in `SessionManager`. |
+| `server/history-utils.ts` *(modify)* | `countQueuedUserTurns` — the queue-depth predicate, which already lives conceptually here because this file owns the `receivedAt`/`consumedAt` stamps it reads. |
 | `server/session-manager.ts` *(modify)* | `debugSessions()` / `debugSession(id)` — the only code that can read session internals. Returns plain JSON. |
 | `server/cli/args.ts` *(modify)* | `--dev` / `--no-dev` flags + HELP text. |
 | `server/cli.ts` *(modify)* | 3-line wiring after the `SessionManager` is constructed. |
@@ -458,12 +459,15 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `server/session-types.ts` (add 3 types; extract 2 currently-inline return types)
-- Modify: `server/session-manager.ts` (`getDiagnostics` / `toolServerStatus` return types; add `debugSessions` / `debugSession` / `debugSummaryOf` / `contextUsageOrNull`)
+- Modify: `server/history-utils.ts` (+ `countQueuedUserTurns`, Step 5b)
+- Modify: `server/session-manager.ts` (`getDiagnostics` / `toolServerStatus` return types; add `debugSessions` / `debugSession` / `contextUsageOrNull`)
 - Test: `server/session-manager.test.ts` (uses the existing mocked-SDK harness at the top of that file)
+- Test: `server/history-utils.test.ts` (+ the `countQueuedUserTurns` truth table, Step 5b)
 
 **Interfaces:**
-- Consumes: `this.get(id)` (**public** live-or-meta resolver — the correct primitive here; `this.require(id)` is **private and live-only**, so it 404s a dormant session), `this.infoFromMeta` (already reached via `get`), `this.info(s)`, `this.sessions` (private map, for the live-vs-dormant check), `this.mergedHistory(s)`, `this.getDiagnostics(id)`, `this.toolServerStatus(id)`, `this.contextUsage(id)`; `TaskRecordUi` from `shared/tasks.ts`; `FirstPartyToolDef` from `shared/first-party.ts`.
+- Consumes: `this.get(id)` (**public** live-or-meta resolver — the correct primitive here; `this.require(id)` is **private and live-only**, so it 404s a dormant session), `this.infoFromMeta` (already reached via `get`), `this.info(s)`, `this.sessions` (private map, for the live-vs-dormant check), `this.mergedHistory(s)`, `this.getDiagnostics(id)`, `this.toolServerStatus(id)`, `this.contextUsage(id)`; `TaskRecordUi` from `shared/tasks.ts`; `FirstPartyToolDef` from `shared/first-party.ts`; `countQueuedUserTurns` (added in Step 5b to `server/history-utils.ts`).
 - Produces:
+  - `export function countQueuedUserTurns(history: readonly SDKMessage[]): number` in `server/history-utils.ts` — the server-side mirror of the client's export of the same name.
   - `export interface SessionCliDiagnostics { cliDebug: { global: boolean; perSession?: boolean; effective: boolean }; stderrTail: string[]; debugLog: { exists: boolean; path?: string; size?: number } }`
   - `export interface FirstPartyToolServerStatus { name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; tools: FirstPartyToolDef[]; error?: string }`
   - `export interface DebugSessionSummary { … }` (fields below)
@@ -500,11 +504,28 @@ describe('debug introspection', () => {
     expect(row?.terminated).toBe(false)
   })
 
-  it('counts a sent-but-unconsumed message as a queued input', async () => {
+  it('does not count a promptly-consumed send as a queued input', () => {
     const info = sm.create({ cwd: '/tmp', model: 'test-model' })
     sm.send(info.id, 'hello')
     const row = sm.debugSessions().find((r) => r.id === info.id)
-    expect(row?.queuedInputs).toBe(1)
+    // In this mock the SDK drains the input queue synchronously (direct
+    // hand-off via the Pushable's parked waiter), so consumedAt is stamped
+    // immediately. This asserts the WIRING (debugSessions reaches the
+    // predicate at all); the predicate's own branching — including the
+    // non-user-frame case — is covered by the truth table in
+    // server/history-utils.test.ts.
+    expect(row?.queuedInputs).toBe(0)
+  })
+
+  it('does not count an assistant frame the pump has stamped', async () => {
+    const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+    // Drive a non-user frame through the pump into the ring. The pump stamps
+    // receivedAt on it and never stamps consumedAt, so the old
+    // timestamps-only predicate would have reported it as a queued input.
+    mockHandles[0].emit({ type: 'assistant', message: { role: 'assistant', content: [] } })
+    await new Promise((r) => setTimeout(r, 0))
+    const row = sm.debugSessions().find((r) => r.id === info.id)
+    expect(row?.queuedInputs).toBe(0)
   })
 
   it('projects historyTail to routing metadata only and nulls the live-only sections off-live', async () => {
@@ -652,7 +673,7 @@ export interface DebugSessionDetail extends DebugSessionSummary {
 
 - [ ] **Step 5: Implement the `SessionManager` methods**
 
-In `server/session-manager.ts`, add next to `getDiagnostics` (they share the diagnostic sources). Add the two module-level helpers near the other free functions at the bottom of the file:
+In `server/session-manager.ts`, add next to `getDiagnostics` (they share the diagnostic sources). Add these two module-level helpers near the other free functions at the bottom of the file. (`countQueuedUserTurns` is NOT among them — it belongs in `server/history-utils.ts`; see Step 5b, and note the fixed predicate there.)
 
 ```ts
 /** Snapshot fields that come straight from the public `SessionInfo`. */
@@ -674,18 +695,6 @@ function debugSummaryFromInfo(
     messageCount: i.messageCount,
     gitStartSha: i.gitStartSha,
   }
-}
-
-/** Main-ring entries the SDK has not consumed yet. Scans `history` directly
- *  (no merge/sort): a queued input is always a top-level user message, and
- *  this runs per session on a list call. */
-function countQueuedInputs(history: SDKMessage[]): number {
-  let n = 0
-  for (const m of history) {
-    const r = m as { receivedAt?: number; consumedAt?: number }
-    if (r.receivedAt != null && r.consumedAt == null) n++
-  }
-  return n
 }
 
 /** Project a ring frame to routing metadata only — never the body. */
@@ -723,7 +732,7 @@ And the methods (place them right after `getDiagnostics` / `setCliDebug`):
         ...debugSummaryFromInfo(info),
         pendingTurns: s?.pendingTurns ?? 0,
         pendingPermissions: s?.pending.size ?? 0,
-        queuedInputs: s ? countQueuedInputs(s.history) : 0,
+        queuedInputs: s ? countQueuedUserTurns(s.history) : 0,
         firstPartyErrors: s?.firstPartyErrors,
       })
     }
@@ -746,7 +755,7 @@ And the methods (place them right after `getDiagnostics` / `setCliDebug`):
       ...debugSummaryFromInfo(info),
       pendingTurns: s?.pendingTurns ?? 0,
       pendingPermissions: s?.pending.size ?? 0,
-      queuedInputs: s ? countQueuedInputs(s.history) : 0,
+      queuedInputs: s ? countQueuedUserTurns(s.history) : 0,
       firstPartyErrors: s?.firstPartyErrors,
       historyTail: s
         ? this.mergedHistory(s).slice(-Math.max(0, historyLimit)).map(projectHistoryFrame)
@@ -784,6 +793,83 @@ And the methods (place them right after `getDiagnostics` / `setCliDebug`):
 ```
 
 Import `DebugSessionDetail` / `DebugSessionSummary` (type-only) from `./session-types.js` in `session-manager.ts`.
+
+- [ ] **Step 5b: Add `countQueuedUserTurns` to `server/history-utils.ts` (with its own tests)**
+
+`queuedInputs` must agree with the client's queue rendering, and the client already owns the correct predicate: `deriveDeliveryStatus` in `src/session-store/normalize.ts:169`, with the exported counter `countQueuedUserTurns` at line 184. Mirror it exactly.
+
+**Do NOT implement the predicate as `receivedAt != null && consumedAt == null`.** `stampReceivedAt` is applied by the pump to **every** ring frame (`server/session-pump.ts:957`) while `consumedAt` is stamped only on top-level user messages, so a timestamps-only predicate counts every assistant / system / tool_result / subagent frame as "queued" and reports a meaningless number on a real transcript.
+
+Add to `server/history-utils.ts` (it already owns `stampReceivedAt` / `stampConsumedAt`, the very stamps this reads — and a module-private helper in `session-manager.ts` could not be unit-tested, which is how the wrong predicate slipped through):
+
+```ts
+/** Number of top-level user turns sitting in the input queue — the server-side
+ *  mirror of the client's export of the same name
+ *  (src/session-store/normalize.ts `countQueuedUserTurns`), and it must agree
+ *  with it exactly: ONLY top-level user frames are classified. `receivedAt`
+ *  alone is NOT enough to call a frame queued — the pump stamps it on every
+ *  frame (session-pump.ts) while `consumedAt` is user-only, so a
+ *  timestamps-only predicate would count every assistant / system /
+ *  tool_result / subagent frame as queued. Same name as the client's export so
+ *  the cross-layer duplication stays greppable. */
+export function countQueuedUserTurns(history: readonly SDKMessage[]): number {
+  let n = 0
+  for (const m of history) {
+    const f = m as {
+      type?: string
+      parent_tool_use_id?: string | null
+      receivedAt?: number
+      consumedAt?: number
+    }
+    if (f.type !== 'user' || f.parent_tool_use_id != null) continue
+    if (f.consumedAt != null) continue
+    if (f.receivedAt != null) n++
+  }
+  return n
+}
+```
+
+Add the name to `session-manager.ts`'s existing `from './history-utils.js'` import list (it already imports `pushBounded`, `stampReceivedAt`, `stampConsumedAt`, `removeFromHistory` from there).
+
+Add a truth table to `server/history-utils.test.ts` — the `assistant` case is the regression for the wrong predicate: a non-user frame carrying `receivedAt` and no `consumedAt` must **not** be counted.
+
+```ts
+describe('countQueuedUserTurns', () => {
+  const frame = (over: Record<string, unknown>) => ({ type: 'user', parent_tool_use_id: null, ...over })
+
+  it('counts a server-acknowledged, not-yet-consumed top-level user turn', () => {
+    expect(countQueuedUserTurns([frame({ receivedAt: 1 })])).toBe(1)
+  })
+
+  it('does not count a consumed turn', () => {
+    expect(countQueuedUserTurns([frame({ receivedAt: 1, consumedAt: 2 })])).toBe(0)
+  })
+
+  it('does not count a frame the server has not acknowledged yet', () => {
+    expect(countQueuedUserTurns([frame({})])).toBe(0)
+  })
+
+  it('does not count subagent / tool-result user frames', () => {
+    expect(countQueuedUserTurns([frame({ receivedAt: 1, parent_tool_use_id: 'toolu_1' })])).toBe(0)
+  })
+
+  it('does NOT count non-user frames even though the pump stamps receivedAt on them', () => {
+    expect(countQueuedUserTurns([{ type: 'assistant', receivedAt: 1 }])).toBe(0)
+    expect(countQueuedUserTurns([{ type: 'system', subtype: 'init', receivedAt: 1 }])).toBe(0)
+  })
+
+  it('sums a mixed ring', () => {
+    expect(
+      countQueuedUserTurns([
+        { type: 'assistant', receivedAt: 1 },
+        frame({ receivedAt: 2 }),
+        frame({ receivedAt: 3, consumedAt: 4 }),
+        frame({ receivedAt: 5 }),
+      ]),
+    ).toBe(2)
+  })
+})
+```
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
