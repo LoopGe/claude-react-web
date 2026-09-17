@@ -78,6 +78,10 @@ import {
   type UserDialogDecision,
   type DialogEvent,
   type UserDialogRequestUi,
+  type SessionCliDiagnostics,
+  type FirstPartyToolServerStatus,
+  type DebugSessionSummary,
+  type DebugSessionDetail,
   endAllSubscribers,
 } from './session-types.js'
 import { HttpError } from './errors.js'
@@ -90,7 +94,6 @@ import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.
 import { coerceRewindResult, type RewindFilesResult } from '../shared/rewind.js'
 import { coerceStructuredOutput, type StructuredRunRequest, type StructuredRunResult } from '../shared/structured.js'
 import { coerceReadFileOutput, type FileReadResult } from '../shared/read-file.js'
-import type { FirstPartyToolDef } from '../shared/first-party.js'
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
@@ -406,6 +409,59 @@ function describeUserMessage(msg: SDKUserMessage): string {
     return joined.length > 120 ? `${joined.slice(0, 120)}…` : joined
   }
   return '(empty message)'
+}
+
+/** Snapshot fields that come straight from the public `SessionInfo`. */
+function debugSummaryFromInfo(
+  i: SessionInfo,
+): Omit<DebugSessionSummary, 'pendingTurns' | 'pendingPermissions' | 'queuedInputs' | 'firstPartyErrors'> {
+  return {
+    id: i.id,
+    title: i.title,
+    phase: i.terminated ? 'terminated' : i.running ? 'live' : 'dormant',
+    terminatedReason: i.terminatedReason,
+    cwd: i.cwd,
+    model: i.model,
+    permissionMode: i.permissionMode,
+    running: i.running,
+    terminated: i.terminated,
+    slept: i.slept,
+    subscribers: i.subscribers,
+    messageCount: i.messageCount,
+    gitStartSha: i.gitStartSha,
+  }
+}
+
+/** Main-ring entries the SDK has not consumed yet. Scans `history` directly
+ *  (no merge/sort): a queued input is always a top-level user message, and
+ *  this runs per session on a list call. */
+function countQueuedInputs(history: SDKMessage[]): number {
+  let n = 0
+  for (const m of history) {
+    const r = m as { receivedAt?: number; consumedAt?: number }
+    if (r.receivedAt != null && r.consumedAt == null) n++
+  }
+  return n
+}
+
+/** Project a ring frame to routing metadata only — never the body. */
+function projectHistoryFrame(m: SDKMessage): DebugSessionDetail['historyTail'][number] {
+  const r = m as {
+    type?: string
+    subtype?: string
+    uuid?: string
+    parent_tool_use_id?: string | null
+    receivedAt?: number
+    consumedAt?: number
+  }
+  return {
+    type: r.type ?? 'unknown',
+    subtype: r.subtype,
+    uuid: r.uuid,
+    parentToolUseId: r.parent_tool_use_id ?? undefined,
+    receivedAt: r.receivedAt,
+    consumedAt: r.consumedAt,
+  }
 }
 
 const log = createLogger('session')
@@ -3716,11 +3772,7 @@ export class SessionManager {
     return { session, hooks: normalized }
   }
 
-  async getDiagnostics(id: string): Promise<{
-    cliDebug: { global: boolean; perSession?: boolean; effective: boolean }
-    stderrTail: string[]
-    debugLog: { exists: boolean; path?: string; size?: number }
-  }> {
+  async getDiagnostics(id: string): Promise<SessionCliDiagnostics> {
     const s = this.require(id)
     const logsDir = this.store ? join(this.store.getDir(), 'logs') : undefined
     const global = defaultConfig.cliDebug ?? false
@@ -3749,6 +3801,76 @@ export class SessionManager {
     return {
       cliDebug: { global, perSession: s.cliDebug, effective: s.cliDebug ?? global },
       note: 'applies on the next session start',
+    }
+  }
+
+  /** Dev-only (`appdebug`): plain-JSON overview of every session — live ones
+   *  from their in-memory state, the rest (hibernated, from the store) with
+   *  zeroed counters. */
+  debugSessions(): DebugSessionSummary[] {
+    const out: DebugSessionSummary[] = []
+    for (const info of this.list()) {
+      const s = this.sessions.get(info.id)
+      out.push({
+        ...debugSummaryFromInfo(info),
+        pendingTurns: s?.pendingTurns ?? 0,
+        pendingPermissions: s?.pending.size ?? 0,
+        queuedInputs: s ? countQueuedInputs(s.history) : 0,
+        firstPartyErrors: s?.firstPartyErrors,
+      })
+    }
+    return out
+  }
+
+  /** Dev-only (`appdebug`): deep-dive one session. Reads internals that no
+   *  other public surface exposes (withdrawnUuids, promptUuids, the task
+   *  table) but projects the history ring to routing metadata only.
+   *
+   *  Resolves live OR dormant: `this.get(id)` is the public live-or-meta
+   *  resolver (it throws 404 for an unknown id), while `this.require(id)`
+   *  only ever resolves LIVE sessions and would 404 a store-backed one. The
+   *  in-memory collections are empty for a dormant session and the three
+   *  live-only sections are null — see the detail type. */
+  async debugSession(id: string, historyLimit = 30): Promise<DebugSessionDetail> {
+    const info = this.get(id)
+    const s = this.sessions.get(id)
+    return {
+      ...debugSummaryFromInfo(info),
+      pendingTurns: s?.pendingTurns ?? 0,
+      pendingPermissions: s?.pending.size ?? 0,
+      queuedInputs: s ? countQueuedInputs(s.history) : 0,
+      firstPartyErrors: s?.firstPartyErrors,
+      historyTail: s
+        ? this.mergedHistory(s).slice(-Math.max(0, historyLimit)).map(projectHistoryFrame)
+        : [],
+      withdrawnUuids: s ? [...s.withdrawnUuids] : [],
+      promptUuids: (s?.promptUuids ?? []).map((e) => ({ u: e.u, v: e.v })),
+      tasks: (s ? [...s.tasks.values()] : []).map((t) => ({
+        taskId: t.taskId,
+        taskType: t.taskType,
+        status: t.status,
+        isBackgrounded: t.isBackgrounded,
+        progressSummary: t.progressSummary,
+        lastToolName: t.lastToolName,
+        startedAt: t.startedAt,
+        endedAt: t.endedAt,
+      })),
+      // Live-only: all three need a running Query / a live Session, and none
+      // of them is worth widening an existing endpoint's behavior for.
+      cli: s ? await this.getDiagnostics(id) : null,
+      toolServers: s ? this.toolServerStatus(id) : null,
+      contextUsage: s ? await this.contextUsageOrNull(id) : null,
+    }
+  }
+
+  /** `contextUsage()` calls requireLive() and throws for a dormant or
+   *  terminated session. Inspecting one is normal, so the debug snapshot
+   *  reports null instead of failing the whole call. */
+  private async contextUsageOrNull(id: string): Promise<unknown | null> {
+    try {
+      return await this.contextUsage(id)
+    } catch {
+      return null
     }
   }
 
@@ -4102,7 +4224,7 @@ export class SessionManager {
 
   /** Status of each registered first-party server for a session. See
    *  SessionMcpManager.toolServerStatus. */
-  toolServerStatus(id: string): Array<{ name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; tools: FirstPartyToolDef[]; error?: string }> {
+  toolServerStatus(id: string): FirstPartyToolServerStatus[] {
     return this.mcp.toolServerStatus(id)
   }
 

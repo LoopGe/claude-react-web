@@ -30,6 +30,89 @@ import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
 import type { CliNotification, WsMessageConsumed, WsMessagesWithdrawn } from '../shared/ws-protocol.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
+import type { FirstPartyToolDef } from '../shared/first-party.js'
+
+/** CLI subprocess diagnostics for one session (SDK stderr tail + the
+ *  optional per-session CLI debug log file). */
+export interface SessionCliDiagnostics {
+  cliDebug: { global: boolean; perSession?: boolean; effective: boolean }
+  stderrTail: string[]
+  debugLog: { exists: boolean; path?: string; size?: number }
+}
+
+/** Status of one registered first-party tool server for one session. */
+export interface FirstPartyToolServerStatus {
+  name: string
+  description: string
+  enabled: boolean
+  injected: boolean
+  requiresCwd: boolean
+  hasCwd: boolean
+  tools: FirstPartyToolDef[]
+  error?: string
+}
+
+/** Plain-JSON projection of one session for the dev-only `appdebug` tools.
+ *  Carries no SDK message bodies — see DebugSessionDetail.historyTail. */
+export interface DebugSessionSummary {
+  id: string
+  title?: string
+  /** Derived, never stored: 'terminated' if `terminated`, else 'live' if
+   *  `running`, else 'dormant'. `SessionInfo` has no phase field. */
+  phase: 'live' | 'dormant' | 'terminated'
+  terminatedReason?: string
+  cwd?: string
+  model?: string
+  permissionMode?: string
+  running: boolean
+  terminated: boolean
+  slept?: boolean
+  subscribers: number
+  messageCount: number
+  /** Sent-but-unfinished turns (mirrors the client's Working state). */
+  pendingTurns: number
+  /** Tool-use permission requests parked awaiting a decision. */
+  pendingPermissions: number
+  /** Derived: main-ring entries with `receivedAt` but no `consumedAt` — the
+   *  exact predicate the client renders as "queued". */
+  queuedInputs: number
+  gitStartSha?: string
+  firstPartyErrors?: Record<string, string>
+}
+
+export interface DebugSessionDetail extends DebugSessionSummary {
+  /** Tail of the merged history, projected to routing metadata ONLY. The
+   *  message body is deliberately dropped: the ring caps at 500 frames each
+   *  potentially carrying a large payload. */
+  historyTail: Array<{
+    type: string
+    subtype?: string
+    uuid?: string
+    parentToolUseId?: string
+    receivedAt?: number
+    consumedAt?: number
+  }>
+  withdrawnUuids: string[]
+  /** app-level uuid → SDK on-disk uuid pairs (the rewind-files mapping). */
+  promptUuids: Array<{ u: string; v?: string }>
+  tasks: Array<{
+    taskId: string
+    taskType?: string
+    status: string
+    isBackgrounded?: boolean
+    progressSummary?: string
+    lastToolName?: string
+    startedAt?: number
+    endedAt?: number
+  }>
+  cli: SessionCliDiagnostics | null
+  /** Live-only: `toolServerStatus` calls require(). Null for a dormant or
+   *  terminated session. */
+  toolServers: FirstPartyToolServerStatus[] | null
+  /** `contextUsage(id)` result, or null when the session is not live
+   *  (contextUsage requires a live Query and throws otherwise). */
+  contextUsage: unknown | null
+}
 
 /** Subscriber — each connected client gets one of these. */
 export interface Subscriber {

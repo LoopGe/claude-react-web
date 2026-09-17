@@ -3801,6 +3801,75 @@ describe('SessionManager', () => {
       expect(turnStateOf(info.id).workingSince).toBeUndefined()
     })
   })
+
+  describe('debug introspection', () => {
+    it('lists a live session with a derived phase and zeroed counters', () => {
+      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+      const row = sm.debugSessions().find((r) => r.id === info.id)
+      expect(row).toMatchObject({
+        id: info.id,
+        phase: 'live',
+        running: true,
+        terminated: false,
+        pendingTurns: 0,
+        pendingPermissions: 0,
+        queuedInputs: 0,
+      })
+    })
+
+    it('derives phase dormant for a session that is in the store but not live', async () => {
+      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+      await sm.unload(info.id)
+      const row = sm.debugSessions().find((r) => r.id === info.id)
+      expect(row?.phase).toBe('dormant')
+      expect(row?.running).toBe(false)
+      expect(row?.terminated).toBe(false)
+    })
+
+    it('counts queued inputs via receivedAt-without-consumedAt predicate', async () => {
+      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+      sm.send(info.id, 'hello')
+      const row = sm.debugSessions().find((r) => r.id === info.id)
+      // In the test mock, the SDK drains the input queue synchronously
+      // (direct hand-off via the Pushable's parked waiter), so consumedAt
+      // is stamped immediately — the predicate yields 0.
+      expect(row?.queuedInputs).toBe(0)
+    })
+
+    it('projects historyTail to routing metadata only and nulls the live-only sections off-live', async () => {
+      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+      sm.send(info.id, 'hello')
+      const detail = await sm.debugSession(info.id, 10)
+      expect(detail.id).toBe(info.id)
+      expect(detail.historyTail.length).toBeGreaterThan(0)
+      // Exactly these six keys — a leaked SDK message body would add one.
+      expect(Object.keys(detail.historyTail[0]).sort()).toEqual(
+        ['consumedAt', 'parentToolUseId', 'receivedAt', 'subtype', 'type', 'uuid'].sort(),
+      )
+      expect(detail.historyTail[0].type).toBe('user')
+      expect(detail.tasks).toEqual([])
+      // recordPromptUuid runs at dispatch, so the unpaired entry is already there.
+      expect(detail.promptUuids.length).toBeGreaterThan(0)
+      expect(detail.cli?.stderrTail).toBeDefined()
+
+      // A dormant session resolves from the store: in-memory collections are
+      // empty and the three live-only sections are null, not an error.
+      await sm.unload(info.id)
+      const dormant = await sm.debugSession(info.id, 0)
+      expect(dormant.phase).toBe('dormant')
+      expect(dormant.contextUsage).toBeNull()
+      expect(dormant.cli).toBeNull()
+      expect(dormant.toolServers).toBeNull()
+      expect(dormant.historyTail).toEqual([])
+      expect(dormant.withdrawnUuids).toEqual([])
+      expect(dormant.tasks).toEqual([])
+    })
+
+    it('throws for an unknown session id', async () => {
+      expect(() => sm.debugSessions()).not.toThrow()
+      await expect(sm.debugSession('nope')).rejects.toThrow()
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------
