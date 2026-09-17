@@ -4889,6 +4889,76 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
   })
 
+  describe('restart() (in-place respawn on a live pump)', () => {
+    // restart() replaces the handle while the OLD pump is still parked on
+    // iter.next(). Destroying the handle ends that pump, and its cleanupPump
+    // then sees a live, healthy session (the one it just handed to a new
+    // pump) — so it must NOT run the auto-resume/terminate tail. Without the
+    // supersession guard this cascaded: cleanupPump's autoResume re-entered
+    // respawnInPlace, destroying the handle restart() had just created, whose
+    // pump then did the same, until the resume budget (20) was exhausted and
+    // the session terminated with terminatedReason 'query_ended' — the UI's
+    // "Connection closed" banner.
+    it('leaves the session running (the superseded pump must not terminate it)', async () => {
+      const info = sm.create({ cwd: '/tmp', model: 'm1' })
+      sm.send(info.id, 'hi')
+      mockHandles[0].emit({
+        type: 'result',
+        subtype: 'success',
+        session_id: info.id,
+        is_error: false,
+        usage: { input_tokens: 1, iterations: [] },
+        modelUsage: {},
+      })
+      await tick()
+      // Precondition: the restart guard (no in-flight turn / queued input) passes.
+      expect(sm.get(info.id).running).toBe(true)
+
+      await sm.restart(info.id)
+      // Let the superseded pump's cleanupPump run.
+      await tick()
+      await tick()
+
+      const s = sm.get(info.id)
+      expect(s.terminated).toBe(false)
+      expect(s.terminatedReason).toBeUndefined()
+      // Exactly one respawn — the restart's own. A cascade would show more.
+      expect(mockHandles).toHaveLength(2)
+      expect(mockHandles[1].options.resume).toBe(info.id)
+    })
+
+    // The production config (cli.ts / app.ts pass autoResume: true). Here the
+    // superseded pump's cleanupPump finds a healthy live session and, without
+    // the supersession guard, re-enters respawnInPlace via autoResume —
+    // destroying the handle restart() just created. That pump then does the
+    // same, so the session churns through the whole MAX_AUTO_RESUME budget
+    // (~0.7s apart, observed in the field) and dies with 'query_ended'.
+    it('does not cascade re-spawns when autoResume is enabled', async () => {
+      sm = new SessionManager({ store, autoResume: true })
+      const info = sm.create({ cwd: '/tmp', model: 'm1' })
+      sm.send(info.id, 'hi')
+      mockHandles[0].emit({
+        type: 'result',
+        subtype: 'success',
+        session_id: info.id,
+        is_error: false,
+        usage: { input_tokens: 1, iterations: [] },
+        modelUsage: {},
+      })
+      await tick()
+
+      await sm.restart(info.id)
+      // Give any cascade room to run (pre-fix the first extra spawn lands on
+      // the very next tick, and the budget burns out within ~20).
+      for (let i = 0; i < 40; i++) await tick()
+
+      expect(mockHandles).toHaveLength(2)
+      const s = sm.get(info.id)
+      expect(s.terminated).toBe(false)
+      expect(s.running).toBe(true)
+    })
+  })
+
   describe('interrupt with cancelQueued', () => {
     const waitFor = async (cond: () => boolean | Promise<boolean>, ticks = 60) => {
       for (let i = 0; i < ticks; i++) {

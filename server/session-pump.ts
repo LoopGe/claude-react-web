@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto'
 import type { FastModeState, SDKMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk'
 import type { Session, SessionBroadcaster } from './session-types.js'
 import { endAllSubscribers } from './session-types.js'
+import type { ProviderSessionHandle } from './providers/types.js'
 import { isTranscriptMessage, pushBounded, stampReceivedAt, shouldBroadcastMessage, trimLargeToolResults, truncateMiddle } from './history-utils.js'
 import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
@@ -687,6 +688,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
   // actually have changed). Set rather than Map because we only need
   // membership — the name was already checked at insertion time.
   const pendingMutatingToolUses = new Set<string>()
+  // The handle this pump owns. An in-place respawn (restart()) swaps
+  // session.handle under a still-running pump; cleanupPump compares against
+  // this to tell "my Query ended" apart from "I was superseded".
+  const myHandle = session.handle
   try {
     const iter = session.handle.messages[Symbol.asyncIterator]()
     // Race iter.next() against the session's abort signal so unload() can
@@ -1265,11 +1270,11 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
       }
     }
   } finally {
-    await cleanupPump(session, deps)
+    await cleanupPump(session, deps, myHandle)
   }
 }
 
-async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
+async function cleanupPump(session: Session, deps: PumpDeps, pumpHandle: ProviderSessionHandle): Promise<void> {
   // Wrap in its own try/catch so a failure in cleanup (e.g.
   // subscriber.push() throwing, persist() failing) doesn't escape
   // as an unhandledRejection from the pumpTask promise.
@@ -1291,6 +1296,23 @@ async function cleanupPump(session: Session, deps: PumpDeps): Promise<void> {
       endAllSubscribers(session)
       return
     }
+
+    // This pump's handle is no longer the session's — SessionManager.restart()
+    // replaced it in place (setProfile's "Restart now") while this pump was
+    // still parked on iter.next(), and destroying the old handle is what ended
+    // us. The session is alive and already owned by the replacement pump, so
+    // the whole tail below is wrong here: `autoResume` would re-enter
+    // respawnInPlace and destroy the handle the restart just created, whose own
+    // pump then repeats the cycle until the resume budget is exhausted and the
+    // session terminates with 'query_ended' — the client's "This session ended
+    // unexpectedly: Connection closed" banner. Leaving subscribers attached and
+    // the pending maps alone is also required: the restart kept the same
+    // session object precisely so the tab's transcript stream survives.
+    // Not to be folded together with the `clearing` guard below: that one
+    // covers clear(), which keeps the session in the map (handle untouched)
+    // while it awaits the pre-destroy interrupt — there the handle identity
+    // still matches, so only `clearing` stops the tail.
+    if (session.handle !== pumpHandle) return
 
     // SessionManager.clear() drives its own respawn after destroying the
     // current handle. Skip both the auto-resume probe AND the cleanup
