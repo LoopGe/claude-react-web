@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { removeFromHistory, shouldBroadcastMessage } from './history-utils.js'
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { removeFromHistory, shouldBroadcastMessage, countQueuedUserTurns } from './history-utils.js'
 
 /** Minimal ring entry — removeFromHistory only reads `uuid`. */
 function msg(uuid?: string): { uuid?: string } {
@@ -48,5 +49,57 @@ describe('shouldBroadcastMessage', () => {
     expect(shouldBroadcastMessage({ type: 'system', subtype: 'error' })).toBe(true)
     expect(shouldBroadcastMessage({ type: 'system', subtype: 'init' })).toBe(false)
     expect(shouldBroadcastMessage({ type: 'system', subtype: 'status' })).toBe(false)
+  })
+})
+
+describe('countQueuedUserTurns', () => {
+  // Minimal shape helpers — countQueuedUserTurns only reads type /
+  // parent_tool_use_id / receivedAt / consumedAt, so these partials are
+  // sufficient for the truth-table.  The `as unknown as SDKMessage[]` cast
+  // sidesteps the full SDKMessage union (SDKUserMessage requires message,
+  // uuid, session_id, …) which would bloat every test line.
+  const topUser = (receivedAt?: number, consumedAt?: number): SDKMessage =>
+    ({ type: 'user', parent_tool_use_id: null, receivedAt, consumedAt } as unknown as SDKMessage)
+  const subUser = (receivedAt?: number): SDKMessage =>
+    ({ type: 'user', parent_tool_use_id: 'tool-123', receivedAt } as unknown as SDKMessage)
+  const assistant = (receivedAt?: number): SDKMessage =>
+    ({ type: 'assistant', parent_tool_use_id: null, receivedAt } as unknown as SDKMessage)
+  const system = (receivedAt?: number): SDKMessage =>
+    ({ type: 'system', subtype: 'init', receivedAt } as unknown as SDKMessage)
+
+  it('counts a top-level user frame with receivedAt only', () => {
+    expect(countQueuedUserTurns([topUser(100)])).toBe(1)
+  })
+
+  it('does not count a top-level user frame that has consumedAt', () => {
+    expect(countQueuedUserTurns([topUser(100, 200)])).toBe(0)
+  })
+
+  it('does not count a user frame with parent_tool_use_id set (subagent / tool result)', () => {
+    expect(countQueuedUserTurns([subUser(100)])).toBe(0)
+  })
+
+  it('does NOT count a non-user frame (assistant) with receivedAt only', () => {
+    expect(countQueuedUserTurns([assistant(100)])).toBe(0)
+  })
+
+  it('does not count a frame with no receivedAt', () => {
+    expect(countQueuedUserTurns([topUser()])).toBe(0)
+  })
+
+  it('returns 0 for an empty history', () => {
+    expect(countQueuedUserTurns([])).toBe(0)
+  })
+
+  it('counts only top-level user frames in a mixed ring', () => {
+    const history: SDKMessage[] = [
+      topUser(100),            // queued
+      assistant(200),          // non-user — must NOT count
+      topUser(300, 400),       // consumed
+      subUser(500),            // subagent user frame — must NOT count
+      system(600),             // system — must NOT count
+      topUser(700),            // queued
+    ]
+    expect(countQueuedUserTurns(history)).toBe(2)
   })
 })

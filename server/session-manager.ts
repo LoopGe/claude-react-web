@@ -103,7 +103,7 @@ import { SessionMcpManager } from './session-manager-mcp.js'
 import { SessionEventBroadcaster } from './session-broadcaster.js'
 import { BackgroundWatcherRegistry } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
-import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory } from './history-utils.js'
+import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory, countQueuedUserTurns } from './history-utils.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -430,18 +430,6 @@ function debugSummaryFromInfo(
     messageCount: i.messageCount,
     gitStartSha: i.gitStartSha,
   }
-}
-
-/** Main-ring entries the SDK has not consumed yet. Scans `history` directly
- *  (no merge/sort): a queued input is always a top-level user message, and
- *  this runs per session on a list call. */
-function countQueuedInputs(history: SDKMessage[]): number {
-  let n = 0
-  for (const m of history) {
-    const r = m as { receivedAt?: number; consumedAt?: number }
-    if (r.receivedAt != null && r.consumedAt == null) n++
-  }
-  return n
 }
 
 /** Project a ring frame to routing metadata only — never the body. */
@@ -3815,7 +3803,7 @@ export class SessionManager {
         ...debugSummaryFromInfo(info),
         pendingTurns: s?.pendingTurns ?? 0,
         pendingPermissions: s?.pending.size ?? 0,
-        queuedInputs: s ? countQueuedInputs(s.history) : 0,
+        queuedInputs: s ? countQueuedUserTurns(s.history) : 0,
         firstPartyErrors: s?.firstPartyErrors,
       })
     }
@@ -3838,7 +3826,7 @@ export class SessionManager {
       ...debugSummaryFromInfo(info),
       pendingTurns: s?.pendingTurns ?? 0,
       pendingPermissions: s?.pending.size ?? 0,
-      queuedInputs: s ? countQueuedInputs(s.history) : 0,
+      queuedInputs: s ? countQueuedUserTurns(s.history) : 0,
       firstPartyErrors: s?.firstPartyErrors,
       historyTail: s
         ? this.mergedHistory(s).slice(-Math.max(0, historyLimit)).map(projectHistoryFrame)

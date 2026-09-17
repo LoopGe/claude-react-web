@@ -82,6 +82,29 @@ export function stampConsumedAt(msg: unknown, at?: number): number {
   return (m as { consumedAt?: number }).consumedAt ?? at ?? Date.now()
 }
 
+/** Number of top-level user turns in `history` that have been received
+ *  (receivedAt set) but not yet consumed by the SDK (consumedAt absent).
+ *  Mirrors the client's `countQueuedUserTurns` in
+ *  src/session-store/normalize.ts: classify only top-level user frames
+ *  (type === 'user' && parent_tool_use_id == null); consumedAt set → not
+ *  queued; else receivedAt set → queued; else neither.
+ *
+ *  Non-user frames (assistant, system, tool_result) and subagent user
+ *  frames (parent_tool_use_id != null) are skipped — they are never in
+ *  the input queue and `stampReceivedAt` stamps every ring frame, so a
+ *  bare `receivedAt` predicate would count them as "queued" (the bug
+ *  this guards against). */
+export function countQueuedUserTurns(history: readonly SDKMessage[]): number {
+  let n = 0
+  for (const m of history) {
+    if (m.type !== 'user') continue
+    if ((m as { parent_tool_use_id?: string | null }).parent_tool_use_id != null) continue
+    if (typeof (m as { consumedAt?: number }).consumedAt === 'number') continue
+    if (typeof (m as { receivedAt?: number }).receivedAt === 'number') n++
+  }
+  return n
+}
+
 /** Remove messages from the history ring by server-minted uuid — the
  *  withdrawal half of an interrupt with cancelQueued: the drained /
  *  CLI-cancelled user turns must not reappear on the next replay. Unknown

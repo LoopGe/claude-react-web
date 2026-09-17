@@ -3836,6 +3836,22 @@ describe('SessionManager', () => {
       expect(row?.queuedInputs).toBe(0)
     })
 
+    it('does not count non-user frames (assistant) as queued inputs', async () => {
+      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+      const h = mockHandles.at(-1)!
+      // The pump stamps receivedAt on every frame that enters the ring.
+      // An assistant frame has receivedAt but is NOT a user message —
+      // countQueuedUserTurns must skip it. Emit the frame into the SDK
+      // stream so the pump processes it into the history ring.
+      h.emit({ type: 'assistant', parent_tool_use_id: null, message: { content: 'reply' } })
+      // Yield to the event loop so the pump can process the emitted frame.
+      await new Promise((r) => setTimeout(r, 10))
+      const row = sm.debugSessions().find((r) => r.id === info.id)
+      expect(row?.queuedInputs).toBe(0)
+      // Sanity: the assistant frame IS in the ring (pump added it).
+      expect(row?.messageCount).toBeGreaterThan(0)
+    })
+
     it('projects historyTail to routing metadata only and nulls the live-only sections off-live', async () => {
       const info = sm.create({ cwd: '/tmp', model: 'test-model' })
       sm.send(info.id, 'hello')
