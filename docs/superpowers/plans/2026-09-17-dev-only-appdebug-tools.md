@@ -629,8 +629,10 @@ export interface DebugSessionSummary {
   pendingTurns: number
   /** Tool-use permission requests parked awaiting a decision. */
   pendingPermissions: number
-  /** Derived: main-ring entries with `receivedAt` but no `consumedAt` — the
-   *  exact predicate the client renders as "queued". */
+  /** Derived: TOP-LEVEL user turns in the main ring that the SDK has received
+   *  but not yet consumed — mirrors the client's `deriveDeliveryStatus`, so it
+   *  agrees with what the UI renders as "queued". Counted by
+   *  `countQueuedUserTurns` (server/history-utils.ts). */
   queuedInputs: number
   gitStartSha?: string
   firstPartyErrors?: Record<string, string>
@@ -1433,7 +1435,7 @@ Expected: FAIL — `enableDevMode is not a function`.
 
 - [ ] **Step 3: Implement `enableDevMode`**
 
-Append to `server/dev-mode.ts` — imports first (Task 2 deliberately left the file import-free; the linter rejects unused bindings, so they arrive with the code that uses them):
+Put the imports at the **top of the file, above `DEV_LIFECYCLE`** — conventional ESM ordering, and what any `import/order` rule would enforce. (`DEV_LIFECYCLE` and `isDevRuntime` from Task 2 stay where they are; only the new imports and the new code are added.) Task 2 deliberately left the file import-free because the linter rejects unused bindings, so they arrive now, with the code that uses them:
 
 ```ts
 import { createLogger, enableLogRing } from './log.js'
