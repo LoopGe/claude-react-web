@@ -14,6 +14,9 @@ export interface CliArgs {
   token?: string
   disableAppPlugins: boolean
   safeMode: boolean
+  /** `--dev` / `--no-dev`. undefined = auto-detect from the entry module
+   *  (see server/dev-mode.ts `isDevRuntime`). true/false force it. */
+  dev?: boolean
   help: boolean
   version: boolean
 }
@@ -74,6 +77,12 @@ export function parseServerArgs(argv: string[]): CliArgs {
       case '--safe-mode':
         args.safeMode = true
         break
+      case '--dev':
+        args.dev = true
+        break
+      case '--no-dev':
+        args.dev = false
+        break
       case '-h':
       case '--help':
         args.help = true
@@ -118,6 +127,11 @@ Options:
                        CLAUDE_CODE_BINARY env or \`which claude\`. Use this if
                        the SDK's auto-detection picks a wrong native build
                        (e.g. musl binary on a glibc host).
+      --dev            Register the dev-only \`appdebug\` introspection tools
+                       (logs, metrics, session internals). Default: auto —
+                       on when the server runs from TypeScript source
+                       (npm run dev / dev:server), off for dist/cli.mjs.
+      --no-dev         Force the dev tools off even when running from source.
   -V, --version        Print version and exit
   -h, --help           Show this help and exit
 `.trim()
