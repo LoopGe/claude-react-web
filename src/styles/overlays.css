@@ -576,7 +576,7 @@
   white-space: pre-wrap;
   word-break: break-all;
 }
-.bash-msg-prompt { color: var(--accent); flex-shrink: 0; }
+.bash-msg-prompt { color: var(--accent-text); flex-shrink: 0; }
 .bash-msg-exit {
   flex-shrink: 0;
   font-size: var(--fs-xs);
@@ -891,7 +891,7 @@ mark.search-hl.search-hl-active {
 .toast-info { --kind-tint: var(--accent); }
 .toast-error .toast-icon { color: var(--danger); }
 .toast-success .toast-icon { color: var(--ok); }
-.toast-info .toast-icon { color: var(--accent); }
+.toast-info .toast-icon { color: var(--accent-text); }
 
 /* Kind-coloured circular badge behind the icon, so the severity reads at
    a glance instead of a bare glyph. */
@@ -978,7 +978,7 @@ mark.search-hl.search-hl-active {
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 45%, transparent);
   background: color-mix(in srgb, var(--kind-tint, var(--accent)) 22%, transparent);
-  color: color-mix(in srgb, var(--kind-tint, var(--accent)) 70%, var(--fg));
+  color: color-mix(in srgb, var(--kind-tint, var(--accent-text)) 70%, var(--fg));
   font: inherit;
   font-size: var(--fs-sm);
   font-weight: 500;

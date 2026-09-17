@@ -41,6 +41,14 @@
   --ansi-muted: #aab0bb;
   --accent: #7b8cde;
   --accent-strong: #5b6fc7;
+  /* Ink for accent-coloured COPY and glyphs — same contract as the other
+     *-text families: >= 4.5:1 against every flat surface, checked by
+     status-ink-contrast.test.ts. Where the accent itself already clears it
+     (dark themes) the ink aliases it; where `--accent-strong` does (light
+     themes) the ink aliases that instead, so only the skins that stock at
+     mid-tone need a fitted value. Borders, fills, glows and shadows keep
+     --accent. */
+  --accent-text: var(--accent);
   /* Foreground colour for text/icons placed on top of --accent (e.g. primary
      CTA buttons). White by default, but useTheme overrides it at runtime via
      onAccentFor() — switching to dark ink when the chosen accent is light
@@ -329,6 +337,7 @@
   --accent: #4f62c8;
   --accent-strong: #3b4ea8;
   --on-accent: #ffffff;
+  --accent-text: var(--accent-strong);
   --danger: #d93b3b;
   --on-danger: #ffffff;
   --danger-text: #ba2424;
@@ -434,6 +443,7 @@
   --accent: #0080ff;
   --accent-strong: #0080ff;
   --on-accent: #ffffff;
+  --accent-text: #2492ff;
   --danger: #ff4040;
   --on-danger: #1a0000;
   --danger-text: #ff5353;
@@ -565,6 +575,7 @@
   --accent: #0000ff;
   --accent-strong: #0000ff;
   --on-accent: #ffffff;
+  --accent-text: var(--accent);
   --danger: #cc0000;
   --on-danger: #ffffff;
   --danger-text: #bb0000;
@@ -677,6 +688,7 @@
   --accent: #7b8cde;
   --accent-strong: #8a9ae6;
   --on-accent: #0e0e12;
+  --accent-text: var(--accent);
   --danger: #ff6b6b;
   --on-danger: #3a0d0d;
   --danger-text: var(--danger);
@@ -708,6 +720,7 @@
   --accent: #3b5bdb;
   --accent-strong: #2f4bc4;
   --on-accent: #ffffff;
+  --accent-text: var(--accent-strong);
   --danger: #d64545;
   --on-danger: #1a0000;
   --danger-text: #b72828;
@@ -1066,6 +1079,7 @@
   --accent: #d97757;
   --accent-strong: #c25e3f;
   --on-accent: #141413;
+  --accent-text: #fe7041;
   --ok: #97ab78;
   --ok-text: var(--ok);
   --warn: #d9a441;
@@ -1101,6 +1115,7 @@
   --accent: #d97757;
   --accent-strong: #c25e3f;
   --on-accent: #ffffff;
+  --accent-text: #a24325;
   --ok: #5c7040;
   --ok-text: #536639;
   --warn: #b5841f;

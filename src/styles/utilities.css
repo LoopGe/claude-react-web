@@ -373,7 +373,7 @@
 }
 .tool-status-label { line-height: 1; }
 .tool-status-running {
-  color: var(--accent);
+  color: var(--accent-text);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }
@@ -484,7 +484,7 @@
 }
 .tool-card-bg-btn:hover {
   background: var(--bg);
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
 }
 .tool-card-bg-btn:focus-visible {
@@ -542,7 +542,7 @@
 }
 .diff-truncation-details > summary::-webkit-details-marker { display: none; }
 .diff-truncation-details > summary:hover {
-  color: var(--accent);
+  color: var(--accent-text);
   background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 .diff-truncation-details[data-state="open"] > summary::after {
@@ -567,7 +567,7 @@
   overflow: hidden;
 }
 .tool-card-bash .bash-tool-prompt {
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
   flex-shrink: 0;
 }
@@ -598,7 +598,7 @@
 }
 .tool-card-bash details.bash-tool-collapsible > summary::-webkit-details-marker { display: none; }
 .tool-card-bash details.bash-tool-collapsible > summary:hover .bash-tool-fold-hint {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* Grep / Glob / WebSearch — pattern lives inside the header title.
@@ -637,7 +637,7 @@
  * Hover underline is the only visible affordance the link is clickable;
  * the IconExternalLink at the end re-emphasises it. */
 .tool-card-web .web-tool-url {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
   display: inline-flex;
   align-items: center;
@@ -1057,7 +1057,7 @@ button.tool-group-failed-jump:focus-visible {
   justify-content: center;
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--accent);
+  color: var(--accent-text);
   font-family: var(--mono);
   font-size: var(--fs-xs);
   font-weight: 600;
@@ -1306,7 +1306,7 @@ button.tool-group-failed-jump:focus-visible {
   padding: 0 var(--space-1);
   border-radius: var(--radius-3xs);
   background: var(--bg-elev-2);
-  color: var(--accent);
+  color: var(--accent-text);
   font-family: var(--mono);
 }
 /* Hover tooltips delay ~150ms so rapid mouse traversal doesn't flash
@@ -1643,7 +1643,7 @@ button.tool-group-failed-jump:focus-visible {
   justify-content: center;
   width: var(--size-20px);
   height: var(--size-20px);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .settings-card-spin {
   animation: tool-status-spin 0.9s linear infinite;
@@ -1693,9 +1693,9 @@ button.tool-group-failed-jump:focus-visible {
 }
 .status-badge-warn { color: var(--warn-text); border-color: var(--warn); }
 .status-badge-danger { color: var(--danger-text); border-color: var(--danger); }
-.status-badge-accent { color: var(--accent); border-color: var(--accent); }
+.status-badge-accent { color: var(--accent-text); border-color: var(--accent); }
 .settings-card-badge.global {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
   margin-left: var(--space-1-5);
   font-weight: 400;
@@ -1867,7 +1867,7 @@ button.tool-group-failed-jump:focus-visible {
   font-size: var(--fs-2xs); color: var(--fg-muted); font-weight: 400;
   padding: 0 5px; border: 1px solid var(--border); border-radius: var(--radius-pill);
 }
-.hooks-category-count.has-hooks { color: var(--accent); border-color: var(--accent); }
+.hooks-category-count.has-hooks { color: var(--accent-text); border-color: var(--accent); }
 .hooks-event-grid {
   display: flex; flex-wrap: wrap; gap: var(--space-1); padding: var(--space-1) 0 var(--space-1-5) var(--space-3);
 }
@@ -1881,7 +1881,7 @@ button.tool-group-failed-jump:focus-visible {
 }
 .hooks-event-badge:hover { border-color: var(--fg-muted); color: var(--fg); }
 .hooks-event-badge.active {
-  border-color: var(--accent); color: var(--accent);
+  border-color: var(--accent); color: var(--accent-text);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
@@ -1895,7 +1895,7 @@ button.tool-group-failed-jump:focus-visible {
   background: var(--bg); font-size: var(--fs-sm);
 }
 .hooks-event-tag {
-  font-size: var(--fs-2xs); font-family: var(--mono); color: var(--accent);
+  font-size: var(--fs-2xs); font-family: var(--mono); color: var(--accent-text);
   padding: 1px 5px; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
   border-radius: var(--radius-3xs); flex-shrink: 0;
 }
@@ -1938,7 +1938,7 @@ button.tool-group-failed-jump:focus-visible {
 }
 .hooks-activity-status.success { color: var(--ok-text); }
 .hooks-activity-status.error { color: var(--danger-text); }
-.hooks-activity-status.running { color: var(--accent); }
+.hooks-activity-status.running { color: var(--accent-text); }
 .hooks-activity-status.cancelled { color: var(--fg-muted); }
 .hooks-activity-time { font-size: var(--fs-2xs); color: var(--fg-muted); }
 .hooks-activity-output {
@@ -2029,7 +2029,7 @@ button.tool-group-failed-jump:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 .settings-model-row.default .settings-model-rank {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
@@ -2124,7 +2124,7 @@ button.tool-group-failed-jump:focus-visible {
   transition: color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .settings-model-select-wrap:focus-within .settings-model-select-icon {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 @media (max-width: 560px) {
   .settings-model-row {
@@ -2637,7 +2637,7 @@ button.tool-group-failed-jump:focus-visible {
   gap: var(--space-3-5);
 }
 .settings-skill-kicker {
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: var(--fs-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -2866,7 +2866,7 @@ input[type="checkbox"]:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--code-bg);
   border: 1px solid var(--border);
   flex: 0 0 auto;
@@ -2910,7 +2910,7 @@ input[type="checkbox"]:disabled {
   background: var(--bg-elev-2);
 }
 .settings-scope-btn.active {
-  color: var(--accent);
+  color: var(--accent-text);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   font-weight: 600;
 }
@@ -3034,7 +3034,7 @@ input[type="checkbox"]:disabled {
   padding: var(--space-1-5) var(--space-3);
   font-family: var(--mono);
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-text);
   white-space: nowrap;
   vertical-align: top;
   width: 1%;
@@ -3260,7 +3260,7 @@ select.input {
   vertical-align: middle;
 }
 .perf-sparkline polyline {
-  stroke: var(--accent);
+  stroke: var(--accent-text);
   stroke-width: 1.2;
 }
 .perf-spark-hot {

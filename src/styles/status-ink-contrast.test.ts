@@ -85,12 +85,13 @@ const NAMED_CONTEXTS = [
   '[data-skin="anthropic"][data-theme="light"]',
 ]
 
-/** The three status families: a fill tuned for tints/borders/glyphs, plus the
+/** The four status families: a fill tuned for tints/borders/glyphs, plus the
  *  copy ink that has to clear AA wherever text renders. */
 const INK_FAMILIES = [
   { fill: '--danger', ink: '--danger-text' },
   { fill: '--warn', ink: '--warn-text' },
   { fill: '--ok', ink: '--ok-text' },
+  { fill: '--accent', ink: '--accent-text' },
 ]
 
 interface StatusPlate {
@@ -113,7 +114,7 @@ function statusPlates(): StatusPlate[] {
     const css = readCss(file)
     for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
       const body = m[2]
-      const ink = body.match(/color:\s*var\((--(?:danger|warn|ok)-text)\)/)
+      const ink = body.match(/color:\s*var\((--(?:danger|warn|ok|accent)-text)\)/)
       if (!ink) continue
       const fam = ink[1].replace('-text', '')
       const bg = body.match(
@@ -199,6 +200,51 @@ describe('status ink contrast', () => {
         expect(
           ratio,
           `${plate.file} ${plate.sel}: ${ink} on ${plate.fam} ${plate.alpha}% over ${plate.surface} = ${ratio.toFixed(2)}:1 (need >= 4.5:1)`,
+        ).toBeGreaterThanOrEqual(4.5)
+      }
+    }
+  })
+
+  // The mode badges are accent washes with a per-mode ink rather than a plate,
+  // so their ink's backdrop is a two-level composite (the badge wash over the
+  // header's own wash) that only these declarations describe. Asserting it here
+  // is what keeps a retuned wash or a new mode from shipping unreadable copy.
+  it('keeps the chat mode badge readable on its wash in every context', () => {
+    const layout = readCss('layout.css')
+    const badgeWash = Number(
+      layout.match(
+        /\.chat-panel-mode-badge \{[^}]*background: color-mix\(in srgb, var\(--accent\) (\d+)%/,
+      )![1],
+    )
+    const headerWash = Number(
+      layout.match(/\.chat-panel-header \{[^}]*background: color-mix\(in srgb, var\(--accent\) (\d+)%/)![1],
+    )
+    const badgeBlocks = parseBlocks(layout).filter((b) => b.sel.includes('.chat-panel-mode-badge.mode-'))
+    const MODES: Array<[string, string]> = [
+      ['default', '--fg'],
+      ['plan', '--warn-text'],
+      ['bypassPermissions', '--danger-text'],
+      ['dontAsk', '--danger-text'],
+      ['acceptEdits', '--accent-text'],
+      ['auto', '--accent-text'],
+    ]
+    for (const [mode, ink] of MODES) {
+      const rule = badgeBlocks.filter((b) => b.sel.includes(`.chat-panel-mode-badge.mode-${mode}`))
+      expect(rule.length, `no rule colours .chat-panel-mode-badge.mode-${mode}`).toBeGreaterThan(0)
+      expect(rule.map((b) => b.decls['color'] ?? '').join(' '), `mode-${mode} should use ${ink}`).toContain(
+        ink,
+      )
+      for (const sel of contexts) {
+        const accent = effectiveToken(blocks, sel, '--accent')
+        const base = effectiveToken(blocks, sel, '--bg-elev')
+        const inkValue = effectiveToken(blocks, sel, ink)
+        if (!accent || !base || !inkValue) continue
+        const header = mixHex(accent, base, headerWash / 100)
+        const badge = mixHex(accent, header, badgeWash / 100)
+        const ratio = contrast(inkValue, badge)
+        expect(
+          ratio,
+          `${sel}: mode-${mode} ${ink} on the badge wash ${badge} = ${ratio.toFixed(2)}:1 (need >= 4.5:1)`,
         ).toBeGreaterThanOrEqual(4.5)
       }
     }

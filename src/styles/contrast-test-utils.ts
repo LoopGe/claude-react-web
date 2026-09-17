@@ -46,6 +46,8 @@ export interface CssBlock {
   attrs: string[]
   /** Declared custom properties, raw values. */
   tokens: Record<string, string>
+  /** Every declaration in the block, custom properties included. */
+  decls: Record<string, string>
 }
 
 /** A stylesheet's text with comments blanked — comment prose must not feed a
@@ -85,10 +87,13 @@ export function parseBlocks(css: string): CssBlock[] {
       else if (css[j] === '}') depth--
     }
     const tokens: Record<string, string> = {}
-    for (const m of css.slice(open + 1, j - 1).matchAll(/(--[a-z0-9-]+):\s*([^;]+);/g)) {
-      tokens[m[1]] = m[2].trim()
+    const decls: Record<string, string> = {}
+    for (const m of css.slice(open + 1, j - 1).matchAll(/(^|[;{\s])([a-z0-9-]+)\s*:\s*([^;]+);/g)) {
+      decls[m[2]] = m[3].trim()
+      if (m[2].startsWith('--')) tokens[m[2]] = m[3].trim()
     }
-    if (sel) out.push({ sel, attrs: [...sel.matchAll(/\[[a-z-]+="[^"]+"\]/g)].map((m) => m[0]), tokens })
+    if (sel)
+      out.push({ sel, attrs: [...sel.matchAll(/\[[a-z-]+="[^"]+"\]/g)].map((m) => m[0]), tokens, decls })
     i = j
   }
   return out

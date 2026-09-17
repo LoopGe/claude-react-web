@@ -66,7 +66,7 @@
   border-color: var(--btn-hover-border);
 }
 .btn-icon.active {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
 }
 /* The composer's send/interrupt control is the only .btn-icon that also

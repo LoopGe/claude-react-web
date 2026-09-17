@@ -40,7 +40,7 @@
   min-width: var(--size-12px);
 }
 .result-mark {
-  color: var(--ok-text, var(--accent));
+  color: var(--ok-text, var(--accent-text));
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -85,7 +85,7 @@
 /* rate_limit_event: a plan rate-limit state transition. Same divider
    vocabulary as retry/error; tone follows the event status — ok (within
    limit) / warn (near limit) / danger (rejected, requests blocked). */
-.msg.result.rate-limit-card--ok .result-mark { color: var(--ok-text, var(--accent)); }
+.msg.result.rate-limit-card--ok .result-mark { color: var(--ok-text, var(--accent-text)); }
 .msg.result.rate-limit-card--warn { color: var(--msg-rate-limit-fg); }
 .msg.result.rate-limit-card--warn::before,
 .msg.result.rate-limit-card--warn::after { background: color-mix(in srgb, var(--warn) 45%, var(--border)); }
@@ -485,7 +485,7 @@
   margin: var(--md-block-mt, 8px) 0 var(--md-block-mb, 8px);
   color: var(--fg-muted);
 }
-.md a { color: var(--accent); text-decoration: none; }
+.md a { color: var(--accent-text); text-decoration: none; }
 .md a:hover { text-decoration: underline; }
 .md hr { border: none; border-top: 1px solid var(--border); margin: var(--space-3-5) 0; }
 .md table {
@@ -920,7 +920,7 @@
   margin: 0;
   font: inherit;
   font-size: var(--fs-sm);
-  color: var(--accent);
+  color: var(--accent-text);
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -1083,7 +1083,7 @@
 }
 .segmented-btn:hover { color: var(--fg); background: var(--bg-elev-2); }
 .segmented-btn.active {
-  color: var(--accent);
+  color: var(--accent-text);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   font-weight: 600;
 }
@@ -1195,7 +1195,7 @@
 }
 .fse-tab:hover { color: var(--fg); }
 .fse-tab.active {
-  color: var(--accent);
+  color: var(--accent-text);
   border-bottom-color: var(--accent);
 }
 .fse-tab:disabled { opacity: .5; cursor: default; }
@@ -1227,7 +1227,7 @@
 .recent-chip-use {
   background: transparent;
   border: none;
-  color: var(--accent);
+  color: var(--accent-text);
   font-family: var(--mono);
   padding: 3px 6px;
   cursor: pointer;
@@ -1339,7 +1339,7 @@
 .crumb {
   background: none;
   border: none;
-  color: var(--accent);
+  color: var(--accent-text);
   padding: var(--space-0-5) var(--space-1);
   border-radius: var(--radius-3xs);
   font: inherit;
@@ -1464,7 +1464,7 @@
   color: var(--fg);
 }
 .global-settings-tab.active {
-  color: var(--accent);
+  color: var(--accent-text);
   border-bottom-color: var(--accent);
 }
 .global-settings-body {
@@ -1564,7 +1564,7 @@
 .perm-badge {
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
-  color: var(--accent);
+  color: var(--accent-text);
   font-family: var(--mono);
   font-size: var(--fs-sm);
   padding: 3px 8px;
@@ -1707,7 +1707,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .todo-panel-count {
   font-family: var(--mono);
@@ -1774,7 +1774,7 @@
   align-items: center;
   gap: var(--space-1);
   font-size: var(--fs-xs);
-  color: var(--accent);
+  color: var(--accent-text);
   background: transparent;
   border: none;
   padding: var(--space-0-5) var(--space-1);
@@ -1939,7 +1939,7 @@
   }
 }
 .todo-in_progress { color: var(--fg); }
-.todo-in_progress .todo-icon { color: var(--accent); }
+.todo-in_progress .todo-icon { color: var(--accent-text); }
 .todo-in_progress .todo-text { color: var(--fg); }
 /* The breathing pulse + shimmer run ONLY while the assistant is mid-turn
    (`.todo-panel-working` is on the root when `working` is true). When idle
@@ -2151,7 +2151,7 @@
 .inline-todo-completed .inline-todo-icon { color: var(--ok); }
 .inline-todo-in_progress { color: var(--fg); }
 .inline-todo-in_progress .inline-todo-icon {
-  color: var(--accent);
+  color: var(--accent-text);
   animation: todo-icon-pulse 2s ease-in-out infinite;
 }
 .inline-todo-in_progress .inline-todo-text-shimmer {
@@ -2196,8 +2196,8 @@
   .inline-todo-in_progress .inline-todo-text-shimmer {
     animation: none;
     background: none;
-    -webkit-text-fill-color: var(--accent);
-    color: var(--accent);
+    -webkit-text-fill-color: var(--accent-text);
+    color: var(--accent-text);
     font-weight: 600;
   }
   /* Reduced-motion: the completed strike shows statically (background-size is
@@ -2235,9 +2235,9 @@
   letter-spacing: 0.02em;
 }
 .tool-chip-accent {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-2));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev-2));
 }
 /* Copyable path chip (Grep / Glob `in <path>`): a <button> styled as a chip
    that copies the resolved absolute path on click. Resets button chrome so it
@@ -2281,7 +2281,7 @@ button.tool-chip.tool-chip-copyable.copied {
   line-height: 1.5;
 }
 .bash-tool-prompt {
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
   flex-shrink: 0;
 }
@@ -2421,7 +2421,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 }
 .web-tool-url {
   font-family: var(--mono);
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
   flex: 1;
   min-width: 0;
@@ -2498,7 +2498,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   background: color-mix(in srgb, var(--ok) 16%, var(--bg-elev));
 }
 .task-mutation-verb.verb-update {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
@@ -2525,9 +2525,9 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   background: color-mix(in srgb, var(--ok) 8%, var(--bg-elev-2));
 }
 .task-mutation-status.status-in_progress {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-2));
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev-2));
 }
 .task-mutation-status.status-deleted {
   color: var(--danger-text);
@@ -2770,7 +2770,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
 }
 .question-chip {
   background: var(--bg-elev-2);
-  color: var(--accent);
+  color: var(--accent-text);
   padding: 2px 7px;
   border-radius: var(--radius-pill);
   font-family: var(--mono);
@@ -2834,7 +2834,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   align-items: center;
 }
 .question-option.selected .question-option-marker {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .question-option-body {
   flex: 1;
@@ -2952,7 +2952,7 @@ details.plan-card-collapsible > summary > .plan-card-header {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: var(--fs-base);
   word-break: break-all;
   text-decoration: none;
@@ -3076,7 +3076,7 @@ details.question-inline-card[data-state="open"] > summary {
   letter-spacing: 0.04em;
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--accent) 18%, transparent);
-  color: var(--accent);
+  color: var(--accent-text);
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .question-inline-status.answered {
@@ -3218,7 +3218,7 @@ details.plan-card-minimized {
   align-items: center;
 }
 .question-inline-option.selected .question-inline-option-marker {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .question-inline-option-body {
   flex: 1;
@@ -3275,7 +3275,7 @@ details.plan-card-minimized {
   letter-spacing: 0.04em;
   border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--accent) 18%, transparent);
-  color: var(--accent);
+  color: var(--accent-text);
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .findings-count {
@@ -3371,7 +3371,7 @@ details.plan-card-minimized {
 .finding-loc {
   font-size: var(--fs-xs);
   font-family: var(--mono);
-  color: var(--accent);
+  color: var(--accent-text);
   margin-left: auto;
   white-space: nowrap;
   overflow: hidden;
@@ -3395,7 +3395,7 @@ details.plan-card-minimized {
   color: var(--fg-muted);
   font-style: italic;
 }
-.finding-scenario-details > summary:hover .finding-scenario-label { color: var(--accent); }
+.finding-scenario-details > summary:hover .finding-scenario-label { color: var(--accent-text); }
 .finding-scenario-body {
   font-size: var(--fs-sm);
   color: var(--fg-muted);

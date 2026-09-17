@@ -303,8 +303,8 @@
 .git-file-status.status-M { color: var(--warn-text); }
 .git-file-status.status-A { color: var(--ok-text); }
 .git-file-status.status-D { color: var(--danger-text); }
-.git-file-status.status-R { color: var(--accent); }
-.git-file-status.status-C { color: var(--accent); }
+.git-file-status.status-R { color: var(--accent-text); }
+.git-file-status.status-C { color: var(--accent-text); }
 .git-file-status.status-U { color: var(--danger-text); }
 .git-file-status.status-T { color: var(--warn-text); }
 .git-file-path {
@@ -412,7 +412,7 @@
 .git-diff-row.del .git-diff-sign { color: var(--danger-text); }
 .git-diff-row.del .git-diff-body { color: var(--danger-text); background: color-mix(in srgb, var(--danger) 14%, transparent); }
 .git-diff-row.hunk { box-shadow: inset 3px 0 0 var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.git-diff-row.hunk .git-diff-body { color: var(--accent); font-weight: 600; }
+.git-diff-row.hunk .git-diff-body { color: var(--accent-text); font-weight: 600; }
 .git-diff-row.meta .git-diff-body { color: var(--fg-muted); }
 .git-diff-row.nonewline .git-diff-body { color: var(--fg-muted); font-style: italic; }
 .git-diff-row.truncated .git-diff-body { color: var(--fg-muted); font-style: italic; }
@@ -436,7 +436,7 @@
 .git-commit:hover { background: var(--btn-hover-bg); }
 .git-commit-hash {
   font-family: var(--mono);
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: var(--fs-sm);
 }
 .git-commit-subject {
@@ -745,7 +745,7 @@
   cursor: not-allowed;
 }
 .git-branch-row.current {
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
   cursor: default;
 }
@@ -791,7 +791,7 @@
 .git-stash-row:first-child { border-top: 0; }
 .git-stash-ref {
   font-family: var(--mono);
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: var(--fs-sm);
   white-space: nowrap;
 }
