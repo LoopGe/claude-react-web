@@ -462,12 +462,12 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Test: `server/session-manager.test.ts` (uses the existing mocked-SDK harness at the top of that file)
 
 **Interfaces:**
-- Consumes: `this.list()`, `this.info(s)`, `this.require(id)`, `this.mergedHistory(s)`, `this.getDiagnostics(id)`, `this.toolServerStatus(id)`, `this.contextUsage(id)`; `TooldRecordUi` from `shared/tasks.ts`; `FirstPartyToolDef` from `shared/first-party.ts`.
+- Consumes: `this.get(id)` (**public** live-or-meta resolver — the correct primitive here; `this.require(id)` is **private and live-only**, so it 404s a dormant session), `this.infoFromMeta` (already reached via `get`), `this.info(s)`, `this.sessions` (private map, for the live-vs-dormant check), `this.mergedHistory(s)`, `this.getDiagnostics(id)`, `this.toolServerStatus(id)`, `this.contextUsage(id)`; `TaskRecordUi` from `shared/tasks.ts`; `FirstPartyToolDef` from `shared/first-party.ts`.
 - Produces:
   - `export interface SessionCliDiagnostics { cliDebug: { global: boolean; perSession?: boolean; effective: boolean }; stderrTail: string[]; debugLog: { exists: boolean; path?: string; size?: number } }`
   - `export interface FirstPartyToolServerStatus { name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; tools: FirstPartyToolDef[]; error?: string }`
   - `export interface DebugSessionSummary { … }` (fields below)
-  - `export interface DebugSessionDetail extends DebugSessionSummary { historyTail; withdrawnUuids; promptUuids; tasks; cli; toolServers; contextUsage }`
+  - `export interface DebugSessionDetail extends DebugSessionSummary { historyTail; withdrawnUuids; promptUuids; tasks; cli: SessionCliDiagnostics | null; toolServers: FirstPartyToolServerStatus[] | null; contextUsage: unknown | null }` — the last three are **live-only and nullable**; every other field degrades to an empty collection for a dormant session.
   - `SessionManager.debugSessions(): DebugSessionSummary[]` (sync)
   - `SessionManager.debugSession(id: string, historyLimit?: number): Promise<DebugSessionDetail>` (async — it awaits `getDiagnostics`)
 
@@ -507,28 +507,33 @@ describe('debug introspection', () => {
     expect(row?.queuedInputs).toBe(1)
   })
 
-  it('projects historyTail to routing metadata only and nulls contextUsage off-live', async () => {
+  it('projects historyTail to routing metadata only and nulls the live-only sections off-live', async () => {
     const info = sm.create({ cwd: '/tmp', model: 'test-model' })
     sm.send(info.id, 'hello')
     const detail = await sm.debugSession(info.id, 10)
     expect(detail.id).toBe(info.id)
     expect(detail.historyTail.length).toBeGreaterThan(0)
-    // Projection only — never the SDK message body.
+    // Exactly these six keys — a leaked SDK message body would add one.
     expect(Object.keys(detail.historyTail[0]).sort()).toEqual(
-      ['consumedAt', 'parentToolUseId', 'receivedAt', 'subtype', 'type', 'uuid'].filter(
-        (k) => k in detail.historyTail[0],
-      ).sort(),
+      ['consumedAt', 'parentToolUseId', 'receivedAt', 'subtype', 'type', 'uuid'].sort(),
     )
     expect(detail.historyTail[0].type).toBe('user')
     expect(detail.tasks).toEqual([])
+    // recordPromptUuid runs at dispatch, so the unpaired entry is already there.
     expect(detail.promptUuids.length).toBeGreaterThan(0)
+    expect(detail.cli?.stderrTail).toBeDefined()
 
-    // A dormant session has no live Query: contextUsage throws internally and
-    // the snapshot reports null rather than failing.
+    // A dormant session resolves from the store: in-memory collections are
+    // empty and the three live-only sections are null, not an error.
     await sm.unload(info.id)
     const dormant = await sm.debugSession(info.id, 0)
+    expect(dormant.phase).toBe('dormant')
     expect(dormant.contextUsage).toBeNull()
+    expect(dormant.cli).toBeNull()
+    expect(dormant.toolServers).toBeNull()
     expect(dormant.historyTail).toEqual([])
+    expect(dormant.withdrawnUuids).toEqual([])
+    expect(dormant.tasks).toEqual([])
   })
 
   it('throws for an unknown session id', async () => {
@@ -635,8 +640,10 @@ export interface DebugSessionDetail extends DebugSessionSummary {
     startedAt?: number
     endedAt?: number
   }>
-  cli: SessionCliDiagnostics
-  toolServers: FirstPartyToolServerStatus[]
+  cli: SessionCliDiagnostics | null
+  /** Live-only: `toolServerStatus` calls require(). Null for a dormant or
+   *  terminated session. */
+  toolServers: FirstPartyToolServerStatus[] | null
   /** `contextUsage(id)` result, or null when the session is not live
    *  (contextUsage requires a live Query and throws otherwise). */
   contextUsage: unknown | null
@@ -725,20 +732,28 @@ And the methods (place them right after `getDiagnostics` / `setCliDebug`):
 
   /** Dev-only (`appdebug`): deep-dive one session. Reads internals that no
    *  other public surface exposes (withdrawnUuids, promptUuids, the task
-   *  table) but projects the history ring to routing metadata only. */
+   *  table) but projects the history ring to routing metadata only.
+   *
+   *  Resolves live OR dormant: `this.get(id)` is the public live-or-meta
+   *  resolver (it throws 404 for an unknown id), while `this.require(id)`
+   *  only ever resolves LIVE sessions and would 404 a store-backed one. The
+   *  in-memory collections are empty for a dormant session and the three
+   *  live-only sections are null — see the detail type. */
   async debugSession(id: string, historyLimit = 30): Promise<DebugSessionDetail> {
-    const s = this.require(id)
-    const tail = this.mergedHistory(s).slice(-Math.max(0, historyLimit))
+    const info = this.get(id)
+    const s = this.sessions.get(id)
     return {
-      ...debugSummaryFromInfo(this.info(s)),
-      pendingTurns: s.pendingTurns,
-      pendingPermissions: s.pending.size,
-      queuedInputs: countQueuedInputs(s.history),
-      firstPartyErrors: s.firstPartyErrors,
-      historyTail: tail.map(projectHistoryFrame),
-      withdrawnUuids: [...s.withdrawnUuids],
-      promptUuids: (s.promptUuids ?? []).map((e) => ({ u: e.u, v: e.v })),
-      tasks: [...s.tasks.values()].map((t) => ({
+      ...debugSummaryFromInfo(info),
+      pendingTurns: s?.pendingTurns ?? 0,
+      pendingPermissions: s?.pending.size ?? 0,
+      queuedInputs: s ? countQueuedInputs(s.history) : 0,
+      firstPartyErrors: s?.firstPartyErrors,
+      historyTail: s
+        ? this.mergedHistory(s).slice(-Math.max(0, historyLimit)).map(projectHistoryFrame)
+        : [],
+      withdrawnUuids: s ? [...s.withdrawnUuids] : [],
+      promptUuids: (s?.promptUuids ?? []).map((e) => ({ u: e.u, v: e.v })),
+      tasks: (s ? [...s.tasks.values()] : []).map((t) => ({
         taskId: t.taskId,
         taskType: t.taskType,
         status: t.status,
@@ -748,9 +763,11 @@ And the methods (place them right after `getDiagnostics` / `setCliDebug`):
         startedAt: t.startedAt,
         endedAt: t.endedAt,
       })),
-      cli: await this.getDiagnostics(id),
-      toolServers: this.toolServerStatus(id),
-      contextUsage: await this.contextUsageOrNull(id),
+      // Live-only: all three need a running Query / a live Session, and none
+      // of them is worth widening an existing endpoint's behavior for.
+      cli: s ? await this.getDiagnostics(id) : null,
+      toolServers: s ? this.toolServerStatus(id) : null,
+      contextUsage: s ? await this.contextUsageOrNull(id) : null,
     }
   }
 
@@ -1192,7 +1209,7 @@ export function buildDebugTools(host: DebugHost): SdkMcpToolDefinition<any>[] {
     ),
     tool(
       'session',
-      'Deep-dive one session: the overview fields plus history-tail routing metadata (no message bodies), withdrawn/prompt uuids, the task table, CLI diagnostics, first-party tool server status, and context usage.',
+      'Deep-dive one session: the overview fields plus history-tail routing metadata (no message bodies), withdrawn/prompt uuids, the task table, CLI diagnostics, first-party tool server status, and context usage. Works for dormant sessions too; cli, toolServers and contextUsage are null off-live.',
       { id: z.string(), history: z.number().int().min(0).max(200).optional() },
       async (a) => guard(async () => json(await host.debugSession(a.id, a.history))),
       { annotations: readOnly },

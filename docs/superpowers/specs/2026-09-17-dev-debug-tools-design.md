@@ -32,7 +32,10 @@
 | 只读首方工具在 broker 自动放行（normal / dontAsk / auto 三处） | 读 `server/permission-broker.ts` |
 | `metrics` 单例 = `{ observe, count, gauge, snapshot, reset }`，`snapshot()` → `MetricsSnapshot{uptimeSec, gauges, counters, histograms}`（直方图含 p50/p95/p99/max） | 读 `server/metrics.ts` / `shared/metrics.ts` |
 | `SessionInfo` 只有 `running` / `terminated`，**没有** `phase` 字段 | 读 `shared/session-info.ts` |
-| 公开可用：`list()`、`require(id)`、`getHistory(id)`、`contextUsage(id)`（内部 `requireLive`，**非 live 会抛**）、`toolServerStatus(id)`、`getDiagnostics(id)`、`setCliDebug(id, body)`、`send(id, text)` | 读 `server/session-manager.ts` |
+| 公开可用：`list()`、`get(id)`（live-or-meta，未知 id 抛 404）、`getHistory(id)`、`contextUsage(id)`（内部 `requireLive`，**非 live 会抛**）、`toolServerStatus(id)`、`getDiagnostics(id)`、`setCliDebug(id, body)`、`send(id, text)` | 读 `server/session-manager.ts` |
+| `require(id)` 是 **private 且 live-only**（只看 `this.sessions`，对 store 里的会话抛 404）—— 所以调试深挖必须走公开的 `get(id)` | 读 `server/session-manager.ts:5161` |
+| `send(id, text)` 是**同步**方法（`SentUserMessage`，不返回 Promise），内部 `requireSendable` 同步抛错 | 读 `server/session-manager.ts:2483` |
+| `promptUuids` 的未配对条目在 **dispatch 时**就写入（`recordPromptUuid`），不等 SDK 回显 | 读 `server/session-manager.ts:2572` |
 | 排队未消费输入的判据 = `receivedAt != null && consumedAt == null` | `server/history-utils.ts` 的 `deriveDeliveryStatus` 注释与实现 |
 | `TaskRecordUi` = `{ taskId, toolUseId?, description, subagentType?, taskType?, workflowName?, status, isBackgrounded?, progressSummary?, lastToolName?, startedAt?, endedAt?, updatedAt }` | 读 `shared/tasks.ts` |
 | `config.firstPartyTools` 是开放的 `Record<string, { enabled }>` 映射，加 `appdebug` 这个 key 无需改 `server/config.ts` | 读 `server/config.ts` |
@@ -71,9 +74,8 @@
 - `withdrawnUuids`: `string[]`
 - `promptUuids`: `{ u, v }[]`（app 级 uuid ↔ SDK 磁盘 uuid 配对，即 `rewind-files` 的映射表）
 - `tasks`: `{ taskId, taskType?, status, isBackgrounded?, progressSummary?, lastToolName?, startedAt?, endedAt? }[]`
-- `cli`: `getDiagnostics(id)` 的原样输出（`cliDebug` 三级有效值 + `stderrTail` + `debugLog` 文件信息）
-- `toolServers`: `toolServerStatus(id)` 的原样输出
 - `contextUsage`: `contextUsage(id)` 的结果，**非 live 会话为 `null`**（见错误处理）
+- `cli` / `toolServers`: 同 `contextUsage`——**live-only，非 live 会话为 `null`**
 
 写（走正常权限流，先弹卡）：
 
@@ -118,7 +120,7 @@
 ### `server/session-manager.ts` 增两个只读内省方法
 
 - `debugSessions(): DebugSessionSummary[]` —— 复用 `this.list()` 拿公开字段，叠加 `s.pending.size` / `s.pendingTurns` / 扫 `s.history` 得出的 `queuedInputs` / `s.firstPartyErrors`。每个会话只做一次线性扫描，不排序。
-- `debugSession(id: string): DebugSessionDetail` —— `this.require(id)` 后深挖；`contextUsage` 走既有 `contextUsage(id)`，用 try/catch 兜住 `requireLive` 的抛错，非 live 时该字段为 `null`。
+- `debugSession(id: string): DebugSessionDetail` —— 用公开的 **`this.get(id)`**（live-or-meta，未知 id 抛 404）解析，**不是** `this.require(id)`（后者只解析 live，会对 store 里的会话误报 404）；live-only 的三个段落（`cli` / `toolServers` / `contextUsage`）在非 live 时为 `null`，其余内存态退化为空集合。
 - `setCliDebug` / `send` **已存在**，直接用，不新增。
 - 快照类型 `DebugSessionSummary` / `DebugSessionDetail` 定义在 `server/session-types.ts`。
 
@@ -163,7 +165,7 @@ session.firstPartyTools.appdebug  ??  config.firstPartyTools.appdebug.enabled  ?
 
 - 所有 handler 包 `guard()`：`HttpError`（未知 sessionId 等）与任意异常都变成 `isError: true` 文本，绝不 reject。
 - `logs` 在环形未启用时返回空 `lines` + `ringEnabled: false` + `ringLines: 0`，并在文本里说明「环形缓冲未启用」，而**不是报错**。
-- `session` 对 dormant / terminated 会话：`cli.stderrTail` 仍可读（读盘），`contextUsage` 为 `null`，`toolServers` 正常（纯注册表查询）。
+- `session` 对 dormant / terminated 会话：**从 store 解析**（走公开的 `get(id)` live-or-meta 解析器，而不是 live-only 的 `require(id)`，后者会对 store 里的会话报 404）；`historyTail` / `withdrawnUuids` / `promptUuids` / `tasks` 这些内存态退化为空数组；`cli` / `toolServers` / `contextUsage` 三个 **live-only 段落为 `null`**（它们都需要活着的 Query 或活的 Session，且不值得为它们去放宽既有 endpoint 的行为）。
 - 输出全部有界：`history` ≤ 200、`logs.limit` ≤ 1000、每行 4KB、环形 1000 行。
 - `enableDevMode` 幂等；重复注册不抛。
 
