@@ -158,6 +158,12 @@ describe('SessionStore IDB cache (Phase 1)', () => {
     const records = await cursorRecent(db!, 's6', 3)
     // oldest-first → a-0, a-1, a-2
     expect(records.map((r) => r.uuid)).toEqual(['a-0', 'a-1', 'a-2'])
+    // The limit keeps the MOST RECENT n (still oldest-first). This is the
+    // mechanism initIdb's cold-load relies on to bound memory at
+    // MEMORY_ITEM_CAP, so it is asserted here rather than by seeding a store
+    // with cap+1 records (which cost ~15s under fake-indexeddb).
+    const capped = await cursorRecent(db!, 's6', 2)
+    expect(capped.map((r) => r.uuid)).toEqual(['a-1', 'a-2'])
   })
 
   it('clearSession idb helper deletes all records + meta', async () => {
@@ -172,32 +178,67 @@ describe('SessionStore IDB cache (Phase 1)', () => {
   })
 
   // ── Phase 2: loadOlder from IDB ────────────────────────────────────
+  //
+  // These three used to be ONE test that seeded 1001 records so that
+  // MEMORY_ITEM_CAP (1000) would make cold-load leave exactly one record
+  // behind in IDB. Under fake-indexeddb every cursor step is a promise
+  // round-trip (~7.5ms per record), so initIdb's two walks — scanUuidSeqs +
+  // cursorRecent — cost ~15s for what was only the test's SETUP;
+  // loadOlderFromIdb itself ran in 3ms.
+  //
+  // loadOlderFromIdb depends on exactly one thing: IDB holding records at a
+  // seq below the oldest in-memory message's. That state is built directly
+  // below, which is ~100x cheaper AND reaches the hasMore / non-contiguous
+  // branches of cursorOlder that the 1001-record version never exercised.
 
-  it('loadOlderFromIdb pages older messages not in memory (cold-load leaves older in IDB)', async () => {
-    // Seed IDB directly with 1001 messages (seqs 1..1001). Cold-load fetches
-    // the most-recent 1000 (MEMORY_ITEM_CAP), leaving seq 1 only in IDB.
-    const db = await openDb()
-    const records = Array.from({ length: 1001 }, (_, i) => ({
-      sessionId: 's8',
-      uuid: `old-${i}`,
-      seq: i + 1,
-      msg: asstMsg(`old-${i}`, `msg ${i}`),
-    }))
-    await putMessages(db!, records, { sessionId: 's8', maxSeq: 1001, minSeq: 1 })
-
-    const store = new SessionStore('s8')
+  /** Store with one persisted message in memory (assigned seq 1), plus
+   *  IDB-only records at `seqs` (all < 1, so they sit older than the tail). */
+  async function storeWithIdbOnlySeqs(sessionId: string, seqs: number[]): Promise<SessionStore> {
+    const store = new SessionStore(sessionId)
     await store.idbReady
-    // Memory holds the 1000 most-recent (seqs 2..1001); seq 1 is only in IDB.
-    expect(store.getSnapshot().items.length).toBe(1000)
-    expect(store.getSnapshot().items[0].id).toBe('old-1') // oldest in memory = seq 2
+    store.dispatch({ type: 'MESSAGE', message: asstMsg('tail', 'in memory') })
+    store.persistNow()
+    await store.flushIdb()
+    const db = await openDb()
+    const records = seqs.map((seq) => ({
+      sessionId,
+      uuid: `s${seq}`,
+      seq,
+      msg: asstMsg(`s${seq}`, `older ${seq}`),
+    }))
+    await putMessages(db!, records, { sessionId, maxSeq: 1, minSeq: Math.min(...seqs) })
+    return store
+  }
+
+  it('loadOlderFromIdb pages records older than the in-memory tail, oldest-first', async () => {
+    const store = await storeWithIdbOnlySeqs('s8', [0, -1])
+    expect(store.getSnapshot().items.map((i) => i.id)).toEqual(['tail'])
 
     const page = await store.loadOlderFromIdb(200)
     expect(page).not.toBeNull()
-    expect(page!.messages).toHaveLength(1)
-    expect(page!.messages[0].uuid).toBe('old-0') // seq 1, oldest-first
+    expect(page!.messages.map((m) => m.uuid)).toEqual(['s-1', 's0'])
     expect(page!.hasMore).toBe(false)
-    expect(page!.contiguous).toBe(true) // seq 1 abuts seq 2
-  }, 60_000)
+    expect(page!.contiguous).toBe(true) // seq 0 abuts the tail's seq 1
+  })
+
+  it('loadOlderFromIdb reports hasMore when records remain below the page', async () => {
+    const store = await storeWithIdbOnlySeqs('s8b', [0, -1, -2])
+
+    const page = await store.loadOlderFromIdb(2)
+    expect(page!.messages.map((m) => m.uuid)).toEqual(['s-1', 's0']) // the 2 newest older
+    expect(page!.hasMore).toBe(true)
+    expect(page!.contiguous).toBe(true)
+  })
+
+  it('loadOlderFromIdb reports contiguous:false across a seq gap (mid-write tab close)', async () => {
+    // seq 0 is missing, so the newest IDB record (-1) does not abut the
+    // tail's seq 1 — the caller must probe the server to bridge the hole.
+    const store = await storeWithIdbOnlySeqs('s8c', [-1, -2])
+
+    const page = await store.loadOlderFromIdb(200)
+    expect(page!.messages.map((m) => m.uuid)).toEqual(['s-2', 's-1'])
+    expect(page!.contiguous).toBe(false)
+  })
 
   it('loadOlderFromIdb returns null when IDB is unavailable', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

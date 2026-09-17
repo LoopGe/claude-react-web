@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, utimesSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { appendStderrLine, readStderrTail, cliLogInfo, cleanupCliLogs } from './cli-diagnostics.js'
@@ -26,14 +27,38 @@ describe('cli-diagnostics', () => {
     await expect(cliLogInfo(undefined, 's1')).resolves.toEqual({ exists: false })
   })
 
-  it('caps the jsonl file at ~5MB keeping the tail', { timeout: 30_000 }, async () => {
-    const big = 'x'.repeat(2048)
-    for (let i = 0; i < 3000; i++) await appendStderrLine(logsDir, 's1', `${i}-${big}`)
+  it('caps the jsonl file at ~5MB, keeping the tail and dropping the head', async () => {
+    // Pre-fill past MAX_STDERR_BYTES in ONE write rather than driving the cap
+    // with real appends. appendStderrLine does a stat + mkdir + appendFile per
+    // call, so the 3000 sequential appends this used to make were ~9000 fs ops
+    // — 30s, which then tripped its own 30s timeout under a loaded pool and
+    // reddened the suite. The cap branch fires on the first append that would
+    // cross the limit, so one oversized seed file reaches the same code path.
     const file = join(logsDir, 'cli-stderr-s1.jsonl')
-    const stat = await import('node:fs/promises').then((f) => f.stat(file))
-    expect(stat.size).toBeLessThan(5 * 1024 * 1024 + 4096)
-    const tail = await readStderrTail(logsDir, 's1', 5)
-    expect(tail.length).toBeLessThanOrEqual(5)
+    const filler = 'y'.repeat(2048)
+    const seeded: string[] = []
+    let bytes = 0
+    for (let i = 0; bytes <= 5 * 1024 * 1024; i++) {
+      const entry = JSON.stringify({ ts: Date.now(), line: `seed-${i}-${filler}` })
+      seeded.push(entry)
+      bytes += entry.length + 1
+    }
+    writeFileSync(file, seeded.join('\n') + '\n', 'utf8')
+    const oldestSeededLine = `seed-0-${filler}`
+
+    await appendStderrLine(logsDir, 's1', 'after-cap-1')
+    await appendStderrLine(logsDir, 's1', 'after-cap-2')
+
+    // Rewritten down to KEEP_LAST_BYTES (1MB) + the new entries, not left at 5MB.
+    const { size } = await stat(file)
+    expect(size).toBeLessThan(2 * 1024 * 1024)
+    // The newest lines survive, in order…
+    expect(await readStderrTail(logsDir, 's1', 2)).toEqual(['after-cap-1', 'after-cap-2'])
+    // …the head was dropped (the point of the cap, previously unasserted)…
+    const all = await readStderrTail(logsDir, 's1', 100_000)
+    expect(all).not.toContain(oldestSeededLine)
+    // …and the kept tail is more than just the two new lines.
+    expect(all.length).toBeGreaterThan(2)
   })
 
   it('cliLogInfo reports file existence and size', async () => {

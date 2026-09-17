@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
-// jsdom does not implement window.matchMedia, so each test that branches on
-// it installs a spy (same pattern as utils/theme.test.ts).
+// The test DOM does not implement window.matchMedia, so each test that
+// branches on it installs a spy (same pattern as utils/theme.test.ts).
 
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'

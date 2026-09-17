@@ -1,3 +1,15 @@
+// @vitest-environment jsdom
+// Pinned to jsdom while the rest of src/** runs on happy-dom (see
+// vitest.config.ts). The storage-quota suite below is ABOUT quota semantics:
+// "recovers from QuotaExceededError by force-pruning then retrying" seeds 5MB
+// of cache entries and drives the recovery path, and jsdom is the environment
+// that models a real 5MB localStorage budget. happy-dom enforces no quota at
+// all, and serves `localStorage` through a proxy that no interception style
+// reaches (prototype assignment, prototype spy, instance spy and instance
+// defineProperty were each measured — none intercept, and deleting the own
+// property throws out of the proxy's deleteProperty trap), so the injected
+// failure never fires there. One file on jsdom costs ~2.4s of env boot; this is
+// the test that actually needs it.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionStore } from './store'
 import { toTranscriptItem } from './normalize'
@@ -436,10 +448,19 @@ describe('SessionStore projection (persist-only capping)', () => {
     expect(tr.content.some((b) => b.type === 'text' && /image omitted/.test(b.text ?? ''))).toBe(true)
   })
 
-  it('byte-budget backstop drops oldest messages but keeps the floor (50)', () => {
+  it('byte-budget backstop drops the oldest messages to fit the 2MB cap', () => {
     // Build a session whose projected payload exceeds 2MB: many messages
     // each carrying a tool_result just under the 8000 cap (~8KB each).
     // ~300 such messages ≈ 2.4MB projected > 2MB limit.
+    //
+    // NOTE: this exercises the byte-trim, NOT the STORAGE_TRIM_FLOOR_MESSAGES
+    // branch — measured, the trim keeps ~133 messages here, comfortably above
+    // the floor of 50, so the old `>= 50` assertion was vacuous. Reaching the
+    // floor needs messages projecting to >42KB each (2MB / 50), i.e. a payload
+    // several MB larger, and STORAGE_MAX_BYTES is a module constant with no
+    // test seam — so the floor stays uncovered rather than paying seconds of
+    // JSON.stringify for it. The ~2s here is irreducible for the same reason:
+    // the payload must exceed the real 2MB constant to reach the trim at all.
     const id = 'proj-budget'
     const store = new SessionStore(id)
     const tr = 'x'.repeat(7800)
@@ -458,20 +479,26 @@ describe('SessionStore projection (persist-only capping)', () => {
     }
     vi.runAllTimers()
     const raw = localStorage.getItem(STORAGE_PREFIX + id)!
-    expect(raw.length).toBeLessThanOrEqual(2 * 1024 * 1024 + 256) // within budget (+slack for the floor overshoot)
+    // Within budget. The +256 covers the wrapper-overhead estimate the trim
+    // loop uses (a rounded constant, not an exact measure of the JSON envelope),
+    // so the written payload can sit a little over the cap without the trim
+    // having misbehaved.
+    expect(raw.length).toBeLessThanOrEqual(2 * 1024 * 1024 + 256)
     const data = JSON.parse(raw)
     const kept = data.messages.length
-    // Floor enforced — never trimmed below 50.
-    expect(kept).toBeGreaterThanOrEqual(50)
+    // Older messages were dropped, and the kept suffix is the NEWEST run.
     expect(kept).toBeLessThan(300)
+    expect(kept).toBeGreaterThan(0)
+    expect(data.messages.at(-1).uuid).toBe('u-299')
+    expect(data.messages[0].uuid).toBe(`u-${300 - kept}`)
     // lastMessageUuid preserved.
     expect(data.lastMessageUuid).toBe('u-299')
-    // This test does ~300 × 8KB localStorage writes — measured 4.0s isolated,
-    // up to ~5.7s under full-suite parallel load, which exceeds vitest's 5s
-    // default and flakes the whole verify gate. Raise the per-test timeout.
-    // It still flaked at 10s on the 4-vCPU CI runner when maxWorkers
-    // oversubscribed the box (8 workers / 4 cores); maxWorkers is now capped to
-    // the machine's parallelism, but keep a generous margin for slow CI hosts.
+    // One 2MB+ project/stringify/setItem cycle — measured 2.0s isolated, more
+    // under full-suite parallel load, which exceeds vitest's 5s default and
+    // flakes the whole verify gate. Raise the per-test timeout. It still flaked
+    // at 10s on the 4-vCPU CI runner when maxWorkers oversubscribed the box
+    // (8 workers / 4 cores); maxWorkers is now capped to the machine's
+    // parallelism, but keep a generous margin for slow CI hosts.
   }, 30_000)
 })
 

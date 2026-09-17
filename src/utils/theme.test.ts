@@ -1,8 +1,8 @@
-// @vitest-environment jsdom
-// This file needs the DOM (document.documentElement, localStorage,
+// @vitest-environment happy-dom
+// This file needs a DOM (document.documentElement, localStorage,
 // window.matchMedia) so it overrides the utils→node default from
-// vitest.config.ts. matchMedia is not implemented by jsdom, so each test
-// that exercises 'system' resolution installs its own mock via spy.
+// vitest.config.ts. matchMedia is not implemented by the test DOM, so each
+// test that exercises 'system' resolution installs its own mock via spy.
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import {

@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from 'vitest'
 import { CHIP_ATTR, CHIP_CLASS, renderTokens, serializeTokens } from './richPromptDom'
 import { joinTokens, tokenize } from './pastedText'

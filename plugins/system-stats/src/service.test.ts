@@ -66,42 +66,29 @@ afterAll(() => {
 // child's PowerShell probe can stall well past the old 12s.
 const SERVICE_TEST_TIMEOUT = 30_000
 
+// One test, not two. There used to be a separate 'answers activate +
+// deactivate' case, but the notification test below already drives the same
+// activate → deactivate round-trip; it just didn't assert the two `{ok:true}`
+// replies. Folding those assertions in here drops a whole extra service spawn
+// (a real Node child that, on Windows, spawns PowerShell for the GPU probe —
+// ~4s of the file's 8.3s) with no loss of coverage.
 describe('system-stats service child loop', () => {
   it(
-    'answers activate + deactivate',
-    async () => {
-      const svc = startService()
-      procs.push(svc.child)
-      const r1 = await svc.call('activate', {
-        pluginId: 'system-stats.claude-react-web',
-        version: '0.1.0',
-        dataDir: process.cwd(),
-        permissions: [],
-        configuration: { 'system-stats.claude-react-web.intervalMs': 60_000 },
-      })
-      expect(r1).toEqual({ ok: true })
-      const r2 = await svc.call('deactivate', { reason: 'disable' })
-      expect(r2).toEqual({ ok: true })
-      svc.close()
-    },
-    SERVICE_TEST_TIMEOUT,
-  )
-
-  it(
-    'pushes an app.event notification with stat values on each sample',
+    'answers activate/deactivate and pushes an app.event notification with stat values on each sample',
     async () => {
       const events: unknown[] = []
       const svc = startService((msg) => {
         if (msg.method === 'app.event') events.push(msg)
       })
       procs.push(svc.child)
-      await svc.call('activate', {
+      const activated = await svc.call('activate', {
         pluginId: 'system-stats.claude-react-web',
         version: '0.1.0',
         dataDir: process.cwd(),
         permissions: [],
         configuration: { 'system-stats.claude-react-web.intervalMs': 100 },
       })
+      expect(activated).toEqual({ ok: true })
       // On Windows the GPU-utilization probe adds up to PROBE_MAX_MS (5s) to the
       // first sample, so allow a comfortable margin over the default interval.
       const deadline = Date.now() + 25_000
@@ -110,7 +97,7 @@ describe('system-stats service child loop', () => {
       const first = events[0] as { params: { widgetId: string; payload: { values: unknown[] } } }
       expect(first.params.widgetId).toBe('system-stats.claude-react-web.overview')
       expect(Array.isArray(first.params.payload.values)).toBe(true)
-      await svc.call('deactivate', { reason: 'disable' })
+      expect(await svc.call('deactivate', { reason: 'disable' })).toEqual({ ok: true })
       svc.close()
     },
     SERVICE_TEST_TIMEOUT,

@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { AnimatePresence } from 'motion/react'

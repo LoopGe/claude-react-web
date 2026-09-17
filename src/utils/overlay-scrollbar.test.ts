@@ -1,6 +1,6 @@
-// @vitest-environment jsdom
+// @vitest-environment happy-dom
 // overlay-scrollbar.ts touches the real DOM (appendChild, MutationObserver,
-// getComputedStyle), so it needs jsdom even though src/utils defaults to node.
+// getComputedStyle), so it needs a DOM even though src/utils defaults to node.
 import { describe, it, expect } from 'vitest'
 import { attachOverlayScrollbar } from './overlay-scrollbar'
 

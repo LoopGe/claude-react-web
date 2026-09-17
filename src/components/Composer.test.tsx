@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { render as rtlRender, cleanup, fireEvent } from '@testing-library/react'
+import { render as rtlRender, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { Composer } from './Composer'
 import { ToastProvider } from './ToastProvider'
 import type { SlashCommand } from '../types'
@@ -774,15 +774,20 @@ describe('Composer context-menu Cut/Copy/Paste/Select-all', () => {
     throw new Error(`Menu item "${label}" not found`)
   }
 
+  // Cut/Paste settle across an awaited `navigator.clipboard` call, so the
+  // assertion has to wait for the OUTCOME rather than for a fixed number of
+  // frames. These three used `await requestAnimationFrame` as a stand-in for
+  // "let React commit", which silently depended on the environment: jsdom
+  // schedules rAF on a real ~16ms timer (long enough by luck), happy-dom
+  // resolves it in ~0ms (not long enough — measured). `waitFor` polls the real
+  // condition, so it is correct under both and has no latent flake margin.
   it('Paste inserts text at a collapsed caret (non-zero position)', async () => {
     navigator.clipboard.readText = async () => 'XYZ'
     const { container } = render(<Harness initial="hello" />)
     rightClick(container, 3, 3)
     await new Promise((r) => requestAnimationFrame(r))
     clickMenuItem('Paste')
-    await new Promise((r) => requestAnimationFrame(r))
-    const editor = getEditor(container)
-    expect(getEditorValue(editor)).toBe('helXYZlo')
+    await waitFor(() => expect(getEditorValue(getEditor(container))).toBe('helXYZlo'))
   })
 
   it('Paste replaces a selection and does not double-apply', async () => {
@@ -791,9 +796,7 @@ describe('Composer context-menu Cut/Copy/Paste/Select-all', () => {
     rightClick(container, 1, 4)
     await new Promise((r) => requestAnimationFrame(r))
     clickMenuItem('Paste')
-    await new Promise((r) => requestAnimationFrame(r))
-    const editor = getEditor(container)
-    expect(getEditorValue(editor)).toBe('hXXo')
+    await waitFor(() => expect(getEditorValue(getEditor(container))).toBe('hXXo'))
   })
 
   it('Cut removes the selected text and copies it', async () => {
@@ -803,9 +806,7 @@ describe('Composer context-menu Cut/Copy/Paste/Select-all', () => {
     rightClick(container, 1, 4)
     await new Promise((r) => requestAnimationFrame(r))
     clickMenuItem('Cut')
-    await new Promise((r) => requestAnimationFrame(r))
-    const editor = getEditor(container)
-    expect(getEditorValue(editor)).toBe('ho')
+    await waitFor(() => expect(getEditorValue(getEditor(container))).toBe('ho'))
     expect(written).toEqual(['ell'])
   })
 

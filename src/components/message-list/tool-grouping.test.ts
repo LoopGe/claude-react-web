@@ -1,3 +1,6 @@
+// @vitest-environment node
+// No DOM anywhere in this file. `src/**` otherwise maps to happy-dom (see
+// vitest.config.ts) as the safe default; opting out skips that env boot.
 import { describe, it, expect } from 'vitest'
 import { summarizeToolGroup, groupMayMatchSearch } from './tool-grouping'
 import type { Block } from '../../types'

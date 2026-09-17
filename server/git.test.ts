@@ -1,7 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from 'node:fs'
-import { rm, mkdir, mkdtemp } from 'node:fs/promises'
+import {
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  cpSync,
+  rmSync,
+} from 'node:fs'
+import { rm, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { buildGitRouter } from './git-routes.js'
@@ -32,7 +40,7 @@ import {
 } from './git.js'
 import { Hono } from 'hono'
 import { createErrorHandler } from './errors.js'
-import { tempDir } from './__test-utils__/index.js'
+import { tempDir, rmRf } from './__test-utils__/index.js'
 
 // Git process startup is noticeably slower on Windows under the full Vitest
 // pool, so keep the git integration suite from flaking at the 5s default.
@@ -110,6 +118,110 @@ function gitCommitAll(cwd: string, message: string): string {
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim()
 }
 
+// ── Seeded-repo template ─────────────────────────────────────────────────
+// Building a repo inside each test costs three git spawns — measured on
+// Windows: init 205ms + add 121ms + commit 951ms ≈ 1.3s. ~54 tests needed one,
+// so ~69s of this file's ~195s was fixture construction before a single
+// assertion ran, and that made this file the WHOLE suite's critical path:
+// every other test file finished ~25s before it did, so `npm test`'s wall
+// clock was simply git.test.ts's runtime.
+//
+// Instead: build ONE repo once, `git repack` its loose objects into a single
+// packfile, drop `.git/hooks` + `.git/logs` (pure copy weight a copied repo
+// never reads), then `fs.cpSync` it per test. Measured: 19 files / ~58ms per
+// copy — 22x cheaper — and a copy is a fully functional work tree (commit,
+// stash, checkout, `worktree add` all verified against one).
+//
+// Commit SHAs are byte-identical in every copy (a SHA is a function of tree
+// content + author + timestamp, all fixed when the template is built), so a
+// test needing to reference an older commit reads `seedShas()` instead of
+// making commits of its own.
+
+/** Content committed by the template's first commit. Tests assert against
+ *  these constants instead of re-committing their own content. */
+const SEED = {
+  a: 'alpha\n',
+  b: 'beta\n',
+  /** Rename source for the `git mv` status test. */
+  old: 'content\n',
+  /** Multi-line, so a one-line edit produces a readable unified diff. */
+  multi: 'one\ntwo\nthree\n',
+  sub: 'sub-alpha\n',
+  /** 700 lines — a full rewrite lands past MAX_DIFF_LINES (500). */
+  big: Array.from({ length: 700 }, (_, i) => `orig-${i}`).join('\n') + '\n',
+  /** NUL bytes guarantee git classifies the blob as binary. */
+  bin: Buffer.from([0, 1, 2, 0, 3, 4]),
+  /** `a.txt` on the template's second branch — differs from main's copy, so
+   *  a local edit to a.txt is enough to make `checkout other` conflict. */
+  aOnOther: 'on-other\n',
+} as const
+
+/** Template commit subjects on `main`, oldest → newest. Only `log.txt` moves
+ *  between them, so every other seed file's content at HEAD equals its SEED
+ *  constant regardless of history depth. */
+const SEED_SUBJECTS = ['first', 'second', 'third'] as const
+
+/** Second branch shipped by the template (see SEED.aOnOther). */
+const SEED_BRANCH = 'other'
+
+let templateDir: string | null = null
+const templateShas: string[] = []
+
+/** Build (once) and return the template repo's path. */
+function buildTemplate(): string {
+  if (templateDir) return templateDir
+  const tpl = tempDir('git-template')
+  gitInit(tpl)
+  writeFileSync(join(tpl, 'a.txt'), SEED.a)
+  writeFileSync(join(tpl, 'b.txt'), SEED.b)
+  writeFileSync(join(tpl, 'old.txt'), SEED.old)
+  writeFileSync(join(tpl, 'multi.txt'), SEED.multi)
+  writeFileSync(join(tpl, 'big.txt'), SEED.big)
+  writeFileSync(join(tpl, 'blob.bin'), SEED.bin)
+  mkdirSync(join(tpl, 'sub'), { recursive: true })
+  writeFileSync(join(tpl, 'sub', 'a.txt'), SEED.sub)
+  SEED_SUBJECTS.forEach((subject, i) => {
+    if (i > 0) writeFileSync(join(tpl, 'log.txt'), `v${i + 1}\n`)
+    templateShas.push(gitCommitAll(tpl, subject))
+  })
+  // A second branch whose a.txt diverges from main's, so the two
+  // checkoutBranch conflict tests don't each have to build one (they were the
+  // file's two slowest tests at 15.4s + 9.6s).
+  execFileSync('git', ['checkout', '--quiet', '-b', SEED_BRANCH], { cwd: tpl })
+  writeFileSync(join(tpl, 'a.txt'), SEED.aOnOther)
+  gitCommitAll(tpl, 'other-version')
+  execFileSync('git', ['checkout', '--quiet', 'main'], { cwd: tpl })
+  // Collapse the loose objects into one packfile and drop the two dirs a
+  // copy never reads: 32 files → 19, ~73ms → ~58ms per copy.
+  execFileSync('git', ['repack', '-adq'], { cwd: tpl })
+  rmSync(join(tpl, '.git', 'hooks'), { recursive: true, force: true })
+  rmSync(join(tpl, '.git', 'logs'), { recursive: true, force: true })
+  templateDir = tpl
+  return tpl
+}
+
+/** Copy the template repo into `target` (an existing empty dir). Leaves a
+ *  clean work tree on `main` with SEED_SUBJECTS.length commits. */
+function seedRepo(target: string): void {
+  cpSync(buildTemplate(), target, { recursive: true })
+}
+
+/** Template commit SHAs on `main`, oldest → newest. Stable across copies. */
+function seedShas(): readonly string[] {
+  buildTemplate()
+  return templateShas
+}
+
+// Synchronous on purpose. The per-test dirs below are removed fire-and-forget
+// (documented there: awaiting Windows' EPERM window cost ~2s PER test), but the
+// template is removed ONCE per file — and an un-awaited rm loses the race with
+// worker exit, leaking a template dir into %TEMP% on every run. rmRf is the
+// repo's tolerant sync remover: it retries the AV/EPERM window briefly, then
+// leaks rather than throwing, so cleanup can never red-green the suite.
+afterAll(() => {
+  if (templateDir) rmRf(templateDir)
+})
+
 /** Build a Hono app wrapping the git router with the same onError hook
  *  the production app uses, so HttpError → JSON conversion is exercised. */
 function buildApp(): Hono {
@@ -170,9 +282,7 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('reports a clean repo correctly', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'README.md'), '# hi\n')
-      gitCommitAll(dir, 'init')
+      seedRepo(dir)
       const app = buildApp()
       const res = await app.request(`/api/git/status?cwd=${encodeURIComponent(dir)}`)
       expect(res.status).toBe(200)
@@ -187,10 +297,9 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('buckets staged / unstaged / untracked files separately', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'a.txt'), 'a-orig\n')
-      writeFileSync(join(dir, 'b.txt'), 'b-orig\n')
-      gitCommitAll(dir, 'init')
+      // a.txt and b.txt arrive tracked and unmodified from the template, so
+      // the three buckets below hold exactly the files this test touches.
+      seedRepo(dir)
 
       // a.txt: staged modification (committed, modified, then `git add`)
       writeFileSync(join(dir, 'a.txt'), 'a-changed\n')
@@ -214,9 +323,7 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('reports state=dirty when there are uncommitted changes', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'a.txt'), 'a\n')
-      gitCommitAll(dir, 'init')
+      seedRepo(dir)
       writeFileSync(join(dir, 'a.txt'), 'a-changed\n')
       const app = buildApp()
       const res = await app.request(`/api/git/status?cwd=${encodeURIComponent(dir)}`)
@@ -225,10 +332,7 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('reports repoRoot even when queried from a subdirectory', async () => {
-      gitInit(dir)
-      mkdirSync(join(dir, 'sub'), { recursive: true })
-      writeFileSync(join(dir, 'sub', 'a.txt'), 'a\n')
-      gitCommitAll(dir, 'init')
+      seedRepo(dir) // ships a tracked sub/a.txt
       writeFileSync(join(dir, 'sub', 'a.txt'), 'a-changed\n')
       // Query status from the repo's subdirectory. Porcelain paths stay
       // relative to the work-tree root, and repoRoot must be that root —
@@ -247,7 +351,7 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('handles paths with spaces and unicode via -z parsing', async () => {
-      gitInit(dir)
+      seedRepo(dir)
       const weird = 'has spaces and 中文 $.txt'
       writeFileSync(join(dir, weird), 'hi')
       const app = buildApp()
@@ -258,9 +362,7 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('detects renames and exposes renamedFrom', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'old.txt'), 'content\n')
-      gitCommitAll(dir, 'init')
+      seedRepo(dir) // ships a tracked old.txt
       // Rename + stage. `git mv` updates the index in one step.
       execFileSync('git', ['mv', 'old.txt', 'new.txt'], { cwd: dir })
       const app = buildApp()
@@ -273,12 +375,10 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('reports detached HEAD with branch=null', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'a.txt'), 'a\n')
-      const sha1 = gitCommitAll(dir, 'first')
-      writeFileSync(join(dir, 'a.txt'), 'b\n')
-      gitCommitAll(dir, 'second')
-      execFileSync('git', ['checkout', '--quiet', sha1], { cwd: dir })
+      seedRepo(dir)
+      // Detach onto the template's root commit — the SHA is identical in
+      // every copy, so no commits of our own are needed.
+      execFileSync('git', ['checkout', '--quiet', seedShas()[0]], { cwd: dir })
       const app = buildApp()
       const res = await app.request(`/api/git/status?cwd=${encodeURIComponent(dir)}`)
       const body = await json<{ branch: string | null; detached: boolean }>(res)
@@ -287,9 +387,7 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('reports rebasing state via .git marker file', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'a.txt'), 'a\n')
-      gitCommitAll(dir, 'init')
+      seedRepo(dir)
       // Manually drop a rebase-merge dir ?simulating an in-progress rebase
       // without having to actually trigger conflict resolution.
       mkdirSync(join(dir, '.git', 'rebase-merge'), { recursive: true })
@@ -300,9 +398,8 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('ignores a stale REBASE_HEAD left behind by an aborted rebase', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'a.txt'), 'a\n')
-      const sha = gitCommitAll(dir, 'init')
+      seedRepo(dir)
+      const sha = seedShas().at(-1)!
       // REBASE_HEAD can linger after a rebase is aborted / the process is
       // killed. git itself does not report a rebase in progress from a lone
       // REBASE_HEAD (only rebase-apply/ or rebase-merge/ count), so neither
@@ -317,16 +414,14 @@ describe('git-routes', () => {
 
   describe('GET /api/git/diff', () => {
     it.skipIf(!gitOk)('400 when path is missing', async () => {
-      gitInit(dir)
+      seedRepo(dir)
       const app = buildApp()
       const res = await app.request(`/api/git/diff?cwd=${encodeURIComponent(dir)}`)
       expect(res.status).toBe(400)
     })
 
     it.skipIf(!gitOk)('400 when path tries to escape the repo', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'a.txt'), 'x\n')
-      gitCommitAll(dir, 'init')
+      seedRepo(dir)
       const app = buildApp()
       const res = await app.request(`/api/git/diff?cwd=${encodeURIComponent(dir)}&path=${encodeURIComponent('../etc/passwd')}`)
       expect(res.status).toBe(400)
@@ -334,19 +429,17 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('400 when path is absolute', async () => {
-      gitInit(dir)
+      seedRepo(dir)
       const app = buildApp()
       const res = await app.request(`/api/git/diff?cwd=${encodeURIComponent(dir)}&path=${encodeURIComponent('/etc/passwd')}`)
       expect(res.status).toBe(400)
     })
 
     it.skipIf(!gitOk)('returns a unified diff for a worktree change', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'a.txt'), 'one\ntwo\nthree\n')
-      gitCommitAll(dir, 'init')
-      writeFileSync(join(dir, 'a.txt'), 'one\nTWO\nthree\n')
+      seedRepo(dir) // multi.txt is committed as SEED.multi ('one\ntwo\nthree\n')
+      writeFileSync(join(dir, 'multi.txt'), 'one\nTWO\nthree\n')
       const app = buildApp()
-      const res = await app.request(`/api/git/diff?cwd=${encodeURIComponent(dir)}&path=a.txt`)
+      const res = await app.request(`/api/git/diff?cwd=${encodeURIComponent(dir)}&path=multi.txt`)
       expect(res.status).toBe(200)
       const body = await json<{ text: string; truncated: boolean; isBinary: boolean }>(res)
       expect(body.text).toContain('-two')
@@ -356,9 +449,7 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('returns a staged diff when staged=1', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'a.txt'), 'one\n')
-      gitCommitAll(dir, 'init')
+      seedRepo(dir) // a.txt is committed as SEED.a ('alpha\n')
       writeFileSync(join(dir, 'a.txt'), 'two\n')
       execFileSync('git', ['add', 'a.txt'], { cwd: dir })
       writeFileSync(join(dir, 'a.txt'), 'three\n')
@@ -367,8 +458,8 @@ describe('git-routes', () => {
       const stagedBody = await json<{ text: string }>(staged)
       const worktree = await app.request(`/api/git/diff?cwd=${encodeURIComponent(dir)}&path=a.txt&staged=0`)
       const worktreeBody = await json<{ text: string }>(worktree)
-      // staged: HEAD ?index   (one ?two)
-      expect(stagedBody.text).toContain('-one')
+      // staged: HEAD ?index   (alpha ?two)
+      expect(stagedBody.text).toContain('-alpha')
       expect(stagedBody.text).toContain('+two')
       // worktree: index ?working tree   (two ?three)
       expect(worktreeBody.text).toContain('-two')
@@ -376,11 +467,7 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('truncates diffs longer than the line cap', async () => {
-      gitInit(dir)
-      const lines: string[] = []
-      for (let i = 0; i < 700; i++) lines.push(`orig-${i}`)
-      writeFileSync(join(dir, 'big.txt'), lines.join('\n') + '\n')
-      gitCommitAll(dir, 'init')
+      seedRepo(dir) // big.txt is committed as SEED.big (700 `orig-N` lines)
       const lines2: string[] = []
       for (let i = 0; i < 700; i++) lines2.push(`new-${i}`)
       writeFileSync(join(dir, 'big.txt'), lines2.join('\n') + '\n')
@@ -393,10 +480,7 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('marks binary files with isBinary=true and empty text', async () => {
-      gitInit(dir)
-      // Binary content: a few NUL bytes guarantee git classifies it as binary.
-      writeFileSync(join(dir, 'blob.bin'), Buffer.from([0, 1, 2, 0, 3, 4]))
-      gitCommitAll(dir, 'init')
+      seedRepo(dir) // blob.bin is committed as SEED.bin (contains NUL bytes)
       writeFileSync(join(dir, 'blob.bin'), Buffer.from([0, 9, 9, 0, 9, 9]))
       const app = buildApp()
       const res = await app.request(`/api/git/diff?cwd=${encodeURIComponent(dir)}&path=blob.bin`)
@@ -414,19 +498,13 @@ describe('git-routes', () => {
 
   describe('GET /api/git/log', () => {
     it.skipIf(!gitOk)('returns commits in reverse chronological order', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'a.txt'), '1\n')
-      gitCommitAll(dir, 'first')
-      writeFileSync(join(dir, 'a.txt'), '2\n')
-      gitCommitAll(dir, 'second')
-      writeFileSync(join(dir, 'a.txt'), '3\n')
-      gitCommitAll(dir, 'third')
+      seedRepo(dir) // SEED_SUBJECTS committed oldest → newest
       const app = buildApp()
       const res = await app.request(`/api/git/log?cwd=${encodeURIComponent(dir)}&limit=10`)
       expect(res.status).toBe(200)
       const body = await json<{ commits: Array<{ subject: string; hash: string; shortHash: string; author: string; date: number }> }>(res)
-      expect(body.commits).toHaveLength(3)
-      expect(body.commits.map((c) => c.subject)).toEqual(['third', 'second', 'first'])
+      expect(body.commits).toHaveLength(SEED_SUBJECTS.length)
+      expect(body.commits.map((c) => c.subject)).toEqual([...SEED_SUBJECTS].reverse())
       // Each commit has a 40-char hash and a 7-char short hash.
       for (const c of body.commits) {
         expect(c.hash).toHaveLength(40)
@@ -437,11 +515,7 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('respects the limit parameter', async () => {
-      gitInit(dir)
-      for (let i = 0; i < 5; i++) {
-        writeFileSync(join(dir, 'a.txt'), `v${i}\n`)
-        gitCommitAll(dir, `c${i}`)
-      }
+      seedRepo(dir) // 3 commits; ask for fewer
       const app = buildApp()
       const res = await app.request(`/api/git/log?cwd=${encodeURIComponent(dir)}&limit=2`)
       const body = await json<{ commits: unknown[] }>(res)
@@ -449,22 +523,18 @@ describe('git-routes', () => {
     })
 
     it.skipIf(!gitOk)('clamps unreasonable limits server-side', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'a.txt'), 'x\n')
-      gitCommitAll(dir, 'only')
+      seedRepo(dir)
       const app = buildApp()
       const res = await app.request(`/api/git/log?cwd=${encodeURIComponent(dir)}&limit=99999`)
       const body = await json<{ commits: unknown[] }>(res)
-      // We have one commit; clamping shouldn't matter for the result count
-      // here, but the call must succeed (i.e. didn't try to ask git for
-      // 99999 commits literally).
-      expect(body.commits).toHaveLength(1)
+      // Clamping shouldn't change the result count when the repo has fewer
+      // commits than the limit, but the call must succeed (i.e. didn't try to
+      // ask git for 99999 commits literally).
+      expect(body.commits).toHaveLength(SEED_SUBJECTS.length)
     })
 
     it.skipIf(!gitOk)('400 for limit=0 or negative', async () => {
-      gitInit(dir)
-      writeFileSync(join(dir, 'a.txt'), 'x\n')
-      gitCommitAll(dir, 'init')
+      seedRepo(dir)
       const app = buildApp()
       const res = await app.request(`/api/git/log?cwd=${encodeURIComponent(dir)}&limit=0`)
       expect(res.status).toBe(400)
@@ -510,9 +580,7 @@ describe('git-routes', () => {
   describe('write operations', () => {
     describe('stageFiles / unstageFiles', () => {
       it.skipIf(!gitOk)('moves a file from unstaged to staged and back', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'orig\n')
-        gitCommitAll(dir, 'init')
+        seedRepo(dir)
         writeFileSync(join(dir, 'a.txt'), 'changed\n')
 
         // Pre-stage: file is unstaged.
@@ -534,36 +602,34 @@ describe('git-routes', () => {
         expect(s.unstaged.map((f) => f.path)).toEqual(['a.txt'])
       })
 
+      // stageFiles runs ensureGitRepo() before validating its paths, so these
+      // two still need a real repo to reach the validation they assert on.
       it.skipIf(!gitOk)('stageFiles errors on empty paths array', async () => {
-        gitInit(dir)
+        seedRepo(dir)
         await expect(stageFiles(dir, [])).rejects.toThrow(/empty/)
       })
 
       it.skipIf(!gitOk)('rejects path traversal', async () => {
-        gitInit(dir)
+        seedRepo(dir)
         await expect(stageFiles(dir, ['../etc/passwd'])).rejects.toThrow(/\.\./)
       })
     })
 
     describe('discardTracked / discardUntracked', () => {
       it.skipIf(!gitOk)('discardTracked restores file content from HEAD', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'original\n')
-        gitCommitAll(dir, 'init')
+        seedRepo(dir)
         writeFileSync(join(dir, 'a.txt'), 'modified\n')
 
         await discardTracked(dir, ['a.txt'])
 
-        expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('original\n')
+        expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe(SEED.a)
         const s = await getStatus(dir)
         if (!s.isRepo) throw new Error('expected repo')
         expect(s.unstaged).toEqual([])
       })
 
       it.skipIf(!gitOk)('discardUntracked deletes loose untracked files', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'committed\n')
-        gitCommitAll(dir, 'init')
+        seedRepo(dir)
         writeFileSync(join(dir, 'new.txt'), 'never tracked\n')
 
         await discardUntracked(dir, ['new.txt'])
@@ -577,9 +643,7 @@ describe('git-routes', () => {
 
     describe('commitChanges', () => {
       it.skipIf(!gitOk)('creates a commit with the given message', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'first\n')
-        gitCommitAll(dir, 'first')
+        seedRepo(dir)
         writeFileSync(join(dir, 'a.txt'), 'second\n')
         await stageFiles(dir, ['a.txt'])
 
@@ -593,9 +657,7 @@ describe('git-routes', () => {
       })
 
       it.skipIf(!gitOk)('amend rewrites the last commit message', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'orig\n')
-        gitCommitAll(dir, 'orig msg')
+        seedRepo(dir) // HEAD subject is SEED_SUBJECTS.at(-1)
 
         await commitChanges(dir, 'replaced msg', true)
 
@@ -604,14 +666,14 @@ describe('git-routes', () => {
       })
 
       it.skipIf(!gitOk)('rejects empty messages on non-amend commits', async () => {
-        gitInit(dir)
+        seedRepo(dir)
         writeFileSync(join(dir, 'a.txt'), 'x\n')
         await stageFiles(dir, ['a.txt'])
         await expect(commitChanges(dir, '   ', false)).rejects.toThrow(/required/)
       })
 
       it.skipIf(!gitOk)('rejects oversized commit messages', async () => {
-        gitInit(dir)
+        seedRepo(dir)
         writeFileSync(join(dir, 'a.txt'), 'x\n')
         await stageFiles(dir, ['a.txt'])
         const big = 'x'.repeat(8 * 1024 + 1)
@@ -621,14 +683,12 @@ describe('git-routes', () => {
 
     describe('stash operations', () => {
       it.skipIf(!gitOk)('create / list / pop round-trip preserves work', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'orig\n')
-        gitCommitAll(dir, 'init')
+        seedRepo(dir)
         writeFileSync(join(dir, 'a.txt'), 'wip\n')
 
         await stashCreate(dir, 'my wip', false)
         // worktree should be back to HEAD
-        expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('orig\n')
+        expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe(SEED.a)
 
         const stashes = await listStashes(dir)
         expect(stashes).toHaveLength(1)
@@ -641,29 +701,23 @@ describe('git-routes', () => {
       })
 
       it.skipIf(!gitOk)('drop removes the stash without restoring work', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'orig\n')
-        gitCommitAll(dir, 'init')
+        seedRepo(dir)
         writeFileSync(join(dir, 'a.txt'), 'lost work\n')
 
         await stashCreate(dir, undefined, false)
         await stashDrop(dir, 0)
 
         expect(await listStashes(dir)).toEqual([])
-        expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('orig\n')
+        expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe(SEED.a)
       })
 
       it.skipIf(!gitOk)('stashCreate errors when nothing to stash', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'x\n')
-        gitCommitAll(dir, 'init')
+        seedRepo(dir) // clean work tree
         await expect(stashCreate(dir, undefined, false)).rejects.toThrow(/No local changes/)
       })
 
       it.skipIf(!gitOk)('includeUntracked picks up new files', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'orig\n')
-        gitCommitAll(dir, 'init')
+        seedRepo(dir)
         writeFileSync(join(dir, 'new.txt'), 'untracked\n')
 
         await stashCreate(dir, undefined, true)
@@ -676,47 +730,36 @@ describe('git-routes', () => {
 
     describe('branch operations', () => {
       it.skipIf(!gitOk)('createBranch + listBranches round-trip', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'x\n')
-        gitCommitAll(dir, 'init')
+        seedRepo(dir)
 
         await createBranch(dir, 'feat/x', false)
         const branches = await listBranches(dir)
         const names = branches.map((b) => b.name).sort()
-        expect(names).toEqual(['feat/x', 'main'])
+        expect(names).toEqual(['feat/x', 'main', SEED_BRANCH].sort())
         const main = branches.find((b) => b.name === 'main')
         expect(main?.current).toBe(true)
       })
 
       it.skipIf(!gitOk)('checkoutBranch switches HEAD', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'x\n')
-        gitCommitAll(dir, 'init')
-        await createBranch(dir, 'other', false)
+        seedRepo(dir) // ships SEED_BRANCH alongside main
 
-        const result = await checkoutBranch(dir, 'other', false)
+        const result = await checkoutBranch(dir, SEED_BRANCH, false)
         expect(result.stashed).toBe(false)
         const s = await getStatus(dir)
         if (!s.isRepo) throw new Error('expected repo')
-        expect(s.branch).toBe('other')
+        expect(s.branch).toBe(SEED_BRANCH)
       })
 
+      // The conflict scenario the next two tests need — two branches holding
+      // different versions of a.txt — is baked into the template, so a local
+      // edit to a.txt is all it takes to make `checkout SEED_BRANCH` collide.
+      // Building it per test (branch + stage + commit + checkout back) was
+      // this file's two slowest cases at 15.4s and 9.6s.
       it.skipIf(!gitOk)('checkoutBranch with autoStash:true stashes conflicting changes', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'committed\n')
-        gitCommitAll(dir, 'init')
-        // Create a branch with a different version of a.txt to set up
-        // a conflict scenario.
-        await createBranch(dir, 'other', true)
-        writeFileSync(join(dir, 'a.txt'), 'on-other\n')
-        await stageFiles(dir, ['a.txt'])
-        await commitChanges(dir, 'other-version', false)
-        // Back to main, modify a.txt locally ?switching to 'other'
-        // would now overwrite the local change.
-        await checkoutBranch(dir, 'main', false)
+        seedRepo(dir)
         writeFileSync(join(dir, 'a.txt'), 'local-uncommitted\n')
 
-        const result = await checkoutBranch(dir, 'other', true)
+        const result = await checkoutBranch(dir, SEED_BRANCH, true)
         expect(result.stashed).toBe(true)
         const stashes = await listStashes(dir)
         expect(stashes).toHaveLength(1)
@@ -724,21 +767,14 @@ describe('git-routes', () => {
 
         const s = await getStatus(dir)
         if (!s.isRepo) throw new Error('expected repo')
-        expect(s.branch).toBe('other')
+        expect(s.branch).toBe(SEED_BRANCH)
       })
 
       it.skipIf(!gitOk)('checkoutBranch without autoStash refuses on conflict', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'committed\n')
-        gitCommitAll(dir, 'init')
-        await createBranch(dir, 'other', true)
-        writeFileSync(join(dir, 'a.txt'), 'on-other\n')
-        await stageFiles(dir, ['a.txt'])
-        await commitChanges(dir, 'other-version', false)
-        await checkoutBranch(dir, 'main', false)
+        seedRepo(dir)
         writeFileSync(join(dir, 'a.txt'), 'local-uncommitted\n')
 
-        await expect(checkoutBranch(dir, 'other', false)).rejects.toThrow(/uncommitted changes|local changes/i)
+        await expect(checkoutBranch(dir, SEED_BRANCH, false)).rejects.toThrow(/uncommitted changes|local changes/i)
       })
     })
 
@@ -762,9 +798,7 @@ describe('git-routes', () => {
 
     describe('abortMerge', () => {
       it.skipIf(!gitOk)('errors out when no merge is in progress', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'x\n')
-        gitCommitAll(dir, 'init')
+        seedRepo(dir)
         // git merge --abort on a non-merging repo exits non-zero — we
         // surface that as HttpError(500) via runGit's catch path.
         await expect(abortMerge(dir)).rejects.toThrow()
@@ -774,11 +808,9 @@ describe('git-routes', () => {
     // ── Session anchor capture (tryCaptureGitHead) + staged-diff helper
     describe('tryCaptureGitHead', () => {
       it.skipIf(!gitOk)('returns the HEAD SHA in a normal repo', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'hi\n')
-        const sha = gitCommitAll(dir, 'init')
+        seedRepo(dir)
         const captured = await tryCaptureGitHead(dir)
-        expect(captured).toBe(sha)
+        expect(captured).toBe(seedShas().at(-1))
       })
 
       it.skipIf(!gitOk)('returns undefined for a non-git directory', async () => {
@@ -786,6 +818,7 @@ describe('git-routes', () => {
         expect(captured).toBeUndefined()
       })
 
+      // The one case the template can't serve: it has commits by construction.
       it.skipIf(!gitOk)('returns undefined for an unborn HEAD', async () => {
         gitInit(dir)
         // No commits yet ?HEAD points at refs/heads/main but it doesn't exist.
@@ -794,56 +827,35 @@ describe('git-routes', () => {
       })
 
       it.skipIf(!gitOk)('returns the SHA when HEAD is detached', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'first\n')
-        const sha1 = gitCommitAll(dir, 'first')
-        writeFileSync(join(dir, 'a.txt'), 'second\n')
-        gitCommitAll(dir, 'second')
-        execFileSync('git', ['checkout', '--quiet', sha1], { cwd: dir })
+        seedRepo(dir)
+        const root = seedShas()[0]
+        execFileSync('git', ['checkout', '--quiet', root], { cwd: dir })
         const captured = await tryCaptureGitHead(dir)
-        expect(captured).toBe(sha1)
+        expect(captured).toBe(root)
       })
     })
 
     describe('tryCaptureRepoRoot', () => {
       it.skipIf(!gitOk)('returns the work-tree top level inside a repo', async () => {
-        const dir = await mkdtemp(join(tmpdir(), 'crw-reporoot-'))
-        try {
-          gitInit(dir)
-          writeFileSync(join(dir, 'a.txt'), 'hi\n')
-          gitCommitAll(dir, 'init')
-          const root = await tryCaptureRepoRoot(dir)
-          // git rev-parse --show-toplevel returns forward slashes on Windows;
-          // use realpathSync.native to resolve 8.3 short paths (GEZELI~1 → Ge Zelin)
-          // so the comparison works regardless of how the OS canonicalises.
-          expect(root).toBe(realpathSync.native(dir).replace(/\\/g, '/'))
-        } finally {
-          void rm(dir, { recursive: true, force: true }).catch(() => {})
-        }
+        seedRepo(dir)
+        const root = await tryCaptureRepoRoot(dir)
+        // git rev-parse --show-toplevel returns forward slashes on Windows;
+        // use realpathSync.native to resolve 8.3 short paths (GEZELI~1 → Ge Zelin)
+        // so the comparison works regardless of how the OS canonicalises.
+        expect(root).toBe(realpathSync.native(dir).replace(/\\/g, '/'))
       })
 
       it.skipIf(!gitOk)('resolves subdirectory cwd to the repo root', async () => {
-        const dir = await mkdtemp(join(tmpdir(), 'crw-reporoot-'))
-        try {
-          gitInit(dir)
-          writeFileSync(join(dir, 'a.txt'), 'hi\n')
-          gitCommitAll(dir, 'init')
-          const sub = join(dir, 'packages', 'app')
-          await mkdir(sub, { recursive: true })
-          const root = await tryCaptureRepoRoot(sub)
-          expect(root).toBe(realpathSync.native(dir).replace(/\\/g, '/'))
-        } finally {
-          void rm(dir, { recursive: true, force: true }).catch(() => {})
-        }
+        seedRepo(dir)
+        const sub = join(dir, 'packages', 'app')
+        await mkdir(sub, { recursive: true })
+        const root = await tryCaptureRepoRoot(sub)
+        expect(root).toBe(realpathSync.native(dir).replace(/\\/g, '/'))
       })
 
       it('returns undefined for a non-repo directory', async () => {
-        const dir = await mkdtemp(join(tmpdir(), 'crw-norepo-'))
-        try {
-          expect(await tryCaptureRepoRoot(dir)).toBeUndefined()
-        } finally {
-          void rm(dir, { recursive: true, force: true }).catch(() => {})
-        }
+        // `dir` is a bare temp dir until a test seeds it.
+        expect(await tryCaptureRepoRoot(dir)).toBeUndefined()
       })
 
       it('returns undefined for a nonexistent directory', async () => {
@@ -853,25 +865,21 @@ describe('git-routes', () => {
 
     describe('getStagedDiff', () => {
       it.skipIf(!gitOk)('returns the staged diff and ignores unstaged changes', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'orig\n')
-        gitCommitAll(dir, 'init')
-        // Stage a change to a.txt; leave b.txt as an unstaged new file.
+        seedRepo(dir)
+        // Stage a change to a.txt; leave loose.txt as an unstaged new file.
         writeFileSync(join(dir, 'a.txt'), 'staged\n')
         execFileSync('git', ['add', 'a.txt'], { cwd: dir })
-        writeFileSync(join(dir, 'b.txt'), 'unstaged\n')
+        writeFileSync(join(dir, 'loose.txt'), 'unstaged\n')
 
         const r = await getStagedDiff(dir)
         expect(r.truncated).toBe(false)
         expect(r.text).toContain('a.txt')
-        // Unstaged b.txt must NOT appear ?Generate runs against `--cached` only.
-        expect(r.text).not.toContain('b.txt')
+        // Unstaged loose.txt must NOT appear ?Generate runs against `--cached` only.
+        expect(r.text).not.toContain('loose.txt')
       })
 
       it.skipIf(!gitOk)('returns an empty string when nothing is staged', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'orig\n')
-        gitCommitAll(dir, 'init')
+        seedRepo(dir)
         writeFileSync(join(dir, 'a.txt'), 'unstaged-only\n')
 
         const r = await getStagedDiff(dir)
@@ -880,9 +888,7 @@ describe('git-routes', () => {
       })
 
       it.skipIf(!gitOk)('truncates oversized staged diffs', async () => {
-        gitInit(dir)
-        writeFileSync(join(dir, 'a.txt'), 'orig\n')
-        gitCommitAll(dir, 'init')
+        seedRepo(dir)
         // Make a large change (~30 KB) so we're past MAX_AI_DIFF_BYTES (16 KB).
         const big = Array.from({ length: 1500 }, (_, i) => `new line ${i}`).join('\n') + '\n'
         writeFileSync(join(dir, 'a.txt'), big)
@@ -917,9 +923,7 @@ describe('listWorktrees', () => {
   const wtPath = (name: string): string => join(realpathSync.native(dir), '.claude', 'worktrees', name)
 
   it.skipIf(!gitOk)('lists the primary worktree plus a linked worktree', async () => {
-    gitInit(dir)
-    writeFileSync(join(dir, 'a.txt'), 'a\n')
-    gitCommitAll(dir, 'root')
+    seedRepo(dir)
     execFileSync('git', ['worktree', 'add', wtPath('feature-auth'), '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
 
     const wts = await listWorktrees(dir)
@@ -932,9 +936,7 @@ describe('listWorktrees', () => {
   })
 
   it.skipIf(!gitOk)('reports a locked linked worktree with its lock message', async () => {
-    gitInit(dir)
-    writeFileSync(join(dir, 'a.txt'), 'a\n')
-    gitCommitAll(dir, 'root')
+    seedRepo(dir)
     execFileSync('git', ['worktree', 'add', wtPath('feature-auth'), '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
     execFileSync('git', ['worktree', 'lock', wtPath('feature-auth'), '--reason', 'claude session feature-auth (pid 123)'], { cwd: dir })
 
@@ -945,9 +947,7 @@ describe('listWorktrees', () => {
   })
 
   it.skipIf(!gitOk)('detects a lock even when no --reason was given (bare `locked` line)', async () => {
-    gitInit(dir)
-    writeFileSync(join(dir, 'a.txt'), 'a\n')
-    gitCommitAll(dir, 'root')
+    seedRepo(dir)
     execFileSync('git', ['worktree', 'add', wtPath('feature-auth'), '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
     execFileSync('git', ['worktree', 'lock', wtPath('feature-auth')], { cwd: dir })
 
@@ -958,9 +958,7 @@ describe('listWorktrees', () => {
   })
 
   it.skipIf(!gitOk)('exposes linked worktrees through getStatusInRepo', async () => {
-    gitInit(dir)
-    writeFileSync(join(dir, 'a.txt'), 'a\n')
-    gitCommitAll(dir, 'root')
+    seedRepo(dir)
     execFileSync('git', ['worktree', 'add', wtPath('feature-auth'), '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
 
     const status = await getStatusInRepo(dir)
@@ -977,16 +975,22 @@ describe('getRangeDiff', () => {
     void rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => {})
   })
 
-  // Build a repo + a linked worktree whose branch commits two changes atop a
-  // main that stays put: a.txt modified, b.txt added.
-  function seed(cwd: string): { wt: string } {
-    gitInit(cwd)
-    writeFileSync(join(cwd, 'a.txt'), 'alpha\n')
-    gitCommitAll(cwd, 'c1')
+  /** Add a linked worktree on a new branch off main. Returns its path. */
+  function addWorktree(cwd: string): string {
     const wt = join(realpathSync.native(cwd), '.claude', 'worktrees', 'feature-auth')
     execFileSync('git', ['worktree', 'add', wt, '-b', 'worktree-feature-auth', 'main'], { cwd })
+    return wt
+  }
+
+  // Seeded repo + a linked worktree whose branch commits two changes atop a
+  // main that stays put: a.txt modified, added.txt added. `added.txt` is
+  // deliberately NOT a template file — the A-status assertion needs a path
+  // that main has never tracked.
+  function seed(cwd: string): { wt: string } {
+    seedRepo(cwd)
+    const wt = addWorktree(cwd)
     writeFileSync(join(wt, 'a.txt'), 'alpha2\n')
-    writeFileSync(join(wt, 'b.txt'), 'beta\n')
+    writeFileSync(join(wt, 'added.txt'), 'beta\n')
     gitCommitAll(wt, 'feature work')
     return { wt }
   }
@@ -995,27 +999,25 @@ describe('getRangeDiff', () => {
     seed(dir)
     const files = await getRangeDiffFiles(dir, 'main', 'worktree-feature-auth')
     const a = files.find((f) => f.path === 'a.txt')
-    const b = files.find((f) => f.path === 'b.txt')
+    const added = files.find((f) => f.path === 'added.txt')
     expect(a?.status).toBe('M')
     expect(a?.insertions).toBe(1)
     expect(a?.deletions).toBe(1)
-    expect(b?.status).toBe('A')
-    expect(b?.insertions).toBe(1)
-    expect(b?.deletions).toBe(0)
+    expect(added?.status).toBe('A')
+    expect(added?.insertions).toBe(1)
+    expect(added?.deletions).toBe(0)
   })
 
   it.skipIf(!gitOk)('returns an empty list when the two refs are identical', async () => {
-    seed(dir)
+    // Comparing main to itself needs no branch at all.
+    seedRepo(dir)
     const files = await getRangeDiffFiles(dir, 'main', 'main')
     expect(files).toEqual([])
   })
 
   it.skipIf(!gitOk)('parses a renamed file on the branch (numstat -z rename encoding)', async () => {
-    gitInit(dir)
-    writeFileSync(join(dir, 'a.txt'), 'a\n')
-    gitCommitAll(dir, 'c1')
-    const wt = join(realpathSync.native(dir), '.claude', 'worktrees', 'feature-auth')
-    execFileSync('git', ['worktree', 'add', wt, '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
+    seedRepo(dir)
+    const wt = addWorktree(dir)
     // Pure rename on the branch: a.txt → c.txt (R100).
     execFileSync('git', ['mv', 'a.txt', 'c.txt'], { cwd: wt })
     gitCommitAll(wt, 'rename')
@@ -1028,20 +1030,17 @@ describe('getRangeDiff', () => {
   })
 
   it.skipIf(!gitOk)('mergeBase (three-dot) reports the branch work; tip (two-dot) also shows main-only changes', async () => {
-    gitInit(dir)
-    writeFileSync(join(dir, 'a.txt'), 'a1\n')
-    gitCommitAll(dir, 'c1')
-    const wt = join(realpathSync.native(dir), '.claude', 'worktrees', 'feature-auth')
-    execFileSync('git', ['worktree', 'add', wt, '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
-    // branch adds b.txt (its own work)…
-    writeFileSync(join(wt, 'b.txt'), 'beta\n')
+    seedRepo(dir)
+    const wt = addWorktree(dir)
+    // branch adds added.txt (its own work)…
+    writeFileSync(join(wt, 'added.txt'), 'beta\n')
     gitCommitAll(wt, 'branch work')
     // …while main moves ahead after the fork (a change NOT on the branch).
     writeFileSync(join(dir, 'a.txt'), 'a1-main\n')
     gitCommitAll(dir, 'main moved')
 
     const threeDot = await getRangeDiffFiles(dir, 'main', 'worktree-feature-auth', true)
-    expect(threeDot.some((f) => f.path === 'b.txt')).toBe(true)
+    expect(threeDot.some((f) => f.path === 'added.txt')).toBe(true)
     expect(threeDot.some((f) => f.path === 'a.txt')).toBe(false)
 
     const twoDot = await getRangeDiffFiles(dir, 'main', 'worktree-feature-auth', false)

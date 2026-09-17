@@ -3060,11 +3060,19 @@ describe('memory_recall rendering', () => {
 describe('file-path click-to-copy', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // jsdom has no clipboard by default; stub writeText so useCopy's success
-    // path fires (without it both navigator.clipboard and execCommand are
-    // absent in jsdom and the copy silently no-ops).
-    Object.assign(navigator, {
-      clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
+    // Stub writeText so useCopy's success path fires — without a clipboard the
+    // copy silently no-ops (neither navigator.clipboard nor execCommand exists
+    // in a bare test DOM).
+    //
+    // defineProperty, not Object.assign: happy-dom exposes
+    // `navigator.clipboard` as a getter-only accessor on Navigator.prototype,
+    // so assigning through it throws ("has only a getter"). defineProperty
+    // installs an own property that shadows the accessor and works in both
+    // happy-dom and jsdom.
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+      writable: true,
     })
   })
 
