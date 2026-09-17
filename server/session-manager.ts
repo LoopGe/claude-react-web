@@ -3857,8 +3857,12 @@ export class SessionManager {
   private async contextUsageOrNull(id: string): Promise<unknown | null> {
     try {
       return await this.contextUsage(id)
-    } catch {
-      return null
+    } catch (e) {
+      if (e instanceof HttpError) {
+        log.debug(`[session ${id}] contextUsage unavailable: ${e.message}`)
+        return null
+      }
+      throw e
     }
   }
 
