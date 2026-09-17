@@ -211,14 +211,16 @@ describe('status ink contrast', () => {
   // is what keeps a retuned wash or a new mode from shipping unreadable copy.
   it('keeps the chat mode badge readable on its wash in every context', () => {
     const layout = readCss('layout.css')
-    const badgeWash = Number(
-      layout.match(
-        /\.chat-panel-mode-badge \{[^}]*background: color-mix\(in srgb, var\(--accent\) (\d+)%/,
-      )![1],
+    const badgeWashMatch = layout.match(
+      /\.chat-panel-mode-badge \{[^}]*background: color-mix\(in srgb, var\(--accent\) (\d+)%/,
     )
-    const headerWash = Number(
-      layout.match(/\.chat-panel-header \{[^}]*background: color-mix\(in srgb, var\(--accent\) (\d+)%/)![1],
+    const headerWashMatch = layout.match(
+      /\.chat-panel-header \{[^}]*background: color-mix\(in srgb, var\(--accent\) (\d+)%/,
     )
+    expect(badgeWashMatch, 'the badge wash declaration moved or was reshaped').not.toBeNull()
+    expect(headerWashMatch, 'the header wash declaration moved or was reshaped').not.toBeNull()
+    const badgeWash = Number(badgeWashMatch![1])
+    const headerWash = Number(headerWashMatch![1])
     const badgeBlocks = parseBlocks(layout).filter((b) => b.sel.includes('.chat-panel-mode-badge.mode-'))
     const MODES: Array<[string, string]> = [
       ['default', '--fg'],
@@ -228,11 +230,38 @@ describe('status ink contrast', () => {
       ['acceptEdits', '--accent-text'],
       ['auto', '--accent-text'],
     ]
+    // Derived counterpart, like NAMED_CONTEXTS: every `.mode-*` rule layout.css
+    // declares must be listed above, so a new mode cannot ship un-checked.
+    // (`mode-slide-in/out` are animation helpers, not modes.)
+    const declaredModes = new Set(
+      [...layout.matchAll(/\.chat-panel-mode-badge\.mode-([A-Za-z-]+)/g)]
+        .map((m) => m[1])
+        .filter((m) => !m.startsWith('slide-') && m !== 'expanded'),
+    )
+    expect([...declaredModes].sort()).toEqual(MODES.map(([m]) => m).sort())
+    // The hover must not deepen the wash: 10% is already the AA cap for every
+    // per-mode ink, so the cue is the label brightening instead.
+    const hoverRule = parseBlocks(layout).filter(
+      (b) => b.sel === '.chat-panel-mode-badge:hover:not(:disabled)',
+    )
+    expect(hoverRule.length, 'the badge hover rule is gone').toBeGreaterThan(0)
+    expect(
+      hoverRule[0].decls['background'],
+      'the badge hover deepens the wash past the AA cap',
+    ).toBeUndefined()
+    expect(hoverRule[0].decls['color'], 'the badge hover should brighten the label').toBe('var(--fg)')
     for (const [mode, ink] of MODES) {
-      const rule = badgeBlocks.filter((b) => b.sel.includes(`.chat-panel-mode-badge.mode-${mode}`))
+      // The RESTING rule only: the selector list is split so a `:hover` or
+      // `.mode-expanded` variant can never stand in for it.
+      const rule = parseBlocks(layout).filter((b) =>
+        b.sel
+          .split(',')
+          .map((s) => s.trim())
+          .includes(`.chat-panel-mode-badge.mode-${mode}`),
+      )
       expect(rule.length, `no rule colours .chat-panel-mode-badge.mode-${mode}`).toBeGreaterThan(0)
-      expect(rule.map((b) => b.decls['color'] ?? '').join(' '), `mode-${mode} should use ${ink}`).toContain(
-        ink,
+      expect(rule.map((b) => b.decls['color'] ?? '').join(' '), `mode-${mode} should use ${ink}`).toMatch(
+        new RegExp(`var\\(${ink}\\)`),
       )
       for (const sel of contexts) {
         const accent = effectiveToken(blocks, sel, '--accent')

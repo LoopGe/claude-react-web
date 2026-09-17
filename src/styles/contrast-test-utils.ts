@@ -88,9 +88,9 @@ export function parseBlocks(css: string): CssBlock[] {
     }
     const tokens: Record<string, string> = {}
     const decls: Record<string, string> = {}
-    for (const m of css.slice(open + 1, j - 1).matchAll(/(^|[;{\s])([a-z0-9-]+)\s*:\s*([^;]+);/g)) {
-      decls[m[2]] = m[3].trim()
-      if (m[2].startsWith('--')) tokens[m[2]] = m[3].trim()
+    for (const m of css.slice(open + 1, j - 1).matchAll(/(?<=^|[;{\s])([a-z0-9-]+)\s*:\s*([^;}]+)/g)) {
+      decls[m[1]] = m[2].trim()
+      if (m[1].startsWith('--')) tokens[m[1]] = m[2].trim()
     }
     if (sel)
       out.push({ sel, attrs: [...sel.matchAll(/\[[a-z-]+="[^"]+"\]/g)].map((m) => m[0]), tokens, decls })

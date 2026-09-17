@@ -374,7 +374,7 @@
 .tool-status-label { line-height: 1; }
 .tool-status-running {
   color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 /* Scoped to .icon-loader (a class IconLoader always carries), NOT to `svg`.
@@ -543,7 +543,7 @@
 .diff-truncation-details > summary::-webkit-details-marker { display: none; }
 .diff-truncation-details > summary:hover {
   color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev-2));
 }
 .diff-truncation-details[data-state="open"] > summary::after {
   content: ' (click to collapse)';
@@ -1056,7 +1056,7 @@ button.tool-group-failed-jump:focus-visible {
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
   color: var(--accent-text);
   font-family: var(--mono);
   font-size: var(--fs-xs);
@@ -1882,7 +1882,7 @@ button.tool-group-failed-jump:focus-visible {
 .hooks-event-badge:hover { border-color: var(--fg-muted); color: var(--fg); }
 .hooks-event-badge.active {
   border-color: var(--accent); color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev-2));
 }
 
 /* Configured hook cards */
@@ -2031,7 +2031,7 @@ button.tool-group-failed-jump:focus-visible {
 .settings-model-row.default .settings-model-rank {
   color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
 }
 .settings-model-id {
   min-width: 0;
@@ -2911,7 +2911,7 @@ input[type="checkbox"]:disabled {
 }
 .settings-scope-btn.active {
   color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
   font-weight: 600;
 }
 .settings-scope-btn.active::after {

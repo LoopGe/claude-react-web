@@ -109,6 +109,14 @@ const ACCENT_VARS = {
   '--accent': (hex: string) => hex,
   '--accent-strong': (hex: string) => accentStrongFor(hex),
   '--on-accent': (hex: string) => onAccentFor(hex),
+  // The copy glyph ink must be declared HERE, not left to the stylesheet's
+  // fitted value: a custom property is substituted on the element that declares
+  // it, so a `--accent-text: var(--accent)` at :root is frozen to the global
+  // accent before it inherits, and a session-coloured panel would paint its ink
+  // in the global hue next to borders/dots in the session hue. A session accent
+  // is the user's own choice of colour, so the ink follows it 1:1 — the shipped
+  // per-theme inks stay the AA-fitted ones.
+  '--accent-text': (hex: string) => hex,
 } as const satisfies Record<string, (hex: string) => string>
 
 /** Build a `sessionId → CSSProperties` map for per-session accent overrides.

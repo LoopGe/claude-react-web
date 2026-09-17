@@ -190,11 +190,13 @@ describe('buildSessionAccentMap', () => {
       '--accent': '#7b8cde',
       '--accent-strong': '#5b6fc7',
       '--on-accent': expect.any(String),
+      '--accent-text': '#7b8cde',
     })
     expect(map.get('s2')).toEqual({
       '--accent': '#e07080',
       '--accent-strong': '#c45465',
       '--on-accent': expect.any(String),
+      '--accent-text': '#e07080',
     })
   })
 

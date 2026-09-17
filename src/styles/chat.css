@@ -1961,7 +1961,7 @@
   font-weight: 500;
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
   padding: 1px 6px;
   border-radius: var(--radius-pill);
   text-transform: none;
@@ -1993,7 +1993,7 @@
   font-weight: 600;
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
   padding: 1px 7px;
   border-radius: var(--radius-pill);
@@ -3174,7 +3174,7 @@
   flex-shrink: 0;
   padding: 1px 4px;
   border-radius: var(--radius-3xs);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
 }
 .workflow-child-label {
   flex: 1;

@@ -534,8 +534,11 @@ body.resizing-col .app {
 .chat-panel-mode-badge.mode-slide-in {
   animation: mode-slide-in var(--motion-duration-moderate) var(--motion-ease-enter);
 }
+/* The wash cannot deepen on hover -- 10% is already the AA cap for the per-mode
+   inks (26% measured 3.47-4.17:1) -- so the cue is the label brightening to
+   --fg, which is the ink the guard checks for the default mode. */
 .chat-panel-mode-badge:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  color: var(--fg);
 }
 .chat-panel-mode-badge:active:not(:disabled) { transform: translateY(0) scale(var(--motion-scale-press)); }
 .chat-panel-mode-badge:focus-visible {
@@ -706,7 +709,7 @@ body.resizing-col .app {
 .chat-panel-effort-badge.effort-xhigh,
 .chat-panel-effort-badge.effort-max {
   color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
 }
 .chat-panel-effort-badge:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
@@ -780,7 +783,7 @@ body.resizing-col .app {
 }
 .chat-panel-persona-badge.persona-on {
   color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
 }
 .chat-panel-persona-badge:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 20%, transparent);

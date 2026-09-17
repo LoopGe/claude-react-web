@@ -1084,7 +1084,7 @@
 .segmented-btn:hover { color: var(--fg); background: var(--bg-elev-2); }
 .segmented-btn.active {
   color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
   font-weight: 600;
 }
 .segmented-btn.active::after { display: none; }
@@ -2500,7 +2500,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 .task-mutation-verb.verb-update {
   color: var(--accent-text);
   border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
 }
 .task-mutation-id {
   font-family: var(--mono);
@@ -3075,7 +3075,7 @@ details.question-inline-card[data-state="open"] > summary {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
   color: var(--accent-text);
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
@@ -3274,7 +3274,7 @@ details.plan-card-minimized {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
   color: var(--accent-text);
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
