@@ -12,6 +12,8 @@ A local browser UI for [`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/
   <img src="docs/screenshots/homepage.png" alt="claude-react-web UI" width="100%" />
 </p>
 
+📖 **[User manual](./docs/manual.en.md)** — a guided tour of every screen, with screenshots ([中文版](./docs/manual.zh-CN.md)).
+
 ## Features
 
 - **Multi-session chat** — Up to 3 conversations side-by-side, organised into reorderable session groups that persist across refreshes
