@@ -3260,7 +3260,9 @@ select.input {
   vertical-align: middle;
 }
 .perf-sparkline polyline {
-  stroke: var(--accent-text);
+  /* A chart's data line is decoration, not a glyph, so it keeps the fill
+     token — same as .perf-spark-hot's fill below. */
+  stroke: var(--accent);
   stroke-width: 1.2;
 }
 .perf-spark-hot {

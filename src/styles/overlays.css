@@ -891,7 +891,7 @@ mark.search-hl.search-hl-active {
 .toast-info { --kind-tint: var(--accent); }
 .toast-error .toast-icon { color: var(--danger); }
 .toast-success .toast-icon { color: var(--ok); }
-.toast-info .toast-icon { color: var(--accent-text); }
+.toast-info .toast-icon { color: var(--accent); }
 
 /* Kind-coloured circular badge behind the icon, so the severity reads at
    a glance instead of a bare glyph. */
