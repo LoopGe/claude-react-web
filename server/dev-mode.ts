@@ -36,3 +36,34 @@ export function isDevRuntime(
   const lifecycle = env.npm_lifecycle_event
   return typeof lifecycle === 'string' && DEV_LIFECYCLE.test(lifecycle)
 }
+
+import { createLogger, enableLogRing } from './log.js'
+import { createDebugAppTools, DEBUG_TOOLS_SERVER_NAME, type DebugHost } from './sdk-tools/app-debug.js'
+import type { FirstPartyToolRegistry } from './sdk-tools/registry.js'
+
+const log = createLogger('dev-mode')
+
+export interface DevModeDeps {
+  /** Injected rather than importing the singleton so tests can pass a fresh
+   *  registry — that avoids adding a test-only `unregister` to production. */
+  registry: FirstPartyToolRegistry
+  sm: DebugHost
+  /** Log-ring capacity; defaults to 1000 lines. */
+  ringCapacity?: number
+}
+
+/** Turn on dev mode: start the log ring and register the `appdebug` server.
+ *  Idempotent — the registry rejects duplicate names, so re-entry is guarded.
+ *
+ *  Call this BEFORE any session spawns; sessions already running pick the
+ *  server up through the existing per-session first-party toggle (which
+ *  re-runs injection), and dormant ones at their next spawn. */
+export function enableDevMode(deps: DevModeDeps): void {
+  enableLogRing(deps.ringCapacity ?? 1000)
+  if (deps.registry.get(DEBUG_TOOLS_SERVER_NAME) !== undefined) return
+  deps.registry.register(createDebugAppTools(deps.sm))
+  log.info(
+    `registered ${DEBUG_TOOLS_SERVER_NAME} (dev runtime) — ` +
+      'read-only: logs, metrics, sessions, session; writes prompt for permission',
+  )
+}
