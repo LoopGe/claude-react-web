@@ -62,3 +62,21 @@ export type ToastContextValue = {
  *  fast-refresh happy (each file exports either components or
  *  non-components, never both). */
 export const ToastContext = createContext<ToastContextValue | null>(null)
+
+/** Identity-stable slice of the toast hub, for consumers that only PUSH a
+ *  toast and never render the list.
+ *
+ *  `ToastContext`'s value is memoised on `toasts`, so its identity changes
+ *  ~3x per toast (push → exiting → removal). React cannot bail out of a
+ *  context update, so any component subscribed to it re-renders every time —
+ *  which is fine for `ToastHost`, but not for the copy affordances (every code
+ *  block, every tool card's CopyButton, every copyable path title), all of
+ *  which are `memo`-ised precisely so unrelated toast traffic can't cascade
+ *  through a long transcript. `show` is a stable useCallback, so this value
+ *  never changes identity and those consumers never re-render on toast
+ *  traffic.
+ *
+ *  Null (not an error) when no provider is mounted — `useCopy` reads it
+ *  directly and simply skips the report, which is what lets the crash screen
+ *  copy from outside `ToastProvider`. */
+export const ToastShowContext = createContext<ToastContextValue['show'] | null>(null)

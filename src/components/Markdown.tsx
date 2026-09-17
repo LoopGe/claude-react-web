@@ -7,9 +7,10 @@
 // assistant output is only semi-trusted and we prefer to render raw HTML
 // as text rather than risk XSS.
 
-import { memo, useMemo, useState, useRef } from 'react'
+import { memo, useMemo, useRef } from 'react'
 import type { ComponentPropsWithoutRef, Ref } from 'react'
 import { useMergedRef } from '../utils/mergedRef'
+import { useCopy } from '../hooks/useCopy'
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
@@ -258,24 +259,17 @@ export const CodeBlock = memo(function CodeBlock({
   preRef,
   ...props
 }: { lang?: string; showCopy?: boolean; preRef?: Ref<HTMLPreElement> } & ComponentPropsWithoutRef<'pre'>) {
-  const [copied, setCopied] = useState(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const { copied, copy } = useCopy()
   const innerRef = useRef<HTMLPreElement>(null)
   // External consumers (e.g. FileViewer's useOverlayScrollbar) need the
   // scrollable <pre> element. useMergedRef keeps the copy path's ref intact
   // while also handing the node out to the caller.
   const preRefMerged = useMergedRef(innerRef, preRef)
 
+  // Read the rendered text lazily on click — the block body is already in
+  // the DOM, so there is nothing to serialise up front.
   const handleCopy = () => {
-    const text = innerRef.current?.textContent ?? ''
-    navigator.clipboard?.writeText(text).then(
-      () => {
-        setCopied(true)
-        clearTimeout(timerRef.current)
-        timerRef.current = setTimeout(() => setCopied(false), 2000)
-      },
-      (err: unknown) => { console.warn('clipboard write failed:', err) },
-    )
+    void copy(() => innerRef.current?.textContent ?? '')
   }
 
   return (

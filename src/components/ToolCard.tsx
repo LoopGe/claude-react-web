@@ -62,7 +62,7 @@ export function CopyButton({
     <button
       type="button"
       className={`tool-copy-btn${copied ? ' copied' : ''} ${className}`.trim()}
-      onClick={() => copy(getValue)}
+      onClick={() => { void copy(getValue) }}
       title={copied ? 'Copied!' : label}
       aria-label={copied ? 'Copied' : label}
     >

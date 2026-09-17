@@ -1,4 +1,7 @@
+import { useContext } from 'react'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu'
+import { writeClipboard, COPY_FAILED_MESSAGE } from '../../hooks/useCopy'
+import { ToastShowContext } from '../../hooks/toastContext'
 import type { SessionGroup, SessionInfo } from '../../types'
 import {
   IconPencil,
@@ -94,6 +97,13 @@ export function SessionContextMenu({
   onShowSuccess,
   onAskConfirm,
 }: SessionContextMenuProps) {
+  // Both copy items below report their own outcome — success through
+  // `onShowSuccess`, failure through a toast — because the menu closes on click
+  // and leaves no element to flip. The push-only context is read directly
+  // rather than through `useToast`, which THROWS outside a provider; this menu
+  // previously needed no provider at all and must not start requiring one.
+  // Declared above the null-session early return: hooks can't run conditionally.
+  const showToast = useContext(ToastShowContext)
   if (!session) return null
   const items: ContextMenuItem[] = [
     {
@@ -229,22 +239,22 @@ export function SessionContextMenu({
     {
       label: 'Copy session ID',
       icon: <IconClipboard size={14} />,
-      onClick: () => {
-        void navigator.clipboard?.writeText(session.id)
-          .then(() => onShowSuccess?.('Session ID copied'))
-          .catch(() => {})
+      onClick: async () => {
+        if (await writeClipboard(session.id)) onShowSuccess?.('Session ID copied')
+        else showToast?.('error', COPY_FAILED_MESSAGE)
       },
     },
     {
       label: 'Copy working directory',
       icon: <IconFolder size={14} />,
       disabled: !session.cwd,
-      onClick: () => {
-        if (session.cwd) {
-          void navigator.clipboard?.writeText(session.cwd)
-            .then(() => onShowSuccess?.('Working directory copied'))
-            .catch(() => {})
-        }
+      onClick: async () => {
+        // Captured into a local: the narrowing on `session.cwd` doesn't survive
+        // into the async continuation.
+        const cwd = session.cwd
+        if (!cwd) return
+        if (await writeClipboard(cwd)) onShowSuccess?.('Working directory copied')
+        else showToast?.('error', COPY_FAILED_MESSAGE)
       },
     },
     { label: '' }, // separator

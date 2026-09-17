@@ -16,6 +16,7 @@
 import { useState } from 'react'
 import { Overlay } from './Overlay'
 import { Markdown } from './Markdown'
+import { useCopy } from '../hooks/useCopy'
 import { useReleaseNotes } from '../hooks/useReleaseNotes'
 import { useToast } from '../hooks/useToast'
 import { reportUpdateResult } from '../utils/update-action'
@@ -54,7 +55,7 @@ export function UpdateDialog({ open, mode, info, updating, onUpdate, onClose }: 
   const notesTo = isCurrent ? info.current : info.latest
   const { releases, loading, error } = useReleaseNotes(open, info.current, notesTo, isCurrent)
   const [updateError, setUpdateError] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
+  const { copied, copy } = useCopy()
 
   const latest = info.latest
   /** The title's version: the range's own upper bound, falling back to the
@@ -90,17 +91,7 @@ export function UpdateDialog({ open, mode, info, updating, onUpdate, onClose }: 
   }
 
   const copyCommand = () => {
-    if (!navigator.clipboard) return
-    const cmd = buildUpgradeCommand(info.packageName, info.registry)
-    navigator.clipboard.writeText(cmd).then(
-      () => {
-        setCopied(true)
-        setTimeout(() => setCopied(false), 2000)
-      },
-      (err: unknown) => {
-        console.warn('clipboard write failed:', err)
-      },
-    )
+    void copy(() => buildUpgradeCommand(info.packageName, info.registry))
   }
 
   const headerTitle =

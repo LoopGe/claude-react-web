@@ -12,6 +12,7 @@ import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useToast } from '../hooks/useToast'
+import { writeClipboard } from '../hooks/useCopy'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
 import { selectionOffsets, placeCaretIn, pasteAtCaret } from './richPromptApi'
 import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
@@ -405,23 +406,24 @@ export const Composer = memo(function Composer({
     const { start, end } = savedSelection
     if (start === end) return
     const sel = input.slice(start, end)
-    try {
-      await navigator.clipboard.writeText(sel)
-      insertAtSavedSelection('')
-    } catch {
-      toast.error('Cut failed — use Ctrl+X instead.')
-    }
+    // `allowFallback: false` because this is the one path where a `true` result
+    // DELETES user text. Only a resolving `writeText` promise verifies that the
+    // text reached the clipboard; the legacy fallback cannot, so it is not
+    // allowed to authorise the delete. That trade-off is deliberate: on an
+    // origin without `navigator.clipboard` Cut is a no-op with a clear message,
+    // which is strictly better than silently losing the draft.
+    if (await writeClipboard(sel, { allowFallback: false })) insertAtSavedSelection('')
+    else toast.error('Cut failed — use Ctrl+X instead.')
   }, [savedSelection, input, insertAtSavedSelection, toast])
 
   const handleCopy = useCallback(async () => {
     const { start, end } = savedSelection
     if (start === end) return
     const sel = input.slice(start, end)
-    try {
-      await navigator.clipboard.writeText(sel)
-    } catch {
-      toast.error('Copy failed — use Ctrl+C instead.')
-    }
+    // Plain `writeClipboard`, not `useCopy`: the menu closes on click so there
+    // is no element to flip, and success stays silent the way the native Ctrl+C
+    // this stands in for does.
+    if (!(await writeClipboard(sel))) toast.error('Copy failed — use Ctrl+C instead.')
   }, [savedSelection, input, toast])
 
   const handlePaste = useCallback(async () => {

@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import QRCode from 'qrcode'
 import { api } from '../hooks/useApi'
+import { writeClipboard } from '../hooks/useCopy'
 import { useToast } from '../hooks/useToast'
 
 interface AccessUrl {
@@ -84,12 +85,12 @@ export function ShareTab() {
 
   const svg = qr && qr.url === selectedUrl ? qr.svg : null
 
-  const handleCopy = useCallback(() => {
+  const handleCopy = useCallback(async () => {
     if (!selectedUrl) return
-    navigator.clipboard?.writeText(selectedUrl).then(
-      () => toast.info('Link copied'),
-      () => toast.error('Copy failed'),
-    )
+    // Plain `writeClipboard`: the link copy has no inline affordance to flip,
+    // so this tab reports both outcomes itself.
+    if (await writeClipboard(selectedUrl)) toast.info('Link copied')
+    else toast.error('Copy failed')
   }, [selectedUrl, toast])
 
   return (

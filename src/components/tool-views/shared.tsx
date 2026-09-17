@@ -77,7 +77,7 @@ export function useCopyablePath(path: string): {
     title: copied ? 'Copied!' : `Click to copy path\n${absPath}`,
     onClick: (e) => {
       e.stopPropagation()
-      copy(() => absPath)
+      void copy(() => absPath)
     },
   }
 }

@@ -5,6 +5,8 @@
 
 import { useState } from 'react'
 import { Overlay } from './Overlay'
+import { formatJson } from '../utils/format'
+import { useCopy } from '../hooks/useCopy'
 import { useStructuredRun } from '../hooks/useStructuredRun'
 import { IconX } from './icons/ToolIcons'
 import type { StructuredPermissionMode, StructuredRunRequest, StructuredRunResult } from '../../shared/structured'
@@ -49,7 +51,7 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
   const [maxTurns, setMaxTurns] = useState('')
   const [maxBudgetUsd, setMaxBudgetUsd] = useState('')
   const [permissionMode, setPermissionMode] = useState<StructuredPermissionMode>('default')
-  const [copied, setCopied] = useState(false)
+  const { copied, copy } = useCopy()
 
   const close = () => {
     if (running) cancel()
@@ -85,23 +87,9 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
     await run(req)
   }
 
-  const pretty = (v: unknown): string => {
-    try {
-      return JSON.stringify(v, null, 2)
-    } catch {
-      return String(v)
-    }
-  }
-
-  const copy = async () => {
+  const handleCopy = () => {
     if (!result?.structuredOutput) return
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(result.structuredOutput, null, 2))
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      // clipboard unavailable — ignore
-    }
+    void copy(() => formatJson(result.structuredOutput))
   }
 
   return (
@@ -193,11 +181,11 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
             <>
               <div className="structured-subrow">
                 <label className="field-label">Result</label>
-                <button className="btn btn-sm" onClick={copy} disabled={!result.structuredOutput}>
+                <button className="btn btn-sm" onClick={handleCopy} disabled={!result.structuredOutput}>
                   {copied ? 'Copied' : 'Copy'}
                 </button>
               </div>
-              <pre className="code-block structured-json">{result.structuredOutput !== undefined ? pretty(result.structuredOutput) : result.rawText ?? '(no output)'}</pre>
+              <pre className="code-block structured-json">{result.structuredOutput !== undefined ? formatJson(result.structuredOutput) : result.rawText ?? '(no output)'}</pre>
               <div className="hint structured-meta">
                 {typeof result.numTurns === 'number' && `turns: ${result.numTurns}`}
                 {typeof result.totalCostUsd === 'number' && ` · cost: $${result.totalCostUsd.toFixed(4)}`}

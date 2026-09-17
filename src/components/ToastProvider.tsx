@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ToastContext,
+  ToastShowContext,
   type Toast,
   type ToastContextValue,
   type ToastKind,
@@ -167,5 +168,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     [toasts, show, dismiss, pause, resume],
   )
 
-  return <ToastContext.Provider value={value}>{children}</ToastContext.Provider>
+  // Push-only slice — see ToastShowContext. `show` is a stable useCallback, so
+  // this identity never changes and its consumers (useCopy, and therefore every
+  // copy affordance in the transcript) don't re-render as toasts come and go.
+  return (
+    <ToastShowContext.Provider value={show}>
+      <ToastContext.Provider value={value}>{children}</ToastContext.Provider>
+    </ToastShowContext.Provider>
+  )
 }

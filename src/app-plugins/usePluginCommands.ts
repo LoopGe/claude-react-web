@@ -15,21 +15,11 @@
 
 import { useCallback, useContext } from 'react'
 import { api } from '../hooks/useApi'
-import { ToastContext, type ToastContextValue } from '../hooks/toastContext'
+import { ToastShowContext } from '../hooks/toastContext'
 import { commandResults, type ActiveResult } from './result-store'
 import { invocationAnchors } from './invocation-anchor-store'
 import type { PluginCommandContext } from '../../shared/app-plugins/command-context.js'
 import type { PluginCommandResult, PluginCommandErrorCode } from '../../shared/app-plugins/command-result.js'
-
-// No-op toast used when <ToastProvider> isn't mounted (e.g. tests that render
-// a surface without the full provider tree). Plugin commands degrade silently.
-const NOOP_TOAST: ToastContextValue = {
-  toasts: [],
-  show: () => '',
-  dismiss: () => {},
-  pause: () => {},
-  resume: () => {},
-}
 
 export interface InvocationAnchor {
   messageId: string
@@ -55,11 +45,12 @@ export interface CommandError {
 }
 
 export function usePluginCommands() {
-  // Read the toast context directly (not via useToast, which throws when the
-  // provider is absent) so plugin command surfaces degrade gracefully when
-  // mounted without the full provider tree.
-  const toastCtx = useContext(ToastContext)
-  const toast = toastCtx ?? NOOP_TOAST
+  // Read the push-only toast context directly (not via useToast, which throws
+  // when the provider is absent) so plugin command surfaces degrade gracefully
+  // when mounted without the full provider tree. That context carries the
+  // identity-stable `show` alone, so these surfaces also stay out of the
+  // re-render cascade a toast list subscription would cause. Null → no toast.
+  const toast = useContext(ToastShowContext)
 
   const execute = useCallback(
     async (opts: ExecuteOptions): Promise<PluginCommandResult | null> => {
@@ -98,7 +89,7 @@ export function usePluginCommands() {
           // Plugin notification levels include 'warn', which the toast system
           // doesn't have — map it to 'error' so the warning is still surfaced.
           const kind = result.level === 'warn' ? 'error' : result.level
-          toast.show(kind, text || result.title || 'Plugin', {})
+          toast?.(kind, text || result.title || 'Plugin')
           return result
         }
         if (result.type === 'popover' && invocationId && opts.anchor) {
@@ -121,16 +112,11 @@ export function usePluginCommands() {
         return result
       } catch (err) {
         // The server returns a typed 422 with { error: { code, message } };
-        // useApi.toApiError extracts both onto ApiError. Surface the message
-        // (prefixed with the code so the user can tell e.g. plugin-quarantined
-        // from command-timeout) and return a structured CommandError so callers
-        // can branch on `code`.
+        // useApi.toApiError extracts both onto ApiError. Surface the message.
         commandResults.dismiss(loadingId)
         invocationAnchors.clear(loadingId)
         const e = err as { status?: number; message?: string; code?: string }
-        const message = e.message ?? 'Command failed'
-        const code = (e.code as PluginCommandErrorCode | undefined) ?? 'unknown'
-        toast.show('error', code === 'unknown' ? message : `${message}`)
+        toast?.('error', e.message ?? 'Command failed')
         return null
       }
     },

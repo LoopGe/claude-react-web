@@ -35,6 +35,7 @@ import { PinnedUserMessage } from './PinnedUserMessage'
 import { api } from '../hooks/useApi'
 import { useAttachments, type Attachment } from '../hooks/useAttachments'
 import { useChatStream } from '../hooks/useChatStream'
+import { writeClipboard, COPY_FAILED_MESSAGE } from '../hooks/useCopy'
 import { usePastedImages } from '../hooks/usePastedImages'
 import { usePastedTexts } from '../hooks/usePastedTexts'
 import { useInputHistory } from '../hooks/useInputHistory'
@@ -1943,7 +1944,12 @@ export const Chat = memo(function Chat({
                     label: 'Copy',
                     icon: <IconCopy size={14} />,
                     onClick: () => {
-                      void navigator.clipboard?.writeText(exportMenuPos.selection)
+                      // The menu closes on click, so there is no inline
+                      // affordance to flip: failure toasts, success stays
+                      // silent like the native Ctrl+C this mirrors.
+                      void writeClipboard(exportMenuPos.selection).then((ok) => {
+                        if (!ok) toast.error(COPY_FAILED_MESSAGE)
+                      })
                     },
                   },
                   { label: '' },

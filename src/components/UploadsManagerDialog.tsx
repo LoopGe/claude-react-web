@@ -14,6 +14,7 @@ import { useMemo, useState } from 'react'
 import { Overlay } from './Overlay'
 import { ConfirmDialog } from './ConfirmDialog'
 import { useToast } from '../hooks/useToast'
+import { writeClipboard } from '../hooks/useCopy'
 import { useUploads } from '../hooks/useUploads'
 import { formatBytes, formatRelativeTime } from '../utils/format'
 import type { UploadListItem } from '../../shared/uploads'
@@ -67,12 +68,10 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
   }, [uploads])
 
   const copyPath = async (u: UploadListItem) => {
-    try {
-      await navigator.clipboard.writeText(u.path)
-      toast.success('Path copied')
-    } catch {
-      toast.error('Copy failed — select the path manually.')
-    }
+    // Plain `writeClipboard`: this row reports BOTH outcomes itself, with
+    // wording that names the fallback ("select the path manually").
+    if (await writeClipboard(u.path)) toast.success('Path copied')
+    else toast.error('Copy failed — select the path manually.')
   }
 
   const confirmDelete = async () => {

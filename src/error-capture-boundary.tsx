@@ -5,7 +5,8 @@
  * exports only the component (react-refresh/only-export-components).
  */
 
-import { Component, type CSSProperties, type ErrorInfo, type ReactNode } from 'react'
+import { Component, useState, type CSSProperties, type ErrorInfo, type ReactNode } from 'react'
+import { writeClipboard } from './hooks/useCopy'
 import { crashFrom, recordCrash, type CrashRecord } from './error-capture'
 
 interface RootErrorBoundaryProps {
@@ -56,12 +57,37 @@ const btnStyle: CSSProperties = {
 }
 
 function CrashScreen({ crash, onReload }: { crash: CrashRecord; onReload: () => void }) {
-  const copy = () => {
-    try {
-      void navigator.clipboard?.writeText(JSON.stringify(crash, null, 2))
-    } catch {
-      /* clipboard unavailable — the console + __crwLastError still have it */
+  // The clipboard layer's plain function, not its hook: this screen is the
+  // last thing that renders when the app is already broken, so it stays free of
+  // context subscriptions and timers. It also needs no toast host — there is
+  // none above ToastProvider, which RootErrorBoundary deliberately sits outside.
+  const [copyState, setCopyState] = useState<'idle' | 'done' | 'failed'>('idle')
+  const copyReport = async () => {
+    // Serialise the fields the card renders, plus whatever the thrown value
+    // contributes. Not `JSON.stringify(crash)` outright: a render crash
+    // routinely throws something non-serialisable (a cyclic DOM node, a React
+    // element), which would throw and leave nothing — or, with an error-safe
+    // fallback, just "[object Object]". `crash.error` is folded in on its own
+    // so a cyclic one degrades to a placeholder instead of taking the whole
+    // report down with it; an ApiError's own `status`/`code` survive this way.
+    const report: Record<string, unknown> = {
+      kind: crash.kind,
+      at: crash.at,
+      message: crash.message,
+      componentStack: crash.componentStack,
+      stack: crash.stack,
     }
+    try {
+      // Round-trips through JSON to strip anything unserialisable in place.
+      report.error = JSON.parse(JSON.stringify(crash.error))
+    } catch {
+      report.error = String(crash.error)
+    }
+    // Report the outcome on the button itself: with no toast host above this
+    // screen, a refused write is otherwise indistinguishable from a successful
+    // one, and the user pastes stale clipboard content into their bug report
+    // believing it holds the crash dump.
+    setCopyState((await writeClipboard(JSON.stringify(report, null, 2))) ? 'done' : 'failed')
   }
   return (
     <div
@@ -130,8 +156,8 @@ function CrashScreen({ crash, onReload }: { crash: CrashRecord; onReload: () => 
           <button type="button" onClick={onReload} style={btnStyle}>
             Reload
           </button>
-          <button type="button" onClick={copy} style={btnStyle}>
-            Copy error
+          <button type="button" onClick={copyReport} style={btnStyle}>
+            {copyState === 'done' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : 'Copy error'}
           </button>
         </div>
       </div>
