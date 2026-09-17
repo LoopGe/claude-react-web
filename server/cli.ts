@@ -36,6 +36,8 @@ import { resolveClaudeBinary } from './claude-binary.js'
 import { parseServerArgs, parseArgv, HELP, type CliArgs } from './cli/args.js'
 import { runCliCommand, topLevelHelp, GROUPS } from './cli/index.js'
 import type { CliContext } from './cli/types.js'
+import { enableDevMode, isDevRuntime } from './dev-mode.js'
+import { firstPartyRegistry } from './sdk-tools/registry.js'
 
 const log = createLogger('cli')
 
@@ -176,6 +178,14 @@ async function runServer(args: CliArgs): Promise<void> {
     autoResume: true,
     crashRecovery: true,
   })
+
+  // Dev-only introspection tools. Registration is the security boundary: the
+  // registry is only iterated for sessions that spawn after this point, and a
+  // published dist/cli.mjs run never reaches this branch (see isDevRuntime).
+  // --dev / --no-dev override detection for the cases it cannot cover.
+  if (args.dev ?? isDevRuntime(process.argv[1], process.env)) {
+    enableDevMode({ registry: firstPartyRegistry, sm: sessionManager })
+  }
 
   // Seed the uploads registry from sessions' on-disk claude-web-uploads/
   // folders. Idempotent (path-keyed) — safe on every boot; deleted entries
