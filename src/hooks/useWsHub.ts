@@ -46,16 +46,18 @@ interface WsHubApi {
   /** Idempotently subscribe a session. Safe to call repeatedly; the
    *  hub tracks ref-counts internally so multiple components can
    *  subscribe to the same session without stepping on each other.
-   *  Pass `sinceUuid` for incremental replay (server sends only
+   *  A frame is sent on the first holder AND whenever the server has not
+   *  confirmed a channel for that session here (see applyChannelLiveness) —
+   *  a refused subscribe must not be able to strand a later consumer with
+   *  no replay. Pass `sinceUuid` for incremental replay (server sends only
    *  messages after that UUID). */
   subscribe: (sessionId: string, sinceUuid?: string) => () => void
-  /** Force a subscribe frame for a session regardless of ref-count.
-   *  `subscribe` only sends a frame when a session's ref-count goes
-   *  0→1; this bypasses that guard, so a session held by other
-   *  consumers (refCount > 0) can still re-request a fresh replay
-   *  after it was resumed from dormant/slept. Server treats a
-   *  repeated subscribe as an idempotent no-op when a channel already
-   *  exists. */
+  /** Force a subscribe frame for a session, bypassing BOTH guards
+   *  `subscribe` applies (the 0→1 ref-count and the known-live check).
+   *  For consumers that know their listener needs a replay right now even
+   *  though the hub believes the channel is served — e.g. useChatStream on
+   *  an observed dormant/slept → running flip. Server treats a repeated
+   *  subscribe as an idempotent no-op when a channel already exists. */
   resubscribe: (sessionId: string, sinceUuid?: string) => void
   /** Update the last known message UUID for a session. Used for
    *  incremental replay on reconnect — the hub stores this and sends
@@ -79,6 +81,69 @@ function wsUrl(): string {
   return `${proto}://${window.location.host}${WS_PATH}`
 }
 
+/** Fold one inbound frame into the set of sessions whose message channel the
+ *  server has ACTUALLY established on this connection.
+ *
+ *  A ref-count is a count of interested consumers, not of live channels: a
+ *  subscribe sent for a session the server cannot serve yet still increments
+ *  the count while establishing nothing. Trusting the count alone made that
+ *  first, failed subscribe poison the session for everyone else — the panel's
+ *  <Chat>/useChatStream mounts only once the session is running, and its
+ *  subscribe was then suppressed as a duplicate, so the server was never asked
+ *  for a replay and the transcript rendered blank on EVERY resume.
+ *
+ *  (Verified against the server: a session the user put to sleep — or one it
+ *  has never heard of — is refused with `session X not found`, because
+ *  startSession deliberately will not wake a slept session from a subscribe.
+ *  A merely dormant session IS auto-resumed there and served normally.)
+ *
+ *  So the hub tracks the truth from the server's own answers:
+ *   • `replay` — the subscribe was served: the channel exists. This is the
+ *     ONLY positive signal, because the success path always sends at least one
+ *     `replay` (an empty one included) before its `replay-done`, while the
+ *     REFUSAL path sends `error` + `replay-done` with no replay at all — a
+ *     `replay-done` is therefore not evidence of anything.
+ *   • `error` — the subscribe was refused: nothing was established.
+ *   • `session-update` with the session no longer running — every server
+ *     teardown path (unload / sleep / spawn-failed / crash) ends the subscriber
+ *     queues AND broadcasts `running: false` (session-manager.ts:4854, :861), so
+ *     a channel recorded earlier is gone even though no frame said so.
+ *   • `session-removed` — the session left the store entirely (`/clear`,
+ *     discard, delete from another tab), which is the one teardown that
+ *     broadcasts `removed` instead of the dormant update; the id can come back
+ *     later via resume(X), so the entry must not outlive it.
+ *
+ *  Only the NEGATIVE direction of `session-update` is read: a RUNNING session
+ *  may still have no channel here (that is the resume case), and marking it
+ *  live would re-create the very suppression this guards against.
+ *
+ *  Every field access is shape-checked: this runs on the hot path before
+ *  fan-out, where the handler's only other validation is `typeof frame.kind`,
+ *  and a throw here would drop the frame for every listener on the socket. */
+function applyChannelLiveness(live: Set<string>, frame: WsServerFrame): void {
+  switch (frame.kind) {
+    case 'replay':
+      if (typeof frame.sessionId === 'string') live.add(frame.sessionId)
+      break
+    case 'error':
+      // Best-effort echo — connection-level errors carry no sessionId.
+      if (typeof frame.sessionId === 'string') live.delete(frame.sessionId)
+      break
+    case 'session-removed':
+      if (typeof frame.id === 'string') live.delete(frame.id)
+      break
+    case 'session-update': {
+      const session = frame.session as { id?: unknown; running?: unknown } | undefined
+      if (session && typeof session.id === 'string' && session.running === false) {
+        live.delete(session.id)
+      }
+      break
+    }
+    default:
+      break
+  }
+}
+
 interface ProviderProps {
   children: ReactNode
   /** Override the URL for tests. Default derives from window.location. */
@@ -96,6 +161,10 @@ export function WsHubProvider({ children, url }: ProviderProps) {
    *  the server can do incremental replay instead of full history. Also
    *  used on reconnect to avoid re-sending the entire message history. */
   const lastUuidRef = useRef<Map<string, string | null>>(new Map())
+  /** Sessions whose channel the server has confirmed as established on the
+   *  CURRENT socket (see applyChannelLiveness). Cleared whenever the socket
+   *  is replaced — channels do not survive a connection. */
+  const liveSessionsRef = useRef<Set<string>>(new Set())
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<number | null>(null)
   const pingTimerRef = useRef<number | null>(null)
@@ -167,6 +236,10 @@ export function WsHubProvider({ children, url }: ProviderProps) {
       if (unmountedRef.current) return
       attemptsRef.current = 0
       setStatus('online')
+      // A fresh socket owns no channels — whatever we recorded as live died
+      // with the previous connection. Every held session is re-subscribed
+      // just below and re-confirmed by its replay.
+      liveSessionsRef.current.clear()
       // Re-subscribe to every session we were holding. Server treats
       // duplicate subscribes as idempotent, so a tab that never
       // disconnected doesn't get clobbered either.
@@ -193,6 +266,9 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         return
       }
       if (!frame || typeof frame !== 'object' || typeof frame.kind !== 'string') return
+      // Track channel liveness BEFORE fan-out so a listener reacting to this
+      // frame (e.g. one that re-subscribes on an `error`) sees the updated set.
+      applyChannelLiveness(liveSessionsRef.current, frame)
       // Fan out to global listeners (O(N) where N is total listeners).
       for (const fn of listenersRef.current) {
         try {
@@ -226,6 +302,10 @@ export function WsHubProvider({ children, url }: ProviderProps) {
       // still fires — without this guard it would schedule a
       // reconnect that closes the *new* working socket.
       if (wsRef.current !== ws) return
+      // The connection is gone, so its channels are too. Clearing here (and
+      // not only on the next open) keeps "live" == "live on the current
+      // socket" true for the whole reconnect gap.
+      liveSessionsRef.current.clear()
       if (pingTimerRef.current != null) {
         window.clearInterval(pingTimerRef.current)
         pingTimerRef.current = null
@@ -300,12 +380,25 @@ export function WsHubProvider({ children, url }: ProviderProps) {
     (sessionId: string, sinceUuid?: string) => {
       const cur = refCountsRef.current.get(sessionId) ?? 0
       refCountsRef.current.set(sessionId, cur + 1)
-      if (cur === 0) {
-        // First subscriber for this session — ask server to start
-        // streaming. Any frames that arrive before this subscribe is
-        // acknowledged by the server are impossible because we drop
-        // the send if socket isn't OPEN; when it reopens we replay
-        // all subscribes.
+      // Send unless the server has already confirmed a channel here. The
+      // ref-count alone is NOT that confirmation: a subscribe refused for a
+      // slept/unservable session still counted a holder, so a later consumer —
+      // the one that actually needs the replay, since <Chat>/useChatStream
+      // only mounts once the session runs — was suppressed as a duplicate and
+      // the session was never served. On a live channel the repeat is an
+      // idempotent no-op server-side (a `debug` line, no second replay), so
+      // erring toward sending is cheap; erring toward silence was the bug.
+      //
+      // Deliberately NOT tracked: an in-flight ("sent, not yet answered")
+      // state to suppress those repeats. Its stale direction — believing a
+      // subscribe is still in flight when its answer was swallowed by the
+      // server's `starting`/`subs.has` guard — skips a frame a listener needs,
+      // which is the blank transcript again. Paying one extra ignored frame
+      // keeps every failure mode on the harmless side.
+      if (cur === 0 || !liveSessionsRef.current.has(sessionId)) {
+        // Any frames arriving before the server acknowledges this subscribe
+        // are impossible: the send is dropped while the socket isn't OPEN,
+        // and on reopen every held session is re-subscribed.
         if (sinceUuid) lastUuidRef.current.set(sessionId, sinceUuid)
         safeSend({ kind: 'subscribe', sessionId, ...(sinceUuid ? { sinceUuid } : {}) })
       }
@@ -314,6 +407,9 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         if (c <= 1) {
           refCountsRef.current.delete(sessionId)
           lastUuidRef.current.delete(sessionId)
+          // The unsubscribe below tears the channel down, so it is no longer
+          // live for the next holder.
+          liveSessionsRef.current.delete(sessionId)
           safeSend({ kind: 'unsubscribe', sessionId })
         } else {
           refCountsRef.current.set(sessionId, c - 1)
@@ -327,14 +423,12 @@ export function WsHubProvider({ children, url }: ProviderProps) {
     lastUuidRef.current.set(sessionId, uuid)
   }, [])
 
-  // Force a fresh subscribe frame for a session even when the hub already
-  // holds a subscription (refCount > 0), which would otherwise swallow
-  // `subscribe`'s 0→1 frame. The server treats a repeated subscribe as an
-  // idempotent no-op when a live channel exists, so this is harmless when
-  // the channel is already served — but it is the only way to (re)establish
-  // a channel after a quiet teardown (a session was dormant/slept and has
-  // just been resumed, and the other consumer subscriptions kept refCount
-  // above zero the whole time).
+  // Force a fresh subscribe frame for a session, bypassing BOTH guards
+  // `subscribe` applies (the 0→1 ref-count and the known-live check). Used by
+  // consumers that know their listener needs a replay NOW — e.g. useChatStream
+  // on an observed dormant-or-slept → running flip.
+  // The server treats a repeated subscribe as an idempotent no-op when a live
+  // channel exists, so this is harmless when the channel is already served.
   const resubscribe = useCallback(
     (sessionId: string, sinceUuid?: string) => {
       if (sinceUuid) lastUuidRef.current.set(sessionId, sinceUuid)
