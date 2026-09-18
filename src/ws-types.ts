@@ -31,6 +31,7 @@ export type WsGlobalPermissionRequest = shared.WsGlobalPermissionRequest<Permiss
  *  the browser (SdkMessage is a loose Record). */
 export type WsReplay = shared.WsReplay<unknown, PermissionRequest>
 export type WsReplayDone = shared.WsReplayDone<PermissionRequest>
+export type { WsSubscribeResult, WsSubscribeResultReason } from '../shared/ws-protocol.js'
 export type WsMessage = shared.WsMessage<unknown>
 export type WsPermissionRequest = shared.WsPermissionRequest<PermissionRequest>
 export type WsPermissionResolved = shared.WsPermissionResolved<shared.PermissionDecision>

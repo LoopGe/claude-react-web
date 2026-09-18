@@ -388,6 +388,54 @@ export interface WsError {
   sessionId?: string
 }
 
+/** The server's answer to one client `subscribe` frame — the STATE of the
+ *  per-session channel, as opposed to the prose `error` frame.
+ *
+ *  A subscription is per-connection, and only the server knows whether this
+ *  connection holds a live channel for a session. Without this frame the
+ *  client had to infer it from ambient signals, and every inference was a
+ *  guess: a `replay` was the only positive one while `error` is emitted for
+ *  unrelated failures too, and the negative ones (`session-update` /
+ *  `session-removed`) are connection-agnostic global broadcasts. The inference
+ *  that mattered is the one that stranded a resumed session: a refused
+ *  subscribe still counted a holder, so the panel's `<Chat>` — which mounts
+ *  only AFTER the resume lands — had its subscribe suppressed as a duplicate
+ *  and the server was never asked for a replay.
+ *
+ *  Exactly one of these is sent per accepted `subscribe` frame on a live
+ *  socket, so a client never has to guess whether it will be served (the one
+ *  exception is a socket that closes mid-handshake — the client's own close
+ *  handling discards its state, so nothing is owed):
+ *   • `served`       — the channel was established by this frame (a replay
+ *                      burst precedes this ack).
+ *   • `already-live` — a channel was already up, and the replay burst for the
+ *                      caller's `sinceUuid` was RE-SERVED (a listener may
+ *                      have attached after the original one). Answered with
+ *                      `ok:false` when the manager can no longer serve the
+ *                      session, so it never claims what it did not deliver.
+ *   • `starting`     — an attempt is already in flight; its own outcome
+ *                      follows.
+ *   • `refused`      — nothing was established (a sleeping / unknown session
+ *                      is not woken by a subscribe). Rides with the `error` +
+ *                      `replay-done` pair the panel's error band renders.
+ *   • `closed`       — a channel this connection held has ended, or a
+ *                      duplicate subscribe found nothing left to serve (the
+ *                      session was unloaded / put to sleep / terminated). */
+export interface WsSubscribeResult {
+  kind: 'subscribe-result'
+  sessionId: string
+  /** True when a channel for this session is live on THIS connection now. */
+  ok: boolean
+  reason: WsSubscribeResultReason
+}
+
+export type WsSubscribeResultReason =
+  | 'served'
+  | 'already-live'
+  | 'starting'
+  | 'refused'
+  | 'closed'
+
 /** A cached widget payload replayed inside the app-plugin snapshot so a
  *  freshly-connected tab can render widgets that were pushed before it
  *  connected (the `app-plugin-event` frame itself is a one-shot broadcast). */
@@ -437,6 +485,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsCliNotification
   | WsReplay<Msg, Perm>
   | WsReplayDone<Perm>
+  | WsSubscribeResult
   | WsMessage<Msg>
   | WsPermissionRequest<Perm>
   | WsPermissionResolved<Decision>
