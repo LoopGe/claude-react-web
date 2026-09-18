@@ -33,6 +33,7 @@ import { attachWebSocket } from './ws.js'
 import { checkForUpdates } from './update-checker.js'
 import { startEventLoopProbe } from './event-loop-probe.js'
 import { resolveClaudeBinary } from './claude-binary.js'
+import { normalizeClaudeConfigDirEnv } from './claude-config-dir.js'
 import { parseServerArgs, parseArgv, HELP, type CliArgs } from './cli/args.js'
 import { runCliCommand, topLevelHelp, GROUPS } from './cli/index.js'
 import type { CliContext } from './cli/types.js'
@@ -42,6 +43,11 @@ import { firstPartyRegistry } from './sdk-tools/registry.js'
 const log = createLogger('cli')
 
 async function main() {
+  // Collapse a blank CLAUDE_CONFIG_DIR before anything resolves a CLI-owned
+  // path: the SDK reads the variable directly with a nullish check, so an
+  // empty value would otherwise leave its in-process helpers on a
+  // cwd-relative projects/ while every server-side reader uses ~/.claude.
+  normalizeClaudeConfigDirEnv()
   const argv = process.argv.slice(2)
   const { stateDir: sd, command, commandArgv } = parseArgv(argv)
 

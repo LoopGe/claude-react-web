@@ -69,6 +69,22 @@ describe('buildProfileEnv', () => {
       if (prev !== undefined) process.env.CLAUDE_CONFIG_DIR = prev
     }
   })
+
+  // claudeUserConfigPath() pins the plain `.claude.json`, which is correct only
+  // while the CLI subprocess does NOT receive CLAUDE_CODE_CUSTOM_OAUTH_URL —
+  // that variable makes the CLI write `.claude-custom-oauth.json` instead.
+  // This assertion is what stops a future "relay the CLAUDE_CODE_* family"
+  // change from silently desyncing the MCP import.
+  it('does not relay CLAUDE_CODE_CUSTOM_OAUTH_URL to the subprocess', () => {
+    const prev = process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL
+    process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL = 'https://oauth.example.com'
+    try {
+      expect(buildProfileEnv(PROFILE, 0).CLAUDE_CODE_CUSTOM_OAUTH_URL).toBeUndefined()
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL
+      else process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL = prev
+    }
+  })
 })
 
 // The spawn log is the one line that is supposed to tell the whole story of a

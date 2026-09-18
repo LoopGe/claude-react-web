@@ -209,7 +209,7 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
       throw new HttpError(400, 'names must be an array of strings')
     }
     const names = body.names.filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
-    const { data: mcpServers, path: configPath } = await readClaudeMcpServers()
+    const { data: mcpServers, path: configPath, existed } = await readClaudeMcpServers()
     // Index entries by their COERCED name (the same value GET returned to the
     // client). An entry's object key and its `name` field can disagree
     // (coerceStoredMcpServer prefers an explicit `name`), so looking the
@@ -229,7 +229,12 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
       const raw = byName.get(name)
       const server = raw ? coerceStoredMcpServer(raw, name) : null
       if (!server) {
-        failed.push({ name, error: `not found in ${configPath} mcpServers` })
+        failed.push({
+          name,
+          error: existed
+            ? `not found in ${configPath} mcpServers`
+            : 'not found in your Claude CLI config (no config file exists yet)',
+        })
         continue
       }
       const errors = validateMcpServer(server)

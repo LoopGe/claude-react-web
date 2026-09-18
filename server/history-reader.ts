@@ -124,18 +124,22 @@ async function findTranscriptFile(sessionId: string): Promise<string | null> {
     // ENOTDIR, which is the ordinary "not a project dir" case, not an anomaly
     // worth logging on every lookup.
     for (const entry of await readdir(projectsDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue
+      // isDirectory() is false for a SYMLINK, and pointing a project dir at
+      // another volume is a normal way to move bulk data — so follow those
+      // too, or the transcript silently stops being found.
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
       const candidate = path.join(projectsDir, entry.name, fileName)
       try {
         await stat(candidate)
         return candidate // first hit ?ids are unique
       } catch (err) {
         const e = err as NodeJS.ErrnoException
-        // Not in this project dir is the normal case. Anything else
+        // Not in this project dir is the normal case (ENOENT), as is a
+        // symlink that points at a file (ENOTDIR). Anything else
         // (permissions, a looping symlink) means a transcript may exist but be
         // unreadable — silently returning null would present that as "no
         // history" with nothing in the logs.
-        if (e.code !== 'ENOENT') {
+        if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') {
           log.warn(`findTranscriptFile stat failed for ${candidate}: ${e.message ?? err}`)
         }
       }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { resolveClaudeUserConfigPath } from './claude-config-dir.js'
+import { resolveClaudeUserConfigPath, normalizeClaudeConfigDirEnv } from './claude-config-dir.js'
 
 // The CLI/SDK prefer `<config dir>/.config.json` and fall back to
 // `.claude.json` — but the two live in DIFFERENT places when no override is
@@ -85,5 +85,28 @@ describe('resolveClaudeUserConfigPath', () => {
       if (prev === undefined) delete process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL
       else process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL = prev
     }
+  })
+
+  // A blank override is easy to produce by accident (docker `-e VAR`,
+  // `VAR=` in .env). The SDK's nullish check would keep it and resolve a
+  // cwd-relative projects/, so it has to be collapsed to "unset".
+  describe('blank override', () => {
+    it('resolves like an unset override', () => {
+      withTempHome((home) => {
+        expect(resolveClaudeUserConfigPath('   ', home)).toBe(join(home, '.claude.json'))
+      })
+    })
+
+    it('is deleted from the environment at boot', () => {
+      const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: '   ' }
+      normalizeClaudeConfigDirEnv(env)
+      expect(env.CLAUDE_CONFIG_DIR).toBeUndefined()
+    })
+
+    it('leaves a real value in the environment alone', () => {
+      const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: '/real/dir' }
+      normalizeClaudeConfigDirEnv(env)
+      expect(env.CLAUDE_CONFIG_DIR).toBe('/real/dir')
+    })
   })
 })

@@ -1,8 +1,27 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { paginateJsonl, turnAnchorsFromJsonl, readHistoryPage } from './history-reader.js'
+
+// Creating a symlink needs no privileges on POSIX but does on Windows unless a
+// junction is used. Probe once so the symlink test is skipped only where the
+// platform genuinely forbids it, rather than silently passing.
+const canSymlink = (() => {
+  const base = mkdtempSync(join(tmpdir(), 'crw-sym-'))
+  try {
+    mkdirSync(join(base, 'target'))
+    symlinkSync(join(base, 'target'), join(base, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
+    return true
+  } catch {
+    return false
+  } finally {
+    // finally, not after the symlink: on a Windows box that forbids junctions
+    // the throw would otherwise leak this temp dir on every test run.
+    rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  }
+})()
 
 // Build a JSONL transcript string from line objects.
 function jsonl(lines: Array<Record<string, unknown>>): string {
@@ -518,10 +537,46 @@ describe('readHistoryPage — CLI config dir', () => {
     }
   })
 
-  // The lookup globs `${configDir}/projects/*/<id>.jsonl`. The config dir is
-  // now an arbitrary user-chosen path, so a directory named with glob
-  // metacharacters (e.g. "cfg[1]") must not change the pattern's meaning —
-  // otherwise replay/resume come back empty with nothing logged.
+  // The scan uses readdir + isDirectory() to skip stray files. A SYMLINK to a
+  // directory reports isDirectory() false, so without an explicit symlink check
+  // a projects subtree pointed at another volume (a normal way to move bulk
+  // data) would silently stop being searched.
+  it.skipIf(!canSymlink)('finds the transcript under a symlinked project dir', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-cfg-'))
+    const sid = 'symlink-session'
+    // The real project dir lives OUTSIDE projects/, which holds a symlink to
+    // it — that is the entry readdir reports isDirectory() === false for, and
+    // therefore the branch this test exists to pin. (Symlinking `projects`
+    // itself would not: readdir follows that path before ever listing it.)
+    const outside = join(root, 'elsewhere', 'D--codes-demo')
+    const cfgRoot = join(root, 'cfg')
+    await mkdir(outside, { recursive: true })
+    await mkdir(join(cfgRoot, 'projects'), { recursive: true })
+    await writeFile(
+      join(outside, `${sid}.jsonl`),
+      jsonl([
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'via a symlink' } },
+        { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] } },
+      ]),
+    )
+    await symlink(outside, join(cfgRoot, 'projects', 'D--codes-demo'), process.platform === 'win32' ? 'junction' : 'dir')
+    expect(existsSync(join(cfgRoot, 'projects', 'D--codes-demo', `${sid}.jsonl`))).toBe(true)
+
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = cfgRoot
+    try {
+      const page = await readHistoryPage(sid, { limit: 100 })
+      expect(page.totalCount).toBe(2)
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  // The lookup no longer globs the config dir, so a directory named with glob
+  // metacharacters (e.g. "cfg[1]") cannot change a pattern's meaning — that
+  // used to make replay/resume come back empty with nothing logged.
   it('finds the transcript when the config dir contains glob metacharacters', async () => {
     const root = await mkdtemp(join(tmpdir(), 'crw-cfg-'))
     const bracketed = join(root, 'cfg[1]')
