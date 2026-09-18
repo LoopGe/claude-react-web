@@ -13,6 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   are now `mcp__git-tools__*`. Existing `firstPartyTools.apptools` config and
   session overrides migrate on load; the legacy `appToolsGit` boolean still
   folds into the new key. Historical transcripts keep the old tool names.
+- **`CLAUDE_CONFIG_DIR` now applies end to end** — the resolved path is relayed
+  to the CLI subprocess, and session transcripts, `settings.json`, user-scope
+  skills and the CLI's global config all resolve through it instead of a
+  hardcoded `~/.claude`. Previously only subagent transcripts followed it, so a
+  relocated config dir left history, resume and the skills panel silently
+  empty.
+  **Breaking:** a per-session `env.CLAUDE_CONFIG_DIR` (or
+  `env.CLAUDE_CODE_CUSTOM_OAUTH_URL`) is now rejected with a 400 on
+  `POST /sessions`, its nested `settings.env`, and
+  `POST /sessions/:id/settings`. Pointing one session at its own config dir
+  split it from every server-side reader, so its transcript became invisible
+  to history, replay and fork. Set it for the server process instead.
+- **`--help` lists `--disable-app-plugins` and `--safe-mode`** — both were
+  parsed and honoured, but neither appeared in the help output.
 
 ## [0.7.1] — 2026-09-02
 
