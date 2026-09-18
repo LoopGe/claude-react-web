@@ -10,6 +10,9 @@
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
 import { api } from '../hooks/useApi'
+import { dropPositionOf, isInAppDrag, readDragPayload, reorderById, sameOrder, setDragPayload } from '../hooks/useDragPayload'
+import { prepareFlip } from '../utils/flip'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { useProfiles } from '../hooks/useProfiles'
 import type { ModelGroupConfig, ProviderProfile } from '../types/config'
 import { randomId } from '../utils/uuid'
@@ -213,17 +216,28 @@ function ProfileCard({
     if (commitMessageModel === model) setCommitMessageModel('')
     setDirty(true)
   }
+  // FLIP selectors scoped to this profile card so two cards briefly
+  // co-mounted during an accordion collapse/expand don't share keys.
+  const modelFlip = () =>
+    prepareFlip(`[data-profile-card="${CSS.escape(profile.id)}"] [data-profile-model-id]`, 'data-profile-model-id')
+  const groupFlip = () =>
+    prepareFlip(`[data-profile-card="${CSS.escape(profile.id)}"] [data-profile-group-id]`, 'data-profile-group-id')
+
   const moveModel = (index: number, direction: -1 | 1) => {
     const target = index + direction
     if (target < 0 || target >= modelList.length) return
     const next = [...modelList]
     ;[next[index], next[target]] = [next[target], next[index]]
+    const animateMove = modelFlip()
     setModelList(next)
     setDirty(true)
+    animateMove()
   }
   const sortModels = () => {
+    const animateMove = modelFlip()
     setModelList([...modelList].sort((a, b) => a.localeCompare(b)))
     setDirty(true)
+    animateMove()
   }
 
   // — Model-group handlers (adapted from the old ModelGroupsTab) ?
@@ -241,19 +255,62 @@ function ProfileCard({
     const j = index + direction
     if (j < 0 || j >= next.length) return
     ;[next[index], next[j]] = [next[j], next[index]]
+    const animateMove = groupFlip()
     setModelGroups(next)
     setDirty(true)
+    animateMove()
   }
   const updateModelGroup = (id: string, patch: Partial<ModelGroupConfig>) => {
     setModelGroups(modelGroups.map((g) => (g.id === id ? { ...g, ...patch } : g)))
     setDirty(true)
   }
 
+  // — Drag-reorder for the two ordered lists above.
+  // Mirrors the sidebar's HTML5 DnD language (useDragPayload + before/after
+  // insertion line). Visual feedback is drop-hint state; the arrays only
+  // reshuffle on drop, same as SessionList.
+  const isMobile = useIsMobile()
+  const [draggingModel, setDraggingModel] = useState<string | null>(null)
+  const [modelDropHint, setModelDropHint] = useState<{ id: string; position: 'before' | 'after' } | null>(null)
+  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null)
+  const [groupDropHint, setGroupDropHint] = useState<{ id: string; position: 'before' | 'after' } | null>(null)
+
+  /** applyReorder — shared by both lists. Skips the state write when the
+   *  drop is a no-op so Save doesn't appear for an unchanged order. FLIP-
+   *  animates the settle so the drop matches the sidebar's motion language. */
+  const applyReorder = <T,>(
+    list: T[],
+    setList: (next: T[]) => void,
+    getId: (item: T) => string,
+    draggedId: string,
+    targetId: string,
+    position: 'before' | 'after',
+    flip: () => () => void,
+  ) => {
+    const next = reorderById(list, getId, draggedId, targetId, position)
+    if (next === list || sameOrder(next, list)) return
+    const animateMove = flip()
+    setList(next)
+    setDirty(true)
+    animateMove()
+  }
+
+  /** Block the browser's native text drop of our payload ids (setDragPayload
+   *  also writes a text/plain fallback) into ANY field on this card —
+   *  Connection inputs sit outside the two list boxes. */
+  const blockInAppNativeDrop = {
+    onDragOver: (e: React.DragEvent) => { if (isInAppDrag(e)) e.preventDefault() },
+    onDrop: (e: React.DragEvent) => { if (isInAppDrag(e)) e.preventDefault() },
+  }
+
+  const canDragModels = !isMobile && modelList.length > 1
+  const canDragGroups = !isMobile && modelGroups.length > 1
+
   const canTest = (authTokenDirty && !!authToken.trim()) || !!profile.authTokenMasked
   const deleteDisabled = profile.isActive || !canDelete
 
   return (
-    <div className="settings-card settings-profile-card">
+    <div className="settings-card settings-profile-card" data-profile-card={profile.id}>
       <div className="settings-card-head settings-mcp-card-head">
         <button className="settings-card-toggle" onClick={onToggleExpand} aria-expanded={expanded}>
           <span className="settings-card-chevron" aria-hidden>
@@ -320,7 +377,7 @@ function ProfileCard({
       )}
 
       <AnimatedCollapse open={expanded}>
-        <div className="settings-card-body settings-profile-body">
+        <div className="settings-card-body settings-profile-body" {...blockInAppNativeDrop}>
           <section className="settings-profile-section">
             <h4 className="settings-profile-section-label">Connection</h4>
             <div className="settings-field">
@@ -369,7 +426,7 @@ function ProfileCard({
             {/* Available Models — ordered list editor (adapted from ModelsTab) */}
             <div className="settings-field">
               <label>Available Models</label>
-              <span className="hint">First model is the default. Add model IDs one at a time.</span>
+              <span className="hint">First model is the default. Drag the rank badge, or use the arrows, to reorder.</span>
               <div className="settings-model-list">
                 {modelList.length > 1 && (
                   <div className="settings-model-list-toolbar">
@@ -383,8 +440,69 @@ function ProfileCard({
                   </div>
                 )}
                 {modelList.map((m, i) => (
-                  <div key={m} className={`settings-model-row${i === 0 ? ' default' : ''}`}>
-                    <span className="settings-model-rank" title={i === 0 ? 'Default model' : undefined}>
+                  <div
+                    key={m}
+                    data-profile-model-id={m}
+                    className={[
+                      'settings-model-row',
+                      i === 0 ? 'default' : '',
+                      draggingModel === m ? 'dragging' : '',
+                      modelDropHint?.id === m ? `drop-${modelDropHint.position}` : '',
+                    ].filter(Boolean).join(' ')}
+                    onDragOver={(e) => {
+                      // Branch on our own drag state, not the payload kind —
+                      // browsers only populate getData on drop (see useDragPayload).
+                      if (draggingModel == null) return
+                      if (!isInAppDrag(e)) return
+                      // Always preventDefault, even on the source row: the
+                      // text/plain fallback would otherwise natively paste
+                      // into any input the pointer crosses.
+                      e.preventDefault()
+                      if (draggingModel === m) return
+                      const position = dropPositionOf(e, e.currentTarget)
+                      setModelDropHint((prev) =>
+                        prev && prev.id === m && prev.position === position ? prev : { id: m, position },
+                      )
+                    }}
+                    onDragLeave={(e) => {
+                      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+                      setModelDropHint((prev) => (prev?.id === m ? null : prev))
+                    }}
+                    onDrop={(e) => {
+                      const payload = readDragPayload(e)
+                      setModelDropHint(null)
+                      setDraggingModel(null)
+                      if (!payload || payload.kind !== 'profile-model') return
+                      // Only accept a drop that started from THIS card's list —
+                      // payload.kind alone would let another profile's drag
+                      // reorder this list during a collapse/expand overlap.
+                      if (draggingModel == null) return
+                      e.preventDefault()
+                      e.stopPropagation()
+                      const position = dropPositionOf(e, e.currentTarget)
+                      applyReorder(modelList, setModelList, (id) => id, payload.id, m, position, modelFlip)
+                    }}
+                  >
+                    {/* Rank doubles as the drag grip — buttons inside the row
+                        must stay clickable without a 1px drift starting a drag. */}
+                    <span
+                      className={`settings-model-rank${canDragModels ? ' settings-model-grip' : ''}`}
+                      title={
+                        canDragModels
+                          ? (i === 0 ? 'Default model · Drag to reorder' : 'Drag to reorder')
+                          : (i === 0 ? 'Default model' : undefined)
+                      }
+                      draggable={canDragModels}
+                      onDragStart={(e) => {
+                        if (!canDragModels) return
+                        setDraggingModel(m)
+                        setDragPayload(e, { kind: 'profile-model', id: m })
+                      }}
+                      onDragEnd={() => {
+                        setDraggingModel(null)
+                        setModelDropHint(null)
+                      }}
+                    >
                       {i === 0 ? 'Default' : i + 1}
                     </span>
                     <code className="settings-model-id" title={m}>{m}</code>
@@ -479,8 +597,9 @@ function ProfileCard({
             {/* Model Groups — adapted from ModelGroupsTab */}
             <div className="settings-field">
               <span className="hint">
-                Groups map Opus/Sonnet/Haiku slots to concrete models. Sessions can select a group or a
-                single model; empty slots inherit the main slot.
+                Groups map Opus/Sonnet/Haiku slots to concrete models. Drag the rank badge, or use the
+                arrows, to reorder. Sessions can select a group or a single model; empty slots inherit
+                the main slot.
               </span>
               <div className="settings-model-list">
                 {modelGroups.length === 0 && (
@@ -493,9 +612,65 @@ function ProfileCard({
                     { key: 'haiku', label: 'Haiku' },
                   ]
                   return (
-                    <div key={g.id} className="settings-model-group">
+                    <div
+                      key={g.id}
+                      data-profile-group-id={g.id}
+                      className={[
+                        'settings-model-group',
+                        draggingGroupId === g.id ? 'dragging' : '',
+                        groupDropHint?.id === g.id ? `drop-${groupDropHint.position}` : '',
+                      ].filter(Boolean).join(' ')}
+                      onDragOver={(e) => {
+                        if (draggingGroupId == null) return
+                        if (!isInAppDrag(e)) return
+                        e.preventDefault()
+                        if (draggingGroupId === g.id) return
+                        // Anchor the midpoint to the header row, not the whole
+                        // card — the slots grid roughly doubles card height and
+                        // would push the split into the middle of the fields.
+                        const anchor = e.currentTarget.querySelector<HTMLElement>('.settings-model-row') ?? e.currentTarget
+                        const position = dropPositionOf(e, anchor)
+                        setGroupDropHint((prev) =>
+                          prev && prev.id === g.id && prev.position === position ? prev : { id: g.id, position },
+                        )
+                      }}
+                      onDragLeave={(e) => {
+                        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+                        setGroupDropHint((prev) => (prev?.id === g.id ? null : prev))
+                      }}
+                      onDrop={(e) => {
+                        const payload = readDragPayload(e)
+                        setGroupDropHint(null)
+                        setDraggingGroupId(null)
+                        if (!payload || payload.kind !== 'profile-model-group') return
+                        if (draggingGroupId == null) return
+                        e.preventDefault()
+                        e.stopPropagation()
+                        const anchor = e.currentTarget.querySelector<HTMLElement>('.settings-model-row') ?? e.currentTarget
+                        const position = dropPositionOf(e, anchor)
+                        applyReorder(modelGroups, setModelGroups, (item) => item.id, payload.id, g.id, position, groupFlip)
+                      }}
+                    >
                       <div className="settings-model-row">
-                        <span className="settings-model-rank" title="Group">{i + 1}</span>
+                        {/* Rank doubles as the drag grip — the rest of the card
+                            is form fields, so making the whole card draggable
+                            would swallow text-selection inside the inputs. */}
+                        <span
+                          className={`settings-model-rank${canDragGroups ? ' settings-model-grip' : ''}`}
+                          title={canDragGroups ? 'Drag to reorder' : 'Group'}
+                          draggable={canDragGroups}
+                          onDragStart={(e) => {
+                            if (!canDragGroups) return
+                            setDraggingGroupId(g.id)
+                            setDragPayload(e, { kind: 'profile-model-group', id: g.id })
+                          }}
+                          onDragEnd={() => {
+                            setDraggingGroupId(null)
+                            setGroupDropHint(null)
+                          }}
+                        >
+                          {i + 1}
+                        </span>
                         <input
                           className="input settings-model-input"
                           value={g.name}
