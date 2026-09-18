@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { paginateJsonl, turnAnchorsFromJsonl } from './history-reader.js'
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { paginateJsonl, turnAnchorsFromJsonl, readHistoryPage } from './history-reader.js'
 
 // Build a JSONL transcript string from line objects.
 function jsonl(lines: Array<Record<string, unknown>>): string {
@@ -481,5 +484,66 @@ describe('turnAnchorsFromJsonl — backfill from disk', () => {
 
   it('returns empty for an empty transcript', () => {
     expect(turnAnchorsFromJsonl('')).toEqual([])
+  })
+})
+
+describe('readHistoryPage — CLI config dir', () => {
+  // The `claude` CLI stores transcripts under $CLAUDE_CONFIG_DIR/projects when
+  // that variable is set, so the reader has to resolve the same root.
+  // Hardcoding ~/.claude makes resume, replay and file-rewind come back
+  // silently empty for anyone who relocated the CLI's config dir.
+  it('reads the transcript from $CLAUDE_CONFIG_DIR/projects', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-cfg-'))
+    const sid = 'cfg-dir-session'
+    const projDir = join(root, 'projects', 'D--codes-demo')
+    await mkdir(projDir, { recursive: true })
+    await writeFile(
+      join(projDir, `${sid}.jsonl`),
+      jsonl([
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'from the override' } },
+        { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] } },
+      ]),
+    )
+
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = root
+    try {
+      const page = await readHistoryPage(sid, { limit: 100 })
+      expect(page.totalCount).toBe(2)
+      expect((page.messages[0] as { uuid: string }).uuid).toBe('u1')
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  // The lookup globs `${configDir}/projects/*/<id>.jsonl`. The config dir is
+  // now an arbitrary user-chosen path, so a directory named with glob
+  // metacharacters (e.g. "cfg[1]") must not change the pattern's meaning —
+  // otherwise replay/resume come back empty with nothing logged.
+  it('finds the transcript when the config dir contains glob metacharacters', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-cfg-'))
+    const bracketed = join(root, 'cfg[1]')
+    const sid = 'glob-meta-session'
+    await mkdir(join(bracketed, 'projects', 'D--codes-demo'), { recursive: true })
+    await writeFile(
+      join(bracketed, 'projects', 'D--codes-demo', `${sid}.jsonl`),
+      jsonl([
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'bracketed dir' } },
+        { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] } },
+      ]),
+    )
+
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = bracketed
+    try {
+      const page = await readHistoryPage(sid, { limit: 100 })
+      expect(page.totalCount).toBe(2)
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

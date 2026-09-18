@@ -7,8 +7,6 @@
 
 import { Hono } from 'hono'
 import { readFile, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import {
   McpConfigStore,
   applyImportedOverwrite,
@@ -26,55 +24,60 @@ import {
   type MaskedMcpServer,
 } from './mcp-config.js'
 import { HttpError, createErrorHandler } from './errors.js'
+import { claudeUserConfigPath } from './claude-config-dir.js'
 import { safeJson } from './routes/index.js'
 import type { McpImportPreviewServer, McpImportResult } from '../shared/mcp-types'
 
 const OAUTH_CALLBACK_PATH = '/api/mcp-config/oauth/callback'
 
-/** Path to the Claude CLI's own user config, which holds its global
- *  `mcpServers` map. We only read this file — never write it. */
-function claudeUserConfigPath(): string {
-  return join(homedir(), '.claude.json')
-}
+/** mtime-keyed cache of the parsed `mcpServers` object. The CLI's global
+ *  config can be tens of MB (Claude Code stores project history under
+ *  `projects`), and JSON.parse is synchronous — without this, a user importing
+ *  servers one-checkbox-at-a-time would re-read + re-parse the whole file per
+ *  POST. The file is mutated by the Claude CLI, not by us, so an mtime check
+ *  is sufficient invalidation; a stale cache survives only until the CLI
+ *  touches the file. `null` = no cached read yet.
+ *
+ *  The resolved PATH is part of the key too: it is derived from
+ *  CLAUDE_CONFIG_DIR at call time, so without it a read of one config file
+ *  would be served for a request that resolves to a different one whose mtime
+ *  happens to match. */
+let claudeMcpCache: { path: string; mtimeMs: number; data: Record<string, unknown> } | null = null
 
-/** mtime-keyed cache of the parsed `mcpServers` object. ~/.claude.json can
- *  be tens of MB (Claude Code stores project history under `projects`), and
- *  JSON.parse is synchronous — without this, a user importing servers
- *  one-checkbox-at-a-time would re-read + re-parse the whole file per POST.
- *  The file is mutated by the Claude CLI, not by us, so an mtime check is
- *  sufficient invalidation; a stale cache survives only until the CLI
- *  touches the file. `null` = no cached read yet. */
-let claudeMcpCache: { mtimeMs: number; data: Record<string, unknown> } | null = null
-
-/** Read the top-level `mcpServers` object from ~/.claude.json. Returns an
+/** Read the top-level `mcpServers` object from the CLI's global config, whose
+ *  path comes from `claudeUserConfigPath()` (see claude-config-dir.ts for the
+ *  `.config.json` / `.claude.json` ordering and the layout asymmetry). Returns an
  *  empty record when the file is missing, malformed, or lacks the key —
  *  never throws for those cases, so the setup wizard isn't blocked by a
  *  corrupt foreign file. A real I/O error (permissions, etc.) still throws
  *  HttpError(500) so it surfaces rather than silently looking empty. */
-async function readClaudeMcpServers(): Promise<Record<string, unknown>> {
+async function readClaudeMcpServers(): Promise<{ data: Record<string, unknown>; path: string; existed: boolean }> {
   const file = claudeUserConfigPath()
   let st
   try {
     st = await stat(file)
   } catch (err) {
     const e = err as NodeJS.ErrnoException
-    if (e.code === 'ENOENT') return {}
-    throw new HttpError(500, `Could not stat ~/.claude.json: ${e.message}`)
+    // `existed: false` so callers don't name a file that was never opened.
+    if (e.code === 'ENOENT') return { data: {}, path: file, existed: false }
+    throw new HttpError(500, `Could not stat ${file}: ${e.message}`)
   }
-  // Cache hit: the file hasn't changed since the last read.
-  if (claudeMcpCache && claudeMcpCache.mtimeMs === st.mtimeMs) return claudeMcpCache.data
+  // Cache hit: same file, unchanged since the last read.
+  if (claudeMcpCache && claudeMcpCache.path === file && claudeMcpCache.mtimeMs === st.mtimeMs) {
+    return { data: claudeMcpCache.data, path: file, existed: true }
+  }
 
   let raw: string
   try {
     raw = await readFile(file, 'utf8')
   } catch (err) {
     const e = err as NodeJS.ErrnoException
-    if (e.code === 'ENOENT') return {}
-    throw new HttpError(500, `Could not read ~/.claude.json: ${e.message}`)
+    if (e.code === 'ENOENT') return { data: {}, path: file, existed: false }
+    throw new HttpError(500, `Could not read ${file}: ${e.message}`)
   }
-  // Strip a leading UTF-8 BOM — some Windows editors save ~/.claude.json
-  // with one, and JSON.parse throws on the BOM (U+FEFF) prefix. Claude Code
-  // itself never writes a BOM, but the file is hand-editable.
+  // Strip a leading UTF-8 BOM — some Windows editors save the CLI's global
+  // config with one, and JSON.parse throws on the BOM (U+FEFF) prefix. Claude
+  // Code itself never writes a BOM, but the file is hand-editable.
   if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1)
 
   const empty: Record<string, unknown> = {}
@@ -85,21 +88,21 @@ async function readClaudeMcpServers(): Promise<Record<string, unknown>> {
     // Malformed JSON — honor the "returns empty" contract instead of 500-ing
     // the setup wizard. Cache the empty result against this mtime so a retry
     // doesn't re-attempt the parse until the file changes.
-    claudeMcpCache = { mtimeMs: st.mtimeMs, data: empty }
-    return empty
+    claudeMcpCache = { path: file, mtimeMs: st.mtimeMs, data: empty }
+    return { data: empty, path: file, existed: true }
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    claudeMcpCache = { mtimeMs: st.mtimeMs, data: empty }
-    return empty
+    claudeMcpCache = { path: file, mtimeMs: st.mtimeMs, data: empty }
+    return { data: empty, path: file, existed: true }
   }
   const mcpServers = (parsed as { mcpServers?: unknown }).mcpServers
   if (!mcpServers || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) {
-    claudeMcpCache = { mtimeMs: st.mtimeMs, data: empty }
-    return empty
+    claudeMcpCache = { path: file, mtimeMs: st.mtimeMs, data: empty }
+    return { data: empty, path: file, existed: true }
   }
   const data = mcpServers as Record<string, unknown>
-  claudeMcpCache = { mtimeMs: st.mtimeMs, data }
-  return data
+  claudeMcpCache = { path: file, mtimeMs: st.mtimeMs, data }
+  return { data, path: file, existed: true }
 }
 
 /** Parse an import file into { key, raw } entries. Accepts three shapes:
@@ -166,7 +169,7 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
     return c.json({ servers })
   })
 
-  // ── Import from Claude CLI config (~/.claude.json) ─────────────────
+  // ── Import from the CLI's global config ────────────────────────────
   // Registered BEFORE `/:name` so the literal `claude-import` segment
   // isn't captured by the `:name` param route below.
 
@@ -174,7 +177,12 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
    *  per-server validation errors so the UI can show which entries the
    *  command allowlist would reject before the user tries to import. */
   app.get('/claude-import', async (c) => {
-    const mcpServers = await readClaudeMcpServers()
+    // The path comes back from the read itself, so the wizard is told the file
+    // that was opened rather than re-resolving (the CLI could create or remove
+    // the preferred `.config.json` between two independent lookups). Omitted
+    // when the file was absent — naming a file that was never read is exactly
+    // the misleading copy this reports to avoid.
+    const { data: mcpServers, path: configPath, existed } = await readClaudeMcpServers()
     const servers: Array<MaskedMcpServer & { importErrors: string[]; exists: boolean }> = []
     for (const [name, raw] of Object.entries(mcpServers)) {
       const server = coerceStoredMcpServer(raw, name)
@@ -186,20 +194,22 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
         exists: !!store.get(server.name),
       })
     }
-    return c.json({ servers })
+    // configPath lets the setup wizard name the file the server actually read,
+    // which is not `~/.claude.json` once CLAUDE_CONFIG_DIR relocates it.
+    return c.json({ servers, ...(existed ? { configPath } : {}) })
   })
 
   /** POST /claude-import — import a subset (by name) into the global store.
-   *  Re-reads ~/.claude.json server-side so secret env/headers values never
-   *  cross the wire. Names that already exist are skipped (not overwritten);
-   *  names that fail validation are reported per-entry. */
+   *  Re-reads the CLI's global config server-side so secret env/headers values
+   *  never cross the wire. Names that already exist are skipped (not
+   *  overwritten); names that fail validation are reported per-entry. */
   app.post('/claude-import', async (c) => {
     const body = await safeJson<{ names?: unknown }>(c.req)
     if (!body || typeof body !== 'object' || !Array.isArray(body.names)) {
       throw new HttpError(400, 'names must be an array of strings')
     }
     const names = body.names.filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
-    const mcpServers = await readClaudeMcpServers()
+    const { data: mcpServers, path: configPath } = await readClaudeMcpServers()
     // Index entries by their COERCED name (the same value GET returned to the
     // client). An entry's object key and its `name` field can disagree
     // (coerceStoredMcpServer prefers an explicit `name`), so looking the
@@ -219,7 +229,7 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
       const raw = byName.get(name)
       const server = raw ? coerceStoredMcpServer(raw, name) : null
       if (!server) {
-        failed.push({ name, error: 'not found in ~/.claude.json mcpServers' })
+        failed.push({ name, error: `not found in ${configPath} mcpServers` })
         continue
       }
       const errors = validateMcpServer(server)

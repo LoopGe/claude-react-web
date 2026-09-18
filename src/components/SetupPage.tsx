@@ -63,9 +63,9 @@ interface ClaudeHealth {
   reason?: 'not_found' | 'spawn_failed' | 'exec_failed' | 'unknown'
 }
 
-/** A native MCP server discovered in ~/.claude.json, as returned by
- *  GET /api/mcp-config/claude-import. Secrets are already masked by the
- *  server; `importErrors` carries allowlist/schema violations that would
+/** A native MCP server discovered in the Claude CLI's global config, as
+ *  returned by GET /api/mcp-config/claude-import. Secrets are already masked by
+ *  the server; `importErrors` carries allowlist/schema violations that would
  *  block import, and `exists` marks servers already in the global store. */
 interface ClaudeMcpCandidate extends McpServerConfigMeta {
   importErrors: string[]
@@ -100,6 +100,10 @@ export function SetupPage({ onConfigured }: Props) {
   const [baseUrl, setBaseUrl] = useState('')
   const [tokenPrefilled, setTokenPrefilled] = useState(false)
   const [baseUrlPrefilled, setBaseUrlPrefilled] = useState(false)
+  /** Path the server actually read for the pre-fill, so the hint below names
+   *  the real file even when the CLI's config dir has been relocated. Falls
+   *  back to the bare filename when the server didn't report one. */
+  const [settingsPath, setSettingsPath] = useState<string | undefined>(undefined)
   const [showToken, setShowToken] = useState(false)
   const tokenInputRef = useRef<HTMLInputElement>(null)
 
@@ -130,13 +134,16 @@ export function SetupPage({ onConfigured }: Props) {
   // yet (or the result was invalidated by an edit).
   const [probedRegistry, setProbedRegistry] = useState<string | null>(null)
 
-  // ── Step 3: MCP import from ~/.claude.json ──
+  // ── Step 3: MCP import from the Claude CLI's global config ──
   // `claudeMcp === undefined` ⇒ probe still in flight (or not yet kicked
   // off — we probe lazily on first entry of step 3, not on mount, so users
-  // who breeze past MCP don't pay for a read of ~/.claude.json). An empty
+  // who breeze past MCP don't pay for a read of that file). An empty
   // array means the file has no top-level `mcpServers` key.
   const [claudeMcp, setClaudeMcp] = useState<ClaudeMcpCandidate[] | undefined>(undefined)
   const [claudeMcpError, setClaudeMcpError] = useState<string | null>(null)
+  /** Path the server read for the MCP import, reported so the copy below can
+   *  name the real file once the CLI's config dir has been relocated. */
+  const [mcpConfigPath, setMcpConfigPath] = useState<string | undefined>(undefined)
   // Per-server import outcome, keyed by server name. Drives the row badges
   // and disables re-importing servers that are already imported/exists.
   // Pre-existing servers (c.exists) are seeded to 'exists' when the probe
@@ -164,10 +171,11 @@ export function SetupPage({ onConfigured }: Props) {
     probeCancelRef.current = () => { cancelled = true }
     setClaudeMcpError(null)
     void api
-      .get<{ servers: ClaudeMcpCandidate[] }>('/mcp-config/claude-import')
+      .get<{ servers: ClaudeMcpCandidate[]; configPath?: string }>('/mcp-config/claude-import')
       .then((r) => {
         if (cancelled) return
         const servers = r.servers ?? []
+        if (r.configPath) setMcpConfigPath(r.configPath)
         setClaudeMcp(servers)
         setMcpImportStatus((prev) => {
           const next = { ...prev }
@@ -179,12 +187,12 @@ export function SetupPage({ onConfigured }: Props) {
       })
       .catch((err) => {
         if (cancelled) return
-        setClaudeMcpError(err instanceof Error ? err.message : 'Failed to read ~/.claude.json')
+        setClaudeMcpError(err instanceof Error ? err.message : 'Failed to read the Claude CLI config')
       })
   }, [])
 
-  /** Lazy-probe ~/.claude.json when the user first lands on step 3. Re-runs
-   *  only while unsettled (claudeMcp undefined) so a completed probe is
+  /** Lazy-probe the CLI's global config when the user first lands on step 3.
+   *  Re-runs only while unsettled (claudeMcp undefined) so a completed probe is
    *  sticky across back/forward navigation. */
   useEffect(() => {
     if (step !== 3 || claudeMcp !== undefined) return
@@ -286,11 +294,14 @@ export function SetupPage({ onConfigured }: Props) {
   // without writing config.json a second time.
   const [setupCompleted, setSetupCompleted] = useState(false)
 
-  // Pre-fill from ~/.claude/settings.json if available.
+  // Pre-fill from the CLI's settings.json if available.
   useEffect(() => {
     void api
-      .get<{ hasKey?: boolean; keySuffix?: string; baseUrl?: string; modelList?: string[] }>('/config/claude-defaults')
+      .get<{ hasKey?: boolean; keySuffix?: string; baseUrl?: string; modelList?: string[]; settingsPath?: string }>(
+        '/config/claude-defaults',
+      )
       .then((r) => {
+        if (r.settingsPath) setSettingsPath(r.settingsPath)
         if (r.hasKey) {
           // Show a visual indicator but don't expose the full key.
           // The masked value is never submitted — the server keeps the existing key.
@@ -406,7 +417,7 @@ export function SetupPage({ onConfigured }: Props) {
   const finalize = useCallback(
     async (openNewSession: boolean) => {
       // Allow proceeding if either the user entered a new token or the
-      // server already has one (tokenPrefilled from ~/.claude/settings.json).
+      // server already has one (tokenPrefilled from the CLI's settings.json).
       if (!authToken.trim() && !tokenPrefilled) {
         setError('Auth token is required — clear-and-retry: click step 1.')
         return
@@ -693,8 +704,8 @@ export function SetupPage({ onConfigured }: Props) {
                 {tokenPrefilled && (
                   <p className="setup-prefilled-hint">
                     {authToken.trim()
-                      ? <>Pre-filled from{' '}<code style={styles.code}>~/.claude/settings.json</code>. Edit to override.</>
-                      : <>Key already configured from{' '}<code style={styles.code}>~/.claude/settings.json</code>. Enter a new one to override.</>
+                      ? <>Pre-filled from{' '}<code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>. Edit to override.</>
+                      : <>Key already configured from{' '}<code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>. Enter a new one to override.</>
                     }
                   </p>
                 )}
@@ -736,7 +747,7 @@ export function SetupPage({ onConfigured }: Props) {
                 {baseUrlPrefilled && (
                   <p className="setup-prefilled-hint">
                     Pre-filled from{' '}
-                    <code style={styles.code}>~/.claude/settings.json</code>. Edit
+                    <code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>. Edit
                     to override.
                   </p>
                 )}
@@ -754,7 +765,7 @@ export function SetupPage({ onConfigured }: Props) {
                 {modelsPrefilled && (
                   <p className="setup-prefilled-hint">
                     Pre-filled from{' '}
-                    <code style={styles.code}>~/.claude/settings.json</code>{' '}
+                    <code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>{' '}
                     (ANTHROPIC_DEFAULT_*_MODEL). Edit to override.
                   </p>
                 )}
@@ -863,9 +874,9 @@ export function SetupPage({ onConfigured }: Props) {
             <div className="setup-field">
               <label className="setup-label">MCP Servers</label>
               <p className="setup-hint">
-                Import MCP servers configured in your Claude CLI{' '}
-                (<code style={styles.code}>~/.claude.json</code>). Imported
-                servers become global and are available to every new session.
+                Import MCP servers configured in your Claude CLI
+                {mcpConfigPath ? <> (<code style={styles.code}>{mcpConfigPath}</code>)</> : null}.
+                Imported servers become global and are available to every new session.
               </p>
 
               {/* Probing */}
@@ -876,7 +887,7 @@ export function SetupPage({ onConfigured }: Props) {
                     style={{ ...styles.spinner, borderTopColor: 'var(--accent)' }}
                     aria-hidden="true"
                   />
-                  <span className="setup-hint">Reading ~/.claude.json…</span>
+                  <span className="setup-hint">Reading your Claude CLI config…</span>
                 </div>
               )}
 
@@ -887,8 +898,11 @@ export function SetupPage({ onConfigured }: Props) {
                   <span className="setup-health-icon" aria-hidden="true">!</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{ ...styles.hint, color: 'var(--fg)' }}>
-                      Could not read <code style={styles.code}>~/.claude.json</code>.
+                      Could not read your Claude CLI config.
                     </p>
+                    {/* The server's message names the file it actually tried,
+                        which is not ~/.claude.json once the config dir has
+                        been relocated — so don't restate a path here. */}
                     <p className="setup-prefilled-hint">{claudeMcpError}</p>
                   </div>
                   <button

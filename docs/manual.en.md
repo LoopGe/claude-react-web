@@ -6,6 +6,8 @@
 > For installation, CLI flags, architecture and development, see [README](../README.md) and [CONFIG.md](../CONFIG.md).
 >
 > Every screenshot here comes from **a real run of this repository's current build** (Windows · light theme · `mimo-v2.5-pro`). UI text is English, and this manual keeps the exact labels so you can match them on screen.
+>
+> Shortcuts are written as they appear on Windows and Linux: on macOS the `Ctrl` key is `Cmd` (`Alt` is the same on both).
 
 ---
 
@@ -46,7 +48,7 @@ The server listens on `http://127.0.0.1:3456` and opens your browser.
 | 1 Environment | Checks the `claude` CLI (`Claude CLI is ready — {version}` / `Claude CLI was not detected on this server.`) |
 | 2 Auth Token | `Auth Token *` (placeholder `sk-ant-...`) and optional `Base URL` |
 | 3 Models | Maintains `Available Models`, `Recap Model`, `Commit Message Model` |
-| 4 MCP | Pick MCP servers to import from `~/.claude.json` |
+| 4 MCP | Pick MCP servers to import from the Claude CLI's global config (the wizard names the exact file it read) |
 | 5 Notifications | Turn desktop notifications on/off |
 | 6 Updates | Set the update registry |
 | 7 Finish | `Create New Session` or `Skip` |
@@ -540,6 +542,8 @@ On narrow screens the layout collapses to a single panel with a drawer sidebar (
 ---
 
 ## 11. Keyboard shortcuts
+
+> Shortcuts below are written as on Windows and Linux — on macOS `Ctrl` is `Cmd`.
 
 ### Global
 

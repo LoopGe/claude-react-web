@@ -1,8 +1,8 @@
 import { promises as fs } from 'node:fs'
-import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
+import { claudeConfigDir } from './claude-config-dir.js'
 
 const log = createLogger('skills-core')
 import type { SkillImportFile, SkillRecord, SkillRootInfo, SkillScope, SkillValidationResponse } from '../shared/skills.js'
@@ -68,7 +68,7 @@ function normalizeCwd(cwd?: string): string {
 }
 
 function skillRoot(scope: SkillScope, cwd?: string): string {
-  if (scope === 'user') return resolve(homedir(), '.claude', 'skills')
+  if (scope === 'user') return resolve(claudeConfigDir(), 'skills')
   return resolve(normalizeCwd(cwd), '.claude', 'skills')
 }
 

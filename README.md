@@ -208,6 +208,10 @@ Options:
                        on when the server runs from TypeScript source
                        (npm run dev / dev:server), off for dist/cli.mjs.
       --no-dev         Force the dev tools off even when running from source.
+      --disable-app-plugins
+                       Disable the App Plugins (Mods) subsystem entirely.
+      --safe-mode      Load App Plugins without activating their background
+                       subprocesses — static UI contributions only.
   -V, --version        Print version and exit
   -h, --help           Show this help and exit
 ```
@@ -237,21 +241,21 @@ claude-react-web update
 
 Anthropic credentials live in `config.json` (`authToken` / `baseUrl`), not in env vars — the server injects them into each SDK subprocess. The variables below tune the server itself and are all optional:
 
-| Variable                    | What it does                                                                            | Default                 |
-| --------------------------- | --------------------------------------------------------------------------------------- | ----------------------- |
-| `CLAUDE_CODE_BINARY`        | Path to the `claude` CLI binary (same as `--claude-binary`)                             | auto-detected on `PATH` |
-| `CLAUDE_CONFIG_DIR`         | Overrides the Claude config directory used to locate **subagent** transcripts           | `~/.claude`             |
-| `LOG_LEVEL`                 | Log verbosity (`error` / `warn` / `info` / `debug` / `trace`)                           | `info`                  |
-| `LOG_SCOPES`                | Comma-separated scope filter for logs (`*` matches all)                                 | all scopes              |
-| `DEBUG_SESSION`             | Set to `1` to force `LOG_LEVEL=debug` (back-compat alias)                               | —                       |
-| `EVENT_LOOP_PROBE`          | Set to `0` to disable the event-loop stall probe                                        | enabled                 |
-| `EVENT_LOOP_PROBE_MS`       | Event-loop probe sample interval, in milliseconds                                       | `5000`                  |
-| `EVENT_LOOP_PROBE_QUIET_MS` | Blocking threshold above which a probe window is reported                               | `100`                   |
-| `METRICS`                   | Set to `0` to disable metrics collection (`GET /api/metrics` returns an empty snapshot) | enabled                 |
+| Variable                    | What it does                                                                                                                                                          | Default                 |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `CLAUDE_CODE_BINARY`        | Path to the `claude` CLI binary (same as `--claude-binary`)                                                                                                           | auto-detected on `PATH` |
+| `CLAUDE_CONFIG_DIR`         | Relocates the CLI's entire config directory. Transcripts, `settings.json`, and user-scope skills all resolve under it, and the value is relayed to the SDK subprocess | `~/.claude`             |
+| `LOG_LEVEL`                 | Log verbosity (`error` / `warn` / `info` / `debug` / `trace`)                                                                                                         | `info`                  |
+| `LOG_SCOPES`                | Comma-separated scope filter for logs (`*` matches all)                                                                                                               | all scopes              |
+| `DEBUG_SESSION`             | Set to `1` to force `LOG_LEVEL=debug` (back-compat alias)                                                                                                             | —                       |
+| `EVENT_LOOP_PROBE`          | Set to `0` to disable the event-loop stall probe                                                                                                                      | enabled                 |
+| `EVENT_LOOP_PROBE_MS`       | Event-loop probe sample interval, in milliseconds                                                                                                                     | `5000`                  |
+| `EVENT_LOOP_PROBE_QUIET_MS` | Blocking threshold above which a probe window is reported                                                                                                             | `100`                   |
+| `METRICS`                   | Set to `0` to disable metrics collection (`GET /api/metrics` returns an empty snapshot)                                                                               | enabled                 |
 
 Any other `ANTHROPIC_*` variable in the environment is forwarded to the SDK subprocess as-is (except `ANTHROPIC_API_KEY`, which is intentionally stripped in favour of the `authToken` Bearer flow).
 
-Session transcripts used for resume and fork are read from `~/.claude/projects/` — the SDK's own layout — regardless of `CLAUDE_CONFIG_DIR`, which currently affects subagent transcript lookup only.
+Setting `CLAUDE_CONFIG_DIR` moves the CLI's whole state consistently: session transcripts, `settings.json`, user-scope skills, and the CLI's global config (`.config.json` when present, else `.claude.json`) all resolve through it, and the resolved path is relayed to the CLI subprocess so it writes exactly where the SDK and the UI read. Set it for the server process — a per-session `env.CLAUDE_CONFIG_DIR` is rejected, since that would split one session away from every reader. Project-scope skills stay under the project (`<cwd>/.claude/skills`).
 
 ### Configuration file
 
@@ -279,7 +283,7 @@ flowchart LR
   Server -.->|"history-reader · resume / fork"| Disk
 ```
 
-Metadata is persisted in `~/.claude-react-web/sessions.json`, so sessions survive restarts; the SDK itself stores full conversation history in `~/.claude/projects/` and resumes it via `options.resume`.
+Metadata is persisted in `~/.claude-react-web/sessions.json`, so sessions survive restarts; the SDK itself stores full conversation history in the CLI's config directory — `~/.claude/projects/` unless `CLAUDE_CONFIG_DIR` moves it — and resumes it via `options.resume`.
 
 <details>
 <summary>Detailed diagram and source layout</summary>
@@ -345,7 +349,7 @@ server/
   recap.ts              # AI session summaries, via anthropic-api.ts
   commit-message.ts     # AI commit messages, via anthropic-api.ts
   compact-summary.ts    # session compaction summaries
-  history-reader.ts     # reads ~/.claude/projects transcripts; resume / fork anchors
+  history-reader.ts     # reads the CLI's transcripts; resume / fork anchors
   ws.ts                 # WebSocket hub (single connection, multiplexed channels)
   git.ts                # owns ALL git execution (runGit); git-broadcast.ts debounces mutations
   git-routes.ts         # read-only git endpoints (status, diff, log)

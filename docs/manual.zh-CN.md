@@ -6,6 +6,8 @@
 > 安装、命令行参数、架构与二次开发请看 [README](../README.md) 和 [CONFIG.md](../CONFIG.md)。
 >
 > 本手册所有截图取自**本仓库当前构建的真实运行界面**（Windows · 浅色主题 · `mimo-v2.5-pro`）。界面文案是英文，正文保留英文原文以便与界面一一对应。
+>
+> 快捷键按 Windows / Linux 的写法标注：macOS 上 `Ctrl` 即 `Cmd`（`Alt` 两平台一致）。
 
 ---
 
@@ -46,7 +48,7 @@ npm i -g claude-react-web && claude-react-web
 | 1 Environment | 检测 `claude` CLI 是否就绪（`Claude CLI is ready — {版本}` / `Claude CLI was not detected on this server.`） |
 | 2 Auth Token | 填 `Auth Token *`（占位符 `sk-ant-...`）与可选的 `Base URL` |
 | 3 Models | 维护 `Available Models` 列表、`Recap Model`、`Commit Message Model` |
-| 4 MCP | 从 `~/.claude.json` 里挑选并导入 MCP 服务器 |
+| 4 MCP | 从 Claude CLI 的全局配置里挑选并导入 MCP 服务器（向导会显示它实际读取的文件路径） |
 | 5 Notifications | 开启/关闭桌面通知 |
 | 6 Updates | 设置更新检查源 |
 | 7 Finish | `Create New Session` 或 `Skip` |
@@ -540,6 +542,8 @@ claude-react-web --host 0.0.0.0
 ---
 
 ## 11. 快捷键
+
+> 下表按 Windows / Linux 的写法标注 —— macOS 上 `Ctrl` 即 `Cmd`。
 
 ### 全局
 

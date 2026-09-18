@@ -25,6 +25,8 @@ import {
   resolveGroup,
 } from '../../model-groups.js'
 import { readHistoryEntries, readHistoryPage } from '../../history-reader.js'
+import { claudeConfigDir } from '../../claude-config-dir.js'
+import { filterClientEnv } from '../../session-env.js'
 import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
 import type { SessionMeta } from '../../persistence.js'
 import type { MpStore } from '../../mp-store.js'
@@ -63,7 +65,7 @@ const SENSITIVE_ENV_KEY = /token|secret|password|auth|key/i
 /** Env keys that meaningfully shape the spawned subprocess. Filters out the
  *  standard OS noise (PATH, HOME, TEMP, …) so the spawn log stays focused on
  *  the behavior-affecting variables this app injects. */
-const RELEVANT_ENV_KEY = /^(ANTHROPIC_|CLAUDE_CODE_|DISABLE_AUTOUPDATER$|ENABLE_TOOL_SEARCH$)/i
+const RELEVANT_ENV_KEY = /^(ANTHROPIC_|CLAUDE_CODE_|CLAUDE_CONFIG_DIR$|DISABLE_AUTOUPDATER$|ENABLE_TOOL_SEARCH$)/i
 
 /** Truncate a long string for log output, marking the cut. */
 function truncateForLog(s: unknown, max = 300): unknown {
@@ -91,7 +93,7 @@ function summarizeSystemPrompt(sp: unknown): unknown {
  *  tells the whole story for debugging session-shape drift (e.g. the
  *  200K-vs-1M context-window question). Env values whose key looks sensitive
  *  are redacted: ANTHROPIC_AUTH_TOKEN / *_API_KEY / … must never reach logs. */
-function summarizeSpawn(opts: CreateSessionOptions, sdkOptions: Options): Record<string, unknown> {
+export function summarizeSpawn(opts: CreateSessionOptions, sdkOptions: Options): Record<string, unknown> {
   const env: Record<string, string> = {}
   if (sdkOptions.env) {
     for (const [k, v] of Object.entries(sdkOptions.env)) {
@@ -165,6 +167,20 @@ export function buildProfileEnv(profile: ProviderProfile, maxOutputTokens: numbe
   // opt back in explicitly rather than letting the model tier silently
   // downgrade the feature.
   env.CLAUDE_CODE_ENABLE_TODO_TOOLS = '1'
+  // Relay the CLI's config-dir override. The SDK resolves its OWN config dir
+  // from process.env.CLAUDE_CONFIG_DIR (that is what `listSessions()` — the
+  // /resume picker — reads), so if the CLI did not receive the same value it
+  // would write transcripts to ~/.claude while the SDK looked under the
+  // override, and the picker would come up empty. Server-side path resolution
+  // goes through claudeConfigDir() for the same reason.
+  //
+  // Relay the RESOLVED absolute path, not the raw value: server-side readers
+  // run it through path.resolve() against the server's cwd, while the child
+  // inherits the session's cwd — a relative value would be resolved against
+  // two different directories and the two halves would silently disagree.
+  if (process.env.CLAUDE_CONFIG_DIR) {
+    env.CLAUDE_CONFIG_DIR = claudeConfigDir()
+  }
   for (const key of Object.keys(process.env)) {
     if (key.startsWith('ANTHROPIC_') && key !== 'ANTHROPIC_API_KEY' && !(key in env)) {
       env[key] = process.env[key]
@@ -175,6 +191,23 @@ export function buildProfileEnv(profile: ProviderProfile, maxOutputTokens: numbe
     log.info(`non-first-party ANTHROPIC_BASE_URL=${profile.baseUrl} — forcing ENABLE_TOOL_SEARCH=false`)
   }
   return env
+}
+
+/** Identity of the profile-derived inputs `buildProfileEnv` writes into the
+ *  subprocess env, restricted to the ones this process can vary at runtime:
+ *  the profile's credentials, the CLI config dir it relays, and the
+ *  output-token cap. (Values copied straight from `process.env` — PATH, HOME,
+ *  the forwarded ANTHROPIC_* — are deliberately not keyed: they are read once
+ *  per spawn from a process environment that does not change under us, and
+ *  hashing them would defeat the cache entirely.)
+ *
+ *  Exported so the cache decision can be asserted directly — nothing about it
+ *  is observable through the provider's public surface. */
+export function envCacheKey(profile: ProviderProfile, configDir: string, maxOutputTokens: number): string {
+  // JSON rather than join(): Array.join renders both undefined and '' as the
+  // empty string, and a plain separator cannot survive a field that contains
+  // it. authToken/baseUrl come from user-authored config.json.
+  return JSON.stringify([profile.authToken, profile.baseUrl ?? null, configDir, maxOutputTokens])
 }
 
 /** Same short-name -> configured-model resolution the manager uses for the
@@ -281,8 +314,7 @@ export class ClaudeProvider implements AgentProvider {
 
   private readonly processMonitor: ProcessMonitor
   private cachedEnv?: NodeJS.ProcessEnv
-  private cachedAuthToken?: string
-  private cachedBaseUrl?: string
+  private cachedEnvKey?: string
 
   constructor(private readonly opts: ClaudeProviderOptions = {}) {
     this.processMonitor = new ProcessMonitor(
@@ -734,7 +766,7 @@ export class ClaudeProvider implements AgentProvider {
         ANTHROPIC_SMALL_FAST_MODEL: effectiveModel,
       }
     }
-    if (customEnv) opts.env = { ...opts.env, ...customEnv }
+    if (customEnv) opts.env = { ...opts.env, ...filterClientEnv(customEnv) }
     // Force-disable the CLI's auto-updater. claude-react-web pins the binary
     // itself (resolveClaudeBinary -> pathToClaudeCodeExecutable), so if a
     // spawned subprocess ALSO runs its own updater, an upgrade replaces
@@ -767,15 +799,15 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   private buildAnthropicEnv(profile: ProviderProfile = resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE)): NodeJS.ProcessEnv {
-    if (
-      this.cachedEnv &&
-      this.cachedAuthToken === profile.authToken &&
-      this.cachedBaseUrl === profile.baseUrl
-    ) {
+    // The cache key includes the CLI config dir: claudeConfigDir() is resolved
+    // per call, so leaving it out would keep a spawn env bound to the old dir
+    // while every reader moved to the new one — the exact divergence this
+    // relay exists to prevent.
+    const key = envCacheKey(profile, claudeConfigDir(), defaultConfig.maxOutputTokens)
+    if (this.cachedEnv && this.cachedEnvKey === key) {
       return this.cachedEnv
     }
-    this.cachedAuthToken = profile.authToken
-    this.cachedBaseUrl = profile.baseUrl
+    this.cachedEnvKey = key
     this.cachedEnv = buildProfileEnv(profile, defaultConfig.maxOutputTokens)
     return this.cachedEnv
   }

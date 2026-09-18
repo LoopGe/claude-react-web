@@ -36,10 +36,9 @@
 //             'queued'. tool_result-bearing user frames are never queued
 //             (parent != null), so they only get receivedAt.
 
-import { readFile, unlink } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { readFile, readdir, stat, unlink } from 'node:fs/promises'
 import path from 'node:path'
-import { glob } from 'node:fs/promises'
+import { claudeConfigDir } from './claude-config-dir.js'
 import { BROADCAST_SYSTEM_SUBTYPES, trimLargeToolResults } from './history-utils.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createLogger } from './log.js'
@@ -107,18 +106,48 @@ function isInterruptPlaceholder(content: unknown): boolean {
 }
 
 /** Locate the transcript file for a session id. Session ids are globally
- *  unique UUIDs, so we glob across all project dirs rather than recreating
- *  the SDK's cwd→dirname encoding ourselves. Returns null if no file exists. Returns null if no file exists. */
+ *  unique UUIDs, so we scan every project dir rather than recreating the SDK's
+ *  cwd→dirname encoding ourselves. Returns null if no file exists.
+ *
+ *  A flat readdir rather than a glob: the config dir is an arbitrary
+ *  user-chosen path (CLAUDE_CONFIG_DIR), so metacharacters in it — "cfg[1]",
+ *  "a*b" — would change a pattern's meaning and silently match nothing. */
 async function findTranscriptFile(sessionId: string): Promise<string | null> {
-  const pattern = path
-    .join(homedir(), '.claude', 'projects', '*', `${sessionId}.jsonl`)
-    .replace(/\\/g, '/')
+  const projectsDir = path.join(claudeConfigDir(), 'projects')
+  // basename() so a caller-supplied id can never traverse out of the projects
+  // tree — the id lands in a join() that is both read and unlinked. Session ids
+  // are UUIDs, so this is a no-op for every real caller.
+  const fileName = `${path.basename(sessionId)}.jsonl`
   try {
-    for await (const match of glob(pattern)) {
-      return match // first hit ?ids are unique
+    // withFileTypes so a stray FILE dropped in projects/ (a .DS_Store, a
+    // README) is skipped rather than stats'd: on POSIX that stat fails with
+    // ENOTDIR, which is the ordinary "not a project dir" case, not an anomaly
+    // worth logging on every lookup.
+    for (const entry of await readdir(projectsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const candidate = path.join(projectsDir, entry.name, fileName)
+      try {
+        await stat(candidate)
+        return candidate // first hit ?ids are unique
+      } catch (err) {
+        const e = err as NodeJS.ErrnoException
+        // Not in this project dir is the normal case. Anything else
+        // (permissions, a looping symlink) means a transcript may exist but be
+        // unreadable — silently returning null would present that as "no
+        // history" with nothing in the logs.
+        if (e.code !== 'ENOENT') {
+          log.warn(`findTranscriptFile stat failed for ${candidate}: ${e.message ?? err}`)
+        }
+      }
     }
   } catch (err) {
-    log.warn(`findTranscriptFile glob error session=${sessionId}: ${(err as Error).message ?? err}`)
+    const e = err as NodeJS.ErrnoException
+    // A missing projects dir is the ordinary "no transcript" case, not an
+    // error: the CLI only creates it once it has written something, so a
+    // fresh install (or any unknown session id) hits this on every lazy-load.
+    if (e.code !== 'ENOENT') {
+      log.warn(`findTranscriptFile scan error session=${sessionId}: ${e.message ?? err}`)
+    }
   }
   return null
 }

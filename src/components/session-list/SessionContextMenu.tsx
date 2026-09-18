@@ -306,7 +306,7 @@ export function SessionContextMenu({
             message: (
               <>
                 <p>Delete &ldquo;{title}&rdquo;?</p>
-                <p>This permanently removes the conversation from disk. The Anthropic SDK&rsquo;s own session log in ~/.claude/projects/ is kept, but the app won&rsquo;t reference it anymore.</p>
+                <p>This permanently removes the conversation from disk. The Anthropic SDK&rsquo;s own session log on disk is kept, but the app won&rsquo;t reference it anymore.</p>
               </>
             ),
             confirmLabel: 'Delete',

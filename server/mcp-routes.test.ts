@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { rmSync } from 'node:fs'
+import { rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { buildMcpConfigRouter } from './mcp-routes.js'
 import { McpConfigStore, type StoredMcpServer } from './mcp-config.js'
 import { tempDir, json } from './__test-utils__/index.js'
@@ -32,6 +33,131 @@ describe('mcp-config routes', () => {
   function app() {
     return buildMcpConfigRouter(store)
   }
+
+  // The CLI keeps its global mcpServers map in `.claude.json` at the root of
+  // its config dir — $CLAUDE_CONFIG_DIR when set, else the home dir. Reading a
+  // hardcoded ~/.claude.json means the import step comes up empty for anyone
+  // who relocated the CLI, with no error to explain why.
+  describe('GET /claude-import — CLI config dir', () => {
+    /** Run `fn` with CLAUDE_CONFIG_DIR pointed at `dir`, restoring it after. */
+    async function withConfigDir<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+      const prev = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        return await fn()
+      } finally {
+        if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = prev
+      }
+    }
+
+    function importNames(body: unknown): string[] {
+      return ((body as { servers: Array<{ name: string }> }).servers ?? []).map((s) => s.name)
+    }
+
+    it('reads .claude.json from $CLAUDE_CONFIG_DIR when set', async () => {
+      const cfgRoot = tempDir('claude-cfg')
+      writeFileSync(
+        join(cfgRoot, '.claude.json'),
+        JSON.stringify({ mcpServers: { 'from-override': { command: 'node', args: ['x.js'] } } }),
+      )
+      try {
+        const body = (await withConfigDir(cfgRoot, async () => (await app().request('/claude-import')).json())) as {
+          servers: Array<{ name: string }>
+          configPath?: string
+        }
+        expect(importNames(body)).toContain('from-override')
+        // The setup wizard names this file in its copy, so the server reports
+        // the one it actually read rather than letting the client assume.
+        expect(body.configPath).toBe(join(cfgRoot, '.claude.json'))
+      } finally {
+        rmSync(cfgRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      }
+    })
+
+    // The SDK/CLI treat `<config dir>/.config.json` as the global config when
+    // it exists, falling back to `.claude.json` otherwise. Reading only the
+    // latter means a user who has the former gets an empty import list with no
+    // error to explain it.
+    it('prefers .config.json when the config dir has one', async () => {
+      const cfgRoot = tempDir('claude-cfg2')
+      writeFileSync(
+        join(cfgRoot, '.claude.json'),
+        JSON.stringify({ mcpServers: { 'from-legacy': { command: 'node', args: ['x.js'] } } }),
+      )
+      writeFileSync(
+        join(cfgRoot, '.config.json'),
+        JSON.stringify({ mcpServers: { 'from-dotconfig': { command: 'node', args: ['x.js'] } } }),
+      )
+      try {
+        const body = await withConfigDir(cfgRoot, async () => (await app().request('/claude-import')).json())
+        expect(importNames(body)).toEqual(['from-dotconfig'])
+      } finally {
+        rmSync(cfgRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      }
+    })
+
+    // The wizard prints this path next to "Import MCP servers configured in
+    // your Claude CLI (…)", so it must not name a file that was never opened.
+    it('omits configPath when the config file does not exist', async () => {
+      const empty = tempDir('claude-cfg-none')
+      try {
+        const body = (await withConfigDir(empty, async () => (await app().request('/claude-import')).json())) as {
+          servers: unknown[]
+          configPath?: string
+        }
+        expect(body.servers).toEqual([])
+        expect(body.configPath).toBeUndefined()
+      } finally {
+        rmSync(empty, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      }
+    })
+
+    it('names the resolved config file when an import target is missing', async () => {
+      const cfgRoot = tempDir('claude-cfg3')
+      writeFileSync(join(cfgRoot, '.claude.json'), JSON.stringify({ mcpServers: {} }))
+      try {
+        const body = (await withConfigDir(cfgRoot, async () =>
+          (
+            await app().request('/claude-import', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ names: ['nope'] }),
+            })
+          ).json(),
+        )) as { failed: Array<{ name: string; error: string }> }
+        // Naming a hardcoded ~/.claude.json sends the user to a file the
+        // server never opened once the config dir is relocated.
+        expect(body.failed[0]?.error).toContain(join(cfgRoot, '.claude.json'))
+      } finally {
+        rmSync(cfgRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      }
+    })
+
+    // The parsed-config cache is keyed on mtime alone, so once the resolved
+    // path can change, two different files touched in the same millisecond
+    // alias and the second read silently returns the first file's servers.
+    it('does not serve a cached read taken from a different config file', async () => {
+      const dirA = tempDir('claude-cfg-a')
+      const dirB = tempDir('claude-cfg-b')
+      const fileA = join(dirA, '.claude.json')
+      const fileB = join(dirB, '.claude.json')
+      writeFileSync(fileA, JSON.stringify({ mcpServers: { fromA: { command: 'node', args: ['a.js'] } } }))
+      writeFileSync(fileB, JSON.stringify({ mcpServers: { fromB: { command: 'node', args: ['b.js'] } } }))
+      const stamp = new Date(1_700_000_000_000)
+      utimesSync(fileA, stamp, stamp)
+      utimesSync(fileB, stamp, stamp)
+      try {
+        const a = await withConfigDir(dirA, async () => (await app().request('/claude-import')).json())
+        expect(importNames(a)).toContain('fromA')
+        const b = await withConfigDir(dirB, async () => (await app().request('/claude-import')).json())
+        expect(importNames(b)).toContain('fromB')
+        expect(importNames(b)).not.toContain('fromA')
+      } finally {
+        for (const d of [dirA, dirB]) rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      }
+    })
+  })
 
   // -------------------------------------------------------------------
   // GET /

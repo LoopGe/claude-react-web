@@ -208,6 +208,10 @@ Options:
                        on when the server runs from TypeScript source
                        (npm run dev / dev:server), off for dist/cli.mjs.
       --no-dev         Force the dev tools off even when running from source.
+      --disable-app-plugins
+                       Disable the App Plugins (Mods) subsystem entirely.
+      --safe-mode      Load App Plugins without activating their background
+                       subprocesses — static UI contributions only.
   -V, --version        Print version and exit
   -h, --help           Show this help and exit
 ```
@@ -237,21 +241,21 @@ claude-react-web update
 
 Anthropic 凭证放在 `config.json`（`authToken` / `baseUrl`）而非环境变量中 —— 服务端会把它们注入每个 SDK 子进程。下面这些变量用于调节服务端自身，全部可选：
 
-| 变量                        | 作用                                                      | 默认值               |
-| --------------------------- | --------------------------------------------------------- | -------------------- |
-| `CLAUDE_CODE_BINARY`        | `claude` CLI 可执行文件路径（等同于 `--claude-binary`）   | 在 `PATH` 中自动探测 |
-| `CLAUDE_CONFIG_DIR`         | 覆盖用于定位**子代理**会话记录的 Claude 配置目录          | `~/.claude`          |
-| `LOG_LEVEL`                 | 日志级别（`error` / `warn` / `info` / `debug` / `trace`） | `info`               |
-| `LOG_SCOPES`                | 按作用域过滤日志，逗号分隔（`*` 匹配全部）                | 全部作用域           |
-| `DEBUG_SESSION`             | 设为 `1` 等价于 `LOG_LEVEL=debug`（向后兼容别名）         | —                    |
-| `EVENT_LOOP_PROBE`          | 设为 `0` 关闭事件循环阻塞探针                             | 开启                 |
-| `EVENT_LOOP_PROBE_MS`       | 事件循环探针采样间隔（毫秒）                              | `5000`               |
-| `EVENT_LOOP_PROBE_QUIET_MS` | 超过该阻塞时长（毫秒）的采样窗口才会被上报                | `100`                |
-| `METRICS`                   | 设为 `0` 关闭指标采集（`GET /api/metrics` 返回空快照）    | 开启                 |
+| 变量                        | 作用                                                                                                     | 默认值               |
+| --------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------- |
+| `CLAUDE_CODE_BINARY`        | `claude` CLI 可执行文件路径（等同于 `--claude-binary`）                                                  | 在 `PATH` 中自动探测 |
+| `CLAUDE_CONFIG_DIR`         | 迁移 CLI 的整个配置目录。会话记录、`settings.json` 与用户级技能都从该目录解析，且该值会转发给 SDK 子进程 | `~/.claude`          |
+| `LOG_LEVEL`                 | 日志级别（`error` / `warn` / `info` / `debug` / `trace`）                                                | `info`               |
+| `LOG_SCOPES`                | 按作用域过滤日志，逗号分隔（`*` 匹配全部）                                                               | 全部作用域           |
+| `DEBUG_SESSION`             | 设为 `1` 等价于 `LOG_LEVEL=debug`（向后兼容别名）                                                        | —                    |
+| `EVENT_LOOP_PROBE`          | 设为 `0` 关闭事件循环阻塞探针                                                                            | 开启                 |
+| `EVENT_LOOP_PROBE_MS`       | 事件循环探针采样间隔（毫秒）                                                                             | `5000`               |
+| `EVENT_LOOP_PROBE_QUIET_MS` | 超过该阻塞时长（毫秒）的采样窗口才会被上报                                                               | `100`                |
+| `METRICS`                   | 设为 `0` 关闭指标采集（`GET /api/metrics` 返回空快照）                                                   | 开启                 |
 
 环境中其他 `ANTHROPIC_*` 变量会原样转发给 SDK 子进程（`ANTHROPIC_API_KEY` 除外，它被有意剥离，以 `authToken` 的 Bearer 流程为准）。
 
-resume 与 fork 所用的会话记录始终从 `~/.claude/projects/` 读取（SDK 自身的目录布局），不受 `CLAUDE_CONFIG_DIR` 影响 —— 该变量目前只影响子代理会话记录的查找。
+设置 `CLAUDE_CONFIG_DIR` 会一致地迁移 CLI 的全部状态：会话记录、`settings.json`、用户级技能与 CLI 全局配置（存在 `.config.json` 时用它，否则用 `.claude.json`）都从它解析，且解析后的绝对路径会转发给 CLI 子进程，因此 CLI 写入的位置与 SDK、界面读取的位置完全一致。请在**服务端进程**上设置它 —— 会话级的 `env.CLAUDE_CONFIG_DIR` 会被拒绝，否则单个会话就会与所有读方脱节。项目级技能始终留在项目内（`<cwd>/.claude/skills`）。
 
 ### 配置文件
 
@@ -279,7 +283,7 @@ flowchart LR
   Server -.->|"history-reader · resume / fork"| Disk
 ```
 
-元数据持久化在 `~/.claude-react-web/sessions.json`，因此会话可跨越重启；SDK 自身把完整对话历史存放在 `~/.claude/projects/`，并通过 `options.resume` 恢复。
+元数据持久化在 `~/.claude-react-web/sessions.json`，因此会话可跨越重启；SDK 自身把完整对话历史存放在 CLI 的配置目录中 —— 默认为 `~/.claude/projects/`，设置 `CLAUDE_CONFIG_DIR` 后会随之迁移 —— 并通过 `options.resume` 恢复。
 
 <details>
 <summary>详细架构图与源码结构</summary>
@@ -345,7 +349,7 @@ server/
   recap.ts              # AI 会话摘要，经由 anthropic-api.ts
   commit-message.ts     # AI 提交信息，经由 anthropic-api.ts
   compact-summary.ts    # 会话压缩摘要
-  history-reader.ts     # 读取 ~/.claude/projects 记录；resume / fork 锚点
+  history-reader.ts     # 读取 CLI 的会话记录；resume / fork 锚点
   ws.ts                 # WebSocket 枢纽（单连接、多路复用通道）
   git.ts                # 唯一持有全部 git 执行（runGit）；git-broadcast.ts 做变更防抖
   git-routes.ts         # 只读 git 接口（status、diff、log）

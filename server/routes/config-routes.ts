@@ -3,7 +3,7 @@
 import { Hono } from 'hono'
 import { readFile } from 'node:fs/promises'
 import { join as joinPath } from 'node:path'
-import { homedir } from 'node:os'
+import { claudeConfigDir } from '../claude-config-dir.js'
 import { SessionManager } from '../session-manager.js'
 import { HttpError } from '../errors.js'
 import { createLogger } from '../log.js'
@@ -116,10 +116,11 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
     return c.json(result.body, result.status)
   })
 
-  // Read defaults from ~/.claude/settings.json so the setup page can
-  // pre-fill the token, base URL, and model list fields.
+  // Read defaults from <claude config dir>/settings.json so the setup page can
+  // pre-fill the token, base URL, and model list fields. Resolved through
+  // claudeConfigDir() so it follows $CLAUDE_CONFIG_DIR like the CLI does.
   app.get('/config/claude-defaults', async (c) => {
-    const settingsPath = joinPath(homedir(), '.claude', 'settings.json')
+    const settingsPath = joinPath(claudeConfigDir(), 'settings.json')
     try {
       const raw = JSON.parse(await readFile(settingsPath, 'utf8'))
       const env = raw?.env ?? {}
@@ -149,6 +150,10 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
         keySuffix: key ? key.slice(-4) : undefined,
         baseUrl: typeof env.ANTHROPIC_BASE_URL === 'string' ? env.ANTHROPIC_BASE_URL : undefined,
         modelList: modelList.length > 0 ? modelList : undefined,
+        // The setup page names this file in its "pre-filled from …" hint. Ship
+        // the path we actually read so the hint stays true when the CLI's
+        // config dir has been relocated with CLAUDE_CONFIG_DIR.
+        settingsPath,
       })
     } catch {
       log.debug('claude-defaults: settings.json not found or unreadable')

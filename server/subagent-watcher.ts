@@ -57,8 +57,8 @@
 
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import os from 'node:os'
 import { randomUUID } from 'node:crypto'
+import { claudeConfigDir } from './claude-config-dir.js'
 import { createLogger } from './log.js'
 import type { Session, GlobalSessionEvent, SessionInfo } from './session-types.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
@@ -72,13 +72,6 @@ const log = createLogger('subagent-watcher')
  *  dead while latched, so the tick only services the maxMs backstop — no
  *  point burning the fast/steady cadence on it. */
 const SUPPRESSED_POLL_INTERVAL_MS = 30_000
-
-/** The CLI's config dir: $CLAUDE_CONFIG_DIR if set, else ~/.claude. The CLI
- *  stores transcripts under <cliHome>/projects/. */
-export function cliHomeDir(): string {
-  const override = process.env.CLAUDE_CONFIG_DIR
-  return override ? path.resolve(override) : path.join(os.homedir(), '.claude')
-}
 
 /** The CLI encodes a cwd into a project-dir segment by replacing drive / path
  *  separators with '-': "D:/codes/x" -> "D--codes-x". Replicated here because
@@ -96,7 +89,7 @@ export function encodeCwd(cwd: string): string {
 
 /** Path of a background subagent's own transcript. */
 export function subagentTranscriptPath(cwd: string, sessionId: string, agentId: string): string {
-  return path.join(cliHomeDir(), 'projects', encodeCwd(cwd), sessionId, 'subagents', `agent-${agentId}.jsonl`)
+  return path.join(claudeConfigDir(), 'projects', encodeCwd(cwd), sessionId, 'subagents', `agent-${agentId}.jsonl`)
 }
 
 /** Parse the agentId out of an async launch-ack tool_result body. The ack
