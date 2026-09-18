@@ -139,7 +139,7 @@ export function buildDebugTools(host: DebugHost): SdkMcpToolDefinition<any>[] {
     ),
     tool(
       'metrics',
-      'Read the in-process metrics registry snapshot: uptime, gauges, counters, and histograms (p50/p95/p99/max). Optional series is a case-sensitive substring filter over metric names.',
+      'Read the in-process metrics registry snapshot: uptime, gauges, counters, and histograms (p50/p95/p99/max). Optional series is a case-sensitive substring filter over the full series key, including label suffixes (e.g. `http_request_ms:route=GET /api/x`), so it can narrow by label value as well as by metric name.',
       { series: z.string().optional() },
       async (a) =>
         guard(async () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { PermissionBroker } from './permission-broker.js'
+import { PermissionBroker, firstPartyReadOnlyTools } from './permission-broker.js'
+import { firstPartyRegistry } from './sdk-tools/registry.js'
 import type { Session, PendingPermission } from './session-types.js'
 import { __setConfigForTest } from './config.js'
 
@@ -947,5 +948,23 @@ describe('PermissionBroker', () => {
       unsubscribe()
       expect(session.permissionSubscribers.size).toBe(0)
     })
+  })
+})
+
+describe('firstPartyReadOnlyTools (dynamic lookup)', () => {
+  it('sees a first-party server registered AFTER this module loaded', () => {
+    // The bug this guards: the exemption set used to be captured at module
+    // load, so a server registered at runtime (appdebug, via enableDevMode)
+    // was never exempt. Register one now — long after import — and assert the
+    // lookup picks it up.
+    firstPartyRegistry.register({
+      name: 'regtest-late',
+      description: 'regression probe',
+      defaultEnabled: false,
+      requiresCwd: false,
+      buildTools: () => [],
+      readOnlyToolNames: new Set(['probe']),
+    })
+    expect(firstPartyReadOnlyTools().has('mcp__regtest-late__probe')).toBe(true)
   })
 })

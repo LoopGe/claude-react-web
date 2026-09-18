@@ -3828,9 +3828,14 @@ export class SessionManager {
       pendingPermissions: s?.pending.size ?? 0,
       queuedInputs: s ? countQueuedUserTurns(s.history) : 0,
       firstPartyErrors: s?.firstPartyErrors,
-      historyTail: s
-        ? this.mergedHistory(s).slice(-Math.max(0, historyLimit)).map(projectHistoryFrame)
-        : [],
+      historyTail: (() => {
+        if (!s) return []
+        const limit = Math.max(0, historyLimit)
+        // slice(-0) is slice(0) — the WHOLE array — so guard the empty case
+        // rather than negating a zero.
+        const tail = limit === 0 ? [] : this.mergedHistory(s).slice(-limit)
+        return tail.map(projectHistoryFrame)
+      })(),
       withdrawnUuids: s ? [...s.withdrawnUuids] : [],
       promptUuids: (s?.promptUuids ?? []).map((e) => ({ u: e.u, v: e.v })),
       tasks: (s ? [...s.tasks.values()] : []).map((t) => ({

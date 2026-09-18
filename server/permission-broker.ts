@@ -33,8 +33,16 @@ import { firstPartyRegistry } from './sdk-tools/registry.js'
 /** First-party read-only tool FQNs (e.g. `mcp__apptools__git_status`).
  *  These are safe in every permission mode the way the built-in read tools
  *  are — the SDK's own `readOnlyHint` annotation is not surfaced through the
- *  canUseTool options, so the registry's declared set is the single source. */
-const FIRST_PARTY_READ_ONLY_TOOLS = firstPartyRegistry.readOnlyToolFqns()
+ *  canUseTool options, so the registry's declared set is the single source.
+ *
+ *  LOOKED UP PER CALL, deliberately NOT a module-level snapshot: `appdebug`
+ *  is registered at RUNTIME (enableDevMode, called from runServer after this
+ *  module has loaded), so a load-time capture would miss its read-only FQNs
+ *  and deny/prompt for tools the spec requires to auto-approve. The registry
+ *  holds a handful of servers, so rebuilding the Set is cheap. */
+export function firstPartyReadOnlyTools(): ReadonlySet<string> {
+  return firstPartyRegistry.readOnlyToolFqns()
+}
 import { isAutoApprovableEditPowerShell } from './accept-edits-powershell.js'
 import { config as serverConfig } from './config.js'
 import { isReadOnlyBash } from './readonly-bash.js'
@@ -329,7 +337,7 @@ export class PermissionBroker {
         }
         // Read-only first-party tools (registry-declared) auto-approve too —
         // same exemption the built-in Read/Grep/Glob tools get elsewhere.
-        if (FIRST_PARTY_READ_ONLY_TOOLS.has(toolName)) {
+        if (firstPartyReadOnlyTools().has(toolName)) {
           return {
             behavior: 'allow',
             updatedInput: toolInput,
@@ -397,7 +405,7 @@ export class PermissionBroker {
       // semantics. Placed AFTER ExitPlanMode/AskUserQuestion so interactive
       // and plan-review flows are never silently denied.
       if (session.permissionMode === 'dontAsk') {
-        const isReadOnlyTool = READONLY_TOOL_NAMES.has(toolName) || FIRST_PARTY_READ_ONLY_TOOLS.has(toolName)
+        const isReadOnlyTool = READONLY_TOOL_NAMES.has(toolName) || firstPartyReadOnlyTools().has(toolName)
         const isReadOnlyBashCmd =
           toolName === 'Bash' &&
           isReadOnlyBash((toolInput as { command?: unknown })?.command)
@@ -428,7 +436,7 @@ export class PermissionBroker {
         const tracker = this.getDenialTracker(session.id)
 
         // 1. Safe tools — always allow, no classifier needed.
-        if (SAFE_AUTO_TOOLS.has(toolName) || FIRST_PARTY_READ_ONLY_TOOLS.has(toolName)) {
+        if (SAFE_AUTO_TOOLS.has(toolName) || firstPartyReadOnlyTools().has(toolName)) {
           tracker.recordAllow()
           return {
             behavior: 'allow',
