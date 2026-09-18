@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-label="claude-react-web — run and steer Claude agents from your browser">
+  <title>claude-react-web</title>
+
+  <!--
+    GitHub social preview source. GitHub requires PNG/JPG, so export this at
+    1280x640 and upload it under Settings > General > Social preview.
+
+    Colours are the project's own "anthropic" skin tokens, copied from
+    src/styles/tokens.css. Six are inlined here:
+
+      bg #141413 · bg-elev #1e1e1c · border / bg-elev-3 #353430
+      fg #e8e6dc · fg-muted #b0aea5 · accent #d97757
+
+    They are inlined rather than referenced, because this is a standalone
+    export asset rendered outside the app and therefore has no access to the
+    theme CSS variables. If any of those six tokens change, update this file
+    too.
+  -->
+
+  <defs>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#d97757" stop-opacity="0.16"/>
+      <stop offset="60%" stop-color="#d97757" stop-opacity="0"/>
+    </linearGradient>
+    <style>
+      .name  { font: 700 84px 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif; fill: #e8e6dc; letter-spacing: -2px; }
+      .tag   { font: 400 30px 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif; fill: #b0aea5; }
+      .pill  { font: 400 21px 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif; fill: #e8e6dc; }
+      .foot  { font: 400 21px 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif; fill: #b0aea5; }
+      .cmd   { font: 400 25px 'Cascadia Code', Consolas, 'SF Mono', Menlo, monospace; fill: #d97757; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="640" fill="#141413"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <!-- accent rule -->
+  <rect x="80" y="132" width="72" height="6" rx="3" fill="#d97757"/>
+
+  <text class="name" x="80" y="248">claude-react-web</text>
+
+  <text class="tag" x="80" y="312">Run and steer Claude agents from your browser.</text>
+
+  <!-- feature pills -->
+  <g>
+    <rect x="80"  y="372" width="202" height="46" rx="23" fill="#1e1e1c" stroke="#353430"/>
+    <text class="pill" x="181" y="402" text-anchor="middle">Multi-session</text>
+
+    <rect x="298" y="372" width="238" height="46" rx="23" fill="#1e1e1c" stroke="#353430"/>
+    <text class="pill" x="417" y="402" text-anchor="middle">Permission-gated</text>
+
+    <rect x="552" y="372" width="168" height="46" rx="23" fill="#1e1e1c" stroke="#353430"/>
+    <text class="pill" x="636" y="402" text-anchor="middle">Git-aware</text>
+
+    <rect x="736" y="372" width="110" height="46" rx="23" fill="#1e1e1c" stroke="#353430"/>
+    <text class="pill" x="791" y="402" text-anchor="middle">MCP</text>
+
+    <rect x="862" y="372" width="176" height="46" rx="23" fill="#1e1e1c" stroke="#353430"/>
+    <text class="pill" x="950" y="402" text-anchor="middle">App Plugins</text>
+  </g>
+
+  <!-- install command -->
+  <g>
+    <rect x="80" y="482" width="392" height="66" rx="12" fill="#1e1e1c" stroke="#353430"/>
+    <circle cx="112" cy="515" r="6" fill="#d97757"/>
+    <text class="cmd" x="136" y="524">npx claude-react-web</text>
+  </g>
+
+  <!-- footer -->
+  <text class="foot" x="1200" y="524" text-anchor="end">Local · MIT · Node 20+</text>
+</svg>

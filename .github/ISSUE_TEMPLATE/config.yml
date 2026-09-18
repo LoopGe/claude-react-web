@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: User manual
+    url: https://github.com/LoopGe/claude-react-web/blob/main/docs/manual.en.md
+    about: A guided tour of every screen, with screenshots — most "how do I…" questions are answered here.
+  - name: Configuration reference
+    url: https://github.com/LoopGe/claude-react-web/blob/main/CONFIG.md
+    about: Every field in ~/.claude-react-web/config.json.
+  - name: Questions and ideas
+    url: https://github.com/LoopGe/claude-react-web/discussions
+    about: For open-ended questions, setups to share, or ideas that aren't a concrete bug or feature yet.

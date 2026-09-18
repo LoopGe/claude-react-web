@@ -1,0 +1,132 @@
+name: Bug report
+description: Something isn't working as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+
+        **Before filing:** please check you are on the latest release (`npm i -g claude-react-web@latest`) and skim the
+        [user manual](https://github.com/LoopGe/claude-react-web/blob/main/docs/manual.en.md) — several chapters
+        cover troubleshooting ([§12](https://github.com/LoopGe/claude-react-web/blob/main/docs/manual.en.md#12-troubleshooting)).
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I am on the latest release, or have confirmed the bug reproduces on it.
+          required: true
+        - label: I searched existing issues and this has not already been reported.
+          required: true
+        - label: This is not a Claude model behaviour issue (those belong with Anthropic, not this UI).
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the actual behaviour. Screenshots or a short screen recording help a lot.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start with `claude-react-web`
+        2. Open a session in '...'
+        3. Send '...'
+        4. See the error
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: claude-react-web version
+      description: Output of `claude-react-web --version`
+      placeholder: 0.7.3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How are you running it?
+      options:
+        - npx claude-react-web
+        - Installed globally from npm
+        - From source (npm run dev / npm run start)
+        - Other (describe below)
+    validations:
+      required: true
+
+  - type: input
+    id: cli-version
+    attributes:
+      label: claude CLI version
+      description: Output of `claude --version` on your machine
+      placeholder: e.g. 2.0.1
+
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      description: Output of `node --version`
+      placeholder: v20.11.0
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15.2 / Windows 11 / Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Enable debug logging and reproduce, then paste what the server prints.
+
+        macOS / Linux:
+
+        ```bash
+        LOG_LEVEL=debug claude-react-web
+        ```
+
+        Windows (PowerShell):
+
+        ```powershell
+        $env:LOG_LEVEL = 'debug'; claude-react-web
+        ```
+
+        Or set the level at runtime in **Global Settings → Logs** — no restart needed, and it works the same on every platform. If you have `logToFile: true` in your config,
+        `<state-dir>/logs/server-YYYY-MM-DD.log` holds the full trace.
+
+        ⚠️ **Redact your `authToken` before pasting.** Anything resembling `sk-ant-...` must be removed.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: '`claude-react-web doctor` output'
+      description: Runs local environment checks and usually pinpoints missing credentials or a bad `claude` binary.
+      render: shell
+    validations:
+      required: false

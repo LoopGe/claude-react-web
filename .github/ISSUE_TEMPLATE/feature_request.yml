@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest an idea or improvement
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. The
+        [user manual appendix](https://github.com/LoopGe/claude-react-web/blob/main/docs/manual.en.md#appendix-capabilities-not-yet-exposed-in-the-ui)
+        lists capabilities the SDK exposes that the UI does not surface yet — if your idea is there,
+        it is already known about and a 👍 on the tracking issue is more useful than a new one.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation you are in, not the solution you have in mind. "I can't tell which session is using which model when three are open" beats "add a model badge".
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+      description: Including how you work around it today — a CLI flag, an MCP server, a plugin.
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: claude-react-web version
+      description: Output of `claude-react-web --version`
+      placeholder: 0.7.3
+    validations:
+      required: false
