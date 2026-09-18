@@ -737,6 +737,11 @@ export interface SessionBroadcaster {
    *  subscribe that landed before the session's `/resume` completed.
    *  Throws 404 (unknown) / 410 (ended and unresumable). */
   resume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo>
+  /** Snapshot of the live session's message history (main + sidechain,
+   *  ordered), or null when the session is dormant. Read-only — the
+   *  duplicate-subscribe path uses it to re-serve a replay on a channel
+   *  this connection already holds, without wiring new subscribers. */
+  getHistory(id: string): SDKMessage[] | null
   subscribe(sessionId: string): {
     iterable: AsyncIterable<SDKMessage>
     history: SDKMessage[]

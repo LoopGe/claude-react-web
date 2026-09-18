@@ -354,8 +354,48 @@ describe('WebSocket multiplexer', () => {
     const err = await waitForFrame(client.frames, (f) => f.kind === 'error')
     if (err.kind !== 'error') throw new Error('narrowing')
     expect(err.message).toMatch(/not found/i)
+    // The machine-readable half of the same answer: the client keys its channel
+    // state on this, not on the English prose above.
+    const ack = await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === 'definitely-not-a-real-id',
+    )
+    if (ack.kind !== 'subscribe-result') throw new Error('narrowing')
+    expect(ack).toMatchObject({ ok: false, reason: 'refused' })
     // Connection should still be open.
     expect(client.ws.readyState).toBe(WebSocket.OPEN)
+    await client.close()
+  })
+
+  it('answers a served subscribe, and re-serves the replay on a duplicate', async () => {
+    // A subscribe is per-connection and the caller's listener may have attached
+    // AFTER the first burst (a panel remount, StrictMode's double mount, a
+    // resume whose replay landed before <Chat> existed). Only the server can
+    // know, so a duplicate must both answer and re-serve rather than being
+    // swallowed — that silence is what left resumed panels blank.
+    const info = sm.create({})
+    sm.send(info.id, 'hello')
+    mockHandles[0].emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    client.send({ kind: 'subscribe', sessionId: info.id })
+    const served = await waitForFrame(client.frames, (f) => f.kind === 'subscribe-result' && f.sessionId === info.id)
+    if (served.kind !== 'subscribe-result') throw new Error('narrowing')
+    expect(served).toMatchObject({ ok: true, reason: 'served' })
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+
+    // Discard the first burst so the re-serve is unambiguous.
+    client.frames.length = 0
+    client.send({ kind: 'subscribe', sessionId: info.id })
+    const again = await waitForFrame(client.frames, (f) => f.kind === 'subscribe-result' && f.sessionId === info.id)
+    if (again.kind !== 'subscribe-result') throw new Error('narrowing')
+    expect(again).toMatchObject({ ok: true, reason: 'already-live' })
+    const replay = await waitForFrame(client.frames, (f) => f.kind === 'replay' && f.sessionId === info.id)
+    if (replay.kind !== 'replay') throw new Error('narrowing')
+    expect(replay.messages.length).toBeGreaterThanOrEqual(3)
     await client.close()
   })
 
@@ -405,6 +445,12 @@ describe('WebSocket multiplexer', () => {
     // removal) time to complete before re-subscribing.
     await new Promise((r) => setTimeout(r, 50))
 
+    // The teardown is announced per-connection: nothing else on this wire says
+    // the channel died (the global session-update feed is broadcast to every
+    // tab, and some teardowns send nothing at all).
+    const closed = client.frames.find((f) => f.kind === 'subscribe-result' && f.sessionId === info.id)
+    expect(closed).toMatchObject({ ok: false, reason: 'closed' })
+
     // Re-subscribe (e.g. the client's resume recovery sends a fresh frame).
     client.send({ kind: 'subscribe', sessionId: info.id })
     // Must be served a fresh replay, not swallowed by the subs.has() guard —
@@ -421,6 +467,27 @@ describe('WebSocket multiplexer', () => {
       (f) => f.kind === 'message' && f.sessionId === info.id,
     )
     if (live.kind !== 'message') throw new Error('narrowing')
+    await client.close()
+  })
+
+  it('does not answer a client-initiated unsubscribe with a closed result', async () => {
+    // The client closed this channel itself; telling it the channel closed
+    // would be noise on a path that runs on every panel unmount.
+    const info = sm.create({})
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    client.send({ kind: 'subscribe', sessionId: info.id })
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+    client.frames.length = 0
+
+    client.send({ kind: 'unsubscribe', sessionId: info.id })
+    await tick()
+    await new Promise((r) => setTimeout(r, 30))
+    expect(
+      client.frames.filter(
+        (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.reason === 'closed',
+      ),
+    ).toHaveLength(0)
     await client.close()
   })
 

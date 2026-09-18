@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
+import type { WsSubscribeResultReason } from '../ws-types'
 
 // ── Mocks ──────────────────────────────────────────────────────────
 
@@ -7,8 +8,7 @@ type WsHubListener = (frame: Record<string, unknown>) => void
 
 let currentSessionListeners: Map<string, Set<WsHubListener>>
 let currentGlobalListeners: Set<WsHubListener>
-const mockSubscribe = vi.fn((_sessionId: string, _sinceUuid?: string) => vi.fn())
-const mockResubscribe = vi.fn()
+const mockSubscribe = vi.fn((_sessionId: string, _sinceUuid?: string, _opts?: { force?: boolean }) => vi.fn())
 const mockSetLastMessageUuid = vi.fn()
 
 // Stable hub object — returned on every useWsHub() call so the hook's
@@ -28,7 +28,6 @@ const mockHub = {
     return () => { set!.delete(fn) }
   },
   subscribe: mockSubscribe,
-  resubscribe: mockResubscribe,
   setLastMessageUuid: mockSetLastMessageUuid,
 }
 
@@ -48,6 +47,16 @@ function dispatchToSession(sessionId: string, frame: Record<string, unknown>) {
   for (const fn of set) fn(frame)
 }
 
+/** The server's answer to one subscribe frame (see WsSubscribeResult). The
+ *  reason is typed on the shared vocabulary so a renamed one can't pass. */
+function subResult(
+  sessionId: string,
+  ok: boolean,
+  reason: WsSubscribeResultReason,
+): Record<string, unknown> {
+  return { kind: 'subscribe-result', sessionId, ok, reason }
+}
+
 const noopPerms: PermissionHandlers = {
   onRequest: vi.fn(),
   onResolved: vi.fn(),
@@ -60,7 +69,6 @@ describe('useChatStream', () => {
     currentSessionListeners = new Map()
     currentGlobalListeners = new Set()
     mockSubscribe.mockClear()
-    mockResubscribe.mockClear()
     mockSetLastMessageUuid.mockClear()
     cacheClear()
     vi.clearAllMocks()
@@ -1019,7 +1027,9 @@ describe('useChatStream', () => {
       () => useChatStream('s1', noopPerms),
     )
 
-    expect(mockSubscribe).toHaveBeenCalledWith('s1', undefined)
+    // `force` because this listener needs the history itself, not just a live
+    // channel: the server re-serves a replay sliced at the cursor.
+    expect(mockSubscribe).toHaveBeenCalledWith('s1', undefined, { force: true })
 
     const cleanupFn = mockSubscribe.mock.results[0].value
     expect(cleanupFn).not.toHaveBeenCalled()
@@ -1028,133 +1038,48 @@ describe('useChatStream', () => {
     expect(cleanupFn).toHaveBeenCalled()
   })
 
-  // ── running-transition recovery (dormant / slept white-screen fix) ──
+  // ── channel state (dormant / slept blank-transcript fix) ─────────────
 
-  it('forces a resubscribe when running flips false→true (dormant/slept → resumed)', () => {
+  it('forces the channel on every effect run, including each running flip', () => {
+    // The mount itself has to force — the channel may already be live (another
+    // consumer subscribed first, or the resume's own replay landed before this
+    // listener existed), and a confirmed channel would otherwise suppress the
+    // frame and leave the transcript blank. The false→true flip forces for the
+    // same reason (a channel that went dormant is gone). One mechanism, no
+    // "did this instance observe the transition" bookkeeping.
     const { rerender } = renderHook(
       ({ running }) => useChatStream('s1', noopPerms, running),
       { initialProps: { running: false } },
     )
-    // A not-running session still subscribes at mount (it may catch an
-    // auto-resume replay served by the server) — but a single subscribe,
-    // whose frame is controlled by the hub's refCount 0→1 guard, cannot
-    // re-establish a channel when other consumers already hold it.
     expect(mockSubscribe).toHaveBeenCalledTimes(1)
-    expect(mockResubscribe).not.toHaveBeenCalled()
+    expect(mockSubscribe).toHaveBeenLastCalledWith('s1', undefined, { force: true })
 
-    // Resume completes → running flips true → the effect re-runs and forces
-    // a fresh subscribe frame so the server serves a replay to this
-    // connection even though hub refCount is already > 0.
+    // Resume completes → running flips true → the effect re-runs and asks
+    // again, so the server serves a replay to this connection.
     rerender({ running: true })
-    expect(mockResubscribe).toHaveBeenCalledWith('s1', undefined)
+    expect(mockSubscribe).toHaveBeenCalledTimes(2)
+    expect(mockSubscribe).toHaveBeenLastCalledWith('s1', undefined, { force: true })
   })
 
-  it('clears a stale error on the running false→true transition', () => {
-    const { result, rerender } = renderHook(
-      ({ running }) => useChatStream('s1', noopPerms, running),
-      { initialProps: { running: false } },
-    )
-    // A premature subscribe to a not-running session surfaces as an error
-    // frame (the server can't serve a live channel for it).
+  it('clears a stale channel error only when the server confirms the channel', () => {
+    const { result } = renderHook(() => useChatStream('s1', noopPerms, false))
+
     act(() => {
       dispatchToSession('s1', { kind: 'error', sessionId: 's1', message: 'session not loaded' })
     })
     expect(result.current.error).toBe('session not loaded')
 
-    rerender({ running: true })
+    // A refusal keeps the band: the state frame says the same thing.
+    act(() => {
+      dispatchToSession('s1', subResult('s1', false, 'refused'))
+    })
+    expect(result.current.error).toBe('session not loaded')
+
+    // Being served does clear it — REPLAY_REPLACE preserves `intent.error`, so
+    // nothing else would, and a healed panel would show a stale band.
+    act(() => {
+      dispatchToSession('s1', subResult('s1', true, 'served'))
+    })
     expect(result.current.error).toBeNull()
-  })
-
-  it('does not force a resubscribe on a true→false running transition', () => {
-    const { rerender } = renderHook(
-      ({ running }) => useChatStream('s1', noopPerms, running),
-      { initialProps: { running: true } },
-    )
-    expect(mockResubscribe).not.toHaveBeenCalled()
-    rerender({ running: false })
-    // Going DOWN is not a recovery: nothing to re-request, and the server
-    // is about to tear the channel down anyway.
-    expect(mockResubscribe).not.toHaveBeenCalled()
-  })
-
-  it('retries the channel when the server answers "session not found"', async () => {
-    // Regression guard for the blank-transcript-after-opening-a-dormant-session
-    // bug. Opening a slept session mounts the panel, which subscribes
-    // immediately, while the resume that makes the session servable is still in
-    // flight — so the server answers `error: session X not found` + an EMPTY
-    // `replay-done`, and the hub emits nothing further on its own. The panel is
-    // left mounted with an empty transcript until a manual reload. Captured
-    // frame-level: `→ subscribe` … `← error` … `← replay-done` … `← session-update`
-    // (resume done) and no further `→ subscribe`.
-    //
-    // The fix re-requests the channel on a bounded backoff, so it recovers
-    // whether the resume was issued by this client, another panel, or another
-    // tab. The `running` false→true path above only covers the case where the
-    // panel observes the transition in one effect instance — a remount (which
-    // is what a panel-slot shuffle does) resets that, which is why the retry
-    // exists separately.
-    vi.useFakeTimers()
-    try {
-      renderHook(() => useChatStream('s1', noopPerms, false))
-
-      act(() => {
-        dispatchToSession('s1', { kind: 'error', sessionId: 's1', message: 'session s1 not found' })
-      })
-      expect(mockResubscribe).not.toHaveBeenCalled()
-
-      act(() => { vi.advanceTimersByTime(500) })
-      expect(mockResubscribe).toHaveBeenCalledWith('s1', undefined)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('stops retrying the channel once a replay arrives (and stays bounded)', () => {
-    vi.useFakeTimers()
-    try {
-      renderHook(() => useChatStream('s1', noopPerms, false))
-
-      act(() => {
-        dispatchToSession('s1', { kind: 'error', sessionId: 's1', message: 'session s1 not found' })
-      })
-      act(() => { vi.advanceTimersByTime(500) })
-      const callsAfterFirstRetry = mockResubscribe.mock.calls.length
-      expect(callsAfterFirstRetry).toBe(1)
-
-      // The resume landed: the retried subscribe serves a replay.
-      act(() => {
-        dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-        dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1', permissions: [] })
-      })
-
-      // No further retries, ever.
-      act(() => { vi.advanceTimersByTime(60_000) })
-      expect(mockResubscribe.mock.calls.length).toBe(callsAfterFirstRetry)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('gives up retrying a session nobody resumes (bounded attempts)', () => {
-    // A slept session that the user never wakes answers "not found" to every
-    // attempt: the retry must exhaust rather than spin forever.
-    vi.useFakeTimers()
-    try {
-      renderHook(() => useChatStream('s1', noopPerms, false))
-      act(() => {
-        dispatchToSession('s1', { kind: 'error', sessionId: 's1', message: 'session s1 not found' })
-      })
-      for (let i = 0; i < 20; i++) {
-        act(() => { vi.advanceTimersByTime(1200) })
-        act(() => {
-          dispatchToSession('s1', { kind: 'error', sessionId: 's1', message: 'session s1 not found' })
-        })
-      }
-      // Bounded: a handful of attempts, not one per error frame.
-      expect(mockResubscribe.mock.calls.length).toBeLessThanOrEqual(6)
-      expect(mockResubscribe.mock.calls.length).toBeGreaterThan(0)
-    } finally {
-      vi.useRealTimers()
-    }
   })
 })

@@ -11,20 +11,6 @@ import type { WsServerFrame } from '../ws-types'
 import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter, TaskRecordUi, UserDialogRequestUi, DialogResolved } from '../types'
 import { extractMessagePlainText } from '../../shared/search/extract'
 
-/** Server answer to a subscribe for a session it cannot serve yet — normally
- *  because the session's resume is still in flight (opening a dormant/slept
- *  session mounts the panel, which subscribes immediately, while the resume is
- *  still spawning). Treated as "not ready yet" rather than as a failure: see
- *  the `error` frame case. */
-const SERVICE_NOT_READY = /\bsession\b[^\n]*\bnot found\b/i
-/** How long to wait before re-requesting the channel after that answer. The
- *  resume lands within a second or two (spawn + history seed), so a few
- *  attempts at this spacing is comfortably enough. */
-const RESUBSCRIBE_RETRY_MS = 400
-/** Attempt cap: a slept session nobody wakes answers "not found" to every
- *  attempt, so the retry has to exhaust instead of spinning. */
-const RESUBSCRIBE_MAX_ATTEMPTS = 5
-
 /** The disk-stable uuid of a message, or null. A message whose uuid matches
  *  between the in-memory ring and the on-disk transcript can anchor the first
  *  history page; plain user PROMPT uuids are minted server-side at send() time
@@ -219,15 +205,6 @@ export function useChatStream(
   // lastMessageUuid (incremental replay) instead of null (full replay).
   const hydrateReady = useSessionField(sessionId, 'hydrateReady')
   const permsRef = useRef(permissions)
-  // Previous value of `running`. The effect uses it to detect a false→true
-  // transition (dormant/slept → resumed) so it can force a channel
-  // re-subscribe; see the wasDown logic in the subscribe effect.
-  const prevRunningRef = useRef<boolean | undefined>(undefined)
-  // Channel re-request state for the "not ready yet" recovery. Held in refs (not
-  // effect-locals) so the attempt budget spans effect re-runs, and a pending
-  // retry survives one — see scheduleResubscribe in the subscribe effect.
-  const resubscribeTimerRef = useRef<number | null>(null)
-  const resubscribeAttemptsRef = useRef(RESUBSCRIBE_MAX_ATTEMPTS)
   // Set true when a `session-cleared` frame lands for this session. Blocks
   // loadOlder() from paging the pre-/clear transcript back in from disk
   // (the on-disk log still holds it; the server only truncated its
@@ -266,21 +243,15 @@ export function useChatStream(
     // (sinceUuid) replay be used when a cache exists. hydrateReady is always
     // set (cache or not), so this never deadlocks.
     if (!hydrateReady) return
-    // A session that is not running cannot be served a live channel yet: a
-    // premature subscribe answers with `error` + empty `replay-done`, and
-    // the client's hub only re-subscribes on reconnect — the reported white
-    // screen. So a false→true transition of `running` (dormant/slept →
-    // resumed) must actively re-request the channel. The hub subscription is
-    // held by other consumers (useGitStatus, HooksPanel) for the whole time
-    // the panel is mounted, so `hub.subscribe()` alone would NOT emit a frame
-    // here (its 0→1 refcount guard). Force a re-subscribe so the server
-    // serves a fresh replay, and clear any error left by an earlier,
-    // premature subscribe. Harmless when the server already has a live
-    // channel for this connection (a repeated subscribe is a server-side
-    // idempotent no-op).
-    const wasDown = prevRunningRef.current === false
-    prevRunningRef.current = running
-
+    // Hold the channel, and require a replay for THIS listener. The hold is
+    // ref-counted and deduped (the same panel's header subscribes too); the
+    // force is what makes the transcript independent of subscription order —
+    // the server re-serves the replay, sliced at `sinceUuid`, so a warm store
+    // costs nothing and a cold one gets the history. Relying on the hold alone
+    // is what left the reported panel blank: it subscribed while the session
+    // was unservable, the hub counted the holder anyway, and this hook mounts
+    // only after the resume lands — by then its subscribe looked like a
+    // duplicate.
     let replayMessages: SdkMessage[] = []
     let replayPermissions: PermissionRequest[] = []
     let replaying = false
@@ -290,31 +261,6 @@ export function useChatStream(
     // the replay-done diagnostic below from misattributing that expected
     // sequence to the discarded-buffer race.
     let errored = false
-    // Bounded channel re-request, armed by the `error` frame case below. The
-    // budget lives OUTSIDE the effect (a ref) so an effect re-run — which a
-    // `running` flip or a remount causes — cannot refill it; a slept session
-    // nobody wakes answers "not found" to every attempt, and that has to
-    // exhaust rather than spin.
-    const scheduleResubscribe = () => {
-      if (resubscribeTimerRef.current != null || resubscribeAttemptsRef.current <= 0) return
-      resubscribeAttemptsRef.current--
-      resubscribeTimerRef.current = window.setTimeout(() => {
-        resubscribeTimerRef.current = null
-        // Clear the "not found" band before re-asking: the error was
-        // "not ready yet", and the same recovery path taken by the `running`
-        // transition (below) clears it for the same reason. Without this a
-        // healed panel keeps rendering the stale error over a full transcript
-        // (REPLAY_REPLACE deliberately preserves `intent.error`).
-        store.dispatch({ type: 'ERROR', message: null })
-        hub.resubscribe(sessionId, getSessionLastMessageUuid(sessionId) ?? undefined)
-      }, RESUBSCRIBE_RETRY_MS)
-    }
-    const stopResubscribing = () => {
-      if (resubscribeTimerRef.current != null) {
-        window.clearTimeout(resubscribeTimerRef.current)
-        resubscribeTimerRef.current = null
-      }
-    }
     // Phase 2 of the layered-state refactor removed the `pendingLive` buffer.
     // Previously, live frames arriving between `replay` and `replay-done` had
     // to be parked because REPLAY_REPLACE's fresh-state branch rebuilt the
@@ -332,11 +278,6 @@ export function useChatStream(
     const off = hub.addSessionListener(sessionId, (frame: WsServerFrame) => {
       switch (frame.kind) {
         case 'replay': {
-          // The channel is live: no more re-requests are needed (a retry armed
-          // by an earlier "not found" must not fire into a working channel),
-          // and the attempt budget is refilled for whatever race comes next.
-          stopResubscribing()
-          resubscribeAttemptsRef.current = RESUBSCRIBE_MAX_ATTEMPTS
           if (!replaying) {
             replaying = true
             replayMessages = []
@@ -365,20 +306,21 @@ export function useChatStream(
           // startSession ERROR path is the exception: it enqueues `error` +
           // `replay-done` with no replay frame, and `errored` tracks that so
           // we don't misattribute it to the race. Otherwise, reaching
-          // replay-done with replaying===false means this listener instance
+          // replay-done with replaying===false means THIS listener instance
           // never saw the replay frames — they landed on a previous effect
           // instance that was torn down mid-replay (deps: running /
-          // hydrateReady / store), discarding the buffer. This is the
-          // "blank transcript after resume" race: REPLAY_REPLACE then runs
-          // with [] and a cold store has nothing to fall back on. Correlates
-          // with the server-side "subscribe … ignored — channel already
-          // live" debug line (the resubscribe after the re-run is swallowed,
-          // so no re-replay).
+          // hydrateReady / store), discarding the buffer.
+          //
+          // No longer a blank-transcript report on its own: the replacement
+          // instance forces its own replay (`subscribe(..., { force: true })`),
+          // and the server re-serves one for a channel it already holds. It is
+          // still worth a line — it says an effect re-ran mid-burst, which
+          // costs a replay rebuild.
           if (!replaying && replayMessages.length === 0 && !errored) {
             console.warn(
               `[useChatStream] replay-done for ${sessionId} arrived with NO preceding ` +
-              `replay frame on this listener — replay frames were likely discarded by an ` +
-              `effect re-run (running=${running}); transcript may render blank`,
+              `replay frame on this listener — an effect re-run (running=${running}) ` +
+              `discarded the in-flight burst; the replacement instance re-requests it`,
             )
           }
           if (frame.permissions?.length) {
@@ -537,16 +479,19 @@ export function useChatStream(
             store.dispatch({ type: 'REPLAY_REPLACE', messages: [], permissions: [] })
           }
           store.dispatch({ type: 'ERROR', message: frame.message })
-          // "session X not found" means the session is not servable YET — its
-          // resume is still in flight (see SERVICE_NOT_READY). The hub emits no
-          // further frame on its own, so without this the panel stays mounted
-          // with a BLANK transcript until a manual reload: frame-level capture
-          // of the reported case shows `→ subscribe`, `← error`,
-          // `← replay-done` (empty), `← session-update` (the resume landing) and
-          // then nothing. Re-request on a bounded backoff so the channel is
-          // re-established once the session is up, whoever issued the resume
-          // (this client's sidebar click, another panel, another tab).
-          if (SERVICE_NOT_READY.test(frame.message)) scheduleResubscribe()
+          break
+        }
+        case 'subscribe-result': {
+          // The state half of a subscribe answer (the `error` frame above
+          // carries the prose). `ok` means this connection is being served —
+          // so a band left by an earlier refusal is stale and must go, since
+          // REPLAY_REPLACE deliberately preserves `intent.error` and nothing
+          // else clears it on a healed panel. Read + guarded through the store
+          // (not the `error` field) so the effect doesn't gain a dep that
+          // would re-run — and re-force a replay — on every band change.
+          if (frame.ok === true && store.getSnapshot().error != null) {
+            store.dispatch({ type: 'ERROR', message: null })
+          }
           break
         }
         case 'session-cleared': {
@@ -587,32 +532,29 @@ export function useChatStream(
       }
     })
 
-    const release = hub.subscribe(sessionId, getSessionLastMessageUuid(sessionId) ?? undefined)
-    if (wasDown) {
-      // The session just (re)started (resume / re-wake). Re-establish the
-      // channel explicitly — see the `wasDown` comment above.
-      store.dispatch({ type: 'ERROR', message: null })
-      hub.resubscribe(sessionId, getSessionLastMessageUuid(sessionId) ?? undefined)
-    }
+    const release = hub.subscribe(
+      sessionId,
+      getSessionLastMessageUuid(sessionId) ?? undefined,
+      // This listener needs the history itself, not just a live channel: the
+      // server re-serves the replay sliced at the cursor above, so a warm
+      // store gets a near-empty burst and a cold one gets everything.
+      { force: true },
+    )
     return () => {
       // Key diagnostic: tearing down mid-replay discards the buffered
-      // chunks (they live in this closure). The replacement effect starts
-      // a fresh buffer, and the server's idempotent-subscribe guard means
-      // the frames already sent are never re-sent — if replay-done lands
-      // on the new instance without its replay frames, REPLAY_REPLACE
-      // runs empty (see the replay-done warn). This warn fires at the
-      // moment the race window opens.
+      // chunks (they live in this closure). The replacement effect forces a
+      // fresh replay for itself, so this is no longer a blank-transcript
+      // report — it says an effect re-ran mid-burst (deps: running /
+      // hydrateReady / store), i.e. a replay rebuild was paid for nothing.
       if (replaying && replayMessages.length > 0) {
         console.warn(
           `[useChatStream] effect re-run for ${sessionId} DISCARDED in-flight replay ` +
           `buffer (${replayMessages.length} msgs, replaying=${replaying}) — ` +
-          `deps change mid-replay; if replay-done lands on the next instance ` +
-          `the transcript may render blank`,
+          `deps changed mid-replay; the replacement instance re-requests it`,
         )
       }
       off()
       release()
-      stopResubscribing()
     }
   }, [hub, sessionId, store, hydrateReady, running])
 

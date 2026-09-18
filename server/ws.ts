@@ -24,6 +24,7 @@
 import type { IncomingMessage, Server as HttpServer } from 'node:http'
 import type { Socket } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { isUpgradeAuthorized } from './auth.js'
 import type { SessionBroadcaster } from './session-types.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
@@ -36,7 +37,9 @@ import {
   type WsGitSnapshot,
   type WsMessageConsumed,
   type WsMessagesWithdrawn,
+  type WsReplay,
   type WsServerFrame,
+  type WsSubscribeResultReason,
 } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
 import type { TaskRecordUi } from '../shared/tasks.js'
@@ -351,19 +354,144 @@ export function attachWebSocket(
     }
 
     // --- per-session channel (subscribe/unsubscribe) -----------------
+    /** Answer one `subscribe` frame with the state of this connection's
+     *  per-session channel. See WsSubscribeResult — the client keys its
+     *  "do I need to ask again?" decision on this instead of inferring it
+     *  from `replay` / `error` / the global session-update feed. */
+    const ackSubscribe = (
+      sessionId: string,
+      ok: boolean,
+      reason: WsSubscribeResultReason,
+    ) => {
+      queue.enqueue({ kind: 'subscribe-result', sessionId, ok, reason })
+    }
+
+    /** Build and enqueue one replay burst for a session on THIS connection:
+     *  the `sinceUuid`-sliced ring, filtered to what the live broadcast would
+     *  send (shouldBroadcastMessage, matching session-pump.ts), chunked, then
+     *  terminated by `replay-done`.
+     *
+     *  Shared by the establish path and the duplicate-subscribe path so the
+     *  two can never drift. A duplicate IS re-served rather than dropped: the
+     *  replay is per-connection and a listener may have attached after the
+     *  first burst (a panel remount, StrictMode's double mount, or a resume
+     *  whose replay landed before <Chat> existed), and only the server can
+     *  know — so "I asked for this channel" always produces a replay.
+     *  `pending` carries the permission/elicitation/dialog snapshots on the
+     *  establish path; a re-serve omits them (the client re-reads that state
+     *  over REST on mount, and a stale snapshot could resurrect an already
+     *  resolved permission request). */
+    const sendReplay = (
+      sessionId: string,
+      history: SDKMessage[],
+      sinceUuid: string | undefined,
+      pending: Pick<WsReplay, 'permissions' | 'elicitations' | 'dialogs'> | null,
+    ) => {
+      let replayHistory = history
+      // If the client supplied `sinceUuid`, try to send only messages after
+      // that point (incremental sync). Fall back to a full replay if the UUID
+      // isn't in the ring (evicted by historyCap or the client cache is stale).
+      if (sinceUuid) {
+        const idx = history.findIndex((m) => (m as { uuid?: string }).uuid === sinceUuid)
+        if (idx >= 0) {
+          replayHistory = history.slice(idx + 1)
+          log.info(
+            `incremental sync for ${sessionId}: ` +
+            `skipped ${idx + 1} msgs, sending ${replayHistory.length} new`,
+          )
+        } else {
+          log.info(
+            `sinceUuid ${sinceUuid} not found in ${sessionId} history ` +
+            `(${history.length} msgs) — full replay`,
+          )
+        }
+      }
+
+      const replayStart = performance.now()
+      // Filter out system messages that the frontend doesn't need. Matches
+      // the live broadcast filter in session-pump.ts.
+      replayHistory = replayHistory.filter(
+        (m) => shouldBroadcastMessage(m as { type?: string; subtype?: string }),
+      )
+      const REPLAY_CHUNK_SIZE = 50
+      // Key diagnostic: pairs with the client's replay-done handling. If the
+      // server logs a non-zero count here but the client renders blank, the
+      // loss is client-side (effect re-run discarded the buffer, or
+      // REPLAY_REPLACE merge dropped everything).
+      log.info(
+        `replay for ${sessionId}: sending ${replayHistory.length} msgs ` +
+        `(ring=${history.length}, sinceUuid=${sinceUuid ?? 'none'})`,
+      )
+      if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
+        queue.enqueue({
+          kind: 'replay',
+          sessionId,
+          messages: replayHistory,
+          permissions: pending?.permissions ?? [],
+          ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
+          ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),
+        })
+        queue.enqueue({ kind: 'replay-done', sessionId })
+      } else {
+        for (let i = 0; i < replayHistory.length; i += REPLAY_CHUNK_SIZE) {
+          queue.enqueue({
+            kind: 'replay',
+            sessionId,
+            messages: replayHistory.slice(i, i + REPLAY_CHUNK_SIZE),
+            permissions: [],
+          })
+        }
+        // Permissions arrive with the final replay-done frame. The
+        // client merges them from whichever frame carries them.
+        queue.enqueue({
+          kind: 'replay-done',
+          sessionId,
+          permissions: pending?.permissions ?? [],
+          ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
+          ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),
+        })
+      }
+      metrics.observe('replay_build_ms', performance.now() - replayStart)
+      metrics.count('replay_messages', undefined, replayHistory.length)
+    }
+
     const startSession = async (sessionId: string, sinceUuid?: string) => {
-      // Idempotent: re-subscribing is a no-op. The client can safely
-      // emit duplicate subscribe frames (e.g. after a tab refresh sees a
-      // panel already open). Debug-logged so a client that resubscribes
-      // expecting a FRESH replay (e.g. its useChatStream effect re-ran
-      // mid-replay and discarded its buffer) can be diagnosed: the
-      // swallowed frame means no replay will be re-sent on this socket.
+      // A second subscribe on a connection that already holds this channel:
+      // re-serve the replay rather than swallowing the frame. The replay is
+      // per-connection and the caller's listener may have attached after the
+      // first burst (panel remount, StrictMode's double mount, a resume whose
+      // replay landed before <Chat> existed) — only the server can know, so
+      // "I asked for the channel" must always produce one. No session
+      // subscribers are wired here: the existing channel keeps streaming.
       if (subs.has(sessionId)) {
-        log.debug(`subscribe for ${sessionId} ignored — channel already live on this connection`)
+        // Wrapped because this branch runs before `starting.add` and outside
+        // the try below: a throw here (a non-serializable ring entry reaching
+        // JSON.stringify, say) would reject this un-awaited call instead of
+        // being reported as a refusal, and nothing would answer the frame.
+        try {
+          const history = sm.getHistory(sessionId)
+          if (history) {
+            sendReplay(sessionId, history, sinceUuid, null)
+            ackSubscribe(sessionId, true, 'already-live')
+          } else {
+            // The connection still lists this session but the manager no
+            // longer serves it — the window between a teardown ending the
+            // queues and this driver's own cleanup. Say so: acking live here
+            // would latch the client's channel state on a channel that is
+            // about to send it nothing (`closed` follows from the teardown).
+            ackSubscribe(sessionId, false, 'closed')
+          }
+        } catch (err) {
+          log.error(`re-serve for ${sessionId} failed:`, err)
+          ackSubscribe(sessionId, false, 'refused')
+        }
         return
       }
       if (starting.has(sessionId)) {
+        // An attempt is already in flight; it will answer with the real
+        // outcome. Answering anything else here would be a guess.
         log.debug(`subscribe for ${sessionId} ignored — startSession already in flight`)
+        ackSubscribe(sessionId, false, 'starting')
         return
       }
       starting.add(sessionId)
@@ -470,71 +598,11 @@ export function attachWebSocket(
         //    send only messages after that point (incremental sync).
         //    Fall back to full replay if the UUID isn't in the ring
         //    (evicted by historyCap or client cache is stale).
-        let replayHistory = msg.history
-        if (sinceUuid) {
-          const idx = msg.history.findIndex(
-            (m) => (m as { uuid?: string }).uuid === sinceUuid,
-          )
-          if (idx >= 0) {
-            replayHistory = msg.history.slice(idx + 1)
-            log.info(
-              `[ws] incremental sync for ${sessionId}: ` +
-              `skipped ${idx + 1} msgs, sending ${replayHistory.length} new`,
-            )
-          } else {
-            log.info(
-              `[ws] sinceUuid ${sinceUuid} not found in ${sessionId} history ` +
-              `(${msg.history.length} msgs) — full replay`,
-            )
-          }
-        }
-
-        const replayStart = performance.now()
-        // Filter out system messages that the frontend doesn't need.
-        // Matches the live broadcast filter in session-pump.ts.
-        replayHistory = replayHistory.filter(
-          (m) => shouldBroadcastMessage(m as { type?: string; subtype?: string }),
-        )
-        const REPLAY_CHUNK_SIZE = 50
-        // Key diagnostic: pairs with the client's replay-done handling.
-        // If the server logs a non-zero count here but the client renders
-        // blank, the loss is client-side (effect re-run discarded the
-        // buffer, or REPLAY_REPLACE merge dropped everything).
-        log.info(
-          `replay for ${sessionId}: sending ${replayHistory.length} msgs ` +
-          `(ring=${msg.history.length}, sinceUuid=${sinceUuid ?? 'none'})`,
-        )
-        if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
-          queue.enqueue({
-            kind: 'replay',
-            sessionId,
-            messages: replayHistory,
-            permissions: perms.snapshot,
-            elicitations: elicits.snapshot,
-            dialogs: dialogs.snapshot,
-          })
-          queue.enqueue({ kind: 'replay-done', sessionId })
-        } else {
-          for (let i = 0; i < replayHistory.length; i += REPLAY_CHUNK_SIZE) {
-            queue.enqueue({
-              kind: 'replay',
-              sessionId,
-              messages: replayHistory.slice(i, i + REPLAY_CHUNK_SIZE),
-              permissions: [],
-            })
-          }
-          // Permissions arrive with the final replay-done frame. The
-          // client merges them from whichever frame carries them.
-          queue.enqueue({
-            kind: 'replay-done',
-            sessionId,
-            permissions: perms.snapshot,
-            elicitations: elicits.snapshot,
-            dialogs: dialogs.snapshot,
-          })
-        }
-        metrics.observe('replay_build_ms', performance.now() - replayStart)
-        metrics.count('replay_messages', undefined, replayHistory.length)
+        sendReplay(sessionId, msg.history, sinceUuid, {
+          permissions: perms.snapshot,
+          elicitations: elicits.snapshot,
+          dialogs: dialogs.snapshot,
+        })
 
         // 2.5) Send the current recap snapshot if there is one. The
         //      live iterable picks up future transitions; the snapshot
@@ -769,11 +837,25 @@ export function attachWebSocket(
             // this connection. Delete the entry only if it is still OUR
             // cleanup (a newer subscribe that re-wired the channel replaced
             // it — that channel must survive).
-            if (subs.get(sessionId)?.cleanup === stop) subs.delete(sessionId)
+            const entry = subs.get(sessionId)
+            if (entry?.cleanup === stop) {
+              subs.delete(sessionId)
+              // Tell the client this connection's channel is gone: nothing
+              // else on the per-connection wire says so (the global
+              // session-update / session-removed frames are broadcast to
+              // every tab and some teardowns send neither).
+              //
+              // A client-initiated `unsubscribe` never reaches here:
+              // stopSession removes the entry before tearing the driver down,
+              // so `entry` is undefined (a channel the client closed itself
+              // needs no announcement).
+              ackSubscribe(sessionId, false, 'closed')
+            }
           }
         })()
 
         subs.set(sessionId, { sessionId, cleanup: stop })
+        ackSubscribe(sessionId, true, 'served')
       } catch (err) {
         // SessionManager.require() throws HttpError for unknown sessions.
         // Relay that to the client rather than killing the connection;
@@ -798,6 +880,10 @@ export function attachWebSocket(
         // terminates — without this, replayReady stays false forever and
         // the UI shows "Loading messages..." indefinitely.
         queue.enqueue({ kind: 'replay-done', sessionId, permissions: [] })
+        // …and the machine-readable half: nothing was established here, so
+        // the client may ask again once the session is servable (`error`
+        // above is prose, and is emitted for unrelated failures too).
+        ackSubscribe(sessionId, false, 'refused')
       } finally {
         starting.delete(sessionId)
       }
@@ -806,8 +892,12 @@ export function attachWebSocket(
     const stopSession = (sessionId: string) => {
       const s = subs.get(sessionId)
       if (!s) return
-      s.cleanup()
+      // Drop the entry BEFORE tearing the driver down: the teardown's
+      // `finally` acks `closed` only when the entry is still ours, so removing
+      // it first is what tells the server not to answer a channel the client
+      // is closing itself (it already knows).
       subs.delete(sessionId)
+      s.cleanup()
     }
 
     ws.on('message', (raw) => {

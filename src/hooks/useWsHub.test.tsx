@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, render, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { WsHubProvider, useWsHub, useWsHubStatus } from './useWsHub'
+import type { WsSubscribeResult, WsSubscribeResultReason } from '../ws-types'
 
 // ── Fake WebSocket ─────────────────────────────────────────────────
 //
@@ -280,30 +281,65 @@ describe('useWsHub: connection lifecycle', () => {
 
 // ── subscribe ref-counting ─────────────────────────────────────────
 
-describe('useWsHub: subscribe ref-counting', () => {
-  it('sends one subscribe for the first holder and one unsubscribe only when the last holder releases', () => {
+describe('useWsHub: subscribe ref-counting and channel state', () => {
+  /** The server's answer to one subscribe frame (see WsSubscribeResult). */
+  const ack = (
+    sessionId: string,
+    ok: boolean,
+    reason: WsSubscribeResultReason,
+  ): WsSubscribeResult => ({ kind: 'subscribe-result', sessionId, ok, reason })
+
+  it('sends one subscribe per holder until the server confirms, then one unsubscribe when the last lets go', () => {
     const { result } = mountHub()
     openSocket()
     const live = sock()
 
     let releaseA: () => void = () => {}
     let releaseB: () => void = () => {}
+    let releaseC: () => void = () => {}
     act(() => { releaseA = result.current.hub.subscribe('s1') })
-    // The server served that subscribe — a channel exists on this connection.
-    // Dedup only applies to a channel we KNOW is live; the replay is what
-    // proves it (see the "refused subscribe" test for the other direction).
-    act(() => { live.fireMessage({ kind: 'replay', sessionId: 's1', messages: [], permissions: [] }) })
-    act(() => { releaseB = result.current.hub.subscribe('s1') })
-    // Second subscriber must not re-send.
     expect(live.framesOfKind('subscribe')).toHaveLength(1)
+
+    // A second holder mounting before the server has answered also sends: the
+    // hub deliberately keeps no in-flight flag (its stale direction skips a
+    // frame a listener needs), and a duplicate is cheap — the server answers it
+    // and re-serves the replay.
+    act(() => { releaseB = result.current.hub.subscribe('s1') })
+    expect(live.framesOfKind('subscribe')).toHaveLength(2)
+
+    // Once a channel is confirmed, further holders are deduped.
+    act(() => { live.fireMessage(ack('s1', true, 'served')) })
+    act(() => { releaseC = result.current.hub.subscribe('s1') })
+    expect(live.framesOfKind('subscribe')).toHaveLength(2)
     expect(live.framesOfKind('subscribe')[0]).toMatchObject({ sessionId: 's1' })
 
     act(() => { releaseA() })
     expect(live.framesOfKind('unsubscribe')).toHaveLength(0) // still held
 
     act(() => { releaseB() })
+    act(() => { releaseC() })
     expect(live.framesOfKind('unsubscribe')).toHaveLength(1)
     expect(live.framesOfKind('unsubscribe')[0]).toMatchObject({ sessionId: 's1' })
+  })
+
+  it('a double release does not tear down a successor holder\'s channel', () => {
+    // The release closure captures the entry it was created for: re-reading the
+    // map by key would let a second call decrement — and delete — the entry a
+    // LATER holder created, killing a live channel it still needs.
+    const { result } = mountHub()
+    openSocket()
+    const live = sock()
+
+    let releaseFirst: () => void = () => {}
+    act(() => { releaseFirst = result.current.hub.subscribe('s1') })
+    act(() => { live.fireMessage(ack('s1', true, 'served')) })
+    act(() => { releaseFirst() })
+    expect(live.framesOfKind('unsubscribe')).toHaveLength(1)
+
+    // A new holder takes the channel over, then the stale release fires again.
+    act(() => { result.current.hub.subscribe('s1') })
+    act(() => { releaseFirst() })
+    expect(live.framesOfKind('unsubscribe')).toHaveLength(1) // not 2 — not ours
   })
 
   it('passes sinceUuid on the subscribe frame when given', () => {
@@ -320,118 +356,77 @@ describe('useWsHub: subscribe ref-counting', () => {
     expect('sinceUuid' in sock().framesOfKind('subscribe')[0]).toBe(false)
   })
 
-  it('resubscribe bypasses the ref-count guard and forces a fresh frame', () => {
-    // resubscribe() must send even when the hub believes the channel is
-    // already served, because it is the escape hatch for a consumer that knows
-    // its own listener still needs a replay (useChatStream on an observed
-    // dormant/slept → running flip). The channel is deliberately confirmed
-    // live first — otherwise an ordinary subscribe() would emit here too and
-    // the test would pass with the bypass removed.
+  it('force sends for a channel the server already confirmed', () => {
+    // `force` is how a listener that has not seen the history says so — the
+    // server re-serves the replay for the cursor it carries. The channel is
+    // deliberately confirmed live first, so the assertion only holds if the
+    // force really bypassed the dedup.
     const { result } = mountHub()
     openSocket()
     const live = sock()
 
     act(() => { result.current.hub.subscribe('s1') })
-    act(() => { live.fireMessage({ kind: 'replay', sessionId: 's1', messages: [], permissions: [] }) })
+    act(() => { live.fireMessage(ack('s1', true, 'served')) })
     act(() => { result.current.hub.subscribe('s1') })
     expect(live.framesOfKind('subscribe')).toHaveLength(1) // live ⇒ deduped
 
-    act(() => { result.current.hub.resubscribe('s1', 'uuid-9') })
+    act(() => { result.current.hub.subscribe('s1', 'uuid-9', { force: true }) })
     expect(live.framesOfKind('subscribe')).toHaveLength(2)
     expect(live.framesOfKind('subscribe')[1]).toMatchObject({ sessionId: 's1', sinceUuid: 'uuid-9' })
-  })
-
-  it('does not emit a second frame for a second holder of an unserved session… and does once it is served', () => {
-    // The other half of the contract above: while nothing has confirmed the
-    // channel, a second holder DOES send (that is the resume fix), and the
-    // replay that answers it re-arms the dedup.
-    const { result } = mountHub()
-    openSocket()
-    const live = sock()
-
-    act(() => { result.current.hub.subscribe('s1') })
-    act(() => { result.current.hub.subscribe('s1') })
-    expect(live.framesOfKind('subscribe')).toHaveLength(2)
-
-    act(() => { live.fireMessage({ kind: 'replay', sessionId: 's1', messages: [], permissions: [] }) })
-    act(() => { result.current.hub.subscribe('s1') })
-    expect(live.framesOfKind('subscribe')).toHaveLength(2)
   })
 
   it('a refused subscribe does not poison the session for the next subscriber', () => {
     // Regression guard for "resume 后加载不出任何消息卡片": the panel for a
     // SLEPT session mounts useGitStatus's subscribe FIRST (that hook runs
     // regardless of `running`; startSession refuses to wake a slept session
-    // from a subscribe, so the answer is "session X not found" and nothing is
-    // established). <Chat>/useChatStream mounts only once the resume lands, so
-    // its subscribe is the one that must actually reach the server. Counting
-    // the refusal as a held channel suppressed it and the session was never
-    // served a replay.
+    // from a subscribe, so the answer is ok:false and nothing is established).
+    // <Chat>/useChatStream mounts only once the resume lands, so its subscribe
+    // is the one that must actually reach the server. Counting the refusal as
+    // a held channel suppressed it and the session was never served a replay.
     const { result } = mountHub()
     openSocket()
     const live = sock()
 
     act(() => { result.current.hub.subscribe('s1') })
     expect(live.framesOfKind('subscribe')).toHaveLength(1)
-    act(() => { live.fireMessage({ kind: 'error', sessionId: 's1', message: 'session s1 not found' }) })
+    act(() => { live.fireMessage(ack('s1', false, 'refused')) })
 
     // The resume lands (running flips true) and the panel's <Chat> mounts.
-    act(() => { live.fireMessage({ kind: 'session-update', session: { id: 's1', running: true } }) })
     act(() => { result.current.hub.subscribe('s1') })
-
     const subs = live.framesOfKind('subscribe')
     expect(subs).toHaveLength(2)
     expect(subs[1]).toMatchObject({ sessionId: 's1' })
-    // …and the replay that answers it re-arms the dedup for later holders.
-    act(() => { live.fireMessage({ kind: 'replay', sessionId: 's1', messages: [], permissions: [] }) })
+
+    // …and the ack that answers it re-arms the dedup for later holders.
+    act(() => { live.fireMessage(ack('s1', true, 'served')) })
     act(() => { result.current.hub.subscribe('s1') })
     expect(live.framesOfKind('subscribe')).toHaveLength(2)
   })
 
-  it('treats a session that stopped running as having no channel', () => {
-    // Sleeping / terminating a session ends its subscriber queues server-side
-    // and broadcasts running:false, but no frame announces the channel's death.
-    // Without that update the recorded channel would suppress the next
-    // subscribe on resume — the same blank transcript by another route.
+  it('re-requests a channel the server reports as closed', () => {
+    // Sleeping / unloading a session ends its subscriber queues server-side;
+    // the per-connection `closed` result is the only signal for it (the global
+    // session-update feed is not per-connection, and some teardowns never
+    // broadcast one). Without it the recorded channel would suppress the next
+    // subscribe on resume, i.e. the blank transcript by another route.
     const { result } = mountHub()
     openSocket()
     const live = sock()
 
     act(() => { result.current.hub.subscribe('s1') })
-    act(() => { live.fireMessage({ kind: 'replay', sessionId: 's1', messages: [], permissions: [] }) })
-    act(() => { live.fireMessage({ kind: 'replay-done', sessionId: 's1', permissions: [] }) })
+    act(() => { live.fireMessage(ack('s1', true, 'served')) })
     act(() => { result.current.hub.subscribe('s1') })
     expect(live.framesOfKind('subscribe')).toHaveLength(1)
 
-    act(() => { live.fireMessage({ kind: 'session-update', session: { id: 's1', running: false } }) })
+    act(() => { live.fireMessage(ack('s1', false, 'closed')) })
     act(() => { result.current.hub.subscribe('s1') })
     expect(live.framesOfKind('subscribe')).toHaveLength(2)
     expect(live.framesOfKind('subscribe')[1]).toMatchObject({ sessionId: 's1' })
   })
 
-  it('drops liveness for a session that left the store', () => {
-    // `/clear`, discard and cross-tab delete tear the channel down and announce
-    // `session-removed` rather than the dormant update (server/session-manager
-    // unload's removeFromStore branch). The id can come back later via
-    // resume(X), so the entry must not survive it.
-    const { result } = mountHub()
-    openSocket()
-    const live = sock()
-
-    act(() => { result.current.hub.subscribe('s1') })
-    act(() => { live.fireMessage({ kind: 'replay', sessionId: 's1', messages: [], permissions: [] }) })
-    act(() => { result.current.hub.subscribe('s1') })
-    expect(live.framesOfKind('subscribe')).toHaveLength(1)
-
-    act(() => { live.fireMessage({ kind: 'session-removed', id: 's1' }) })
-    act(() => { result.current.hub.subscribe('s1') })
-    expect(live.framesOfKind('subscribe')).toHaveLength(2)
-  })
-
-  it('ignores a session-update that carries no session payload', () => {
-    // The message handler validates only `typeof frame.kind`, and
-    // applyChannelLiveness runs before the per-listener try/catch — a throw
-    // there would drop the frame for every listener on the socket.
+  it('ignores a subscribe-result that names no session', () => {
+    // This runs before fan-out, where the handler's only other validation is
+    // `typeof frame.kind` — a throw would drop the frame for every listener.
     const { result } = mountHub()
     openSocket()
     const live = sock()
@@ -439,57 +434,37 @@ describe('useWsHub: subscribe ref-counting', () => {
     act(() => { result.current.hub.addListener(global) })
 
     act(() => {
-      live.fireMessage({ kind: 'session-update' })
-      live.fireMessage({ kind: 'session-update', session: null })
-      live.fireMessage({ kind: 'session-update', session: { id: 's1' } })
+      live.fireMessage({ kind: 'subscribe-result' })
+      live.fireMessage({ kind: 'subscribe-result', sessionId: 42, ok: 'yes' })
     })
-    expect(global).toHaveBeenCalledTimes(3)
+    expect(global).toHaveBeenCalledTimes(2)
 
-    // …and liveness survives a session-update whose `running` is just absent.
+    // A held channel is unaffected by a malformed answer.
     act(() => { result.current.hub.subscribe('s1') })
-    act(() => { live.fireMessage({ kind: 'replay', sessionId: 's1', messages: [], permissions: [] }) })
+    act(() => { live.fireMessage(ack('s1', true, 'served')) })
     act(() => { result.current.hub.subscribe('s1') })
     expect(live.framesOfKind('subscribe')).toHaveLength(1)
   })
 
-  it('does not read a refused subscribe\'s replay-done terminator as a live channel', () => {
-    // The server answers a refused subscribe with `error` + `replay-done` (the
-    // terminator exists so the client's replay state machine always finishes).
-    // Treating that trailing frame as "channel established" would put the
-    // session straight back into the suppressed state — the refusal would be
-    // undone one frame later.
-    const { result } = mountHub()
-    openSocket()
-    const live = sock()
-
-    act(() => { result.current.hub.subscribe('s1') })
-    act(() => { live.fireMessage({ kind: 'error', sessionId: 's1', message: 'session s1 not found' }) })
-    act(() => { live.fireMessage({ kind: 'replay-done', sessionId: 's1', permissions: [] }) })
-    act(() => { result.current.hub.subscribe('s1') })
-
-    expect(live.framesOfKind('subscribe')).toHaveLength(2)
-  })
-
-  it('drops liveness for every session when the socket is replaced', () => {
-    // Channels are per-connection: a recording that survived a reconnect would
+  it('drops channel state when the socket is replaced', () => {
+    // Channels are per-connection: a liveness that survived a reconnect would
     // suppress the re-subscribe the reopen handler issues.
     const { result } = mountHub()
     openSocket()
     act(() => { result.current.hub.subscribe('s1') })
-    act(() => { sock().fireMessage({ kind: 'replay', sessionId: 's1', messages: [], permissions: [] }) })
+    act(() => { sock().fireMessage(ack('s1', true, 'served')) })
 
     act(() => { sock().serverDrop() })
     act(() => { vi.advanceTimersByTime(500) })
     openSocket()
     const revived = sock()
-    // The open handler re-subscribes the held session itself.
+    // The open handler re-subscribes the held session even though the previous
+    // socket had confirmed it.
     expect(revived.framesOfKind('subscribe')).toHaveLength(1)
 
-    // A consumer subscribing before that replay lands re-requests rather than
-    // trusting a stale "live" — idempotent server-side, so erring this way is
-    // safe; the reverse would strand a listener with no replay.
+    act(() => { revived.fireMessage(ack('s1', true, 'served')) })
     act(() => { result.current.hub.subscribe('s1') })
-    expect(revived.framesOfKind('subscribe')).toHaveLength(2)
+    expect(revived.framesOfKind('subscribe')).toHaveLength(1)
   })
 })
 
