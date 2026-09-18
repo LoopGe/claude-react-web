@@ -132,6 +132,10 @@ Options:
                        on when the server runs from TypeScript source
                        (npm run dev / dev:server), off for dist/cli.mjs.
       --no-dev         Force the dev tools off even when running from source.
+      --disable-app-plugins
+                       Disable the App Plugins (Mods) subsystem entirely.
+      --safe-mode      Load App Plugins without activating their background
+                       subprocesses — static UI contributions only.
   -V, --version        Print version and exit
   -h, --help           Show this help and exit
 `.trim()
