@@ -166,10 +166,10 @@ describe('NewSessionDialog first-party tools picker', () => {
   it('pre-checks rows from the global defaults and omits the field when unchanged', async () => {
     const onSubmit = vi.fn()
     const { baseElement } = render(
-      <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ apptools: { enabled: true } }} />,
+      <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ 'git-tools': { enabled: true } }} />,
     )
-    await waitFor(() => expect(baseElement.textContent).toContain('apptools'))
-    expect(findFirstPartyRow(baseElement, 'apptools').checkbox.checked).toBe(true)
+    await waitFor(() => expect(baseElement.textContent).toContain('git-tools'))
+    expect(findFirstPartyRow(baseElement, 'git-tools').checkbox.checked).toBe(true)
 
     const form = await clickCreate(baseElement, onSubmit)
     // Unchanged from the global default → no override (the session inherits).
@@ -179,26 +179,26 @@ describe('NewSessionDialog first-party tools picker', () => {
   it('sends an explicit OFF override when a globally-enabled tool is unchecked', async () => {
     const onSubmit = vi.fn()
     const { baseElement } = render(
-      <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ apptools: { enabled: true } }} />,
+      <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ 'git-tools': { enabled: true } }} />,
     )
-    await waitFor(() => expect(baseElement.textContent).toContain('apptools'))
-    fireEvent.click(findFirstPartyRow(baseElement, 'apptools').checkbox)
+    await waitFor(() => expect(baseElement.textContent).toContain('git-tools'))
+    fireEvent.click(findFirstPartyRow(baseElement, 'git-tools').checkbox)
 
     const form = await clickCreate(baseElement, onSubmit)
-    expect(form.firstPartyTools).toEqual({ apptools: false })
+    expect(form.firstPartyTools).toEqual({ 'git-tools': false })
   })
 
   it('sends an explicit ON override when a globally-disabled tool is checked', async () => {
     const onSubmit = vi.fn()
     const { baseElement } = render(
-      <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ apptools: { enabled: false } }} />,
+      <NewSessionDialog {...baseProps} onSubmit={onSubmit} firstPartyTools={{ 'git-tools': { enabled: false } }} />,
     )
-    await waitFor(() => expect(baseElement.textContent).toContain('apptools'))
-    expect(findFirstPartyRow(baseElement, 'apptools').checkbox.checked).toBe(false)
-    fireEvent.click(findFirstPartyRow(baseElement, 'apptools').checkbox)
+    await waitFor(() => expect(baseElement.textContent).toContain('git-tools'))
+    expect(findFirstPartyRow(baseElement, 'git-tools').checkbox.checked).toBe(false)
+    fireEvent.click(findFirstPartyRow(baseElement, 'git-tools').checkbox)
 
     const form = await clickCreate(baseElement, onSubmit)
-    expect(form.firstPartyTools).toEqual({ apptools: true })
+    expect(form.firstPartyTools).toEqual({ 'git-tools': true })
   })
 
   it('hides the cluster when the defaults map is empty', async () => {

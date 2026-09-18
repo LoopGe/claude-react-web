@@ -5,6 +5,15 @@ All notable changes to `claude-react-web` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **First-party git MCP server renamed `apptools` → `git-tools`** — tool FQNs
+  are now `mcp__git-tools__*`. Existing `firstPartyTools.apptools` config and
+  session overrides migrate on load; the legacy `appToolsGit` boolean still
+  folds into the new key. Historical transcripts keep the old tool names.
+
 ## [0.7.1] — 2026-09-02
 
 A focused patch release on top of `0.7.0` — **59 commits**. Headline work is

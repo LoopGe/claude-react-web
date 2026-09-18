@@ -23,13 +23,13 @@ describe('mutatingToolUseId', () => {
   it('detects first-party mutating tools by FQN (git-broadcast seam)', () => {
     // In-process MCP tool names arrive with the mcp__{server}__ prefix; the
     // registry's mutating FQNs are unioned into the detection set.
-    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__apptools__git_stage', id: 'tu_g1' })).toBe('tu_g1')
-    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__apptools__git_commit', id: 'tu_g2' })).toBe('tu_g2')
-    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__apptools__git_discard', id: 'tu_g3' })).toBe('tu_g3')
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__git-tools__git_stage', id: 'tu_g1' })).toBe('tu_g1')
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__git-tools__git_commit', id: 'tu_g2' })).toBe('tu_g2')
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__git-tools__git_discard', id: 'tu_g3' })).toBe('tu_g3')
   })
 
   it('does NOT treat read-only first-party tools as mutating', () => {
-    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__apptools__git_status', id: 'tu_gr' })).toBeNull()
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__git-tools__git_status', id: 'tu_gr' })).toBeNull()
   })
 
   it('returns the id for EnterWorktree / ExitWorktree blocks (worktree-change seam)', () => {

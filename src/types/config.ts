@@ -64,11 +64,11 @@ export interface ConfigResponse {
   /** Global font size (`--fs-scale`) preset. Undefined = inherit the server
    *  default (standard, scale 1). */
   fontSize?: FontSizePreset
-  /** Global default for the first-party `apptools` git MCP server. Sessions
+  /** Global default for the first-party `git-tools` git MCP server. Sessions
    *  without an explicit override inherit this. */
   appToolsGit?: boolean
   /** Per-first-party-server global defaults (keyed by server name, e.g.
-   *  `apptools`). `appToolsGit` is the legacy single-entry form. */
+   *  `git-tools`). `appToolsGit` is the legacy single-entry form. */
   firstPartyTools?: Record<string, { enabled: boolean }>
   /** Currently active profile id (multi-profile mode). */
   activeProfileId?: string
@@ -110,7 +110,7 @@ export interface FullServerConfig {
   textSpacing: TextSpacingPreset
   /** Global font size (`--fs-scale`) preset. */
   fontSize: FontSizePreset
-  /** Global default for the first-party `apptools` git MCP server. */
+  /** Global default for the first-party `git-tools` git MCP server. */
   appToolsGit: boolean
   /** Per-first-party-server global defaults. */
   firstPartyTools?: Record<string, { enabled: boolean }>

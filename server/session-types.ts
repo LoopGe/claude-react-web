@@ -654,15 +654,15 @@ export interface Session {
   /** User intent: per-session CLI debug logging. undefined = inherit the
    *  global config default. Persisted so resume/fork/restart keep the intent. */
   cliDebug?: boolean
-  /** Per-session override for the first-party `apptools` git MCP server.
+  /** Per-session override for the first-party `git-tools` git MCP server.
    *  Undefined = inherit the global config default; a boolean pins it.
    *  Persisted via SessionMeta and mirrored into SessionInfo. Read at
    *  spawn / live setMcpServers; not itself an SDK call. */
   appToolsGit?: boolean
   /** Per-session overrides for first-party tool servers (keyed by server
-   *  name, e.g. `apptools`). `true`/`false` pin that server; `null` clears
+   *  name, e.g. `git-tools`). `true`/`false` pin that server; `null` clears
    *  the override to inherit the global default. `appToolsGit` is the legacy
-   *  single-entry form of `firstPartyTools.apptools`. */
+   *  single-entry form of `firstPartyTools['git-tools']`. */
   firstPartyTools?: Record<string, boolean | null>
   /** True when the user explicitly slept this session via the "Sleep"
    *  action. Distinguishes deliberate dormancy from passive restart/crash

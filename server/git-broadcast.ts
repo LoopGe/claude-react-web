@@ -102,7 +102,7 @@ export const MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
 ])
 
 /** Built-in mutating tools ∪ first-party mutating tools (FQNs like
- *  `mcp__apptools__git_stage`). The pump matches tool_use block names against
+ *  `mcp__git-tools__git_stage`). The pump matches tool_use block names against
  *  this — FQN form, matching what the SDK reports for in-process MCP tools. */
 /** Worktree entry/exit tools. EnterWorktree creates a linked worktree (a
  *  real filesystem + git mutation); ExitWorktree removes one (action

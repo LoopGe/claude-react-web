@@ -9,6 +9,7 @@
 
 import type { SessionSkillOverride } from './skills.js'
 import type { SandboxSetting } from './sandbox.js'
+import { GIT_TOOLS_SERVER_NAME, migrateLegacyGitToolsKey } from './first-party.js'
 
 /** Coarse-grained session lifecycle. The server is the single source of
  *  truth for this — derived from `(running, working, queueDepth,
@@ -281,7 +282,7 @@ export interface SessionInfoBase<PM = string> {
    *  default (config.showMessageHeaders); a boolean pins this session to
    *  that value. Persisted so it survives resume / fork / reload. */
   showMessageHeaders?: boolean
-  /** Per-session override for the first-party `apptools` git MCP server.
+  /** Per-session override for the first-party `git-tools` git MCP server.
    *  Undefined = inherit the global default (config.appToolsGit); a boolean
    *  pins this session to that value. Persisted so it survives resume /
    *  fork / reload. */
@@ -289,7 +290,7 @@ export interface SessionInfoBase<PM = string> {
   /** Per-session overrides for first-party tool servers (keyed by server
    *  name). `true`/`false` pin that server; `null` clears the override to
    *  inherit the global default. `appToolsGit` is the legacy single-entry
-   *  form of `firstPartyTools.apptools`. */
+   *  form of `firstPartyTools['git-tools']`. */
   firstPartyTools?: Record<string, boolean | null>
   /** True when the user explicitly put this session to sleep (dormant) via
    *  the "Sleep" action — distinct from a passive dormant state caused by a
@@ -306,19 +307,21 @@ export interface SessionInfoBase<PM = string> {
  *  and any future fork-style client re-creation). Boolean overrides are
  *  carried; `null` entries — the live-session "inherit" marker, which is
  *  NOT a valid create-body value — are dropped; the legacy `appToolsGit`
- *  boolean folds into the `apptools` entry (name matching the server's
- *  APP_TOOLS_SERVER_NAME / config.ts's legacy fold) unless the structured
- *  map already pins that entry. Returns undefined when there is nothing to
- *  preserve, so the create body can simply omit the key (= inherit). */
+ *  boolean folds into the `git-tools` entry (name matching the server's
+ *  GIT_TOOLS_SERVER_NAME / config.ts's legacy fold) unless the structured
+ *  map already pins that entry. A pre-rename `apptools` key is migrated.
+ *  Returns undefined when there is nothing to preserve, so the create body
+ *  can simply omit the key (= inherit). */
 export function firstPartyOverridesForCreate(
   session: Pick<SessionInfoBase<unknown>, 'firstPartyTools' | 'appToolsGit'>,
 ): Record<string, boolean> | undefined {
   const out: Record<string, boolean> = {}
-  for (const [name, v] of Object.entries(session.firstPartyTools ?? {})) {
+  const migrated = migrateLegacyGitToolsKey(session.firstPartyTools) ?? {}
+  for (const [name, v] of Object.entries(migrated)) {
     if (typeof v === 'boolean') out[name] = v
   }
-  if (!('apptools' in out) && typeof session.appToolsGit === 'boolean') {
-    out.apptools = session.appToolsGit
+  if (!(GIT_TOOLS_SERVER_NAME in out) && typeof session.appToolsGit === 'boolean') {
+    out[GIT_TOOLS_SERVER_NAME] = session.appToolsGit
   }
   return Object.keys(out).length > 0 ? out : undefined
 }

@@ -373,7 +373,7 @@ describe('PermissionBroker', () => {
     it('dontAsk auto-allows read-only first-party tools (permission seam)', async () => {
       const session = makeFakeSession({ permissionMode: 'dontAsk' })
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
-      const result = await canUseTool('mcp__apptools__git_status', {}, ctx())
+      const result = await canUseTool('mcp__git-tools__git_status', {}, ctx())
       expect(result).toMatchObject({ behavior: 'allow' })
       expect(session.pending.size).toBe(0)
     })
@@ -381,7 +381,7 @@ describe('PermissionBroker', () => {
     it('dontAsk still auto-DENIES first-party write tools (permission seam)', async () => {
       const session = makeFakeSession({ permissionMode: 'dontAsk' })
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
-      const result = await canUseTool('mcp__apptools__git_commit', { message: 'x' }, ctx())
+      const result = await canUseTool('mcp__git-tools__git_commit', { message: 'x' }, ctx())
       expect(result).toMatchObject({ behavior: 'deny', interrupt: false })
       expect(session.pending.size).toBe(0)
     })

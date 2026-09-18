@@ -1,6 +1,6 @@
-// First-party `apptools` in-process MCP server (SDK createSdkMcpServer).
+// First-party `git-tools` in-process MCP server (SDK createSdkMcpServer).
 //
-// Exposes the host's git tooling directly to the agent as `mcp__apptools__*`
+// Exposes the host's git tooling directly to the agent as `mcp__git-tools__*`
 // tools, reusing server/git.ts's high-level helpers (never raw runGit — not
 // exported) so there is zero new shell path and the exact same
 // validateRepoRelativePath / validateBranchName safety gates the GitPanel
@@ -9,13 +9,14 @@
 //
 // The built server binds the SESSION cwd in its handler closures and is
 // injected into the session's mcpServers map at spawn and on every live
-// setMcpServers (see SessionManager.injectAppTools). Build once per session
+// setMcpServers (see SessionMcpManager.injectAll). Build once per session
 // and reuse — the server itself is stateless beyond cwd.
 
 import { z } from 'zod'
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { FirstPartyToolServer } from './types.js'
+import { GIT_TOOLS_SERVER_NAME } from '../../shared/first-party.js'
 import {
   getStatus,
   getLog,
@@ -37,8 +38,10 @@ import {
   validateBranchName,
 } from '../git.js'
 
-/** Server name — tool FQN is `mcp__apptools__{name}`. */
-export const APP_TOOLS_SERVER_NAME = 'apptools'
+/** Server name — tool FQN is `mcp__git-tools__{name}`. Defined in shared so
+ *  config/session migration and the client fallback share one source of
+ *  truth. `APP_TOOLS_SERVER_NAME` is a legacy alias for existing imports. */
+export { GIT_TOOLS_SERVER_NAME, GIT_TOOLS_SERVER_NAME as APP_TOOLS_SERVER_NAME }
 
 /** Bare read-only tool names (registry FQN set prefixes these). */
 export const APP_TOOLS_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
@@ -66,7 +69,7 @@ export const APP_TOOLS_MUTATING_TOOLS: ReadonlySet<string> = new Set([
 
 /** The git server registered into the first-party registry. */
 export const gitAppTools: FirstPartyToolServer = {
-  name: APP_TOOLS_SERVER_NAME,
+  name: GIT_TOOLS_SERVER_NAME,
   description: 'First-party git tools bound to the session cwd',
   defaultEnabled: true,
   requiresCwd: true,
@@ -99,7 +102,7 @@ async function guard(fn: () => Promise<CallToolResult>): Promise<CallToolResult>
 
 const PATH_LIST = z.array(z.string()).describe('repo-relative paths (no "..", no absolute paths)')
 
-/** The tool definitions for the apptools server, bound to the session cwd.
+/** The tool definitions for the git-tools server, bound to the session cwd.
  *  Exported separately from the server builder so tests can assert the tool
  *  set / annotations and invoke handlers without owning an McpServer. */
 export function buildAppToolsTools(cwd: string): SdkMcpToolDefinition<any>[] {
@@ -205,12 +208,12 @@ export function buildAppToolsTools(cwd: string): SdkMcpToolDefinition<any>[] {
   ]
 }
 
-/** Build the in-process apptools MCP server for a session. Handlers are bound
+/** Build the in-process git-tools MCP server for a session. Handlers are bound
  *  to the session cwd. The returned config is NOT serializable (holds a live
  *  McpServer instance) and must never enter the JSON McpConfigStore. */
 export function buildAppToolsServer(cwd: string): ReturnType<typeof createSdkMcpServer> {
   return createSdkMcpServer({
-    name: APP_TOOLS_SERVER_NAME,
+    name: GIT_TOOLS_SERVER_NAME,
     version: '1.0.0',
     tools: buildAppToolsTools(cwd),
   })

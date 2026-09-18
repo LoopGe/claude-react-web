@@ -24,6 +24,7 @@ import {
 import { setWebAuth } from './auth.js'
 import { HttpError } from './errors.js'
 import { coerceProfiles, profileDefaultModel, profileFromLegacyFields, resolveActiveProfile, type LegacyProfileFields } from './profiles.js'
+import { GIT_TOOLS_SERVER_NAME, migrateLegacyGitToolsKey } from '../shared/first-party.js'
 
 const log = createLogger('config')
 
@@ -146,17 +147,17 @@ interface ConfigFile {
   /** Global default for per-session CLI debug logging (Options.debug +
    *  debugFile). SessionMeta.cliDebug overrides when set. Default: false. */
   cliDebug?: boolean
-  /** Global default for injecting the first-party `apptools` in-process MCP
-   *  server (git tools) into sessions. Per-session overrides
+  /** Global default for injecting the first-party `git-tools` in-process MCP
+   *  server into sessions. Per-session overrides
    *  (SessionMeta.appToolsGit) take priority; sessions without an override
-   *  inherit this value. LEGACY — superseded by `firstPartyTools.apptools`,
+   *  inherit this value. LEGACY — superseded by `firstPartyTools['git-tools']`,
    *  still read for backward compatibility with old config.json files. */
   appToolsGit: boolean
   /** Per-first-party-server global defaults. Each key is an in-process MCP
-   *  server name (e.g. `apptools`); sessions without an override inherit
-   *  these. `firstPartyTools.apptools.enabled` supersedes the legacy
+   *  server name (e.g. `git-tools`); sessions without an override inherit
+   *  these. `firstPartyTools['git-tools'].enabled` supersedes the legacy
    *  `appToolsGit` boolean (which is folded in at load when the structured
-   *  key is absent). */
+   *  key is absent). The pre-rename `apptools` key is migrated on load. */
   firstPartyTools?: Record<string, { enabled?: boolean }>
   /** When true, acceptEdits and bypassPermissions modes also auto-approve
    *  edits/commands targeting "sensitive" config paths (.git/, .claude/,
@@ -227,9 +228,9 @@ export interface ServerConfig {
   readonly fontSize: FontSizePreset
   /** Global default for per-session CLI debug logging (spawn-time only). */
   readonly cliDebug: boolean
-  /** Global default for the per-session `apptools` git MCP server. Sessions
+  /** Global default for the per-session `git-tools` git MCP server. Sessions
    *  without an explicit override inherit this. LEGACY derived convenience —
-   *  equals `firstPartyTools.apptools?.enabled ?? true`. */
+   *  equals `firstPartyTools['git-tools']?.enabled ?? true`. */
   readonly appToolsGit: boolean
   /** Per-first-party-server global defaults (see ConfigFile). */
   readonly firstPartyTools: Readonly<Record<string, Readonly<{ enabled: boolean }>>>
@@ -282,7 +283,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   fontSize: DEFAULT_FONT_SIZE,
   cliDebug: false,
   appToolsGit: true,
-  firstPartyTools: Object.freeze({ apptools: Object.freeze({ enabled: true }) }),
+  firstPartyTools: Object.freeze({ [GIT_TOOLS_SERVER_NAME]: Object.freeze({ enabled: true }) }),
   allowSensitivePathEdits: false,
   maxOutputTokens: 0,
   profiles: Object.freeze([]),
@@ -562,8 +563,9 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
   }
 
   // Structured per-first-party-server defaults. The legacy `appToolsGit`
-  // boolean is folded into the `apptools` entry when the file did not itself
-  // provide one, so old config.json files keep working.
+  // boolean is folded into the `git-tools` entry when the file did not itself
+  // provide one, so old config.json files keep working. The pre-rename
+  // `apptools` key is migrated to `git-tools` on load.
   let fileFirstParty: Record<string, { enabled: boolean }> | undefined
   if (file_.firstPartyTools && typeof file_.firstPartyTools === 'object' && !Array.isArray(file_.firstPartyTools)) {
     const structured: Record<string, { enabled: boolean }> = {}
@@ -571,32 +573,33 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
       if (typeof raw.enabled === 'boolean') structured[name] = { enabled: raw.enabled }
     }
-    if (Object.keys(structured).length > 0) {
-      fileFirstParty = structured
+    const migrated = migrateLegacyGitToolsKey(structured) ?? structured
+    if (Object.keys(migrated).length > 0) {
+      fileFirstParty = migrated
       ;(merged as { firstPartyTools: Record<string, { enabled: boolean }> }).firstPartyTools = Object.freeze(
-        Object.fromEntries(Object.entries(structured).map(([k, v]) => [k, Object.freeze(v)])),
+        Object.fromEntries(Object.entries(migrated).map(([k, v]) => [k, Object.freeze(v)])),
       )
     }
   }
-  // Fold the legacy flat boolean INTO the structured `apptools` entry when
+  // Fold the legacy flat boolean INTO the structured `git-tools` entry when
   // the file did not itself provide one. The structured map is the single
   // authoritative view of the global defaults (firstPartyEnabled and the
   // global-settings UI both read it structured-first) — without this fold a
   // legacy-only `{ appToolsGit: false }` file would leave the structured map
   // at its default `enabled: true` and the user's setting would be silently
   // dead behind it.
-  if (typeof file_.appToolsGit === 'boolean' && fileFirstParty?.apptools === undefined) {
+  if (typeof file_.appToolsGit === 'boolean' && fileFirstParty?.[GIT_TOOLS_SERVER_NAME] === undefined) {
     ;(merged as { firstPartyTools: Record<string, { enabled: boolean }> }).firstPartyTools = Object.freeze({
       ...merged.firstPartyTools,
-      apptools: Object.freeze({ enabled: file_.appToolsGit }),
+      [GIT_TOOLS_SERVER_NAME]: Object.freeze({ enabled: file_.appToolsGit }),
     })
   }
   // Derive the legacy appToolsGit convenience field from the structured map
   // ONLY when the file itself provided firstPartyTools — structured wins over
   // the flat legacy boolean. A file with just the flat boolean keeps both
   // views at the value the boolean block set above (via the fold).
-  if (fileFirstParty?.apptools?.enabled !== undefined) {
-    ;(merged as { appToolsGit: boolean }).appToolsGit = fileFirstParty.apptools.enabled
+  if (fileFirstParty?.[GIT_TOOLS_SERVER_NAME]?.enabled !== undefined) {
+    ;(merged as { appToolsGit: boolean }).appToolsGit = fileFirstParty[GIT_TOOLS_SERVER_NAME]!.enabled
   }
 
   if (typeof file_.allowSensitivePathEdits === 'boolean') {

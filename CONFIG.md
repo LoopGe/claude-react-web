@@ -94,7 +94,7 @@ Model used by the AI commit-message generator in the GitPanel "This session" vie
 | Type | `number` (messages) |
 | Default | `500` |
 
-Maximum number of messages kept in memory per session. When the cap is reached, the oldest messages are discarded from the in-memory ring buffer. This does **not** affect the full conversation stored on disk by the SDK (`~/.claude/projects/`) — the complete history is always available for resume.
+Maximum number of messages kept in memory per session. When the cap is reached, the oldest messages are discarded from the in-memory ring buffer. This does **not** affect the full conversation stored on disk by the SDK (`~/.claude/projects/`, or under `CLAUDE_CONFIG_DIR` when that is set) — the complete history is always available for resume.
 
 ```json
 {
@@ -303,7 +303,9 @@ This only relaxes the sensitive-path safety check — it does **not** affect:
 | Type | `boolean` |
 | Default | `true` |
 
-Global default for injecting the first-party `apptools` in-process MCP server (git tools: status, log, stage, commit, branch, stash, …) into sessions. The agent can then call `mcp__apptools__*` tools directly; writes go through the session's normal permission flow. Per-session overrides (`POST /sessions/:id/app-tools`, or the "Let Claude use git tools" toggle in the MCP settings tab) take priority — sessions without an override inherit this value.
+Global default for injecting the first-party `git-tools` in-process MCP server (status, log, stage, commit, branch, stash, …) into sessions. The agent can then call `mcp__git-tools__*` tools directly; writes go through the session's normal permission flow. Per-session overrides (`POST /sessions/:id/app-tools`, or the "Let Claude use git tools" toggle in the MCP settings tab) take priority — sessions without an override inherit this value.
+
+Prefer the structured `firstPartyTools["git-tools"].enabled` form for new configs — this boolean is the legacy surface and is folded into that key on load. Configs that still use the pre-rename `firstPartyTools.apptools` key are migrated to `git-tools` automatically.
 
 Set to `false` to stop injecting git tools by default:
 

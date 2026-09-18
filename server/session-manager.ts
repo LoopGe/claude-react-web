@@ -85,6 +85,7 @@ import {
   endAllSubscribers,
 } from './session-types.js'
 import { HttpError } from './errors.js'
+import { filterClientEnv } from './session-env.js'
 import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
 import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
@@ -95,6 +96,7 @@ import { coerceRewindResult, type RewindFilesResult } from '../shared/rewind.js'
 import { coerceStructuredOutput, type StructuredRunRequest, type StructuredRunResult } from '../shared/structured.js'
 import { coerceReadFileOutput, type FileReadResult } from '../shared/read-file.js'
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
+import { migrateLegacyGitToolsKey } from '../shared/first-party.js'
 import { PermissionBroker } from './permission-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
@@ -1138,9 +1140,11 @@ export class SessionManager {
     // body field — NOT an SDK Options key; the provider whitelists what
     // reaches the subprocess). Rides into spawn() as prefs so the FIRST
     // injection honors it — no create-then-toggle round-trip. `appToolsGit`
-    // is mirrored for the apptools entry to keep the legacy surface coherent
-    // (same as setFirstPartyTool).
-    const firstParty = (opts as { firstPartyTools?: Record<string, boolean> }).firstPartyTools
+    // is mirrored for the git-tools entry to keep the legacy surface coherent
+    // (same as setFirstPartyTool). A pre-rename `apptools` key is migrated so
+    // a stale client body cannot store a pin firstPartyEnabled never reads.
+    const rawFirstParty = (opts as { firstPartyTools?: Record<string, boolean> }).firstPartyTools
+    const firstParty = migrateLegacyGitToolsKey(rawFirstParty)
     const createPrefs = firstParty
       ? { appToolsGit: firstParty[APP_TOOLS_SERVER_NAME], firstPartyTools: firstParty }
       : undefined
@@ -2425,6 +2429,14 @@ export class SessionManager {
     // own resolution). baseSpawnOptions' return rides into sdkOptions through
     // providerExtras — leaving it in would hand the CLI arg builder an unknown key.
     delete (sdkOptions as { cliDebug?: boolean }).cliDebug
+    // The create body's `settings` rides the flag-settings layer, which
+    // outranks the top-level env — so it needs the same blocklist as the env
+    // map filtered in the provider (see session-env.ts). The HTTP route
+    // already rejects this with a 400; this covers non-HTTP callers.
+    const sdkFlagSettings = (sdkOptions as { settings?: { env?: Record<string, string> } }).settings
+    if (sdkFlagSettings?.env) {
+      sdkFlagSettings.env = filterClientEnv(sdkFlagSettings.env)
+    }
     // Inject the first-party in-process MCP servers (session-cwd-bound tools)
     // into the spawn-time mcpServers map. Done AFTER snapshotMeta so the
     // persisted `mcpServerNames` stays the user-configured set. Record the
@@ -3685,6 +3697,12 @@ export class SessionManager {
     const hooksResult = 'hooks' in forwarded
       ? validateSessionHooksConfig(forwarded.hooks ?? {})
       : null
+    // Another second-door case, exactly like `agent` below: `settings.env`
+    // reaches the live CLI through this generic route, so the blocklist has to
+    // be applied here rather than only at the HTTP sites that validate it.
+    if ('env' in forwarded) {
+      forwarded.env = filterClientEnv(forwarded.env as Record<string, string> | undefined)
+    }
     // `agent` is a legitimate Settings key, so this generic route is a SECOND
     // door onto the main-thread persona (the raw-JSON settings box can send
     // it). Left unhandled it would forward an unvalidated name to the SDK and
@@ -4004,7 +4022,7 @@ export class SessionManager {
     return this.info(s)
   }
 
-  /** Per-session override for the first-party `apptools` git MCP server
+  /** Per-session override for the first-party `git-tools` git MCP server
    *  (legacy route — forwards to the generalized setFirstPartyTool, which is
    *  immediate on live sessions). `enabled: null` clears the override so the
    *  session re-inherits the global default. */

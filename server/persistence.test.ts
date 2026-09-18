@@ -195,12 +195,22 @@ describe('SessionStore', () => {
   it('round-trips firstPartyTools across upsert + reload', async () => {
     const store = new SessionStore({ stateDir: dir })
     await store.load()
-    store.upsert(makeMeta('a', { firstPartyTools: { apptools: false } }))
+    store.upsert(makeMeta('a', { firstPartyTools: { 'git-tools': false } }))
     await store.flush()
 
     const store2 = new SessionStore({ stateDir: dir })
     await store2.load()
-    expect(store2.get('a')?.firstPartyTools).toEqual({ apptools: false })
+    expect(store2.get('a')?.firstPartyTools).toEqual({ 'git-tools': false })
+  })
+
+  it('migrates a pre-rename apptools firstPartyTools key to git-tools on load', async () => {
+    // Write the old key straight to disk so coerceMeta's migration is what
+    // heals it — the rename must not silently re-enable a pin the user set.
+    const path = join(dir, 'sessions.json')
+    writeFileSync(path, JSON.stringify([makeMeta('a', { firstPartyTools: { apptools: false } })]))
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    expect(store.get('a')?.firstPartyTools).toEqual({ 'git-tools': false })
   })
 
   it('drops a sandbox object whose enabled is not true (present = ON contract)', async () => {

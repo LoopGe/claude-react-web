@@ -69,7 +69,7 @@ describe('FirstPartyToolRegistry', () => {
     expect(map).toEqual({ good: expect.anything() })
   })
 
-  it('the singleton registers the git apptools server', () => {
+  it('the singleton registers the git-tools server', () => {
     expect(firstPartyRegistry.get(APP_TOOLS_SERVER_NAME)).toBeDefined()
     const names = firstPartyRegistry.list().map((s) => s.name)
     expect(names).toContain(APP_TOOLS_SERVER_NAME)
@@ -79,8 +79,8 @@ describe('FirstPartyToolRegistry', () => {
     // Bare-name sets — FQN derivation prefixes them.
     expect(git.readOnlyToolNames).toEqual(APP_TOOLS_READ_ONLY_TOOLS)
     expect(git.mutatingToolNames).toEqual(APP_TOOLS_MUTATING_TOOLS)
-    expect(firstPartyRegistry.mutatingToolFqns()).toContain('mcp__apptools__git_stage')
-    expect(firstPartyRegistry.readOnlyToolFqns()).toContain('mcp__apptools__git_status')
+    expect(firstPartyRegistry.mutatingToolFqns()).toContain('mcp__git-tools__git_stage')
+    expect(firstPartyRegistry.readOnlyToolFqns()).toContain('mcp__git-tools__git_status')
   })
 
   describe('listToolDefs', () => {
@@ -115,14 +115,14 @@ describe('FirstPartyToolRegistry', () => {
       ])
     })
 
-    it('the singleton lists the 15 apptools tools, 4 of them read-only', () => {
-      const apptools = firstPartyRegistry.listToolDefs().find((s) => s.name === APP_TOOLS_SERVER_NAME)!
-      expect(apptools.error).toBeUndefined()
-      expect(apptools.tools).toHaveLength(15)
-      expect(apptools.tools.filter((t) => t.readOnly).map((t) => t.name))
+    it('the singleton lists the 15 git-tools tools, 4 of them read-only', () => {
+      const gitTools = firstPartyRegistry.listToolDefs().find((s) => s.name === APP_TOOLS_SERVER_NAME)!
+      expect(gitTools.error).toBeUndefined()
+      expect(gitTools.tools).toHaveLength(15)
+      expect(gitTools.tools.filter((t) => t.readOnly).map((t) => t.name))
         .toEqual(['git_status', 'git_branches', 'git_stashes', 'git_log'])
-      expect(apptools.tools.every((t) => t.description.length > 0)).toBe(true)
-      expect(apptools.tools.find((t) => t.name === 'git_stage')).toMatchObject({ readOnly: false })
+      expect(gitTools.tools.every((t) => t.description.length > 0)).toBe(true)
+      expect(gitTools.tools.find((t) => t.name === 'git_stage')).toMatchObject({ readOnly: false })
     })
   })
 })

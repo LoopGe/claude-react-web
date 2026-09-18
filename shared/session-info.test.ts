@@ -60,23 +60,35 @@ describe('coerceThinkingSetting', () => {
 
 describe('firstPartyOverridesForCreate', () => {
   it('carries boolean overrides through', () => {
-    expect(firstPartyOverridesForCreate({ firstPartyTools: { apptools: false, other: true } }))
-      .toEqual({ apptools: false, other: true })
+    expect(firstPartyOverridesForCreate({ firstPartyTools: { 'git-tools': false, other: true } }))
+      .toEqual({ 'git-tools': false, other: true })
   })
 
   it('drops null entries (live-session "inherit" markers, not create-body values)', () => {
-    expect(firstPartyOverridesForCreate({ firstPartyTools: { apptools: null } })).toBeUndefined()
+    expect(firstPartyOverridesForCreate({ firstPartyTools: { 'git-tools': null } })).toBeUndefined()
   })
 
-  it('folds the legacy appToolsGit boolean into the apptools entry', () => {
-    expect(firstPartyOverridesForCreate({ appToolsGit: false })).toEqual({ apptools: false })
+  it('folds the legacy appToolsGit boolean into the git-tools entry', () => {
+    expect(firstPartyOverridesForCreate({ appToolsGit: false })).toEqual({ 'git-tools': false })
     // True is an explicit ON pin too (global default may be OFF) — preserve it.
-    expect(firstPartyOverridesForCreate({ appToolsGit: true })).toEqual({ apptools: true })
+    expect(firstPartyOverridesForCreate({ appToolsGit: true })).toEqual({ 'git-tools': true })
   })
 
   it('lets the structured map win over the legacy boolean', () => {
-    expect(firstPartyOverridesForCreate({ appToolsGit: false, firstPartyTools: { apptools: true } }))
-      .toEqual({ apptools: true })
+    expect(firstPartyOverridesForCreate({ appToolsGit: false, firstPartyTools: { 'git-tools': true } }))
+      .toEqual({ 'git-tools': true })
+  })
+
+  it('migrates a pre-rename apptools key to git-tools', () => {
+    expect(firstPartyOverridesForCreate({ firstPartyTools: { apptools: false } }))
+      .toEqual({ 'git-tools': false })
+  })
+
+  it('lets an explicit null on git-tools win over a legacy apptools pin', () => {
+    // null is the live-session inherit marker — migration must not treat it
+    // as absent and resurrect the legacy false.
+    expect(firstPartyOverridesForCreate({ firstPartyTools: { 'git-tools': null, apptools: false } }))
+      .toBeUndefined()
   })
 
   it('returns undefined when there is nothing to preserve', () => {

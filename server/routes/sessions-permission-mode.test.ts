@@ -184,15 +184,15 @@ describe('session create body validation (narrowCreateBody)', () => {
 
   it('rejects a non-boolean firstPartyTools value', async () => {
     const { app, sm } = makeApp()
-    const res = await post(app, { firstPartyTools: { apptools: 'yes' } })
+    const res = await post(app, { firstPartyTools: { 'git-tools': 'yes' } })
     expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: 'firstPartyTools.apptools must be a boolean' })
+    expect(await res.json()).toEqual({ error: 'firstPartyTools.git-tools must be a boolean' })
     expect(sm.create).not.toHaveBeenCalled()
   })
 
   it('rejects a non-object firstPartyTools', async () => {
     const { app, sm } = makeApp()
-    const res = await post(app, { firstPartyTools: ['apptools'] })
+    const res = await post(app, { firstPartyTools: ['git-tools'] })
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: 'firstPartyTools must be an object of booleans' })
     expect(sm.create).not.toHaveBeenCalled()
@@ -200,10 +200,10 @@ describe('session create body validation (narrowCreateBody)', () => {
 
   it('accepts a firstPartyTools override map (unknown server names tolerated) and forwards it', async () => {
     const { app, sm } = makeApp()
-    const res = await post(app, { firstPartyTools: { apptools: false, 'future-server': true } })
+    const res = await post(app, { firstPartyTools: { 'git-tools': false, 'future-server': true } })
     expect(res.status).toBe(201)
     expect(sm.create).toHaveBeenCalledWith(
-      expect.objectContaining({ firstPartyTools: { apptools: false, 'future-server': true } }),
+      expect.objectContaining({ firstPartyTools: { 'git-tools': false, 'future-server': true } }),
       undefined,
       undefined,
       false,

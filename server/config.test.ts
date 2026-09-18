@@ -92,38 +92,46 @@ describe('config', () => {
   })
 
   it('reads structured firstPartyTools and derives the legacy appToolsGit', async () => {
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ firstPartyTools: { apptools: { enabled: false } } }))
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ firstPartyTools: { 'git-tools': { enabled: false } } }))
     vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(config.firstPartyTools.apptools.enabled).toBe(false)
+    expect(config.firstPartyTools['git-tools'].enabled).toBe(false)
     expect(config.appToolsGit).toBe(false)
   })
 
   it('structured firstPartyTools wins over the legacy appToolsGit boolean', async () => {
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ appToolsGit: false, firstPartyTools: { apptools: { enabled: true } } }))
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ appToolsGit: false, firstPartyTools: { 'git-tools': { enabled: true } } }))
     vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(config.firstPartyTools.apptools.enabled).toBe(true)
+    expect(config.firstPartyTools['git-tools'].enabled).toBe(true)
   })
 
   // The structured map is the single authoritative view of the global
   // first-party defaults (firstPartyEnabled and the global-settings UI both
   // read it structured-first). A legacy-only file must therefore fold its
-  // flat boolean INTO the structured `apptools` entry — otherwise the
+  // flat boolean INTO the structured `git-tools` entry — otherwise the
   // user's `appToolsGit: false` is silently dead behind the default
-  // `{ apptools: { enabled: true } }`.
-  it('folds a legacy-only appToolsGit into the structured firstPartyTools.apptools entry', async () => {
+  // `{ 'git-tools': { enabled: true } }`.
+  it('folds a legacy-only appToolsGit into the structured git-tools entry', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ appToolsGit: false }))
     await loadConfig(dir)
-    expect(config.firstPartyTools.apptools.enabled).toBe(false)
+    expect(config.firstPartyTools['git-tools'].enabled).toBe(false)
     expect(config.appToolsGit).toBe(false)
   })
 
   it('folds a legacy-only true appToolsGit into the structured map too', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ appToolsGit: true }))
     await loadConfig(dir)
-    expect(config.firstPartyTools.apptools.enabled).toBe(true)
+    expect(config.firstPartyTools['git-tools'].enabled).toBe(true)
     expect(config.appToolsGit).toBe(true)
+  })
+
+  it('migrates a pre-rename firstPartyTools.apptools key to git-tools', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ firstPartyTools: { apptools: { enabled: false } } }))
+    await loadConfig(dir)
+    expect(config.firstPartyTools['git-tools'].enabled).toBe(false)
+    expect((config.firstPartyTools as Record<string, unknown>).apptools).toBeUndefined()
+    expect(config.appToolsGit).toBe(false)
   })
 
   it('loadConfig filters empty strings from modelList', async () => {

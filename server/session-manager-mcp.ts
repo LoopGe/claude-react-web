@@ -22,6 +22,7 @@
 
 import type { FirstPartyToolDef } from '../shared/first-party.js'
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
+import { LEGACY_GIT_TOOLS_SERVER_NAME, migrateLegacyGitToolsKey } from '../shared/first-party.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 import { config as defaultConfig } from './config.js'
 import type { McpConfigStore } from './mcp-config.js'
@@ -147,7 +148,12 @@ export class SessionMcpManager {
    *  inherit), legacy session `appToolsGit`, global structured config, legacy
    *  global `appToolsGit`, then the server's own default. */
   firstPartyEnabled(s: Session, name: string): boolean {
-    const so = s.firstPartyTools?.[name]
+    let so = s.firstPartyTools?.[name]
+    // Live-map fallback for an unmigrated pre-rename key (create body or a
+    // stale writer). Persistence coerceMeta also migrates on reload.
+    if (name === APP_TOOLS_SERVER_NAME && so === undefined) {
+      so = s.firstPartyTools?.[LEGACY_GIT_TOOLS_SERVER_NAME]
+    }
     if (so !== undefined && so !== null) return so
     if (name === APP_TOOLS_SERVER_NAME && s.appToolsGit !== undefined) return s.appToolsGit
     const go = defaultConfig.firstPartyTools?.[name]?.enabled
@@ -215,13 +221,21 @@ export class SessionMcpManager {
    *  persist the override — it applies at the next spawn. */
   async setFirstPartyTool(id: string, name: string, enabled: boolean | null): Promise<SessionInfo> {
     const s = this.deps.require(id)
-    const prev = s.firstPartyTools?.[name] ?? null
-    const next: Record<string, boolean | null> = { ...(s.firstPartyTools ?? {}) }
-    if (enabled === null) delete next[name]
-    else next[name] = enabled
+    // Normalize the pre-rename server name so a stale caller cannot store a
+    // pin under a key firstPartyEnabled only reads as a fallback.
+    const server = name === LEGACY_GIT_TOOLS_SERVER_NAME ? APP_TOOLS_SERVER_NAME : name
+    // Snapshot the raw map (including any unmigrated legacy key) so a failed
+    // live re-injection restores the exact prior state; operate on a migrated
+    // copy so the pin lands under the canonical key.
+    const original = s.firstPartyTools
+    const migrated = migrateLegacyGitToolsKey(original) ?? {}
+    const prev = migrated[server] ?? null
+    const next: Record<string, boolean | null> = { ...migrated }
+    if (enabled === null) delete next[server]
+    else next[server] = enabled
     s.firstPartyTools = Object.keys(next).length > 0 ? next : undefined
-    // Keep the legacy appToolsGit surface coherent for the apptools entry.
-    if (name === APP_TOOLS_SERVER_NAME) s.appToolsGit = enabled ?? undefined
+    // Keep the legacy appToolsGit surface coherent for the git-tools entry.
+    if (server === APP_TOOLS_SERVER_NAME) s.appToolsGit = enabled ?? undefined
     s.lastActivityAt = Date.now()
 
     if (s.running) {
@@ -229,12 +243,9 @@ export class SessionMcpManager {
         await this.setMcpServers(id, s.dynamicMcpServers ?? {})
       } catch (err) {
         // Revert the override so UI (server-backed session info) and reality
-        // stay consistent.
-        const revert: Record<string, boolean | null> = { ...(s.firstPartyTools ?? {}) }
-        if (prev === null) delete revert[name]
-        else revert[name] = prev
-        s.firstPartyTools = Object.keys(revert).length > 0 ? revert : undefined
-        if (name === APP_TOOLS_SERVER_NAME) s.appToolsGit = prev ?? undefined
+        // stay consistent — restore the raw original map verbatim.
+        s.firstPartyTools = original
+        if (server === APP_TOOLS_SERVER_NAME) s.appToolsGit = prev ?? undefined
         throw err
       }
     } else {

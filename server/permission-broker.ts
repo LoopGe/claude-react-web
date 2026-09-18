@@ -30,7 +30,7 @@ import { createLogger } from './log.js'
 import { isAutoApprovableEditBash, isInScopeEditTool, isSensitiveAutoEditPath, EDIT_TOOL_PATH_FIELD } from './accept-edits-bash.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 
-/** First-party read-only tool FQNs (e.g. `mcp__apptools__git_status`).
+/** First-party read-only tool FQNs (e.g. `mcp__git-tools__git_status`).
  *  These are safe in every permission mode the way the built-in read tools
  *  are — the SDK's own `readOnlyHint` annotation is not surfaced through the
  *  canUseTool options, so the registry's declared set is the single source.

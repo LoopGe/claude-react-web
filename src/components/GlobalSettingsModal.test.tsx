@@ -18,7 +18,7 @@ vi.stubGlobal('matchMedia', () => ({
 afterEach(() => { cleanup() })
 
 // api.get is called for /config/full, /mcp-config and /first-party-tools — route by URL.
-function mockGet(config: Record<string, unknown>, fpServers: unknown[] = [apptoolsInfo]) {
+function mockGet(config: Record<string, unknown>, fpServers: unknown[] = [gitToolsInfo]) {
   vi.mocked(api.get).mockImplementation((url: string) => {
     if (url === '/mcp-config') return Promise.resolve({ servers: [] })
     if (url === '/first-party-tools') return Promise.resolve({ servers: fpServers })
@@ -27,8 +27,8 @@ function mockGet(config: Record<string, unknown>, fpServers: unknown[] = [apptoo
 }
 
 // Static registry listing as GET /first-party-tools serves it.
-const apptoolsInfo = {
-  name: 'apptools',
+const gitToolsInfo = {
+  name: 'git-tools',
   description: 'First-party git tools bound to the session cwd',
   tools: [
     { name: 'git_status', description: 'Show git working-tree status.', readOnly: true },
@@ -66,10 +66,10 @@ describe('GlobalSettingsModal first-party tools section', () => {
     fireEvent.click(screen.getByText('MCP Servers'))
   }
 
-  /** The apptools card + its staged ON/OFF toggle, once the section renders.
+  /** The git-tools card + its staged ON/OFF toggle, once the section renders.
    *  Queried through `screen` / document because the modal portals to body
    *  (Overlay's fixed-backdrop variants always portal — see Overlay.tsx). */
-  const apptoolsCard = async () => {
+  const gitToolsCard = async () => {
     await waitFor(() => expect(screen.getByText('First-party tools')).toBeTruthy())
     const card = document.querySelector('.settings-first-party-card')
     expect(card, 'first-party card').toBeDefined()
@@ -79,15 +79,15 @@ describe('GlobalSettingsModal first-party tools section', () => {
   }
 
   it('renders one card per first-party server from the config map', async () => {
-    await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
-    const { toggle } = await apptoolsCard()
-    expect(screen.getByText('apptools')).toBeTruthy()
+    await openMcpTab({ firstPartyTools: { 'git-tools': { enabled: true } } })
+    const { toggle } = await gitToolsCard()
+    expect(screen.getByText('git-tools')).toBeTruthy()
     expect(toggle.textContent).toBe('ON')
   })
 
   it('stages toggles locally and saves the structured key on Save', async () => {
-    await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
-    const { toggle } = await apptoolsCard()
+    await openMcpTab({ firstPartyTools: { 'git-tools': { enabled: true } } })
+    const { toggle } = await gitToolsCard()
 
     fireEvent.click(toggle)
     // Staged — nothing hits the network until Save.
@@ -98,13 +98,13 @@ describe('GlobalSettingsModal first-party tools section', () => {
     await waitFor(() => expect(api.put).toHaveBeenCalled())
     expect(vi.mocked(api.put)).toHaveBeenCalledWith(
       '/config',
-      expect.objectContaining({ firstPartyTools: { apptools: { enabled: false } } }),
+      expect.objectContaining({ firstPartyTools: { 'git-tools': { enabled: false } } }),
     )
   })
 
   it('expands the static tool listing on "List tools" (read-only badge on git_status)', async () => {
-    await openMcpTab({ firstPartyTools: { apptools: { enabled: true } } })
-    const { card } = await apptoolsCard()
+    await openMcpTab({ firstPartyTools: { 'git-tools': { enabled: true } } })
+    const { card } = await gitToolsCard()
     expect(screen.queryByText('git_status')).toBeNull()
 
     const listBtn = [...card.querySelectorAll('button')].find((b) => b.textContent === 'List tools')

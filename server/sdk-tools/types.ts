@@ -1,6 +1,6 @@
 // First-party tool server contract for the SDK in-process MCP registry.
 // A FirstPartyToolServer describes one in-process MCP server (e.g. the git
-// `apptools` server) that the host injects into sessions. The SDK namespaces
+// `git-tools` server) that the host injects into sessions. The SDK namespaces
 // each server's tools as `mcp__{server}__{tool}`, so tool-name sets here are
 // ALWAYS bare names — consumers derive FQNs via the registry.
 

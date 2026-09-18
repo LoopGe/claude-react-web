@@ -67,9 +67,9 @@ function byName(name: string) {
 }
 
 describe('app-tools in-process git server', () => {
-  it('names the server apptools', () => {
-    expect(APP_TOOLS_SERVER_NAME).toBe('apptools')
-    expect(buildAppToolsServer(CWD).name).toBe('apptools')
+  it('names the server git-tools', () => {
+    expect(APP_TOOLS_SERVER_NAME).toBe('git-tools')
+    expect(buildAppToolsServer(CWD).name).toBe('git-tools')
   })
 
   it('exposes the expected git tool set', () => {

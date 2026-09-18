@@ -16,6 +16,7 @@ import { PERMISSION_MODES } from '../types'
 import type { SkillRecord } from '../../shared/skills'
 import type { SandboxSetting } from '../../shared/sandbox'
 import type { FirstPartyToolDef } from '../../shared/first-party'
+import { GIT_TOOLS_SERVER_NAME } from '../../shared/first-party'
 import { McpToolRow, firstPartyToolDefsAsMcpTools } from './McpToolsList'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
@@ -205,7 +206,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     }
   }, [session.id])
 
-  /** Per-session first-party tool server override (e.g. the `apptools` git
+  /** Per-session first-party tool server override (e.g. the `git-tools` git
    *  server). `null` clears the override to re-inherit the global default.
    *  Immediate on live sessions (the server re-injects via setMcpServers). */
   const toggleFirstParty = async (name: string, enabled: boolean | null) => {
@@ -681,13 +682,13 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // Global MCP servers not yet connected to this session.
   // Prefer the snapshot-derived mcpServerNames (reliable, arrives via WS)
   // over the mcp-status result (flaky SDK control request that may fail).
-  // First-party in-process servers (e.g. `apptools`) are managed by their own
+  // First-party in-process servers (e.g. `git-tools`) are managed by their own
   // section below, not the MCP server management list — exclude them from the
   // SDK-reported status so they never render a reconnect/toggle card. Names
-  // come from GET /sessions/:id/tools; fall back to the known apptools name
+  // come from GET /sessions/:id/tools; fall back to the known git-tools name
   // before that fetch lands.
   const firstPartyNames = useMemo(
-    () => new Set(firstPartyTools.length > 0 ? firstPartyTools.map((t) => t.name) : ['apptools']),
+    () => new Set(firstPartyTools.length > 0 ? firstPartyTools.map((t) => t.name) : [GIT_TOOLS_SERVER_NAME]),
     [firstPartyTools],
   )
   const mcpSdkList = useMemo(() => mcp.filter((s) => !firstPartyNames.has(s.name)), [mcp, firstPartyNames])
@@ -1103,7 +1104,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             type="text"
             className="input"
             value={memoryDirDraft}
-            placeholder="~/.claude/projects/<this project>/memory/ (default)"
+            placeholder="<projects dir>/<this project>/memory/ (default)"
             disabled={memoryDisabled}
             onChange={(e) => setMemoryDirDraft(e.target.value)}
             onBlur={() => void commitMemoryDir()}

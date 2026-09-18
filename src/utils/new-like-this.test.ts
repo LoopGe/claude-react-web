@@ -62,16 +62,16 @@ describe('buildNewLikeThisForm', () => {
 
   it('carries the source per-first-party-server overrides into the form', () => {
     const form = buildNewLikeThisForm(
-      mkSource({ id: 's1', firstPartyTools: { apptools: false } }),
+      mkSource({ id: 's1', firstPartyTools: { 'git-tools': false } }),
       undefined,
       10,
     )
-    expect(form.firstPartyTools).toEqual({ apptools: false })
+    expect(form.firstPartyTools).toEqual({ 'git-tools': false })
   })
 
   it('folds the legacy appToolsGit into the override map', () => {
     const form = buildNewLikeThisForm(mkSource({ id: 's1', appToolsGit: false }), undefined, 10)
-    expect(form.firstPartyTools).toEqual({ apptools: false })
+    expect(form.firstPartyTools).toEqual({ 'git-tools': false })
   })
 
   it('omits firstPartyTools when the source has no overrides (inherit global)', () => {

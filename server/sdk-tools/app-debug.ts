@@ -3,7 +3,7 @@
 // Gives the agent a view of the HOST process it is running inside — the
 // in-process log ring, the metrics registry, per-session internals, and three
 // permission-gated runtime writes — rather than of the workspace (that is what
-// the `apptools` git server is for).
+// the `git-tools` git server is for).
 //
 // REACHABILITY IS THE SECURITY BOUNDARY: this module is only ever imported by
 // `server/dev-mode.ts`, whose `enableDevMode` the CLI calls when the server

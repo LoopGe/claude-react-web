@@ -1,5 +1,5 @@
 // First-party tool registry: the code-internal register of in-process MCP
-// servers the host injects into sessions (replacing the apptools singleton).
+// servers the host injects into sessions (the git-tools server is one of them).
 // First-party servers are built per session (handlers bind the session cwd)
 // and injected into the session's mcpServers map at spawn and on live
 // setMcpServers. The registry also derives FQN sets for the permission-broker

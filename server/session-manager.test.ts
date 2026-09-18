@@ -87,27 +87,27 @@ const { mockGetSessionInfo, mockListSessions, mockListSubagents, mockGetSubagent
 // First-party in-process servers are injected into every session's
 // mcpServers map at spawn / live setMcpServers. Mock the registry so no real
 // in-process McpServer is constructed; mockInjectAll mirrors the real logic
-// (inject the `apptools` server when the resolver enables it and a cwd is
+// (inject the `git-tools` server when the resolver enables it and a cwd is
 // present), letting tests assert on the injected entry.
 const { mockInjectAll } = vi.hoisted(() => ({ mockInjectAll: vi.fn() }))
 mockInjectAll.mockImplementation((cwd: string | null, enabled: (name: string) => boolean) => {
-  if (enabled('apptools') && cwd) return { apptools: { type: 'sdk', name: 'apptools' } }
+  if (enabled('git-tools') && cwd) return { 'git-tools': { type: 'sdk', name: 'git-tools' } }
   return undefined
 })
 vi.mock('./sdk-tools/registry.js', () => ({
   firstPartyRegistry: {
     injectAll: mockInjectAll,
-    readOnlyToolFqns: () => new Set(['mcp__apptools__git_status', 'mcp__apptools__git_branches']),
-    mutatingToolFqns: () => new Set(['mcp__apptools__git_stage']),
-    list: () => [{ name: 'apptools', description: '', defaultEnabled: true, requiresCwd: true, buildTools: () => [] }],
+    readOnlyToolFqns: () => new Set(['mcp__git-tools__git_status', 'mcp__git-tools__git_branches']),
+    mutatingToolFqns: () => new Set(['mcp__git-tools__git_stage']),
+    list: () => [{ name: 'git-tools', description: '', defaultEnabled: true, requiresCwd: true, buildTools: () => [] }],
     // toolServerStatus embeds this listing verbatim — the real registry's
     // listToolDefs content is pinned in sdk-tools/registry.test.ts.
-    listToolDefs: () => [{ name: 'apptools', description: '', tools: [{ name: 'stub_tool', description: 'stub', readOnly: true }] }],
+    listToolDefs: () => [{ name: 'git-tools', description: '', tools: [{ name: 'stub_tool', description: 'stub', readOnly: true }] }],
   },
 }))
 vi.mock('./sdk-tools/app-tools.js', () => ({
-  APP_TOOLS_SERVER_NAME: 'apptools',
-  buildAppToolsServer: vi.fn((cwd: string) => ({ type: 'sdk', name: 'apptools', instance: { cwd } })),
+  APP_TOOLS_SERVER_NAME: 'git-tools',
+  buildAppToolsServer: vi.fn((cwd: string) => ({ type: 'sdk', name: 'git-tools', instance: { cwd } })),
 }))
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
@@ -2870,6 +2870,20 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.hooks).toEqual(hooks)
   })
 
+  // `settings.env` reaches the live CLI through this generic route, so the
+  // spawn-merge blocklist has to apply here too — otherwise the rule only
+  // holds for the HTTP doors that happen to validate, and any other caller of
+  // this public method reopens the override.
+  it('applySettings() strips a blocked env override before forwarding', async () => {
+    const info = sm.create({})
+
+    await sm.applySettings(info.id, {
+      env: { CLAUDE_CONFIG_DIR: '/tmp/sess-home', MY_FLAG: '1' },
+    } as never)
+
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ env: { MY_FLAG: '1' } })
+  })
+
   // --- effort capability (effortLevels three-state) ---
   // Capability is now classified by model-id keyword (effortLevelsForModel),
   // NOT the SDK's supportedModels (which on gateways reports unmatched
@@ -4187,17 +4201,17 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     rmRf(mcpDir)
   })
 
-  it('forwards the given servers straight to query.setMcpServers (plus apptools)', async () => {
+  it('forwards the given servers straight to query.setMcpServers (plus git-tools)', async () => {
     const info = sm.create({ cwd: '/tmp' })
     const servers = { x: { type: 'stdio', command: 'node' } }
     const result = await sm.setMcpServers(info.id, servers)
-    // The first-party apptools server is appended to the map (spawn + live
+    // The first-party git-tools server is appended to the map (spawn + live
     // share the injectAppTools path); the user servers pass through verbatim.
     expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({
       ...servers,
-      apptools: expect.anything(),
+      'git-tools': expect.anything(),
     })
-    expect(result).toEqual({ added: ['x', 'apptools'], removed: [], errors: {} })
+    expect(result).toEqual({ added: ['x', 'git-tools'], removed: [], errors: {} })
   })
 
   it('spawn sets perTaskStopAffordance so the per-task stop control is declared', async () => {
@@ -4245,33 +4259,43 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     await expect(sm.getSubagentMessages('ghost', 'agent-1')).rejects.toBeTruthy()
   })
 
-  it('injects the apptools server into spawn mcpServers when the session has a cwd', async () => {
+  it('injects the git-tools server into spawn mcpServers when the session has a cwd', async () => {
     const info = sm.create({ cwd: '/tmp' })
     const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown>
-    expect(mcpServers.apptools).toBeDefined()
+    expect(mcpServers['git-tools']).toBeDefined()
     expect(mockInjectAll).toHaveBeenCalledWith('/tmp', expect.any(Function), expect.any(Function))
-    expect(info.mcpServerNames ?? []).not.toContain('apptools')
+    expect(info.mcpServerNames ?? []).not.toContain('git-tools')
   })
 
-  it('omits apptools when the session has no cwd', async () => {
+  it('omits git-tools when the session has no cwd', async () => {
     sm.create({})
     const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown> | undefined
-    expect(mcpServers?.apptools).toBeUndefined()
+    expect(mcpServers?.['git-tools']).toBeUndefined()
   })
 
   it('create() seeds a create-time firstPartyTools override so the first spawn honors it', () => {
-    const info = sm.create({ cwd: '/tmp', firstPartyTools: { apptools: false } } as Parameters<SessionManager['create']>[0])
+    const info = sm.create({ cwd: '/tmp', firstPartyTools: { 'git-tools': false } } as Parameters<SessionManager['create']>[0])
     // The override lands on the session (persisted via writeStore) AND the
-    // first spawn injection already skips apptools — no create-then-toggle
+    // first spawn injection already skips git-tools — no create-then-toggle
     // round-trip needed.
-    expect(info.firstPartyTools).toEqual({ apptools: false })
+    expect(info.firstPartyTools).toEqual({ 'git-tools': false })
     const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown> | undefined
-    expect(mcpServers?.apptools).toBeUndefined()
+    expect(mcpServers?.['git-tools']).toBeUndefined()
   })
 
-  it('omits apptools from live setMcpServers when the session override disables it', async () => {
+  it('create() migrates a pre-rename apptools firstPartyTools key so the first spawn honors it', () => {
+    // A stale client / raw API body still sending the old key must not store
+    // a pin that firstPartyEnabled never reads.
+    const info = sm.create({ cwd: '/tmp', firstPartyTools: { apptools: false } } as Parameters<SessionManager['create']>[0])
+    expect(info.firstPartyTools).toEqual({ 'git-tools': false })
+    expect(info.appToolsGit).toBe(false)
+    const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown> | undefined
+    expect(mcpServers?.['git-tools']).toBeUndefined()
+  })
+
+  it('omits git-tools from live setMcpServers when the session override disables it', async () => {
     const info = sm.create({ cwd: '/tmp' })
-    // Simulate a per-session override turning apptools off (setAppTools path).
+    // Simulate a per-session override turning git-tools off (setAppTools path).
     const session = (sm as unknown as { sessions: Map<string, { appToolsGit?: boolean }> }).sessions.get(info.id)!
     session.appToolsGit = false
     await sm.setMcpServers(info.id, { x: { type: 'stdio', command: 'node' } })
@@ -4280,23 +4304,39 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
   it('setFirstPartyTool persists the override and re-injects immediately on a live session', async () => {
     const info = sm.create({ cwd: '/tmp' })
-    const next = await sm.setFirstPartyTool(info.id, 'apptools', false)
-    expect(next.firstPartyTools?.apptools).toBe(false)
+    const next = await sm.setFirstPartyTool(info.id, 'git-tools', false)
+    expect(next.firstPartyTools?.['git-tools']).toBe(false)
     expect(next.appToolsGit).toBe(false)
     // Live → re-runs the injection path (setMcpServers with the stored user
-    // map); apptools is now disabled so the handle sees only the empty user set.
+    // map); git-tools is now disabled so the handle sees only the empty user set.
     expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({})
-    // A later re-enable injects apptools again.
-    await sm.setFirstPartyTool(info.id, 'apptools', true)
-    expect(mockHandles[0].setMcpServers).toHaveBeenLastCalledWith({ apptools: expect.anything() })
+    // A later re-enable injects git-tools again.
+    await sm.setFirstPartyTool(info.id, 'git-tools', true)
+    expect(mockHandles[0].setMcpServers).toHaveBeenLastCalledWith({ 'git-tools': expect.anything() })
+  })
+
+  it('setFirstPartyTool normalizes a pre-rename apptools server name', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const next = await sm.setFirstPartyTool(info.id, 'apptools', false)
+    expect(next.firstPartyTools?.['git-tools']).toBe(false)
+    expect(next.firstPartyTools?.apptools).toBeUndefined()
+    expect(next.appToolsGit).toBe(false)
+  })
+
+  it('firstPartyEnabled honors an unmigrated apptools session override', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    const session = (sm as unknown as { sessions: Map<string, { firstPartyTools?: Record<string, boolean | null> }> }).sessions.get(info.id)!
+    session.firstPartyTools = { apptools: false }
+    const mcp = (sm as unknown as { mcp: { firstPartyEnabled(s: unknown, name: string): boolean } }).mcp
+    expect(mcp.firstPartyEnabled(session, 'git-tools')).toBe(false)
   })
 
   it('setFirstPartyTool reverts the override when the live re-injection fails', async () => {
     const info = sm.create({ cwd: '/tmp' })
     mockHandles[0].setMcpServers.mockRejectedValueOnce(new Error('sdk down'))
-    await expect(sm.setFirstPartyTool(info.id, 'apptools', false)).rejects.toThrow('sdk down')
+    await expect(sm.setFirstPartyTool(info.id, 'git-tools', false)).rejects.toThrow('sdk down')
     const session = (sm as unknown as { sessions: Map<string, { firstPartyTools?: Record<string, boolean | null> }> }).sessions.get(info.id)!
-    expect(session.firstPartyTools?.['apptools']).toBeUndefined()
+    expect(session.firstPartyTools?.['git-tools']).toBeUndefined()
   })
 
   it('setFirstPartyTool on a non-running session only persists (no SDK call)', async () => {
@@ -4304,27 +4344,27 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     const session = (sm as unknown as { sessions: Map<string, { running: boolean }> }).sessions.get(info.id)!
     session.running = false
     mockHandles[0].setMcpServers.mockClear()
-    const next = await sm.setFirstPartyTool(info.id, 'apptools', true)
-    expect(next.firstPartyTools?.apptools).toBe(true)
+    const next = await sm.setFirstPartyTool(info.id, 'git-tools', true)
+    expect(next.firstPartyTools?.['git-tools']).toBe(true)
     expect(mockHandles[0].setMcpServers).not.toHaveBeenCalled()
   })
 
   it('toolServerStatus reports enabled/injected/hasCwd per registered server', async () => {
     const info = sm.create({ cwd: '/tmp' })
     const status = sm.toolServerStatus(info.id)
-    const apptools = status.find((s) => s.name === 'apptools')!
-    expect(apptools.enabled).toBe(true)
-    expect(apptools.injected).toBe(true)
-    expect(apptools.requiresCwd).toBe(true)
-    expect(apptools.hasCwd).toBe(true)
-    expect(apptools.error).toBeUndefined()
+    const gitTools = status.find((s) => s.name === 'git-tools')!
+    expect(gitTools.enabled).toBe(true)
+    expect(gitTools.injected).toBe(true)
+    expect(gitTools.requiresCwd).toBe(true)
+    expect(gitTools.hasCwd).toBe(true)
+    expect(gitTools.error).toBeUndefined()
   })
 
   it('toolServerStatus embeds the registry static tool listing per server', async () => {
     const info = sm.create({ cwd: '/tmp' })
     const status = sm.toolServerStatus(info.id)
-    const apptools = status.find((s) => s.name === 'apptools')!
-    expect(apptools.tools).toEqual([{ name: 'stub_tool', description: 'stub', readOnly: true }])
+    const gitTools = status.find((s) => s.name === 'git-tools')!
+    expect(gitTools.tools).toEqual([{ name: 'stub_tool', description: 'stub', readOnly: true }])
   })
 
   it('throws for an unknown / non-live session', async () => {
@@ -4353,7 +4393,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(res.status).toBe(200)
     expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({
       'global-a': { type: 'stdio', command: 'node', args: ['a.js'] },
-      apptools: expect.anything(),
+      'git-tools': expect.anything(),
     })
   })
 
@@ -4366,7 +4406,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({
       'global-a': { type: 'stdio', command: 'node', args: ['a.js'] },
       inline: { type: 'http', url: 'http://x' },
-      apptools: expect.anything(),
+      'git-tools': expect.anything(),
     })
   })
 
@@ -4374,8 +4414,8 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     const info = sm.create({ cwd: '/tmp' })
     const res = await post(`/sessions/${info.id}/mcp/servers`, { servers: {} })
     expect(res.status).toBe(200)
-    // Empty user set → only the injected first-party apptools remains.
-    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({ apptools: expect.anything() })
+    // Empty user set → only the injected first-party git-tools remains.
+    expect(mockHandles[0].setMcpServers).toHaveBeenCalledWith({ 'git-tools': expect.anything() })
   })
 
   it('400s when neither servers nor enabledMcpServers is provided', async () => {

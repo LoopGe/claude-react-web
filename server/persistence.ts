@@ -22,6 +22,7 @@ import { validateSessionHooksConfig, type SessionHooksConfig } from '../shared/h
 import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import { validateSandboxSetting } from '../shared/sandbox.js'
+import { migrateLegacyGitToolsKey } from '../shared/first-party.js'
 
 const log = createLogger('persistence')
 
@@ -135,7 +136,7 @@ export interface SessionMeta {
    *  global config default. Persisted so resume/fork/restart keep the intent.
    *  Spawn-time only — takes effect on the next spawn. */
   cliDebug?: boolean
-  /** Per-session override for the first-party `apptools` git MCP server.
+  /** Per-session override for the first-party `git-tools` git MCP server.
    *  Undefined = inherit the global config default. Persisted so the
    *  override survives reload. */
   appToolsGit?: boolean
@@ -280,7 +281,8 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       for (const [name, val] of Object.entries(v)) {
         if (typeof val === 'boolean' || val === null) out[name] = val
       }
-      return Object.keys(out).length > 0 ? out : undefined
+      const migrated = migrateLegacyGitToolsKey(out) ?? out
+      return Object.keys(migrated).length > 0 ? migrated : undefined
     })(),
     slept: typeof r.slept === 'boolean' ? r.slept : undefined,
   }

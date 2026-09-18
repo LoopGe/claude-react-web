@@ -26,8 +26,8 @@ const mkSession = (firstPartyTools?: Record<string, boolean>) =>
 
 // Live server status deliberately says "enabled" in every case below so the
 // assertions can distinguish which source the display chain consulted.
-const apptoolsStatus = {
-  name: 'apptools',
+const gitToolsStatus = {
+  name: 'git-tools',
   description: 'First-party git tools bound to the session cwd',
   enabled: true,
   injected: true,
@@ -66,10 +66,10 @@ function renderPanel(opts: {
   )
 }
 
-/** The action button (Enable/Disable) of the apptools card, once the section
+/** The action button (Enable/Disable) of the git-tools card, once the section
  *  renders. Mirrors the MCP server card, so the label is state-dependent. */
 async function findApptoolsAction(container: HTMLElement) {
-  await waitFor(() => expect(container.textContent).toContain('apptools'))
+  await waitFor(() => expect(container.textContent).toContain('git-tools'))
   const card = container.querySelector('.settings-first-party-card')
   expect(card, 'first-party card').toBeDefined()
   const action = [...card!.querySelectorAll('button')].find(
@@ -84,7 +84,7 @@ describe('SettingsPanel first-party card display chain', () => {
     vi.clearAllMocks()
     ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
       if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
-      if (url.endsWith('/tools')) return Promise.resolve({ tools: [apptoolsStatus] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [gitToolsStatus] })
       if (url === '/profiles') return Promise.resolve({ profiles: [] })
       if (url === '/config') return Promise.resolve({ models: [] })
       return Promise.resolve({})
@@ -95,15 +95,15 @@ describe('SettingsPanel first-party card display chain', () => {
     // Global default OFF must win over the stale live status (enabled: true).
     const { container } = renderPanel({
       session: mkSession(),
-      globalPrefs: { firstPartyTools: { apptools: { enabled: false } } },
+      globalPrefs: { firstPartyTools: { 'git-tools': { enabled: false } } },
     })
     await expect(findApptoolsAction(container)).resolves.toBe('Enable')
   })
 
   it('prefers a session override over the global map', async () => {
     const { container } = renderPanel({
-      session: mkSession({ apptools: true }),
-      globalPrefs: { firstPartyTools: { apptools: { enabled: false } } },
+      session: mkSession({ 'git-tools': true }),
+      globalPrefs: { firstPartyTools: { 'git-tools': { enabled: false } } },
     })
     await expect(findApptoolsAction(container)).resolves.toBe('Disable')
   })
@@ -121,7 +121,7 @@ describe('SettingsPanel first-party card display chain', () => {
       session: mkSession(),
       globalPrefs: { firstPartyTools: {} },
     })
-    await waitFor(() => expect(container.textContent).toContain('apptools'))
+    await waitFor(() => expect(container.textContent).toContain('git-tools'))
     expect(container.textContent).not.toContain('git_status')
 
     const card = container.querySelector('.settings-first-party-card')!
@@ -167,7 +167,7 @@ describe('SettingsPanel first-party card display chain', () => {
       )
     }
     const { container } = render(<Harness />)
-    await waitFor(() => expect(container.textContent).toContain('apptools'))
+    await waitFor(() => expect(container.textContent).toContain('git-tools'))
     const card = container.querySelector('.settings-first-party-card')!
     const disable = [...card.querySelectorAll('button')].find((b) => b.textContent === 'Disable')
     expect(disable, 'Disable action').toBeDefined()
@@ -179,7 +179,7 @@ describe('SettingsPanel first-party card display chain', () => {
     // returned session carries the override, so the card must flip to Enable
     // and expose the Reset (inherit global) link.
     await act(async () => {
-      release({ session: mkSession({ apptools: false }) })
+      release({ session: mkSession({ 'git-tools': false }) })
     })
     expect(card.querySelector('.settings-card-pending')).toBeNull()
     expect([...card.querySelectorAll('button')].some((b) => b.textContent === 'Enable')).toBe(true)

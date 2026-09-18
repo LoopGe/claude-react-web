@@ -30,7 +30,7 @@ const mockHandles: MockQueryHandle[] = []
 // createSdkMcpServer) and spawn stays cheap.
 const { mockInjectAll } = vi.hoisted(() => ({ mockInjectAll: vi.fn() }))
 mockInjectAll.mockImplementation((cwd: string | null, enabled: (name: string) => boolean) => {
-  if (enabled('apptools') && cwd) return { apptools: { type: 'sdk', name: 'apptools' } }
+  if (enabled('git-tools') && cwd) return { 'git-tools': { type: 'sdk', name: 'git-tools' } }
   return undefined
 })
 vi.mock('./sdk-tools/registry.js', () => ({
@@ -42,7 +42,7 @@ vi.mock('./sdk-tools/registry.js', () => ({
   },
 }))
 vi.mock('./sdk-tools/app-tools.js', () => ({
-  APP_TOOLS_SERVER_NAME: 'apptools',
+  APP_TOOLS_SERVER_NAME: 'git-tools',
 }))
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({

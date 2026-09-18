@@ -12,6 +12,7 @@ import { formatHooksValidationErrors, toSdkHooksSettings, validateSessionHooksCo
 import { coerceThinkingSetting } from '../../shared/session-info.js'
 import { validateSandboxSetting } from '../../shared/sandbox.js'
 import { coerceToolProfile } from '../../shared/tool-profile.js'
+import { isBlockedEnvVar } from '../session-env.js'
 import { createLogger } from '../log.js'
 import { validateSendBody } from '../send-body.js'
 
@@ -42,22 +43,6 @@ function validateEnabledPlugins(value: unknown): string | null {
   return validateStringArray('enabledPlugins', value)
 }
 
-/** Environment variable names that can alter process execution, inject code,
- *  or redirect I/O. Blocked from user-supplied `env` overrides to prevent
- *  privilege escalation in spawned child processes. */
-const BLOCKED_ENV_VARS = new Set([
-  'PATH', 'Path',                          // executable search path
-  'LD_PRELOAD',                            // inject shared libraries (Linux)
-  'LD_LIBRARY_PATH',                       // library search path (Linux)
-  'DYLD_INSERT_LIBRARIES',                 // inject shared libraries (macOS)
-  'DYLD_LIBRARY_PATH',                     // library search path (macOS)
-  'NODE_OPTIONS',                          // inject arbitrary Node.js flags
-  'NODE_PATH',                             // module resolution override
-  'PYTHONPATH',                            // Python module search path
-  'HOME', 'USERPROFILE',                   // redirect home dir / credential reads
-  'COMSPEC', 'SystemRoot', 'windir',       // Windows system paths
-])
-
 /** Validate the optional `env` field accepted by session creation. The SDK
  *  expects a string-to-string map for subprocess environment overrides; reject
  *  malformed input instead of letting object spread coerce arrays/strings into
@@ -71,7 +56,7 @@ function validateEnv(value: unknown): string | null {
     if (typeof envValue !== 'string') {
       return `env.${key} must be a string`
     }
-    if (BLOCKED_ENV_VARS.has(key)) {
+    if (isBlockedEnvVar(key)) {
       return `env.${key} is not allowed — overriding this variable is blocked for security`
     }
   }
@@ -276,6 +261,11 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
       const reason = agentUnusableReason(agentDefinitionStore, rawAgent)
       if (reason) return c.json({ error: reason }, 400)
     }
+    // The create body's own optional flags map also reaches the SDK, so its
+    // `env` needs the same guard as the top-level one — otherwise the same
+    // override walks in through a third door.
+    const settingsEnvErr = validateEnv((rest.settings as { env?: unknown } | undefined)?.env)
+    if (settingsEnvErr) return c.json({ error: settingsEnvErr }, 400)
     if (rest.settings && typeof rest.settings === 'object' && !Array.isArray(rest.settings) && 'hooks' in rest.settings) {
       const settings = rest.settings as Record<string, unknown>
       const parsedHooks = validateSessionHooksConfig(settings.hooks ?? {})
@@ -585,6 +575,11 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
   // Apply flag settings
   app.post('/sessions/:id/settings', async (c) => {
     const body = await safeJson<{ settings?: Settings }>(c.req)
+    // Flag settings carry their own `env` map, which applySettings forwards to
+    // the live session. Without repeating the create-time guard here, this
+    // door reopens the very overrides validateEnv exists to block.
+    const envErr = validateEnv((body?.settings as { env?: unknown } | undefined)?.env)
+    if (envErr) return c.json({ error: envErr }, 400)
     const info = await sm.applySettings(c.req.param('id'), body.settings ?? {})
     return c.json({ session: info })
   })
@@ -748,7 +743,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     return c.json({ session: info })
   })
 
-  // Per-session override for the first-party `apptools` git MCP server.
+  // Per-session override for the first-party `git-tools` git MCP server.
   // `enabled: null` clears the override so the session re-inherits the
   // global default. Immediate on live sessions (re-injects); legacy route
   // forwarding to the generalized first-party toggle below.
