@@ -14,7 +14,8 @@
 
 - **All diagnostic logging goes through `server/log.ts`** (`createLogger(scope)`). Never add bare `console.*` for diagnostics. The `[scope]` tag is auto-prepended — do not hand-write it.
 - **Never let an MCP handler reject.** Every handler is wrapped in `guard()`; errors become `{ content: [{ type: 'text', text }], isError: true }`. A rejected MCP call hangs the turn.
-- **Do NOT modify** `server/sdk-tools/types.ts`, `server/sdk-tools/registry.ts`, `server/permission-broker.ts`, or any file under `src/` or `shared/`. The UI picks up the new server generically via `GET /api/first-party-tools`.
+- **Do NOT modify** `server/sdk-tools/types.ts`, `server/sdk-tools/registry.ts`, or any file under `src/` or `shared/`. The UI picks up the new server generically via `GET /api/first-party-tools`.
+  - **Originally this list also forbade `server/permission-broker.ts`, and that was wrong.** The constraint assumed the read-only exemption would pick up `appdebug` automatically, but the broker snapshots `firstPartyRegistry.readOnlyToolFqns()` as a **module-level constant at import time**, while `appdebug` is registered at **runtime** (`enableDevMode`, from `runServer`) — so its read-only FQNs never entered the set, and in `dontAsk` mode the read tools would have been auto-**denied**. The exemption must be looked up per call. Only the final whole-branch review could catch this, because it is invisible from any single task: the registry side is correct in isolation, and the broker side is correct for every server registered at module load.
 - **No new dependencies.** `zod` is already a direct dependency.
 - **Server name is `appdebug`**; tool FQNs are `mcp__appdebug__{name}`. The registry stores BARE tool names.
 - **Read-only tool set is exactly** `{ logs, metrics, sessions, session }` — these go into `readOnlyToolNames`, which is what makes `permission-broker.ts` auto-approve them. The three write tools must NOT be in that set.
@@ -1630,45 +1631,54 @@ Expected: all green. `npm run test` must show the pre-existing suites unaffected
 Run: `npm run build`
 Expected: `dist/client` + `dist/cli.mjs` produced with no esbuild error. `server/dev-mode.ts` and `server/sdk-tools/app-debug.ts` are bundled into `dist/cli.mjs`; they are inert unless `isDevRuntime` is true.
 
-- [ ] **Step 5: End-to-end verification — dev run exposes the tools**
+- [ ] **Step 5: End-to-end verification — a source run registers the server**
+
+The registration line is emitted at boot by `enableDevMode`, **before** `serve()` is called, so there is no need to poll a listening port: start the server under a timeout, then grep its boot log. This removes the race a `curl` against a just-started server would have, and it exercises the real `isDevRuntime` gate rather than a route that would also answer if registration had happened by some other path.
+
+**Every E2E command below passes `--state-dir` pointing at a throwaway directory.** Without it the server boots against the real `~/.claude-react-web`, which means loading and flushing the user's actual sessions/plugins/stores — a side effect on data outside this worktree that these checks have no business touching. Booting against `/tmp/crw-appdebug-e2e` keeps the whole exercise self-contained.
+
+```bash
+timeout 15 npx tsx server/cli.ts --port 3459 --no-open --state-dir /tmp/crw-appdebug-e2e > /tmp/dev.log 2>&1
+grep -c 'registered appdebug (dev runtime)' /tmp/dev.log
+```
+
+Expected: `1` (not 0). The exact substring matters — `dev-mode`'s logger auto-prepends its `[dev-mode]` scope tag, so the line reads `[dev-mode] registered appdebug (dev runtime) — read-only: …`. Grepping for the bare word `appdebug` alone would be satisfiable by an unrelated mention.
+
+`timeout` sends SIGTERM, which `server/cli.ts` already handles (graceful shutdown + exit).
+
+Then run the remaining checks in the app UI, which is the human-visible acceptance:
 
 ```bash
 npm run dev:server
 ```
 
-Then, with the server up, from a second shell:
+- `GET /api/first-party-tools` lists `appdebug` with 7 tools, 4 marked `"readOnly": true`.
+- SettingsPanel → MCP tab shows an `appdebug` section with a toggle and 7 tools — **with no UI code changed** (the tab is driven generically by that endpoint).
+- In a session whose cwd is this repo: the agent calls `mcp__appdebug__logs` / `mcp__appdebug__sessions` **without a permission card**, and `mcp__appdebug__set_log` **does** raise one.
+- Closed loop: `set_log` with `{"level":"debug","scopes":["pump"]}`, then `logs` with `{"scope":"pump"}` — real server log lines come back.
+
+- [ ] **Step 6: End-to-end verification — the published path does NOT register**
 
 ```bash
-# The tools are listed for the first-party registry...
-curl -s http://127.0.0.1:3456/api/first-party-tools | grep -o 'appdebug'
+timeout 15 node dist/cli.mjs --port 3460 --no-open --state-dir /tmp/crw-appdebug-e2e > /tmp/dist.log 2>&1
+grep -c 'registered appdebug' /tmp/dist.log
 ```
 
-Expected: `appdebug` appears, with 7 tools (4 marked `"readOnly":true`).
-
-Then in the app UI: create a session whose cwd is this repo, and confirm the agent can call `mcp__appdebug__logs` / `mcp__appdebug__sessions` **without a permission card**, and that `mcp__appdebug__set_log` **does** raise a permission card. Verify the SettingsPanel → MCP tab shows an `appdebug` section with a toggle and 7 tools (no UI code was changed).
-
-Close-loop check: ask the agent to call `set_log` with `{"level":"debug","scopes":["pump"]}`, then `logs` with `{"scope":"pump"}` and confirm real server log lines come back.
-
-- [ ] **Step 6: End-to-end verification — the published path does NOT**
-
-```bash
-npm run build && node dist/cli.mjs --port 3457 --no-open
-```
-
-From a second shell:
-
-```bash
-curl -s http://127.0.0.1:3457/api/first-party-tools | grep -c appdebug   # expect 0
-```
-
-Expected: `0` — no match. Also confirm the boot log does **not** contain `dev-mode` registering anything.
+Expected: `0` — no match. This is the load-bearing check of the whole feature: the file is present in the bundle (Step 4 built it in), and it stays inert.
 
 - [ ] **Step 7: End-to-end verification — the override flags**
 
 ```bash
-npm run dev:server -- --no-dev      # → appdebug absent
-npm run start -- --dev              # → appdebug present (needs the Step 4 build)
+# forced OFF even though the entry module is TypeScript source
+timeout 15 npx tsx server/cli.ts --port 3461 --no-open --no-dev --state-dir /tmp/crw-appdebug-e2e > /tmp/nodev.log 2>&1
+grep -c 'registered appdebug' /tmp/nodev.log          # expect 0
+
+# forced ON for the built bundle, which detection would otherwise skip
+timeout 15 node dist/cli.mjs --port 3462 --no-open --dev --state-dir /tmp/crw-appdebug-e2e > /tmp/forcedev.log 2>&1
+grep -c 'registered appdebug' /tmp/forcedev.log       # expect 1
 ```
+
+Expected: `0`, then `1`. Wait for each `timeout` to return before grepping — the file is written by the still-running process, and reading it early would give a false negative. These two cases are the only reason the flags exist, so a `0` on the second one means the override is not wired.
 
 - [ ] **Step 8: Commit**
 

@@ -16,7 +16,9 @@
 
 4. **日志环形缓冲的 capture 点在 `passes()` 之后——只收已经打印出来的行**。语义诚实（就是「服务器打印了什么」），且**零性能失真**：反过来在过滤前 capture，会让每条被压掉的 trace 都走 `formatArg` / `JSON.stringify`，插桩本身拖慢你正在排查的性能问题。代价是看不到「被 level 压掉的历史」，因此 `logs` 会先回报当前 level / scopes，代理的固定循环是 `set_log {level:'debug', scopes:['pump']}` → 让人复现 → `logs {since}` → 收回。
 
-5. **读工具进 `readOnlyToolNames`，写工具走正常权限流**。broker 对 registry 声明的只读 FQN 自动放行（`permission-broker.ts` 三处：`FIRST_PARTY_READ_ONLY_TOOLS` 判定），所以「看日志 / 指标 / 会话状态」不弹权限卡、在 `dontAsk` 与 auto 模式下也算只读；而「改日志级别 / 开关 cliDebug / 往会话注入消息」有副作用，**先弹权限卡**，与 `git_stage` 等写工具同一姿态。
+5. **读工具进 `readOnlyToolNames`，写工具走正常权限流** —— 但**注册时机是这条决策的关键前提**。`firstPartyRegistry.register` 在 `registry.ts` 模块加载期注册 `gitAppTools`，而 `appdebug` 是**运行时**注册的（`enableDevMode` 在 `runServer()` 里被调用）。`permission-broker.ts` 的豁免集合若按模块级常量在 import 期快照（`const FIRST_PARTY_READ_ONLY_TOOLS = firstPartyRegistry.readOnlyToolFqns()`），就**永远看不到 `appdebug` 的只读 FQN**：`dontAsk` 下会被自动**拒绝**、`auto` 下要走分类器、`acceptEdits` 下会弹卡，与本节意图完全相反。因此 broker 侧必须**每次调用时查表**（`firstPartyReadOnlyTools()`），不得快照。
+
+   在该前提下：只读工具不弹权限卡，在 `dontAsk` 与 auto 模式下也算只读（`permission-broker.ts` 三处：`FIRST_PARTY_READ_ONLY_TOOLS` 判定）；而「改日志级别 / 开关 cliDebug / 往会话注入消息」有副作用，**先弹权限卡**，与 `git_stage` 等写工具同一姿态。
 
 6. **依赖注入靠闭包，不改首方工具契约**。`createDebugAppTools(host: DebugHost): FirstPartyToolServer`，其 `buildTools()` 忽略 cwd、只闭包 `host`；`server/sdk-tools/types.ts` 与 `registry.ts` **一行不改**。host 是个窄接口（4 个方法），`SessionManager` 结构上满足它，测试传 fake。
 
@@ -29,7 +31,8 @@
 | `npm run dev:server` 下 `argv[1]` = `...\server\cli.ts`、`npm_lifecycle_event` = `dev:server`，且 tsx watch fork 后仍成立（pid/ppid 不同） | 临时探针脚本经 `npm run` + `tsx watch` 实跑 |
 | `node x.mjs` → `argv[1]` 为 `.mjs`；经 `npm run start` → `npm_lifecycle_event` = `start` | 同一探针 |
 | SDK 子进程 env 是白名单（`buildProfileEnv` 只透传 PATH/HOME/… + `ANTHROPIC_*`） | 读 `server/providers/claude/claude-provider.ts` |
-| 只读首方工具在 broker 自动放行（normal / dontAsk / auto 三处） | 读 `server/permission-broker.ts` |
+| 只读首方工具在 broker 自动放行（normal / dontAsk / auto 三处）—— **但这条只对模块加载期注册的服务器成立** | 读 `server/permission-broker.ts` |
+| **陷阱：** `permission-broker.ts` 若把豁免集合存成模块级常量（import 期快照），运行时注册的 `appdebug` 永远进不去它；全仓库 `readOnlyToolFqns()` 只被调用那一次，没有任何重新捕获。豁免必须每次调用时查表 | 全仓库 grep `readOnlyToolFqns`（唯一调用点 + 三处消费） |
 | `metrics` 单例 = `{ observe, count, gauge, snapshot, reset }`，`snapshot()` → `MetricsSnapshot{uptimeSec, gauges, counters, histograms}`（直方图含 p50/p95/p99/max） | 读 `server/metrics.ts` / `shared/metrics.ts` |
 | `SessionInfo` 只有 `running` / `terminated`，**没有** `phase` 字段 | 读 `shared/session-info.ts` |
 | 公开可用：`list()`、`get(id)`（live-or-meta，未知 id 抛 404）、`getHistory(id)`、`contextUsage(id)`（内部 `requireLive`，**非 live 会抛**）、`toolServerStatus(id)`、`getDiagnostics(id)`、`setCliDebug(id, body)`、`send(id, text)` | 读 `server/session-manager.ts` |
