@@ -56,17 +56,40 @@ describe('ChatEmptyState easter-egg trigger', () => {
     // before starting a fresh one.
     render(<ChatEmptyState onUnlockEasterEgg={vi.fn()} />)
     const icon = document.querySelector('.chat-empty-icon') as HTMLElement
-    const cancel = vi.fn()
-    const animateSpy = vi.fn(() => ({ cancel }) as unknown as Animation)
+    // Model the real `Animation` contract: `finished` and `ready` are promises
+    // that REJECT with an AbortError when the animation is canceled (WAAPI
+    // spec). They are not decorative — omitting them is what let the producing
+    // side's unhandled rejection go unnoticed, so asserting through them here
+    // keeps cancel()'s rejected promises observed.
+    //
+    // A FRESH handle per call, deliberately: returning one shared object would
+    // make "the prior run was cancelled" indistinguishable from "the brand-new
+    // run was cancelled", and the assertions below are the whole point of the
+    // test.
+    type StubHandle = { cancel: ReturnType<typeof vi.fn>; finished: Promise<Animation> }
+    const handles: StubHandle[] = []
+    const animateSpy = vi.fn(() => {
+      let reject: (reason: unknown) => void = () => {}
+      const finished = new Promise<Animation>((_resolve, rej) => {
+        reject = rej
+      })
+      const cancel = vi.fn(() =>
+        reject(new DOMException('The animation was canceled.', 'AbortError')),
+      )
+      const handle: StubHandle = { cancel, finished }
+      handles.push(handle)
+      return handle as unknown as Animation
+    })
     ;(icon as unknown as { animate: typeof animateSpy }).animate = animateSpy
 
     fireEvent.click(icon)
     expect(animateSpy).toHaveBeenCalledTimes(1)
-    expect(cancel).not.toHaveBeenCalled()
+    expect(handles[0].cancel).not.toHaveBeenCalled()
 
     // A second rapid click cancels the in-flight bounce, then re-triggers.
     fireEvent.click(icon)
-    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(handles[0].cancel).toHaveBeenCalledTimes(1) // the PRIOR run
+    expect(handles[1].cancel).not.toHaveBeenCalled() // not the fresh one
     expect(animateSpy).toHaveBeenCalledTimes(2)
   })
 })

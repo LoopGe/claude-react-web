@@ -50,7 +50,25 @@ export function ChatEmptyState({ onUnlockEasterEgg }: ChatEmptyStateProps) {
       if (typeof el.animate === 'function') {
         const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
         // Cancel any in-flight bounce so a rapid re-click restarts cleanly.
-        bounceRef.current?.cancel()
+        //
+        // WAAPI's `cancel()` rejects BOTH of the animation's pending promises with an
+        // AbortError by spec — `finished` always, and `ready` while a play/pause
+        // task is still queued. Nobody awaits either here, so without a handler
+        // the rejection surfaces as an unobserved one: a console "Uncaught (in
+        // promise)" on rapid re-clicks in a real browser, and a hard CI failure
+        // under vitest, which counts unhandled rejections as errors even when
+        // every assertion passed. The outcome of the cancel carries no
+        // information (it exists only to restart the bounce), so drain both
+        // explicitly rather than leaving them dangling. Optional chaining
+        // mirrors the `matchMedia?.()` above: `animate` existing does not promise
+        // every member of the interface, and throwing out of this click handler
+        // would break the easter egg outright.
+        const inFlight = bounceRef.current
+        if (inFlight) {
+          inFlight.finished?.catch(() => {})
+          inFlight.ready?.catch(() => {})
+          inFlight.cancel()
+        }
         bounceRef.current = el.animate(
           reduce
             ? [
