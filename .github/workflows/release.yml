@@ -1,0 +1,119 @@
+name: Release
+
+# Triggered by the `v*` tag the release tooling pushes (see RELEASING.md), or
+# manually for a tag that already exists. Publishes to npm with provenance and
+# creates the GitHub Release. The in-app updater reads BOTH the npm `latest`
+# dist-tag and the GitHub Releases API, so both halves must succeed together.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (must already exist, e.g. v0.8.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write # create the GitHub Release
+  id-token: write # npm provenance / Trusted Publishing
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Create a GitHub environment named `npm-publish` with required reviewers to
+    # gate the publish behind a manual approval. Works without it too.
+    environment: npm-publish
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: tag
+        env:
+          # Interpolated as an env var, not inline, so a tag string can never be
+          # executed as shell.
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="$DISPATCH_TAG"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          case "$TAG" in
+            v*) ;;
+            *) echo "release: tag must start with 'v', got '$TAG'"; exit 1 ;;
+          esac
+          VERSION="${TAG#v}"
+          # A `-suffix` is a prerelease: publish under that dist-tag (never
+          # `latest`) and mark the GitHub Release pre-release so the in-app
+          # updater skips it.
+          if [ "$VERSION" != "${VERSION%%-*}" ]; then
+            PRERELEASE=true
+            SUFFIX="${VERSION#*-}"
+            NPM_TAG="${SUFFIX%%.*}"
+          else
+            PRERELEASE=false
+            NPM_TAG=latest
+          fi
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "prerelease=$PRERELEASE"
+            echo "npm_tag=$NPM_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The version is baked into the server bundle at build time
+      # (server/update-checker.ts), so a tag that disagrees with package.json
+      # would ship an install that misreports its own version forever.
+      - name: Check tag matches package.json
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$PKG_VERSION" != "$VERSION" ]; then
+            echo "release: package.json is $PKG_VERSION but tag is $TAG"
+            exit 1
+          fi
+
+      - name: Verify
+        run: npm run verify
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public --tag "$NPM_TAG"
+        env:
+          NPM_TAG: ${{ steps.tag.outputs.npm_tag }}
+          # Prefer npm Trusted Publishing and delete this line — see RELEASING.md.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Extract release notes
+        run: node scripts/changelog-section.mjs "$VERSION" > RELEASE_NOTES.md
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          PRERELEASE: ${{ steps.tag.outputs.prerelease }}
+        run: |
+          args=(--title "$TAG" --notes-file RELEASE_NOTES.md --verify-tag)
+          [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
+          gh release create "$TAG" "${args[@]}"

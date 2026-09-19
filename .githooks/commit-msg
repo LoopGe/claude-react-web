@@ -1,0 +1,8 @@
+#!/bin/sh
+# Conventional Commits gate. Activated by `git config core.hooksPath .githooks`
+# (run from `npm install` via scripts/setup-hooks.mjs). CI enforces the same
+# rule on every PR, so a machine without the hook is still covered.
+if ! command -v npx >/dev/null 2>&1; then
+  exit 0
+fi
+npx --no-install commitlint --edit "$1"

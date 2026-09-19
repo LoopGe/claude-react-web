@@ -397,15 +397,16 @@ npm run lint
 npm test
 ```
 
-| Script              | What it does                                                                |
-| ------------------- | --------------------------------------------------------------------------- |
-| `npm run dev`       | Hot-reloading server + Vite dev server side by side                         |
-| `npm run build`     | `vite build` → `dist/client` and esbuild → `dist/cli.mjs`, run concurrently |
-| `npm run typecheck` | `tsc --noEmit` for both browser and Node tsconfigs                          |
-| `npm run lint`      | ESLint (includes `react-hooks`)                                             |
-| `npm run format`    | Prettier write                                                              |
-| `npm test`          | Vitest (server unit tests + client hook tests)                              |
-| `npm run verify`    | `typecheck` + `lint` + `test` + `build` in one go                           |
+| Script              | What it does                                                                   |
+| ------------------- | ------------------------------------------------------------------------------ |
+| `npm run dev`       | Hot-reloading server + Vite dev server side by side                            |
+| `npm run build`     | `vite build` → `dist/client` and esbuild → `dist/cli.mjs`, run concurrently    |
+| `npm run typecheck` | `tsc --noEmit` for both browser and Node tsconfigs                             |
+| `npm run lint`      | ESLint (includes `react-hooks`)                                                |
+| `npm run format`    | Prettier write                                                                 |
+| `npm test`          | Vitest (server unit tests + client hook tests)                                 |
+| `npm run verify`    | `typecheck` + `lint` + `test` + `build` in one go                              |
+| `npm run release`   | Cut a release: bump, changelog, tag, push — see [RELEASING.md](./RELEASING.md) |
 
 ## Contributing
 
@@ -417,6 +418,8 @@ npm run verify
 
 `npm test` must pass. Add tests alongside behaviour changes — the repo uses Vitest for both the Node server and the jsdom-based client hooks.
 
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/) (`type(scope): subject`), enforced by a `commit-msg` hook and by CI. Record user-visible changes under `CHANGELOG.md`'s `[Unreleased]` section as you go; [`RELEASING.md`](./RELEASING.md) covers how a version is cut.
+
 ## Disclaimer
 
 **This is an unofficial, community-built project.** It is not affiliated with, endorsed by, or sponsored by Anthropic. "Claude" and "Claude Code" are trademarks of Anthropic PBC. You are responsible for ensuring your use complies with Anthropic's terms of service and any applicable usage policies.
@@ -425,7 +428,7 @@ Your `authToken` is stored in `~/.claude-react-web/config.json` on your own mach
 
 ## Changelog
 
-See [CHANGELOG.md](./CHANGELOG.md) for release history.
+See [CHANGELOG.md](./CHANGELOG.md) for release history. The release process is documented in [RELEASING.md](./RELEASING.md).
 
 ## License
 

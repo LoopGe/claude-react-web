@@ -22,6 +22,8 @@ npm run verify
 ## Checklist
 
 - [ ] `npm run verify` passes (typecheck + lint + test + build)
+- [ ] Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) (`type(scope): subject`)
+- [ ] User-visible changes are recorded under `CHANGELOG.md`'s `[Unreleased]` section
 - [ ] Tests were added or updated for behaviour changes
 - [ ] New colours use theme CSS variables, defined in **both** `:root` and `[data-theme="light"]`
 - [ ] No `console.*` added for diagnostics — the server logs through `createLogger(scope)`
