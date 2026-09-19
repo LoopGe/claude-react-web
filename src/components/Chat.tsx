@@ -316,6 +316,7 @@ interface Props {
     showPinnedUserMessage: boolean
     autoRecap: boolean
     toolGroupCards: boolean
+    autoExpandRunningGroups: boolean
     showMessageHeaders: boolean
     firstPartyTools?: Record<string, { enabled: boolean }>
   }
@@ -481,6 +482,8 @@ export const Chat = memo(function Chat({
   const effectiveShowPinned = session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage
   const effectiveAutoRecap = session.autoRecap ?? globalPrefs.autoRecap
   const effectiveToolGroupCards = session.toolGroupCards ?? globalPrefs.toolGroupCards
+  const effectiveAutoExpandRunningGroups =
+    session.autoExpandRunningGroups ?? globalPrefs.autoExpandRunningGroups
   const effectiveShowMessageHeaders = session.showMessageHeaders ?? globalPrefs.showMessageHeaders
   // Pinned "current question" header — the user message of the turn in view,
   // shown when it has scrolled above the viewport. `pinnedUserMsg` drives
@@ -2166,6 +2169,7 @@ export const Chat = memo(function Chat({
           cwd={session.cwd}
           onBackgroundTool={backgroundToolAction}
           toolGroupCards={effectiveToolGroupCards}
+          autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
           showMessageHeaders={effectiveShowMessageHeaders}
           // The task checklist + monitor bar are bottom OVERLAYS of the
           // transcript, not siblings of it: rendering them here puts them in
@@ -2671,6 +2675,7 @@ export const Chat = memo(function Chat({
             questionAnswers={stream.questionAnswers}
             onBackgroundTool={backgroundToolAction}
             toolGroupCards={effectiveToolGroupCards}
+            autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
             showMessageHeaders={effectiveShowMessageHeaders}
           />
         </SkillProvider>
@@ -2697,6 +2702,7 @@ export const Chat = memo(function Chat({
               planContent={stream.planContent}
               questionAnswers={stream.questionAnswers}
               toolGroupCards={effectiveToolGroupCards}
+              autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
               showMessageHeaders={effectiveShowMessageHeaders}
             />
           </SkillProvider>

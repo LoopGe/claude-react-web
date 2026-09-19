@@ -197,6 +197,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       showPinnedUserMessage: serverConfig.showPinnedUserMessage,
       autoRecap: serverConfig.autoRecap,
       toolGroupCards: serverConfig.toolGroupCards,
+      autoExpandRunningGroups: serverConfig.autoExpandRunningGroups,
       showMessageHeaders: serverConfig.showMessageHeaders,
       rowGap: serverConfig.rowGap,
       textSpacing: serverConfig.textSpacing,

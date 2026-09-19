@@ -78,4 +78,29 @@ describe('buildNewLikeThisForm', () => {
     const form = buildNewLikeThisForm(mkSource({ id: 's1' }), undefined, 10)
     expect(form.firstPartyTools).toBeUndefined()
   })
+
+  it('carries the plugin subset — a narrowed copy must not silently widen', () => {
+    const form = buildNewLikeThisForm(
+      mkSource({ id: 's1', enabledPlugins: ['plugA@mp1'] }),
+      undefined,
+      10,
+    )
+    expect(form.enabledPlugins).toEqual(['plugA@mp1'])
+  })
+
+  it('carries an explicit empty plugin subset (none enabled)', () => {
+    // `[]` is meaningful ("no plugins") and distinct from `undefined`
+    // ("all enabled") — collapsing the two would flip the copy's tool surface.
+    const form = buildNewLikeThisForm(
+      mkSource({ id: 's1', enabledPlugins: [] }),
+      undefined,
+      10,
+    )
+    expect(form.enabledPlugins).toEqual([])
+  })
+
+  it('leaves enabledPlugins undefined when the source uses all enabled plugins', () => {
+    const form = buildNewLikeThisForm(mkSource({ id: 's1' }), undefined, 10)
+    expect(form.enabledPlugins).toBeUndefined()
+  })
 })

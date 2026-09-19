@@ -222,12 +222,13 @@ export function App() {
     showPinnedUserMessage: boolean
     autoRecap: boolean
     toolGroupCards: boolean
+    autoExpandRunningGroups: boolean
     showMessageHeaders: boolean
     rowGap: RowGapPreset
     textSpacing: TextSpacingPreset
     fontSize: FontSizePreset
     firstPartyTools?: Record<string, { enabled: boolean }>
-  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP, textSpacing: DEFAULT_TEXT_SPACING, fontSize: DEFAULT_FONT_SIZE })
+  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, autoExpandRunningGroups: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP, textSpacing: DEFAULT_TEXT_SPACING, fontSize: DEFAULT_FONT_SIZE })
 
   // Apply the global transcript spacing to a CSS variable. Set on
   // documentElement, it overrides the `.chat`-scoped default, so message rows,
@@ -511,6 +512,7 @@ export function App() {
           showPinnedUserMessage: r.showPinnedUserMessage ?? true,
           autoRecap: r.autoRecap ?? true,
           toolGroupCards: r.toolGroupCards ?? true,
+          autoExpandRunningGroups: r.autoExpandRunningGroups ?? true,
           showMessageHeaders: r.showMessageHeaders ?? true,
           rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
           textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
@@ -1916,6 +1918,21 @@ export function App() {
           // Preserve per-first-party-server overrides so a restarted session
           // keeps its tool set (create-time prefs honor them on FIRST spawn).
           firstPartyTools: firstPartyOverridesForCreate(source),
+          // Preserve the plugin subset (undefined = all enabled, `[]` = none).
+          // Same fresh-id reason as the UI prefs below: no persisted meta
+          // exists for Y, so without this the restart silently widens the
+          // session to every globally-enabled plugin.
+          enabledPlugins: source.enabledPlugins,
+          // Preserve the panel's per-session UI overrides. Y is a fresh id
+          // with no persisted meta, so without these the replacement would
+          // silently revert to the global defaults (and writeStore would then
+          // clobber the on-disk values). `undefined` (inherit) is omitted by
+          // JSON.stringify — the create route treats absent as inherit.
+          showPinnedUserMessage: source.showPinnedUserMessage,
+          autoRecap: source.autoRecap,
+          toolGroupCards: source.toolGroupCards,
+          autoExpandRunningGroups: source.autoExpandRunningGroups,
+          showMessageHeaders: source.showMessageHeaders,
           title: source.title,
           joinGroupOf: id,
           // X is being evicted by this restart (swapSession replaces X→Y), so
@@ -3660,6 +3677,7 @@ export function App() {
       showPinnedUserMessage: r.showPinnedUserMessage ?? true,
       autoRecap: r.autoRecap ?? true,
       toolGroupCards: r.toolGroupCards ?? true,
+      autoExpandRunningGroups: r.autoExpandRunningGroups ?? true,
       showMessageHeaders: r.showMessageHeaders ?? true,
       rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
       textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,

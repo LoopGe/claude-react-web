@@ -46,6 +46,7 @@ function renderGroup({
   working,
   closed,
   subagentStatuses,
+  autoExpandRunningGroups,
 }: {
   members: SdkMessage[]
   toolStatus: Map<string, ToolStatus>
@@ -56,6 +57,7 @@ function renderGroup({
   working?: boolean
   closed?: boolean
   subagentStatuses?: ReadonlyMap<string, ActiveSubagent>
+  autoExpandRunningGroups?: boolean
 }) {
   return render(
     <ToolStatusProvider value={toolStatus}>
@@ -71,6 +73,7 @@ function renderGroup({
               working={working}
               closed={closed}
               subagentStatuses={subagentStatuses}
+              autoExpandRunningGroups={autoExpandRunningGroups}
             />
           </BackgroundToolProvider>
         </PlanStatusProvider>
@@ -450,6 +453,151 @@ describe('ToolGroupCard', () => {
     // the target instead.
     expect(container.querySelector('.tool-group-count')).toBeNull()
     expect(container.querySelector('.tool-group-names')?.textContent).toBe('Read App.tsx')
+  })
+
+  describe('autoExpandRunningGroups off — running groups stay folded, fold paths unchanged', () => {
+    function OffHarness({
+      initialRunning = true,
+      autoExpandRunningGroups = false,
+    }: {
+      initialRunning?: boolean
+      autoExpandRunningGroups?: boolean
+    } = {}) {
+      const [status, setStatus] = useState<Map<string, ToolStatus>>(
+        new Map([
+          ['t1-tu', 'success' as const],
+          ['t2-tu', initialRunning ? ('running' as const) : ('success' as const)],
+        ]),
+      )
+      const [working, setWorking] = useState(true)
+      const settle = () =>
+        setStatus(new Map([['t1-tu', 'success' as const], ['t2-tu', 'success' as const]]))
+      const members = [toolMsg('t1'), toolMsg('t2')]
+      return (
+        <ToolStatusProvider value={status}>
+          <ToolResultProvider value={new Map()}>
+            <PlanStatusProvider value={new Map()}>
+              <BackgroundToolProvider value={undefined}>
+                <ToolGroupCard
+                  members={members}
+                  memberItemIndices={[0, 1]}
+                  working={working}
+                  closed
+                  autoExpandRunningGroups={autoExpandRunningGroups}
+                />
+                <button type="button" data-testid="settle" onClick={settle} />
+                <button type="button" data-testid="end" onClick={() => setWorking(false)} />
+              </BackgroundToolProvider>
+            </PlanStatusProvider>
+          </ToolResultProvider>
+        </ToolStatusProvider>
+      )
+    }
+
+    it('does not auto-expand a running group, but still reports running in the header', () => {
+      const { container } = renderGroup({
+        members: [toolMsg('t1'), toolMsg('t2')],
+        toolStatus: new Map<string, ToolStatus>([
+          ['t1-tu', 'success'],
+          ['t2-tu', 'running'],
+        ]),
+        working: true,
+        autoExpandRunningGroups: false,
+      })
+      expect(isOpen(container)).toBe(false)
+      // The header badge is the standing signal — a folded running group must
+      // not go silent.
+      expect(container.querySelector('.tool-status-running')).not.toBeNull()
+    })
+
+    it('lets the user open a running group and keeps it open', () => {
+      const { container } = renderGroup({
+        members: [toolMsg('t1'), toolMsg('t2')],
+        toolStatus: new Map<string, ToolStatus>([
+          ['t1-tu', 'success'],
+          ['t2-tu', 'running'],
+        ]),
+        working: true,
+        autoExpandRunningGroups: false,
+      })
+      fireEvent.click(container.querySelector('.tool-group-toggle')!)
+      expect(isOpen(container)).toBe(true)
+    })
+
+    it('still force-opens a pending plan/question group (never gated by the pref)', () => {
+      const { container } = renderGroup({
+        members: [toolMsg('t1'), toolMsg('p1', 'ExitPlanMode')],
+        toolStatus: new Map<string, ToolStatus>([['t1-tu', 'success']]),
+        planStatus: new Map([['p1-tu', 'pending' as const]]),
+        autoExpandRunningGroups: false,
+      })
+      expect(isOpen(container)).toBe(true)
+      expect(container.querySelector('.tool-status-waiting')).not.toBeNull()
+    })
+
+    it('still force-opens on a search hit', () => {
+      const { container } = renderGroup({
+        members: [toolMsg('t1', 'Read', { file_path: 'needle.ts' }), toolMsg('t2')],
+        toolStatus: new Map<string, ToolStatus>([
+          ['t1-tu', 'success'],
+          ['t2-tu', 'running'],
+        ]),
+        searchQuery: 'needle',
+        autoExpandRunningGroups: false,
+      })
+      expect(isOpen(container)).toBe(true)
+    })
+
+    it('folds a settled group mid-turn when a boundary row closes it', () => {
+      // The fold paths are NOT gated by the pref: with the pref on, the group
+      // is pinned open for the whole turn; with it off, the group was never
+      // auto-opened and the boundary closure keeps it folded.
+      const { container, getByTestId } = render(<OffHarness />)
+      expect(isOpen(container)).toBe(false) // running, but not auto-expanded
+      fireEvent.click(getByTestId('settle'))
+      expect(isOpen(container)).toBe(false)
+    })
+
+    it('still runs the post-turn settle fold for a group that was live via a pending decision', () => {
+      // A pending plan latches `wasLive` even with the pref off, so the
+      // settle-hold path (open through the grace window, then fold) is
+      // untouched — the pref only decides who gets auto-OPENED.
+      vi.useFakeTimers()
+      function PendingHarness() {
+        const [planStatus, setPlanStatus] = useState<Map<string, 'approved' | 'rejected' | 'pending'>>(
+          new Map([['p1-tu', 'pending']]),
+        )
+        const [working, setWorking] = useState(true)
+        const approve = () => setPlanStatus(new Map([['p1-tu', 'approved' as const]]))
+        return (
+          <ToolStatusProvider value={new Map()}>
+            <ToolResultProvider value={new Map()}>
+              <PlanStatusProvider value={planStatus}>
+                <BackgroundToolProvider value={undefined}>
+                  <ToolGroupCard
+                    members={[toolMsg('t1'), toolMsg('p1', 'ExitPlanMode')]}
+                    memberItemIndices={[0, 1]}
+                    working={working}
+                    autoExpandRunningGroups={false}
+                  />
+                  <button type="button" data-testid="approve" onClick={approve} />
+                  <button type="button" data-testid="end" onClick={() => setWorking(false)} />
+                </BackgroundToolProvider>
+              </PlanStatusProvider>
+            </ToolResultProvider>
+          </ToolStatusProvider>
+        )
+      }
+      const { container, getByTestId } = render(<PendingHarness />)
+      expect(isOpen(container)).toBe(true) // pending decision force-opens
+      fireEvent.click(getByTestId('approve'))
+      expect(isOpen(container)).toBe(true) // latched → held open for the turn
+      fireEvent.click(getByTestId('end')) // settle hold
+      act(() => {
+        vi.advanceTimersByTime(2300)
+      })
+      expect(isOpen(container)).toBe(false) // still folds after the grace window
+    })
   })
 
   describe('boundary closure (`closed`) — fold mid-turn once a non-foldable row follows', () => {

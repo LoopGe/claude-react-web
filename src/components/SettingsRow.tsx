@@ -4,16 +4,19 @@
 
 import type { ReactNode } from 'react'
 
-export function SettingsRow({ title, hint, children, stack }: {
+export function SettingsRow({ title, hint, children, stack, rowClassName }: {
   title: ReactNode
   hint?: ReactNode
   children: ReactNode
   /** Stack the control under the text column instead of pinning it right.
    *  For wide controls (text inputs, selects) in narrow surfaces. */
   stack?: boolean
+  /** Extra class(es) on the row root — e.g. `settings-row-sub` for a nested
+   *  child row indented under its parent setting. */
+  rowClassName?: string
 }) {
   return (
-    <div className={`settings-row${stack ? ' stack' : ''}`}>
+    <div className={`settings-row${stack ? ' stack' : ''}${rowClassName ? ` ${rowClassName}` : ''}`}>
       <div className="settings-row-text">
         <span className="settings-row-title">{title}</span>
         {hint != null && <span className="settings-row-hint">{hint}</span>}

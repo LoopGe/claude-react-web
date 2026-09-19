@@ -128,6 +128,11 @@ export interface SessionMeta {
    *  cards. Undefined = inherit the global config default. Persisted so
    *  the override survives reload. */
   toolGroupCards?: boolean
+  /** Per-session override for auto-expanding a group that holds a running
+   *  tool. Undefined = inherit the global config default. Persisted so the
+   *  override survives reload. Only meaningful while the effective
+   *  `toolGroupCards` is on. */
+  autoExpandRunningGroups?: boolean
   /** Per-session override for message-card header rows. Undefined =
    *  inherit the global config default. Persisted so the override
    *  survives reload. */
@@ -271,6 +276,8 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     showPinnedUserMessage: typeof r.showPinnedUserMessage === 'boolean' ? r.showPinnedUserMessage : undefined,
     autoRecap: typeof r.autoRecap === 'boolean' ? r.autoRecap : undefined,
     toolGroupCards: typeof r.toolGroupCards === 'boolean' ? r.toolGroupCards : undefined,
+    autoExpandRunningGroups:
+      typeof r.autoExpandRunningGroups === 'boolean' ? r.autoExpandRunningGroups : undefined,
     showMessageHeaders: typeof r.showMessageHeaders === 'boolean' ? r.showMessageHeaders : undefined,
     cliDebug: typeof r.cliDebug === 'boolean' ? r.cliDebug : undefined,
     appToolsGit: typeof r.appToolsGit === 'boolean' ? r.appToolsGit : undefined,

@@ -55,6 +55,9 @@ interface Props {
    *  the owning Chat panel) — forwarded so the subagent's inner transcript
    *  matches the main one. */
   toolGroupCards?: boolean
+  /** Auto-expand running groups pref (effective value from the owning Chat
+   *  panel) — forwarded for consistency with the main transcript. */
+  autoExpandRunningGroups?: boolean
   /** Message-card header visibility pref (effective value from the owning
    *  Chat panel) — forwarded for consistency with the main transcript. */
   showMessageHeaders?: boolean
@@ -78,6 +81,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   questionAnswers,
   onBackgroundTool,
   toolGroupCards,
+  autoExpandRunningGroups,
   showMessageHeaders,
 }: Props) {
   const currentId = stack[stack.length - 1]
@@ -263,6 +267,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             questionAnswers={questionAnswers}
             onBackgroundTool={onBackgroundTool}
             toolGroupCards={toolGroupCards}
+            autoExpandRunningGroups={autoExpandRunningGroups}
             showMessageHeaders={showMessageHeaders}
             replayReady
             // Subagents are not interactive — you can't type into them.

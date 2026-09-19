@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`autoExpandRunningGroups` display default** — new sub-setting of "Use
+  collapsible tool-group cards" (Global Settings → Appearance, plus a
+  per-session override in each session's Appearance tab). When off, a tool
+  group holding a running tool stays folded: the header keeps its `running`
+  badge and clicking still opens it. Only the *auto-expand* half is gated —
+  every fold path (boundary-row fold, the post-turn 2.2s settle hold, manual
+  toggles) behaves exactly as before, and a group holding a pending
+  plan/question still force-opens. Default `true` preserves current behavior.
+
+### Fixed
+
+- **Per-session UI overrides now survive `/clear`, `/compact` and Restart** —
+  the replacement session is a fresh id with no persisted meta, so
+  `showPinnedUserMessage` / `autoRecap` / `toolGroupCards` /
+  `showMessageHeaders` (and the first-party tool pins) silently reverted to
+  the global defaults, and the next write then clobbered the stored values.
+  `clear()` now carries them onto Y, and the client's restart flow sends them
+  on the create body.
+- **The plugin subset survives Restart and "New session like this"** — both
+  create a session under a fresh id, so a narrowed `enabledPlugins` selection
+  was dropped and the new session silently widened to every globally-enabled
+  plugin (`[]` — none — flipped to all).
+- **`showMessageHeaders` overrides now reach the client** — the field was
+  persisted and fork-carried but missing from the SessionInfo projection, so
+  a per-session override never applied (the panel always showed the global
+  default).
+
 ### Changed
 
 - **First-party git MCP server renamed `apptools` → `git-tools`** — tool FQNs

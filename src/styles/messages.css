@@ -995,6 +995,25 @@
 }
 .settings-row-control { flex-shrink: 0; }
 
+/* Nested sub-setting row (e.g. "Auto-expand running groups" under "Use
+   collapsible tool-group cards"). Indented under its parent with an
+   L-shaped connector; the caller hides the row entirely while the parent
+   is off, so there is no disabled state to style here. */
+.settings-row-sub { position: relative; padding-left: 38px; }
+.settings-row-sub::before {
+  content: '';
+  position: absolute;
+  left: 22px;
+  top: 0;
+  width: 9px;
+  height: 50%;
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-bottom-left-radius: 7px;
+  pointer-events: none;
+}
+.settings-row-sub .settings-row-title { font-size: var(--fs-sm); }
+
 /* Stepper: [−] value [unit] [+] — no native spinner. */
 .stepper {
   display: inline-flex;

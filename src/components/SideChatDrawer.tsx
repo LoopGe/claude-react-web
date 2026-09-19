@@ -38,6 +38,9 @@ interface Props {
   /** Transcript's collapsible tool-group cards pref (effective value —
    *  session override ?? global default, resolved by ChatPanel). */
   toolGroupCards?: boolean
+  /** Auto-expand running groups pref (effective value — session override ??
+   *  global default, resolved by ChatPanel). */
+  autoExpandRunningGroups?: boolean
   /** Message-card header visibility pref (effective value — session
    *  override ?? global default, resolved by ChatPanel). */
   showMessageHeaders?: boolean
@@ -53,6 +56,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   stream,
   permissions,
   toolGroupCards,
+  autoExpandRunningGroups,
   showMessageHeaders,
   onClose,
   onCollapse,
@@ -219,6 +223,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           hasOlder={stream.hasOlder}
           loadingOlder={stream.loadingOlder}
           toolGroupCards={toolGroupCards}
+          autoExpandRunningGroups={autoExpandRunningGroups}
           showMessageHeaders={showMessageHeaders}
           emptyStateContent={(
             // Side Chat-specific empty state. The drawer is ephemeral —

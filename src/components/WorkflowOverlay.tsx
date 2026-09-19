@@ -58,6 +58,9 @@ interface Props {
    *  the owning Chat panel) — forwarded so this transcript matches the
    *  main one. */
   toolGroupCards?: boolean
+  /** Auto-expand running groups pref (effective value from the owning Chat
+   *  panel) — forwarded for consistency with the main transcript. */
+  autoExpandRunningGroups?: boolean
   /** Message-card header visibility pref (effective value from the owning
    *  Chat panel) — forwarded for consistency with the main transcript. */
   showMessageHeaders?: boolean
@@ -77,6 +80,7 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
   planContent,
   questionAnswers,
   toolGroupCards,
+  autoExpandRunningGroups,
   showMessageHeaders,
 }: Props) {
   // Focused child: null = show the Workflow's direct children (phase tree
@@ -260,6 +264,7 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
               planContent={planContent}
               questionAnswers={questionAnswers}
               toolGroupCards={toolGroupCards}
+              autoExpandRunningGroups={autoExpandRunningGroups}
               showMessageHeaders={showMessageHeaders}
               replayReady
             />

@@ -277,6 +277,12 @@ export interface SessionInfoBase<PM = string> {
    *  a boolean pins this session to that value. Persisted so it survives
    *  resume / fork / reload. */
   toolGroupCards?: boolean
+  /** Per-session override for auto-expanding a group that holds a running
+   *  tool. Undefined = inherit the global default
+   *  (config.autoExpandRunningGroups); a boolean pins this session to that
+   *  value. Persisted so it survives resume / fork / reload. Only
+   *  meaningful while the effective `toolGroupCards` is on. */
+  autoExpandRunningGroups?: boolean
   /** Per-session override for message-card header rows (assistant/you
    *  label + timestamp + sending status). Undefined = inherit the global
    *  default (config.showMessageHeaders); a boolean pins this session to

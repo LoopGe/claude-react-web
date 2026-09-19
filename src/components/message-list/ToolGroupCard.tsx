@@ -2,10 +2,12 @@
 // (see ./transcript-rows.ts foldToolGroupRows).
 //
 // Settled groups collapse to a one-line header; a running tool or pending
-// Plan/Question keeps the group open. Search force-expands only when the
-// group's own name/input may match (tool results force-expand themselves
-// via ToolResultDetails). Children are existing BlockView / ToolUseBlock
-// cards — no tool view is rewritten.
+// Plan/Question keeps the group open — unless `autoExpandRunningGroups` is
+// off, in which case a RUNNING tool no longer opens the group (the header
+// badge still reports it) while pending Plan/Question still always does.
+// Search force-expands only when the group's own name/input may match (tool
+// results force-expand themselves via ToolResultDetails). Children are
+// existing BlockView / ToolUseBlock cards — no tool view is rewritten.
 //
 // Collapsed header still surfaces running / waiting / failed so a failure
 // or blocked turn is never hidden. The automatic post-turn fold also waits
@@ -76,6 +78,17 @@ interface ToolGroupCardProps {
    *  staying pinned open until the whole turn ends. Last row (nothing
    *  follows) is `false`, so live growth is still held open. */
   closed?: boolean
+  /** Whether a group holding a RUNNING tool auto-expands (the transcript's
+   *  `autoExpandRunningGroups` UI pref). True = today's behavior: a running
+   *  member force-opens the group and the turn-latch keeps it open through
+   *  the turn. False = running groups stay folded (the header badge still
+   *  reports running and clicking opens them) — the latch/settle-fold
+   *  machinery itself is unchanged, so a group that was auto-expanded by
+   *  anything else (a pending plan/question, an earlier toggle of this
+   *  pref) still pins and folds exactly as before. Pending interactive
+   *  members ALWAYS force-open regardless of this pref — a folded plan
+   *  would hide a decision the turn is parked on. Defaults to true. */
+  autoExpandRunningGroups?: boolean
 }
 
 // ── Fold state machine ───────────────────────────────────────────────────
@@ -160,6 +173,7 @@ function ToolGroupCardInner({
   subagentStatuses,
   workflowStatuses,
   closed = false,
+  autoExpandRunningGroups = true,
 }: ToolGroupCardProps) {
   const toolStatuses = useToolStatuses()
   const planStatuses = usePlanStatusMap()
@@ -186,7 +200,15 @@ function ToolGroupCardInner({
     () => groupMayMatchSearch(toolBlocks, searchQuery),
     [toolBlocks, searchQuery],
   )
-  const live = summary.anyRunning || summary.anyPendingInteractive
+  // `live` is the signal that force-opens the group AND (via the turn latch
+  // in the reducer) keeps it pinned through the turn + triggers the
+  // post-turn settle fold. The pref gates ONLY the running half of it: with
+  // the pref off a running member no longer opens the group, so gating the
+  // latch with the same signal is what keeps `autoOpen` from re-opening it
+  // mid-turn (`wasLive && turnActive`). A pending plan/question is never
+  // gated — a folded decision would hide a turn the user has to act on.
+  const live =
+    summary.anyPendingInteractive || (autoExpandRunningGroups && summary.anyRunning)
   const turnActive = working === true
 
   const [fold, dispatch] = useReducer(foldReducer, { live, working: turnActive }, initFoldState)
@@ -417,6 +439,7 @@ function propsEqual(a: ToolGroupCardProps, b: ToolGroupCardProps): boolean {
   return (
     a.working === b.working &&
     a.closed === b.closed &&
+    a.autoExpandRunningGroups === b.autoExpandRunningGroups &&
     a.searchQuery === b.searchQuery &&
     a.activeMemberItemIndex === b.activeMemberItemIndex &&
     a.activeMatchInItem === b.activeMatchInItem &&

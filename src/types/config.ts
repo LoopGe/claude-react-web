@@ -51,6 +51,10 @@ export interface ConfigResponse {
   /** Global default for the transcript's collapsible tool-group cards.
    *  Sessions without an explicit override inherit this. */
   toolGroupCards?: boolean
+  /** Global default for auto-expanding a group that holds a running tool.
+   *  Sessions without an explicit override inherit this. Only meaningful
+   *  while `toolGroupCards` is on. */
+  autoExpandRunningGroups?: boolean
   /** Global default for message-card header rows (assistant/you label +
    *  timestamp + sending status). Sessions without an explicit override
    *  inherit this. */
@@ -102,6 +106,9 @@ export interface FullServerConfig {
   autoRecap: boolean
   /** Global default for the transcript's collapsible tool-group cards. */
   toolGroupCards: boolean
+  /** Global default for auto-expanding a group that holds a running tool.
+   *  Only meaningful while `toolGroupCards` is on. */
+  autoExpandRunningGroups: boolean
   /** Global default for message-card header rows. */
   showMessageHeaders: boolean
   /** Global transcript spacing (`--chat-row-gap`) density preset. */

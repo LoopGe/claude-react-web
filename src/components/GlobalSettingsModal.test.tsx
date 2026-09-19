@@ -463,4 +463,42 @@ describe('GlobalSettingsModal Appearance tab', () => {
       expect(screen.queryByRole('radiogroup', { name })).toBeNull()
     }
   })
+
+  describe('auto-expand-running-groups sub-setting', () => {
+    const SUB = 'Auto-expand running groups'
+
+    it('renders as an indented child row and persists its own key', async () => {
+      await openAppearanceTab({ toolGroupCards: true, autoExpandRunningGroups: false })
+      const sub = screen.getByRole('switch', { name: SUB })
+      expect(sub.getAttribute('aria-checked')).toBe('false')
+      expect(sub.closest('.settings-row')!.classList.contains('settings-row-sub')).toBe(true)
+
+      fireEvent.click(sub)
+      save()
+      await waitFor(() => expect(api.put).toHaveBeenCalled())
+      expect(vi.mocked(api.put)).toHaveBeenCalledWith('/config', expect.objectContaining({
+        autoExpandRunningGroups: true,
+      }))
+    })
+
+    it('hides the sub-row while the parent is off', async () => {
+      await openAppearanceTab({ toolGroupCards: false, autoExpandRunningGroups: true })
+      expect(screen.queryByRole('switch', { name: SUB })).toBeNull()
+    })
+
+    it('keeps the stored value while hidden and reapplies it when the parent returns', async () => {
+      // Turning the parent off must not silently reset the child — the value
+      // rides along on Save and the row comes back as it was.
+      await openAppearanceTab({ toolGroupCards: true, autoExpandRunningGroups: false })
+      fireEvent.click(screen.getByRole('switch', { name: 'Use collapsible tool-group cards' }))
+      expect(screen.queryByRole('switch', { name: SUB })).toBeNull()
+
+      save()
+      await waitFor(() => expect(api.put).toHaveBeenCalled())
+      expect(vi.mocked(api.put)).toHaveBeenCalledWith('/config', expect.objectContaining({
+        toolGroupCards: false,
+        autoExpandRunningGroups: false,
+      }))
+    })
+  })
 })

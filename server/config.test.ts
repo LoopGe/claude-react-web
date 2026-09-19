@@ -411,6 +411,23 @@ describe('config', () => {
     expect(WRITABLE_CONFIG_KEYS).toContain('fontSize')
   })
 
+  it('defaults autoExpandRunningGroups to true (current behavior)', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.autoExpandRunningGroups).toBe(true)
+  })
+
+  it('honors an autoExpandRunningGroups override from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ autoExpandRunningGroups: false }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.autoExpandRunningGroups).toBe(false)
+  })
+
+  it('exposes autoExpandRunningGroups as a writable config key', () => {
+    expect(WRITABLE_CONFIG_KEYS).toContain('autoExpandRunningGroups')
+  })
+
   describe('clearCredentials', () => {
     it('clears authToken, baseUrl, and accessToken from config.json', async () => {
       writeFileSync(join(dir, 'config.json'), JSON.stringify({

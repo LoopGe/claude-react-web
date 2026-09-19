@@ -54,6 +54,7 @@ function renderPanel(opts: {
             showPinnedUserMessage: true,
             autoRecap: true,
             toolGroupCards: true,
+            autoExpandRunningGroups: true,
             showMessageHeaders: true,
             ...opts.globalPrefs,
           } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
@@ -156,6 +157,7 @@ describe('SettingsPanel first-party card display chain', () => {
                 showPinnedUserMessage: true,
                 autoRecap: true,
                 toolGroupCards: true,
+                autoExpandRunningGroups: true,
                 firstPartyTools: {},
               } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
             }
@@ -198,6 +200,7 @@ describe('SettingsPanel MCP reconnect feedback', () => {
     showPinnedUserMessage: true,
     autoRecap: true,
     toolGroupCards: true,
+    autoExpandRunningGroups: true,
   } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
 
   /** Render the session panel on its MCP tab with a ToastHost mounted under
@@ -404,5 +407,66 @@ describe('SettingsPanel Appearance tab', () => {
     // Moved, not duplicated.
     expect(switchEl(container, 'Auto-generate session recap')).toBeNull()
     expect(switchEl(container, 'Show message card headers')).toBeNull()
+  })
+
+  describe('auto-expand-running-groups sub-setting', () => {
+    const SUB_LABEL = 'Auto-expand running groups'
+
+    it('renders indented under its parent and posts its own key', async () => {
+      const { container } = renderPanel({ tab: 'appearance' })
+      await waitFor(() => expect(switchEl(container, SUB_LABEL)).not.toBeNull())
+
+      const row = switchEl(container, SUB_LABEL)!.closest('.settings-row')!
+      expect(row.classList.contains('settings-row-sub')).toBe(true)
+      expect(switchEl(container, SUB_LABEL)!.getAttribute('aria-checked')).toBe('true')
+
+      fireEvent.click(switchEl(container, SUB_LABEL)!)
+      await waitFor(() =>
+        expect(api.post).toHaveBeenCalledWith('/sessions/s1/prefs', { autoExpandRunningGroups: false }))
+    })
+
+    it('inherits the global default and reports it in the hint', async () => {
+      const { container } = renderPanel({
+        tab: 'appearance',
+        globalPrefs: { autoExpandRunningGroups: false },
+      })
+      await waitFor(() => expect(switchEl(container, SUB_LABEL)).not.toBeNull())
+      expect(switchEl(container, SUB_LABEL)!.getAttribute('aria-checked')).toBe('false')
+      expect(container.textContent).toContain('Inheriting global (OFF).')
+    })
+
+    it('shows a session override with a reset link that clears it', async () => {
+      const { container } = renderPanel({
+        tab: 'appearance',
+        session: { id: 's1', running: true, terminated: false, autoExpandRunningGroups: false } as unknown as SessionInfo,
+      })
+      await waitFor(() => expect(switchEl(container, SUB_LABEL)).not.toBeNull())
+      expect(container.textContent).toContain('Session override.')
+
+      const reset = [...container.querySelectorAll('.settings-reset-link')].find(
+        (b) => b.textContent === 'Reset (inherit global)',
+      )!
+      fireEvent.click(reset)
+      await waitFor(() =>
+        expect(api.post).toHaveBeenCalledWith('/sessions/s1/prefs', { autoExpandRunningGroups: null }))
+    })
+
+    it('hides the sub-row while the effective parent is off', async () => {
+      const { container } = renderPanel({ tab: 'appearance', globalPrefs: { toolGroupCards: false } })
+      await waitFor(() => expect(switchEl(container, 'Use collapsible tool-group cards')).not.toBeNull())
+      expect(switchEl(container, SUB_LABEL)).toBeNull()
+    })
+
+    it('keeps the sub-row when a session override re-enables the parent', async () => {
+      // The gate reads the EFFECTIVE parent, not the session field: a session
+      // pinning toolGroupCards=true while the global default is off still has
+      // collapsible cards, so the sub-setting must stay reachable.
+      const { container } = renderPanel({
+        tab: 'appearance',
+        session: { id: 's1', running: true, terminated: false, toolGroupCards: true } as unknown as SessionInfo,
+        globalPrefs: { toolGroupCards: false },
+      })
+      await waitFor(() => expect(switchEl(container, SUB_LABEL)).not.toBeNull())
+    })
   })
 })

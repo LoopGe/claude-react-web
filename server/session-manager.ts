@@ -971,6 +971,7 @@ export class SessionManager {
       showPinnedUserMessage: s.showPinnedUserMessage,
       autoRecap: s.autoRecap,
       toolGroupCards: s.toolGroupCards,
+      autoExpandRunningGroups: s.autoExpandRunningGroups,
       showMessageHeaders: s.showMessageHeaders,
       cliDebug: s.cliDebug,
       appToolsGit: s.appToolsGit,
@@ -1145,8 +1146,31 @@ export class SessionManager {
     // a stale client body cannot store a pin firstPartyEnabled never reads.
     const rawFirstParty = (opts as { firstPartyTools?: Record<string, boolean> }).firstPartyTools
     const firstParty = migrateLegacyGitToolsKey(rawFirstParty)
-    const createPrefs = firstParty
-      ? { appToolsGit: firstParty[APP_TOOLS_SERVER_NAME], firstPartyTools: firstParty }
+    // Create-time per-session UI prefs — sent by the client's restart flow so
+    // the replacement session keeps the panel's overrides (a fresh id has no
+    // persisted meta to fall back on). App-level body fields, never SDK
+    // Options; `undefined` = inherit the global default.
+    const uiPrefs = opts as {
+      showPinnedUserMessage?: boolean
+      autoRecap?: boolean
+      toolGroupCards?: boolean
+      autoExpandRunningGroups?: boolean
+      showMessageHeaders?: boolean
+    }
+    const createPrefs = firstParty || uiPrefs.showPinnedUserMessage !== undefined
+      || uiPrefs.autoRecap !== undefined
+      || uiPrefs.toolGroupCards !== undefined
+      || uiPrefs.autoExpandRunningGroups !== undefined
+      || uiPrefs.showMessageHeaders !== undefined
+      ? {
+          showPinnedUserMessage: uiPrefs.showPinnedUserMessage,
+          autoRecap: uiPrefs.autoRecap,
+          toolGroupCards: uiPrefs.toolGroupCards,
+          autoExpandRunningGroups: uiPrefs.autoExpandRunningGroups,
+          showMessageHeaders: uiPrefs.showMessageHeaders,
+          appToolsGit: firstParty?.[APP_TOOLS_SERVER_NAME],
+          firstPartyTools: firstParty,
+        }
       : undefined
     return this.spawn(randomUUID(), withDefault, customEnv, undefined, undefined, createPrefs, joinGroupOf, evictingSource)
   }
@@ -1685,11 +1709,12 @@ export class SessionManager {
       undefined,
       opts?.historySeed,
       parentOverride,
-      // Carry the source's pure-UI pref overrides onto the fork so a
-      // pinned header / auto-recap / tool-group-card / message-header
-      // override survives forking. No-op when the source inherits global
-      // (all undefined) — the fork then inherits global too.
-      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, toolGroupCards: meta.toolGroupCards, showMessageHeaders: meta.showMessageHeaders, appToolsGit: meta.appToolsGit, firstPartyTools: meta.firstPartyTools },
+      // Carry the source's pure-UI pref overrides + first-party tool pins onto
+      // the fork so a pinned header / auto-recap / tool-group-card /
+      // message-header / running-group override survives forking. No-op when
+      // the source inherits global (all undefined) — the fork then inherits
+      // global too.
+      { showPinnedUserMessage: meta.showPinnedUserMessage, autoRecap: meta.autoRecap, toolGroupCards: meta.toolGroupCards, autoExpandRunningGroups: meta.autoExpandRunningGroups, showMessageHeaders: meta.showMessageHeaders, appToolsGit: meta.appToolsGit, firstPartyTools: meta.firstPartyTools },
       // joinGroupOf: the source id — Y joins X's group (append semantics;
       // X stays, since fork doesn't remove the source). The crash-recovery
       // "Fork from last completed turn" button sets `replacesSource` so the
@@ -2096,7 +2121,7 @@ export class SessionManager {
     customEnv?: Record<string, string>,
     historySeed?: SDKMessage[],
     skillOverride?: SessionSkillOverride,
-    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; toolGroupCards?: boolean; showMessageHeaders?: boolean; appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> },
+    prefs?: { showPinnedUserMessage?: boolean; autoRecap?: boolean; toolGroupCards?: boolean; autoExpandRunningGroups?: boolean; showMessageHeaders?: boolean; appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> },
     /** When this spawn is a fresh Y that should land in an existing session
      *  X's sidebar group, pass X's id here so the `created` broadcast carries
      *  `joinGroupOf: X`. Set by `/clear`, restart, and fork. Append
@@ -2295,15 +2320,18 @@ export class SessionManager {
       // meta; create/fork/clear pass it on opts where snapshotMeta captured
       // it. A present object = sandbox ON; undefined = off.
       sandbox: existingMeta?.sandbox ?? metaSnapshot.sandbox,
-      // Pure-UI pref overrides. An explicit `prefs` arg (fork / clear
-      // carrying the source's overrides onto a new id) wins; otherwise
-      // restore from the persisted meta so a resumed session keeps its
-      // override instead of silently reverting to the global default
-      // (and then having writeStore() clobber the persisted value).
-      // `??` (not `||`) so an explicit `false` override survives.
+      // Pure-UI pref overrides + first-party tool pins. An explicit `prefs`
+      // arg (fork / clear carrying the source's overrides onto a NEW id, where
+      // no persisted meta exists) wins; otherwise restore from the persisted
+      // meta so a resumed session keeps its override instead of silently
+      // reverting to the global default (and then having writeStore() clobber
+      // the persisted value). `??` (not `||`) so an explicit `false` override
+      // survives.
       showPinnedUserMessage: prefs?.showPinnedUserMessage ?? existingMeta?.showPinnedUserMessage,
       autoRecap: prefs?.autoRecap ?? existingMeta?.autoRecap,
       toolGroupCards: prefs?.toolGroupCards ?? existingMeta?.toolGroupCards,
+      autoExpandRunningGroups:
+        prefs?.autoExpandRunningGroups ?? existingMeta?.autoExpandRunningGroups,
       showMessageHeaders: prefs?.showMessageHeaders ?? existingMeta?.showMessageHeaders,
       cliDebug: existingMeta?.cliDebug ?? metaSnapshot.cliDebug,
       appToolsGit: prefs?.appToolsGit ?? existingMeta?.appToolsGit,
@@ -2434,6 +2462,12 @@ export class SessionManager {
     // own resolution). baseSpawnOptions' return rides into sdkOptions through
     // providerExtras — leaving it in would hand the CLI arg builder an unknown key.
     delete (sdkOptions as { cliDebug?: boolean }).cliDebug
+    // Strip the create-time per-session UI prefs (the client restart flow
+    // sends them on the body). They are pure app-level state mirrored into
+    // SessionInfo — the SDK has no such Options keys.
+    for (const key of ['showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups', 'showMessageHeaders']) {
+      delete (sdkOptions as Record<string, unknown>)[key]
+    }
     // The create body's `settings` rides the flag-settings layer, which
     // outranks the top-level env — so it needs the same blocklist as the env
     // map filtered in the provider (see session-env.ts). The HTTP route
@@ -3145,6 +3179,34 @@ export class SessionManager {
         agent: s.agent,
       }
 
+      // Pure-UI pref overrides + per-server first-party tool pins ride the
+      // same "reset the conversation, not the configuration" rule as agent /
+      // toolProfile above. They must be passed as spawn's `prefs` arg: Y has
+      // a NEW id, so `existingMeta` is undefined and the persisted-meta
+      // fallback cannot see X's values.
+      //
+      // All-undefined (X inherits every global default and pins no server)
+      // collapses to `undefined` rather than an empty object, so spawn's
+      // `prefs?.field ?? existingMeta?.field` fallback stays live for any
+      // future same-id caller — an empty object would shadow it.
+      const carriedPrefs = s.showPinnedUserMessage !== undefined
+        || s.autoRecap !== undefined
+        || s.toolGroupCards !== undefined
+        || s.autoExpandRunningGroups !== undefined
+        || s.showMessageHeaders !== undefined
+        || s.appToolsGit !== undefined
+        || s.firstPartyTools !== undefined
+        ? {
+            showPinnedUserMessage: s.showPinnedUserMessage,
+            autoRecap: s.autoRecap,
+            toolGroupCards: s.toolGroupCards,
+            autoExpandRunningGroups: s.autoExpandRunningGroups,
+            showMessageHeaders: s.showMessageHeaders,
+            appToolsGit: s.appToolsGit,
+            firstPartyTools: s.firstPartyTools,
+          }
+        : undefined
+
       // Spawn a fresh session Y under a new id, same settings, no `resume:`.
       // spawn() persists Y, broadcasts `created`, and starts its pump. Side
       // Chat sessions re-inject SIDE_DEVELOPER_INSTRUCTIONS so the boundary
@@ -3199,7 +3261,7 @@ export class SessionManager {
         undefined,
         undefined,
         settings.skillOverride,
-        undefined,
+        carriedPrefs,
         id,
         // evictingSource: X is being detached by this clear(), so the client
         // bypasses its maxGroupSize cap when appending Y to X's group (the
@@ -4007,6 +4069,7 @@ export class SessionManager {
       showPinnedUserMessage?: boolean | undefined
       autoRecap?: boolean | undefined
       toolGroupCards?: boolean | undefined
+      autoExpandRunningGroups?: boolean | undefined
       showMessageHeaders?: boolean | undefined
     },
   ): Promise<SessionInfo> {
@@ -4019,6 +4082,9 @@ export class SessionManager {
     }
     if ('toolGroupCards' in partial) {
       s.toolGroupCards = partial.toolGroupCards
+    }
+    if ('autoExpandRunningGroups' in partial) {
+      s.autoExpandRunningGroups = partial.autoExpandRunningGroups
     }
     if ('showMessageHeaders' in partial) {
       s.showMessageHeaders = partial.showMessageHeaders
@@ -5457,6 +5523,8 @@ export class SessionManager {
     showPinnedUserMessage?: boolean
     autoRecap?: boolean
     toolGroupCards?: boolean
+    autoExpandRunningGroups?: boolean
+    showMessageHeaders?: boolean
     appToolsGit?: boolean
     firstPartyTools?: Record<string, boolean | null>
     slept?: boolean
@@ -5495,6 +5563,8 @@ export class SessionManager {
       showPinnedUserMessage: x.showPinnedUserMessage,
       autoRecap: x.autoRecap,
       toolGroupCards: x.toolGroupCards,
+      autoExpandRunningGroups: x.autoExpandRunningGroups,
+      showMessageHeaders: x.showMessageHeaders,
       appToolsGit: x.appToolsGit,
       firstPartyTools: x.firstPartyTools,
       slept: x.slept,

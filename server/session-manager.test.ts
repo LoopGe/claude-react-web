@@ -1460,6 +1460,62 @@ describe('SessionManager', () => {
     spy.mockRestore()
   })
 
+  it('clear() carries per-session UI prefs and first-party pins onto Y', async () => {
+    // Y has a NEW id, so spawn's persisted-meta fallback can't see X's
+    // values — clear() must pass them as the explicit `prefs` arg or every
+    // override silently reverts to the global default (and writeStore()
+    // then clobbers the on-disk value).
+    const info = sm.create({})
+    await sm.setPrefs(info.id, {
+      showPinnedUserMessage: false,
+      autoRecap: false,
+      toolGroupCards: false,
+      autoExpandRunningGroups: false,
+      showMessageHeaders: false,
+    })
+    await sm.setFirstPartyTool(info.id, 'git-tools', false)
+
+    const next = await sm.clear(info.id)
+
+    expect(next.showPinnedUserMessage).toBe(false)
+    expect(next.autoRecap).toBe(false)
+    expect(next.toolGroupCards).toBe(false)
+    expect(next.autoExpandRunningGroups).toBe(false)
+    expect(next.showMessageHeaders).toBe(false)
+    expect(next.firstPartyTools?.['git-tools']).toBe(false)
+    // Persisted too, so the next resume/fork of Y keeps them.
+    const meta = store.get(next.id)
+    expect(meta?.autoExpandRunningGroups).toBe(false)
+    expect(meta?.toolGroupCards).toBe(false)
+    expect(meta?.firstPartyTools?.['git-tools']).toBe(false)
+  })
+
+  it('clear() carries the plugin subset onto Y (a narrowed subset must not widen)', async () => {
+    // `undefined` = all enabled, `[]` = none — a dropped subset silently
+    // widens the session to every globally-enabled plugin.
+    const info = sm.create({ enabledPlugins: [] } as Parameters<SessionManager['create']>[0])
+    expect(info.enabledPlugins).toEqual([])
+
+    const next = await sm.clear(info.id)
+    expect(next.enabledPlugins).toEqual([])
+    expect(store.get(next.id)?.enabledPlugins).toEqual([])
+  })
+
+  it('clear() of an all-default session passes no prefs arg (fallback stays live)', async () => {
+    // An empty prefs OBJECT would shadow spawn's `prefs?.field ?? meta?.field`
+    // fallback for a future same-id caller; all-undefined must collapse.
+    const info = sm.create({})
+    const spawnSpy = vi.spyOn(
+      sm as unknown as { spawn: (...args: unknown[]) => unknown },
+      'spawn',
+    )
+    await sm.clear(info.id)
+    // args: [id, opts, env, seed, skillOverride, prefs, ...]
+    const prefsArg = spawnSpy.mock.calls[0]![5]
+    expect(prefsArg).toBeUndefined()
+    spawnSpy.mockRestore()
+  })
+
   it('clear() resets stale working state from the interrupted turn', async () => {
     const info = sm.create({})
     sm.send(info.id, 'busy')
@@ -4293,6 +4349,53 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(info.appToolsGit).toBe(false)
     const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown> | undefined
     expect(mcpServers?.['git-tools']).toBeUndefined()
+  })
+
+  it('create() seeds create-time UI prefs (the client restart flow)', () => {
+    // The restart flow creates a fresh id via POST /sessions; without these
+    // riding the body, Y's panel would silently revert to the global defaults.
+    const info = sm.create({
+      cwd: '/tmp',
+      showPinnedUserMessage: false,
+      autoRecap: false,
+      toolGroupCards: false,
+      autoExpandRunningGroups: false,
+      showMessageHeaders: false,
+    } as Parameters<SessionManager['create']>[0])
+    expect(info.showPinnedUserMessage).toBe(false)
+    expect(info.autoRecap).toBe(false)
+    expect(info.toolGroupCards).toBe(false)
+    expect(info.autoExpandRunningGroups).toBe(false)
+    expect(info.showMessageHeaders).toBe(false)
+    // Persisted too, so a later resume/fork of Y keeps them.
+    const meta = store.get(info.id)
+    expect(meta?.autoExpandRunningGroups).toBe(false)
+    expect(meta?.showMessageHeaders).toBe(false)
+  })
+
+  it('create() with no UI prefs leaves them undefined (inherit global)', () => {
+    const info = sm.create({ cwd: '/tmp' } as Parameters<SessionManager['create']>[0])
+    expect(info.showPinnedUserMessage).toBeUndefined()
+    expect(info.autoExpandRunningGroups).toBeUndefined()
+    expect(info.showMessageHeaders).toBeUndefined()
+  })
+
+  it('create() strips the app-level UI prefs from the SDK options', () => {
+    // They ride the create body (restart flow) but are app state only — the
+    // SDK has no such Options keys, and the CLI arg builder would choke on
+    // unknown fields.
+    sm.create({
+      cwd: '/tmp',
+      showPinnedUserMessage: false,
+      toolGroupCards: false,
+      autoExpandRunningGroups: false,
+      showMessageHeaders: false,
+    } as Parameters<SessionManager['create']>[0])
+    const opts = mockHandles[0].options as Record<string, unknown>
+    expect(opts.showPinnedUserMessage).toBeUndefined()
+    expect(opts.toolGroupCards).toBeUndefined()
+    expect(opts.autoExpandRunningGroups).toBeUndefined()
+    expect(opts.showMessageHeaders).toBeUndefined()
   })
 
   it('omits git-tools from live setMcpServers when the session override disables it', async () => {

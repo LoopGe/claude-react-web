@@ -63,6 +63,7 @@ interface Props {
     showPinnedUserMessage: boolean
     autoRecap: boolean
     toolGroupCards: boolean
+    autoExpandRunningGroups: boolean
     showMessageHeaders: boolean
     firstPartyTools?: Record<string, { enabled: boolean }>
   }
@@ -169,6 +170,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   const effShowPinned = session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage
   const effAutoRecap = session.autoRecap ?? globalPrefs.autoRecap
   const effToolGroupCards = session.toolGroupCards ?? globalPrefs.toolGroupCards
+  const effAutoExpandRunningGroups = session.autoExpandRunningGroups ?? globalPrefs.autoExpandRunningGroups
   const effShowMessageHeaders = session.showMessageHeaders ?? globalPrefs.showMessageHeaders
   /** POST a per-session pref override. A boolean pins it; `null` clears the
    *  override so the session re-inherits the global default. No success toast
@@ -181,6 +183,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       showPinnedUserMessage?: boolean | null
       autoRecap?: boolean | null
       toolGroupCards?: boolean | null
+      autoExpandRunningGroups?: boolean | null
       showMessageHeaders?: boolean | null
     },
   ) => {
@@ -1365,6 +1368,40 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             onChange={(next) => void changePref({ toolGroupCards: next })}
           />
         </SettingsRow>
+
+        {/* Sub-setting of the row above. Hidden while the effective parent is
+            off — the override value (if any) is kept and reappears with the
+            parent. Gated on the EFFECTIVE parent so a session whose override
+            re-enables the cards gets the sub-row back. */}
+        {effToolGroupCards && (
+          <SettingsRow
+            rowClassName="settings-row-sub"
+            title="Auto-expand running groups"
+            hint={<>A group holding a running tool or subagent opens automatically and
+              stays open until the turn ends. When off, running groups stay folded —
+              the header keeps its running badge, and clicking one still opens it.{' '}
+              {session.autoExpandRunningGroups === undefined
+                ? `Inheriting global (${globalPrefs.autoExpandRunningGroups ? 'ON' : 'OFF'}).`
+                : 'Session override.'}
+              {session.autoExpandRunningGroups !== undefined && (
+                <button
+                  type="button"
+                  className="settings-reset-link"
+                  disabled={busy || session.terminated}
+                  onClick={() => void changePref({ autoExpandRunningGroups: null })}
+                >
+                  Reset (inherit global)
+                </button>
+              )}</>}
+          >
+            <Switch
+              label="Auto-expand running groups"
+              checked={effAutoExpandRunningGroups}
+              disabled={busy || session.terminated}
+              onChange={(next) => void changePref({ autoExpandRunningGroups: next })}
+            />
+          </SettingsRow>
+        )}
 
         <SettingsRow
           title="Show message card headers"

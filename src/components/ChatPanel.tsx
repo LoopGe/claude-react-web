@@ -122,6 +122,7 @@ export interface ChatPanelProps {
     showPinnedUserMessage: boolean
     autoRecap: boolean
     toolGroupCards: boolean
+    autoExpandRunningGroups: boolean
     showMessageHeaders: boolean
     firstPartyTools?: Record<string, { enabled: boolean }>
   }
@@ -1392,6 +1393,9 @@ export const ChatPanel = memo(function ChatPanel({
           stream={sideChatStream}
           permissions={sideChatPermissions}
           toolGroupCards={sideChatSession.toolGroupCards ?? globalPrefs.toolGroupCards}
+          autoExpandRunningGroups={
+            sideChatSession.autoExpandRunningGroups ?? globalPrefs.autoExpandRunningGroups
+          }
           showMessageHeaders={sideChatSession.showMessageHeaders ?? globalPrefs.showMessageHeaders}
           onClose={onCloseSideChat}
           onCollapse={onToggleCollapseSideChat}

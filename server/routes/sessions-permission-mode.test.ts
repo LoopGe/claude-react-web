@@ -209,4 +209,36 @@ describe('session create body validation (narrowCreateBody)', () => {
       false,
     )
   })
+
+  it('accepts create-time UI prefs (the restart flow) and forwards them', async () => {
+    const { app, sm } = makeApp()
+    const res = await post(app, {
+      showPinnedUserMessage: false,
+      autoRecap: false,
+      toolGroupCards: false,
+      autoExpandRunningGroups: false,
+      showMessageHeaders: false,
+    })
+    expect(res.status).toBe(201)
+    expect(sm.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        showPinnedUserMessage: false,
+        autoRecap: false,
+        toolGroupCards: false,
+        autoExpandRunningGroups: false,
+        showMessageHeaders: false,
+      }),
+      undefined,
+      undefined,
+      false,
+    )
+  })
+
+  it('rejects a non-boolean UI pref at create', async () => {
+    const { app, sm } = makeApp()
+    const res = await post(app, { autoExpandRunningGroups: 'yes' })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'autoExpandRunningGroups must be a boolean' })
+    expect(sm.create).not.toHaveBeenCalled()
+  })
 })

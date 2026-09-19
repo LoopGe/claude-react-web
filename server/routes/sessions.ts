@@ -206,6 +206,16 @@ function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Rec
       }
     }
   }
+  // Create-time per-session UI prefs (app-level, NOT SDK Options). The restart
+  // flow sends these so the replacement session keeps the panel's overrides
+  // instead of silently reverting to the global defaults. Absent = inherit
+  // (never `null` — that form belongs to the /prefs route).
+  for (const name of ['showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups', 'showMessageHeaders']) {
+    const v = rest[name]
+    if (v !== undefined && typeof v !== 'boolean') {
+      return { ok: false, error: `${name} must be a boolean` }
+    }
+  }
   return { ok: true, value: rest }
 }
 
@@ -703,12 +713,14 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
       showPinnedUserMessage?: boolean | null
       autoRecap?: boolean | null
       toolGroupCards?: boolean | null
+      autoExpandRunningGroups?: boolean | null
       showMessageHeaders?: boolean | null
     }>(c.req)
     const partial: {
       showPinnedUserMessage?: boolean | undefined
       autoRecap?: boolean | undefined
       toolGroupCards?: boolean | undefined
+      autoExpandRunningGroups?: boolean | undefined
       showMessageHeaders?: boolean | undefined
     } = {}
     if (body && Object.prototype.hasOwnProperty.call(body, 'showPinnedUserMessage')) {
@@ -731,6 +743,13 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
         return c.json({ error: 'toolGroupCards must be a boolean or null' }, 400)
       }
       partial.toolGroupCards = v ?? undefined
+    }
+    if (body && Object.prototype.hasOwnProperty.call(body, 'autoExpandRunningGroups')) {
+      const v = body.autoExpandRunningGroups
+      if (v !== null && typeof v !== 'boolean') {
+        return c.json({ error: 'autoExpandRunningGroups must be a boolean or null' }, 400)
+      }
+      partial.autoExpandRunningGroups = v ?? undefined
     }
     if (body && Object.prototype.hasOwnProperty.call(body, 'showMessageHeaders')) {
       const v = body.showMessageHeaders

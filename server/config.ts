@@ -129,6 +129,12 @@ interface ConfigFile {
    *  sessions without an override inherit this value. When false, tool-only
    *  assistant rows render as individual tool cards with no fold chrome. */
   toolGroupCards: boolean
+  /** Global default for auto-expanding a group that holds a running tool.
+   *  Per-session overrides (SessionMeta.autoExpandRunningGroups) take
+   *  priority. When false, a running group stays folded (its header keeps
+   *  the running badge and clicking still opens it); every fold path is
+   *  unchanged. Only meaningful while `toolGroupCards` is on. */
+  autoExpandRunningGroups: boolean
   /** Global default for message-card header rows (assistant/you label +
    *  timestamp + sending status). Per-session overrides
    *  (SessionMeta.showMessageHeaders) take priority; sessions without an
@@ -214,6 +220,10 @@ export interface ServerConfig {
   /** Global default for the transcript's collapsible tool-group cards.
    *  Sessions without an explicit override inherit this. */
   readonly toolGroupCards: boolean
+  /** Global default for auto-expanding a group that holds a running tool.
+   *  Sessions without an explicit override inherit this. Only meaningful
+   *  while `toolGroupCards` is on. */
+  readonly autoExpandRunningGroups: boolean
   /** Global default for message-card header rows. Sessions without an
    *  explicit override inherit this. */
   readonly showMessageHeaders: boolean
@@ -277,6 +287,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   showPinnedUserMessage: true,
   autoRecap: true,
   toolGroupCards: true,
+  autoExpandRunningGroups: true,
   showMessageHeaders: true,
   rowGap: DEFAULT_ROW_GAP,
   textSpacing: DEFAULT_TEXT_SPACING,
@@ -537,6 +548,10 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { toolGroupCards: boolean }).toolGroupCards = file_.toolGroupCards
   }
 
+  if (typeof file_.autoExpandRunningGroups === 'boolean') {
+    ;(merged as { autoExpandRunningGroups: boolean }).autoExpandRunningGroups = file_.autoExpandRunningGroups
+  }
+
   if (typeof file_.showMessageHeaders === 'boolean') {
     ;(merged as { showMessageHeaders: boolean }).showMessageHeaders = file_.showMessageHeaders
   }
@@ -661,6 +676,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'showPinnedUserMessage',
   'autoRecap',
   'toolGroupCards',
+  'autoExpandRunningGroups',
   'showMessageHeaders',
   'rowGap',
   'textSpacing',

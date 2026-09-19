@@ -646,6 +646,12 @@ export interface Session {
    *  it. Persisted via SessionMeta and mirrored into SessionInfo. Pure
    *  UI pref — no SDK call. */
   toolGroupCards?: boolean
+  /** Per-session override for auto-expanding a group that holds a running
+   *  tool. Undefined = inherit the global config default; a boolean pins
+   *  it. Persisted via SessionMeta and mirrored into SessionInfo. Pure
+   *  UI pref — no SDK call. Only meaningful while the effective
+   *  `toolGroupCards` is on. */
+  autoExpandRunningGroups?: boolean
   /** Per-session override for message-card header rows (assistant/you
    *  label + timestamp + sending status). Undefined = inherit the global
    *  config default; a boolean pins it. Persisted via SessionMeta and

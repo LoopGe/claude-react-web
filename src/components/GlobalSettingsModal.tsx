@@ -166,6 +166,7 @@ export function GlobalSettingsModal({
   const [showPinnedUserMessage, setShowPinnedUserMessage] = useState(true)
   const [autoRecap, setAutoRecap] = useState(true)
   const [toolGroupCards, setToolGroupCards] = useState(true)
+  const [autoExpandRunningGroups, setAutoExpandRunningGroups] = useState(true)
   const [showMessageHeaders, setShowMessageHeaders] = useState(true)
   const [rowGap, setRowGap] = useState<RowGapPreset>(DEFAULT_ROW_GAP)
   const [textSpacing, setTextSpacing] = useState<TextSpacingPreset>(DEFAULT_TEXT_SPACING)
@@ -216,6 +217,7 @@ export function GlobalSettingsModal({
         setShowPinnedUserMessage(cfg.showPinnedUserMessage ?? true)
         setAutoRecap(cfg.autoRecap ?? true)
         setToolGroupCards(cfg.toolGroupCards ?? true)
+        setAutoExpandRunningGroups(cfg.autoExpandRunningGroups ?? true)
         setShowMessageHeaders(cfg.showMessageHeaders ?? true)
         setRowGap(cfg.rowGap ?? DEFAULT_ROW_GAP)
         setTextSpacing(cfg.textSpacing ?? DEFAULT_TEXT_SPACING)
@@ -299,6 +301,7 @@ export function GlobalSettingsModal({
         showPinnedUserMessage,
         autoRecap,
         toolGroupCards,
+        autoExpandRunningGroups,
         showMessageHeaders,
         rowGap,
         textSpacing,
@@ -446,6 +449,7 @@ export function GlobalSettingsModal({
                   showPinnedUserMessage={showPinnedUserMessage}
                   autoRecap={autoRecap}
                   toolGroupCards={toolGroupCards}
+                  autoExpandRunningGroups={autoExpandRunningGroups}
                   showMessageHeaders={showMessageHeaders}
                   rowGap={rowGap}
                   textSpacing={textSpacing}
@@ -453,6 +457,7 @@ export function GlobalSettingsModal({
                   onShowPinnedUserMessageChange={setShowPinnedUserMessage}
                   onAutoRecapChange={setAutoRecap}
                   onToolGroupCardsChange={setToolGroupCards}
+                  onAutoExpandRunningGroupsChange={setAutoExpandRunningGroups}
                   onShowMessageHeadersChange={setShowMessageHeaders}
                   onRowGapChange={setRowGap}
                   onTextSpacingChange={setTextSpacing}
@@ -704,13 +709,16 @@ function ServerTab({
  *  session from the session Settings panel's own Appearance tab. Split out of
  *  the Server tab, which now holds only server-wide Limits + Permissions. */
 function AppearanceTab({
-  showPinnedUserMessage, autoRecap, toolGroupCards, showMessageHeaders, rowGap, textSpacing, fontSize,
+  showPinnedUserMessage, autoRecap, toolGroupCards, autoExpandRunningGroups,
+  showMessageHeaders, rowGap, textSpacing, fontSize,
   onShowPinnedUserMessageChange, onAutoRecapChange, onToolGroupCardsChange,
+  onAutoExpandRunningGroupsChange,
   onShowMessageHeadersChange, onRowGapChange, onTextSpacingChange, onFontSizeChange,
 }: {
   showPinnedUserMessage: boolean
   autoRecap: boolean
   toolGroupCards: boolean
+  autoExpandRunningGroups: boolean
   showMessageHeaders: boolean
   rowGap: RowGapPreset
   textSpacing: TextSpacingPreset
@@ -718,6 +726,7 @@ function AppearanceTab({
   onShowPinnedUserMessageChange: (v: boolean) => void
   onAutoRecapChange: (v: boolean) => void
   onToolGroupCardsChange: (v: boolean) => void
+  onAutoExpandRunningGroupsChange: (v: boolean) => void
   onShowMessageHeadersChange: (v: boolean) => void
   onRowGapChange: (v: RowGapPreset) => void
   onTextSpacingChange: (v: TextSpacingPreset) => void
@@ -763,6 +772,21 @@ function AppearanceTab({
             onChange={onToolGroupCardsChange}
           />
         </SettingsRow>
+        {/* Sub-setting of the row above. Hidden while the parent is off —
+            the preference's value is kept and reappears with the parent. */}
+        {toolGroupCards && (
+          <SettingsRow
+            rowClassName="settings-row-sub"
+            title="Auto-expand running groups"
+            hint="A group holding a running tool or subagent opens automatically and stays open until the turn ends. When off, running groups stay folded — the header keeps its running badge, and clicking one still opens it. Plan/question groups still open for decisions."
+          >
+            <Switch
+              label="Auto-expand running groups"
+              checked={autoExpandRunningGroups}
+              onChange={onAutoExpandRunningGroupsChange}
+            />
+          </SettingsRow>
+        )}
         <SettingsRow
           title="Show message card headers"
           hint="Shows the assistant/you label, timestamp, and sending status row on each message card. When off, message cards render as bare content."
