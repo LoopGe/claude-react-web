@@ -3,6 +3,7 @@
 
 import { cloneElement, isValidElement, lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../hooks/useApi'
+import { getHostCapabilities } from '../host-capabilities'
 import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { IconX, IconCheck, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconFileText, IconSparkles, IconTerminal } from './icons/ToolIcons'
@@ -338,6 +339,7 @@ export function GlobalSettingsModal({
     }
   }
 
+  const caps = getHostCapabilities()
   const tabs: { key: Tab; label: string }[] = [
     { key: 'profiles', label: 'Profiles' },
     { key: 'server', label: 'Server' },
@@ -346,7 +348,9 @@ export function GlobalSettingsModal({
     { key: 'mcp', label: 'MCP Servers' },
     { key: 'marketplace', label: 'Marketplace' },
     { key: 'app-plugins', label: 'App Plugins' },
-    { key: 'share', label: 'Open on phone' },
+    // "Open on phone" shares a LAN URL — meaningless on the desktop build,
+    // which has no reachable HTTP origin.
+    ...(caps.lanSharing ? [{ key: 'share' as const, label: 'Open on phone' }] : []),
     { key: 'logs', label: 'Logs' },
     { key: 'about', label: 'About' },
   ]
@@ -510,6 +514,7 @@ export function GlobalSettingsModal({
                   onFetchVersions={onFetchVersions}
                   onOpenCurrentReleaseNotes={onOpenCurrentReleaseNotes}
                   onOpenResetConfig={() => setShowResetConfig(true)}
+                  selfUpdate={caps.npxSelfUpdate}
                 />
               )}
             </>
@@ -1804,6 +1809,7 @@ function AboutTab({
   onFetchVersions,
   onOpenCurrentReleaseNotes,
   onOpenResetConfig,
+  selfUpdate = true,
 }: {
   info: UpdateInfo | null
   refreshing: boolean
@@ -1827,6 +1833,10 @@ function AboutTab({
   /** Open the read-only What's New dialog for this version. */
   onOpenCurrentReleaseNotes?: () => void
   onOpenResetConfig?: () => void
+  /** Whether the npx/registry self-update flow applies to this host. False on
+   *  the desktop build, whose updates come from the app bundle, not npm. The
+   *  version-info rows above stay visible either way. */
+  selfUpdate?: boolean
 }) {
   const toast = useToast()
   // Error from the most recent in-app update attempt (POST /api/update),
@@ -2092,6 +2102,12 @@ function AboutTab({
           </div>
         </Field>
       )}
+      {/* Self-update block: the registry probe, the in-app npm install, and
+          the version switcher. All of it is meaningless on the desktop build
+          (updates ship as a new app bundle), so it is gated on `selfUpdate`.
+          Everything above — running version, CLI/SDK versions, restart
+          state — stays visible on every host. */}
+      {selfUpdate && (<>
       <Field
         label="Update registry"
         hint="npm registry probed for the `latest` dist-tag. Leave empty to disable update checks. Changes take effect after Save."
@@ -2299,6 +2315,7 @@ function AboutTab({
           </div>
         )}
       </div>
+      </>)}
     </div>
   )
 }

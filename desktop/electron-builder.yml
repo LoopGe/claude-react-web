@@ -1,0 +1,71 @@
+# electron-builder configuration for the desktop host.
+#
+#   npm run build:desktop && npx electron-builder --config desktop/electron-builder.yml
+#
+# Packaged layout:
+#   - dist/desktop/{main.mjs,preload.cjs}   the host (from desktop/build.mjs)
+#   - dist/client                           the renderer
+#   - node_modules/@anthropic-ai/**         the agent SDK + its platform
+#                                           package, which carries the `claude`
+#                                           CLI binary (unpacked from asar so
+#                                           it can be executed)
+#
+# The `claude` CLI is NOT a separate resource: @anthropic-ai/claude-agent-sdk
+# declares it as a platform optionalDependency (…-darwin-arm64, …-win32-x64,
+# …-linux-x64, …), so shipping that package is what bundles the binary. Only
+# the package for the TARGET platform is installed by npm, so a per-platform
+# build naturally carries one CLI.
+
+appId: com.loopge.claude-react-web
+productName: claude-react-web-desktop
+directories:
+  output: dist/desktop/dist
+  buildResources: desktop/build
+
+# The main process is a self-contained esbuild bundle EXCEPT for the SDK, which
+# is external because it resolves its bundled CLI relative to itself. Ship it
+# (and its platform package) intact.
+files:
+  - dist/desktop/main.mjs
+  - dist/desktop/preload.cjs
+  - dist/client/**
+  # Whole @anthropic-ai scope: the SDK plus whichever platform package npm
+  # installed (e.g. claude-agent-sdk-darwin-arm64, which carries the `claude`
+  # CLI). A bare-scope glob is used because electron-builder's matcher does not
+  # expand a `claude-agent-sdk-*` segment into the sibling platform package.
+  - node_modules/@anthropic-ai/**
+  - package.json
+
+# The root package.json is the published CLI's (bin → dist/cli.mjs) and carries
+# no `main`, so electron-builder would look for a non-existent index.js. Inject
+# the Electron entry only into the packaged app.asar — the source package.json
+# keeps its CLI semantics for `npx`.
+extraMetadata:
+  main: dist/desktop/main.mjs
+
+# The SDK locates its CLI by walking up from its own module path, and that CLI
+# is a native executable. asar is transparent for reads but NOT for exec, so
+# the whole SDK tree must live on the real filesystem.
+asar: true
+asarUnpack:
+  - node_modules/@anthropic-ai/**
+
+mac:
+  category: public.app-category.developer-tools
+  target: [dmg, zip]
+  hardenedRuntime: true
+  # Notarization/entitlements are left to the release pipeline.
+win:
+  target: [nsis]
+linux:
+  target: [AppImage, deb]
+  category: Development
+
+# Auto-update feed. electron-updater reads these artifacts back from the
+# GitHub release (the `latest*.yml` blockmaps electron-builder emits alongside
+# the installers). Building still succeeds without a token; publishing needs
+# GH_TOKEN in the environment (the release pipeline provides it).
+publish:
+  provider: github
+  owner: LoopGe
+  repo: claude-react-web

@@ -50,6 +50,55 @@ describe('GlobalSettingsModal Profiles tab', () => {
   })
 })
 
+describe('GlobalSettingsModal host-capability gating', () => {
+  afterEach(() => {
+    delete (window as { __CRW_DESKTOP__?: unknown }).__CRW_DESKTOP__
+  })
+
+  it('shows the "Open on phone" tab on the web host', async () => {
+    mockGet({})
+    render(<GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Open on phone')).toBeTruthy())
+  })
+
+  it('hides the "Open on phone" tab inside the desktop host', async () => {
+    ;(window as { __CRW_DESKTOP__?: unknown }).__CRW_DESKTOP__ = { connect: () => {} }
+    mockGet({})
+    render(<GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />)
+    // Wait for the tab bar to render (Profiles is always present)…
+    await waitFor(() => expect(screen.getByText('Profiles')).toBeTruthy())
+    // …then assert the LAN-sharing entry point is absent.
+    expect(screen.queryByText('Open on phone')).toBeNull()
+  })
+
+  // AboutTab calls useToast, so it must render inside a ToastProvider.
+  const renderAbout = async () => {
+    mockGet({})
+    render(
+      <ToastProvider>
+        <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />
+      </ToastProvider>,
+    )
+    await waitFor(() => expect(screen.getByText('About')).toBeTruthy())
+    fireEvent.click(screen.getByText('About'))
+  }
+
+  it('keeps the self-update block on the web host About tab', async () => {
+    await renderAbout()
+    await waitFor(() => expect(screen.getByText('Update registry')).toBeTruthy())
+  })
+
+  it('hides the self-update block on the desktop host About tab', async () => {
+    ;(window as { __CRW_DESKTOP__?: unknown }).__CRW_DESKTOP__ = { connect: () => {} }
+    await renderAbout()
+    // The version-info rows still render (Project is static)…
+    await waitFor(() => expect(screen.getByText('Project')).toBeTruthy())
+    // …but the npm self-update controls are gone.
+    expect(screen.queryByText('Update registry')).toBeNull()
+    expect(screen.queryByText('Switch version')).toBeNull()
+  })
+})
+
 describe('GlobalSettingsModal first-party tools section', () => {
   beforeEach(() => {
     vi.mocked(api.put).mockResolvedValue({})

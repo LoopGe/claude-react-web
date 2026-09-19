@@ -3,6 +3,7 @@ import { act, render, renderHook } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { WsHubProvider, useWsHub, useWsHubStatus } from './useWsHub'
 import type { WsSubscribeResult, WsSubscribeResultReason } from '../ws-types'
+import { setTransport } from '../transport'
 
 // ── Fake WebSocket ─────────────────────────────────────────────────
 //
@@ -465,6 +466,41 @@ describe('useWsHub: subscribe ref-counting and channel state', () => {
     act(() => { revived.fireMessage(ack('s1', true, 'served')) })
     act(() => { result.current.hub.subscribe('s1') })
     expect(revived.framesOfKind('subscribe')).toHaveLength(1)
+  })
+})
+
+// ── transport seam ─────────────────────────────────────────────────
+
+describe('useWsHub: transport seam', () => {
+  afterEach(() => setTransport(null))
+
+  it('handles a transport that opens synchronously during connect()', () => {
+    // An IPC-backed transport can deliver `open` while connect() is still on
+    // the stack, before the hub assigns connRef. Reads of connRef at that
+    // instant are null, so the open must be deferred until the handle exists;
+    // otherwise every re-subscribe (and the heartbeat) is silently dropped and
+    // a reconnected panel is stranded with no replay.
+    const sent: unknown[] = []
+    setTransport({
+      request: vi.fn(),
+      connect(handlers) {
+        const conn = { send: (frame: unknown) => { sent.push(frame) }, close: () => {} }
+        handlers.onOpen() // synchronous, before connect() returns
+        return conn
+      },
+    })
+
+    const { result } = renderHook(() => useWsHub(), {
+      wrapper: ({ children }: { children: ReactNode }) => <WsHubProvider>{children}</WsHubProvider>,
+    })
+
+    // The deferred open ran with the real handle: heartbeat armed.
+    act(() => { vi.advanceTimersByTime(25_000) })
+    expect(sent.some((f) => (f as { kind?: string }).kind === 'ping')).toBe(true)
+
+    // …and normal sends still work afterwards.
+    act(() => { result.current.subscribe('s1', 'u1') })
+    expect(sent).toContainEqual({ kind: 'subscribe', sessionId: 's1', sinceUuid: 'u1' })
   })
 })
 

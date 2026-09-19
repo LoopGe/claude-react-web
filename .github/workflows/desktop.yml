@@ -1,0 +1,122 @@
+name: Desktop
+
+# Builds the Electron desktop installers for macOS, Windows and Linux, and
+# attaches them to the GitHub Release for the tag.
+#
+# One runner per OS on purpose: the `claude` CLI ships as a per-platform
+# optionalDependency of the agent SDK (claude-agent-sdk-darwin-arm64,
+# -win32-x64, -linux-x64, …), and `npm ci` only installs the package matching
+# the runner. Building all three on one host would produce bundles missing the
+# other platforms' CLI. Cross-building is therefore not supported by design;
+# this matrix is the supported path.
+#
+# This workflow does NOT publish to npm — release.yml owns that. It only adds
+# the desktop installers to the GitHub Release the npm workflow created (or
+# creates it if it is not there yet).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build installers for (e.g. v0.8.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write # upload assets to the GitHub Release
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --mac
+          - os: ubuntu-latest
+            args: --linux
+          - os: windows-latest
+            args: --win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # electron-builder downloads the Electron runtime on first use; the
+      # default cache keeps that off the critical path on re-runs.
+      - name: Build installers
+        run: npm run desktop:package -- ${{ matrix.args }} --publish never
+        env:
+          # macOS builds are left unsigned here. To sign + notarize, add the
+          # CSC_LINK / CSC_KEY_PASSWORD / APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD
+          # secrets and remove this line — electron-builder picks them up.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          # Installers plus the electron-updater feed metadata (*.yml + blockmaps).
+          path: |
+            dist/desktop/dist/*.dmg
+            dist/desktop/dist/*.zip
+            dist/desktop/dist/*.exe
+            dist/desktop/dist/*.AppImage
+            dist/desktop/dist/*.deb
+            dist/desktop/dist/*.yml
+            dist/desktop/dist/*.blockmap
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="$DISPATCH_TAG"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # Idempotent: create the Release if npm's job has not run yet, then
+      # upload (--clobber so a re-run replaces stale assets rather than 422s).
+      - name: Attach to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          shopt -s nullglob
+          files=(artifacts/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "desktop: no installer artifacts found"; exit 1
+          fi
+          gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber

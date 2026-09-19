@@ -21,7 +21,8 @@
 
 import { createContext, createElement, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { WS_PATH, type WsClientFrame, type WsServerFrame } from '../ws-types'
+import type { WsClientFrame, WsServerFrame } from '../ws-types'
+import { getTransport, type TransportConnection, type TransportFrameHandlers } from '../transport'
 
 /** Per-subscribe options (see WsHubApi.subscribe). */
 export interface SubscribeOpts {
@@ -98,14 +99,6 @@ const WsHubContext = createContext<WsHubApi | null>(null)
 // hub.status, keeping the hub referentially stable across flips.
 const WsStatusContext = createContext<WsHubStatus>('connecting')
 
-/** URL the hub connects to — relative to the current origin so it
- *  works in both dev (Vite proxies /api/ws to 3456) and prod (served
- *  from the same origin as /api). */
-function wsUrl(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${window.location.host}${WS_PATH}`
-}
-
 /** Per-session channel bookkeeping for ONE connection, keyed by sessionId.
  *  Deliberately ONE entry per session rather than parallel maps: the pieces
  *  describe the same channel, and the last release drops the whole entry so
@@ -155,7 +148,11 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   /** Channel bookkeeping per session — holders, server-confirmed liveness, and
    *  the replay cursor. See ChannelState. */
   const channelsRef = useRef<Map<string, ChannelState>>(new Map())
-  const wsRef = useRef<WebSocket | null>(null)
+  const connRef = useRef<TransportConnection | null>(null)
+  /** Monotonic id for the current connection: a later connect() bumps it, so
+   *  a stale connection's late open/close events are ignored (the equivalent
+   *  of the old `wsRef.current !== ws` guard). */
+  const connSeqRef = useRef(0)
   const reconnectTimerRef = useRef<number | null>(null)
   const pingTimerRef = useRef<number | null>(null)
   const attemptsRef = useRef<number>(0)
@@ -165,17 +162,22 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   const connectRef = useRef<() => void>(() => {})
   const [status, setStatus] = useState<WsHubStatus>('connecting')
 
-  /** Send a frame if the socket is open. Silently drops otherwise —
-   *  callers re-issue subscribes on (re)open, so a dropped frame
-   *  during reconnect isn't fatal. */
+  /** Send a frame on a specific connection, if it is open. The transport
+   *  drops silently otherwise — callers re-issue subscribes on (re)open, so a
+   *  dropped frame during reconnect isn't fatal.
+   *
+   *  Takes the connection explicitly because a transport may fire `onOpen`
+   *  SYNCHRONOUSLY from connect() (a WS to an already-up socket, or an IPC
+   *  channel), i.e. before `connRef.current` has been assigned. Anything
+   *  driven from onOpen must send through its captured handle, not the ref. */
+  const sendOn = useCallback((conn: TransportConnection, frame: WsClientFrame) => {
+    conn.send(frame)
+  }, [])
+
+  /** Send a frame on the current connection. For callers outside the
+   *  connect() lifecycle (subscribe/unsubscribe), where connRef is settled. */
   const safeSend = useCallback((frame: WsClientFrame) => {
-    const ws = wsRef.current
-    if (!ws || ws.readyState !== WebSocket.OPEN) return
-    try {
-      ws.send(JSON.stringify(frame))
-    } catch {
-      /* socket may have transitioned to CLOSING; ignore */
-    }
+    connRef.current?.send(frame)
   }, [])
 
   // Reconnect scheduler — declared before `connect` so it can be
@@ -203,16 +205,127 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   // reconnect path can reuse it.
   const connect = useCallback(() => {
     if (unmountedRef.current) return
-    // Close any existing socket before creating a new one to prevent
-    // orphaned connections accumulating during rapid reconnects.
-    const old = wsRef.current
-    if (old && old.readyState !== WebSocket.CLOSED) {
-      try { old.close(1000, 'replaced') } catch { /* already closing */ }
+    // Close any existing connection before creating a new one to prevent
+    // orphaned connections accumulating during rapid reconnects. (The
+    // transport treats an already-closed channel as a no-op.)
+    connRef.current?.close(1000, 'replaced')
+
+    // Identifies THIS connection. A later connect() bumps the sequence, so a
+    // stale connection's late open/close events are ignored — the equivalent
+    // of the old `wsRef.current !== ws` guard.
+    const seq = ++connSeqRef.current
+
+    // The connection handle is captured by the handlers rather than read from
+    // connRef: a transport may fire onOpen synchronously from connect(),
+    // before `connRef.current = conn` below runs, and sending through a null
+    // ref would silently drop every re-subscribe. If a transport ever fires
+    // before connect() returns, the open is deferred until the handle exists.
+    let conn: TransportConnection | null = null
+    let pendingOpen = false
+
+    const handlers: TransportFrameHandlers = {
+      onOpen: () => {
+        if (unmountedRef.current || connSeqRef.current !== seq) return
+        if (!conn) {
+          // Connect() has not returned yet — re-run once the handle is set.
+          pendingOpen = true
+          return
+        }
+        attemptsRef.current = 0
+        setStatus('online')
+        // A fresh connection owns no channels: forget what the previous
+        // connection confirmed, then re-ask for every session still held (the
+        // server answers each frame, so liveness is re-learned rather than
+        // assumed). Deliberately NO replayMode here: the reconnect resend
+        // can't know whether a cached transcript exists (the frame is
+        // re-emitted for every holder, not just the chat consumer), so it uses
+        // the ordinary — always-correct — replay mode.
+        for (const state of channelsRef.current.values()) state.live = false
+        for (const [sessionId, state] of channelsRef.current) {
+          sendOn(conn, {
+            kind: 'subscribe',
+            sessionId,
+            ...(state.lastUuid ? { sinceUuid: state.lastUuid } : {}),
+          })
+        }
+        // App-level heartbeat — some reverse proxies close idle WS
+        // after 30-60s. A 25s app-level ping is safely below that, and
+        // the server echoes a tiny pong so we also get a failure
+        // signal if the pipe is half-closed.
+        if (pingTimerRef.current != null) window.clearInterval(pingTimerRef.current)
+        pingTimerRef.current = window.setInterval(() => {
+          safeSend({ kind: 'ping', nonce: Date.now() })
+        }, 25_000)
+      },
+
+      onFrame: (raw) => {
+        if (unmountedRef.current) return
+        const frame = raw as WsServerFrame
+        if (!frame || typeof frame !== 'object' || typeof frame.kind !== 'string') return
+        // Fold the server's answer to a subscribe into this connection's channel
+        // state BEFORE fan-out, so a listener reacting to the frame sees it
+        // already applied. Shape-checked: the handler's only other validation is
+        // `typeof frame.kind`, and a throw here would drop the frame for every
+        // listener on the socket.
+        if (frame.kind === 'subscribe-result' && typeof frame.sessionId === 'string') {
+          const state = channelsRef.current.get(frame.sessionId)
+          if (state) state.live = frame.ok === true
+        }
+        // Fan out to global listeners (O(N) where N is total listeners).
+        for (const fn of listenersRef.current) {
+          try {
+            fn(frame)
+          } catch (err) {
+            console.error('[wsHub] listener threw:', err)
+          }
+        }
+        // Fan out to session-scope listeners (O(1) lookup by sessionId).
+        // This is the fast path used by useChatStream — each panel only
+        // processes frames for its own session without scanning others.
+        const sid = 'sessionId' in frame ? (frame as { sessionId?: string }).sessionId : undefined
+        if (sid) {
+          const sessionSet = sessionListenersRef.current.get(sid)
+          if (sessionSet) {
+            for (const fn of sessionSet) {
+              try {
+                fn(frame)
+              } catch (err) {
+                console.error('[wsHub] session listener threw:', err)
+              }
+            }
+          }
+        }
+      },
+
+      onClose: () => {
+        if (unmountedRef.current || connSeqRef.current !== seq) return
+        // The connection is gone, so its channels are too. Forgetting here (and
+        // not only on the next open) keeps "live" == "live on the current
+        // connection" true for the whole reconnect gap.
+        for (const state of channelsRef.current.values()) state.live = false
+        if (pingTimerRef.current != null) {
+          window.clearInterval(pingTimerRef.current)
+          pingTimerRef.current = null
+        }
+        scheduleReconnect()
+      },
+
+      onError: () => {
+        // Browsers don't give useful detail here; the close event follows
+        // and scheduleReconnect handles the retry. Logging the event
+        // itself is noise.
+      },
     }
-    const target = url ?? wsUrl()
-    let ws: WebSocket
+
     try {
-      ws = new WebSocket(target)
+      conn = getTransport().connect(handlers, { url })
+      connRef.current = conn
+      // A transport that opened synchronously during connect() set pendingOpen;
+      // replay it now that the handle exists.
+      if (pendingOpen) {
+        pendingOpen = false
+        handlers.onOpen()
+      }
     } catch (err) {
       // Some browsers throw synchronously on bad URLs. Schedule a
       // retry rather than crashing the React tree.
@@ -220,105 +333,7 @@ export function WsHubProvider({ children, url }: ProviderProps) {
       scheduleReconnect()
       return
     }
-    wsRef.current = ws
-
-    ws.addEventListener('open', () => {
-      if (unmountedRef.current) return
-      attemptsRef.current = 0
-      setStatus('online')
-      // A fresh socket owns no channels: forget what the previous connection
-      // confirmed, then re-ask for every session still held (the server
-      // answers each frame, so liveness is re-learned rather than assumed).
-      // Deliberately NO replayMode here: the reconnect resend can't know
-      // whether a cached transcript exists (the frame is re-emitted for every
-      // holder, not just the chat consumer), so it uses the ordinary —
-      // always-correct — replay mode.
-      for (const state of channelsRef.current.values()) state.live = false
-      for (const [sessionId, state] of channelsRef.current) {
-        safeSend({
-          kind: 'subscribe',
-          sessionId,
-          ...(state.lastUuid ? { sinceUuid: state.lastUuid } : {}),
-        })
-      }
-      // App-level heartbeat — some reverse proxies close idle WS
-      // after 30-60s. A 25s app-level ping is safely below that, and
-      // the server echoes a tiny pong so we also get a failure
-      // signal if the pipe is half-closed.
-      if (pingTimerRef.current != null) window.clearInterval(pingTimerRef.current)
-      pingTimerRef.current = window.setInterval(() => {
-        safeSend({ kind: 'ping', nonce: Date.now() })
-      }, 25_000)
-    })
-
-    ws.addEventListener('message', (ev) => {
-      if (unmountedRef.current) return
-      let frame: WsServerFrame
-      try {
-        frame = JSON.parse(ev.data) as WsServerFrame
-      } catch {
-        return
-      }
-      if (!frame || typeof frame !== 'object' || typeof frame.kind !== 'string') return
-      // Fold the server's answer to a subscribe into this connection's channel
-      // state BEFORE fan-out, so a listener reacting to the frame sees it
-      // already applied. Shape-checked: the handler's only other validation is
-      // `typeof frame.kind`, and a throw here would drop the frame for every
-      // listener on the socket.
-      if (frame.kind === 'subscribe-result' && typeof frame.sessionId === 'string') {
-        const state = channelsRef.current.get(frame.sessionId)
-        if (state) state.live = frame.ok === true
-      }
-      // Fan out to global listeners (O(N) where N is total listeners).
-      for (const fn of listenersRef.current) {
-        try {
-          fn(frame)
-        } catch (err) {
-          console.error('[wsHub] listener threw:', err)
-        }
-      }
-      // Fan out to session-scope listeners (O(1) lookup by sessionId).
-      // This is the fast path used by useChatStream — each panel only
-      // processes frames for its own session without scanning others.
-      const sid = 'sessionId' in frame ? (frame as { sessionId?: string }).sessionId : undefined
-      if (sid) {
-        const sessionSet = sessionListenersRef.current.get(sid)
-        if (sessionSet) {
-          for (const fn of sessionSet) {
-            try {
-              fn(frame)
-            } catch (err) {
-              console.error('[wsHub] session listener threw:', err)
-            }
-          }
-        }
-      }
-    })
-
-    ws.addEventListener('close', () => {
-      if (unmountedRef.current) return
-      // Only react if this socket is still the active one. When
-      // connect() replaces a socket, the old socket's close event
-      // still fires — without this guard it would schedule a
-      // reconnect that closes the *new* working socket.
-      if (wsRef.current !== ws) return
-      // The connection is gone, so its channels are too. Forgetting here (and
-      // not only on the next open) keeps "live" == "live on the current
-      // socket" true for the whole reconnect gap.
-      for (const state of channelsRef.current.values()) state.live = false
-      if (pingTimerRef.current != null) {
-        window.clearInterval(pingTimerRef.current)
-        pingTimerRef.current = null
-      }
-      scheduleReconnect()
-    })
-
-    ws.addEventListener('error', () => {
-      // Browsers don't give useful detail here; the close event follows
-      // and scheduleReconnect handles the retry. Logging the event
-      // itself is noise.
-    })
-  }, [safeSend, url, scheduleReconnect])
+  }, [safeSend, sendOn, url, scheduleReconnect])
   // Keep the ref in sync so scheduleReconnect (empty-dep) always calls
   // the latest connect closure. Layout effect avoids react-hooks/refs.
   useLayoutEffect(() => {
@@ -338,15 +353,9 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         window.clearInterval(pingTimerRef.current)
         pingTimerRef.current = null
       }
-      const ws = wsRef.current
-      wsRef.current = null
-      if (ws) {
-        try {
-          ws.close(1000, 'client unmounting')
-        } catch {
-          /* ignore */
-        }
-      }
+      const conn = connRef.current
+      connRef.current = null
+      conn?.close(1000, 'client unmounting')
     }
     // connect is referentially stable (wrapped in useCallback with
     // stable deps); we only want this effect once for the provider's

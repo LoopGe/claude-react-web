@@ -3,13 +3,20 @@ import react from '@vitejs/plugin-react'
 
 // Frontend Vite config. Output goes to dist/client/ so the Node server can
 // serve it as static assets after `npm run build`.
+//
+// Ports are env-overridable so several git worktrees can run `npm run dev`
+// side by side: VITE_PORT picks this dev server's port, and CRW_PORT must
+// match the API server's port (see server/cli/args.ts) since /api is proxied
+// to it.
+const apiPort = Number(process.env.CRW_PORT) || 3456
+
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 5174,
+    port: Number(process.env.VITE_PORT) || 5174,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:3456',
+        target: `http://127.0.0.1:${apiPort}`,
         changeOrigin: true,
         // `/api/ws` is a WebSocket upgrade; without ws:true Vite's proxy
         // treats it as plain HTTP and strips the Upgrade header.

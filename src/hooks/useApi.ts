@@ -1,124 +1,18 @@
-// Tiny fetch wrapper. Uses /api as the base path (Vite proxies in dev, same-origin in prod).
-// All requests have a default 30 s timeout to prevent the UI from hanging indefinitely
+// Thin API wrapper. Delegates to the active Transport (web: fetch against
+// /api; desktop: IPC) so callers are indifferent to the wire. All requests
+// have a default 30 s timeout to prevent the UI from hanging indefinitely
 // when the backend is unresponsive.
 
-export interface ApiError extends Error {
-  status: number
-  /** Typed error code when the server returned a structured body
-   *  `{ error: { code, message } }` (e.g. PluginCommandError). Undefined for
-   *  plain `{ error: "string" }` bodies. */
-  code?: string
-}
+import { getTransport, type TransportRequestOptions } from '../transport'
 
-const DEFAULT_TIMEOUT_MS = 30_000
+export type { ApiError } from '../transport/types'
 
-function toApiError(res: Response, body: unknown): ApiError {
-  const validationErrors = body && typeof body === 'object' && 'errors' in body && Array.isArray((body as { errors: unknown }).errors)
-    ? (body as { errors: unknown[] }).errors
-      .map((item) => {
-        if (!item || typeof item !== 'object') return null
-        const path = 'path' in item && typeof (item as { path: unknown }).path === 'string'
-          ? (item as { path: string }).path
-          : ''
-        const message = 'message' in item && typeof (item as { message: unknown }).message === 'string'
-          ? (item as { message: string }).message
-          : ''
-        return `${path} ${message}`.trim()
-      })
-      .filter((item): item is string => typeof item === 'string' && item.length > 0)
-      .join('; ')
-    : ''
-
-  // The server returns errors in one of three shapes:
-  //   { error: "string" }                          -> plain message
-  //   { error: { code, message } }                 -> typed (PluginCommandError)
-  //   { errors: [{ path, message }, ...] }         -> validation list (above)
-  let message = ''
-  let code: string | undefined
-  if (body && typeof body === 'object' && 'error' in body) {
-    const errField = (body as { error: unknown }).error
-    if (typeof errField === 'string') {
-      message = errField
-    } else if (errField && typeof errField === 'object') {
-      const obj = errField as { code?: unknown; message?: unknown }
-      if (typeof obj.message === 'string') message = obj.message
-      if (typeof obj.code === 'string') code = obj.code
-    }
-  }
-  if (!message && validationErrors) message = validationErrors
-  if (!message) message = `HTTP ${res.status}`
-
-  const err = new Error(message) as ApiError
-  err.status = res.status
-  if (code) err.code = code
-  return err
-}
-
-export async function apiRequest<T>(
+export function apiRequest<T>(
   path: string,
   init: RequestInit = {},
-  opts: { timeoutMs?: number } = {},
+  opts: TransportRequestOptions = {},
 ): Promise<T> {
-  // Merge caller-supplied signal with our timeout signal. When either
-  // fires the request is aborted. `timeoutMs: 0` disables the wall-clock
-  // limit — used by the `!` bash exec path, which runs until the command
-  // exits or the user hits the stop button (/exec/abort) rather than being
-  // cut off at a fixed deadline.
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  const timeoutController = new AbortController()
-  const timeoutId = timeoutMs > 0
-    ? setTimeout(() => timeoutController.abort(), timeoutMs)
-    : null
-
-  // If the caller already provided a signal, propagate its abort to our
-  // controller so either source can cancel the fetch.
-  const callerSignal = init.signal
-  let callerAbort: (() => void) | undefined
-  if (callerSignal) {
-    if (callerSignal.aborted) {
-      timeoutController.abort(callerSignal.reason)
-    } else {
-      callerAbort = () => timeoutController.abort(callerSignal.reason)
-      callerSignal.addEventListener('abort', callerAbort, { once: true })
-    }
-  }
-
-  try {
-    const res = await fetch(`/api${path}`, {
-      ...init,
-      signal: timeoutController.signal,
-      headers: {
-        // Only set Content-Type when a body is present. GET/DELETE
-        // requests have no body and the header is meaningless there;
-        // some proxies / CDNs treat it as a CORS preflight trigger.
-        ...(init.body != null ? { 'Content-Type': 'application/json' } : {}),
-        ...(init.headers ?? {}),
-      },
-    })
-    const contentType = res.headers.get('content-type') ?? ''
-    const body = contentType.includes('application/json') ? await res.json() : await res.text()
-    if (!res.ok) throw toApiError(res, body)
-    return body as T
-  } catch (err) {
-    // Use duck-typing instead of instanceof checks: DOMException may not
-    // inherit from Error in every test/browser runtime, and DOMException can
-    // be undefined in some environments.
-    if (err && typeof err === 'object' && 'name' in err && err.name === 'AbortError') {
-      const reason = callerSignal?.aborted
-        ? 'Request cancelled'
-        : `Request timed out after ${timeoutMs / 1000}s`
-      const timeoutErr = new Error(reason) as ApiError
-      if (callerSignal?.aborted) timeoutErr.name = 'AbortError'
-      timeoutErr.status = 0
-      throw timeoutErr
-    }
-    throw err
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId)
-    if (callerSignal && callerAbort) {
-      callerSignal.removeEventListener('abort', callerAbort)
-    }
-  }
+  return getTransport().request<T>(path, init, opts)
 }
 
 export const api = {

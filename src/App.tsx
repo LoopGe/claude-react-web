@@ -727,6 +727,17 @@ export function App() {
     registerSW().then((reg) => { swRegRef.current = reg })
   }, [])
 
+  // Native application-menu commands (desktop host only). The menu lives in
+  // the main process; the preload exposes a subscription. No-op on the web,
+  // where there is no bridge.
+  useEffect(() => {
+    const onMenu = window.__CRW_DESKTOP__?.onMenu
+    if (!onMenu) return
+    return onMenu((command) => {
+      if (command === 'crw:menu-new-session') setNewSessionDialogOpen(true)
+    })
+  }, [])
+
   // Listen for SW notification action callbacks. When the user clicks
   // Allow/Deny on an OS notification, the SW calls the decide API
   // directly and then posts back so the UI can focus the session.

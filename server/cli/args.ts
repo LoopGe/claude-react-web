@@ -24,7 +24,9 @@ export interface CliArgs {
 /** Existing server flag parser — moved verbatim from cli.ts. */
 export function parseServerArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
-    port: 3456,
+    // Env-overridable so several git worktrees (and their Vite servers) can
+    // run side by side without colliding on the default port.
+    port: Number(process.env.CRW_PORT) || 3456,
     host: '127.0.0.1',
     open: true,
     disableAppPlugins: false,
@@ -107,7 +109,7 @@ Usage:
   claude-react-web [options]
 
 Options:
-  -p, --port <port>    Server port (default: 3456)
+  -p, --port <port>    Server port (default: 3456, or $CRW_PORT)
       --host <host>    Bind host (default: 127.0.0.1). Use 0.0.0.0 to allow
                        LAN access (e.g. from a phone) — this REQUIRES a web
                        access token (auto-generated if --token is omitted).
