@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 
-import { clearCredentials, config, loadConfig, readConfigFile, updateConfigFile, WRITABLE_CONFIG_KEYS } from './config.js'
+import { clearCredentials, config, getConfigPath, loadConfig, readConfigFile, setConfigPath, updateConfigFile, WRITABLE_CONFIG_KEYS } from './config.js'
 import { tempDir } from './__test-utils__/index.js'
 
 describe('config', () => {
@@ -602,5 +603,53 @@ describe('provider-profile migration + derived fields', () => {
     const raw = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
     expect(raw.profiles.every((p: { authToken: string; baseUrl: string }) => p.authToken === '')).toBe(true)
     expect(raw.profiles[0].baseUrl).toBe('https://api.anthropic.com')
+  })
+})
+
+describe('--config path override', () => {
+  let stateDir: string
+  let altDir: string
+  let altFile: string
+
+  beforeEach(() => {
+    stateDir = tempDir('config-state')
+    altDir = tempDir('config-alt')
+    altFile = join(altDir, 'shared-config.json')
+  })
+
+  afterEach(() => {
+    setConfigPath(undefined)
+    rmSync(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    rmSync(altDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  })
+
+  it('reads and writes at the override path, not <stateDir>/config.json', async () => {
+    writeFileSync(altFile, JSON.stringify({ historyCap: 123 }))
+    setConfigPath(altFile)
+    await loadConfig(stateDir)
+    expect(config.historyCap).toBe(123)
+    await updateConfigFile(stateDir, { historyCap: 321 })
+    expect(JSON.parse(readFileSync(altFile, 'utf8')).historyCap).toBe(321)
+    expect(() => readFileSync(join(stateDir, 'config.json'))).toThrow()
+  })
+
+  it('scaffolds the override file (and its dir) when missing', async () => {
+    const nested = join(altDir, 'nested', 'config.json')
+    setConfigPath(nested)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(stateDir)
+    expect(existsSync(nested)).toBe(true)
+    expect(() => readFileSync(join(stateDir, 'config.json'))).toThrow()
+    log.mockRestore()
+  })
+
+  it('expands a leading ~ to the home directory', () => {
+    setConfigPath('~/.claude-react-web/config.json')
+    expect(getConfigPath('/state')).toBe(join(homedir(), '.claude-react-web', 'config.json'))
+  })
+
+  it('falls back to <stateDir>/config.json when cleared', () => {
+    setConfigPath(undefined)
+    expect(getConfigPath('/state')).toBe(join('/state', 'config.json'))
   })
 })

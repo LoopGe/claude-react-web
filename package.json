@@ -30,8 +30,8 @@
     "dist"
   ],
   "scripts": {
-    "dev:server": "tsx watch server/cli.ts --no-open --state-dir ./.dev-state",
-    "dev:server:once": "tsx server/cli.ts --no-open --state-dir ./.dev-state",
+    "dev:server": "tsx watch server/cli.ts --no-open",
+    "dev:server:once": "tsx server/cli.ts --no-open",
     "dev:client": "vite",
     "dev:client:once": "vite",
     "dev": "concurrently -n server,client -c blue,magenta \"npm:dev:server\" \"npm:dev:client\"",

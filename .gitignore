@@ -4,8 +4,7 @@ node_modules/
 /dist/
 /packages/*/dist/
 .vite/
-# Per-worktree dev state dir (see the dev:server scripts) so worktrees don't
-# share ~/.claude-react-web sessions/config while running side by side.
+# Dev state dir when running with `--state-dir .dev-state` manually.
 .dev-state/
 # Pre-extracted Electron runtime for electron-builder (electronDist). Avoids
 # app-builder's zip extractor, which drops the MacOS launcher on some hosts.

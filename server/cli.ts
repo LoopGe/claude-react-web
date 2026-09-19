@@ -18,7 +18,7 @@ import QRCode from 'qrcode'
 import pkg from '../package.json' with { type: 'json' }
 import { isLoopbackHost, lanIPv4Addresses } from './net.js'
 import { setWebAuth } from './auth.js'
-import { loadConfig, config } from './config.js'
+import { loadConfig, config, setConfigPath } from './config.js'
 import { disableFileLogging, getLogFilePath, createLogger, setLogToStderr } from './log.js'
 import { defaultStateDir } from './persistence.js'
 import { createServerContext } from './bootstrap.js'
@@ -39,7 +39,10 @@ async function main() {
   // cwd-relative projects/ while every server-side reader uses ~/.claude.
   normalizeClaudeConfigDirEnv()
   const argv = process.argv.slice(2)
-  const { stateDir: sd, command, commandArgv } = parseArgv(argv)
+  const { stateDir: sd, config: configPath, command, commandArgv } = parseArgv(argv)
+  // Apply --config before any loadConfig() so every reader/writer of the
+  // config file (server boot, management subcommands) uses the same path.
+  if (configPath) setConfigPath(configPath)
 
   // Subcommand mode: run one management command headless and exit.
   if (command !== undefined) {

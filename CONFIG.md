@@ -8,6 +8,7 @@ claude-react-web reads its server-side configuration from a JSON file at startup
 |------|---------|
 | `~/.claude-react-web/config.json` | Default config location |
 | `--state-dir <path>` CLI flag | Override the entire state directory; `config.json` is read from there |
+| `--config <path>` CLI flag | Read/write `config.json` at an explicit path (leading `~` expands to the home dir); wins over `--state-dir` for the config file only |
 
 The file is optional — if missing or malformed, built-in defaults are used silently.
 

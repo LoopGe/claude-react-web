@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs'
 import { CliContext, CliGroup } from './types.js'
 import { ParsedOptions, scalar } from './parser.js'
-import { config } from '../config.js'
+import { config, getConfigPath } from '../config.js'
 import { resolveClaudeBinary } from '../claude-binary.js'
 import { table, maskToken } from './render.js'
 
@@ -23,7 +23,7 @@ async function runDoctor(ctx: CliContext, parsed: ParsedOptions): Promise<Doctor
     name: 'authToken',
     ok: !!config.authToken,
     detail: config.authToken ? maskToken(config.authToken) ?? '' : 'not configured',
-    fix: config.authToken ? undefined : 'edit <stateDir>/config.json → profiles[0].authToken',
+    fix: config.authToken ? undefined : `edit ${getConfigPath(ctx.stateDir)} → profiles[0].authToken`,
   })
   checks.push({ name: 'baseUrl', ok: !!config.baseUrl, detail: config.baseUrl })
   const profile = config.profiles.find((p) => p.id === config.activeProfileId)

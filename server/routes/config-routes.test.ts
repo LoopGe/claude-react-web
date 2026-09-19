@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildConfigRouter } from './config-routes.js'
+import { setConfigPath } from '../config.js'
 import type { SessionManager } from '../session-manager.js'
 
 // `/config/claude-defaults` pre-fills the setup page from the CLI's own
@@ -44,6 +45,44 @@ describe('config routes — claude-defaults', () => {
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
       else process.env.CLAUDE_CONFIG_DIR = prev
       rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// The setup page's save path must follow `--config`, or a dev run pointed at a
+// shared config would scaffold/save into its own state dir instead.
+describe('config routes — setup honors --config override', () => {
+  it('writes setup fields to the override path, not <stateDir>/config.json', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'crw-setup-state-'))
+    const altDir = mkdtempSync(join(tmpdir(), 'crw-setup-alt-'))
+    const altFile = join(altDir, 'shared-config.json')
+    writeFileSync(
+      altFile,
+      JSON.stringify({
+        profiles: [{
+          id: 'default', name: 'Default', authToken: '', baseUrl: 'https://api.anthropic.com',
+          modelList: ['m'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c',
+        }],
+        activeProfileId: 'default',
+      }),
+    )
+
+    const sm = {} as unknown as SessionManager
+    setConfigPath(altFile)
+    try {
+      const res = await buildConfigRouter(sm, stateDir).request('/config/setup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ authToken: 'new-token' }),
+      })
+      expect(res.status).toBe(200)
+      const written = JSON.parse(readFileSync(altFile, 'utf8')) as { profiles: { authToken: string }[] }
+      expect(written.profiles[0].authToken).toBe('new-token')
+      expect(() => readFileSync(join(stateDir, 'config.json'))).toThrow()
+    } finally {
+      setConfigPath(undefined)
+      rmSync(stateDir, { recursive: true, force: true })
+      rmSync(altDir, { recursive: true, force: true })
     }
   })
 })

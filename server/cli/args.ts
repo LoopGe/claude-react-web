@@ -10,6 +10,8 @@ export interface CliArgs {
   cwd?: string
   model?: string
   stateDir?: string
+  /** Explicit config.json path (overrides `<stateDir>/config.json`). */
+  config?: string
   claudeBinary?: string
   token?: string
   disableAppPlugins: boolean
@@ -66,6 +68,9 @@ export function parseServerArgs(argv: string[]): CliArgs {
         break
       case '--state-dir':
         args.stateDir = next()
+        break
+      case '--config':
+        args.config = next()
         break
       case '--claude-binary':
         args.claudeBinary = next()
@@ -124,6 +129,10 @@ Options:
       --model <name>   Default model advertised to new sessions (informational)
       --state-dir <p>  Where to keep session metadata and config.json
                        (default: ~/.claude-react-web)
+      --config <path>  Read/write config.json at an explicit path instead of
+                       <state-dir>/config.json. A leading ~ is expanded to the
+                       home directory. Useful to share one config across
+                       worktrees or dev/prod runs.
       --claude-binary <path>
                        Path to the claude CLI binary. Default: resolved from
                        CLAUDE_CODE_BINARY env or \`which claude\`. Use this if
@@ -142,21 +151,24 @@ Options:
   -h, --help           Show this help and exit
 `.trim()
 
-/** Strip --state-dir (valid anywhere) and detect a leading subcommand.
- *  Returns the captured --state-dir, the detected command (first non-flag
- *  token) and the remaining command argv. When no subcommand is present,
- *  `command` is undefined and the caller falls through to the server path
- *  with the ORIGINAL argv (serverArgv handling stays in cli.ts). */
-export function parseArgv(argv: string[]): { stateDir?: string; command?: string; commandArgv: string[] } {
+/** Strip --state-dir / --config (valid anywhere) and detect a leading
+ *  subcommand. Returns the captured paths, the detected command (first
+ *  non-flag token) and the remaining command argv. When no subcommand is
+ *  present, `command` is undefined and the caller falls through to the server
+ *  path with the ORIGINAL argv (serverArgv handling stays in cli.ts). */
+export function parseArgv(argv: string[]): { stateDir?: string; config?: string; command?: string; commandArgv: string[] } {
   const rest: string[] = []
   let stateDir: string | undefined
+  let config: string | undefined
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--state-dir') { stateDir = argv[++i]; continue }
     if (a.startsWith('--state-dir=')) { stateDir = a.slice('--state-dir='.length); continue }
+    if (a === '--config') { config = argv[++i]; continue }
+    if (a.startsWith('--config=')) { config = a.slice('--config='.length); continue }
     rest.push(a)
   }
   const first = rest[0]
-  if (first && !first.startsWith('-')) return { stateDir, command: first, commandArgv: rest.slice(1) }
-  return { stateDir, command: undefined, commandArgv: [] }
+  if (first && !first.startsWith('-')) return { stateDir, config, command: first, commandArgv: rest.slice(1) }
+  return { stateDir, config, command: undefined, commandArgv: [] }
 }

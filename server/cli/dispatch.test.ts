@@ -4,12 +4,17 @@ import { parseArgv } from './args.js'
 
 describe('parseArgv (from args.ts)', () => {
   it('detects a leading subcommand', () => {
-    expect(parseArgv(['mcp', 'list'])).toEqual({ stateDir: undefined, command: 'mcp', commandArgv: ['list'] })
+    expect(parseArgv(['mcp', 'list'])).toEqual({ stateDir: undefined, config: undefined, command: 'mcp', commandArgv: ['list'] })
   })
   it('strips --state-dir from anywhere', () => {
     expect(parseArgv(['--state-dir', '/x', 'mcp', 'list']).command).toBe('mcp')
     expect(parseArgv(['--state-dir=/x', 'mcp', 'list']).stateDir).toBe('/x')
     expect(parseArgv(['mcp', 'list', '--state-dir=/x']).command).toBe('mcp')
+  })
+  it('strips --config from anywhere', () => {
+    expect(parseArgv(['--config', '/c.json', 'mcp', 'list'])).toEqual({ stateDir: undefined, config: '/c.json', command: 'mcp', commandArgv: ['list'] })
+    expect(parseArgv(['--config=/c.json', 'mcp', 'list']).config).toBe('/c.json')
+    expect(parseArgv(['mcp', 'list', '--config=/c.json']).command).toBe('mcp')
   })
   it('returns no command for server flags', () => {
     expect(parseArgv(['--port', '3456']).command).toBeUndefined()

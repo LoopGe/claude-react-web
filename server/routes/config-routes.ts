@@ -2,7 +2,7 @@
 
 import { Hono } from 'hono'
 import { readFile } from 'node:fs/promises'
-import { join as joinPath } from 'node:path'
+import { dirname, join as joinPath } from 'node:path'
 import { claudeConfigDir } from '../claude-config-dir.js'
 import { SessionManager } from '../session-manager.js'
 import { HttpError } from '../errors.js'
@@ -10,7 +10,7 @@ import { createLogger } from '../log.js'
 import { safeJson } from './index.js'
 
 const log = createLogger('config')
-import { config as serverConfig, loadConfig, readConfigFile, updateConfigFile, MAX_PASTED_IMAGE_BYTES } from '../config.js'
+import { config as serverConfig, getConfigPath, loadConfig, readConfigFile, updateConfigFile, MAX_PASTED_IMAGE_BYTES } from '../config.js'
 import {
   LOG_LEVELS, getLogConfig, setLogConfig, type LogLevel,
   enableFileLogging, disableFileLogging, isFileLoggingEnabled, getLogFilePath,
@@ -34,7 +34,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       commitMessageModel?: string
       updateCheckRegistry?: string
     }>(c.req)
-    const configPath = joinPath(configDir, 'config.json')
+    const configPath = getConfigPath(configDir)
     let existing: Record<string, unknown> = {}
     try {
       existing = JSON.parse(await readFile(configPath, 'utf8'))
@@ -89,7 +89,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       // "update checks disabled", so we write it rather than dropping it.
       existing.updateCheckRegistry = body.updateCheckRegistry.trim()
     }
-    await writeAtomic(configDir, configPath, existing)
+    await writeAtomic(dirname(configPath), configPath, existing)
     await loadConfig(configDir)
     log.info('config/setup saved and reloaded')
     return c.json({ ok: true, configured: !!serverConfig.authToken })

@@ -1,14 +1,16 @@
 // Server-side configuration defaults.
 //
 // Configuration is loaded from <stateDir>/config.json (default
-// ~/.claude-react-web/config.json). CLI flags (--model) take priority
-// over the config file; hardcoded defaults are the final fallback.
+// ~/.claude-react-web/config.json), or from the file named by the CLI
+// `--config` flag when given. CLI flags (--model) take priority over the
+// config file; hardcoded defaults are the final fallback.
 //
 // After loadConfig() runs the config object is frozen — mutation attempts
 // throw at runtime, making the "load once" invariant explicit.
 
 import { promises as fs } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import type { SkillLoadMode } from '../shared/skills.js'
 import type { RowGapPreset } from '../shared/row-gap.js'
 import { isRowGapPreset, DEFAULT_ROW_GAP } from '../shared/row-gap.js'
@@ -344,6 +346,29 @@ export function __setConfigForTest(overrides: Partial<ServerConfig>): void {
   config = Object.freeze({ ...config, ...overrides })
 }
 
+/** Explicit config.json path set by the CLI `--config` flag. Module-level so
+ *  every reader/writer of the config file — loadConfig, readConfigFile, the
+ *  write queue, clearCredentials — follows one path without threading it
+ *  through each signature. Unset = derive `<stateDir>/config.json`. */
+let configPathOverride: string | null = null
+
+/** Point config.json at an explicit file for the life of the process. A
+ *  leading `~` is expanded here so `--config ~/.claude-react-web/config.json`
+ *  works even where the shell does not expand it. Pass undefined to reset. */
+export function setConfigPath(filePath?: string): void {
+  if (!filePath) {
+    configPathOverride = null
+    return
+  }
+  configPathOverride = resolve(filePath.replace(/^~(?=$|[\\/])/, homedir()))
+}
+
+/** The config file this process reads and writes: the `--config` override when
+ *  set, else `<stateDir>/config.json`. */
+export function getConfigPath(stateDir: string): string {
+  return configPathOverride ?? join(stateDir, 'config.json')
+}
+
 /**
  * Load config from `<stateDir>/config.json`, replacing the config object
  * with a frozen merge of defaults + file values. If the file is missing a
@@ -351,7 +376,7 @@ export function __setConfigForTest(overrides: Partial<ServerConfig>): void {
  * silently.
  */
 export async function loadConfig(stateDir: string): Promise<void> {
-  const file = join(stateDir, 'config.json')
+  const file = getConfigPath(stateDir)
   let raw: string
   try {
     raw = await fs.readFile(file, 'utf8')
@@ -359,7 +384,7 @@ export async function loadConfig(stateDir: string): Promise<void> {
     // File doesn't exist — scaffold a starter config so the user has a
     // concrete file to edit (fill in authToken, adjust models, etc.).
     try {
-      await fs.mkdir(stateDir, { recursive: true })
+      await fs.mkdir(dirname(file), { recursive: true })
       const scaffold = JSON.stringify(
         {
           profiles: [{
@@ -693,7 +718,7 @@ export const WRITABLE_CONFIG_KEYS = [
  * if the file doesn't exist or is malformed.
  */
 export async function readConfigFile(stateDir: string): Promise<Record<string, unknown>> {
-  const file = join(stateDir, 'config.json')
+  const file = getConfigPath(stateDir)
   try {
     const raw = await fs.readFile(file, 'utf8')
     const parsed = JSON.parse(raw)
@@ -758,7 +783,7 @@ async function doUpdateConfigFile(
       if (key === 'maxGroupPanels') delete existing.maxOpenPanels
     }
   }
-  const file = join(stateDir, 'config.json')
+  const file = getConfigPath(stateDir)
   await fs.writeFile(file, JSON.stringify(existing, null, 2), 'utf8')
   // Apply the merged result directly instead of re-reading from disk.
   applyParsedConfig(existing as unknown as ConfigFile, stateDir, file)
@@ -787,7 +812,7 @@ async function doRawConfigUpdate(
 ): Promise<void> {
   const existing = await readConfigFile(stateDir)
   await mutate(existing)
-  const file = join(stateDir, 'config.json')
+  const file = getConfigPath(stateDir)
   await fs.writeFile(file, JSON.stringify(existing, null, 2), 'utf8')
   applyParsedConfig(existing as unknown as ConfigFile, stateDir, file)
 }
