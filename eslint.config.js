@@ -10,7 +10,9 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import prettier from 'eslint-config-prettier'
 
 export default [
-  { ignores: ['dist', 'node_modules', 'coverage', 'fixtures', 'plugins', 'packages'] },
+  // `.claude` holds git-ignored worktrees (`.claude/worktrees/*`) — full repo
+  // checkouts that must not be linted as part of the main tree.
+  { ignores: ['dist', 'node_modules', 'coverage', 'fixtures', 'plugins', 'packages', '.claude'] },
 
   js.configs.recommended,
   ...tseslint.configs.recommended,

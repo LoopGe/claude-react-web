@@ -30,6 +30,9 @@ export function toSnapshot(p: PendingPermission): PermissionRequestSnapshot {
     displayName: p.displayName,
     description: p.description,
     suggestions: p.suggestions,
+    defaultToNo: p.defaultToNo,
+    suppressAlwaysAllowRule: p.suppressAlwaysAllowRule,
+    mcpServer: p.mcpServer,
     toolUseID: p.toolUseID,
     createdAt: p.createdAt,
   }

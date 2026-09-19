@@ -2051,6 +2051,11 @@ export class SessionManager {
         type: 'preset',
         preset: 'claude_code',
         append: SIDE_DEVELOPER_INSTRUCTIONS,
+        // Render per request instead of recording at first spawn: these
+        // instructions are app-managed and may change across versions, so a
+        // resumed side chat must pick up the current text rather than reuse a
+        // prompt recorded by an older build (SDK 0.3.267 default is to record).
+        snapshot: false,
       },
     }
     // Re-apply globally configured MCP servers (same as fork).
@@ -3171,6 +3176,7 @@ export class SessionManager {
           type: 'preset',
           preset: 'claude_code',
           append: SIDE_DEVELOPER_INSTRUCTIONS,
+          snapshot: false,
         }
         freshOpts.parentId = settings.parentId
       }
@@ -4379,8 +4385,12 @@ export class SessionManager {
     // already succeeded — turning a cosmetic probe into a failed pin — and
     // leave the in-flight flag stuck on, blocking every later probe.
     try {
+      // `detail: 'summary'` (SDK ≥0.3.257) skips the per-category token-count
+      // API calls — this probe only needs the auto-compact facts / window, not
+      // the skills/agents/memoryFiles breakdown the SettingsPanel fetches via
+      // contextUsage(). Falls back to 'full' on CLIs that predate the option.
       void fn
-        .call(s.handle)
+        .call(s.handle, { detail: 'summary' })
         .then((raw) => {
           const facts = parseSdkAutoCompactFacts(raw)
           if (facts) applySdkAutoCompactFacts(s, facts)
@@ -5875,6 +5885,7 @@ export class SessionManager {
         type: 'preset',
         preset: 'claude_code',
         append: SIDE_DEVELOPER_INSTRUCTIONS,
+        snapshot: false,
       }
     }
     // Re-apply globally configured MCP servers (same as resume/fork).

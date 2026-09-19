@@ -2361,7 +2361,9 @@ describe('SessionManager', () => {
     mockHandles[0].getContextUsage.mockReturnValueOnce(new Promise((res) => { resolveProbe = res }))
 
     await sm.setAutoCompactWindow(info.id, 113000)
-    expect(mockHandles[0].getContextUsage).toHaveBeenCalled()
+    // The background probe asks for the cheap summary (no per-category
+    // token-count API calls) — it only needs the auto-compact facts.
+    expect(mockHandles[0].getContextUsage).toHaveBeenCalledWith({ detail: 'summary' })
     // Pin already committed, with our derived approximation on the bar.
     expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(80000)
 

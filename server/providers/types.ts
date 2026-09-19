@@ -193,7 +193,11 @@ export interface ProviderSessionHandle {
   setMcpPermissionModeOverride?(serverName: string, mode: 'default' | 'auto' | null): Promise<{ warning?: string }>
   reloadPlugins?(): Promise<unknown>
   reloadSkills(): Promise<unknown>
-  getContextUsage?(): Promise<unknown>
+  /** Context-window usage. `detail: 'summary'` (SDK ≥0.3.257) answers from the
+   *  last response's usage + local estimates without the per-category
+   *  token-count API calls — used by the fire-and-forget auto-compact probe.
+   *  The REST breakdown endpoint calls it with no args (`'full'`). */
+  getContextUsage?(opts?: { detail?: 'summary' | 'full' }): Promise<unknown>
   getUsage?(): Promise<unknown>
   /** Authenticated-account info (SDK Query.accountInfo): email /
    *  organization / subscriptionType / tokenSource / apiKeySource /

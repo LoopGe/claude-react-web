@@ -131,14 +131,13 @@ describe('ClaudeProvider.runStructured', () => {
     expect(call.options.canUseTool).toBeUndefined()
   })
 
-  it('installs a denying canUseTool for non-bypass modes so permissioned calls never hang', async () => {
+  it('uses permissionPrompts:none for non-bypass modes so permissioned calls never hang', async () => {
     queryMock.mockImplementation(makeGenerator([resultSuccess()]))
     await makeProvider().runStructured({ ...REQ, permissionMode: 'default' })
     const [call] = queryMock.mock.calls[0]
-    expect(call.options.canUseTool).toBeTypeOf('function')
+    expect(call.options.permissionPrompts).toBe('none')
+    expect(call.options.canUseTool).toBeUndefined()
     expect(call.options.allowDangerouslySkipPermissions).toBeUndefined()
-    const decision = await call.options.canUseTool()
-    expect(decision).toEqual({ behavior: 'deny', message: 'denied by structured run', interrupt: false })
   })
 
   it('aborts the query on an external signal', async () => {

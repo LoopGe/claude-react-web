@@ -148,6 +148,10 @@ export interface SlashCommand {
   description: string
   argumentHint: string
   aliases?: string[]
+  /** SDK: true when the command is Claude Code's own; absent for user,
+   *  project, plugin or MCP commands. Authoritative built-in marker — prefer
+   *  it over parsing the "(plugin)" tag out of the description. */
+  builtin?: boolean
 }
 
 /** A plugin loaded by the SDK. */
@@ -342,7 +346,70 @@ export interface SdkMessage {
     | 'max_turns'
     | 'completed'
   stop_reason?: string | null
+  /** SDK 0.3.232+ structured twin of a `/context` result, carried on the
+   *  synthetic assistant message that delivers the markdown table. Rendered as
+   *  a card; the markdown stays available inside the card. Shape is validated
+   *  defensively in the renderer. */
+  context_usage?: StructuredContextUsage
+  /** SDK 0.3.273 structured twin of a `/usage` result, carried on the
+   *  synthetic assistant message that delivers its text. */
+  usage_report?: StructuredUsageReport
   [k: string]: unknown
+}
+
+/** Defensive mirror of the SDK's `SDKContextUsage` (only what we render). */
+export interface StructuredContextUsage {
+  model?: string
+  total_tokens?: number
+  raw_max_tokens?: number
+  percentage?: number
+  over_limit?: { tokens_over?: number; kind?: string }
+  categories?: Array<{
+    name?: string
+    tokens?: number
+    kind?: 'used' | 'free' | 'buffer' | 'deferred'
+  }>
+}
+
+/** Defensive mirror of the SDK's `SDKUsageReport` (only what we render). */
+export interface StructuredUsageReport {
+  session?: {
+    total_cost_usd?: number
+    total_duration_ms?: number
+    total_lines_added?: number
+    total_lines_removed?: number
+    model_usage?: Record<
+      string,
+      {
+        inputTokens?: number
+        outputTokens?: number
+        thinkingTokens?: number
+        cacheReadInputTokens?: number
+        cacheCreationInputTokens?: number
+        costUSD?: number
+      }
+    >
+  }
+  rate_limits?: {
+    limits?:
+      | Array<{
+          kind?: string
+          group?: string
+          percent?: number
+          resets_at?: string | null
+          severity?: string
+          is_active?: boolean
+          scope?: { model?: { display_name?: string } | null; surface?: { display_name?: string } | null } | null
+        }>
+      | null
+    extra_usage?: {
+      is_enabled?: boolean
+      monthly_limit?: number | null
+      used_credits?: number | null
+      utilization?: number | null
+      currency?: string | null
+    } | null
+  } | null
 }
 
 // ── Content Block ────────────────────────────────────────────────
@@ -388,6 +455,10 @@ export interface McpServerStatus {
   serverInfo?: { name?: string; version?: string }
   error?: string
   scope?: string
+  /** SDK 0.3.274 provenance: `sdk` = an in-process server this host
+   *  registered; otherwise the config scope the definition came from
+   *  (user/project/local/dynamic/managed/plugin/…). Absent on older CLIs. */
+  source?: string
   config?: unknown
   tools?: McpServerTool[]
 }
@@ -531,6 +602,7 @@ export interface StoredAgentDefinition {
   effort?: string | number
   maxTurns?: number
   background?: boolean
+  omitClaudeMd?: boolean
   memory?: 'user' | 'project' | 'local'
   initialPrompt?: string
   tools?: string[]

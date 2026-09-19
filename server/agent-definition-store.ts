@@ -15,6 +15,7 @@ export const AGENT_FIELDS = [
   'description', 'prompt', 'tools', 'disallowedTools', 'model', 'mcpServers',
   'skills', 'memory', 'effort', 'permissionMode', 'maxTurns', 'background',
   'initialPrompt', 'observer', 'observerMessage', 'criticalSystemReminder_EXPERIMENTAL',
+  'omitClaudeMd',
 ] as const
 
 export type AgentField = (typeof AGENT_FIELDS)[number]
@@ -193,6 +194,9 @@ export function coerceStoredAgentDefinition(raw: unknown): StoredAgentDefinition
   }
   if (out.background !== undefined && typeof out.background !== 'boolean') {
     strip('background', 'must be a boolean')
+  }
+  if (out.omitClaudeMd !== undefined && typeof out.omitClaudeMd !== 'boolean') {
+    strip('omitClaudeMd', 'must be a boolean')
   }
   return out as unknown as StoredAgentDefinition
 }

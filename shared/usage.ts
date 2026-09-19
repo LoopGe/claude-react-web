@@ -36,6 +36,9 @@ export interface UsageRateLimits {
 export interface UsageModelEntry {
   inputTokens?: number
   outputTokens?: number
+  /** Thinking tokens (SDK 0.3.257), a subset of outputTokens. Absent for turns
+   *  run on CLIs that predate the field. */
+  thinkingTokens?: number
   cacheReadInputTokens?: number
   cacheCreationInputTokens?: number
   webSearchRequests?: number

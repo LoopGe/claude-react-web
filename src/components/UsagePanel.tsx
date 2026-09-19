@@ -212,6 +212,7 @@ export const UsagePanel = memo(function UsagePanel({
                         <th>model</th>
                         <th>in</th>
                         <th>out</th>
+                        <th title="thinking tokens (subset of out)">think</th>
                         <th>cache</th>
                         <th>cost</th>
                       </tr>
@@ -224,6 +225,7 @@ export const UsagePanel = memo(function UsagePanel({
                             : null
                         const inTok = get('inputTokens')
                         const outTok = get('outputTokens')
+                        const thinkTok = get('thinkingTokens')
                         const cacheTok =
                           (get('cacheReadInputTokens') ?? 0) + (get('cacheCreationInputTokens') ?? 0)
                         const mCost = fmtCost(m.costUSD)
@@ -234,6 +236,7 @@ export const UsagePanel = memo(function UsagePanel({
                             </td>
                             <td>{inTok != null ? formatTokens(inTok) : '—'}</td>
                             <td>{outTok != null ? formatTokens(outTok) : '—'}</td>
+                            <td>{thinkTok != null ? formatTokens(thinkTok) : '—'}</td>
                             <td>{cacheTok > 0 ? formatTokens(cacheTok) : '—'}</td>
                             <td>{mCost ?? '—'}</td>
                           </tr>

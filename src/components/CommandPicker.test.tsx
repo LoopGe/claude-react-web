@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render } from '@testing-library/react'
-import { CommandPicker } from './CommandPicker'
+import { CommandPicker, pickerFlatCommands } from './CommandPicker'
 import { expectPortaledToBody } from './portal-test-utils'
 import type { SlashCommand } from '../types'
 
@@ -40,5 +40,16 @@ describe('CommandPicker', () => {
     expect(document.querySelector('.cmd-picker')).not.toBeNull()
     unmount()
     expect(document.querySelector('.cmd-picker')).toBeNull()
+  })
+
+  it('honours the SDK builtin marker over a plugin-looking description tag', () => {
+    const mixed: SlashCommand[] = [
+      { name: 'a', description: '(myplugin) do a', argumentHint: '' },
+      { name: 'b', description: '(myplugin) do b', argumentHint: '', builtin: true },
+      { name: 'c', description: '(myplugin) do c', argumentHint: '' },
+    ]
+    // builtin commands go to the trailing built-in group; plugin commands
+    // keep the tag-derived grouping.
+    expect(pickerFlatCommands(mixed).map((c) => c.name)).toEqual(['a', 'c', 'b'])
   })
 })

@@ -41,6 +41,7 @@ import {
 import { toolDebug, toolDebugEnabled } from './debug'
 import { parseWorkflowOutput } from './workflow-meta'
 import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
+import { isEmptyResultFrame } from '../../shared/results.js'
 
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -1321,6 +1322,11 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // cursor either: its uuid is never in the ring, so anchoring on it would
   // break the sinceUuid incremental replay path.
   const isToolProgress = message.type === 'tool_progress'
+  // Empty result frames are suppressed by toTranscriptItem, so they must not
+  // anchor the sinceUuid incremental replay either — the server never persists
+  // them (result-frames sidecar / disk) and after a restart the anchor would
+  // miss the rebuilt ring and force a full replay. See isEmptyResultFrame.
+  const isEmptyResult = isEmptyResultFrame(incomingMessage)
 
   let thinkingTokens: number | null = mirror.thinkingTokens
   if (isThinkingTokens) {
@@ -1333,7 +1339,7 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   const workingMirror: ServerMirror = {
     ...mirror,
     eventCount: mirror.eventCount + 1,
-    ...(messageUuid && !isApiRetry && !isThinkingTokens && !isStreamEvent && !isToolProgress ? { lastMessageUuid: messageUuid } : {}),
+    ...(messageUuid && !isApiRetry && !isThinkingTokens && !isStreamEvent && !isToolProgress && !isEmptyResult ? { lastMessageUuid: messageUuid } : {}),
     apiRetry: isApiRetry ? incomingMessage : null,
     thinkingTokens,
   }

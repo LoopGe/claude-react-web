@@ -66,6 +66,7 @@ interface FormState {
   permissionMode: string
   maxTurns: string
   background: boolean
+  omitClaudeMd: boolean
   memory: string
   initialPrompt: string
   observer: string
@@ -87,6 +88,7 @@ function emptyForm(): FormState {
     permissionMode: '',
     maxTurns: '',
     background: false,
+    omitClaudeMd: false,
     memory: '',
     initialPrompt: '',
     observer: '',
@@ -109,6 +111,7 @@ function fromDef(def: StoredAgentDefinition): FormState {
     permissionMode: def.permissionMode ?? '',
     maxTurns: def.maxTurns === undefined ? '' : String(def.maxTurns),
     background: def.background ?? false,
+    omitClaudeMd: def.omitClaudeMd ?? false,
     memory: def.memory ?? '',
     initialPrompt: def.initialPrompt ?? '',
     observer: def.observer ?? '',
@@ -143,6 +146,7 @@ function buildData(f: FormState): Record<string, unknown> {
   if (f.memory) data.memory = f.memory
   if (f.maxTurns !== '') data.maxTurns = Number(f.maxTurns)
   data.background = f.background
+  data.omitClaudeMd = f.omitClaudeMd
   return data
 }
 
@@ -342,6 +346,16 @@ export function AgentDefinitionForm({ initial, onSaved, onCancel }: AgentDefinit
             type="checkbox"
             checked={form.background}
             onChange={(e) => set('background', e.target.checked)}
+          />
+        </label>
+        <label className="settings-field settings-field-inline">
+          <span title="Run this subagent without user, project and local CLAUDE.md files; managed policy files still load.">
+            Omit CLAUDE.md
+          </span>
+          <input
+            type="checkbox"
+            checked={form.omitClaudeMd}
+            onChange={(e) => set('omitClaudeMd', e.target.checked)}
           />
         </label>
         <label className="settings-field">

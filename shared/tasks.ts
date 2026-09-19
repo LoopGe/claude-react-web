@@ -65,6 +65,15 @@ export function normalizeTaskType(raw: string | undefined): string | undefined {
   return TASK_TYPE_ALIASES[raw] ?? raw
 }
 
+/** A file a backgrounded MCP task returned by reference (SDK
+ *  `SDKMcpResourceLink`), flattened to the fields the UI renders. */
+export interface TaskResourceLink {
+  uri: string
+  name: string
+  title?: string
+  mimeType?: string
+}
+
 /** A task as tracked by the server and rendered by the client (TasksPanel,
  *  subagent chip enrichment). All optional fields are read defensively from
  *  the SDK frames — the wire shape can evolve without a protocol bump. */
@@ -97,6 +106,13 @@ export interface TaskRecordUi {
   progressSummary?: string
   /** Last tool the task's agent invoked (task_progress.last_tool_name). */
   lastToolName?: string
+  /** Machine-readable stop cause (SDK 0.3.273 `task_notification.reason`),
+   *  set only when the task did not end through an ordinary completion /
+   *  failure / stop. Currently only 'worker_restart'. */
+  reason?: 'worker_restart'
+  /** Files a backgrounded MCP task returned by reference (SDK 0.3.257
+   *  `task_notification.resource_links`). */
+  resourceLinks?: TaskResourceLink[]
   /** Server receive time of the task_started frame (stampReceivedAt). */
   startedAt?: number
   endedAt?: number

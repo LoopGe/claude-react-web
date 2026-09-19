@@ -116,6 +116,13 @@ export async function getClaudeHealth(
   return result
 }
 
+/** The last SUCCESSFUL probe result, if any. Lets a synchronous caller that
+ *  cannot await (spawn-time Options building) read the CLI version. Returns
+ *  undefined until some caller has probed at least once. */
+export function cachedClaudeHealth(): ClaudeHealth | undefined {
+  return cached
+}
+
 export function buildHealthRouter(claudeBinary: string | undefined): Hono {
   const app = new Hono()
 

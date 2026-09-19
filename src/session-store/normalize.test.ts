@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription, recentMessagesDescription, countQueuedUserTurns, getActiveWorktree, subagentChildArgSummary, getSubagentChildStarts } from './normalize'
+import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription, recentMessagesDescription, countQueuedUserTurns, getActiveWorktree, subagentChildArgSummary, getSubagentChildStarts, toTranscriptItem } from './normalize'
 import type { SdkMessage } from '../types'
 
 /** Build a top-level `user` message with the given text content (string or
@@ -458,5 +458,20 @@ describe('getSubagentChildStarts', () => {
   it('returns empty for a non-assistant message', () => {
     expect(getSubagentChildStarts({ type: 'user', uuid: 'u', parent_tool_use_id: 'tu_sa', message: { role: 'user', content: 'hi' } } as unknown as SdkMessage))
       .toEqual({ parentId: '', children: [] })
+  })
+})
+
+describe('toTranscriptItem — empty result suppression', () => {
+  const resultMsg = (extra: Record<string, unknown>): SdkMessage =>
+    ({ type: 'result', uuid: 'r1', subtype: 'success', is_error: false, num_turns: 0, result: '', total_cost_usd: 0, ...extra } as unknown as SdkMessage)
+
+  it('drops a no-op result frame so it never renders a footer', () => {
+    expect(toTranscriptItem(resultMsg({}), undefined)).toBeNull()
+  })
+
+  it('keeps a real result frame (turns / text / error)', () => {
+    expect(toTranscriptItem(resultMsg({ num_turns: 1, result: 'done' }), undefined)).not.toBeNull()
+    expect(toTranscriptItem(resultMsg({ result: '/usage output' }), undefined)).not.toBeNull()
+    expect(toTranscriptItem(resultMsg({ is_error: true, subtype: 'error_during_execution' }), undefined)).not.toBeNull()
   })
 })

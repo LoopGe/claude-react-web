@@ -208,12 +208,20 @@ const TaskRow = memo(function TaskRow({
         </span>
         {(task.subagentType || task.workflowName || task.taskType) && (
           <span className="tasks-row-meta">
-            {[task.subagentType ?? task.workflowName ?? task.taskType, task.isBackgrounded ? 'background' : null, task.skipTranscript || task.ambient ? 'ambient' : null]
+            {[task.subagentType ?? task.workflowName ?? task.taskType, task.isBackgrounded ? 'background' : null, task.skipTranscript || task.ambient ? 'ambient' : null, task.reason === 'worker_restart' ? 'worker restarted' : null]
               .filter(Boolean)
               .join(' · ')}
           </span>
         )}
         {task.progressSummary && <span className="tasks-row-summary">{task.progressSummary}</span>}
+        {task.resourceLinks && task.resourceLinks.length > 0 && (
+          <span
+            className="tasks-row-summary"
+            title={task.resourceLinks.map((r) => r.uri).join('\n')}
+          >
+            {task.resourceLinks.map((r) => r.title ?? r.name).join(', ')}
+          </span>
+        )}
       </span>
       {!terminal && (
         <span className="tasks-row-timer-wrap">

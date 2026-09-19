@@ -36,6 +36,48 @@ import {
   TaskNotificationCard,
   ToolUseSummaryView,
 } from './views/frame-views'
+import { ContextUsageReportCard, UsageReportCard } from './views/structured-reports'
+
+/** Human labels for `SDKAssistantMessageError` codes shown in the message
+ *  header badge. Unknown/future codes fall through to the raw value (still
+ *  debug-friendly), so this map never has to track the SDK union exactly. */
+const ASSISTANT_ERROR_LABELS: Record<string, string> = {
+  authentication_failed: 'authentication failed',
+  oauth_org_not_allowed: 'organization not allowed',
+  account_on_hold: 'account on hold',
+  verification_required: 'verification required',
+  billing_error: 'billing error',
+  rate_limit: 'rate limit',
+  overloaded: 'overloaded',
+  invalid_request: 'invalid request',
+  model_not_found: 'model not found',
+  server_error: 'server error',
+  unknown: 'unknown error',
+  max_output_tokens: 'output limit reached',
+  cloud_credential_error: 'cloud credential error',
+}
+
+/** Human explanations for `SDKStartupFailureReason` — why Claude Code refused
+ *  to start, so the result footer can offer the cause instead of a bare
+ *  "error_during_execution". */
+const STARTUP_FAILURE_LABELS: Record<string, string> = {
+  org_pin_api_key_conflict: 'an API key conflicts with the organization sign-in policy',
+  org_verify_failed: 'the sign-in organization could not be verified',
+  org_pin_mismatch: 'the sign-in belongs to a disallowed organization',
+  managed_settings_invalid: 'managed policy settings could not be read',
+  remote_settings_required_unavailable: 'required managed settings were unavailable',
+  gateway_signin_required: 'the gateway requires sign-in',
+  gateway_access_denied: 'the gateway denied access',
+  proxy_invalid: 'a proxy setting is not a valid URL',
+  temp_dir_unusable: 'the temp directory is unusable',
+  cwd_unavailable: 'the working directory is unavailable',
+  shell_tool_missing: 'no shell tool is available',
+  session_held_by_background: 'the conversation is running in the background',
+  worktree_resume_refused: 'the worktree resume was refused',
+  worktree_unverified: 'the worktree could not be verified',
+  cli_version_too_old: 'this Claude Code version is below the minimum required',
+  bypass_root: 'bypass permissions cannot run as root',
+}
 
 export const MessageView = memo(function MessageView({
   msg,
@@ -445,13 +487,31 @@ export const MessageView = memo(function MessageView({
         <div className="msg-header">
           <span>{isSubagent ? 'subagent' : 'assistant'}</span>
           <MessageTimestamp ms={msg.receivedAt} />
-          {msg.error && !modelNotFound && <span className="msg-header-error" title={msg.error as string}>{msg.error as string}</span>}
+          {msg.error && !modelNotFound && (
+            <span className="msg-header-error" title={msg.error as string}>
+              {ASSISTANT_ERROR_LABELS[msg.error as string] ?? (msg.error as string)}
+            </span>
+          )}
         </div>
         )}
         <div className="msg-body">
-          {blocks.map((b, i) => (
-            <BlockView key={i} block={b} searchQuery={searchQuery} activeMatchIdx={blockActiveIdx[i]} toolResultActiveMatchIdx={toolResultActiveMatchIdx} />
-          ))}
+          {/* Structured twins of `/context` and `/usage` (SDK 0.3.232 / 0.3.273)
+              render as cards; the canonical markdown output stays available
+              inside the collapsible below so no information is lost. */}
+          {msg.context_usage && <ContextUsageReportCard usage={msg.context_usage} />}
+          {msg.usage_report && <UsageReportCard report={msg.usage_report} />}
+          {(msg.context_usage || msg.usage_report) ? (
+            <details className="msg-report-raw">
+              <summary>Raw output</summary>
+              {blocks.map((b, i) => (
+                <BlockView key={i} block={b} searchQuery={searchQuery} activeMatchIdx={blockActiveIdx[i]} toolResultActiveMatchIdx={toolResultActiveMatchIdx} />
+              ))}
+            </details>
+          ) : (
+            blocks.map((b, i) => (
+              <BlockView key={i} block={b} searchQuery={searchQuery} activeMatchIdx={blockActiveIdx[i]} toolResultActiveMatchIdx={toolResultActiveMatchIdx} />
+            ))
+          )}
           {modelNotFound && onSwitchModel && (
             <button type="button" className="btn btn-sm msg-switch-model-btn" onClick={onSwitchModel}>
               Switch model
@@ -489,7 +549,23 @@ export const MessageView = memo(function MessageView({
       : 0
     const outTok = usage?.output_tokens ?? 0
     const tokens = inTok > 0 || outTok > 0 ? `${formatTokens(inTok)} in \u00b7 ${formatTokens(outTok)} out` : ''
-    const meta = [turns, dur, tokens, cost].filter(Boolean).join(' \u00b7 ')
+    // SDK 0.3.268/0.3.273/0.3.277 wrapper fields on the result frame.
+    const wrapper = msg as unknown as {
+      local_command?: unknown
+      resume_reason?: unknown
+      startup_failure_reason?: unknown
+    }
+    const localCommand = typeof wrapper.local_command === 'string' ? wrapper.local_command : ''
+    const resumeReason = typeof wrapper.resume_reason === 'string' ? wrapper.resume_reason : ''
+    const startupReason = typeof wrapper.startup_failure_reason === 'string' ? wrapper.startup_failure_reason : ''
+    const meta = [
+      localCommand ? `/${localCommand}` : '',
+      resumeReason ? 'resumed after restart' : '',
+      turns,
+      dur,
+      tokens,
+      cost,
+    ].filter(Boolean).join(' \u00b7 ')
     return (
       <div
         className={`msg result${isInterrupted ? ' interrupted' : ''}`}
@@ -497,6 +573,11 @@ export const MessageView = memo(function MessageView({
       >
         <span className="result-mark" aria-hidden="true">{isInterrupted ? '!' : 'ok'}</span>
         {meta && <span className="result-meta">{meta}</span>}
+        {startupReason && (
+          <span className="result-meta" title={startupReason}>
+            startup failed: {STARTUP_FAILURE_LABELS[startupReason] ?? startupReason}
+          </span>
+        )}
       </div>
     )
   }

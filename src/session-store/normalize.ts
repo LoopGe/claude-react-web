@@ -12,6 +12,7 @@ import type {
 import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, SKILL_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME, ENTER_WORKTREE_TOOL_NAME, EXIT_WORKTREE_TOOL_NAME } from '../constants/toolNames'
 import { extractMessagePlainText } from '../search'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
+import { isEmptyResultFrame } from '../../shared/results.js'
 /** Strings the SDK / canUseTool deny path uses to mean "user said no".
  *  Matched against tool_result.content text — case-insensitive substring
  *  match. Both Anthropic CLI and our own deny path land here.
@@ -124,6 +125,13 @@ export function toTranscriptItem(
   // The server drops it in the pump; keep the client side defensive so a
   // frame that slips through (older server, replay cache) never renders.
   if (msg.type === 'tool_progress') return null
+  // Empty `result` frames (SDK 0.3.274 queued background-task completions, plus
+  // the spawn/restart warm-up) are not real turns — suppress their footer so a
+  // batch of completions can't paint one "ok" row each. The reducer's turn-end
+  // sweep still runs (applyMessage's result branch is independent of this), so
+  // liveTurn/placeholders/thinking state is unaffected. Not persisted to IDB
+  // either, since updateTranscriptMirror is the only append path.
+  if (isEmptyResultFrame(msg)) return null
 
   const hiddenByDefault = shouldHideByDefault(msg)
   const id = typeof msg.uuid === 'string'

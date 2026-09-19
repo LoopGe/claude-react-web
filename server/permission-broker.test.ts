@@ -346,6 +346,37 @@ describe('PermissionBroker', () => {
       expect(Array.from(session.pending.values())[0].toolName).toBe('ExitPlanMode')
     })
 
+    it('carries the SDK defaultToNo / suppressAlwaysAllowRule hints onto the request snapshot', () => {
+      const session = makeFakeSession()
+      const onRequest = vi.fn()
+      const canUseTool = broker.buildCanUseTool(session, onRequest)
+      // No await: the pending promise resolves only on decide() — the snapshot
+      // is broadcast synchronously inside the call.
+      void canUseTool('Bash', { command: 'rm -rf build' }, {
+        toolUseID: 'tu-hints',
+        requestId: 'req-tu-hints',
+        signal: new AbortController().signal,
+        title: 'Dangerous command',
+        displayName: 'Bash',
+        description: '',
+        suggestions: [],
+        defaultToNo: true,
+        suppressAlwaysAllowRule: true,
+        mcpServer: { name: 'linear', source: 'sdk' },
+      })
+      const pending = Array.from(session.pending.values())[0]
+      expect(pending.kind).toBe('permission')
+      if (pending.kind !== 'permission') throw new Error('expected a permission request')
+      expect(pending.defaultToNo).toBe(true)
+      expect(pending.suppressAlwaysAllowRule).toBe(true)
+      // The wire snapshot (what the client dialog reads) must carry them too.
+      expect(onRequest.mock.calls[0][1]).toMatchObject({
+        defaultToNo: true,
+        suppressAlwaysAllowRule: true,
+        mcpServer: { name: 'linear', source: 'sdk' },
+      })
+    })
+
     // 鈹€鈹€鈹€ dontAsk mode 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     const ctx = (toolUseID = 'tu-1') => ({
       toolUseID,

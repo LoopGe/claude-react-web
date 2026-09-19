@@ -214,8 +214,8 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.reloadSkills()
   }
 
-  getContextUsage(): Promise<unknown> {
-    return this.query.getContextUsage()
+  getContextUsage(opts?: { detail?: 'summary' | 'full' }): Promise<unknown> {
+    return this.query.getContextUsage(opts)
   }
 
   /** Authenticated-account info (email / organization / subscription /

@@ -43,7 +43,7 @@ function coerceDef(def: StoredAgentDefinition): StoredAgentDefinition {
   if (!ok) throw new HttpError(400, 'invalid agent definition shape')
   // If the client explicitly sent a value coerce had to strip, reject — a
   // silent drop would make GET report a definition that differs from the PUT.
-  for (const field of ['memory', 'effort', 'maxTurns', 'background'] as const) {
+  for (const field of ['memory', 'effort', 'maxTurns', 'background', 'omitClaudeMd'] as const) {
     if (def[field] !== undefined && !(field in ok)) {
       throw new HttpError(400, `${field} value ${JSON.stringify(def[field])} is invalid`)
     }

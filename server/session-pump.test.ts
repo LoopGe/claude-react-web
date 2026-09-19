@@ -1461,6 +1461,37 @@ describe('applyTaskEvent', () => {
     expect(session.tasks.get('t1')?.status).toBe('running')
   })
 
+  it('folds the worker_restart reason and resource_links from a notification', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1' }))
+    applyTaskEvent(session, sysFrame('task_notification', {
+      task_id: 't1',
+      status: 'stopped',
+      reason: 'worker_restart',
+      resource_links: [
+        { uri: 'file:///tmp/report.md', name: 'report.md', title: 'Report', mimeType: 'text/markdown' },
+        { name: 'missing-uri' },
+      ],
+    }))
+    expect(session.tasks.get('t1')).toMatchObject({
+      status: 'stopped',
+      reason: 'worker_restart',
+      resourceLinks: [{ uri: 'file:///tmp/report.md', name: 'report.md', title: 'Report', mimeType: 'text/markdown' }],
+    })
+  })
+
+  it('ignores an unknown reason and malformed resource_links', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_notification', {
+      task_id: 't1',
+      status: 'completed',
+      reason: 'something_else',
+      resource_links: 'nope',
+    }))
+    expect(session.tasks.get('t1')?.reason).toBeUndefined()
+    expect(session.tasks.get('t1')?.resourceLinks).toBeUndefined()
+  })
+
   it('pushes a full snapshot to every taskSubscriber on each fold', () => {
     const { session, snapshots } = makeTaskSession()
     applyTaskEvent(session, sysFrame('task_started', { task_id: 't1' }))
@@ -1947,6 +1978,65 @@ describe('pump: task lifecycle frames', () => {
     expect(onTaskNotification).not.toHaveBeenCalled()
     // The frame itself still folded + broadcast as usual.
     expect(session.tasks.get('t1')?.status).toBe('completed')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pump: empty result frames
+//
+// SDK 0.3.274 emits one result per queued background-task completion — all but
+// the last empty (num_turns: 0, no text). Those are not real turns: the pump
+// must still run its turn bookkeeping (so the working indicator settles) but
+// must not promote them to a resume anchor or persist them to the
+// result-frames sidecar (which would replay duplicate footers on resume).
+// ---------------------------------------------------------------------------
+
+describe('pump: empty result frames', () => {
+  const assistant = {
+    type: 'assistant',
+    uuid: 'a1',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] },
+    parent_tool_use_id: null,
+  } as unknown as SDKMessage
+  const emptyResult = {
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    num_turns: 0,
+    result: '',
+    total_cost_usd: 0,
+    uuid: 'r-empty',
+  } as unknown as SDKMessage
+  const realResult = {
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    num_turns: 1,
+    result: 'done',
+    total_cost_usd: 0.01,
+    uuid: 'r-real',
+  } as unknown as SDKMessage
+
+  it('does not anchor or persist an empty completion, but still broadcasts it', async () => {
+    const { session, broadcasts } = makePumpSession([assistant, emptyResult])
+    const recordResultFrame = vi.fn()
+    const recordTurnAnchor = vi.fn()
+    await pump(session, makePumpDeps({ recordResultFrame, recordTurnAnchor }))
+
+    expect(recordTurnAnchor).not.toHaveBeenCalled()
+    expect(recordResultFrame).not.toHaveBeenCalled()
+    // Kept on the wire so the client's turn-end sweep still runs.
+    expect(broadcasts.map((m) => (m as { uuid?: string }).uuid)).toContain('r-empty')
+  })
+
+  it('anchors and persists a real result as before', async () => {
+    const { session } = makePumpSession([assistant, realResult])
+    const recordResultFrame = vi.fn()
+    const recordTurnAnchor = vi.fn()
+    await pump(session, makePumpDeps({ recordResultFrame, recordTurnAnchor }))
+
+    expect(recordTurnAnchor).toHaveBeenCalledWith('s-pump', 'a1', expect.any(Number))
+    expect(recordResultFrame).toHaveBeenCalledWith('s-pump', 'r-real', 'a1', realResult)
   })
 })
 

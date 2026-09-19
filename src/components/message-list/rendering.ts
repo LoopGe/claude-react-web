@@ -83,6 +83,9 @@ export function willRenderEmpty(
   // Assistant: mirror MessageView's hasVisibleContent check.
   const hasVisibleContent =
     Boolean(msg.error) ||
+    // A structured /context or /usage twin renders its own card even when the
+    // text body is empty — never drop the row on the blocks alone.
+    Boolean(msg.context_usage || msg.usage_report) ||
     blocks.some((b) => {
       if (b.type === 'tool_use' || b.type === 'image') return true
       if (b.type === 'text') return typeof b.text === 'string' && b.text.trim().length > 0

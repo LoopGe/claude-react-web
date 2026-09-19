@@ -226,3 +226,45 @@ describe('PermissionDialog minimize button', () => {
     expect(within(container).getByRole('button', { name: 'Minimize' })).toBeTruthy()
   })
 })
+
+describe('PermissionDialog security hints', () => {
+  it('hides the session-wide allow when suppressAlwaysAllowRule is set', () => {
+    const { container } = render(
+      <PermissionDialog
+        request={{ ...toolRequest(), suggestions: [{ type: 'addRules', rules: [] }], suppressAlwaysAllowRule: true }}
+        onDecide={vi.fn()}
+      />,
+    )
+    expect(within(container).queryByRole('button', { name: 'Allow for session' })).toBeNull()
+    expect(container.textContent).toContain("isn't offered")
+  })
+
+  it('still offers the session-wide allow when suggestions are present and not suppressed', () => {
+    const { container } = render(
+      <PermissionDialog
+        request={{ ...toolRequest(), suggestions: [{ type: 'addRules', rules: [] }] }}
+        onDecide={vi.fn()}
+      />,
+    )
+    expect(within(container).getByRole('button', { name: 'Allow for session' })).toBeTruthy()
+  })
+
+  it('opens on the decline option when defaultToNo is set', () => {
+    const { container } = render(
+      <PermissionDialog request={{ ...toolRequest(), defaultToNo: true }} onDecide={vi.fn()} />,
+    )
+    const deny = within(container).getByRole('button', { name: 'Deny' })
+    expect(document.activeElement).toBe(deny)
+  })
+
+  it('shows the MCP server provenance when the request carries one', () => {
+    const { container } = render(
+      <PermissionDialog
+        request={{ ...toolRequest(), mcpServer: { name: 'linear', source: 'project' } }}
+        onDecide={vi.fn()}
+      />,
+    )
+    expect(container.textContent).toContain('via linear')
+    expect(container.textContent).toContain('(project)')
+  })
+})

@@ -42,8 +42,29 @@ import type { StructuredRunRequest, StructuredRunResult } from '../../../shared/
 import type { ResumableSession } from '../../session-types.js'
 import { createLogger } from '../../log.js'
 import { appendStderrLine } from '../../cli-diagnostics.js'
+import { cachedClaudeHealth, getClaudeHealth } from '../../routes/health-routes.js'
 
 const log = createLogger('claude-provider')
+
+/** Windows refuses to start a process whose command line exceeds 32,767
+ *  chars. The SDK passes one `--plugin-dir <path>` per plugin, so a large
+ *  enabled-plugin set eventually fails the spawn there. Above this many
+ *  plugins the provider switches to `Options.pluginDelivery: 'initialize'`
+ *  (the list rides stdin instead of argv). */
+const INIT_PLUGIN_DELIVERY_THRESHOLD = 20
+
+/** Cached `claude --version` says the CLI is new enough (>= 2.1.261) for
+ *  `pluginDelivery: 'initialize'`. An unknown/older version returns false so
+ *  the safe argv path is kept — an old CLI exits at startup on the
+ *  `--await-initialize` flag. */
+function cliSupportsInitializePluginDelivery(): boolean {
+  const health = cachedClaudeHealth()
+  if (!health?.ok || !health.version) return false
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(health.version)
+  if (!m) return false
+  const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  return maj > 2 || (maj === 2 && (min > 1 || (min === 1 && pat >= 261)))
+}
 
 /** True when a base URL points at a first-party Anthropic API host
  *  (api.anthropic.com or a *.anthropic.com subdomain). Non-first-party
@@ -575,13 +596,14 @@ export class ClaudeProvider implements AgentProvider {
       sdkOptions.allowDangerouslySkipPermissions = true
     } else {
       // Headless one-shot has no web UI to answer tool permission prompts, so
-      // a permissioned call would sit unanswered until the 120s timeout. Auto-
-      // deny every permission-requiring call (safe reads flow through approval
-      // rules and never reach canUseTool), keeping the run read-only by default
-      // and guaranteeing it terminates. Deny with interrupt:false so the model
-      // re-plans instead of aborting the turn.
-      sdkOptions.canUseTool = async () =>
-        ({ behavior: 'deny', message: 'denied by structured run', interrupt: false }) as const
+      // a permissioned call would sit unanswered until the 120s timeout. SDK
+      // 0.3.259's `permissionPrompts: 'none'` is the native form of the old
+      // deny-everything canUseTool shim: rules / hooks / auto-mode still decide
+      // (safe reads flow through approval rules), and anything that would
+      // otherwise prompt is denied immediately with a "no approval surface"
+      // message, keeping the run read-only by default and guaranteed to
+      // terminate.
+      sdkOptions.permissionPrompts = 'none'
     }
 
     // Close the input after the single user turn so the run is clearly
@@ -791,6 +813,13 @@ export class ClaudeProvider implements AgentProvider {
           ...existing,
           ...enabledPaths.map((path) => ({ type: 'local' as const, path })),
         ]
+        // Windows-only argv-length guard (see INIT_PLUGIN_DELIVERY_THRESHOLD).
+        // Kick a probe so later spawns have the version, then use initialize
+        // delivery only when the probe proves the CLI supports it.
+        if (process.platform === 'win32' && opts.plugins.length >= INIT_PLUGIN_DELIVERY_THRESHOLD) {
+          void getClaudeHealth(this.opts.claudeBinary)
+          if (cliSupportsInitializePluginDelivery()) opts.pluginDelivery = 'initialize'
+        }
       }
     }
     // Enabled custom agent definitions ride every spawn's Options.agents,

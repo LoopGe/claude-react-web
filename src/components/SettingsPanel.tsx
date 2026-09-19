@@ -824,7 +824,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     }
 
     for (const cmd of commands) {
-      const key = keyFor(cmd.description)
+      // SDK `builtin` marker is authoritative; fall back to the "(plugin)"
+      // description tag only when it's absent.
+      const key = cmd.builtin === true ? '__builtin__' : keyFor(cmd.description)
       ensure(key)
       if (seenCommands.get(key)!.has(cmd.name)) continue
       seenCommands.get(key)!.add(cmd.name)
@@ -1462,6 +1464,22 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
                   <code>{a.agentType}</code>
                   <span className="settings-kv-source">{a.source}</span>
                   <span className="settings-kv-tokens">{formatTokens(a.tokens)}</span>
+                </div>
+              ))}
+            </div>
+          </AnimatedDetails>
+        )}
+        {usage?.categories && usage.categories.length > 0 && (
+          <AnimatedDetails
+            className="settings-detail settings-detail-tight"
+            summary={`Categories: ${usage.categories.length}`}
+          >
+            <div className="settings-detail-body">
+              {usage.categories.map((c, i) => (
+                <div key={`${c.kind}:${c.name}:${i}`} className="settings-kv-row">
+                  <code>{c.name}</code>
+                  <span className="settings-kv-source">{c.kind}</span>
+                  <span className="settings-kv-tokens">{formatTokens(c.tokens)}</span>
                 </div>
               ))}
             </div>
@@ -2106,6 +2124,16 @@ function McpServerCard({
           {server.name}
           {isGlobal && (
             <span className="settings-card-badge global">global</span>
+          )}
+          {server.source && (
+            // Provenance from the SDK. `sdk` is a host-registered in-process
+            // server; other values are the config scope (user/project/…).
+            <span
+              className="settings-card-badge"
+              title={`Definition source: ${server.source}`}
+            >
+              {server.source === 'sdk' ? 'in-process' : server.source}
+            </span>
           )}
         </span>
         {server.tools && (

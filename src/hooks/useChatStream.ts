@@ -65,6 +65,15 @@ export interface ContextUsage {
   }
   memoryFiles?: { tokenCount: number }
   mcpTools?: { tokenCount: number }
+  /** Canonical context rows from the SDK control response (0.3.268). Classify
+   *  on `kind` — 'used' occupies the window, 'free' is the remainder,
+   *  'buffer' is the compaction reserve, 'deferred' is an out-of-window tool
+   *  schema listed for awareness — never on the English `name`. */
+  categories?: Array<{
+    name: string
+    tokens: number
+    kind: 'used' | 'free' | 'buffer' | 'deferred'
+  }>
 }
 
 export type { ActivePhase }

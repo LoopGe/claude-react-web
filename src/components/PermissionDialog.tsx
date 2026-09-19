@@ -9,7 +9,7 @@
 // persistForSession=true and let the server promote every suggestion's
 // destination to 'session'. No suggestions? We hide the always button.
 
-import { memo, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import type { PermissionRequest, PermissionMode } from '../types'
 import type { PlanTargetMode } from '../hooks/usePermissionChannel'
 import { Markdown } from './Markdown'
@@ -64,7 +64,20 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
   // 10px scrollbar instead of the project's 6px floating thumb.
   const setModalSectionOs = useOverlayScrollbar({ autoHide: 'leave' })
 
-  const hasSuggestions = Array.isArray(request.suggestions) && request.suggestions.length > 0
+  // `suppressAlwaysAllowRule` means the SDK's suggested rule would grant more
+  // than this ask's own action — never offer the persistent session-wide allow.
+  const hasSuggestions =
+    Array.isArray(request.suggestions) &&
+    request.suggestions.length > 0 &&
+    request.suppressAlwaysAllowRule !== true
+  // `defaultToNo` — the ask must not be approvable by a single stray keystroke:
+  // open on the decline option. This dialog has no one-key approve shortcut, so
+  // moving focus to Deny is the whole contract.
+  const defaultToNo = request.defaultToNo === true
+  const denyRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (defaultToNo) denyRef.current?.focus()
+  }, [defaultToNo, request.id])
 
   const click = (
     d:
@@ -206,6 +219,16 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
             <div className="perm-summary">
               <span className="perm-badge">{request.displayName ?? request.toolName}</span>
             </div>
+            {request.mcpServer && (
+              // SDK 0.3.274 provenance: trust the SOURCE, not the name.
+              // `source: 'sdk'` is an in-process server this host registered;
+              // every other source (user/project/plugin/dynamic/…) is config
+              // authored elsewhere, so its name is untrusted display text.
+              <div className="perm-sub" title={`MCP server: ${request.mcpServer.name} (${request.mcpServer.source})`}>
+                via {request.mcpServer.name}
+                {request.mcpServer.source === 'sdk' ? ' (in-process)' : ` (${request.mcpServer.source})`}
+              </div>
+            )}
             <InputPreview input={request.input} />
           </>
         )}
@@ -287,6 +310,11 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
           </>
         ) : (
           <>
+            {request.suppressAlwaysAllowRule === true && (
+              <span className="hint" style={{ textAlign: 'center' }}>
+                A session-wide allow isn&apos;t offered for this request.
+              </span>
+            )}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button
                 className="btn btn-primary"
@@ -308,6 +336,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
                 </button>
               )}
               <button
+                ref={denyRef}
                 className="btn btn-danger"
                 onClick={() => click({ behavior: 'deny' })}
                 disabled={busy}

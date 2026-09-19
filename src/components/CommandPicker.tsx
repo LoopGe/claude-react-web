@@ -42,13 +42,14 @@ interface CommandGroup {
   commands: SlashCommand[]
 }
 
-/** Split commands into groups by plugin. The SDK encodes a command's owning
- *  plugin as a leading "(plugin)" tag in its description (names are bare, with
- *  no "plugin:" prefix); fall back to "__builtin__" when there's no tag. */
+/** Split commands into groups by plugin. A command marked `builtin` by the SDK
+ *  is Claude Code's own; otherwise the SDK encodes the owning plugin as a
+ *  leading "(plugin)" tag in the description (names are bare, with no
+ *  "plugin:" prefix), and a missing tag also means built-in. */
 function groupCommands(commands: SlashCommand[]): CommandGroup[] {
   const map = new Map<string, SlashCommand[]>()
   for (const cmd of commands) {
-    const key = pluginTagOf(cmd.description) ?? '__builtin__'
+    const key = cmd.builtin === true ? '__builtin__' : pluginTagOf(cmd.description) ?? '__builtin__'
     if (!map.has(key)) map.set(key, [])
     map.get(key)!.push(cmd)
   }

@@ -25,8 +25,9 @@ const LAUNCH_ACK_RE = /^async agent launched successfully/i
 import { createLogger } from './log.js'
 import type { HookRunRecord, HookRuntimeEvent, HookRunStatus } from '../shared/hooks.js'
 import type { CliNotification } from '../shared/ws-protocol.js'
-import { isTerminalTaskStatus, normalizeTaskType } from '../shared/tasks.js'
+import { isTerminalTaskStatus, normalizeTaskType, type TaskResourceLink } from '../shared/tasks.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
+import { isEmptyResultFrame } from '../shared/results.js'
 
 const MAX_HOOK_OUTPUT_CHARS = 20_000
 
@@ -189,6 +190,8 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
     summary?: unknown
     last_tool_name?: unknown
     status?: unknown
+    reason?: unknown
+    resource_links?: unknown
     receivedAt?: unknown
   }
   if (raw.subtype !== 'task_started' && raw.subtype !== 'task_updated'
@@ -273,6 +276,11 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
       description: str(raw.description) ?? rec.description,
       status,
       progressSummary: str(raw.summary) ?? rec.progressSummary,
+      // SDK 0.3.273: present only when the task did not end through an
+      // ordinary completion/failure/stop (currently 'worker_restart').
+      reason: raw.reason === 'worker_restart' ? 'worker_restart' : rec.reason,
+      // SDK 0.3.257: files a backgrounded MCP task returned by reference.
+      resourceLinks: normalizeResourceLinks(raw.resource_links) ?? rec.resourceLinks,
       endedAt: frameTime ?? rec.endedAt,
       updatedAt: now,
     })
@@ -280,6 +288,26 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
 
   pruneTerminalTasks(session)
   pushTasksSnapshot(session)
+}
+
+/** Narrow the SDK's `resource_link` blocks to the fields the UI renders,
+ *  dropping malformed entries. Returns undefined when nothing usable remains
+ *  so an existing value is preserved on a frame that carries none. */
+function normalizeResourceLinks(raw: unknown): TaskResourceLink[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out: TaskResourceLink[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const r = item as { uri?: unknown; name?: unknown; title?: unknown; mimeType?: unknown }
+    if (typeof r.uri !== 'string' || r.uri === '') continue
+    out.push({
+      uri: r.uri,
+      name: typeof r.name === 'string' && r.name !== '' ? r.name : r.uri,
+      ...(typeof r.title === 'string' && r.title !== '' ? { title: r.title } : {}),
+      ...(typeof r.mimeType === 'string' && r.mimeType !== '' ? { mimeType: r.mimeType } : {}),
+    })
+  }
+  return out.length > 0 ? out : undefined
 }
 
 /** Evict oldest terminal records beyond the cap. Active tasks are never
@@ -682,6 +710,11 @@ export function hookLifecycleMessage(msg: SDKMessage): HookRuntimeEvent | null {
 export async function pump(session: Session, deps: PumpDeps): Promise<void> {
   log.info(`[session ${session.id}] pump started`)
   let msgCount = 0
+  // SDK >=0.3.268 numbers result frames per run (`result_index`, from 0) in
+  // delivery order. A pump owns exactly one run, so a gap means a result frame
+  // was lost between the CLI and us — log it (diagnostic only; the turn still
+  // settles via whatever frames arrived).
+  let lastResultIndex: number | undefined
   // Pump-local: ids of tool_use blocks for filesystem-mutating tools.
   // Populated when we see the assistant's tool_use, drained when the
   // matching tool_result lands (which is when we know git status may
@@ -1179,13 +1212,29 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // `result` BEFORE calling iter.next() for the next turn, so the
         // queued item is still in our Pushable when we observe `result`.
         if (msg.type === 'result') {
+          // SDK 0.3.274 emits one result per queued background-task completion,
+          // all but the last empty (num_turns: 0) — same shape as the
+          // spawn/restart warm-up result. They are not real turns: they must
+          // not become resume anchors or persisted result frames, and the
+          // client transcript suppresses their footer (isEmptyResultFrame).
+          const emptyResult = isEmptyResultFrame(msg)
+          const resultIndex = (msg as { result_index?: unknown }).result_index
+          if (typeof resultIndex === 'number' && Number.isFinite(resultIndex)) {
+            if (lastResultIndex !== undefined && resultIndex > lastResultIndex + 1) {
+              log.warn(
+                `[session ${session.id}] result frame gap: index ${resultIndex} after ${lastResultIndex} ` +
+                `(${resultIndex - lastResultIndex - 1} lost)`,
+              )
+            }
+            lastResultIndex = resultIndex
+          }
           // Promote the most recent main-thread assistant uuid to the
           // safe-resume anchor: this turn completed successfully, so a later
           // fork/cut from here would drop a *later* crashed turn while
           // preserving this one. Only success counts — error_max_turns /
           // error_max_budget leave the turn in an indeterminate state, so we
           // keep the previous anchor rather than trusting a failed turn.
-          if ((msg as { subtype?: string }).subtype === 'success' && session.lastAssistantUuid) {
+          if (!emptyResult && (msg as { subtype?: string }).subtype === 'success' && session.lastAssistantUuid) {
             session.lastSafeResumeUuid = session.lastAssistantUuid
             // Persist this turn's anchor to the sidecar so the "discard
             // messages from here onward" feature can offer ANY historical
@@ -1200,7 +1249,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // summaries (cost/duration/turns/usage). Both success AND error
           // results are recorded (error turns have a result summary too).
           // Fire-and-forget: the turn path doesn't block on disk writes.
-          {
+          if (!emptyResult) {
             const resultUuid = (msg as { uuid?: string }).uuid
             if (resultUuid && session.lastAssistantUuid) {
               deps.recordResultFrame?.(session.id, resultUuid, session.lastAssistantUuid, msg)
