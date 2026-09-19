@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render, cleanup, fireEvent, waitFor, screen } from '@testing-library/react'
 import { NewSessionDialog } from './NewSessionDialog'
 import type { NewSessionForm } from '../../types'
 
@@ -207,5 +207,71 @@ describe('NewSessionDialog first-party tools picker', () => {
     await waitFor(() => expect(baseElement.textContent).not.toContain('plugA'))
     expect(baseElement.textContent).not.toContain('First-party tools')
     await clickCreate(baseElement, onSubmit)
+  })
+})
+
+describe('NewSessionDialog project prefill', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+  })
+  afterEach(() => window.localStorage.clear())
+
+  const renderDialog = (props: { initialCwd?: string; onSubmit?: ReturnType<typeof vi.fn>; onCancel?: () => void } = {}) =>
+    render(<NewSessionDialog {...baseProps} onSubmit={props.onSubmit ?? vi.fn()} {...props} />)
+
+  it('prefers the most recent project over defaults.cwd', () => {
+    window.localStorage.setItem('claude-react-web:recent-cwds', JSON.stringify(['/a/recent-app']))
+    renderDialog()
+    expect(screen.getByTitle('/a/recent-app')).toBeTruthy()
+  })
+
+  it('falls back to defaults.cwd when there are no recent projects', () => {
+    renderDialog()
+    expect(screen.getByTitle('/tmp')).toBeTruthy()
+  })
+
+  it('lets the drag-and-drop prefill win over the recent list', () => {
+    window.localStorage.setItem('claude-react-web:recent-cwds', JSON.stringify(['/a/recent-app']))
+    renderDialog({ initialCwd: '/b/dropped' })
+    expect(screen.getByTitle('/b/dropped')).toBeTruthy()
+  })
+
+  it('submits the prefilled project as cwd', async () => {
+    window.localStorage.setItem('claude-react-web:recent-cwds', JSON.stringify(['/a/recent-app']))
+    const onSubmit = vi.fn()
+    renderDialog({ onSubmit })
+    const createBtn = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Create',
+    )!
+    fireEvent.click(createBtn)
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    expect(onSubmit.mock.calls[0][0].cwd).toBe('/a/recent-app')
+  })
+
+  it('opens the directory picker from the Project menu footer', async () => {
+    renderDialog()
+    fireEvent.click(screen.getByTitle('/tmp'))
+    fireEvent.click(screen.getByText('Open project…'))
+    await waitFor(() => expect(screen.getByText('Pick a working directory')).toBeTruthy())
+  })
+
+  it('closes only the project menu on Escape, keeping the dialog open', () => {
+    const onCancel = vi.fn()
+    renderDialog({ onCancel })
+    const trigger = screen.getByTitle('/tmp')
+    fireEvent.click(trigger)
+    const search = screen.getByRole('textbox', { name: 'Search projects' })
+    fireEvent.keyDown(search, { key: 'Escape' })
+    expect(document.querySelector('.project-picker-menu')).toBeNull()
+    expect(onCancel).not.toHaveBeenCalled()
+    expect(screen.getByText('New session')).toBeTruthy()
+    // Keyboard close hands focus back to the trigger instead of dropping it on <body>.
+    expect(document.activeElement).toBe(trigger)
   })
 })

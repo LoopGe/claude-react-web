@@ -119,7 +119,7 @@ Overlays can be stacked over the panel area: session settings, Git panel, Tasks,
 
 | Field | Notes |
 | --- | --- |
-| `Working directory` | The button beside it opens the directory picker |
+| `Project` | Recent-project dropdown; the last-used project is preselected. `Open project…` opens the directory picker, and an absolute path can be pasted into the search box |
 | `Title (optional)` | Otherwise the session falls back to a generated label |
 | `Agent` | Run the main thread as a custom agent (`None` to skip) |
 | `Model` | Model, with recent-model chips |

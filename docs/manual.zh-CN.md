@@ -119,7 +119,7 @@ npm i -g claude-react-web && claude-react-web
 
 | 字段 | 说明 |
 | --- | --- |
-| `Working directory` | 工作目录，旁边的按钮打开目录选择器 |
+| `Project` | 最近项目下拉框，默认预选上次使用的项目；`Open project…` 打开目录选择器，也可在搜索框直接粘贴绝对路径 |
 | `Title (optional)` | 标题；不填就用默认编号 |
 | `Agent` | 用某个自定义 Agent 当主线程（`None` 表示不用） |
 | `Model` | 模型，可点最近使用的芯片 |

@@ -1278,6 +1278,223 @@
 }
 .recent-chip-forget:hover { color: var(--danger-text); background: var(--bg); }
 
+/* Desktop-style project picker in the New session dialog (ProjectPicker.tsx).
+   The trigger replaces the old free-text "Working directory" input + datalist
+   + recent chips; the menu is portaled to <body> with fixed viewport
+   coordinates so the modal's scroll container can never clip it. Its z-index
+   sits one above --z-modal because the dialog backdrop owns that layer. */
+.project-picker-trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1-5) var(--space-2-5);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: var(--fs-base);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.project-picker-trigger:hover { border-color: var(--fg-muted); }
+.project-picker-trigger[aria-expanded="true"] { border-color: var(--accent); }
+.project-picker-avatar {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-circle);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.project-picker-avatar.empty {
+  color: var(--fg-muted);
+  background: var(--bg-elev-2);
+  border-color: var(--border);
+}
+.project-picker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.project-picker-name.placeholder { color: var(--fg-muted); font-weight: 400; }
+.project-picker-path {
+  margin-left: auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+.project-picker-chevron { flex: 0 0 auto; display: inline-flex; color: var(--fg-muted); }
+
+.project-picker-menu {
+  position: fixed;
+  z-index: calc(var(--z-modal) + 1);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
+  transform-origin: top left;
+}
+.project-picker-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2-5);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.project-picker-search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: var(--fs-base);
+}
+.project-picker-search input::placeholder { color: var(--fg-muted); }
+.project-picker-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--size-20px);
+  height: var(--size-20px);
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.project-picker-clear:hover { color: var(--fg); background: var(--btn-hover-bg); }
+
+.project-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--space-1);
+  overflow-y: auto;
+  max-height: var(--project-picker-list-max, 240px);
+}
+.project-picker-row {
+  display: flex;
+  align-items: stretch;
+  border-radius: var(--radius-sm);
+}
+.project-picker-row:hover,
+.project-picker-row.active { background: var(--btn-hover-bg); }
+.project-picker-item {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: var(--fs-base);
+  text-align: left;
+  cursor: pointer;
+}
+.project-picker-item .project-picker-avatar { width: var(--size-20px); height: var(--size-20px); }
+.project-picker-item-main { min-width: 0; display: flex; flex-direction: column; }
+.project-picker-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-picker-item-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+.project-picker-item code {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+.project-picker-item-spacer { flex: 1; }
+.project-picker-check { flex: 0 0 auto; color: var(--accent-text); }
+.project-picker-use-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--size-20px);
+  height: var(--size-20px);
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-text);
+  font-size: var(--fs-xs);
+}
+.project-picker-forget {
+  flex: 0 0 auto;
+  width: var(--size-24px);
+  margin-right: var(--space-1);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.project-picker-row:hover .project-picker-forget,
+.project-picker-forget:focus-visible { opacity: 1; }
+.project-picker-forget:hover { color: var(--danger-text); background: var(--bg); }
+/* No hover on pure-touch devices: reveal the forget affordance instead of
+   leaving it invisible-but-tappable. */
+@media (hover: none) {
+  .project-picker-forget { opacity: 1; }
+}
+.project-picker-empty {
+  padding: var(--space-3) var(--space-2);
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+.project-picker-foot { border-top: 1px solid var(--border); padding: var(--space-1); }
+.project-picker-foot button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1-5) var(--space-2);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: var(--fs-base);
+  text-align: left;
+  cursor: pointer;
+}
+.project-picker-foot button:hover { background: var(--btn-hover-bg); }
+.project-picker-foot svg { color: var(--fg-muted); }
+
 /* Modal (directory picker) */
 .modal-backdrop {
   position: fixed;

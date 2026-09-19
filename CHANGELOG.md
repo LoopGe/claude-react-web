@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **New-session "Project" picker** — the New session dialog's free-text
+  *Working directory* field is now a Desktop-style dropdown: the trigger shows
+  the project name and its parent directory, and the menu lists the current
+  value followed by the recents in MRU order (each row forgettable, no badge or
+  pinning). A pasted absolute path turns into a "Use this path" row, and
+  `Open project…` reuses the existing server-side directory browser. The dialog
+  now prefills the last-used project ahead of the server-provided default —
+  drag-and-drop still wins over both, and the server/API behaviour is
+  untouched. The menu portals to `<body>` so the dialog's scroll container can
+  never clip it, closes on Escape through the shared escape stack without
+  closing the dialog, and deliberately keeps itself mounted when focus drops to
+  `body`: Safari/WebKit blurs the focused search box when a button is pressed
+  (buttons don't take focus there), which otherwise unmounted the menu on
+  mousedown and swallowed the click.
 - **`autoExpandRunningGroups` display default** — new sub-setting of "Use
   collapsible tool-group cards" (Global Settings → Appearance, plus a
   per-session override in each session's Appearance tab). When off, a tool

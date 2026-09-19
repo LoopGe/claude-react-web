@@ -1,9 +1,9 @@
 import { lazy, Suspense, useEffect, useId, useState } from 'react'
 import { DirectoryPicker } from '../DirectoryPicker'
-import { IconX, IconFolder, IconPencil } from '../icons/ToolIcons'
+import { ProjectPicker } from './ProjectPicker'
+import { IconX, IconPencil } from '../icons/ToolIcons'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { api } from '../../hooks/useApi'
-import { shortenPath } from '../../utils/paths'
 import { AccentPicker } from '../AccentPicker'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import { PERMISSION_MODES } from '../../types'
@@ -54,7 +54,13 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // Per-instance prefix for label↔control id linkage. useId keeps the
   // dialog's ids document-unique even if it ever mounts more than once.
   const uid = useId()
-  const [cwd, setCwd] = useState<string>(initialCwd ?? defaults.cwd ?? '')
+  // Declared before `cwd` so its lazy initializer can prefer the most recent
+  // project: the last-used directory is the dialog's de facto default, with
+  // the drag-and-drop prefill and the server-provided defaults.cwd as
+  // fallbacks. useLocalStorage reads synchronously, so the first render
+  // already sees the stored list.
+  const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [])
+  const [cwd, setCwd] = useState<string>(initialCwd ?? recentCwds[0] ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [systemPrompt, setSystemPrompt] = useState('')
@@ -136,7 +142,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const [firstPartyDiffs, setFirstPartyDiffs] = useState<Record<string, boolean>>({})
 
   const [recentModels, setRecentModels] = useLocalStorage<string[]>(RECENT_MODELS_KEY, [])
-  const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [])
   const [recentModelsCapRaw] = useLocalStorage<number>(RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT)
   const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
   const recentModelsCap = Math.max(3, Math.min(50, Math.round(recentModelsCapRaw)))
@@ -358,50 +363,15 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
 
           <div className="modal-section">
             <div className="settings-field">
-              <label htmlFor={uid + '-cwd'}>Working directory</label>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <input
-                  className="input"
-                  id={uid + '-cwd'}
-                  placeholder="/path/to/project"
-                  list="recent-cwds"
-                  value={cwd}
-                  onChange={(e) => setCwd(e.target.value)}
-                  style={{ flex: 1 }}
-                />
-                <button type="button" className="btn" onClick={() => setShowPicker(true)} title="Browse server directories" aria-label="Browse server directories">
-                  <IconFolder size={16} />
-                </button>
-              </div>
-              <datalist id="recent-cwds">
-                {recentCwds.map((p) => (
-                  <option key={p} value={p} />
-                ))}
-              </datalist>
-              {recentCwds.length > 0 && (
-                <div className="recent-chips">
-                  {recentCwds.slice(0, 5).map((p) => (
-                    <span key={p} className="recent-chip" title={p}>
-                      <button
-                        type="button"
-                        className="recent-chip-use"
-                        onClick={() => setCwd(p)}
-                      >
-                        {shortenPath(p)}
-                      </button>
-                      <button
-                        type="button"
-                        className="recent-chip-forget"
-                        onClick={() => forgetCwd(p)}
-                        title="Forget this path"
-                        aria-label={`Forget ${p}`}
-                      >
-                        <IconX size={12} />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
+              <label htmlFor={uid + '-project'}>Project</label>
+              <ProjectPicker
+                id={uid + '-project'}
+                value={cwd}
+                recents={recentCwds}
+                onSelect={setCwd}
+                onForget={forgetCwd}
+                onBrowse={() => setShowPicker(true)}
+              />
             </div>
 
             <div className="settings-field">
