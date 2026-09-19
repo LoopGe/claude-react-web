@@ -2344,6 +2344,41 @@ describe('PREPEND_MESSAGES', () => {
     // disk-old is prepended; disk-boundary is deduped against srv-dup.
     expect(state.mirror.items.map((i) => i.id)).toEqual(['disk-old', 'srv-dup', 'asst'])
   })
+
+  // Tail-first replay backfill chunks share the ring's uuid space with the
+  // on-screen tail, so uuid dedup is exact there. The content-signature
+  // overlap check exists for the DISK pager, where the same logical prompt
+  // arrives under a different uuid — run on a backfill chunk it would
+  // false-drop a genuinely distinct older prompt whose text repeats
+  // ("continue") across a chunk boundary.
+  it('trustUuidDedup keeps a distinct older prompt with identical text (backfill boundary)', () => {
+    let state = createInitialSessionState('s')
+    // On screen (tail): the boundary "continue" prompt + its reply.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('tail-prompt', 'continue') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('tail-reply', 'ok') })
+    // Backfill chunk: a DIFFERENT, textually-identical older turn.
+    state = reduceSessionState(state, {
+      type: 'PREPEND_MESSAGES',
+      messages: [userMsg('old-prompt', 'continue')],
+      trustUuidDedup: true,
+    })
+    // Both prompts survive — they are distinct ring entries.
+    expect(state.mirror.items.map((i) => i.id)).toEqual(['old-prompt', 'tail-prompt', 'tail-reply'])
+  })
+
+  it('without trustUuidDedup the same shape is treated as disk-pager overlap (prompt dropped)', () => {
+    // Pin the contrast: the default (disk pager) semantics intentionally
+    // dedupe the identical-text prompt across the uuid boundary, which is
+    // why the backfill path must opt out.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('tail-prompt', 'continue') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('tail-reply', 'ok') })
+    state = reduceSessionState(state, {
+      type: 'PREPEND_MESSAGES',
+      messages: [userMsg('old-prompt', 'continue')],
+    })
+    expect(state.mirror.items.map((i) => i.id)).toEqual(['tail-prompt', 'tail-reply'])
+  })
 })
 
 describe('reducer: front-trim memory bound', () => {

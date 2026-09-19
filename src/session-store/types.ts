@@ -555,8 +555,17 @@ export type SessionAction =
   /** Prepend older messages fetched from disk (lazy-load on scroll-up).
    *  Messages are in chronological order (oldest first) and are unshifted
    *  ahead of the current transcript. Deduped by uuid against what's
-   *  already present. */
-  | { type: 'PREPEND_MESSAGES'; messages: SdkMessage[] }
+   *  already present.
+   *
+   *  `trustUuidDedup: true` (tail-first replay backfill chunks) skips the
+   *  prompt content-signature overlap check: backfill chunks come from the
+   *  same server history ring as the on-screen tail, so uuids match
+   *  one-to-one and uuid dedup is exact — while the signature check exists
+   *  for the DISK pager, where disk and memory mint different uuids for the
+   *  same logical prompt. Running it on backfill chunks would false-drop a
+   *  genuinely distinct older prompt whose text repeats ("continue") across
+   *  a chunk boundary. */
+  | { type: 'PREPEND_MESSAGES'; messages: SdkMessage[]; trustUuidDedup?: boolean }
   | { type: 'MESSAGE'; message: SdkMessage }
   | { type: 'OPTIMISTIC_USER_MESSAGE'; message: SdkMessage }
   /** The REST send endpoint accepted an optimistic user message and returned

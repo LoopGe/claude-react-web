@@ -47,7 +47,7 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     case 'REPLAY_REPLACE':
       return replayReplace(state, action.messages, action.permissions)
     case 'PREPEND_MESSAGES':
-      return prependMessages(state, action.messages)
+      return prependMessages(state, action.messages, { trustUuidDedup: action.trustUuidDedup === true })
     case 'MESSAGE':
       return applyMessage(state, action.message)
     case 'OPTIMISTIC_USER_MESSAGE':
@@ -649,7 +649,11 @@ function promptSequencesEqual(
  *     plan flipped to 'approved' via PERMISSION_RESOLVED without a
  *     tool_result). The older batch's ids are disjoint from the live tail,
  *     so additive indexing is both sufficient and non-destructive. */
-function prependMessages(state: SessionState, older: SdkMessage[]): SessionState {
+function prependMessages(
+  state: SessionState,
+  older: SdkMessage[],
+  opts?: { trustUuidDedup?: boolean },
+): SessionState {
   if (older.length === 0) return state
   const mirror = state.mirror
 
@@ -661,7 +665,11 @@ function prependMessages(state: SessionState, older: SdkMessage[]): SessionState
   // boundary that uuid-dedup can't bridge — see the doc comment). Match the
   // batch's trailing prompt run against the on-screen leading prompt run
   // element-wise, from the boundary inward, by content signature.
-  const overlap = countPromptOverlap(older, mirror.items)
+  // Skipped entirely for same-uuid-space batches (tail-first replay
+  // backfill): uuid dedup is exact there, and the signature check would
+  // false-drop a distinct older prompt whose text repeats across the chunk
+  // boundary (see the PREPEND_MESSAGES action doc).
+  const overlap = opts?.trustUuidDedup ? 0 : countPromptOverlap(older, mirror.items)
   const batch = overlap > 0 ? older.slice(0, older.length - overlap) : older
 
   const newItems: TranscriptItem[] = []

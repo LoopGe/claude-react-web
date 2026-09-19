@@ -29,6 +29,7 @@ import { isUpgradeAuthorized } from './auth.js'
 import type { SessionBroadcaster } from './session-types.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
 import { shouldBroadcastMessage } from './history-utils.js'
+import { planTailBackfillReplay } from './replay-plan.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
 import {
@@ -386,6 +387,7 @@ export function attachWebSocket(
       history: SDKMessage[],
       sinceUuid: string | undefined,
       pending: Pick<WsReplay, 'permissions' | 'elicitations' | 'dialogs'> | null,
+      replayMode?: 'tail-backfill',
     ) => {
       let replayHistory = history
       // If the client supplied `sinceUuid`, try to send only messages after
@@ -422,7 +424,52 @@ export function attachWebSocket(
         `replay for ${sessionId}: sending ${replayHistory.length} msgs ` +
         `(ring=${history.length}, sinceUuid=${sinceUuid ?? 'none'})`,
       )
-      if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
+      // Tail-first replay plan (no-cache cold start): the newest chunk is a
+      // complete first screen, so send it first (tail: true — the client
+      // applies it immediately) and the older chunks after it newest→oldest
+      // (backfill: true — the client prepends each one, the same machinery the
+      // scroll-up disk pager uses). Gated on the client opting in via
+      // replayMode AND an absent sinceUuid: a sinceUuid implies a cached
+      // client transcript, and backfill chunks are NEWER than a stale cache,
+      // which would land above it on prepend, corrupting the ordering (see
+      // replay-plan.ts). The plan doubles as the branch decider — a null plan
+      // (payload fits one chunk) falls through to the ordinary paths below,
+      // which is also the safe behavior should the planner's null contract
+      // ever drift from the chunk-size check.
+      const tailPlan =
+        replayMode === 'tail-backfill' && !sinceUuid
+          ? planTailBackfillReplay(replayHistory, REPLAY_CHUNK_SIZE)
+          : null
+      if (tailPlan) {
+        log.info(
+          `tail-first replay for ${sessionId}: tail=${tailPlan.tail.length} ` +
+          `+ ${tailPlan.backfill.length} backfill chunks (${replayHistory.length} total)`,
+        )
+        // The pending-request snapshots ride the TAIL frame (same shape as the
+        // ordinary single-frame replay), so a permission card appears with the
+        // first paint instead of after the backfill drains — and a mid-burst
+        // client effect re-run can never lose them at the terminator. The
+        // trailing replay-done carries no payload; it only closes the burst.
+        queue.enqueue({
+          kind: 'replay',
+          sessionId,
+          messages: tailPlan.tail,
+          permissions: pending?.permissions ?? [],
+          ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
+          ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),
+          tail: true,
+        })
+        for (const chunk of tailPlan.backfill) {
+          queue.enqueue({
+            kind: 'replay',
+            sessionId,
+            messages: chunk,
+            permissions: [],
+            backfill: true,
+          })
+        }
+        queue.enqueue({ kind: 'replay-done', sessionId })
+      } else if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
         queue.enqueue({
           kind: 'replay',
           sessionId,
@@ -455,7 +502,11 @@ export function attachWebSocket(
       metrics.count('replay_messages', undefined, replayHistory.length)
     }
 
-    const startSession = async (sessionId: string, sinceUuid?: string) => {
+    const startSession = async (
+      sessionId: string,
+      sinceUuid?: string,
+      replayMode?: 'tail-backfill',
+    ) => {
       // A second subscribe on a connection that already holds this channel:
       // re-serve the replay rather than swallowing the frame. The replay is
       // per-connection and the caller's listener may have attached after the
@@ -471,7 +522,7 @@ export function attachWebSocket(
         try {
           const history = sm.getHistory(sessionId)
           if (history) {
-            sendReplay(sessionId, history, sinceUuid, null)
+            sendReplay(sessionId, history, sinceUuid, null, replayMode)
             ackSubscribe(sessionId, true, 'already-live')
           } else {
             // The connection still lists this session but the manager no
@@ -598,11 +649,17 @@ export function attachWebSocket(
         //    send only messages after that point (incremental sync).
         //    Fall back to full replay if the UUID isn't in the ring
         //    (evicted by historyCap or client cache is stale).
-        sendReplay(sessionId, msg.history, sinceUuid, {
-          permissions: perms.snapshot,
-          elicitations: elicits.snapshot,
-          dialogs: dialogs.snapshot,
-        })
+        sendReplay(
+          sessionId,
+          msg.history,
+          sinceUuid,
+          {
+            permissions: perms.snapshot,
+            elicitations: elicits.snapshot,
+            dialogs: dialogs.snapshot,
+          },
+          replayMode,
+        )
 
         // 2.5) Send the current recap snapshot if there is one. The
         //      live iterable picks up future transitions; the snapshot
@@ -914,7 +971,13 @@ export function attachWebSocket(
       }
       switch (frame.kind) {
         case 'subscribe':
-          if (typeof frame.sessionId === 'string' && frame.sessionId) startSession(frame.sessionId, frame.sinceUuid)
+          if (typeof frame.sessionId === 'string' && frame.sessionId) {
+            startSession(
+              frame.sessionId,
+              frame.sinceUuid,
+              frame.replayMode === 'tail-backfill' ? 'tail-backfill' : undefined,
+            )
+          }
           break
         case 'unsubscribe':
           if (typeof frame.sessionId === 'string' && frame.sessionId) stopSession(frame.sessionId)

@@ -280,6 +280,114 @@ describe('WebSocket multiplexer', () => {
     await client.close()
   })
 
+  /** Emit `count` assistant messages tagged m0..m{count-1} into the session's
+   *  history ring and let the pump drain them. Replay chunks are exact slices
+   *  of this ring, so tests can assert ordering by uuid. */
+  async function seedHistory(count: number) {
+    for (let i = 0; i < count; i++) {
+      mockHandles[0].emit({
+        type: 'assistant',
+        uuid: `m${i}`,
+        message: { role: 'assistant', content: [{ type: 'text', text: `m${i}` }] },
+      })
+    }
+    await tick()
+    await tick()
+  }
+
+  it('serves a no-cache cold start tail-first, newest→oldest backfill chunks', async () => {
+    // Tail-first replay: a cold client (no sinceUuid) opts in and gets the
+    // NEWEST chunk on the first frame so it can paint immediately, then the
+    // older chunks newest→oldest for the client to prepend.
+    const info = sm.create({})
+    const TOTAL = 120
+    await seedHistory(TOTAL)
+
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    client.send({ kind: 'subscribe', sessionId: info.id, replayMode: 'tail-backfill' })
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+
+    const replays = client.frames.filter(
+      (f): f is Extract<WsServerFrame, { kind: 'replay' }> =>
+        f.kind === 'replay' && f.sessionId === info.id,
+    )
+    const uuidOf = (m: unknown) => (m as { uuid?: string }).uuid
+
+    // Frame 0 is the tail: the newest 50, marked `tail`.
+    expect(replays).toHaveLength(3) // tail + 2 backfill chunks
+    expect(replays[0].tail).toBe(true)
+    expect(replays[0].backfill).toBeUndefined()
+    expect(replays[0].messages).toHaveLength(50)
+    expect(uuidOf(replays[0].messages[0])).toBe('m70')
+    expect(uuidOf(replays[0].messages[49])).toBe('m119')
+
+    // The remaining chunks are backfill, ordered newest→oldest, each
+    // internally chronological.
+    const backfill = replays.slice(1)
+    expect(backfill.every((f) => f.backfill === true && f.tail === undefined)).toBe(true)
+    expect(backfill[0].messages).toHaveLength(50)
+    expect(uuidOf(backfill[0].messages[0])).toBe('m20')
+    expect(uuidOf(backfill[0].messages[49])).toBe('m69')
+    expect(backfill[1].messages).toHaveLength(20)
+    expect(uuidOf(backfill[1].messages[0])).toBe('m0')
+    expect(uuidOf(backfill[1].messages[19])).toBe('m19')
+
+    // The split is lossless: backfill reversed + tail reproduces the ring.
+    const reassembled = [
+      ...[...backfill].reverse().flatMap((f) => f.messages),
+      ...replays[0].messages,
+    ].map(uuidOf)
+    expect(reassembled).toEqual(Array.from({ length: TOTAL }, (_, i) => `m${i}`))
+    await client.close()
+  })
+
+  it('ignores replayMode when a sinceUuid is supplied (cached client)', async () => {
+    // A sinceUuid implies a cached transcript on the client, and backfill
+    // chunks are NEWER than a stale cache — prepending them would corrupt the
+    // ordering. So tail mode is honored only with an absent sinceUuid.
+    const info = sm.create({})
+    await seedHistory(120)
+
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    client.send({ kind: 'subscribe', sessionId: info.id, sinceUuid: 'm59', replayMode: 'tail-backfill' })
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+
+    const replays = client.frames.filter(
+      (f): f is Extract<WsServerFrame, { kind: 'replay' }> =>
+        f.kind === 'replay' && f.sessionId === info.id,
+    )
+    // Ordinary incremental chunks — no tail/backfill markers.
+    expect(replays.every((f) => f.tail === undefined && f.backfill === undefined)).toBe(true)
+    // Everything strictly after the anchor (m60..m119), in arrival order.
+    const uuids = replays.flatMap((f) => f.messages).map((m) => (m as { uuid?: string }).uuid)
+    expect(uuids).toEqual(Array.from({ length: 60 }, (_, i) => `m${i + 60}`))
+    await client.close()
+  })
+
+  it('falls back to one ordinary replay frame when the history matches the tail chunk size', async () => {
+    // The planner returns null (no backfill) and the caller must use the
+    // ordinary path unchanged — the pre-tail behavior for short histories.
+    const info = sm.create({})
+    await seedHistory(50)
+
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    client.send({ kind: 'subscribe', sessionId: info.id, replayMode: 'tail-backfill' })
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+
+    const replays = client.frames.filter(
+      (f): f is Extract<WsServerFrame, { kind: 'replay' }> =>
+        f.kind === 'replay' && f.sessionId === info.id,
+    )
+    expect(replays).toHaveLength(1)
+    expect(replays[0].tail).toBeUndefined()
+    expect(replays[0].backfill).toBeUndefined()
+    expect(replays[0].messages).toHaveLength(50)
+    await client.close()
+  })
+
   it('replays completed hook runs with completed kind and refreshes activity', async () => {
     const info = sm.create({})
     const before = sm.get(info.id).lastActivityAt

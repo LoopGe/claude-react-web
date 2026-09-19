@@ -22,11 +22,22 @@ import type { GitStatusResponse, GitBranch, GitStashEntry } from './git-types.js
  *  with that UUID (incremental sync). If the UUID is not found in the
  *  session's history ring (too old / evicted), the server falls back to
  *  a full replay. Clients should omit `sinceUuid` on reconnects where
- *  they cannot guarantee cache continuity. */
+ *  they cannot guarantee cache continuity.
+ *
+ *  `replayMode: 'tail-backfill'` opts into tail-first replay for the
+ *  NO-cache cold start (it is only honored together with an absent
+ *  `sinceUuid`): the server sends one `tail`-marked replay frame with
+ *  the newest chunk, then `backfill`-marked frames newest→oldest, then
+ *  `replay-done`. An opt-in capability field rather than a server-side
+ *  default because a stale client bundle (open tab across an upgrade)
+ *  would otherwise buffer the out-of-order frames and concatenate them
+ *  in ARRIVAL order into one replay-done — a garbled transcript. Older
+ *  servers ignore the unknown field, so it is safe to always send. */
 export interface WsSubscribe {
   kind: 'subscribe'
   sessionId: string
   sinceUuid?: string
+  replayMode?: 'tail-backfill'
 }
 
 /** Stop streaming events for `sessionId`. Safe to call even if not
@@ -125,7 +136,13 @@ export interface WsCliNotification {
 }
 
 /** Beginning of a per-session replay burst. Contains the full message
- *  history + any pending permissions, then a terminator frame. */
+ *  history + any pending permissions, then a terminator frame.
+ *
+ *  Tail-first replay (see WsSubscribe.replayMode): the burst is
+ *  exactly ONE `tail: true` frame (the newest chunk — apply
+ *  immediately), followed by `backfill: true` frames (newest→oldest —
+ *  prepend each on arrival), followed by `replay-done`. Frames without
+ *  either marker follow the ordinary buffered semantics. */
 export interface WsReplay<Msg, Perm> {
   kind: 'replay'
   sessionId: string
@@ -139,6 +156,12 @@ export interface WsReplay<Msg, Perm> {
   /** Still-outstanding user dialogs (e.g. refusal fallback). Optional for
    *  the same forward-compat reason as `elicitations`. */
   dialogs?: UserDialogRequestUi[]
+  /** Tail-first replay: this frame is the newest chunk and the only
+   *  frame of the initial paint. Absent on ordinary replay frames. */
+  tail?: boolean
+  /** Tail-first replay: this frame is a backfill chunk, strictly older
+   *  than everything already on screen. Absent on ordinary frames. */
+  backfill?: boolean
 }
 export interface WsReplayDone<Perm> {
   kind: 'replay-done'

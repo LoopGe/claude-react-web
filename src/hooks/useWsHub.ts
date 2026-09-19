@@ -23,6 +23,22 @@ import { createContext, createElement, useCallback, useContext, useEffect, useLa
 import type { ReactNode } from 'react'
 import { WS_PATH, type WsClientFrame, type WsServerFrame } from '../ws-types'
 
+/** Per-subscribe options (see WsHubApi.subscribe). */
+export interface SubscribeOpts {
+  /** Require a replay for the caller's own listener: the server re-serves it
+   *  for the `sinceUuid` given. Use when a new listener attaches — a panel
+   *  mounting, or one that attached after an earlier burst — because a
+   *  confirmed-live channel alone does not mean THIS listener ever saw the
+   *  history. */
+  force?: boolean
+  /** Opt into tail-first replay: on a no-cache cold start (no sinceUuid)
+   *  the server sends the newest chunk first (`tail: true` — rendered
+   *  immediately) and the rest newest→oldest as `backfill: true` frames
+   *  the client prepends. The server only honors this together with an
+   *  absent sinceUuid and ignores the field entirely on older builds. */
+  replayMode?: 'tail-backfill'
+}
+
 /** Handler for any server frame. Receives the full envelope so
  *  consumers can narrow by `kind`. Returning false is ignored — this
  *  is a pure notification channel. */
@@ -55,9 +71,19 @@ interface WsHubApi {
    *  an earlier burst — because a confirmed-live channel alone does not mean
    *  THIS listener ever saw the history.
    *
+   *  `opts.replayMode` opts this subscriber into tail-first replay (see
+   *  WsSubscribe.replayMode). Deliberately a per-call opt-in and NOT a
+   *  hub-wide constant: the frame that establishes the channel is emitted by
+   *  whichever consumer gets there first, and a non-chat consumer
+   *  (useGitStatus mounts with the panel) would otherwise advertise the
+   *  capability with no sinceUuid while useChatStream still holds a cached
+   *  transcript — the server would then serve a tail-backfill burst to a
+   *  cached client and corrupt its ordering. Only the consumer that owns the
+   *  replay semantics (useChatStream, when it has no anchor uuid) may set it.
+   *
    *  Pass `sinceUuid` for incremental replay (the server sends only messages
    *  after that UUID); it also becomes the cursor used on reconnect. */
-  subscribe: (sessionId: string, sinceUuid?: string, opts?: { force?: boolean }) => () => void
+  subscribe: (sessionId: string, sinceUuid?: string, opts?: SubscribeOpts) => () => void
   /** Update the last known message UUID for a session. Used for
    *  incremental replay on reconnect — the hub stores this and sends
    *  it with re-subscribe frames after a connection drop. */
@@ -203,6 +229,10 @@ export function WsHubProvider({ children, url }: ProviderProps) {
       // A fresh socket owns no channels: forget what the previous connection
       // confirmed, then re-ask for every session still held (the server
       // answers each frame, so liveness is re-learned rather than assumed).
+      // Deliberately NO replayMode here: the reconnect resend can't know
+      // whether a cached transcript exists (the frame is re-emitted for every
+      // holder, not just the chat consumer), so it uses the ordinary —
+      // always-correct — replay mode.
       for (const state of channelsRef.current.values()) state.live = false
       for (const [sessionId, state] of channelsRef.current) {
         safeSend({
@@ -347,7 +377,7 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   }, [])
 
   const subscribe = useCallback(
-    (sessionId: string, sinceUuid?: string, opts?: { force?: boolean }) => {
+    (sessionId: string, sinceUuid?: string, opts?: SubscribeOpts) => {
       let state = channelsRef.current.get(sessionId)
       if (!state) {
         state = newChannelState()
@@ -363,7 +393,12 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         // Any frames arriving before the server answers this subscribe are
         // impossible: the send is dropped while the socket isn't OPEN, and on
         // reopen every held session is re-subscribed.
-        safeSend({ kind: 'subscribe', sessionId, ...(sinceUuid ? { sinceUuid } : {}) })
+        safeSend({
+          kind: 'subscribe',
+          sessionId,
+          ...(sinceUuid ? { sinceUuid } : {}),
+          ...(opts?.replayMode ? { replayMode: opts.replayMode } : {}),
+        })
       }
       // Captured, not re-read: a release that runs twice (or after the entry
       // was replaced) must not decrement a successor's count and tear down a
