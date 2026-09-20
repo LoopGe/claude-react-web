@@ -86,7 +86,14 @@ describe('recap', () => {
 
   beforeEach(() => {
     vi.restoreAllMocks()
-    __setConfigForTest({ authToken: 'test-token-123', baseUrl: 'https://api.anthropic.com' })
+    // recapModel is '' by default ("use the session's own model"), and the
+    // legacy `generateRecap` shim below passes no session model — so a test
+    // that exercises the API path must configure one explicitly.
+    __setConfigForTest({
+      authToken: 'test-token-123',
+      baseUrl: 'https://api.anthropic.com',
+      recapModel: 'test-recap-model',
+    })
   })
 
   afterEach(() => {

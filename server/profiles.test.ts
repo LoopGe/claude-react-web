@@ -9,8 +9,11 @@ const FALLBACK: ProviderProfile = {
   id: 'default', name: 'Default', authToken: '',
   baseUrl: 'https://api.anthropic.com',
   modelList: ['anthropic/claude-sonnet-4-20250514'],
-  modelGroups: [], recapModel: 'claude-haiku-4-5-20251001',
-  commitMessageModel: 'claude-haiku-4-5-20251001',
+  // Deliberately NOT '' even though the real DEFAULT_PROFILE is: the test
+  // below asserts that a missing field is filled FROM this fallback, which
+  // '' vs '' cannot distinguish. The shipped value is locked separately by
+  // the DEFAULT_PROFILE contract test.
+  modelGroups: [], recapModel: 'fb/recap', commitMessageModel: 'fb/commit',
 }
 const P = (id: string, modelList: string[] = ['a/' + id]): ProviderProfile =>
   ({ ...FALLBACK, id, name: 'P ' + id, modelList })
@@ -42,6 +45,16 @@ describe('findProfile / profileDefaultModel', () => {
 })
 
 describe('coerceProfiles', () => {
+  it('DEFAULT_PROFILE leaves the auxiliary models unset (empty = session model)', async () => {
+    // Contract lock: the real fallback must stay empty. When it held a
+    // hardcoded id ('claude-haiku-4-5-20251001'), every profile with an
+    // unset recapModel silently inherited it and a third-party gateway
+    // answered 401 for a model it has no provider for.
+    const { DEFAULT_PROFILE } = await import('./config.js')
+    expect(DEFAULT_PROFILE.recapModel).toBe('')
+    expect(DEFAULT_PROFILE.commitMessageModel).toBe('')
+  })
+
   it('drops malformed entries and keeps the last duplicate id', () => {
     const raw = [
       { id: '', name: 'x' },                          // dropped: blank id

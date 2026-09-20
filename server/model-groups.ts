@@ -74,6 +74,30 @@ export function capabilitiesForTier(
   }
 }
 
+/** Fallback model for a session-scoped auxiliary LLM call — session recaps,
+ *  AI commit messages, and the auto-mode permission classifier — for when the
+ *  per-field config override (recapModel / commitMessageModel /
+ *  autoClassifierModel) is empty.
+ *
+ *  A session with an active model group uses that group's HAIKU tier: it is
+ *  the same slot the CLI routes its own internal queries to (title
+ *  generation, background subagents, `ANTHROPIC_SMALL_FAST_MODEL`), and the
+ *  cheap/fast class these three tasks are sized for. (The group's `main` slot
+ *  — which is what `session.model` holds for a group session — would put
+ *  recaps and a 5s-budget classifier on the flagship model.) Without a group
+ *  the session's own model is the answer. */
+export function auxFallbackModel(
+  sessionModel: string | undefined,
+  group: ModelGroupConfig | undefined,
+  resolve: (id: string) => string | undefined,
+): string | undefined {
+  if (group) {
+    const haiku = resolveGroup(group, resolve).tiers.haiku
+    if (haiku) return haiku
+  }
+  return sessionModel
+}
+
 /** The fallback degradation chain for a group session: tier aliases BELOW the
  *  main slot, resolved by the CLI through the tier env vars. */
 export function fallbackAliasesFor(main: 'opus' | 'sonnet' | 'haiku'): string[] {

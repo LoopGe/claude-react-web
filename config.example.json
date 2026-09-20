@@ -6,8 +6,6 @@
     "claude-opus-4-20250514",
     "claude-haiku-3-5-20241022"
   ],
-  "recapModel": "claude-haiku-4-5-20251001",
-  "commitMessageModel": "claude-haiku-4-5-20251001",
   "maxUploadBytes": 26214400,
   "historyCap": 500,
   "subagentHistoryCap": 300,

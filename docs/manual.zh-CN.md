@@ -463,7 +463,7 @@ Tasks 面板分两组：正在跑的（带 `Stop <描述>` 停止按钮）和 `F
 
 ![配置档](screenshots/manual/ch9-global-profiles.png)
 
-**Profiles（配置档）** 是凭据与模型集的组合：`+ Add profile` 新建，每个卡片里有 `Connection`（`Name`、`Auth Token`、`Base URL`）、`Models`（`Available Models` 列表、`Recap Model`、`Commit Message Model`）、`Model Groups`（把 opus/sonnet/haiku 三个槽位映射到具体模型，并选 `Main`）。右上角 `Test connection` 可试连，`Set active` 设为活动配置档。
+**Profiles（配置档）** 是凭据与模型集的组合：`+ Add profile` 新建，每个卡片里有 `Connection`（`Name`、`Auth Token`、`Base URL`）、`Models`（`Available Models` 列表、`Recap Model`、`Commit Message Model`）、`Model Groups`（把 opus/sonnet/haiku 三个槽位映射到具体模型，并选 `Main`）。`Recap Model` / `Commit Message Model` 保持 `(default)` 表示「用会话的辅助模型」——会话有活动的 Model Group 时用该组的 **haiku** 档，否则用会话自己的模型；想覆盖就在这两个下拉框里显式选一个。右上角 `Test connection` 可试连，`Set active` 设为活动配置档。
 
 工具栏左上角的配置档切换器选另一个配置档时，会弹出 `Switch profile to "..."` 询问要把哪些**在线会话**一起重启过去 —— 只有被勾选的会话会重启。
 

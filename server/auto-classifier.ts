@@ -3,8 +3,9 @@
  *
  * When a session is in 'auto' mode, every tool call that isn't on the
  * safe-allowlist passes through this classifier. A fast/cheap model
- * (haiku by default) evaluates whether the action is safe and returns
- * an allow/block decision.
+ * evaluates whether the action is safe and returns an allow/block
+ * decision: `config.autoClassifierModel` when set, else the session's own
+ * model. There is no hardcoded fallback model.
  *
  * Design principles:
  *   - Fail-closed: every error, timeout, or parse failure → fall back
@@ -156,11 +157,12 @@ export async function classifyToolAction(params: {
   messages: Array<{ role: string; content: string }>
   cwd: string
   signal?: AbortSignal
-  /** The session's current model. Used as fallback when
-   *  config.autoClassifierModel is empty/unset. */
-  sessionModel?: string
+  /** Fallback model when `config.autoClassifierModel` is empty: the session's
+   *  model group's haiku tier when it has an active group, else the session's
+   *  own model. Resolved by SessionManager.auxFallbackModelFor(). */
+  fallbackModel?: string
 }): Promise<ClassifierResult> {
-  const { toolName, toolInput, messages, cwd, signal, sessionModel } = params
+  const { toolName, toolInput, messages, cwd, signal, fallbackModel } = params
 
   // Abort check before spending tokens
   if (signal?.aborted) {
@@ -196,8 +198,8 @@ export async function classifyToolAction(params: {
     : timeoutSignal
 
   try {
-    // Priority: config override > session model > fail-closed
-    const model = config.autoClassifierModel || sessionModel
+    // Priority: config override > session aux fallback model > fail-closed
+    const model = config.autoClassifierModel || fallbackModel
     if (!model) {
       return { allow: false, reason: 'No classifier model configured and session has no model' }
     }

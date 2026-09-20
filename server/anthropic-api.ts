@@ -34,6 +34,13 @@ interface CallOptions {
  *  timeout, or empty content — callers wrap in try/catch when they want
  *  a graceful fallback path. */
 export async function callAnthropicMessages(opts: CallOptions): Promise<string> {
+  // Guard, not a fallback: every caller resolves its model from a config
+  // setting that is EMPTY by default ('' = "use the session's model"), so a
+  // missed fallback would otherwise post `model: ''` and surface as an
+  // opaque 400 from whatever the baseUrl points at. All four callers either
+  // resolve a model before calling or catch the throw, so failing here is
+  // strictly better than round-tripping a request that cannot succeed.
+  if (!opts.model) throw new Error(`no model resolved for the ${opts.caller ?? 'unknown'} call`)
   const token = requireAuthToken()
   const start = Date.now()
   log.debug(`request model=${opts.model} maxTokens=${opts.maxTokens}`)

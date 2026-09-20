@@ -17,7 +17,9 @@ describe('generateCommitMessage', () => {
   const originalToken = serverConfig.authToken
 
   beforeEach(() => {
-    __setConfigForTest({ authToken: 'test-token' })
+    // The shipped default for commitMessageModel is '' ("use the aux
+    // fallback model"), so a test that expects a configured model must set one.
+    __setConfigForTest({ authToken: 'test-token', commitMessageModel: 'test-commit-model' })
   })
   afterEach(() => {
     global.fetch = originalFetch
@@ -52,6 +54,53 @@ describe('generateCommitMessage', () => {
 
     const r = await generateCommitMessage(SAMPLE_DIFF)
     expect(r.message).toBe('feat(api): add endpoint\n\nWith body.')
+  })
+
+  it('uses the session fallback model when no commitMessageModel is configured', async () => {
+    // Empty commitMessageModel is the default and means "use the session's
+    // aux fallback model" — see SessionManager.auxFallbackModelFor.
+    __setConfigForTest({ commitMessageModel: '', authToken: 'test-token' })
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+      new Response(
+        JSON.stringify({ content: [{ type: 'text', text: 'feat(api): add endpoint' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    )
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const r = await generateCommitMessage(SAMPLE_DIFF, { fallbackModel: 'vendor/model-a' })
+    expect(r.message).toBe('feat(api): add endpoint')
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body))
+    expect(body.model).toBe('vendor/model-a')
+  })
+
+  it('prefers an explicitly configured commitMessageModel over the fallback model', async () => {
+    __setConfigForTest({ commitMessageModel: 'vendor/cheap', authToken: 'test-token' })
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
+      new Response(
+        JSON.stringify({ content: [{ type: 'text', text: 'feat: x' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    )
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    await generateCommitMessage(SAMPLE_DIFF, { fallbackModel: 'vendor/model-a' })
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body))
+    expect(body.model).toBe('vendor/cheap')
+  })
+
+  it('does not call the API with an empty model when neither source provides one', async () => {
+    // Regression guard: an empty model used to reach the wire and bounce as
+    // a 400, which the caller reported as a silent "used fallback" — making
+    // "why is my commit message always a chore:?" unanswerable.
+    __setConfigForTest({ commitMessageModel: '', authToken: 'test-token' })
+    const fetchMock = vi.fn()
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const r = await generateCommitMessage(SAMPLE_DIFF)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(r.fallback).toBe(true)
+    expect(r.message).toMatch(/^chore:/)
   })
 
   it('falls back when the API returns 4xx/5xx', async () => {

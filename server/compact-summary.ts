@@ -27,8 +27,9 @@ Write in dense prose, not bullet soup. Do NOT restate generic status ("we chatte
 /** Summarise a session's message history into a compact continuation seed.
  *  Returns an empty string when the history has no compressible content
  *  (e.g. no user/assistant turns) — the caller should then skip seeding and
- *  fall back to a plain clear. */
-export async function summarizeForCompact(messages: SDKMessage[], sessionModel?: string): Promise<string> {
+ *  fall back to a plain clear. `fallbackModel` (the session's model-group
+ *  haiku tier, else its own model) is used when `recapModel` is empty. */
+export async function summarizeForCompact(messages: SDKMessage[], fallbackModel?: string): Promise<string> {
   const { lines, language } = extractHistory(messages)
   if (lines.length === 0) return ''
 
@@ -41,7 +42,7 @@ export async function summarizeForCompact(messages: SDKMessage[], sessionModel?:
       ? `\n\n---\nWrite the hand-off summary in ${language}.`
       : `\n\n---\nWrite the hand-off summary in the same language the user uses in their messages above.`,
   })
-  const model = serverConfig.recapModel || sessionModel
+  const model = serverConfig.recapModel || fallbackModel
   if (!model) throw new Error('No model configured for compact summary and session has no model')
 
   const text = await callAnthropicMessages({

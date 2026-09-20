@@ -22,7 +22,12 @@ describe('config', () => {
     expect(config.historyCap).toBe(500)
     expect(config.modelList.length).toBeGreaterThan(0)
     expect(config.defaultModel).toBeTruthy()
-    expect(config.recapModel).toBeTruthy()
+    // The per-task models default to UNSET, which means "use the session's
+    // own model" — not a hardcoded model id, which would be unroutable on a
+    // third-party gateway (see the recap/commit/classifier call sites).
+    expect(config.recapModel).toBe('')
+    expect(config.commitMessageModel).toBe('')
+    expect(config.autoClassifierModel).toBe('')
   })
 
   it('config object is frozen', () => {
@@ -168,11 +173,46 @@ describe('config', () => {
     expect(config.modelList).not.toEqual(['custom-a', 'custom-b'])
   })
 
-  it('loadConfig ignores empty recapModel string', async () => {
-    const before = config.recapModel
+  it('loadConfig treats a blank recapModel as unset, not as "keep the old value"', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ recapModel: '   ' }))
     await loadConfig(dir)
-    expect(config.recapModel).toBe(before)
+    // Blank = "use the session's model". The old behaviour kept whatever was
+    // loaded before (which, on a fresh boot, was the hardcoded haiku default).
+    expect(config.recapModel).toBe('')
+  })
+
+  it('loadConfig treats a null recapModel/commitMessageModel as unset', async () => {
+    // This is exactly what the profile UI sends when the user picks
+    // "(default)" in the Recap Model / Commit Message Model dropdowns.
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{
+        id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
+        modelList: ['vendor/model-a'], modelGroups: [],
+        recapModel: null, commitMessageModel: null,
+      }],
+      activeProfileId: 'default',
+    }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    // Regression: these used to come back as 'claude-haiku-4-5-20251001',
+    // which a third-party gateway answers with 401 "该模型未指定供应商".
+    expect(config.recapModel).toBe('')
+    expect(config.commitMessageModel).toBe('')
+  })
+
+  it('loadConfig honors an explicit recapModel', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{
+        id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
+        modelList: ['vendor/model-a'], modelGroups: [],
+        recapModel: 'vendor/cheap', commitMessageModel: 'vendor/cheap',
+      }],
+      activeProfileId: 'default',
+    }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.recapModel).toBe('vendor/cheap')
+    expect(config.commitMessageModel).toBe('vendor/cheap')
   })
 
   it('loadConfig applies maxUploadBytes from config.json', async () => {
@@ -641,6 +681,26 @@ describe('--config path override', () => {
     expect(existsSync(nested)).toBe(true)
     expect(() => readFileSync(join(stateDir, 'config.json'))).toThrow()
     log.mockRestore()
+  })
+
+  it('does not bake a model id into the scaffolded config', async () => {
+    // The scaffold used to write the (then hardcoded) recap/commit default
+    // into profiles[0], so every fresh install froze a model id on disk that
+    // a third-party gateway could not route. Absent = unset = session model.
+    const nested = join(altDir, 'scaffold', 'config.json')
+    setConfigPath(nested)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(stateDir)
+    log.mockRestore()
+
+    const scaffolded = JSON.parse(readFileSync(nested, 'utf8'))
+    expect(scaffolded.profiles[0]).not.toHaveProperty('recapModel')
+    expect(scaffolded.profiles[0]).not.toHaveProperty('commitMessageModel')
+
+    // Reloading that scaffolded file must resolve to "unset", not a model id.
+    await loadConfig(stateDir)
+    expect(config.recapModel).toBe('')
+    expect(config.commitMessageModel).toBe('')
   })
 
   it('expands a leading ~ to the home directory', () => {

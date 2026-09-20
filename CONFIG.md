@@ -42,13 +42,22 @@ The CLI `--model` flag takes priority over the first entry when launching.
 | | |
 |---|---|
 | Type | `string` |
-| Default | `"claude-haiku-4-5-20251001"` |
+| Default | `""` (unset — the session's aux model is used) |
 
-Lightweight model used to generate AI session summaries (recaps). Choose a fast, inexpensive model since recaps are generated frequently and don't require deep reasoning.
+Model used to generate AI session summaries (recaps). **Empty means "use the session's aux
+model"**: a session with an active Model Group uses that group's **haiku** slot (the same cheap
+tier the CLI routes its own internal queries to; a group that leaves the haiku slot empty collapses
+all tiers to its `Main` model), and a session without a group uses its own model. Set it to a
+specific model to override that for every session — the value must be one the active profile's
+provider actually serves, because a third-party gateway rejects an unknown model id at request
+time (a 401, not a config error).
+
+Per-profile: this field lives on each entry of `profiles[]` (a top-level `recapModel` is migrated
+into `profiles[0]` on first load and is no longer written).
 
 ```json
 {
-  "recapModel": "claude-haiku-4-5-20251001"
+  "recapModel": ""
 }
 ```
 
@@ -76,13 +85,41 @@ Maximum file upload size. Files larger than this are rejected before upload. Mus
 | | |
 |---|---|
 | Type | `string` |
-| Default | `"claude-haiku-4-5-20251001"` |
+| Default | `""` (unset — the session's aux model is used) |
 
-Model used by the AI commit-message generator in the GitPanel "This session" view. Defaults to the same lightweight model as `recapModel`; point it at a stronger model (e.g. an Opus build) if you want higher-quality messages at higher cost.
+Model used by the AI commit-message generator in the GitPanel "This session" view. Empty means
+"use the session's aux model" — the session's Model Group haiku slot when it has an active group
+(see `recapModel` for the empty-haiku-slot caveat), else the session's own model. Point it at a
+stronger model (e.g. an Opus build) if you want higher-quality messages at higher cost.
+Per-profile, like `recapModel`; an empty value plus a session that has no model at all falls back
+to a locally-derived `chore:` message rather than an error.
 
 ```json
 {
-  "commitMessageModel": "claude-haiku-4-5-20251001"
+  "commitMessageModel": ""
+}
+```
+
+---
+
+### `autoClassifierModel`
+
+| | |
+|---|---|
+| Type | `string` |
+| Default | `""` (unset — the session's aux model is used) |
+
+Model used by the `auto` permission-mode security classifier, which judges each tool call that
+isn't on the safe-allowlist. Empty means "use the session's aux model" — the session's Model Group
+haiku slot when it has an active group (see `recapModel` for the empty-haiku-slot caveat), else
+the session's own model. The classifier must answer within `autoClassifierTimeout` ms or it fails
+closed to the human permission prompt, so pin this to a small fast model when the session's model
+is a large/slow one. There is no UI for it; set it via `config.json` or
+`npx claude-react-web config set autoClassifierModel <id>` (use `null` to clear it back to unset).
+
+```json
+{
+  "autoClassifierModel": ""
 }
 ```
 

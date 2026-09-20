@@ -33,7 +33,14 @@ describe('summarizeForCompact', () => {
 
   beforeEach(() => {
     origConfig = { ...config }
-    __setConfigForTest({ authToken: 'test-token-123', baseUrl: 'https://api.anthropic.com' })
+    // recapModel is '' by default ("use the session's own model"); pin a
+    // model so the happy path tests assert a configured model, and the
+    // fallback tests can override it back to ''.
+    __setConfigForTest({
+      authToken: 'test-token-123',
+      baseUrl: 'https://api.anthropic.com',
+      recapModel: 'test-recap-model',
+    })
     mockCall.mockReset()
     mockCall.mockResolvedValue('  The user is building a settings panel.  ')
   })
@@ -59,7 +66,8 @@ describe('summarizeForCompact', () => {
   })
 
   it('uses the session model when no recapModel is configured', async () => {
-    __setConfigForTest({ ...origConfig, recapModel: undefined, authToken: 'test-token-123' })
+    // '' is the shipped default and means "use the session's own model".
+    __setConfigForTest({ ...origConfig, recapModel: '', authToken: 'test-token-123' })
     await summarizeForCompact(
       [userMsg('hi'), assistantMsg('hello')],
       'anthropic/claude-sonnet-4-20250514',
@@ -88,7 +96,7 @@ describe('summarizeForCompact', () => {
   })
 
   it('throws when neither a recapModel nor a session model exists', async () => {
-    __setConfigForTest({ ...origConfig, recapModel: undefined, authToken: 'test-token-123' })
+    __setConfigForTest({ ...origConfig, recapModel: '', authToken: 'test-token-123' })
     await expect(summarizeForCompact([userMsg('hi'), assistantMsg('hello')])).rejects.toThrow(
       /No model configured/,
     )

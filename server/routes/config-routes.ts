@@ -58,11 +58,14 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       if (Array.isArray(body.modelList) && body.modelList.length > 0) {
         p0.modelList = body.modelList.filter((m) => typeof m === 'string' && m.trim())
       }
+      // Stored as '' rather than dropped: '' is the explicit "unset — use
+      // the session's own model" value. (A deleted key would resurrect the
+      // DEFAULTS value if that ever became a real model id again.)
       if (typeof body.recapModel === 'string') {
-        p0.recapModel = body.recapModel.trim() || undefined
+        p0.recapModel = body.recapModel.trim()
       }
       if (typeof body.commitMessageModel === 'string') {
-        p0.commitMessageModel = body.commitMessageModel.trim() || undefined
+        p0.commitMessageModel = body.commitMessageModel.trim()
       }
       profilesArr[0] = p0
     } else {
@@ -78,11 +81,13 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       if (Array.isArray(body.modelList) && body.modelList.length > 0) {
         existing.modelList = body.modelList.filter((m) => typeof m === 'string' && m.trim())
       }
+      // Legacy top-level writes — same '' = unset semantics as above; the
+      // migration into profiles[0] carries the value through unchanged.
       if (typeof body.recapModel === 'string') {
-        existing.recapModel = body.recapModel.trim() || undefined
+        existing.recapModel = body.recapModel.trim()
       }
       if (typeof body.commitMessageModel === 'string') {
-        existing.commitMessageModel = body.commitMessageModel.trim() || undefined
+        existing.commitMessageModel = body.commitMessageModel.trim()
       }
     }
     if (typeof body.updateCheckRegistry === 'string') {
@@ -105,8 +110,13 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
   // rejected before any inference runs — so this round-trips for free.
   //
   // Classification (auth vs. wrong-base-url vs. success) lives in the shared
-  // `testConnection` helper (server/config-test-connection.ts) so the new
-  // POST /profiles/:id/test route reuses the exact same probe + outcome.
+  // `testConnection` helper (server/config-test-connection.ts). This route is
+  // the API-level probe for callers that only hold a token + URL, so it always
+  // uses the free sentinel probe — POST /profiles/:id/test (the Profile card's
+  // button) passes the profile's own model instead, since a gateway rejects an
+  // unroutable model with 401, which the sentinel probe cannot tell apart from
+  // a bad token. Note the guard in front of both: an internal/LAN baseUrl is
+  // refused by SSRF validation before any probe runs.
   app.post('/config/test-connection', async (c) => {
     const body = await safeJson<{ authToken?: string; baseUrl?: string }>(c.req)
     const token = body.authToken?.trim() || serverConfig.authToken

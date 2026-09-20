@@ -452,6 +452,61 @@ describe('SessionManager', () => {
       expect(mockHandles[0].options.model).toBe('anthropic/claude-opus-4-20250514')
     })
 
+    it('resolves the aux fallback model to the group haiku tier, not the main', () => {
+      // The aux calls (recap / commit message / auto-mode classifier) ask the
+      // manager for their fallback model when the matching config field is
+      // empty. For a group session that must be the HAIKU slot — the class of
+      // model the CLI itself routes internal queries to — while session.model
+      // (and the info projection) stays the group's main.
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      expect(info.model).toBe('anthropic/claude-opus-4-20250514')
+      expect(sm.auxFallbackModelFor(info.id)).toBe('claude-haiku-3-5-20241022')
+    })
+
+    it('resolves the aux fallback model to the session model without a group', () => {
+      const info = sm.create({ cwd: '/tmp', model: 'gw/some-model' })
+      expect(sm.auxFallbackModelFor(info.id)).toBe('gw/some-model')
+    })
+
+    it('persists the profile pin so a dormant session still resolves its own group', () => {
+      // The pin is what identifies WHICH profile's model groups apply. It is
+      // not derivable from the active profile, so it has to survive a restart
+      // — otherwise a dormant session is resolved against whatever profile
+      // happens to be active and silently loses its group's haiku tier.
+      const groupB = { id: 'g_b', name: 'B group', opus: 'vendor/big', haiku: 'vendor/small', main: 'opus' as const }
+      const before = {
+        profiles: defaultConfig.profiles,
+        activeProfileId: defaultConfig.activeProfileId,
+        modelGroups: defaultConfig.modelGroups,
+      }
+      const profile = (id: string, modelGroups: unknown[]): import('./config.js').ProviderProfile => ({
+        id, name: id, authToken: 't', baseUrl: 'https://gw', modelList: ['vendor/big', 'vendor/small'],
+        modelGroups: modelGroups as import('./config.js').ModelGroupConfig[],
+        recapModel: '', commitMessageModel: '',
+      })
+      try {
+        __setConfigForTest({
+          profiles: [profile('A', []), profile('B', [groupB])],
+          activeProfileId: 'A',
+          modelGroups: [],
+        })
+        const info = sm.create({
+          cwd: '/tmp', profileId: 'B', modelGroupId: 'g_b',
+        } as Parameters<SessionManager['create']>[0])
+        expect(sm.auxFallbackModelFor(info.id)).toBe('vendor/small')
+        expect(store.get(info.id)?.profileId).toBe('B')
+
+        // A second manager over the same store IS the restart case: the
+        // session is dormant, so only the persisted pin can resolve it.
+        const restarted = new SessionManager({ store })
+        expect(restarted.auxFallbackModelFor(info.id)).toBe('vendor/small')
+        void restarted.shutdown()
+      } finally {
+        __setConfigForTest({ ...before })
+      }
+    })
+
     it('applies the fallback degradation chain on spawn for a group session', () => {
       __setConfigForTest({ modelGroups: [GROUP] })
       sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])

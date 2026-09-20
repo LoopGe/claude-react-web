@@ -212,4 +212,56 @@ describe('ProfilesSettingsTab', () => {
       })
     })
   })
+
+  describe('recap / commit model selects', () => {
+    const stored: ProviderProfile[] = [
+      {
+        id: 'a',
+        name: 'A',
+        isActive: true,
+        authTokenMasked: '****cdef',
+        baseUrl: 'https://gw1',
+        modelList: ['vendor/listed'],
+        modelGroups: [],
+        // Stored, but NOT in this profile's model list (e.g. carried over
+        // from another subscription).
+        recapModel: 'vendor/unlisted',
+        commitMessageModel: '',
+      },
+    ]
+
+    function mockStored() {
+      const update = vi.fn().mockResolvedValue(undefined)
+      vi.mocked(useProfiles.useProfiles).mockReturnValue({
+        profiles: stored,
+        activeProfileId: 'a',
+        refresh: vi.fn(),
+        create: vi.fn(),
+        update,
+        remove: vi.fn(),
+        activate: vi.fn(),
+      })
+      return update
+    }
+
+    it('renders a stored model that is absent from the list, rather than blank', () => {
+      mockStored()
+      render(<ProfilesSettingsTab />)
+      const select = screen.getByLabelText('Recap Model') as HTMLSelectElement
+      // Without a matching <option> the select renders blank while still
+      // holding a model id — the invisible state that hid this bug.
+      expect(select.value).toBe('vendor/unlisted')
+      expect(screen.getByRole('option', { name: /vendor\/unlisted/ })).toBeTruthy()
+    })
+
+    it('sends null when (default) is picked, so the server clears the stored model', async () => {
+      const update = mockStored()
+      render(<ProfilesSettingsTab />)
+      fireEvent.change(screen.getByLabelText('Recap Model'), { target: { value: '' } })
+      fireEvent.click(screen.getByRole('button', { name: /^Save( changes)?$/i }))
+      await vi.waitFor(() => {
+        expect(update).toHaveBeenCalledWith('a', expect.objectContaining({ recapModel: null }))
+      })
+    })
+  })
 })

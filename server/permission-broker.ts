@@ -115,6 +115,18 @@ export class PermissionBroker {
    *  Shared across all sessions managed by this broker instance. */
   private classifierLimiter = new ClassifierLimiter(5)
 
+  /** Resolver for a session's auxiliary fallback model (its model group's
+   *  haiku tier, else its own model) — the model the auto-mode classifier
+   *  runs on when `autoClassifierModel` is empty. Required: a broker built
+   *  without it would silently lose the classifier's fallback and, with the
+   *  shipped `autoClassifierModel: ''` default, fail closed to the human
+   *  prompt on every tool call. */
+  private auxFallbackModelFor: (sessionId: string) => string | undefined
+
+  constructor(auxFallbackModelFor: (sessionId: string) => string | undefined) {
+    this.auxFallbackModelFor = auxFallbackModelFor
+  }
+
   /** Per-session denial tracker for auto mode. When consecutive denials
    *  reach 3 or total denials reach 20, the classifier is skipped and
    *  the tool call falls through to the human prompt. */
@@ -483,7 +495,7 @@ export class PermissionBroker {
               messages: getMessagesForClassifier(session, 5),
               cwd: session.cwd ?? '',
               signal: ctx.signal,
-              sessionModel: session.model,
+              fallbackModel: this.auxFallbackModelFor(session.id),
             })
             if (result.allow) {
               tracker.recordAllow()

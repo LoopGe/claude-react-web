@@ -52,7 +52,13 @@ export interface ProviderProfile {
   baseUrl: string
   modelList: readonly string[]
   modelGroups: readonly ModelGroupConfig[]
+  /** Model for AI session recaps. EMPTY = use the session's own model.
+   *  Never a hardcoded default: a model id this profile's provider does not
+   *  serve is rejected at request time (third-party gateways answer 401 for
+   *  an unroutable model), so "unset" has to stay expressible. */
   recapModel: string
+  /** Model for AI-generated commit messages. EMPTY = use the session's own
+   *  model. See recapModel. */
   commitMessageModel: string
 }
 
@@ -60,11 +66,16 @@ export interface ProviderProfile {
 interface ConfigFile {
   modelList?: string[]
   modelGroups?: ModelGroupConfig[]
+  /** Model used for AI session recaps (the "(default)" option in the
+   *  profile UI). EMPTY — the default — means "use the session's own model";
+   *  set it to a specific id to force a cheaper/stronger model. Stored as a
+   *  string (not optional) so callers can do plain `if (config.recapModel)`,
+   *  same shape as `updateCheckRegistry` below. */
   recapModel?: string
   /** Model used by the AI commit-message generator under the GitPanel
-   *  "This session" view. Defaults to the same haiku model as recap; pick
-   *  a different one (e.g. opus for higher quality at much higher cost)
-   *  per project preference. */
+   *  "This session" view. EMPTY — the default — means "use the session's
+   *  own model"; pick a specific one (e.g. opus for higher quality at much
+   *  higher cost) per project preference. */
   commitMessageModel?: string
   maxUploadBytes?: number
   historyCap?: number
@@ -116,6 +127,9 @@ interface ConfigFile {
   updateCheckRegistry?: string
   skillLoadMode: string
   enabledSkills: string[]
+  /** Model for the auto-mode permission classifier. EMPTY = use the
+   *  session's own model (the classifier fails closed to the human prompt
+   *  when neither is set). Empty is the default — see DEFAULTS. */
   autoClassifierModel: string
   autoClassifierTimeout: number
   /** Global default for the pinned "current question" header. Per-session
@@ -183,7 +197,10 @@ export interface ServerConfig {
   readonly modelList: readonly string[]
   readonly modelGroups: readonly ModelGroupConfig[]
   readonly defaultModel: string
+  /** Derived from the active profile. EMPTY = use the session's own model —
+   *  read this with plain truthiness (`config.recapModel || sessionModel`). */
   readonly recapModel: string
+  /** Derived from the active profile. EMPTY = use the session's own model. */
   readonly commitMessageModel: string
   readonly maxUploadBytes: number
   readonly historyCap: number
@@ -208,8 +225,10 @@ export interface ServerConfig {
   readonly updateCheckRegistry: string
   readonly skillLoadMode: SkillLoadMode
   readonly enabledSkills: readonly string[]
-  /** Model used by the auto-mode security classifier. Should be a fast,
-   *  cheap model — haiku is the default. */
+  /** Model used by the auto-mode security classifier. EMPTY (the default)
+   *  means "use the session's own model"; pin a fast, cheap model here when
+   *  the session model is a large/slow one, since the classifier must answer
+   *  within autoClassifierTimeout or it fails closed to the human prompt. */
   readonly autoClassifierModel: string
   /** Timeout (ms) for classifier API calls. */
   readonly autoClassifierTimeout: number
@@ -269,8 +288,12 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   ]),
   modelGroups: Object.freeze([]),
   defaultModel: 'anthropic/claude-sonnet-4-20250514',
-  recapModel: 'claude-haiku-4-5-20251001',
-  commitMessageModel: 'claude-haiku-4-5-20251001',
+  // These three are deliberately EMPTY: empty = "use the session's own model".
+  // A hardcoded default (previously 'claude-haiku-4-5-20251001') is a model id
+  // that a third-party gateway may not serve at all, and the failure surfaces
+  // as a 401 at request time rather than as an obvious config error.
+  recapModel: '',
+  commitMessageModel: '',
   maxUploadBytes: 500 * 1024 * 1024,
   historyCap: 500,
   subagentHistoryCap: 300,
@@ -284,7 +307,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   updateCheckRegistry: 'https://registry.npmjs.org',
   skillLoadMode: 'default',
   enabledSkills: Object.freeze([]),
-  autoClassifierModel: 'claude-haiku-4-5-20251001',
+  autoClassifierModel: '',
   autoClassifierTimeout: 5000,
   showPinnedUserMessage: true,
   autoRecap: true,
@@ -394,8 +417,11 @@ export async function loadConfig(stateDir: string): Promise<void> {
             baseUrl: DEFAULTS.baseUrl,
             modelList: [...config.modelList],
             modelGroups: [...config.modelGroups],
-            recapModel: config.recapModel,
-            commitMessageModel: config.commitMessageModel,
+            // recapModel / commitMessageModel are deliberately NOT scaffolded:
+            // writing a concrete model id here would bake in a model the
+            // user's provider may not serve (and it is what made a fresh
+            // install's recaps 401 on third-party gateways). Absent = use the
+            // session's own model.
           }],
           activeProfileId: 'default',
           maxUploadBytes: config.maxUploadBytes,
@@ -464,7 +490,14 @@ async function migrateLegacyProfiles(
  *  `{key: null}` / `{key: ''}` to clear it), `existing` will lack that
  *  key and the merged result must fall back to the hardcoded default.
  *  Building from `config` would carry the stale loaded value forward,
- *  making cleared keys behave like "no change". */
+ *  making cleared keys behave like "no change".
+ *
+ *  For recapModel / commitMessageModel / autoClassifierModel that
+ *  "hardcoded default" is the EMPTY STRING, which the call sites read as
+ *  "use the session's own model" — so a cleared key is a working
+ *  configuration, not a missing one. Do not put a concrete model id
+ *  back into DEFAULTS: it is unroutable on other providers and the
+ *  failure only shows up as a 401 at request time. */
 function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): void {
   const merged: ServerConfig = { ...DEFAULTS }
 
@@ -553,6 +586,10 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     }
   }
 
+  // Blank/unset falls through to DEFAULTS.autoClassifierModel, which is ''
+  // — i.e. "use the session's own model". The truthiness gate is what makes
+  // an explicit '' indistinguishable from a removed key, and that is fine:
+  // both mean "unset". Do NOT reintroduce a concrete model id here.
   if (typeof file_.autoClassifierModel === 'string' && file_.autoClassifierModel.trim()) {
     ;(merged as { autoClassifierModel: string }).autoClassifierModel = file_.autoClassifierModel.trim()
   }
@@ -771,6 +808,9 @@ async function doUpdateConfigFile(
     if (key in updates) {
       const val = updates[key]
       // Treat null / empty-string as "remove the override" (revert to default).
+      // For a model field whose default is itself '' (unset = "use the
+      // session's model"), deleting the key and storing '' are equivalent —
+      // both reload as ''. See DEFAULTS.
       if (val === null || val === '') {
         delete existing[key]
       } else {

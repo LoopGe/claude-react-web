@@ -47,7 +47,7 @@ import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
-import { fallbackAliasesFor, resolveGroup } from './model-groups.js'
+import { auxFallbackModel, fallbackAliasesFor, resolveConfiguredModelId, resolveGroup } from './model-groups.js'
 import { isSdkForwardedMode } from './permission-modes.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import {
@@ -542,7 +542,11 @@ export class SessionManager {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.subagentHistoryCap = opts.subagentHistoryCap ?? defaultConfig.subagentHistoryCap
     this.forwardSubagentText = opts.forwardSubagentText ?? defaultConfig.forwardSubagentText
-    this.permBroker = new PermissionBroker()
+    // The classifier needs the same fallback resolution the other aux calls
+// use (config override → the session's model-group haiku tier → the
+// session's model), so hand the broker a resolver rather than the raw
+// session model.
+    this.permBroker = new PermissionBroker((id) => this.auxFallbackModelFor(id))
     this.elicitBroker = new ElicitationBroker()
     this.dialogBroker = new DialogBroker()
     this.autoResumeEnabled = opts.autoResume ?? false
@@ -582,7 +586,7 @@ export class SessionManager {
         return this.phaseOf(s)
       },
       getHistory: (id) => this.getHistory(id),
-      getModel: (id) => this.sessions.get(id)?.model,
+      getFallbackModel: (id) => this.auxFallbackModelFor(id),
       setRecap: (id, recap) => {
         const s = this.sessions.get(id)
         if (!s) return
@@ -946,6 +950,12 @@ export class SessionManager {
       model: s.model,
       agent: s.agent,
       modelGroupId: s.modelGroupId,
+      // The profile pin must survive a restart: resume() re-pins from it
+      // (below), and the auxiliary-model resolution (auxFallbackModelFor)
+      // needs it to resolve the session's own model group — without it a
+      // dormant session is looked up against whichever profile happens to be
+      // active.
+      profileId: s.profileId,
       permissionMode: s.permissionMode,
       title: s.title,
       betas: s.betas,
@@ -3360,7 +3370,7 @@ export class SessionManager {
     // summarizer always saw subagent tool frames; it still sees subagent
     // frames, including the now-forwarded text/thinking ones).
     const merged = this.mergedHistory(s)
-    const summary = await summarizeForCompact(merged, s.model)
+    const summary = await summarizeForCompact(merged, this.auxFallbackModelFor(s.id))
     if (!summary) {
       log.info(`[session ${id}] compact: no compressible content, falling back to plain clear`)
       return this.clear(id)
@@ -5224,6 +5234,26 @@ export class SessionManager {
     const meta = this.store?.get(id)
     if (meta) return this.infoFromMeta(meta)
     throw new HttpError(404, `session ${id} not found`)
+  }
+
+  /** Fallback model for a session-scoped auxiliary LLM call — recap, AI
+   *  commit message, auto-mode classifier — used when the matching config
+   *  override (recapModel / commitMessageModel / autoClassifierModel) is
+   *  empty. Resolves from the session's model-group reference, so it works
+   *  for live and dormant sessions alike: a group session gets that group's
+   *  HAIKU tier (the slot the CLI already routes its own internal queries
+   *  to, and the class these tasks are sized for), a group-less session gets
+   *  its own model. See model-groups.auxFallbackModel(). */
+  auxFallbackModelFor(id: string): string | undefined {
+    const session = this.sessions.get(id) ?? this.store?.get(id)
+    if (!session) return undefined
+    const profile = effectiveProfileFor(session.profileId)
+    const group = session.modelGroupId
+      ? profile.modelGroups.find((g) => g.id === session.modelGroupId)
+      : undefined
+    // Shared resolver (model-groups.ts) — the same one the provider uses for
+    // the tier env vars, so both sides resolve a group's slots identically.
+    return auxFallbackModel(session.model, group, (m) => resolveConfiguredModelId(m, profile.modelList))
   }
 
   /** Snapshot of the in-memory message history for a live session.

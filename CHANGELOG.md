@@ -34,6 +34,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Profile saves no longer silently ignore a cleared field** — `PUT /profiles/:id` skipped
+  `null` for `baseUrl` / `modelList` / `modelGroups` (the card sends `null` whenever the field is
+  empty), so clearing a value and saving kept the old one while the card showed it cleared —
+  and it reappeared on reload. Model groups now clear (a profile may legitimately have none); a
+  blank name / Base URL / empty model list is rejected with a message instead, since each is an
+  invalid profile (a blank baseUrl would silently fall back to the public API and spend the
+  profile's key there).
+- **Recaps / commit messages / auto-mode classification no longer send a hardcoded Claude model
+  to whatever provider you configured** — `recapModel`, `commitMessageModel` and
+  `autoClassifierModel` all defaulted to `claude-haiku-4-5-20251001`, and an empty value was
+  backfilled with it. On a third-party Anthropic-compatible gateway that model has no provider, so
+  the request failed with `401 该模型未指定供应商` (surfaced as `Anthropic API 401: …` in the recap
+  card) even though the session's own model worked fine. Empty now means exactly what the
+  `(default)` dropdown option promises: **use the session's own model**. `commitMessageModel`
+  gained the session-model fallback the other two already had (and no longer posts `model: ''`),
+  the scaffold no longer bakes a model id into a fresh `config.json`, and `config.example.json`
+  no longer ships one. The fallback itself is the session's **aux model**: a session with an
+  active Model Group uses that group's *haiku* slot — the same cheap tier the CLI routes its own
+  internal queries to (title generation, background subagents) — and only a session without a
+  group (or whose group leaves the haiku slot empty, which collapses all tiers to `Main`) falls
+  back to its own model. That keeps recaps, commit messages and the 5s-budget auto-mode
+  classifier off the flagship model a group's `main` slot would otherwise hand them.
+  *Upgrading:* if your `config.json` already stores
+  `claude-haiku-4-5-20251001` (the old scaffold wrote it), clear it — Profiles → `Recap Model` →
+  `(default)` → Save. Saving `(default)` used to be a silent no-op (`null` was ignored by
+  `PUT /profiles/:id`), which is fixed here too.
+- **"Test connection" no longer reports a bad token for a healthy gateway** — the probe used a
+  sentinel model, and a gateway answers `401` for *any* model it cannot route, so the reply was
+  classified as `Invalid auth token`. The profile test now probes the profile's own first model
+  (bounded to 1 token); when a `401` is genuinely ambiguous the provider's own message is shown
+  instead of a verdict, and the Anthropic error type (`authentication_error` / `permission_error`)
+  remains the only thing reported as an invalid token.
+- **A stored recap/commit model that is not in the profile's model list is now visible** — the
+  `<select>` had no matching option, so it rendered blank while still holding a model id: the user
+  could neither see nor re-pick what would actually be sent. It now renders as its own
+  `… (not in this list)` option.
+
 - **Per-session UI overrides now survive `/clear`, `/compact` and Restart** —
   the replacement session is a fresh id with no persisted meta, so
   `showPinnedUserMessage` / `autoRecap` / `toolGroupCards` /

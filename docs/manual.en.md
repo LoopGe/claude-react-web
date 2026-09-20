@@ -463,7 +463,7 @@ Tabs: `Profiles` · `Server` · `Appearance` · `Skills` · `MCP Servers` · `Ma
 
 ![Profiles](screenshots/manual/ch9-global-profiles.png)
 
-**Profiles** bundle credentials with a model set: `+ Add profile` to create one; each card holds `Connection` (`Name`, `Auth Token`, `Base URL`), `Models` (`Available Models`, `Recap Model`, `Commit Message Model`), and `Model Groups` (mapping the opus/sonnet/haiku slots to concrete models, plus a `Main` choice). Use `Test connection` to verify and `Set active` to switch.
+**Profiles** bundle credentials with a model set: `+ Add profile` to create one; each card holds `Connection` (`Name`, `Auth Token`, `Base URL`), `Models` (`Available Models`, `Recap Model`, `Commit Message Model`), and `Model Groups` (mapping the opus/sonnet/haiku slots to concrete models, plus a `Main` choice). Leaving `Recap Model` / `Commit Message Model` at `(default)` means "use the session's aux model" — the session's Model Group *haiku* slot when a group is active, otherwise the session's own model. Pick a specific model there to override that. Use `Test connection` to verify and `Set active` to switch.
 
 Selecting another profile from the toolbar switcher opens `Switch profile to "..."`, which asks which **live sessions** to restart into the new profile — only the ones you tick are restarted.
 

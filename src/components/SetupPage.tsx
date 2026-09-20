@@ -112,6 +112,11 @@ export function SetupPage({ onConfigured }: Props) {
   const [newModel, setNewModel] = useState('')
   const [recapModel, setRecapModel] = useState('')
   const [commitMessageModel, setCommitMessageModel] = useState('')
+  // The wizard never prefills these two from an existing config, so it must
+  // only send them when the user actually made a choice — otherwise finishing
+  // the wizard would wipe a Recap Model configured in Settings → Profiles.
+  const [recapModelTouched, setRecapModelTouched] = useState(false)
+  const [commitModelTouched, setCommitModelTouched] = useState(false)
   const [duplicateMsg, setDuplicateMsg] = useState<string | null>(null)
   const [modelsPrefilled, setModelsPrefilled] = useState(false)
 
@@ -320,6 +325,26 @@ export function SetupPage({ onConfigured }: Props) {
       .catch(() => {})
   }, [])
 
+  // Prefill the recap / commit-message selects from the ACTIVE profile's
+  // stored values. Without this the selects would render "(default)" while a
+  // concrete model is still stored, so the wizard would both misreport the
+  // setting and leave the user no way to clear it (the already-selected
+  // "(default)" option cannot fire onChange). The touched flags then mean
+  // "the user changed this" rather than "we guessed".
+  useEffect(() => {
+    void api
+      .get<{ profiles?: Array<{ id: string; recapModel?: string; commitMessageModel?: string }>; activeProfileId?: string }>(
+        '/profiles',
+      )
+      .then((r) => {
+        const active = r.profiles?.find((p) => p.id === r.activeProfileId) ?? r.profiles?.[0]
+        if (!active) return
+        if (typeof active.recapModel === 'string') setRecapModel(active.recapModel)
+        if (typeof active.commitMessageModel === 'string') setCommitMessageModel(active.commitMessageModel)
+      })
+      .catch(() => {})
+  }, [])
+
   /** Probe the CLI binary. Used by both the initial Step 0 effect and the
    *  Recheck button — the second case must bypass the server-side cache
    *  via `?force=1` because the user just (allegedly) installed the CLI. */
@@ -398,16 +423,27 @@ export function SetupPage({ onConfigured }: Props) {
     setModelList(modelList.filter((m) => m !== model))
     setModelsPrefilled(false)
     // Reset bound selects + show a transient hint so the user knows the
-    // dependent selection silently dropped to default. Without the
-    // notice, a user removing their custom recap model on Step 2 has no
-    // signal that recapModel is now '' (server default) on Step 4.
+    // dependent selection dropped to (default) — i.e. the session's own
+    // model is used from now on. Without the notice, a user removing their
+    // custom recap model on Step 2 has no signal that the setting cleared.
+    // One combined notice: `flashDuplicateMsg` owns a single timer+slot, so
+    // flashing twice would show only the second reset and hide the first.
+    const reset: string[] = []
     if (recapModel === model) {
       setRecapModel('')
-      flashDuplicateMsg(`Recap model reset to default (${model} removed)`, 3500)
+      setRecapModelTouched(true)
+      reset.push('Recap')
     }
     if (commitMessageModel === model) {
       setCommitMessageModel('')
-      flashDuplicateMsg(`Commit-message model reset to default (${model} removed)`, 3500)
+      setCommitModelTouched(true)
+      reset.push('Commit-message')
+    }
+    if (reset.length > 0) {
+      flashDuplicateMsg(
+        `${reset.join(' + ')} model reset to (default) — ${model} was removed from the list`,
+        3500,
+      )
     }
   }
 
@@ -434,8 +470,13 @@ export function SetupPage({ onConfigured }: Props) {
             authToken: authToken.trim() || undefined,
             baseUrl: baseUrl.trim() || undefined,
             modelList: modelList.length > 0 ? modelList : undefined,
-            recapModel: recapModel.trim() || undefined,
-            commitMessageModel: commitMessageModel.trim() || undefined,
+            // Sent only when the user touched the select (see the touched flags): the
+            // values arrive prefilled from the active profile, so an untouched
+            // select means "leave the stored value alone" rather than "clear
+            // it". An empty string is the server's "use the session's own
+            // model", and picking (default) is a real choice.
+            ...(recapModelTouched ? { recapModel: recapModel.trim() } : {}),
+            ...(commitModelTouched ? { commitMessageModel: commitMessageModel.trim() } : {}),
             // Always send the registry (even when empty) so an explicit
             // opt-out — the user clearing the prefilled value — persists
             // as updateCheckRegistry: '' rather than being silently
@@ -470,7 +511,7 @@ export function SetupPage({ onConfigured }: Props) {
       // flipped isConfigured), so calling setSubmitting(false) would warn
       // about state-on-unmounted in dev.
     },
-    [authToken, baseUrl, modelList, recapModel, commitMessageModel, updateRegistry, onConfigured, setupCompleted, tokenPrefilled],
+    [authToken, baseUrl, modelList, recapModel, commitMessageModel, recapModelTouched, commitModelTouched, updateRegistry, onConfigured, setupCompleted, tokenPrefilled],
   )
 
   // ── Navigation helpers ──
@@ -829,15 +870,21 @@ export function SetupPage({ onConfigured }: Props) {
                   Recap Model <span style={styles.optional}>(optional)</span>
                 </label>
                 <p className="setup-hint">
-                  Model used for AI session summaries. Leave empty to use the default (first model).
+                  Model used for AI session summaries. (default) uses the session's aux model — the
+                  model group's haiku slot, else the session's own model.
                 </p>
                 <select
                   className="input"
                   id="setup-recap-model"
                   value={recapModel}
-                  onChange={(e) => setRecapModel(e.target.value)}
+                  onChange={(e) => { setRecapModel(e.target.value); setRecapModelTouched(true) }}
                 >
                   <option value="">(default)</option>
+                  {/* Keep an explicit-but-unlisted model selectable, so the
+                      select never renders blank while a model is stored. */}
+                  {recapModel && !modelList.includes(recapModel) ? (
+                    <option value={recapModel}>{recapModel} (not in this list)</option>
+                  ) : null}
                   {modelList.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
@@ -849,15 +896,19 @@ export function SetupPage({ onConfigured }: Props) {
                   Commit Message Model <span style={styles.optional}>(optional)</span>
                 </label>
                 <p className="setup-hint">
-                  Model used for AI-generated commit messages in the Git panel. Leave empty to use the default.
+                  Model used for AI-generated commit messages in the Git panel. (default) uses the
+                  session's aux model — the model group's haiku slot, else the session's own model.
                 </p>
                 <select
                   className="input"
                   id="setup-commit-message-model"
                   value={commitMessageModel}
-                  onChange={(e) => setCommitMessageModel(e.target.value)}
+                  onChange={(e) => { setCommitMessageModel(e.target.value); setCommitModelTouched(true) }}
                 >
                   <option value="">(default)</option>
+                  {commitMessageModel && !modelList.includes(commitMessageModel) ? (
+                    <option value={commitMessageModel}>{commitMessageModel} (not in this list)</option>
+                  ) : null}
                   {modelList.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}

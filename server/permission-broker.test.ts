@@ -4,6 +4,14 @@ import { firstPartyRegistry } from './sdk-tools/registry.js'
 import type { Session, PendingPermission } from './session-types.js'
 import { __setConfigForTest } from './config.js'
 
+// The auto-mode classifier is stubbed so a test can assert which model the
+// broker asks it to run on (the injected aux-fallback resolver) without an
+// API call. Nothing else in this file exercises the classifier.
+vi.mock('./auto-classifier.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./auto-classifier.js')>()),
+  classifyToolAction: vi.fn(async () => ({ allow: true, reason: 'mocked' })),
+}))
+
 // 鈹€鈹€鈹€ Helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 function makeFakeSession(overrides: Partial<Session> = {}): Session {
@@ -129,7 +137,7 @@ describe('PermissionBroker', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
-    broker = new PermissionBroker()
+    broker = new PermissionBroker(() => undefined)
   })
 
   afterEach(() => {
@@ -978,6 +986,42 @@ describe('PermissionBroker', () => {
       expect(session.permissionSubscribers.size).toBe(1)
       unsubscribe()
       expect(session.permissionSubscribers.size).toBe(0)
+    })
+  })
+})
+
+describe('auto mode classifier model', () => {
+  it('classifies with the injected aux fallback model for the session', async () => {
+    // With autoClassifierModel empty (the shipped default), the classifier
+    // must run on the model the manager resolves for THIS session — its
+    // model group's haiku tier, else its own model — not on a stale default.
+    const { classifyToolAction } = await import('./auto-classifier.js')
+    const mockClassify = vi.mocked(classifyToolAction)
+    mockClassify.mockClear()
+    __setConfigForTest({ autoClassifierModel: '' })
+
+    const injected = vi.fn(() => 'vendor/aux-model')
+    const autoBroker = new PermissionBroker(injected)
+    const session = makeFakeSession({ id: 'auto-1', permissionMode: 'auto', cwd: '/work/app' })
+    const canUseTool = autoBroker.buildCanUseTool(session, vi.fn())
+
+    // Not an in-cwd edit and not a whitelisted filesystem command, so it skips
+    // auto mode's acceptEdits fast path and actually reaches the classifier.
+    await canUseTool('Bash', { command: 'git push --force origin main' }, {
+      toolUseID: 'tu-auto',
+      requestId: 'req-auto',
+      signal: new AbortController().signal,
+      title: 'Run bash',
+      displayName: 'Bash',
+      description: '',
+      suggestions: [],
+    })
+
+    expect(injected).toHaveBeenCalledWith('auto-1')
+    expect(mockClassify).toHaveBeenCalledTimes(1)
+    expect(mockClassify.mock.calls[0][0]).toMatchObject({
+      toolName: 'Bash',
+      fallbackModel: 'vendor/aux-model',
     })
   })
 })

@@ -188,6 +188,10 @@ function ProfileCard({
       const body: Record<string, string> = {}
       if (authTokenDirty && authToken.trim()) body.authToken = authToken.trim()
       if (baseUrl.trim()) body.baseUrl = baseUrl.trim()
+      // Test the model this card would actually save, not the last one
+      // persisted — the server falls back to the saved modelList[0] when
+      // this is omitted, which would probe a model the user just replaced.
+      if (modelList[0]) body.model = modelList[0]
       const r = await api.post<ProfileTestResult>(
         `/profiles/${encodeURIComponent(profile.id)}/test`,
         body,
@@ -553,7 +557,10 @@ function ProfileCard({
             {/* Recap Model dropdown (over this profile's own modelList) */}
             <div className="settings-field">
               <label htmlFor={`${uid}-recap-model`}>Recap Model</label>
-              <span className="hint">Model used for AI session summaries (lighter model recommended)</span>
+              <span className="hint">
+                Model used for AI session summaries. (default) uses the session's aux model — the
+                model group's haiku slot, else the session's own model.
+              </span>
               <div className="settings-model-select-wrap">
                 <select
                   className="input settings-model-select"
@@ -562,6 +569,13 @@ function ProfileCard({
                   onChange={(e) => { setRecapModel(e.target.value); setDirty(true) }}
                 >
                   <option value="">(default)</option>
+                  {/* A stored model that is not in this list needs its own
+                      option: with no matching option the select renders
+                      blank, hiding which model will actually be used (and
+                      leaving no way to re-pick or clear it). */}
+                  {recapModel && !modelList.includes(recapModel) ? (
+                    <option value={recapModel}>{recapModel} (not in this list)</option>
+                  ) : null}
                   {modelList.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
@@ -573,7 +587,10 @@ function ProfileCard({
             {/* Commit Message Model dropdown (over this profile's own modelList) */}
             <div className="settings-field">
               <label htmlFor={`${uid}-commit-message-model`}>Commit Message Model</label>
-              <span className="hint">Model used for AI-generated commit messages in Git panel</span>
+              <span className="hint">
+                Model used for AI-generated commit messages in Git panel. (default) uses the
+                session's aux model (the model group's haiku slot, else the session's model).
+              </span>
               <div className="settings-model-select-wrap">
                 <select
                   className="input settings-model-select"
@@ -582,6 +599,9 @@ function ProfileCard({
                   onChange={(e) => { setCommitMessageModel(e.target.value); setDirty(true) }}
                 >
                   <option value="">(default)</option>
+                  {commitMessageModel && !modelList.includes(commitMessageModel) ? (
+                    <option value={commitMessageModel}>{commitMessageModel} (not in this list)</option>
+                  ) : null}
                   {modelList.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}

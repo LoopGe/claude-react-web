@@ -1,11 +1,41 @@
 import { describe, expect, it } from 'vitest'
 import {
+  auxFallbackModel,
   capabilitiesForTier,
   fallbackAliasesFor,
   isOpaqueModel,
   resolveConfiguredModelId,
   resolveGroup,
 } from './model-groups.js'
+
+describe('auxFallbackModel', () => {
+  const resolve = (m: string) => (m.includes('/') ? m : `vendor/${m}`)
+
+  it('uses the group haiku tier, not the session (main) model', () => {
+    // This is the whole point: `session.model` for a group session is the
+    // group's MAIN slot, which is the wrong class of model for a recap or a
+    // 5s-budget permission classifier.
+    const group = {
+      id: 'g1', name: 'G1',
+      opus: 'deepseek-v4-pro', sonnet: 'glm-5.3', haiku: 'deepseek-v4-flash',
+      main: 'opus' as const,
+    }
+    expect(auxFallbackModel('vendor/deepseek-v4-pro', group, resolve)).toBe('vendor/deepseek-v4-flash')
+  })
+
+  it('falls back to the group main when the haiku slot is empty', () => {
+    const group = { id: 'g1', name: 'G1', opus: 'big', main: 'opus' as const }
+    expect(auxFallbackModel('vendor/big', group, resolve)).toBe('vendor/big')
+  })
+
+  it('uses the session model when there is no group', () => {
+    expect(auxFallbackModel('vendor/session-model', undefined, resolve)).toBe('vendor/session-model')
+  })
+
+  it('passes through undefined when nothing is resolvable', () => {
+    expect(auxFallbackModel(undefined, undefined, resolve)).toBeUndefined()
+  })
+})
 
 describe('resolveGroup', () => {
   const resolve = (m: string) => (m === 'opus-model' ? 'provider/opus-model' : m)

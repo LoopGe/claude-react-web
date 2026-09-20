@@ -63,10 +63,16 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
         ? body.modelList.filter((m) => typeof m === 'string' && m.trim())
         : active?.modelList ?? DEFAULT_PROFILE.modelList,
       modelGroups: Array.isArray(body.modelGroups) ? body.modelGroups : active?.modelGroups ?? DEFAULT_PROFILE.modelGroups,
-      recapModel: typeof body.recapModel === 'string' && body.recapModel.trim()
-        ? body.recapModel.trim() : active?.recapModel ?? DEFAULT_PROFILE.recapModel,
-      commitMessageModel: typeof body.commitMessageModel === 'string' && body.commitMessageModel.trim()
-        ? body.commitMessageModel.trim() : active?.commitMessageModel ?? DEFAULT_PROFILE.commitMessageModel,
+      // An explicitly-sent value wins on create too — including '' and null
+      // ("unset", the same rule PUT /profiles/:id applies, since the settings
+      // tab sends `value || null`). Only an ABSENT field templates from the
+      // active profile.
+      recapModel: typeof body.recapModel === 'string' || body.recapModel === null
+        ? (typeof body.recapModel === 'string' ? body.recapModel.trim() : '')
+        : active?.recapModel ?? DEFAULT_PROFILE.recapModel,
+      commitMessageModel: typeof body.commitMessageModel === 'string' || body.commitMessageModel === null
+        ? (typeof body.commitMessageModel === 'string' ? body.commitMessageModel.trim() : '')
+        : active?.commitMessageModel ?? DEFAULT_PROFILE.commitMessageModel,
     }
     await queueConfigWrite(configDir, (existing) => {
       const profiles = Array.isArray(existing.profiles) ? existing.profiles : []
@@ -89,18 +95,50 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
       found = true
       const prev = profiles[idx] as Record<string, unknown>
       const next: Record<string, unknown> = { ...prev }
-      if (typeof body.name === 'string' && body.name.trim()) next.name = body.name.trim()
+      // Every field the card can send is either applied or REJECTED — never
+      // silently ignored. A blank name / Base URL / empty model list is an
+      // invalid profile (a blank name is dropped by coerceProfiles, an empty
+      // baseUrl would fall back to the public API and spend this profile's key
+      // there, and modelList[0] is the session's default model), so the card
+      // gets an error instead of staying "cleared" while the server keeps the
+      // old value. This mirrors POST /profiles, which already 400s on a blank
+      // name.
+      if (body.name !== undefined) {
+        if (typeof body.name !== 'string' || !body.name.trim()) {
+          throw new HttpError(400, 'name is required')
+        }
+        next.name = body.name.trim()
+      }
       // authToken only written when non-empty (empty/absent = keep existing).
       if (typeof body.authToken === 'string' && body.authToken.trim()) next.authToken = body.authToken.trim()
-      if (typeof body.baseUrl === 'string' && body.baseUrl.trim()) {
+      if (body.baseUrl !== undefined) {
+        if (typeof body.baseUrl !== 'string' || !body.baseUrl.trim()) {
+          throw new HttpError(400, 'Base URL is required')
+        }
         next.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
       }
-      if (Array.isArray(body.modelList)) {
-        next.modelList = body.modelList.filter((m) => typeof m === 'string' && m.trim())
+      if (body.modelList !== undefined) {
+        const list = Array.isArray(body.modelList)
+          ? body.modelList.filter((m) => typeof m === 'string' && m.trim())
+          : []
+        if (list.length === 0) throw new HttpError(400, 'a profile needs at least one model')
+        next.modelList = list
       }
-      if (Array.isArray(body.modelGroups)) next.modelGroups = body.modelGroups
-      if (typeof body.recapModel === 'string') next.recapModel = body.recapModel.trim()
-      if (typeof body.commitMessageModel === 'string') next.commitMessageModel = body.commitMessageModel.trim()
+      // modelGroups is the one collection that CAN be empty, so null clears it
+      // (the card sends null when its local group list is empty).
+      if (body.modelGroups === null) next.modelGroups = []
+      else if (Array.isArray(body.modelGroups)) next.modelGroups = body.modelGroups
+      // An explicitly-supplied recap/commit model replaces the stored one —
+      // including the CLEAR case. `null` (which the UI sends for its
+      // "(default)" option) and `''` both mean "unset = use the session's own
+      // model"; skipping null instead would silently keep the previous model
+      // and make "(default)" a no-op that still spends on the old one.
+      if (body.recapModel === null || typeof body.recapModel === 'string') {
+        next.recapModel = typeof body.recapModel === 'string' ? body.recapModel.trim() : ''
+      }
+      if (body.commitMessageModel === null || typeof body.commitMessageModel === 'string') {
+        next.commitMessageModel = typeof body.commitMessageModel === 'string' ? body.commitMessageModel.trim() : ''
+      }
       profiles[idx] = next
       existing.profiles = profiles
     })
@@ -169,13 +207,16 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
     const profile = serverConfig.profiles.find((p) => p.id === id)
     if (!profile) throw new HttpError(404, `profile ${id} not found`)
     // Accept optional overrides so the client can test a dirty/unsaved token.
-    let body: { authToken?: unknown; baseUrl?: unknown } = {}
+    let body: { authToken?: unknown; baseUrl?: unknown; model?: unknown } = {}
     try { body = await c.req.json() } catch { /* empty body is fine */ }
     if (body.authToken !== undefined && typeof body.authToken !== 'string') {
       throw new HttpError(400, 'authToken must be a string')
     }
     if (body.baseUrl !== undefined && typeof body.baseUrl !== 'string') {
       throw new HttpError(400, 'baseUrl must be a string')
+    }
+    if (body.model !== undefined && body.model !== null && typeof body.model !== 'string') {
+      throw new HttpError(400, 'model must be a string or null')
     }
     const authToken = (typeof body.authToken === 'string' && body.authToken.trim())
       ? body.authToken.trim()
@@ -184,8 +225,23 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
       ? body.baseUrl.trim().replace(/\/+$/, '')
       : profile.baseUrl
     if (!authToken) throw new HttpError(400, 'No auth token to test — save one first')
+    // Which model to probe:
+    //   - a non-empty `model` → that one (the Profile card sends its edited
+    //     list's first entry, so a dirty list is what gets tested);
+    //   - an explicit '' / null → the free sentinel probe ("verify token +
+    //     URL only"), following the same '' = unset convention the model
+    //     fields use — hence the distinction from "absent";
+    //   - absent → the profile's own first model, because a third-party
+    //     gateway answers 401/404 for a model it cannot route and the sentinel
+    //     probe cannot tell that apart from a bad token.
+    const requestedModel = body.model === null
+      ? ''
+      : typeof body.model === 'string'
+        ? body.model.trim()
+        : undefined
+    const model = requestedModel ?? profile.modelList[0]
     const { testConnection } = await import('../config-test-connection.js')
-    const result = await testConnection(authToken, baseUrl)
+    const result = await testConnection(authToken, baseUrl, { model })
     return c.json(result.body, result.status)
   })
 

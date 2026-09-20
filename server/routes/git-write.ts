@@ -241,8 +241,10 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     }
     // generateCommitMessage handles its own fallback path so an
     // unconfigured authToken or unreachable API doesn't surface as a
-    // 500 — the caller always gets a usable message.
-    const result = await generateCommitMessage(text)
+    // 500 — the caller always gets a usable message. The fallback model
+    // (used when no commitMessageModel is configured) is the session's aux
+    // model: its model group's haiku tier, else its own model.
+    const result = await generateCommitMessage(text, { fallbackModel: sm.auxFallbackModelFor(id) })
     if (result.fallback) {
       log.warn(`commit-message session=${id} usedFallback=true`)
     } else {
