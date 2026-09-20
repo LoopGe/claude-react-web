@@ -48,6 +48,7 @@ export interface DesktopBridge extends DesktopRealtimeBridge {
   windowAction?(action: DesktopWindowAction): void
   editAction?(action: DesktopEditAction): void
   viewAction?(action: DesktopViewAction): void
+  openExternal?(url: string): void
   setTitlebarTheme?(theme: TitlebarThemePayload): void
   onMaximizeChange?(handler: (maximized: boolean) => void): () => void
   requestMaximizeState?(): void

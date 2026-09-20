@@ -47,6 +47,7 @@ import { useUpdateNag, nagDismissValueFor, writeNagDismiss } from './hooks/useUp
 import type { UpdateDialogMode } from './components/UpdateDialog'
 import { getHostCapabilities } from './host-capabilities'
 import { DesktopAppMenu } from './components/DesktopAppMenu'
+import { DesktopTitlebarTabs } from './components/DesktopTitlebarTabs'
 import { TITLEBAR_HEIGHT_PX } from '../shared/desktop-bridge'
 import { useUiState } from './hooks/useUiState'
 import { sessionStoreRegistry } from './session-store/registry'
@@ -733,15 +734,23 @@ export function App() {
   }, [])
 
   // Native application-menu commands (desktop host only). The menu lives in
-  // the main process; the preload exposes a subscription. No-op on the web,
-  // where there is no bridge.
+  // the main process; the preload exposes a subscription. The Windows ☰
+  // routes through the same handler so both hosts share one dispatch.
+  const handleDesktopMenuCommand = useCallback((command: string) => {
+    if (command === 'crw:menu-new-session') setNewSessionDialogOpen(true)
+    else if (command === 'crw:menu-open-settings') setGlobalSettingsOpen(true)
+    else if (command === 'crw:menu-project-home') {
+      const bridge = window.__CRW_DESKTOP__
+      if (bridge?.openExternal) bridge.openExternal('https://github.com/LoopGe/claude-react-web')
+      else void window.open('https://github.com/LoopGe/claude-react-web', '_blank', 'noopener,noreferrer')
+    }
+  }, [])
+
   useEffect(() => {
     const onMenu = window.__CRW_DESKTOP__?.onMenu
     if (!onMenu) return
-    return onMenu((command) => {
-      if (command === 'crw:menu-new-session') setNewSessionDialogOpen(true)
-    })
-  }, [])
+    return onMenu((command) => handleDesktopMenuCommand(command))
+  }, [handleDesktopMenuCommand])
 
   // Host capabilities (stable for the life of the page). Drives the custom
   // titlebar class, the Windows ☰ menu, and the caption-overlay theme sync.
@@ -2718,15 +2727,6 @@ export function App() {
                 description: 'Zoom in',
               } satisfies Shortcut,
               {
-                // Ctrl+Shift+= is the physical "+" on most US layouts.
-                // (Numpad '+' would be e.key === '+' → 'mod++', which the
-                // combo parser cannot express — '+' is the delimiter.)
-                combo: 'mod+shift+=',
-                handler: () => window.__CRW_DESKTOP__?.viewAction?.('zoom-in'),
-                allowInInput: true,
-                description: 'Zoom in',
-              } satisfies Shortcut,
-              {
                 combo: 'f11',
                 handler: () => window.__CRW_DESKTOP__?.viewAction?.('toggle-fullscreen'),
                 allowInInput: true,
@@ -4014,11 +4014,23 @@ export function App() {
           {/* Windows custom titlebar: ☰ app menu replaces the native File/Edit
               bar. macOS keeps the native menu (no ☰). */}
           {hostCaps.customTitlebar && hostCaps.desktopPlatform === 'win32' && (
-            <DesktopAppMenu
-              onNewSession={() => setNewSessionDialogOpen(true)}
-              onOpenSettings={() => setGlobalSettingsOpen(true)}
+            <DesktopAppMenu onCommand={handleDesktopMenuCommand} />
+          )}
+          {/* Open-panel tabs in the custom titlebar (desktop win/darwin).
+              Mirror openSessions — click focuses, × closes, + starts new. */}
+          {hostCaps.customTitlebar && (
+            <DesktopTitlebarTabs
+              sessions={openSessions}
+              focusedId={focusedId}
+              onSelect={(id) => void handleSelect(id)}
+              onClose={closeSession}
+              onNew={() => setNewSessionDialogOpen(true)}
+              maxOpen={maxOpen}
             />
           )}
+          {/* Drag island: absorbs leftover header width so the custom
+              titlebar always has a grab target (tabs/toolbar are no-drag). */}
+          {hostCaps.customTitlebar && <div className="titlebar-drag-spacer" aria-hidden />}
           {/* Hamburger toggles the drawer sidebar. Rendered only on mobile;
               CSS pushes it to the left edge (margin-right: auto) so the rest
               of the toolbar stays flush-right. */}

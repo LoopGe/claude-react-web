@@ -1,11 +1,13 @@
 // Windows custom-titlebar app menu (☰).
 //
-// On Windows the native menu bar is gone (frame: false + no Menu.setApplicationMenu).
-// This dropdown is the replacement for File / Edit / View / Window — same
-// role the macOS native menu plays, rendered into the drag strip.
+// Renders shared/desktop-menu.ts — the SAME data that generates the macOS
+// native menu — so the two hosts cannot drift. On Windows the native menu
+// bar is gone (titleBarStyle:'hidden' + no Menu.setApplicationMenu); this
+// dropdown is the File/Edit/View/Window replacement.
 //
 // Reuses the project's ctx-menu popover conventions (portal, viewport clamp,
-// outside-press dismiss with trigger exemption, capture-phase Escape).
+// outside-press dismiss with trigger exemption, capture-phase Escape) plus
+// a minimal arrow-key menu model that role="menu" promises to AT.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -14,43 +16,50 @@ import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { markPortaledSurface } from '../theme'
 import { formatCombo } from '../utils/format-combo'
+import {
+  DESKTOP_MENU,
+  desktopMenuVisible,
+  type DesktopMenuAction,
+  type DesktopMenuItem,
+} from '../../shared/desktop-menu'
 import type { DesktopEditAction, DesktopViewAction, DesktopWindowAction } from '../../shared/desktop-bridge'
 
 interface Props {
-  onNewSession: () => void
-  onOpenSettings: () => void
+  /** Renderer callbacks for command-tagged items (session.new, settings…). */
+  onCommand: (command: string) => void
 }
-
-type Row =
-  | {
-      kind: 'item'
-      id: string
-      label: string
-      accelerator?: string
-      danger?: boolean
-      /** Edit rows must not steal focus from the input they act on. */
-      keepFocus?: boolean
-      run: () => void
-    }
-  | { kind: 'sep'; id: string }
 
 function desktopBridge() {
   return typeof window !== 'undefined' ? window.__CRW_DESKTOP__ : undefined
 }
 
-function windowAction(action: DesktopWindowAction): void {
-  desktopBridge()?.windowAction?.(action)
+function runHostAction(action: DesktopMenuAction): void {
+  const bridge = desktopBridge()
+  switch (action.kind) {
+    case 'edit':
+      bridge?.editAction?.(action.action as DesktopEditAction)
+      return
+    case 'view':
+      bridge?.viewAction?.(action.action as DesktopViewAction)
+      return
+    case 'window':
+      bridge?.windowAction?.(action.action as DesktopWindowAction)
+      return
+    case 'href':
+      // Host opens it — a renderer window.open would spawn a raw BrowserWindow.
+      if (desktopBridge()?.openExternal) desktopBridge()!.openExternal!(action.href)
+      else void window.open(action.href, '_blank', 'noopener,noreferrer')
+      return
+    case 'command':
+      // Handled by the caller via onCommand.
+      return
+    case 'role':
+      // Roles are mac/linux native-menu only; nothing to do in the ☰.
+      return
+  }
 }
 
-function editAction(action: DesktopEditAction): void {
-  desktopBridge()?.editAction?.(action)
-}
-
-function viewAction(action: DesktopViewAction): void {
-  desktopBridge()?.viewAction?.(action)
-}
-
-export function DesktopAppMenu({ onNewSession, onOpenSettings }: Props) {
+export function DesktopAppMenu({ onCommand }: Props) {
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   /** Element focused before the menu opened — edit rows restore it so
@@ -65,8 +74,6 @@ export function DesktopAppMenu({ onNewSession, onOpenSettings }: Props) {
     const bridge = desktopBridge()
     if (!bridge?.onMaximizeChange) return
     const off = bridge.onMaximizeChange((v) => setMaximized(v))
-    // Seed from the host — the window may already be maximized before this
-    // component mounted, and the event-only mirror would never fire.
     bridge.requestMaximizeState?.()
     return off
   }, [])
@@ -74,15 +81,13 @@ export function DesktopAppMenu({ onNewSession, onOpenSettings }: Props) {
   const openMenu = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect()
     if (!rect) return
-    lastFocusedRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null
+    lastFocusedRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     setAnchor({ x: rect.left, y: rect.bottom + 4 })
     setOpen(true)
   }, [])
 
   const close = useCallback(() => setOpen(false), [])
 
-  // Measure then nudge inward so the menu never clips off-screen.
   useLayoutEffect(() => {
     if (!open) return
     const el = menuRef.current
@@ -98,77 +103,42 @@ export function DesktopAppMenu({ onNewSession, onOpenSettings }: Props) {
     })
   }, [open, anchor.x, anchor.y])
 
-  // Trigger is exempt — it toggles, so its own mousedown must not unmount
-  // the menu before the click lands (mirrors AppearancePanel).
   useOutsideMouseDown({ ref: menuRef, onClose: close, triggerRef, active: open })
   useEscapeStack({ active: open, onEscape: close, getContainer: () => menuRef.current })
 
-  const rows: Row[] = [
-    { kind: 'item', id: 'new', label: 'New Session', accelerator: 'mod+n', run: onNewSession },
-    { kind: 'item', id: 'settings', label: 'Settings', accelerator: 'mod+,', run: onOpenSettings },
-    { kind: 'sep', id: 'sep-file' },
-    // keepFocus: Electron's wc.undo()/paste() target the focused element.
-    // A plain mousedown would focus this <button> and the edit command would
-    // hit a non-editable node — preventDefault keeps focus in the composer.
-    { kind: 'item', id: 'undo', label: 'Undo', accelerator: 'mod+z', keepFocus: true, run: () => editAction('undo') },
-    { kind: 'item', id: 'redo', label: 'Redo', accelerator: 'mod+y', keepFocus: true, run: () => editAction('redo') },
-    { kind: 'sep', id: 'sep-edit-1' },
-    { kind: 'item', id: 'cut', label: 'Cut', accelerator: 'mod+x', keepFocus: true, run: () => editAction('cut') },
-    { kind: 'item', id: 'copy', label: 'Copy', accelerator: 'mod+c', keepFocus: true, run: () => editAction('copy') },
-    { kind: 'item', id: 'paste', label: 'Paste', accelerator: 'mod+v', keepFocus: true, run: () => editAction('paste') },
-    {
-      kind: 'item',
-      id: 'selectAll',
-      label: 'Select All',
-      accelerator: 'mod+a',
-      keepFocus: true,
-      run: () => editAction('selectAll'),
-    },
-    { kind: 'sep', id: 'sep-view' },
-    { kind: 'item', id: 'reload', label: 'Reload', accelerator: 'mod+r', run: () => viewAction('reload') },
-    {
-      kind: 'item',
-      id: 'devtools',
-      label: 'Toggle Developer Tools',
-      accelerator: 'mod+shift+i',
-      run: () => viewAction('toggle-devtools'),
-    },
-    { kind: 'item', id: 'zoom-in', label: 'Zoom In', accelerator: 'mod+=', run: () => viewAction('zoom-in') },
-    { kind: 'item', id: 'zoom-out', label: 'Zoom Out', accelerator: 'mod+-', run: () => viewAction('zoom-out') },
-    { kind: 'item', id: 'zoom-reset', label: 'Reset Zoom', accelerator: 'mod+0', run: () => viewAction('zoom-reset') },
-    {
-      kind: 'item',
-      id: 'fullscreen',
-      label: 'Toggle Full Screen',
-      accelerator: 'f11',
-      run: () => viewAction('toggle-fullscreen'),
-    },
-    { kind: 'sep', id: 'sep-win' },
-    { kind: 'item', id: 'min', label: 'Minimize', run: () => windowAction('minimize') },
-    {
-      kind: 'item',
-      id: 'max',
-      label: maximized ? 'Restore' : 'Maximize',
-      run: () => windowAction('toggle-maximize'),
-    },
-    { kind: 'item', id: 'close', label: 'Close', danger: true, run: () => windowAction('close') },
-  ]
+  // Flatten the shared data for the Windows ☰. The mac-only `app` group is
+  // skipped (its Settings/Quit live under File here). Window-group labels
+  // flip Maximize↔Restore from the live maximize mirror.
+  const rows: Array<
+    | { kind: 'item'; item: DesktopMenuItem; label: string }
+    | { kind: 'sep'; id: string }
+  > = []
+  for (const group of DESKTOP_MENU) {
+    if (!desktopMenuVisible(group, 'windows')) continue
+    if (group.role === 'app') continue
+    for (const entry of group.entries) {
+      if (!desktopMenuVisible(entry, 'windows')) continue
+      if (entry.type === 'separator') {
+        rows.push({ kind: 'sep', id: entry.id })
+        continue
+      }
+      // Skip pure Electron roles that have no Windows ☰ equivalent wired.
+      if (entry.action?.kind === 'role') continue
+      let label = entry.label
+      if (entry.id === 'maximize-win') label = maximized ? 'Restore' : 'Maximize'
+      rows.push({ kind: 'item', item: entry, label })
+    }
+  }
 
-  const runRow = (row: Row) => {
-    if (row.kind !== 'item') return
-    // Restore the pre-menu focus BEFORE the action: the open effect moves
-    // focus into the menu for arrow-key nav, and Electron's edit commands
-    // target document.activeElement. Without this, Paste hits a <button>.
-    if (row.keepFocus && lastFocusedRef.current?.isConnected) {
+  const runItem = (item: DesktopMenuItem) => {
+    if (item.keepFocus && lastFocusedRef.current?.isConnected) {
       lastFocusedRef.current.focus({ preventScroll: true })
     }
     close()
-    row.run()
+    if (item.action?.kind === 'command') onCommand(item.action.command)
+    else if (item.action) runHostAction(item.action)
   }
 
-  // Minimal menu keyboard model: ArrowDown/Up move between items, Home/End
-  // jump, Enter/Space activate (native button behaviour). role="menu" promises
-  // this to AT — without it we'd be lying about the widget type.
   const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]') ?? [])
     if (items.length === 0) return
@@ -188,7 +158,6 @@ export function DesktopAppMenu({ onNewSession, onOpenSettings }: Props) {
     }
   }
 
-  // Focus the first item when the menu opens so arrow keys work immediately.
   useEffect(() => {
     if (!open) return
     const id = window.setTimeout(() => {
@@ -227,20 +196,17 @@ export function DesktopAppMenu({ onNewSession, onOpenSettings }: Props) {
                 <div key={row.id} className="ctx-menu-sep" role="separator" />
               ) : (
                 <button
-                  key={row.id}
+                  key={row.item.id}
                   type="button"
-                  className={`ctx-menu-item${row.danger ? ' danger' : ''}`}
+                  className={`ctx-menu-item${row.item.danger ? ' danger' : ''}`}
                   role="menuitem"
-                  // keepFocus rows must not steal the caret from the input
-                  // they act on — preventDefault on mousedown leaves focus
-                  // where it was so wc.paste()/undo() hit the textarea.
-                  onMouseDown={row.keepFocus ? (e) => e.preventDefault() : undefined}
-                  onClick={() => runRow(row)}
+                  onMouseDown={row.item.keepFocus ? (e) => e.preventDefault() : undefined}
+                  onClick={() => runItem(row.item)}
                 >
                   <span className="ctx-menu-label">{row.label}</span>
-                  {row.accelerator && (
+                  {row.item.accelerator && (
                     <span className="titlebar-app-menu-accel" aria-hidden>
-                      {formatCombo(row.accelerator)}
+                      {formatCombo(row.item.accelerator)}
                     </span>
                   )}
                 </button>

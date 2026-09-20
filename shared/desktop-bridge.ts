@@ -7,8 +7,11 @@
 /** IPC channel the native menu uses to dispatch a command to the renderer. */
 export const DESKTOP_MENU_CHANNEL = 'crw:menu'
 
-/** Commands the native application menu can dispatch. */
-export type DesktopMenuCommand = 'crw:menu-new-session'
+/** Commands the native application menu can dispatch to the renderer. */
+export type DesktopMenuCommand =
+  | 'crw:menu-new-session'
+  | 'crw:menu-open-settings'
+  | 'crw:menu-project-home'
 
 /** Host OS as reported by the preload (`process.platform`). */
 export type DesktopPlatform = 'darwin' | 'win32' | 'linux'
@@ -47,6 +50,8 @@ export type DesktopViewAction =
   | 'zoom-reset'
   | 'toggle-fullscreen'
 export const DESKTOP_VIEW_ACTION_CHANNEL = 'crw:view-action'
+/** Renderer → main: open an external URL in the system browser. */
+export const DESKTOP_OPEN_EXTERNAL_CHANNEL = 'crw:open-external'
 
 /** Shared titlebar strip height in CSS px. MUST stay in sync with
  *  `--titlebar-height` in src/styles/tokens.css and `--app-header-height`

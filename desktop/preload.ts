@@ -18,6 +18,7 @@ import {
   DESKTOP_MENU_CHANNEL,
   DESKTOP_EDIT_ACTION_CHANNEL,
   DESKTOP_GET_MAXIMIZE_CHANNEL,
+  DESKTOP_OPEN_EXTERNAL_CHANNEL,
   DESKTOP_TITLEBAR_THEME_CHANNEL,
   DESKTOP_VIEW_ACTION_CHANNEL,
   DESKTOP_WINDOW_ACTION_CHANNEL,
@@ -51,6 +52,8 @@ interface DesktopBridge {
   editAction(action: DesktopEditAction): void
   /** View-menu actions (reload / devtools / zoom / fullscreen). */
   viewAction(action: DesktopViewAction): void
+  /** Open an external URL in the system browser (never a raw BrowserWindow). */
+  openExternal(url: string): void
   /** Keep the Windows caption overlay colours in sync with the app theme. */
   setTitlebarTheme(theme: TitlebarThemePayload): void
   /** Maximize-state changes (for ☰ Window menu labels). */
@@ -81,6 +84,10 @@ const bridge: DesktopBridge = {
 
   viewAction(action: DesktopViewAction) {
     ipcRenderer.send(DESKTOP_VIEW_ACTION_CHANNEL, action)
+  },
+
+  openExternal(url: string) {
+    ipcRenderer.send(DESKTOP_OPEN_EXTERNAL_CHANNEL, url)
   },
 
   setTitlebarTheme(theme: TitlebarThemePayload) {

@@ -1,15 +1,21 @@
 // Native application menu — macOS and Linux.
 //
-// Windows uses the custom titlebar (frame: false + titleBarOverlay) with a
-// renderer ☰ dropdown instead of a native menu bar; installing one there
-// would fight the frameless chrome (Alt would pop a menu row that steals the
-// drag strip). macOS and Linux keep the platform-standard menu so familiar
-// shortcuts and app-menu conventions hold. Edit shortcuts on Windows still
-// work inside inputs via Chromium; app-level shortcuts live in the renderer's
-// useKeyboardShortcuts + the ☰ menu.
+// The template is GENERATED from shared/desktop-menu.ts so the mac menu and
+// the Windows ☰ dropdown cannot drift. Windows clears the application menu
+// (custom titlebar + renderer ☰); installing one there would fight the
+// frameless chrome (Alt would pop a menu row that steals the drag strip).
 
 import { Menu, shell, app, type BrowserWindow, type MenuItemConstructorOptions } from 'electron'
 import { DESKTOP_MENU_CHANNEL, type DesktopMenuCommand } from '../shared/desktop-bridge.js'
+import {
+  DESKTOP_MENU,
+  desktopMenuVisible,
+  menuPlatformOf,
+  type DesktopMenuAction,
+  type DesktopMenuEntry,
+  type DesktopMenuGroup,
+  type DesktopMenuPlatform,
+} from '../shared/desktop-menu.js'
 
 /** Send a menu command to the focused renderer over the shared menu channel.
  *  The preload's `onMenu` subscription dispatches by command. */
@@ -17,90 +23,121 @@ function sendToFocused(win: BrowserWindow | null, command: DesktopMenuCommand): 
   win?.webContents.send(DESKTOP_MENU_CHANNEL, command)
 }
 
+/** Bridge edit actions → Electron roles for the native menu. */
+const EDIT_ROLE: Record<string, string> = {
+  undo: 'undo',
+  redo: 'redo',
+  cut: 'cut',
+  copy: 'copy',
+  paste: 'paste',
+  selectAll: 'selectAll',
+}
+
+/** Bridge view actions → Electron roles for the native menu. */
+const VIEW_ROLE: Record<string, string> = {
+  reload: 'reload',
+  'force-reload': 'forceReload',
+  'toggle-devtools': 'toggleDevTools',
+  'zoom-in': 'zoomIn',
+  'zoom-out': 'zoomOut',
+  'zoom-reset': 'resetZoom',
+  'toggle-fullscreen': 'togglefullscreen',
+}
+
+function resolveRole(action: DesktopMenuAction | undefined): string | null {
+  if (!action) return null
+  if (action.kind === 'role') return action.role
+  if (action.kind === 'edit') return EDIT_ROLE[action.action] ?? null
+  if (action.kind === 'view') return VIEW_ROLE[action.action] ?? null
+  if (action.kind === 'window') {
+    if (action.action === 'minimize') return 'minimize'
+    if (action.action === 'close') return 'close'
+    return null
+  }
+  return null
+}
+
+function buildEntry(
+  entry: DesktopMenuEntry,
+  platform: DesktopMenuPlatform,
+  getWindow: () => BrowserWindow | null,
+): MenuItemConstructorOptions | null {
+  if (!desktopMenuVisible(entry, platform)) return null
+  if (entry.type === 'separator') return { type: 'separator' }
+
+  const role = resolveRole(entry.action)
+  if (role) {
+    return {
+      label: entry.label,
+      role: role as MenuItemConstructorOptions['role'],
+      accelerator: entry.electronAccelerator,
+    }
+  }
+
+  const item: MenuItemConstructorOptions = {
+    label: entry.label,
+    accelerator: entry.electronAccelerator,
+  }
+
+  if (entry.action?.kind === 'command') {
+    const command = entry.action.command
+    // Resolve the window at CLICK time, not build time: a window that was
+    // replaced (close + reopen via `activate`) must not receive the command
+    // on its dead webContents.
+    item.click = () => sendToFocused(getWindow(), command)
+  } else if (entry.action?.kind === 'href') {
+    const href = entry.action.href
+    item.click = () => {
+      void shell.openExternal(href)
+    }
+  } else if (entry.action?.kind === 'window' && entry.action.action === 'toggle-maximize') {
+    item.click = () => {
+      const win = getWindow()
+      if (!win) return
+      if (win.isMaximized()) win.unmaximize()
+      else win.maximize()
+    }
+  }
+
+  return item
+}
+
+function buildGroup(
+  group: DesktopMenuGroup,
+  platform: DesktopMenuPlatform,
+  getWindow: () => BrowserWindow | null,
+): MenuItemConstructorOptions | null {
+  if (!desktopMenuVisible(group, platform)) return null
+
+  const items = group.entries
+    .map((e) => buildEntry(e, platform, getWindow))
+    .filter((x): x is MenuItemConstructorOptions => x !== null)
+
+  if (group.role === 'help') {
+    return { role: 'help', label: group.label, submenu: items }
+  }
+  if (group.role === 'window') {
+    return { role: 'windowMenu', label: group.label, submenu: items }
+  }
+  if (group.role === 'app') {
+    // The macOS application menu (under the app name). Roles in the shared
+    // data (about/services/hide/quit/…) map 1:1 onto Electron roles.
+    return { label: group.label || app.name, submenu: items }
+  }
+  return { label: group.label, submenu: items }
+}
+
 export function buildAppMenu(getWindow: () => BrowserWindow | null): Menu {
-  const isMac = process.platform === 'darwin'
-
-  const appMenu: MenuItemConstructorOptions[] = isMac
-    ? [{
-        label: app.name,
-        submenu: [
-          { role: 'about' },
-          { type: 'separator' },
-          { role: 'services' },
-          { type: 'separator' },
-          { role: 'hide' },
-          { role: 'hideOthers' },
-          { role: 'unhide' },
-          { type: 'separator' },
-          { role: 'quit' },
-        ],
-      }]
-    : []
-
-  const template: MenuItemConstructorOptions[] = [
-    ...appMenu,
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'New Session',
-          accelerator: 'CmdOrCtrl+N',
-          // Resolve the window at CLICK time, not build time: a window that
-          // was replaced (close + reopen via `activate`) must not receive the
-          // command on its dead webContents.
-          click: () => sendToFocused(getWindow(), 'crw:menu-new-session'),
-        },
-        { type: 'separator' },
-        // A tool app should not keep a headless host alive after the window
-        // closes; keep the standard close on every platform.
-        isMac ? { role: 'close' } : { role: 'quit' },
-      ],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        { role: 'selectAll' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' },
-      ],
-    },
-    {
-      label: 'Window',
-      submenu: [
-        { role: 'minimize' },
-        { role: 'zoom' },
-        ...(isMac ? [{ type: 'separator' as const }, { role: 'front' as const }] : []),
-      ],
-    },
-    {
-      role: 'help',
-      submenu: [
-        {
-          label: 'Project Home',
-          click: () => { void shell.openExternal('https://github.com/LoopGe/claude-react-web') },
-        },
-      ],
-    },
-  ]
-
+  const platform = menuPlatformOf(process.platform)
+  const template = DESKTOP_MENU.map((g) => buildGroup(g, platform, getWindow)).filter(
+    (x): x is MenuItemConstructorOptions => x !== null,
+  )
+  // The app-name menu should show the real productName, not the data label.
+  for (const row of template) {
+    if (row.label === 'claude-react-web' && process.platform === 'darwin') {
+      row.label = app.name
+    }
+  }
   return Menu.buildFromTemplate(template)
 }
 

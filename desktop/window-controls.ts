@@ -1,16 +1,16 @@
 // Window-control IPC for the custom titlebar.
 //
-// On Windows the frame is hidden (`frame: false` + `titleBarOverlay`); the
-// renderer draws its own drag strip and a ☰ menu, and drives minimize /
-// maximize / close through these channels. Edit- and view-menu actions also
-// land here so the Windows dropdown can forward them to the focused
-// webContents without a native menu bar.
+// On Windows the OS chrome is hidden via `titleBarStyle: 'hidden'` +
+// `titleBarOverlay` (NOT frame:false — that drops non-client hit-testing).
+// The renderer draws its own drag strip and a ☰ menu, and drives minimize /
+// maximize / close through these channels.
 
-import { BrowserWindow, ipcMain, type IpcMainEvent } from 'electron'
+import { BrowserWindow, ipcMain, shell, type IpcMainEvent } from 'electron'
 import {
   DESKTOP_EDIT_ACTION_CHANNEL,
   DESKTOP_GET_MAXIMIZE_CHANNEL,
   DESKTOP_MAXIMIZE_CHANNEL,
+  DESKTOP_OPEN_EXTERNAL_CHANNEL,
   DESKTOP_TITLEBAR_THEME_CHANNEL,
   DESKTOP_VIEW_ACTION_CHANNEL,
   DESKTOP_WINDOW_ACTION_CHANNEL,
@@ -151,6 +151,20 @@ export function wireWindowControls(): void {
     const win = targetWindow(evt)
     if (!win) return
     evt.sender.send(DESKTOP_MAXIMIZE_CHANNEL, win.isMaximized())
+  })
+
+  // External links must go through the OS browser. Without this, a renderer
+  // window.open(url) on a frameless Electron window spawns a raw BrowserWindow.
+  ipcMain.on(DESKTOP_OPEN_EXTERNAL_CHANNEL, (_evt, url: unknown) => {
+    if (typeof url !== 'string') return
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return
+    void shell.openExternal(parsed.toString())
   })
 }
 
