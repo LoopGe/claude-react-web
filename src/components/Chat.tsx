@@ -1165,6 +1165,23 @@ export const Chat = memo(function Chat({
   }, [discardAnchors, onDiscard])
 
   // ── File-snapshot rewind (shadow-repo sidecar) ───────────────────
+  /** Prefetched file-snapshot anchors: the set of user-message ids that
+   *  have a recorded snapshot and can be rewound to. Fetched once per
+   *  session mount (like discardAnchors) — zero latency on right-click. */
+  const [rewindAnchors, setRewindAnchors] = useState<{ available: boolean; anchorIds: Set<string> }>({ available: false, anchorIds: new Set() })
+  useEffect(() => {
+    let cancelled = false
+    void api.get<{ available: boolean; reason?: string; anchors: Array<{ messageId: string }> }>(
+      `/sessions/${session.id}/file-snapshots`,
+    )
+      .then((res) => {
+        if (cancelled) return
+        setRewindAnchors({ available: res.available, anchorIds: new Set(res.anchors.map((a) => a.messageId)) })
+      })
+      .catch(() => { setRewindAnchors({ available: false, anchorIds: new Set() }) })
+    return () => { cancelled = true }
+  }, [session.id])
+
   /** True when `uuid` resolves to a top-level user message in the current
    *  transcript. Such a row's id IS the server-minted prompt uuid the
    *  manager maps to the SDK on-disk uuid. Synthetic user frames (tool
@@ -1175,6 +1192,12 @@ export const Chat = memo(function Chat({
     const item = stream.items.find((i) => i.id === uuid)
     return !!item && item.msg.type === 'user' && item.msg.parent_tool_use_id == null
   }, [stream.items])
+
+  /** True when `uuid` is a rewindable user message AND the snapshot
+   *  sidecar has a recorded anchor for it. */
+  const isRewindableWithSnapshot = useCallback((uuid: string | undefined) => {
+    return !!uuid && isRewindableUserMessage(uuid) && rewindAnchors.available && rewindAnchors.anchorIds.has(uuid)
+  }, [isRewindableUserMessage, rewindAnchors])
 
   /** Rewind confirmation modal. On open we fire a dry-run POST so the
    *  dialog can show the diff the rewind would apply (files / +/- lines);
@@ -2006,23 +2029,25 @@ export const Chat = memo(function Chat({
                 }
               },
             } as ContextMenuItem, { label: '' } as ContextMenuItem] : []),
-            // File-checkpoint rewind: restore tracked files to their state
-            // at the right-clicked user message. Only idle sessions with a
-            // top-level user-message target are legal (the server re-guards
-            // with 409/412/410).
+            // File-snapshot rewind: restore worktree files to their state
+            // at the right-clicked user message. Requires a recorded
+            // snapshot anchor — the server re-guards phase on the real POST
+            // (409 if working, 410/412 for terminated/dormant).
             {
               label: 'Rewind files to this message',
               icon: <IconRotateCcw size={14} />,
               danger: true,
-              disabled: !(session.phase === 'idle' && isRewindableUserMessage(exportMenuPos.targetId)),
-              title: session.phase !== 'idle'
-                ? 'Files can only be rewound while the session is idle'
-                : !isRewindableUserMessage(exportMenuPos.targetId)
-                  ? 'Can only rewind to a sent user message'
-                  : undefined,
+              disabled: !isRewindableWithSnapshot(exportMenuPos.targetId),
+              title: !isRewindableUserMessage(exportMenuPos.targetId)
+                ? 'Can only rewind to a sent user message'
+                : !rewindAnchors.available
+                  ? 'File snapshots are not available for this session'
+                  : !rewindAnchors.anchorIds.has(exportMenuPos.targetId ?? '')
+                    ? 'No snapshot recorded for this message'
+                    : undefined,
               onClick: () => {
                 const mid = exportMenuPos.targetId
-                if (mid && session.phase === 'idle' && isRewindableUserMessage(mid)) {
+                if (mid && isRewindableWithSnapshot(mid)) {
                   openRewindConfirm(mid)
                 }
               },
@@ -2232,7 +2257,7 @@ export const Chat = memo(function Chat({
             title="Rewind files to this message?"
             message={
               <>
-                <p>Tracked files will be restored to their state when this message was sent. The conversation itself is not truncated.</p>
+                <p>Files created after this message will be deleted and existing files will be restored to their state when this message was sent. The conversation is not truncated.</p>
                 {rewindConfirm.dryError && (
                   <p className="confirm-dialog-hint">Preview failed: {rewindConfirm.dryError}</p>
                 )}
