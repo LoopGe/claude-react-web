@@ -46,7 +46,6 @@ interface MockQueryHandle {
   setMcpPermissionModeOverride: ReturnType<typeof vi.fn>
   getContextUsage: ReturnType<typeof vi.fn>
   accountInfo: ReturnType<typeof vi.fn>
-  rewindFiles: ReturnType<typeof vi.fn>
   readFile: ReturnType<typeof vi.fn>
   seedReadState: ReturnType<typeof vi.fn>
   generateSessionTitle: ReturnType<typeof vi.fn>
@@ -205,7 +204,6 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         setMcpPermissionModeOverride: vi.fn(async () => ({})),
         getContextUsage: vi.fn(async () => ({})),
         accountInfo: vi.fn(async () => ({})),
-        rewindFiles: vi.fn(async () => ({ canRewind: true })),
         readFile: vi.fn(async () => ({ available: false })),
         seedReadState: vi.fn(async () => {}),
         generateSessionTitle: vi.fn(async (_desc: string, _opts?: { persist?: boolean }) => 'Mock auto title'),
@@ -251,7 +249,6 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         setMcpPermissionModeOverride: handle.setMcpPermissionModeOverride,
         getContextUsage: handle.getContextUsage,
         accountInfo: handle.accountInfo,
-        rewindFiles: handle.rewindFiles,
         readFile: handle.readFile,
         seedReadState: handle.seedReadState,
         generateSessionTitle: handle.generateSessionTitle,

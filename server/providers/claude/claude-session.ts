@@ -225,13 +225,6 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.accountInfo()
   }
 
-  /** File-checkpoint rewind. The userMessageId here is the SDK on-disk uuid
-   *  (the manager maps the app-level uuid via the promptUuids sidecar);
-   *  the result is narrowed by the manager via coerceRewindResult. */
-  rewindFiles(userMessageId: string, options?: { dryRun?: boolean }): Promise<unknown> {
-    return this.query.rewindFiles(userMessageId, options)
-  }
-
   /** Read a file's content (SDK Query.readFile), gated by the session's
    *  Read-permission rules inside the SDK. Resolves `{ contents }` or null
    *  (denied / missing); the manager narrows via coerceReadFileOutput. */

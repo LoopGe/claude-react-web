@@ -878,11 +878,10 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     return c.json({ account: account ?? null })
   })
 
-  // Restore tracked files to their state at a user message (SDK
-  // rewindFiles; requires enableFileCheckpointing, on by default).
-  // `messageId` is the app-level user-message uuid (the server maps it to
-  // the SDK's on-disk uuid). `dryRun: true` previews the diff without
-  // modifying files — used by the client's confirm dialog.
+  // Restore files to their state at a user message via the shadow-repo
+  // snapshot sidecar. `messageId` is the app-level user-message uuid.
+  // `dryRun: true` previews the diff without modifying files — used by
+  // the client's confirm dialog.
   app.post('/sessions/:id/rewind-files', async (c) => {
     const body = await safeJson<{ messageId?: unknown; dryRun?: unknown }>(c.req)
     if (typeof body.messageId !== 'string' || !body.messageId) {

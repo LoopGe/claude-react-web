@@ -2930,7 +2930,7 @@ export class SessionManager {
         // is never echoed, so its entry would stay v-less forever and the
         // next FIFO echo (onPromptEcho pairs the oldest unpaired) would pair
         // a live prompt with a withdrawn uuid, shifting every later
-        // rewindFiles mapping. Unpaired entries are memory-only (the sidecar
+        // mapping. Unpaired entries are memory-only (the sidecar
         // persists at echo time), so no save is needed here.
         s.promptUuids = (s.promptUuids ?? []).filter((e) => !(e.v == null && uuids.has(e.u)))
         // Remember the withdrawal (capped) so a tab that reconnects after the

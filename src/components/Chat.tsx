@@ -1164,7 +1164,7 @@ export const Chat = memo(function Chat({
     })
   }, [discardAnchors, onDiscard])
 
-  // ── File-checkpoint rewind (SDK Query.rewindFiles) ────────────────
+  // ── File-snapshot rewind (shadow-repo sidecar) ───────────────────
   /** True when `uuid` resolves to a top-level user message in the current
    *  transcript. Such a row's id IS the server-minted prompt uuid the
    *  manager maps to the SDK on-disk uuid. Synthetic user frames (tool

@@ -215,7 +215,7 @@ export type {
 // server narrows the raw response, so the client shape is clean already.
 export type { AccountInfoData } from '../shared/account-info'
 
-// File-checkpoint rewind (SDK rewindFiles) — narrowed server-side.
+// File-snapshot rewind (shadow-repo sidecar) — narrowed server-side.
 export type { RewindFilesResult } from '../shared/rewind'
 
 /** Broadcast envelope for a resolved elicitation. */
