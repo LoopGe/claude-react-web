@@ -4696,6 +4696,69 @@ export class SessionManager {
     return narrowRewindPreview(preview)
   }
 
+  /** File-snapshot capability for a session: whether the shadow-repo
+   *  snapshot sidecar is available and the list of rewindable anchors.
+   *  Does NOT require a live Query — reads the sidecar directly.
+   *  Throws HttpError 404 for unknown sessions. */
+  async fileSnapshotCapability(id: string): Promise<{
+    available: boolean
+    reason?: string
+    anchors: Array<{ messageId: string }>
+  }> {
+    // 404 for unknown sessions — same pattern as rewindFiles.
+    const live = this.sessions.get(id)
+    const meta = live ?? this.store?.get(id)
+    if (!live && !meta) {
+      throw new HttpError(404, `session ${id} not found`)
+    }
+    if (this.snapshots.isDisabled()) {
+      return { available: false, reason: 'disabled', anchors: [] }
+    }
+    const snapMeta = await this.snapshotStore.load(id)
+    if (!snapMeta) {
+      return { available: false, reason: 'no-snapshot', anchors: [] }
+    }
+    if (!snapMeta.gitDir) {
+      return { available: false, reason: 'not-git', anchors: [] }
+    }
+    const anchors = await this.snapshots.listAnchors(id)
+    return { available: true, anchors }
+  }
+
+  /** Structured diff from a recorded snapshot anchor to the current
+   *  capture. Requires the snapshot sidecar to be available (same
+   *  guards as rewindFiles). Does NOT require a live Query.
+   *  Throws HttpError 400 when the anchor is missing or snapshots
+   *  are unavailable; 404 for unknown sessions. */
+  async snapshotDiff(id: string, fromMessageId: string): Promise<{
+    diffs: Array<{
+      file: string
+      status: 'added' | 'deleted' | 'modified'
+      additions: number
+      deletions: number
+      patch?: string
+    }>
+  }> {
+    const live = this.sessions.get(id)
+    const meta = live ?? this.store?.get(id)
+    if (!live && !meta) {
+      throw new HttpError(404, `session ${id} not found`)
+    }
+    if (this.snapshots.isDisabled()) {
+      throw new HttpError(400, 'file snapshots are disabled')
+    }
+    const snapMeta = await this.snapshotStore.load(id)
+    if (!snapMeta?.gitDir) {
+      throw new HttpError(400, 'no snapshot data for this session')
+    }
+    const anchor = snapMeta.byMessage[fromMessageId]
+    if (!anchor) {
+      throw new HttpError(400, `no snapshot anchor for message ${fromMessageId}`)
+    }
+    const diffs = await this.snapshots.diffFromAnchor(id, fromMessageId)
+    return { diffs }
+  }
+
   /** Read a file's content (SDK Query.readFile) via a live session — gated by
    *  that session's Read-permission rules inside the SDK. Read-only and
    *  non-destructive, so unlike rewindFiles it has no phase guard: `requireLive`

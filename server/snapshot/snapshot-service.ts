@@ -108,6 +108,12 @@ export class SnapshotService {
     this.maxUntrackedBytes = opts.maxUntrackedBytes ?? 2 * 1024 * 1024
   }
 
+  /** Whether the service was configured with fileSnapshots disabled.
+   *  Used by SessionManager to report 'disabled' reason in capability. */
+  isDisabled(): boolean {
+    return !this.fileSnapshots
+  }
+
   /** In-process mutex per sessionId; serializes capture/rewind. */
   private async lock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.locks.get(sessionId) ?? Promise.resolve()
@@ -280,6 +286,32 @@ export class SnapshotService {
       out.push({ messageId: ids[i] })
     }
     return out
+  }
+
+  /** Structured diff from a recorded anchor to the current capture.
+   *  Uses the per-session lock (same as dryRun/rewind) so the capture
+   *  doesn't race a concurrent rewind. Returns the diff array; throws
+   *  on missing meta/anchor or capture failure (callers pre-validate). */
+  async diffFromAnchor(
+    sessionId: string,
+    messageId: string,
+  ): Promise<Array<{
+    file: string
+    status: 'added' | 'deleted' | 'modified'
+    additions: number
+    deletions: number
+    patch?: string
+  }>> {
+    return this.lock(sessionId, async () => {
+      const meta = await this.store.load(sessionId)
+      if (!meta?.gitDir) throw new Error('no snapshot data for session')
+      const anchor = meta.byMessage[messageId]
+      if (!anchor) throw new Error(`no snapshot anchor for message ${messageId}`)
+      const repo: ShadowRepo = { gitDir: meta.gitDir, worktree: meta.worktree, scope: meta.scope }
+      const current = await captureTree(repo, { maxUntrackedBytes: this.maxUntrackedBytes })
+      if (!current) throw new Error('capture failed')
+      return structuredDiff(repo, anchor.start, current)
+    })
   }
 
   /** Dry-run rewind: structured diff preview without touching the worktree. */

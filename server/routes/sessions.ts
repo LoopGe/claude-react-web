@@ -894,6 +894,26 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     return c.json({ rewind })
   })
 
+  // File-snapshot capability: whether the shadow-repo snapshot sidecar
+  // is available for this session, and the list of rewindable anchors.
+  // Does NOT require a live Query — reads the sidecar directly.
+  app.get('/sessions/:id/file-snapshots', async (c) => {
+    const result = await sm.fileSnapshotCapability(c.req.param('id'))
+    return c.json(result)
+  })
+
+  // Structured diff from a snapshot anchor to the current capture.
+  // Query param `from` (required) is the user-message id the anchor was
+  // recorded for. Returns the same diff shape as dryRun's `diffs` field.
+  app.get('/sessions/:id/snapshot-diff', async (c) => {
+    const from = c.req.query('from')
+    if (!from) {
+      return c.json({ error: 'from query parameter is required' }, 400)
+    }
+    const result = await sm.snapshotDiff(c.req.param('id'), from)
+    return c.json(result)
+  })
+
   // Read a file's current content via the session (SDK readFile): gated by
   // the session's Read-permission rules inside the SDK. `path` is absolute
   // (resolved against cwd by the SDK); absent/non-absolute → 400. Response is
