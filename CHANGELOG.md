@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Sessions pinned to a non-active profile now spend their OWN subscription for recaps, compact
+  summaries, commit messages and auto-mode classification** — those calls read the model override
+  and the endpoint/token from the globally *active* profile, while the session's CLI subprocess
+  ran on the profile it is pinned to. A session pinned to B with A active therefore ignored B's
+  `recapModel`/`commitMessageModel` and sent B's model id (or its session model) to **A's**
+  endpoint with A's key — a `401/404` on any gateway, i.e. the same failure this release fixes,
+  just under a different profile layout. Everything an auxiliary call needs is now resolved once
+  per session (`SessionManager.auxTargetFor`): the model (profile override → model group haiku tier
+  → session model) plus that session's own profile credentials. `autoClassifierModel` stays a
+  global setting — no profile carries it.
 - **Profile saves no longer silently ignore a cleared field** — `PUT /profiles/:id` skipped
   `null` for `baseUrl` / `modelList` / `modelGroups` (the card sends `null` whenever the field is
   empty), so clearing a value and saving kept the old one while the card showed it cleared —

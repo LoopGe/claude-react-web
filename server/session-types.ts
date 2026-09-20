@@ -632,6 +632,15 @@ export interface Session {
    *  resume-from-disk so the (possibly out-of-date) profile never pins a
    *  session forever. */
   toolProfile?: SessionToolProfile
+  /** The profile this session's subprocess was actually spawned with.
+   *  RAM-only, and NOT the same as `profileId` (which is the user's pin, and
+   *  undefined for a session that follows the active profile): an unpinned
+   *  session spawned while profile A was active keeps running on A's endpoint
+   *  and key even after the user activates B — nothing re-resolves a running
+   *  session's model or credentials. Auxiliary LLM calls (recap / commit
+   *  message / classifier) resolve their endpoint + token from THIS field, so
+   *  they always mirror what the subprocess is really using. */
+  spawnProfileId?: string
   /** Per-session override for the pinned "current question" header.
    *  Undefined = inherit the global config default; a boolean pins it.
    *  Persisted via SessionMeta and mirrored into SessionInfo. Pure UI

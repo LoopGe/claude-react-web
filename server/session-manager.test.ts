@@ -452,28 +452,66 @@ describe('SessionManager', () => {
       expect(mockHandles[0].options.model).toBe('anthropic/claude-opus-4-20250514')
     })
 
-    it('resolves the aux fallback model to the group haiku tier, not the main', () => {
+    it('resolves the aux target to the group haiku tier, not the main', () => {
       // The aux calls (recap / commit message / auto-mode classifier) ask the
-      // manager for their fallback model when the matching config field is
-      // empty. For a group session that must be the HAIKU slot — the class of
-      // model the CLI itself routes internal queries to — while session.model
-      // (and the info projection) stays the group's main.
+      // manager for their target when the matching config field is empty. For
+      // a group session the model must be the HAIKU slot — the class of model
+      // the CLI itself routes internal queries to — while session.model (and
+      // the info projection) stays the group's main.
       __setConfigForTest({ modelGroups: [GROUP] })
       const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
       expect(info.model).toBe('anthropic/claude-opus-4-20250514')
-      expect(sm.auxFallbackModelFor(info.id)).toBe('claude-haiku-3-5-20241022')
+      expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({ model: 'claude-haiku-3-5-20241022' })
     })
 
-    it('resolves the aux fallback model to the session model without a group', () => {
+    it('resolves the aux target model to the session model without a group', () => {
       const info = sm.create({ cwd: '/tmp', model: 'gw/some-model' })
-      expect(sm.auxFallbackModelFor(info.id)).toBe('gw/some-model')
+      expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({ model: 'gw/some-model' })
     })
 
-    it('persists the profile pin so a dormant session still resolves its own group', () => {
-      // The pin is what identifies WHICH profile's model groups apply. It is
-      // not derivable from the active profile, so it has to survive a restart
-      // — otherwise a dormant session is resolved against whatever profile
-      // happens to be active and silently loses its group's haiku tier.
+    it('prefers the profile override, and reads it from the SESSION profile', () => {
+      // The override is a per-profile field, so a session pinned to B must
+      // use B's — reading the active profile's would apply one profile's model
+      // to another profile's session.
+      const before = {
+        profiles: defaultConfig.profiles,
+        activeProfileId: defaultConfig.activeProfileId,
+        modelGroups: defaultConfig.modelGroups,
+      }
+      const profile = (id: string, recapModel: string): import('./config.js').ProviderProfile => ({
+        id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
+        modelList: ['vendor/model'], modelGroups: [], recapModel, commitMessageModel: '',
+      })
+      try {
+        __setConfigForTest({
+          profiles: [profile('A', 'vendor/from-a'), profile('B', 'vendor/from-b')],
+          activeProfileId: 'A',
+          modelGroups: [],
+        })
+        const info = sm.create({ cwd: '/tmp', profileId: 'B', model: 'vendor/model' } as Parameters<SessionManager['create']>[0])
+        expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({
+          model: 'vendor/from-b',
+          baseUrl: 'https://gw-B',
+          authToken: 'sk-B',
+        })
+        // …and 'commitMessage' follows the same profile (its own field, empty
+        // here ⇒ the session model), never the active profile's endpoint.
+        expect(sm.auxTargetFor(info.id, 'commitMessage')).toMatchObject({
+          model: 'vendor/model',
+          baseUrl: 'https://gw-B',
+          authToken: 'sk-B',
+        })
+      } finally {
+        __setConfigForTest({ ...before })
+      }
+    })
+
+    it('persists the profile pin so a dormant session still resolves its own profile', () => {
+      // The pin is what identifies WHICH profile's credentials and model
+      // groups apply. It is not derivable from the active profile, so it has
+      // to survive a restart — otherwise a dormant session is resolved against
+      // whatever profile happens to be active, sending its model to the wrong
+      // endpoint.
       const groupB = { id: 'g_b', name: 'B group', opus: 'vendor/big', haiku: 'vendor/small', main: 'opus' as const }
       const before = {
         profiles: defaultConfig.profiles,
@@ -481,7 +519,8 @@ describe('SessionManager', () => {
         modelGroups: defaultConfig.modelGroups,
       }
       const profile = (id: string, modelGroups: unknown[]): import('./config.js').ProviderProfile => ({
-        id, name: id, authToken: 't', baseUrl: 'https://gw', modelList: ['vendor/big', 'vendor/small'],
+        id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
+        modelList: ['vendor/big', 'vendor/small'],
         modelGroups: modelGroups as import('./config.js').ModelGroupConfig[],
         recapModel: '', commitMessageModel: '',
       })
@@ -494,13 +533,17 @@ describe('SessionManager', () => {
         const info = sm.create({
           cwd: '/tmp', profileId: 'B', modelGroupId: 'g_b',
         } as Parameters<SessionManager['create']>[0])
-        expect(sm.auxFallbackModelFor(info.id)).toBe('vendor/small')
+        expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({
+          model: 'vendor/small', baseUrl: 'https://gw-B', authToken: 'sk-B',
+        })
         expect(store.get(info.id)?.profileId).toBe('B')
 
         // A second manager over the same store IS the restart case: the
         // session is dormant, so only the persisted pin can resolve it.
         const restarted = new SessionManager({ store })
-        expect(restarted.auxFallbackModelFor(info.id)).toBe('vendor/small')
+        expect(restarted.auxTargetFor(info.id, 'recap')).toMatchObject({
+          model: 'vendor/small', baseUrl: 'https://gw-B', authToken: 'sk-B',
+        })
         void restarted.shutdown()
       } finally {
         __setConfigForTest({ ...before })

@@ -48,9 +48,16 @@ Model used to generate AI session summaries (recaps). **Empty means "use the ses
 model"**: a session with an active Model Group uses that group's **haiku** slot (the same cheap
 tier the CLI routes its own internal queries to; a group that leaves the haiku slot empty collapses
 all tiers to its `Main` model), and a session without a group uses its own model. Set it to a
-specific model to override that for every session — the value must be one the active profile's
-provider actually serves, because a third-party gateway rejects an unknown model id at request
-time (a 401, not a config error).
+specific model to override that for every session — the value must be one the profile's provider
+actually serves, because a third-party gateway rejects an unknown model id at request time (a 401,
+not a config error).
+
+Per-profile, and the credentials follow the model: recaps, compact summaries, commit messages and
+the classifier all authenticate against the **session's** profile — the one that session is pinned
+to, or the active profile when it has no pin — never a different one. A session pinned elsewhere
+therefore spends its own subscription, exactly like its CLI subprocess does. (Switching the active
+profile therefore changes where an *unpinned* session's aux calls authenticate, matching the fact
+that a running unpinned session keeps its spawn-time credentials until it is restarted.)
 
 Per-profile: this field lives on each entry of `profiles[]` (a top-level `recapModel` is migrated
 into `profiles[0]` on first load and is no longer written).
@@ -111,10 +118,11 @@ to a locally-derived `chore:` message rather than an error.
 
 Model used by the `auto` permission-mode security classifier, which judges each tool call that
 isn't on the safe-allowlist. Empty means "use the session's aux model" — the session's Model Group
-haiku slot when it has an active group (see `recapModel` for the empty-haiku-slot caveat), else
-the session's own model. The classifier must answer within `autoClassifierTimeout` ms or it fails
-closed to the human permission prompt, so pin this to a small fast model when the session's model
-is a large/slow one. There is no UI for it; set it via `config.json` or
+haiku slot when it has an active group (see `recapModel` for the empty-haiku-slot caveat), else the
+session's own model. Unlike `recapModel` / `commitMessageModel` this one is **global, not
+per-profile** (no profile carries it). The classifier must answer within `autoClassifierTimeout` ms
+or it fails closed to the human permission prompt, so pin this to a small fast model when the
+session's model is a large/slow one. There is no UI for it; set it via `config.json` or
 `npx claude-react-web config set autoClassifierModel <id>` (use `null` to clear it back to unset).
 
 ```json

@@ -47,6 +47,7 @@ import { isAutoApprovableEditPowerShell } from './accept-edits-powershell.js'
 import { config as serverConfig } from './config.js'
 import { isReadOnlyBash } from './readonly-bash.js'
 import { classifyToolAction, sanitizeToolInput } from './auto-classifier.js'
+import type { AuxLlmTarget } from './anthropic-api.js'
 import { ClassifierLimiter } from './auto-classifier-limiter.js'
 import { getMessagesForClassifier } from './session-utils.js'
 import { AutoDenialTracker } from './auto-denial-tracker.js'
@@ -115,16 +116,16 @@ export class PermissionBroker {
    *  Shared across all sessions managed by this broker instance. */
   private classifierLimiter = new ClassifierLimiter(5)
 
-  /** Resolver for a session's auxiliary fallback model (its model group's
-   *  haiku tier, else its own model) — the model the auto-mode classifier
-   *  runs on when `autoClassifierModel` is empty. Required: a broker built
-   *  without it would silently lose the classifier's fallback and, with the
-   *  shipped `autoClassifierModel: ''` default, fail closed to the human
-   *  prompt on every tool call. */
-  private auxFallbackModelFor: (sessionId: string) => string | undefined
+  /** Resolver for a session's auxiliary LLM target — the model the auto-mode
+   *  classifier runs on plus the credentials of that session's own profile
+   *  (see AuxLlmTarget). Required: a broker built without it would silently
+   *  lose the classifier's model and, with the shipped
+   *  `autoClassifierModel: ''` default, fail closed to the human prompt on
+   *  every tool call. */
+  private auxTargetFor: (sessionId: string) => AuxLlmTarget | undefined
 
-  constructor(auxFallbackModelFor: (sessionId: string) => string | undefined) {
-    this.auxFallbackModelFor = auxFallbackModelFor
+  constructor(auxTargetFor: (sessionId: string) => AuxLlmTarget | undefined) {
+    this.auxTargetFor = auxTargetFor
   }
 
   /** Per-session denial tracker for auto mode. When consecutive denials
@@ -495,7 +496,7 @@ export class PermissionBroker {
               messages: getMessagesForClassifier(session, 5),
               cwd: session.cwd ?? '',
               signal: ctx.signal,
-              fallbackModel: this.auxFallbackModelFor(session.id),
+              target: this.auxTargetFor(session.id),
             })
             if (result.allow) {
               tracker.recordAllow()

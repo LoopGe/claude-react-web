@@ -991,16 +991,18 @@ describe('PermissionBroker', () => {
 })
 
 describe('auto mode classifier model', () => {
-  it('classifies with the injected aux fallback model for the session', async () => {
+  it('classifies with the injected aux target (model + the session profile)', async () => {
     // With autoClassifierModel empty (the shipped default), the classifier
     // must run on the model the manager resolves for THIS session — its
-    // model group's haiku tier, else its own model — not on a stale default.
+    // model group's haiku tier, else its own model — and against that
+    // session's own profile endpoint/token, not on a stale global default.
     const { classifyToolAction } = await import('./auto-classifier.js')
     const mockClassify = vi.mocked(classifyToolAction)
     mockClassify.mockClear()
     __setConfigForTest({ autoClassifierModel: '' })
 
-    const injected = vi.fn(() => 'vendor/aux-model')
+    const target = { model: 'vendor/aux-model', baseUrl: 'https://gw-session', authToken: 'sk-session' }
+    const injected = vi.fn(() => target)
     const autoBroker = new PermissionBroker(injected)
     const session = makeFakeSession({ id: 'auto-1', permissionMode: 'auto', cwd: '/work/app' })
     const canUseTool = autoBroker.buildCanUseTool(session, vi.fn())
@@ -1021,7 +1023,7 @@ describe('auto mode classifier model', () => {
     expect(mockClassify).toHaveBeenCalledTimes(1)
     expect(mockClassify.mock.calls[0][0]).toMatchObject({
       toolName: 'Bash',
-      fallbackModel: 'vendor/aux-model',
+      target,
     })
   })
 })

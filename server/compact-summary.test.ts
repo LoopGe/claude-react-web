@@ -30,17 +30,17 @@ function assistantMsg(text: string): SDKMessage {
 describe('summarizeForCompact', () => {
   const mockCall = vi.mocked(callAnthropicMessages)
   let origConfig: typeof config
+  // The session's aux target: endpoint + credential + resolved model, all
+  // resolved by SessionManager.auxTargetFor (its own tests cover the
+  // resolution rules; here we assert it is what reaches the request).
+  const TARGET = {
+    model: 'anthropic/claude-sonnet-4-20250514',
+    baseUrl: 'https://gw-session',
+    authToken: 'sk-session',
+  }
 
   beforeEach(() => {
     origConfig = { ...config }
-    // recapModel is '' by default ("use the session's own model"); pin a
-    // model so the happy path tests assert a configured model, and the
-    // fallback tests can override it back to ''.
-    __setConfigForTest({
-      authToken: 'test-token-123',
-      baseUrl: 'https://api.anthropic.com',
-      recapModel: 'test-recap-model',
-    })
     mockCall.mockReset()
     mockCall.mockResolvedValue('  The user is building a settings panel.  ')
   })
@@ -53,11 +53,11 @@ describe('summarizeForCompact', () => {
     const summary = await summarizeForCompact([
       userMsg('Add a dark mode toggle'),
       assistantMsg('I will add a theme variable and wire the toggle in SettingsPanel.'),
-    ])
+    ], TARGET)
     expect(summary).toBe('The user is building a settings panel.')
     expect(mockCall).toHaveBeenCalledTimes(1)
     const opts = mockCall.mock.calls[0][0]
-    expect(opts.model).toBe(config.recapModel)
+    expect(opts.model).toBe(TARGET.model)
     expect(opts.maxTokens).toBe(1000)
     expect(opts.temperature).toBe(0)
     // The transcript must carry the actual conversation (not a generic recap).
@@ -65,14 +65,15 @@ describe('summarizeForCompact', () => {
     expect(opts.system).toContain('compressing a Claude Code conversation')
   })
 
-  it('uses the session model when no recapModel is configured', async () => {
-    // '' is the shipped default and means "use the session's own model".
-    __setConfigForTest({ ...origConfig, recapModel: '', authToken: 'test-token-123' })
-    await summarizeForCompact(
-      [userMsg('hi'), assistantMsg('hello')],
-      'anthropic/claude-sonnet-4-20250514',
-    )
-    expect(mockCall.mock.calls[0][0].model).toBe('anthropic/claude-sonnet-4-20250514')
+  it('passes the session target (its own endpoint + token) through', async () => {
+    // Compact summarisation is a session-scoped call: it must authenticate
+    // against the session's profile, not the globally active one.
+    __setConfigForTest({ ...origConfig, authToken: 'sk-global', baseUrl: 'https://gw-global' })
+    await summarizeForCompact([userMsg('hi'), assistantMsg('hello')], TARGET)
+    expect(mockCall.mock.calls[0][0].target).toMatchObject({
+      baseUrl: 'https://gw-session',
+      authToken: 'sk-session',
+    })
   })
 
   it('returns an empty string (without calling the API) for empty history', async () => {
@@ -88,23 +89,31 @@ describe('summarizeForCompact', () => {
     expect(mockCall).not.toHaveBeenCalled()
   })
 
-  it('throws when authToken is not configured', async () => {
-    __setConfigForTest({ ...origConfig, authToken: undefined })
-    await expect(summarizeForCompact([userMsg('hi'), assistantMsg('hello')])).rejects.toThrow(
-      /authToken is not configured/,
-    )
+  it('throws when the session target has no authToken', async () => {
+    // The global config's token is irrelevant: compact authenticates as the
+    // session, so a missing token on ITS profile is the failure.
+    __setConfigForTest({ ...origConfig, authToken: 'sk-global' })
+    await expect(
+      summarizeForCompact([userMsg('hi'), assistantMsg('hello')], { ...TARGET, authToken: '' }),
+    ).rejects.toThrow(/authToken/)
   })
 
-  it('throws when neither a recapModel nor a session model exists', async () => {
-    __setConfigForTest({ ...origConfig, recapModel: '', authToken: 'test-token-123' })
+  it('throws when the session target has no model', async () => {
+    await expect(
+      summarizeForCompact([userMsg('hi'), assistantMsg('hello')], { ...TARGET, model: '' }),
+    ).rejects.toThrow(/No model configured/)
+  })
+
+  it('throws when there is no session target at all', async () => {
+    __setConfigForTest({ ...origConfig, authToken: 'test-token-123' })
     await expect(summarizeForCompact([userMsg('hi'), assistantMsg('hello')])).rejects.toThrow(
-      /No model configured/,
+      /authToken/,
     )
   })
 
   it('collapses whitespace runs in the returned summary', async () => {
     mockCall.mockResolvedValueOnce('line one\n\n\n   line two    end')
-    const summary = await summarizeForCompact([userMsg('hi'), assistantMsg('hello')])
+    const summary = await summarizeForCompact([userMsg('hi'), assistantMsg('hello')], TARGET)
     expect(summary).toBe('line one line two end')
   })
 })

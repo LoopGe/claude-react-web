@@ -14,16 +14,23 @@ index 0000001..0000002 100644
 
 describe('generateCommitMessage', () => {
   const originalFetch = global.fetch
-  const originalToken = serverConfig.authToken
+  // The session's aux target: the resolved model plus the SESSION profile's
+  // endpoint/token (from SessionManager.auxTargetFor). Tests that expect the
+  // API to be reached must pass one — the module no longer reads the global
+  // config for its model.
+  const TARGET = { model: 'test-commit-model', baseUrl: 'https://gw-session', authToken: 'sk-session' }
+  const withTarget = { target: TARGET }
+  // Two tests below mutate the config singleton to prove the target — not the
+  // global config — is what authenticates; snapshot it so those values cannot
+  // leak into later tests in this file.
+  let origConfig: typeof serverConfig
 
   beforeEach(() => {
-    // The shipped default for commitMessageModel is '' ("use the aux
-    // fallback model"), so a test that expects a configured model must set one.
-    __setConfigForTest({ authToken: 'test-token', commitMessageModel: 'test-commit-model' })
+    origConfig = { ...serverConfig }
   })
   afterEach(() => {
     global.fetch = originalFetch
-    __setConfigForTest({ authToken: originalToken })
+    __setConfigForTest(origConfig)
     vi.restoreAllMocks()
   })
 
@@ -37,7 +44,7 @@ describe('generateCommitMessage', () => {
       ),
     ) as typeof fetch
 
-    const r = await generateCommitMessage(SAMPLE_DIFF)
+    const r = await generateCommitMessage(SAMPLE_DIFF, withTarget)
     expect(r.message).toBe('fix(foo): increment x by 1')
     expect(r.fallback).toBeUndefined()
   })
@@ -52,14 +59,13 @@ describe('generateCommitMessage', () => {
       ),
     ) as typeof fetch
 
-    const r = await generateCommitMessage(SAMPLE_DIFF)
+    const r = await generateCommitMessage(SAMPLE_DIFF, withTarget)
     expect(r.message).toBe('feat(api): add endpoint\n\nWith body.')
   })
 
-  it('uses the session fallback model when no commitMessageModel is configured', async () => {
-    // Empty commitMessageModel is the default and means "use the session's
-    // aux fallback model" — see SessionManager.auxFallbackModelFor.
-    __setConfigForTest({ commitMessageModel: '', authToken: 'test-token' })
+  it('uses the target model for the request', async () => {
+    // The override → group haiku tier → session model chain is resolved by
+    // SessionManager.auxTargetFor; this module just sends what it is given.
     const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
       new Response(
         JSON.stringify({ content: [{ type: 'text', text: 'feat(api): add endpoint' }] }),
@@ -68,14 +74,21 @@ describe('generateCommitMessage', () => {
     )
     global.fetch = fetchMock as unknown as typeof fetch
 
-    const r = await generateCommitMessage(SAMPLE_DIFF, { fallbackModel: 'vendor/model-a' })
+    const r = await generateCommitMessage(SAMPLE_DIFF, {
+      target: { model: 'vendor/model-a', baseUrl: 'https://gw-target', authToken: 'sk-target' },
+    })
     expect(r.message).toBe('feat(api): add endpoint')
     const body = JSON.parse(String(fetchMock.mock.calls[0][1].body))
     expect(body.model).toBe('vendor/model-a')
   })
 
-  it('prefers an explicitly configured commitMessageModel over the fallback model', async () => {
-    __setConfigForTest({ commitMessageModel: 'vendor/cheap', authToken: 'test-token' })
+  it('authenticates against the target profile, never the global config', async () => {
+    // The target IS the session's own profile: a session pinned to a
+    // non-active profile must not spend the active profile's key or endpoint.
+    __setConfigForTest({
+      commitMessageModel: '', authToken: 'sk-global',
+      baseUrl: 'https://gw-global',
+    })
     const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
       new Response(
         JSON.stringify({ content: [{ type: 'text', text: 'feat: x' }] }),
@@ -84,16 +97,21 @@ describe('generateCommitMessage', () => {
     )
     global.fetch = fetchMock as unknown as typeof fetch
 
-    await generateCommitMessage(SAMPLE_DIFF, { fallbackModel: 'vendor/model-a' })
-    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body))
-    expect(body.model).toBe('vendor/cheap')
+    await generateCommitMessage(SAMPLE_DIFF, {
+      target: { model: 'vendor/from-b', baseUrl: 'https://gw-b', authToken: 'sk-b' },
+    })
+    const url = String(fetchMock.mock.calls[0][0])
+    const init = fetchMock.mock.calls[0][1]
+    expect(url).toBe('https://gw-b/v1/messages')
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk-b')
+    expect(url).not.toContain('gw-global')
   })
 
-  it('does not call the API with an empty model when neither source provides one', async () => {
+  it('does not call the API when no model was resolved', async () => {
     // Regression guard: an empty model used to reach the wire and bounce as
     // a 400, which the caller reported as a silent "used fallback" — making
-    // "why is my commit message always a chore:?" unanswerable.
-    __setConfigForTest({ commitMessageModel: '', authToken: 'test-token' })
+    // "why is my commit message always a chore:?" unanswerable. No target
+    // (and a target without a model) must short-circuit locally.
     const fetchMock = vi.fn()
     global.fetch = fetchMock as unknown as typeof fetch
 
@@ -101,6 +119,10 @@ describe('generateCommitMessage', () => {
     expect(fetchMock).not.toHaveBeenCalled()
     expect(r.fallback).toBe(true)
     expect(r.message).toMatch(/^chore:/)
+
+    const r2 = await generateCommitMessage(SAMPLE_DIFF, { target: { ...TARGET, model: '' } })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(r2.fallback).toBe(true)
   })
 
   it('falls back when the API returns 4xx/5xx', async () => {
@@ -108,7 +130,7 @@ describe('generateCommitMessage', () => {
       new Response('rate limited', { status: 429 }),
     ) as typeof fetch
 
-    const r = await generateCommitMessage(SAMPLE_DIFF)
+    const r = await generateCommitMessage(SAMPLE_DIFF, withTarget)
     expect(r.fallback).toBe(true)
     // Fallback should still mention the file we changed.
     expect(r.message).toMatch(/src\/foo\.ts/)
@@ -120,7 +142,7 @@ describe('generateCommitMessage', () => {
       throw new Error('ECONNREFUSED')
     }) as typeof fetch
 
-    const r = await generateCommitMessage(SAMPLE_DIFF)
+    const r = await generateCommitMessage(SAMPLE_DIFF, withTarget)
     expect(r.fallback).toBe(true)
     expect(r.message).toContain('src/foo.ts')
   })
@@ -133,16 +155,18 @@ describe('generateCommitMessage', () => {
       ),
     ) as typeof fetch
 
-    const r = await generateCommitMessage(SAMPLE_DIFF)
+    const r = await generateCommitMessage(SAMPLE_DIFF, withTarget)
     expect(r.fallback).toBe(true)
   })
 
-  it('falls back when authToken is missing', async () => {
-    __setConfigForTest({ authToken: undefined })
+  it('falls back when the target profile has no authToken', async () => {
+    // The global config's token is irrelevant: the call authenticates as the
+    // session's profile, so only ITS token matters.
+    __setConfigForTest({ authToken: 'sk-global' })
     global.fetch = vi.fn() as typeof fetch
-    const r = await generateCommitMessage(SAMPLE_DIFF)
+    const r = await generateCommitMessage(SAMPLE_DIFF, { target: { ...TARGET, authToken: '' } })
     expect(r.fallback).toBe(true)
-    // fetch should never have been called — requireAuthToken throws
+    // fetch should never have been called — the missing token is rejected
     // before we reach the network.
     expect(global.fetch).not.toHaveBeenCalled()
   })
@@ -152,7 +176,7 @@ describe('generateCommitMessage', () => {
       throw new Error('forced')
     }) as typeof fetch
 
-    const r = await generateCommitMessage('')
+    const r = await generateCommitMessage('', withTarget)
     expect(r.fallback).toBe(true)
     expect(r.message.trim().length).toBeGreaterThan(0)
   })
@@ -175,7 +199,7 @@ diff --git a/c.ts b/c.ts
 -x
 +y
 `
-    const r = await generateCommitMessage(multiDiff)
+    const r = await generateCommitMessage(multiDiff, withTarget)
     expect(r.message).toMatch(/3 files/)
     expect(r.message).toContain('a.ts')
     expect(r.message).toContain('b.ts')

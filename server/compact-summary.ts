@@ -11,8 +11,7 @@
 // it reads like the user restating where they are — not like a status report.
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { config as serverConfig } from './config.js'
-import { callAnthropicMessages } from './anthropic-api.js'
+import { callAnthropicMessages, type AuxLlmTarget } from './anthropic-api.js'
 import { extractHistory, buildTranscript } from './recap.js'
 
 const COMPACT_SYSTEM_PROMPT = `You are compressing a Claude Code conversation so it can continue in a fresh session. Write a compact hand-off summary the user (or a fresh model) can continue from directly. Preserve:
@@ -27,14 +26,14 @@ Write in dense prose, not bullet soup. Do NOT restate generic status ("we chatte
 /** Summarise a session's message history into a compact continuation seed.
  *  Returns an empty string when the history has no compressible content
  *  (e.g. no user/assistant turns) — the caller should then skip seeding and
- *  fall back to a plain clear. `fallbackModel` (the session's model-group
- *  haiku tier, else its own model) is used when `recapModel` is empty. */
-export async function summarizeForCompact(messages: SDKMessage[], fallbackModel?: string): Promise<string> {
+ *  fall back to a plain clear. `target` (the session's profile credentials +
+ *  its resolved model) comes from SessionManager.auxTargetFor. */
+export async function summarizeForCompact(messages: SDKMessage[], target?: AuxLlmTarget): Promise<string> {
   const { lines, language } = extractHistory(messages)
   if (lines.length === 0) return ''
 
-  if (!serverConfig.authToken) {
-    throw new Error('compact unavailable: authToken is not configured. Set authToken in config.json.')
+  if (!target?.authToken) {
+    throw new Error("compact unavailable: the session's profile has no authToken configured. Set authToken in config.json.")
   }
 
   const transcript = buildTranscript(lines, language, {
@@ -42,15 +41,17 @@ export async function summarizeForCompact(messages: SDKMessage[], fallbackModel?
       ? `\n\n---\nWrite the hand-off summary in ${language}.`
       : `\n\n---\nWrite the hand-off summary in the same language the user uses in their messages above.`,
   })
-  const model = serverConfig.recapModel || fallbackModel
+  const model = target.model
   if (!model) throw new Error('No model configured for compact summary and session has no model')
 
   const text = await callAnthropicMessages({
     model,
+    target,
     system: COMPACT_SYSTEM_PROMPT,
     userContent: transcript,
     maxTokens: 1000,
     temperature: 0,
+    caller: 'compact-summary',
   })
   // Compact summaries are plain prose; collapse the same whitespace-trim
   // recap uses (no code fences / JSX fragments to strip here).

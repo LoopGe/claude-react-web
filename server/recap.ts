@@ -25,7 +25,7 @@
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { config as serverConfig } from './config.js'
-import { callAnthropicMessages } from './anthropic-api.js'
+import { callAnthropicMessages, type AuxLlmTarget } from './anthropic-api.js'
 import type { SessionRecap, SessionRecapStats } from '../shared/session-info.js'
 import { HttpError } from './errors.js'
 
@@ -42,10 +42,9 @@ export interface RecapManagerDeps {
   /** Live message history for the session (snapshot). Returns null
    *  when the session is dormant — recapManager surfaces a 412. */
   getHistory: (sessionId: string) => SDKMessage[] | null
-  /** Fallback model when `config.recapModel` is empty: the session's model
-   *  group's haiku tier when it has an active group, else the session's own
-   *  model. Wired to SessionManager.auxFallbackModelFor(). */
-  getFallbackModel?: (sessionId: string) => string | undefined
+  /** Endpoint + credential + resolved model for a session's recap call, from
+   *  SessionManager.auxTargetFor — see AuxLlmTarget. */
+  getTarget?: (sessionId: string) => AuxLlmTarget | undefined
   /** Mutator: write the session's recap field. The caller is expected
    *  to also broadcast (via broadcastRecap). recapManager calls these
    *  in pairs after every transition. */
@@ -252,11 +251,15 @@ ${formatRule}
 ${languageRule}`
 }
 
-async function callAnthropic(transcript: string, language: string | null, fallbackModel?: string): Promise<string> {
-  const model = serverConfig.recapModel || fallbackModel
+async function callAnthropic(transcript: string, language: string | null, target?: AuxLlmTarget): Promise<string> {
+  // The model arrives fully resolved (profile override → model group haiku
+  // tier → session model) together with the credentials of the SESSION's own
+  // profile — see SessionManager.auxTargetFor.
+  const model = target?.model
   if (!model) throw new Error('No recap model configured and the session has no model')
   const text = await callAnthropicMessages({
     model,
+    target,
     system: buildSystemPrompt(language),
     userContent: transcript,
     maxTokens: 1000,
@@ -400,12 +403,17 @@ export class RecapManager {
       return empty
     }
 
+    // One target lookup for the whole cycle: the SESSION's profile (endpoint +
+    // token) and its resolved model. Not the globally active profile — a
+    // session pinned elsewhere must not spend this profile's key.
+    const target = this.deps.getTarget?.(sessionId)
+
     // Auth check up-front — the LLM call would fail anyway, but failing
     // here gives a sharper error message than the generic fetch error.
-    if (!serverConfig.authToken) {
+    if (!target?.authToken) {
       const errored: SessionRecap = {
         status: 'error',
-        error: 'Recap unavailable: authToken is not configured. Set authToken in config.json.',
+        error: "Recap unavailable: the session's profile has no authToken configured. Set authToken in config.json.",
         generatedAt: Date.now(),
       }
       this.#applyResult(sessionId, errored, gen)
@@ -422,7 +430,7 @@ export class RecapManager {
 
     try {
       const transcript = buildTranscript(lines, language)
-      const summary = await callAnthropic(transcript, language, this.deps.getFallbackModel?.(sessionId))
+      const summary = await callAnthropic(transcript, language, target)
       const ready: SessionRecap = {
         status: 'ready',
         summary,
@@ -483,6 +491,15 @@ const legacyRecaps = new Map<string, SessionRecap>()
 const legacyManager = new RecapManager({
   getPhase: (id) => (legacyState.has(id) || legacyRecaps.has(id) ? 'idle' : 'unknown'),
   getHistory: (id) => legacyState.get(id)?.history ?? null,
+  // Standalone tests exercise the recap pipeline, not profile resolution, so
+  // the shim synthesises a target from the global config — the behaviour the
+  // pre-refactor pipeline had. Real sessions go through SessionManager, which
+  // resolves the target from the session's OWN profile.
+  getTarget: () => ({
+    model: serverConfig.recapModel || undefined,
+    baseUrl: serverConfig.baseUrl,
+    authToken: serverConfig.authToken ?? '',
+  }),
   setRecap: (id, recap) => {
     if (recap === undefined) legacyRecaps.delete(id)
     else legacyRecaps.set(id, recap)

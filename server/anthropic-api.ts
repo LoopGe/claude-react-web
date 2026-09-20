@@ -7,10 +7,34 @@
 // quirks are unique enough not to be worth abstracting further.
 
 import { config as serverConfig, requireAuthToken } from './config.js'
+import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
 
 const log = createLogger('anthropic-api')
+
+/** Endpoint + credential + model for ONE auxiliary LLM call, resolved per
+ *  session.
+ *
+ *  These calls must follow the SESSION's profile, not the globally active
+ *  one: a session pinned to a non-active profile runs its CLI subprocess on
+ *  that profile's subscription (`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`
+ *  come from `effectiveProfileFor(session.profileId)`), so sending its recap
+ *  through the active profile's endpoint would put one profile's model id on
+ *  another profile's URL — a 401/404 for every gateway. Callers with no
+ *  session context omit `target` and get the global config: that is only the
+ *  app-plugin AI broker today (server/app-plugins/host/ai-broker.ts, which
+ *  has no session in its request shape), and it therefore still uses the
+ *  active profile. */
+export interface AuxLlmTarget {
+  /** Fully resolved model. For recap / commit message it is the session
+   *  profile's own override, else the session's model group haiku tier, else
+   *  the session's model; for the classifier, the global autoClassifierModel
+   *  (only on the active profile) → the same tier chain. */
+  model?: string
+  baseUrl: string
+  authToken: string
+}
 
 interface CallOptions {
   model: string
@@ -25,8 +49,11 @@ interface CallOptions {
    *  Used by the auto-mode classifier which needs conversation context. */
   messages?: Array<{ role: string; content: string }>
   /** Metrics label for the observability histogram — which server feature
-   *  is calling. Finite enum: 'recap' | 'commit-message' | 'auto-classifier'. */
+   *  is calling. Finite enum: 'recap' | 'commit-message' | 'auto-classifier'
+   *  | 'compact-summary' | 'unknown' (the app-plugin AI broker passes none). */
   caller?: string
+  /** Per-session endpoint + credential. See AuxLlmTarget. */
+  target?: AuxLlmTarget
 }
 
 /** POST /v1/messages with a single-turn user message. Returns the raw
@@ -41,11 +68,25 @@ export async function callAnthropicMessages(opts: CallOptions): Promise<string> 
   // resolve a model before calling or catch the throw, so failing here is
   // strictly better than round-tripping a request that cannot succeed.
   if (!opts.model) throw new Error(`no model resolved for the ${opts.caller ?? 'unknown'} call`)
-  const token = requireAuthToken()
+  const baseUrl = opts.target?.baseUrl ?? serverConfig.baseUrl
+  // A session-scoped call authenticates with ITS profile's token; only a
+  // caller with no session falls back to the global `authToken`.
+  let token: string
+  if (opts.target) {
+    token = opts.target.authToken
+    if (!token) {
+      throw new HttpError(
+        401,
+        `no authToken for the ${opts.caller ?? 'unknown'} call — the session's profile has none configured`,
+      )
+    }
+  } else {
+    token = requireAuthToken()
+  }
   const start = Date.now()
-  log.debug(`request model=${opts.model} maxTokens=${opts.maxTokens}`)
+  log.debug(`request model=${opts.model} baseUrl=${baseUrl} maxTokens=${opts.maxTokens}`)
   try {
-    const res = await fetch(`${serverConfig.baseUrl}/v1/messages`, {
+    const res = await fetch(`${baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -63,16 +104,16 @@ export async function callAnthropicMessages(opts: CallOptions): Promise<string> 
     })
     if (!res.ok) {
       const body = await res.text().catch(() => '')
-      log.error(`api error status=${res.status} elapsed=${Date.now() - start}ms model=${opts.model} body=${body.slice(0, 200)}`)
+      log.error(`api error status=${res.status} elapsed=${Date.now() - start}ms model=${opts.model} baseUrl=${baseUrl} body=${body.slice(0, 200)}`)
       throw new Error(`Anthropic API ${res.status}: ${body.slice(0, 200)}`)
     }
     const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
     const text = data.content?.[0]?.text
     if (!text) {
-      log.error(`empty response elapsed=${Date.now() - start}ms model=${opts.model}`)
+      log.error(`empty response elapsed=${Date.now() - start}ms model=${opts.model} baseUrl=${baseUrl}`)
       throw new Error('Empty response from Anthropic API')
     }
-    log.info(`success model=${opts.model} elapsed=${Date.now() - start}ms textLen=${text.length}`)
+    log.info(`success model=${opts.model} baseUrl=${baseUrl} elapsed=${Date.now() - start}ms textLen=${text.length}`)
     return text
   } finally {
     // Records ALL outcomes — success, HTTP error, empty response, AND a

@@ -22,6 +22,7 @@ import {
   type Settings,
 } from '@anthropic-ai/claude-agent-sdk'
 import type { ProcessExitInfo } from './process-monitor.js'
+import type { AuxLlmTarget } from './anthropic-api.js'
 import { randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -542,11 +543,10 @@ export class SessionManager {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.subagentHistoryCap = opts.subagentHistoryCap ?? defaultConfig.subagentHistoryCap
     this.forwardSubagentText = opts.forwardSubagentText ?? defaultConfig.forwardSubagentText
-    // The classifier needs the same fallback resolution the other aux calls
-// use (config override → the session's model-group haiku tier → the
-// session's model), so hand the broker a resolver rather than the raw
-// session model.
-    this.permBroker = new PermissionBroker((id) => this.auxFallbackModelFor(id))
+    // The classifier needs the same per-session target the other aux calls
+    // use (the session's profile credentials + its model), so hand the broker
+    // a resolver rather than the raw session model.
+    this.permBroker = new PermissionBroker((id) => this.auxTargetFor(id, 'classifier'))
     this.elicitBroker = new ElicitationBroker()
     this.dialogBroker = new DialogBroker()
     this.autoResumeEnabled = opts.autoResume ?? false
@@ -586,7 +586,7 @@ export class SessionManager {
         return this.phaseOf(s)
       },
       getHistory: (id) => this.getHistory(id),
-      getFallbackModel: (id) => this.auxFallbackModelFor(id),
+      getTarget: (id) => this.auxTargetFor(id, 'recap'),
       setRecap: (id, recap) => {
         const s = this.sessions.get(id)
         if (!s) return
@@ -951,7 +951,7 @@ export class SessionManager {
       agent: s.agent,
       modelGroupId: s.modelGroupId,
       // The profile pin must survive a restart: resume() re-pins from it
-      // (below), and the auxiliary-model resolution (auxFallbackModelFor)
+      // (below), and the auxiliary-call resolution (auxTargetFor)
       // needs it to resolve the session's own model group — without it a
       // dormant session is looked up against whichever profile happens to be
       // active.
@@ -2254,6 +2254,10 @@ export class SessionManager {
       // (/clear, fork) wins; otherwise capture any create-body passthrough so
       // it too survives a later /clear. RAM-only — see Session.toolProfile.
       toolProfile: toolProfile ?? extractToolProfile(fullOpts),
+      // The profile this subprocess is spawned WITH, recorded for the aux
+      // calls: an unpinned session keeps running on it even after the user
+      // activates another profile (RAM-only — see Session.spawnProfileId).
+      spawnProfileId: profile.id,
       // For group sessions, metaSnapshot.model was set to the resolved group
       // main by the model-group block above (and metaSnapshot.modelGroupId to
       // the group id, or cleared by self-heal). For non-group sessions the
@@ -3370,7 +3374,7 @@ export class SessionManager {
     // summarizer always saw subagent tool frames; it still sees subagent
     // frames, including the now-forwarded text/thinking ones).
     const merged = this.mergedHistory(s)
-    const summary = await summarizeForCompact(merged, this.auxFallbackModelFor(s.id))
+    const summary = await summarizeForCompact(merged, this.auxTargetFor(s.id, 'recap'))
     if (!summary) {
       log.info(`[session ${id}] compact: no compressible content, falling back to plain clear`)
       return this.clear(id)
@@ -5236,24 +5240,54 @@ export class SessionManager {
     throw new HttpError(404, `session ${id} not found`)
   }
 
-  /** Fallback model for a session-scoped auxiliary LLM call — recap, AI
-   *  commit message, auto-mode classifier — used when the matching config
-   *  override (recapModel / commitMessageModel / autoClassifierModel) is
-   *  empty. Resolves from the session's model-group reference, so it works
-   *  for live and dormant sessions alike: a group session gets that group's
-   *  HAIKU tier (the slot the CLI already routes its own internal queries
-   *  to, and the class these tasks are sized for), a group-less session gets
-   *  its own model. See model-groups.auxFallbackModel(). */
-  auxFallbackModelFor(id: string): string | undefined {
-    const session = this.sessions.get(id) ?? this.store?.get(id)
+  /** Everything an auxiliary LLM call needs for a session: the resolved model
+   *  plus the credentials of the SESSION's own profile — the subscription its
+   *  CLI subprocess already runs on. A session pinned to a non-active profile
+   *  must not send its recap to another profile's endpoint (one profile's
+   *  model id on another profile's URL is a 401/404 for every gateway).
+   *
+   *  Model resolution: the profile's per-field override (`recapModel` /
+   *  `commitMessageModel`; `autoClassifierModel` is global, not per-profile,
+   *  and is therefore applied only to sessions on the active profile), else
+   *  the session's model-group HAIKU tier — the slot the CLI routes its own
+   *  internal queries to — else the session's own model. Works for live and
+   *  dormant sessions alike. See model-groups.auxFallbackModel(). */
+  auxTargetFor(
+    id: string,
+    field: 'recap' | 'commitMessage' | 'classifier',
+  ): AuxLlmTarget | undefined {
+    const live = this.sessions.get(id)
+    const session = live ?? this.store?.get(id)
     if (!session) return undefined
-    const profile = effectiveProfileFor(session.profileId)
+    // A LIVE session must mirror what its subprocess is really running with:
+    // the profile captured at spawn — activating another profile does not
+    // re-resolve a running session's model or credentials, only a restart
+    // does. A dormant session has no subprocess, so its persisted pin decides,
+    // else the active profile it would be resumed with.
+    const profile = effectiveProfileFor(live ? live.spawnProfileId ?? live.profileId : session.profileId)
     const group = session.modelGroupId
       ? profile.modelGroups.find((g) => g.id === session.modelGroupId)
       : undefined
     // Shared resolver (model-groups.ts) — the same one the provider uses for
     // the tier env vars, so both sides resolve a group's slots identically.
-    return auxFallbackModel(session.model, group, (m) => resolveConfiguredModelId(m, profile.modelList))
+    const fallback = auxFallbackModel(session.model, group, (m) => resolveConfiguredModelId(m, profile.modelList))
+    // autoClassifierModel is a GLOBAL setting (no profile carries it), so it is
+    // only meaningful for a session running on the profile it was written for.
+    // Applying it to a session on another provider would hand that provider a
+    // model id it does not serve — the exact misroute this resolution exists to
+    // prevent.
+    const override = field === 'recap'
+      ? profile.recapModel
+      : field === 'commitMessage'
+        ? profile.commitMessageModel
+        : profile.id === defaultConfig.activeProfileId
+          ? defaultConfig.autoClassifierModel
+          : ''
+    return {
+      model: override || fallback,
+      baseUrl: profile.baseUrl,
+      authToken: profile.authToken,
+    }
   }
 
   /** Snapshot of the in-memory message history for a live session.

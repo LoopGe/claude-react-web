@@ -4,8 +4,9 @@
  * When a session is in 'auto' mode, every tool call that isn't on the
  * safe-allowlist passes through this classifier. A fast/cheap model
  * evaluates whether the action is safe and returns an allow/block
- * decision: `config.autoClassifierModel` when set, else the session's own
- * model. There is no hardcoded fallback model.
+ * decision: the session's resolved target model (the global
+ * `config.autoClassifierModel` when set, else the session's model group haiku
+ * tier, else the session's own model). There is no hardcoded fallback model.
  *
  * Design principles:
  *   - Fail-closed: every error, timeout, or parse failure → fall back
@@ -17,7 +18,7 @@
  *     action are sent, keeping latency and cost low.
  */
 
-import { callAnthropicMessages } from './anthropic-api.js'
+import { callAnthropicMessages, type AuxLlmTarget } from './anthropic-api.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
 import { config } from './config.js'
@@ -157,12 +158,14 @@ export async function classifyToolAction(params: {
   messages: Array<{ role: string; content: string }>
   cwd: string
   signal?: AbortSignal
-  /** Fallback model when `config.autoClassifierModel` is empty: the session's
-   *  model group's haiku tier when it has an active group, else the session's
-   *  own model. Resolved by SessionManager.auxFallbackModelFor(). */
-  fallbackModel?: string
+  /** Endpoint + credential + model for THIS session, from
+   *  SessionManager.auxTargetFor('classifier'): the session's own profile
+   *  credentials, and `config.autoClassifierModel` (global — it has no
+   *  per-profile field) else the session's model group haiku tier else its own
+   *  model. */
+  target?: AuxLlmTarget
 }): Promise<ClassifierResult> {
-  const { toolName, toolInput, messages, cwd, signal, fallbackModel } = params
+  const { toolName, toolInput, messages, cwd, signal, target } = params
 
   // Abort check before spending tokens
   if (signal?.aborted) {
@@ -198,8 +201,9 @@ export async function classifyToolAction(params: {
     : timeoutSignal
 
   try {
-    // Priority: config override > session aux fallback model > fail-closed
-    const model = config.autoClassifierModel || fallbackModel
+    // Priority: the session target's resolved model (config override → group
+    // haiku tier → session model) > fail-closed
+    const model = target?.model
     if (!model) {
       return { allow: false, reason: 'No classifier model configured and session has no model' }
     }
@@ -207,6 +211,7 @@ export async function classifyToolAction(params: {
 
     const response = await callAnthropicMessages({
       model,
+      target,
       system: CLASSIFIER_SYSTEM_PROMPT,
       userContent: userPrompt,
       maxTokens: 32,
