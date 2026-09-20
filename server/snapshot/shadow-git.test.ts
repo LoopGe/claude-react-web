@@ -1,0 +1,88 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { mkdtemp, mkdir, writeFile, readFile, rm, access, copyFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { odbDir, metaFile, snapshotRoot } from './paths.js'
+import {
+  initShadowRepo, captureTree, nameOnlyDiff, treeHasPath,
+  restorePaths, deletePaths,
+} from './shadow-git.js'
+
+const execFileAsync = promisify(execFile)
+
+async function git(cwd: string, args: string[]) {
+  return execFileAsync('git', args, { cwd })
+}
+
+describe('paths', () => {
+  it('nests odb and meta under stateDir/snapshots', () => {
+    const root = '/state'
+    expect(snapshotRoot(root)).toBe(join(root, 'snapshots'))
+    expect(odbDir(root, 'abc')).toBe(join(root, 'snapshots', 'odb', 'abc'))
+    expect(metaFile(root, 'abc')).toBe(join(root, 'snapshots', 'meta', 'abc.json'))
+  })
+})
+
+describe('shadow-git capture/restore', () => {
+  let worktree: string
+  let sourceGitDir: string
+  let gitDir: string
+  let repo: { gitDir: string; worktree: string; scope: string }
+
+  beforeAll(async () => {
+    worktree = await mkdtemp(join(tmpdir(), 'snap-wt-'))
+    await git(worktree, ['init'])
+    await git(worktree, ['config', 'user.email', 't@t.test'])
+    await git(worktree, ['config', 'user.name', 'T'])
+    await git(worktree, ['config', 'commit.gpgsign', 'false'])
+    await mkdir(join(worktree, 'scope'), { recursive: true })
+    await writeFile(join(worktree, 'scope', 'a.txt'), 'one\n')
+    await writeFile(join(worktree, 'outside.txt'), 'out\n')
+    await git(worktree, ['add', '.'])
+    await git(worktree, ['commit', '-m', 'init'])
+    const common = (await git(worktree, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).stdout.trim()
+    sourceGitDir = (await git(worktree, ['rev-parse', '--path-format=absolute', '--git-dir'])).stdout.trim()
+    gitDir = join(worktree, '.snap-odb')
+    await initShadowRepo({
+      gitDir,
+      worktree,
+      scope: 'scope',
+      sourceCommonDir: common,
+    })
+    repo = { gitDir, worktree, scope: 'scope' }
+  })
+
+  afterAll(async () => {
+    await rm(worktree, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it('captures only the cwd scope and ignores outside changes', async () => {
+    const t1 = await captureTree(repo, { sourceGitDir })
+    expect(t1).toBeTruthy()
+    await writeFile(join(worktree, 'scope', 'a.txt'), 'two\n')
+    await writeFile(join(worktree, 'scope', 'new.txt'), 'n\n')
+    await writeFile(join(worktree, 'outside.txt'), 'changed\n')
+    const t2 = await captureTree(repo, { sourceGitDir })
+    const files = await nameOnlyDiff(repo, t1!, t2!)
+    expect(files.sort()).toEqual(['scope/a.txt', 'scope/new.txt'])
+  })
+
+  it('restores tracked content and deletes paths absent from the start tree', async () => {
+    // Reset scope to baseline so t1 captures the original content
+    await writeFile(join(worktree, 'scope', 'a.txt'), 'one\n')
+    await rm(join(worktree, 'scope', 'new.txt')).catch(() => {})
+    // Re-seed the shadow index from the source so captureTree sees the baseline
+    await copyFile(join(sourceGitDir, 'index'), join(gitDir, 'index')).catch(() => {})
+    const t1 = await captureTree(repo, { sourceGitDir })
+    await writeFile(join(worktree, 'scope', 'a.txt'), 'three\n')
+    await writeFile(join(worktree, 'scope', 'born.txt'), 'x\n')
+    const hasBorn = await treeHasPath(repo, t1!, 'scope/born.txt')
+    expect(hasBorn).toBe(false)
+    await restorePaths(repo, t1!, ['scope/a.txt'])
+    await deletePaths(repo, [join(worktree, 'scope', 'born.txt')])
+    expect(await readFile(join(worktree, 'scope', 'a.txt'), 'utf8')).toBe('one\n')
+    await expect(access(join(worktree, 'scope', 'born.txt'))).rejects.toThrow()
+  })
+})
