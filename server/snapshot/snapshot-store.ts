@@ -88,6 +88,18 @@ export class SnapshotStore {
       if (keepMessageIds.has(k)) byMessage[k] = v
     }
     const patches = src.patches.filter((p) => keepPatchMessageIds.has(p.messageId))
+    // NOTE: the fork inherits src.gitDir/worktree/scope, so it reuses the
+    // source's shadow odb at odb/<src.id>. This is deliberate for v1: the
+    // inherited byMessage/patches reference tree SHAs that live in the
+    // source's odb, and the fork needs them to honor rewinds to inherited
+    // anchors. The trade-off is a theoretical concurrency risk — if the
+    // source's fire-and-forget captureAnchor is still in flight after
+    // discard, it writes to odb/<src.id> while the fork's captures also
+    // write there, racing on the git index lockfile. In practice
+    // captureAnchor finishes in <500ms and discard runs after the turn
+    // completes, so the race window is negligible. A future hardening
+    // pass should copy the odb directory to odb/<toId> and rewrite
+    // gitDir, eliminating the race while preserving inherited SHAs.
     await this.save(toId, { ...src, byMessage, patches, last: undefined })
   }
 

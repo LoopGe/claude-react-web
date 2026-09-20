@@ -603,6 +603,14 @@ export interface PumpDeps {
    *  `assistantUuid` is the turn's last assistant uuid (positions the result
    *  in the seed). Fire-and-forget on the turn path. */
   recordResultFrame?: (sessionId: string, resultUuid: string, assistantUuid: string, result: SDKMessage) => void
+  /** Capture the end-of-turn worktree state and append a patch (the diff
+   *  from the previous tree to this one) to the snapshot sidecar. Pairs
+   *  with `recordTurnAnchor`/`recordResultFrame` on the success-result
+   *  path. Fire-and-forget: a missed patch only means that turn's file
+   *  mutations aren't separately rewindable (the previous anchor still
+   *  is). Optional so test fixtures that don't exercise snapshot behavior
+   *  can omit it. */
+  recordTurnSnapshot?: (sessionId: string, assistantUuid: string) => void
   /** Reference to the broadcaster — needed by the mutating-tool detector
    *  to schedule a debounced git-snapshot broadcast after Claude
    *  runs Edit/Write/NotebookEdit/Bash. Optional so test fixtures that
@@ -1254,6 +1262,16 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             if (resultUuid && session.lastAssistantUuid) {
               deps.recordResultFrame?.(session.id, resultUuid, session.lastAssistantUuid, msg)
             }
+          }
+          // Capture the end-of-turn worktree state and append a patch (the
+          // diff from the previous tree to this one) to the snapshot sidecar.
+          // Pairs with the anchor captured at send time: the patch records
+          // what this turn's tool edits changed, so a rewind-to-anchor can
+          // restore the pre-turn state. Fire-and-forget like the anchor/
+          // result-frame writes; a missed patch only means this turn's
+          // mutations aren't separately rewindable.
+          if (!emptyResult && session.lastAssistantUuid) {
+            deps.recordTurnSnapshot?.(session.id, session.lastAssistantUuid)
           }
           const moreQueued = session.handle.queueDepth > 0
           log.debug(

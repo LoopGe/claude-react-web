@@ -21,6 +21,13 @@ const execFileAsync = promisify(execFile)
 
 export interface SnapshotServiceOptions {
   stateDir: string
+  /** Optional injected store. When omitted, the service constructs its own
+   *  `SnapshotStore` backed by `stateDir`. Callers that also need direct
+   *  access to the store (e.g. SessionManager constructs both a
+   *  `SnapshotStore` for `copyForFork`/`remove` AND a `SnapshotService`
+   *  for capture/rewind) pass the same store here so the two references
+   *  share one underlying file writer — avoiding double-write races. */
+  store?: SnapshotStore
   fileSnapshots?: boolean
   maxUntrackedBytes?: number
 }
@@ -96,7 +103,7 @@ export class SnapshotService {
 
   constructor(opts: SnapshotServiceOptions) {
     this.stateDir = opts.stateDir
-    this.store = new SnapshotStore(opts.stateDir)
+    this.store = opts.store ?? new SnapshotStore(opts.stateDir)
     this.fileSnapshots = opts.fileSnapshots !== false
     this.maxUntrackedBytes = opts.maxUntrackedBytes ?? 2 * 1024 * 1024
   }
@@ -219,17 +226,26 @@ export class SnapshotService {
 
   /**
    * Append a patch for an assistant turn.
-   * Uses meta.last?.tree as the start; if the nameOnlyDiff is non-empty,
-   * pushes { messageId: assistantUuid, hash: prevTree, files: abs paths }
-   * and updates last to endTree.
+   * Uses `prevTree` (the last tree BEFORE this turn's capture overwrote
+   * it) as the diff start; if the nameOnlyDiff is non-empty, pushes
+   * { messageId: assistantUuid, hash: prevTree, files: abs paths } and
+   * updates last to endTree. If `prevTree` is omitted, falls back to
+   * `meta.last?.tree` (caller must ensure capture hasn't just run and
+   * overwritten it — otherwise the diff is `endTree → endTree` = empty).
    * The session pump serializes turn-finish calls, so no additional lock
    * is needed here (only capture and rewind are concurrent-safe via lock).
    */
-  async appendPatch(sessionId: string, assistantUuid: string, endTree: string): Promise<void> {
+  async appendPatch(
+    sessionId: string,
+    assistantUuid: string,
+    endTree: string,
+    prevTree?: string | null,
+  ): Promise<void> {
     const meta = await this.store.load(sessionId)
-    if (!meta?.gitDir || !meta.last?.tree) return
+    if (!meta?.gitDir) return
+    const start = prevTree ?? meta.last?.tree
+    if (!start) return
     const repo: ShadowRepo = { gitDir: meta.gitDir, worktree: meta.worktree, scope: meta.scope }
-    const start = meta.last.tree
     try {
       const files = await nameOnlyDiff(repo, start, endTree)
       if (files.length === 0) {

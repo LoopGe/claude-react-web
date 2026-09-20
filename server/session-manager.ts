@@ -29,6 +29,8 @@ import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
 import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
+import { SnapshotStore } from './snapshot/snapshot-store.js'
+import { SnapshotService, type RewindPreview } from './snapshot/snapshot-service.js'
 import { McpConfigStore } from './mcp-config.js'
 import { agentUnusableReason, normalizeAgentName, type AgentDefinitionStore } from './agent-definition-store.js'
 import { RecapManager } from './recap.js'
@@ -92,7 +94,7 @@ import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting
 import { isTerminalTaskStatus } from '../shared/tasks.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
-import { coerceRewindResult, type RewindFilesResult } from '../shared/rewind.js'
+import { type RewindFilesResult } from '../shared/rewind.js'
 import { coerceStructuredOutput, type StructuredRunRequest, type StructuredRunResult } from '../shared/structured.js'
 import { coerceReadFileOutput, type FileReadResult } from '../shared/read-file.js'
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
@@ -502,6 +504,21 @@ export class SessionManager {
   private promptUuidStore: PromptUuidStore
   private turnAnchorStore: TurnAnchorStore
   private resultFrameStore: ResultFrameStore
+  /** Sidecar store for shadow-repo file snapshots. Holds per-session
+   *  metadata (gitDir / worktree / scope / byMessage / patches / last)
+   *  used by SnapshotService and accessed directly here for fork/discard
+   *  copy + delete cleanup. Mirrors the promptUuid/turnAnchor/resultFrame
+   *  sidecar pattern: one store per manager, one file per session. */
+  private snapshotStore: SnapshotStore
+  /** Shadow-repo file-snapshot service. Captures worktree state at
+   *  user-message-send time (anchor) and at turn completion (patch), and
+   *  drives dry-run / real rewind from the recorded snapshots. Built
+   *  once per manager and shared across all sessions — per-session
+   *  state lives in the store sidecar. Constructed with the same
+   *  SnapshotStore as `snapshotStore` so direct writes (copyForFork /
+   *  remove) and service-driven writes (capture / recordAnchor /
+   *  appendPatch) share one writer per session. */
+  private snapshots: SnapshotService
   private mcpStore?: McpConfigStore
   private agentStore?: AgentDefinitionStore
   private providers: ProviderRegistry
@@ -552,6 +569,19 @@ export class SessionManager {
     this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
     this.turnAnchorStore = new TurnAnchorStore(this.store.getDir(), this.historyCap)
     this.resultFrameStore = new ResultFrameStore(this.store.getDir(), this.historyCap)
+    // Shadow-repo file snapshots: build the store and service against the
+    // same stateDir so direct copyForFork/remove and service-driven capture
+    // /rewind share one underlying writer per session. fileSnapshots /
+    // maxUntrackedBytes come from the boot-time config snapshot captured
+    // below as `defaultConfig`; reloads of config.json after construction
+    // do not propagate (same as historyCap / subagentHistoryCap).
+    this.snapshotStore = new SnapshotStore(this.store.getDir())
+    this.snapshots = new SnapshotService({
+      stateDir: this.store.getDir(),
+      store: this.snapshotStore,
+      fileSnapshots: defaultConfig.fileSnapshots,
+      maxUntrackedBytes: defaultConfig.fileSnapshotsMaxUntrackedBytes,
+    })
     this.mcpStore = opts.mcpConfigStore ?? new McpConfigStore()
     this.agentStore = opts.agentStore
     this.providers = opts.providers ?? createDefaultProviders({
@@ -1883,6 +1913,55 @@ export class SessionManager {
       }
     }
 
+    // Copy X's snapshot sidecar to Y, truncated to the cut point. Mirrors
+    // the turn-anchor + result-frame copy logic above:
+    //   - keepPatchMessageIds: the inherited anchor assistant uuids (only
+    //     patches for turns at/before the cut survive, so a rewind-to-
+    //     anchor on Y doesn't reference patches for dropped turns).
+    //   - keepMessageIds: the user-message uuids at/before the cut. The
+    //     promptUuids sidecar is in send order, and each user message
+    //     starts the next turn, so the first (anchorIdx + 1) entries
+    //     correspond to the kept turns. Combined with any user uuids in
+    //     the (rewritten) historySeed for full coverage when the seed is
+    //     available (ring or disk).
+    {
+      const keepPatchIds = new Set(inherited.map((a) => a.assistantUuid))
+      const keepMessageIds = new Set<string>()
+      // historySeed carries the rewritten user uuids (server uuids after
+      // rewriteSeedPromptUuids) — most accurate when present.
+      if (historySeed) {
+        for (const m of historySeed) {
+          if ((m as { type?: string }).type === 'user') {
+            const u = (m as { uuid?: string }).uuid
+            if (typeof u === 'string') keepMessageIds.add(u)
+          }
+        }
+      }
+      // promptUuids is the authority on send order. The in-memory list
+      // (liveX.promptUuids) is the freshest — the sidecar is only
+      // persisted on SDK echo, so a live session with un-echoed prompts
+      // has more entries in memory than on disk. Each user message
+      // starts the next turn, so the first (anchorIdx + 1) entries
+      // correspond to the kept turns. Fall back to the sidecar for
+      // dormant sources.
+      const inMemory = liveX?.promptUuids
+      if (inMemory && inMemory.length > 0) {
+        for (let i = 0; i <= anchorIdx && i < inMemory.length; i++) {
+          const u = inMemory[i].u
+          if (typeof u === 'string') keepMessageIds.add(u)
+        }
+      } else {
+        const sidecar = await this.promptUuidStore.load(id)
+        if (sidecar) {
+          for (let i = 0; i <= anchorIdx && i < sidecar.length; i++) {
+            const u = sidecar[i].u
+            if (typeof u === 'string') keepMessageIds.add(u)
+          }
+        }
+      }
+      await this.snapshotStore.copyForFork(id, forkInfo.id, keepMessageIds, keepPatchIds)
+    }
+
     // 4. Unload X. removeFromStore drops it from the sidebar (clear-style
     //    X→Y swap). deleteOriginal additionally unlinks X's transcript: we
     //    pass `terminated: true` so unload AWAITS the pump (the CLI
@@ -1897,6 +1976,7 @@ export class SessionManager {
       // assertion under full-suite load).
       await this.turnAnchorStore.remove(id)
       await this.resultFrameStore.remove(id)
+      await this.snapshotStore.remove(id)
       await this.promptUuidStore.remove(id)
     } else {
       await this.unload(id, { removeFromStore: true })
@@ -2594,6 +2674,16 @@ export class SessionManager {
       `input.queueDepth=${s.handle.queueDepth}, ` +
       `running=${s.running}, terminated=${s.terminated}`,
     )
+    // Capture the pre-turn worktree state as a snapshot anchor so this
+    // user message can be rewound to later. Fire-and-forget with an
+    // internal 2s timeout — the capture starts before dispatch (so it
+    // has a head start over the SDK's tool_use), but a slow git subprocess
+    // must not block the HTTP send path. On any failure (timeout, non-git
+    // cwd, git error) log.warn and continue; the anchor is best-effort,
+    // missing only the rewind-to-this-message option. Spec: capture before
+    // tools run — in practice the SDK takes 1–3s to start the first
+    // tool_use, while capture typically finishes in <500ms.
+    this.captureAnchor(id, s, userMsg.uuid!)
     this.dispatchUserMessage(s, userMsg)
     // dispatchUserMessage → pushToSession → stampReceivedAt stamps receivedAt
     // in place before this returns; cast once here so the route reads it
@@ -2616,8 +2706,31 @@ export class SessionManager {
       `[session ${id}] sendContent PRE-PUSH — blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
       `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
     )
+    this.captureAnchor(id, s, userMsg.uuid!)
     this.dispatchUserMessage(s, userMsg)
     return userMsg as SentUserMessage
+  }
+
+  /** Fire-and-forget snapshot capture + anchor recording for send/sendContent.
+   *  See `send()` for the rationale. Never throws to the caller. */
+  private captureAnchor(id: string, s: Session, userUuid: string): void {
+    const cwd = s.cwd
+    if (!cwd) return
+    void (async () => {
+      try {
+        // 2s timeout: a slow git subprocess must not leave the capture
+        // pending indefinitely — the lock would stall later captures for
+        // the same session. Resolve null on timeout; the capture Promise
+        // continues in the background and eventually releases the lock.
+        const tree = await Promise.race([
+          this.snapshots.capture({ sessionId: id, cwd }),
+          new Promise<null>((r) => setTimeout(() => r(null), 2000)),
+        ])
+        if (tree) await this.snapshots.recordAnchor(id, cwd, userUuid, tree)
+      } catch (err) {
+        log.warn(`[session ${id}] snapshot capture failed: ${(err as Error).message ?? err}`)
+      }
+    })()
   }
 
   /** Shared tail for send() and sendContent(): push into the SDK input
@@ -4542,46 +4655,45 @@ export class SessionManager {
   }
 
   /** Restore the session's tracked files to their state at user message
-   *  `messageId` (SDK Query.rewindFiles, requires enableFileCheckpointing —
-   *  on by default in the claude provider). `messageId` is the app-level
-   *  (server-minted) uuid the client knows; it is mapped to the SDK's
-   *  on-disk uuid via the in-memory promptUuids pairs. `dryRun: true`
-   *  previews the diff without touching files.
+   *  `messageId` via the shadow-repo snapshot sidecar. `messageId` is the
+   *  app-level (server-minted) user-message uuid the client knows; it is
+   *  the same key `captureAnchor` recorded for that message, so no SDK-uuid
+   *  mapping is needed. `dryRun: true` previews the diff without touching
+   *  files.
    *
-   *  Idle-only: rewinding mid-turn would race the running tool edits, so a
-   *  working/queued session gets a 409. A REAL (non-dry) rewind also fires
-   *  a git-snapshot push so open GitPanels refetch the now-changed worktree. */
+   *  Idle/dormant/terminated only: rewinding mid-turn would race the
+   *  running tool edits, so a working session gets a 409 on REAL rewind
+   *  (dryRun is allowed — it doesn't touch files). A REAL rewind also
+   *  fires a git-snapshot push so open GitPanels refetch the now-changed
+   *  worktree.
+   *
+   *  Does NOT require a live Query — the snapshot sidecar is the authority,
+   *  so dormant and terminated sessions can still rewind. This is the
+   *  deliberate shift from the prior SDK `Query.rewindFiles` path (which
+   *  required a live handle and mapped app uuid → SDK on-disk uuid). */
   async rewindFiles(id: string, messageId: string, opts?: { dryRun?: boolean }): Promise<RewindFilesResult> {
-    const s = this.requireLive(id)
-    switch (this.phaseOf(s)) {
-      case 'terminated':
-        throw new HttpError(410, `session ${id} is terminated`)
-      case 'dormant':
-        throw new HttpError(412, `session ${id} is dormant; resume it before rewinding`)
-      case 'working':
-        throw new HttpError(409, `session ${id} is working; wait for the turn to finish before rewinding`)
+    // Live or dormant — do NOT requireLive. The snapshot sidecar is the
+    // authority, so a dormant/terminated session can still rewind files.
+    const live = this.sessions.get(id)
+    const meta = live ?? this.store?.get(id)
+    if (!live && !meta) {
+      throw new HttpError(404, `session ${id} not found`)
     }
-    // Map the app-level uuid → the SDK on-disk uuid. The pair exists only
-    // once the SDK has echoed the prompt back (i.e. persisted it), which is
-    // exactly the precondition for a checkpoint existing at that message.
-    const sdkUuid = (s.promptUuids ?? []).find((e) => e.u === messageId && e.v != null)?.v
-    if (!sdkUuid) {
+    const phase = live ? this.phaseOf(live) : (meta?.terminated ? 'terminated' : 'dormant')
+    if (phase === 'working' && !opts?.dryRun) {
       throw new HttpError(
-        400,
-        `no checkpoint target for message ${messageId} — the message was sent before uuid tracking, hasn't been persisted yet, or is not a sent user prompt`,
+        409,
+        `session ${id} is working; wait for the turn to finish before rewinding`,
       )
     }
-    const fn = this.requireHandleMethod<(mid: string, options?: { dryRun?: boolean }) => Promise<unknown>>(
-      s,
-      'rewindFiles',
-      'file rewind',
-      'supportsRewindFiles',
-    )
-    const raw = await this.timeSdkControl(id, 'rewindFiles', () => fn(sdkUuid, opts))
-    const result = coerceRewindResult(raw)
+    // The snapshot service is the authority — no SDK uuid mapping, no live
+    // Query required.  Returns RewindPreview; we narrow to the wire shape.
+    const preview: RewindPreview = opts?.dryRun
+      ? await this.snapshots.dryRun(id, messageId)
+      : await this.snapshots.rewind(id, messageId)
     // A real rewind rewrote the worktree — nudge git consumers to refetch.
-    if (result.canRewind && !opts?.dryRun) this.broadcastGitStatusChanged(id)
-    return result
+    if (preview.canRewind && !opts?.dryRun) this.broadcastGitStatusChanged(id)
+    return narrowRewindPreview(preview)
   }
 
   /** Read a file's content (SDK Query.readFile) via a live session — gated by
@@ -4998,6 +5110,8 @@ export class SessionManager {
     void this.turnAnchorStore.remove(id)
     // And the result-frame sidecar (per-turn result summaries).
     void this.resultFrameStore.remove(id)
+    // And the snapshot sidecar (shadow-repo file snapshots + anchors).
+    void this.snapshotStore.remove(id)
     // Drop any stored recap — otherwise a new session that happens to
     // reuse this id (rare, but possible under --state-dir swaps) would
     // see the old summary. unload() already calls invalidate() but we
@@ -5737,6 +5851,34 @@ export class SessionManager {
           // summary (cost/duration) won't show on resume.
           void this.resultFrameStore.append(sessionId, { resultUuid, assistantUuid, result })
         },
+        recordTurnSnapshot: (sessionId, assistantUuid) => {
+          // Fire-and-forget on the turn path; a missed patch only means
+          // this turn's file mutations aren't separately rewindable. The
+          // service's internal lock serializes against any concurrent
+          // rewind for the same session.
+          const session = this.sessions.get(sessionId)
+          const cwd = session?.cwd
+          if (!cwd) return
+          void (async () => {
+            try {
+              // Read the previous last tree BEFORE capture overwrites it
+              // — capture() sets meta.last.tree = endTree, so reading
+              // after would make appendPatch's diff endTree→endTree =
+              // empty. Passing the prev explicitly keeps the diff correct.
+              // (There's a small race if another capture lands between
+              // this load and our capture, but the per-session lock
+              // inside capture serializes them — the load reads what the
+              // previous capture left, which is the pre-turn tree.)
+              const prevMeta = await this.snapshotStore.load(sessionId)
+              const prev = prevMeta?.last?.tree
+              const end = await this.snapshots.capture({ sessionId, cwd })
+              if (!end) return
+              await this.snapshots.appendPatch(sessionId, assistantUuid, end, prev)
+            } catch (err) {
+              log.warn(`[session ${sessionId}] turn snapshot failed: ${(err as Error).message ?? err}`)
+            }
+          })()
+        },
       }
     }
     return this.cachedPumpDeps
@@ -6166,4 +6308,24 @@ export class SessionManager {
     return true
   }
 
+}
+
+/** Narrow a SnapshotService `RewindPreview` (the in-house shadow-repo
+ *  rewind result, which carries a structured `diffs` array) into the
+ *  wire `RewindFilesResult` shape the client already consumes. The
+ *  client doesn't render the structured diffs from this endpoint (it
+ *  pulls them via the separate diff route), so we drop `diffs` and keep
+ *  only the fields the wire type promises. `skippedLinks` is always
+ *  absent (the shadow-repo path has no symlink/hard-link safety
+ *  refusal), and the rest passes through verbatim. */
+function narrowRewindPreview(p: RewindPreview): RewindFilesResult {
+  const out: RewindFilesResult = { canRewind: p.canRewind === true }
+  if (typeof p.error === 'string' && p.error) out.error = p.error
+  if (Array.isArray(p.filesChanged) && p.filesChanged.length > 0) {
+    out.filesChanged = p.filesChanged.filter((f): f is string => typeof f === 'string' && !!f)
+    if (out.filesChanged.length === 0) delete out.filesChanged
+  }
+  if (typeof p.insertions === 'number' && Number.isFinite(p.insertions)) out.insertions = p.insertions
+  if (typeof p.deletions === 'number' && Number.isFinite(p.deletions)) out.deletions = p.deletions
+  return out
 }
