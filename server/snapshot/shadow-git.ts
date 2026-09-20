@@ -25,11 +25,16 @@ const BASE_CONFIG: ReadonlyArray<readonly [string, string]> = [
   ['core.untrackedCache', 'true'],
 ]
 
-/** posix-style relative scope; '.' when cwd === worktree. Rejects escapes. */
+/** posix-style relative scope; '.' when cwd === worktree. Rejects escapes.
+ *  Normalises both paths to forward-slash so `relative()` is not confused
+ *  by mixed separators (e.g. git `--show-toplevel` returns `C:/…` while
+ *  Node `mkdtemp` returns `C:\…` on Windows). */
 export function scopeFromCwd(worktree: string, cwd: string): string | null {
-  const rel = relative(worktree, cwd)
+  const normWt = worktree.split(sep).join('/')
+  const normCwd = cwd.split(sep).join('/')
+  const rel = relative(normWt, normCwd).split(sep).join('/')
   if (rel.startsWith('..') || isAbsolute(rel)) return null
-  return rel.split(sep).join('/') || '.'
+  return rel || '.'
 }
 
 function args(repo: ShadowRepo, cmd: string[]): string[] {
