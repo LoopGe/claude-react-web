@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 import { buildStructuredRouter } from './structured.js'
+import { setServerDefaultCwd } from '../default-cwd.js'
 import { HttpError, createErrorHandler } from '../errors.js'
 import type { SessionManager } from '../session-manager.js'
 import type { StructuredRunRequest } from '../../shared/structured.js'
@@ -149,5 +150,38 @@ describe('structured route', () => {
       body: JSON.stringify(VALID),
     })
     expect(res.status).toBe(408)
+  })
+})
+
+describe('structured route default cwd', () => {
+  function post(body: unknown) {
+    return {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  }
+
+  it('runs in the host default workspace when the body omits cwd', async () => {
+    // An unqualified run must not inherit the process directory — that is what
+    // the client's "(default)" placeholder means.
+    setServerDefaultCwd('/resolved/by/boot')
+    const { app, sm } = makeApp(() => ({ ok: true, structuredOutput: { x: 1 } }))
+    const res = await app.request('/structured', post(VALID))
+    expect(res.status).toBe(200)
+    expect(sm.runStructured).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: '/resolved/by/boot' }),
+      expect.anything(),
+    )
+  })
+
+  it('keeps an explicit cwd', async () => {
+    setServerDefaultCwd('/resolved/by/boot')
+    const { app, sm } = makeApp(() => ({ ok: true, structuredOutput: { x: 1 } }))
+    await app.request('/structured', post({ ...VALID, cwd: '/explicit' }))
+    expect(sm.runStructured).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: '/explicit' }),
+      expect.anything(),
+    )
   })
 })

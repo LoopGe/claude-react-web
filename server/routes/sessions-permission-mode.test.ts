@@ -56,7 +56,12 @@ describe('session permission mode routes', () => {
     })
 
     expect(res.status).toBe(201)
-    expect(sm.create).toHaveBeenCalledWith({ settings: { hooks } }, undefined, undefined, false)
+    expect(sm.create).toHaveBeenCalledWith(
+      expect.objectContaining({ settings: { hooks } }),
+      undefined,
+      undefined,
+      false,
+    )
   })
 
   it('rejects unsupported hooks inside create-time settings', async () => {
@@ -95,7 +100,12 @@ describe('session create body validation (narrowCreateBody)', () => {
     const { app, sm } = makeApp()
     const res = await post(app, { model: 'claude-sonnet-4-6' })
     expect(res.status).toBe(201)
-    expect(sm.create).toHaveBeenCalledWith({ model: 'claude-sonnet-4-6' }, undefined, undefined, false)
+    expect(sm.create).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'claude-sonnet-4-6' }),
+      undefined,
+      undefined,
+      false,
+    )
   })
 
   it('rejects non-string cwd / title / pathToClaudeCodeExecutable', async () => {
@@ -179,7 +189,12 @@ describe('session create body validation (narrowCreateBody)', () => {
     const { app, sm } = makeApp()
     const res = await post(app, { someFutureOption: true, model: 'claude-sonnet-4-6' })
     expect(res.status).toBe(201)
-    expect(sm.create).toHaveBeenCalledWith({ someFutureOption: true, model: 'claude-sonnet-4-6' }, undefined, undefined, false)
+    expect(sm.create).toHaveBeenCalledWith(
+      expect.objectContaining({ someFutureOption: true, model: 'claude-sonnet-4-6' }),
+      undefined,
+      undefined,
+      false,
+    )
   })
 
   it('rejects a non-boolean firstPartyTools value', async () => {

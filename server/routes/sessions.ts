@@ -1,6 +1,7 @@
 // Session routes: CRUD, messaging, control, MCP/plugin per-session, queries.
 
 import { Hono } from 'hono'
+import { serverDefaultCwd, withDefaultCwd } from '../default-cwd.js'
 import { isAbsolute } from 'node:path'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
 import { SessionManager } from '../session-manager.js'
@@ -287,7 +288,12 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     if (enabledPlugins !== undefined) (rest as { enabledPlugins?: string[] }).enabledPlugins = enabledPlugins
     const narrowed = narrowCreateBody(rest)
     if (!narrowed.ok) return c.json({ error: narrowed.error }, 400)
-    const info = sm.create(narrowed.value as Options & { provider?: string }, customEnv as Record<string, string> | undefined, joinGroupOf as string | undefined, evicting)
+    // The default workspace is advertised by GET /api/config; applying it here
+    // is what makes "advertised" and "actual" the same thing. Without it a
+    // create that omitted cwd reached the SDK with no cwd at all, leaving the
+    // CLI to inherit whatever directory the host process happened to be in.
+    const createBody = withDefaultCwd(narrowed.value, serverDefaultCwd())
+    const info = sm.create(createBody as Options & { provider?: string }, customEnv as Record<string, string> | undefined, joinGroupOf as string | undefined, evicting)
     return c.json({ session: info }, 201)
   })
 

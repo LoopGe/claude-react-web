@@ -1,6 +1,7 @@
 // Config-related routes: setup, defaults, full config, update.
 
 import { Hono } from 'hono'
+import { serverDefaultCwd } from '../default-cwd.js'
 import { readFile } from 'node:fs/promises'
 import { dirname, join as joinPath } from 'node:path'
 import { claudeConfigDir } from '../claude-config-dir.js'
@@ -206,7 +207,9 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       firstPartyTools: serverConfig.firstPartyTools,
       allowSensitivePathEdits: serverConfig.allowSensitivePathEdits,
       defaults: {
-        cwd: process.cwd(),
+        // Same one authority as GET /api/config — this surface used to
+        // hardcode its own process.cwd() and disagree with it.
+        cwd: serverDefaultCwd(),
         model: serverConfig.defaultModel,
       },
     })

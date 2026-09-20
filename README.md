@@ -164,7 +164,7 @@ On first run a starter `~/.claude-react-web/config.json` is scaffolded. Set your
 | `--host <host>`                | Bind host (default: `127.0.0.1`). `0.0.0.0` allows LAN access and **requires** a web access token, auto-generated if `--token` is omitted                                         |
 | `--token <token>`              | Shared web access token. Visitors supply it once via `/?token=<token>` and a cookie is set. Pin a stable value here or as `accessToken` in `config.json`                          |
 | `-o, --open` / `--no-open`     | Open a browser on start (default: open)                                                                                                                                           |
-| `--cwd <path>`                 | Default cwd advertised to new sessions (informational)                                                                                                                            |
+| `--cwd <path>`                 | Default workspace for sessions created without a cwd                                                                                                                              |
 | `--model <name>`               | Default model advertised to new sessions (informational)                                                                                                                          |
 | `--state-dir <path>`           | Where session metadata and `config.json` live (default: `~/.claude-react-web`)                                                                                                    |
 | `--config <path>`              | Read/write `config.json` at an explicit path instead of `<state-dir>/config.json` (a leading `~` expands to the home dir). Handy to share one config across worktrees or dev/prod runs |
@@ -195,7 +195,7 @@ Options:
                        a stable value here or as "accessToken" in config.json.
   -o, --open           Open browser on start (default)
       --no-open        Do not open a browser window
-      --cwd <path>     Default cwd advertised to new sessions (informational)
+      --cwd <path>     Default workspace for sessions created without a cwd
       --model <name>   Default model advertised to new sessions (informational)
       --state-dir <p>  Where to keep session metadata and config.json
                        (default: ~/.claude-react-web)

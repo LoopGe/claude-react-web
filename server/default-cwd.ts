@@ -69,3 +69,67 @@ export async function pickLastUsedCwd(
   }
   return { cwd: opts.fallback, fellBack: true }
 }
+
+/**
+ * Apply the host's default workspace to a session-create body that did not
+ * specify one.
+ *
+ * Without this the default is only *advertised* (`GET /api/config` →
+ * `defaults.cwd`) and never applied: `POST /sessions` forwards the body's
+ * `cwd` straight through, and the provider sets `sdkOptions.cwd` only when it
+ * is not `undefined`, so an omitted cwd leaves the SDK to fall back to
+ * whatever directory the host process happens to be in.
+ *
+ * A blank string counts as omitted: `''` is not `undefined`, so passing it
+ * through would hand the SDK an empty cwd instead of a fallback.
+ *
+ * Returns a copy — the caller's body is never mutated.
+ */
+export function withDefaultCwd(
+  body: Record<string, unknown>,
+  defaultCwd: string,
+): Record<string, unknown> & { cwd: string } {
+  const cwd = body.cwd
+  if (typeof cwd === 'string' && cwd.trim() !== '') return { ...body, cwd }
+  return { ...body, cwd: defaultCwd }
+}
+
+/**
+ * The workspace a host is entitled to default to: the path it named, when that
+ * path is a real one, otherwise the process directory.
+ *
+ * A blank name counts as none. `--cwd ""` — an unset shell variable, say —
+ * would otherwise be stored as the default and then handed to the SDK as an
+ * explicit empty cwd, bypassing the SDK's own fallback exactly as a blank body
+ * cwd would.
+ */
+export function coerceHostCwd(hostCwd: string | undefined): string {
+  return hostCwd?.trim() ? hostCwd : process.cwd()
+}
+
+/**
+ * The one resolved default workspace for this server process.
+ *
+ * Resolved exactly once by `createServerContext`: `opts.cwd` when the host
+ * supplied one (the CLI's `--cwd`, or a desktop host's last-used workspace),
+ * otherwise `process.cwd()`. Everything that advertises or applies a default
+ * reads it from here, so `GET /api/config`, `GET /api/config/full`,
+ * `GET /api/fs/home` and session creation cannot disagree — which they did
+ * while each computed its own `process.cwd()`.
+ *
+ * Module state rather than a threaded parameter, matching how `loadConfig`
+ * resolves `serverConfig` for the routes: there is no argument a new caller
+ * can forget to pass.
+ */
+let resolvedDefaultCwd: string | undefined
+
+/** Set once, from `createServerContext`. */
+export function setServerDefaultCwd(cwd: string): void {
+  resolvedDefaultCwd = cwd
+}
+
+/** The host's default workspace. Falls back to `process.cwd()` only when boot
+ *  never ran (standalone router construction, tests). */
+export function serverDefaultCwd(): string {
+  return resolvedDefaultCwd ?? process.cwd()
+}

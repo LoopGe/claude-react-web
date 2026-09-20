@@ -13,6 +13,7 @@ import { HttpError } from '../errors.js'
 import { createLogger } from '../log.js'
 import { permissionModeList } from '../permission-modes.js'
 import { safeJson } from './index.js'
+import { serverDefaultCwd } from '../default-cwd.js'
 import type { StructuredPermissionMode, StructuredRunRequest } from '../../shared/structured.js'
 
 const log = createLogger('structured')
@@ -77,6 +78,11 @@ export function buildStructuredRouter(sm: SessionManager, opts: { timeoutMs?: nu
 
   app.post('/structured', async (c) => {
     const req = validateBody(await safeJson(c.req))
+    // An unqualified run uses the host's declared workspace, exactly like a
+    // session create — otherwise it inherits whatever directory the process
+    // happens to be in (for a GUI host, its install or home dir). This is what
+    // the client's "(default)" placeholder means.
+    if (req.cwd === undefined) req.cwd = serverDefaultCwd()
 
     if (active >= MAX_CONCURRENT) {
       throw new HttpError(429, `too many concurrent structured runs (max ${MAX_CONCURRENT})`)

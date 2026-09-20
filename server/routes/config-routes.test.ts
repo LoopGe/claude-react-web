@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildConfigRouter } from './config-routes.js'
+import { setServerDefaultCwd } from '../default-cwd.js'
 import { setConfigPath } from '../config.js'
 import type { SessionManager } from '../session-manager.js'
 
@@ -83,6 +84,23 @@ describe('config routes — setup honors --config override', () => {
       setConfigPath(undefined)
       rmSync(stateDir, { recursive: true, force: true })
       rmSync(altDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('config routes — full defaults', () => {
+  it('reports the host resolved default workspace, not a fresh process.cwd()', async () => {
+    // This surface hardcoded its own process.cwd() and so disagreed with
+    // GET /api/config about what the default workspace was.
+    setServerDefaultCwd('/resolved/by/boot')
+    const stateDir = mkdtempSync(join(tmpdir(), 'crw-cfgfull-'))
+    try {
+      const res = await buildConfigRouter({} as unknown as SessionManager, stateDir).request('/config/full')
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { defaults?: { cwd?: string } }
+      expect(body.defaults?.cwd).toBe('/resolved/by/boot')
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true })
     }
   })
 })

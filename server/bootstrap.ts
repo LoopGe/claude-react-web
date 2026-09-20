@@ -12,6 +12,7 @@ import { buildApp } from './app.js'
 import { loadConfig } from './config.js'
 import { createLogger } from './log.js'
 import { SessionStore } from './persistence.js'
+import { coerceHostCwd, setServerDefaultCwd } from './default-cwd.js'
 import { McpConfigStore } from './mcp-config.js'
 import { AgentDefinitionStore } from './agent-definition-store.js'
 import { SessionManager } from './session-manager.js'
@@ -163,6 +164,18 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
   await appPluginManager.initialize()
   if (!appPluginsEnabled) log.info('app plugins disabled')
 
+  // The single default workspace for this process, resolved once. Every
+  // surface that advertises or applies a default — GET /api/config,
+  // GET /api/config/full, GET /api/fs/home, and session creation — reads it
+  // back through serverDefaultCwd(), so they cannot disagree. They used to,
+  // because each computed its own `process.cwd()`.
+  // The single default workspace for this process, resolved once. Every
+  // surface that advertises or applies a default — GET /api/config,
+  // GET /api/config/full, GET /api/fs/home, and session creation — reads it
+  // back through serverDefaultCwd(), so they cannot disagree. They used to,
+  // because each computed its own `process.cwd()`.
+  setServerDefaultCwd(coerceHostCwd(opts.cwd))
+
   const { app } = buildApp({
     sessionManager,
     sessionStore: store,
@@ -174,7 +187,7 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
     mpStore,
     appPluginManager: appPluginsEnabled ? appPluginManager : undefined,
     appPluginMarketplaceStore: appPluginsEnabled ? appPluginMarketplaceStore : undefined,
-    defaults: { cwd: opts.cwd, model: opts.model, claudeBinary },
+    defaults: { model: opts.model, claudeBinary },
     configDir: stateDir,
     bind: opts.bind,
   })

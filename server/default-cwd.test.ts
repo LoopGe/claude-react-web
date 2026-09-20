@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest'
-import { pickLastUsedCwd, type CwdCandidate } from './default-cwd.js'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  coerceHostCwd,
+  pickLastUsedCwd,
+  serverDefaultCwd,
+  setServerDefaultCwd,
+  withDefaultCwd,
+  type CwdCandidate,
+} from './default-cwd.js'
 
 const FALLBACK = '/home/me'
 
@@ -138,5 +145,86 @@ describe('pickLastUsedCwd', () => {
       cwd: FALLBACK,
       fellBack: false,
     })
+  })
+})
+
+describe('withDefaultCwd', () => {
+  const DEFAULT = '/default'
+
+  it('applies the default when the body omits cwd', () => {
+    expect(withDefaultCwd({}, DEFAULT)).toEqual({ cwd: DEFAULT })
+  })
+
+  it('applies the default when cwd is explicitly undefined', () => {
+    expect(withDefaultCwd({ cwd: undefined }, DEFAULT)).toEqual({ cwd: DEFAULT })
+  })
+
+  it('applies the default when cwd is an empty string', () => {
+    // '' !== undefined, so without this it would reach the SDK as an empty
+    // cwd rather than falling back.
+    expect(withDefaultCwd({ cwd: '' }, DEFAULT)).toEqual({ cwd: DEFAULT })
+  })
+
+  it('applies the default when cwd is whitespace only', () => {
+    expect(withDefaultCwd({ cwd: '   ' }, DEFAULT)).toEqual({ cwd: DEFAULT })
+  })
+
+  it('keeps an explicit cwd', () => {
+    expect(withDefaultCwd({ cwd: '/explicit' }, DEFAULT)).toEqual({ cwd: '/explicit' })
+  })
+
+  it('does not trim an explicit cwd', () => {
+    // A directory name may legitimately contain spaces.
+    expect(withDefaultCwd({ cwd: '/my project' }, DEFAULT)).toEqual({ cwd: '/my project' })
+  })
+
+  it('returns every other body field untouched', () => {
+    expect(withDefaultCwd({ model: 'm', title: 't' }, DEFAULT)).toEqual({
+      model: 'm',
+      title: 't',
+      cwd: DEFAULT,
+    })
+  })
+
+  it('does not mutate the body it was given', () => {
+    const body: { model: string; cwd?: string } = { model: 'm' }
+    withDefaultCwd(body, DEFAULT)
+    expect(body).toEqual({ model: 'm' })
+  })
+})
+
+describe('coerceHostCwd', () => {
+  it('falls back to process.cwd() when the host named none', () => {
+    expect(coerceHostCwd(undefined)).toBe(process.cwd())
+  })
+
+  it('falls back to process.cwd() for a blank name', () => {
+    // `--cwd ""` (an unset shell variable) is not a workspace; storing it would
+    // hand the SDK an explicit empty cwd, bypassing its own fallback.
+    expect(coerceHostCwd('')).toBe(process.cwd())
+    expect(coerceHostCwd('   ')).toBe(process.cwd())
+  })
+
+  it('returns a named path unchanged', () => {
+    expect(coerceHostCwd('/work/proj')).toBe('/work/proj')
+  })
+
+  it('does not trim a named path', () => {
+    expect(coerceHostCwd(' /work/proj ')).toBe(' /work/proj ')
+  })
+})
+
+describe('serverDefaultCwd', () => {
+  it('falls back to process.cwd() before boot has resolved one', async () => {
+    // A fresh module instance, so this asserts the pre-boot state no matter
+    // what other tests in this file (or a shuffled run) have already set.
+    vi.resetModules()
+    const fresh = await import('./default-cwd.js')
+    expect(fresh.serverDefaultCwd()).toBe(process.cwd())
+  })
+
+  it('returns the value boot resolved', () => {
+    setServerDefaultCwd('/resolved/by/boot')
+    expect(serverDefaultCwd()).toBe('/resolved/by/boot')
   })
 })

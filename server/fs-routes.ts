@@ -16,6 +16,7 @@
 
 import { Hono, type Context } from 'hono'
 import { createErrorHandler } from './errors.js'
+import { serverDefaultCwd } from './default-cwd.js'
 import { readdir, stat, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, resolve as resolvePath, sep } from 'node:path'
@@ -63,7 +64,9 @@ export function buildFsRouter(): Hono {
   app.get('/home', (c) => {
     return c.json({
       home: homedir(),
-      cwd: process.cwd(),
+      // The host's resolved default workspace, not a fresh process.cwd() — the
+      // picker's start point and the new-session prefill must agree.
+      cwd: serverDefaultCwd(),
       sep,
     })
   })

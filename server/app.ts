@@ -3,6 +3,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { bodyLimit } from 'hono/body-limit'
+import { serverDefaultCwd } from './default-cwd.js'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve as resolvePath } from 'node:path'
@@ -105,8 +106,10 @@ export interface AppOptions {
   appPluginMarketplaceStore?: AppPluginMarketplaceStore
   /** Default values exposed via GET /api/config (used by the "new session" form).
    *  `claudeBinary` is NOT exposed to the UI — it's a server-side concern
-   *  that gets injected into every Query via options.pathToClaudeCodeExecutable. */
-  defaults?: { cwd?: string; model?: string; claudeBinary?: string }
+   *  that gets injected into every Query via options.pathToClaudeCodeExecutable.
+   *  The default workspace is NOT here: it lives in one place
+   *  (`serverDefaultCwd()`), so no surface can advertise a different one. */
+  defaults?: { model?: string; claudeBinary?: string }
   /** State directory containing config.json. Passed to the API router
    *  so the setup endpoint can write config changes to disk. */
   configDir?: string
@@ -240,7 +243,9 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     c.json({
       configured: !!serverConfig.authToken,
       defaults: {
-        cwd: opts.defaults?.cwd ?? process.cwd(),
+        // One authority: resolved once by createServerContext. This route,
+        // /config/full, /fs/home and session creation all read the same value.
+        cwd: serverDefaultCwd(),
         model: opts.defaults?.model ?? serverConfig.defaultModel,
       },
       models: serverConfig.modelList,

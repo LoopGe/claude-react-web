@@ -125,7 +125,8 @@ Options:
                        a stable value here or as "accessToken" in config.json.
   -o, --open           Open browser on start (default)
       --no-open        Do not open a browser window
-      --cwd <path>     Default cwd advertised to new sessions (informational)
+      --cwd <path>     Default workspace for sessions created without a cwd
+                       (also what the new-session form pre-fills)
       --model <name>   Default model advertised to new sessions (informational)
       --state-dir <p>  Where to keep session metadata and config.json
                        (default: ~/.claude-react-web)

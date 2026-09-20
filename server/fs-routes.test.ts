@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildFsRouter, validateFolderName } from './fs-routes.js'
+import { setServerDefaultCwd } from './default-cwd.js'
 import { tempDir, json } from './__test-utils__/index.js'
 
 describe('fs-routes', () => {
@@ -68,6 +69,17 @@ describe('fs-routes', () => {
       expect(body).toHaveProperty('sep')
       expect(typeof body.home).toBe('string')
       expect(typeof body.cwd).toBe('string')
+    })
+
+    it('returns the host resolved default workspace as the picker start point', async () => {
+      // Not a fresh process.cwd(): the picker's start point and the
+      // new-session prefill must agree, so both read the one authority.
+      setServerDefaultCwd('/resolved/by/boot')
+      const app = buildFsRouter()
+      const res = await app.request('/home')
+      expect(res.status).toBe(200)
+      const body = await json(res)
+      expect(body.cwd).toBe('/resolved/by/boot')
     })
   })
 

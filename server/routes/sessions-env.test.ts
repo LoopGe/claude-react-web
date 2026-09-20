@@ -42,8 +42,10 @@ describe('POST /sessions env validation', () => {
     const res = await create(app, { env: { MY_FLAG: '1' } })
     expect(res.status).toBe(201)
     // The route passes the env map as the SECOND argument to create(), not
-    // inside the options object (mirrors the agent-create tests).
-    expect(sm.create).toHaveBeenCalledWith({}, { MY_FLAG: '1' }, undefined, false)
+    // inside the options object (mirrors the agent-create tests). The options
+    // object is no longer empty: the route applies the host default cwd to any
+    // create that omits one, so this asserts only that the env stayed outside it.
+    expect(sm.create).toHaveBeenCalledWith(expect.any(Object), { MY_FLAG: '1' }, undefined, false)
   })
 
   // Flag settings carry their own `env` map and are forwarded straight to
