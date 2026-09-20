@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SnapshotStore, type SessionSnapshotMeta } from './snapshot-store.js'
@@ -43,7 +43,7 @@ describe('SnapshotStore', () => {
     expect(await store.load('s1')).toBeNull()
   })
 
-  it('update chains writes and filters fork copy', async () => {
+  it('update reads previous value through the write chain', async () => {
     await store.update('x', () =>
       empty({
         byMessage: { U1: { start: 'a' }, U2: { start: 'b' } },
@@ -53,11 +53,38 @@ describe('SnapshotStore', () => {
         ],
       }),
     )
+    const loaded = await store.load('x')
+    expect(loaded?.byMessage).toEqual({ U1: { start: 'a' }, U2: { start: 'b' } })
+    expect(loaded?.patches).toHaveLength(2)
+  })
+
+  it('copyForFork filters byMessage and patches to kept sets', async () => {
+    await store.save('x', empty({
+      byMessage: { U1: { start: 'a' }, U2: { start: 'b' } },
+      patches: [
+        { messageId: 'A1', hash: 'a', files: ['/w/f1'] },
+        { messageId: 'A2', hash: 'b', files: ['/w/f2'] },
+      ],
+    }))
     await store.copyForFork('x', 'y', new Set(['U1']), new Set(['A1']))
     const y = await store.load('y')
     expect(y?.byMessage).toEqual({ U1: { start: 'a' } })
     expect(y?.patches).toEqual([{ messageId: 'A1', hash: 'a', files: ['/w/f1'] }])
-    await store.remove('y')
-    expect(await store.load('y')).toBeNull()
+  })
+
+  it('copyForFork clears last', async () => {
+    await store.save('x', empty({
+      last: { tree: 'deadbeef', at: 1234567890 },
+    }))
+    await store.copyForFork('x', 'y', new Set(), new Set())
+    const y = await store.load('y')
+    expect(y?.last).toBeUndefined()
+  })
+
+  it('remove deletes the sidecar', async () => {
+    await store.save('x', empty())
+    expect(await store.load('x')).not.toBeNull()
+    await store.remove('x')
+    expect(await store.load('x')).toBeNull()
   })
 })
