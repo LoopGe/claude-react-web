@@ -2,7 +2,10 @@
 //
 // Construction of the server context (stores, SessionManager, Hono app) is
 // shared with the web launcher via server/bootstrap.ts. This host adds only:
-//   - a per-launch random state dir under userData
+//   - a state dir under userData (see boot()), isolated from the web build's
+//     own state
+//   - a default session workspace derived from the user's session history,
+//     because a GUI launch has no meaningful `process.cwd()` (see boot())
 //   - a custom `crw://` protocol that serves the built client and proxies
 //     /api/* into the in-process Hono app (no TCP port, no CORS surface)
 //   - MessageChannel-backed realtime: one SessionConnection per renderer,
@@ -14,9 +17,13 @@
 
 import { app, BrowserWindow, ipcMain, MessageChannelMain, protocol } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { extname, join, normalize, resolve as resolvePath, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServerContext, type ServerContext } from '../server/bootstrap.js'
+import { SessionStore } from '../server/persistence.js'
+import { pickLastUsedCwd } from '../server/default-cwd.js'
 import { SessionConnection } from '../server/frame-bridge.js'
 import { PortFrameSink } from './frame-sink-ipc.js'
 import { installAppMenu } from './menu.js'
@@ -168,7 +175,67 @@ function wireIpc(): void {
 
 }
 
+/** True when `path` is an existing directory a session could actually use.
+ *  Async on purpose: a recorded workspace can live on a disconnected network
+ *  drive or a hung SMB share, and a blocking stat there would freeze the main
+ *  thread for the mount timeout — before any window has opened, so the app
+ *  would just look dead. */
+async function isUsableDir(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The workspace to advertise as this host's default session cwd.
+ *
+ * This must not be `process.cwd()`. A packaged GUI app is launched with no
+ * meaningful working directory — macOS starts it in `/`, a Windows shortcut in
+ * the install directory — so the app has to *declare* a default rather than
+ * inherit an accident. `process.cwd()` remains the right fallback for the CLI
+ * (you ran it somewhere; that somewhere is your workspace), which is why this
+ * is solved here and not in the shared `buildApp` fallback.
+ *
+ * The honest answer is the workspace the user last worked in, so we read the
+ * persisted session index. `createServerContext` loads the same file into the
+ * real store a moment later; this read is read-only and discarded, so the
+ * duplication costs one extra parse at boot.
+ */
+async function resolveDefaultCwd(stateDir: string): Promise<string> {
+  const fallback = homedir()
+  try {
+    const sessions = await new SessionStore({ stateDir }).load()
+    const { cwd, fellBack } = await pickLastUsedCwd(sessions, { fallback, isUsableDir })
+    // Report which of the two happened rather than comparing values: the
+    // winning workspace may legitimately *be* the home directory, and this
+    // line is the only record of what the host actually chose.
+    log.info(
+      fellBack
+        ? `default cwd: ${cwd} (home — no usable session workspace)`
+        : `default cwd: ${cwd} (last used workspace)`,
+    )
+    return cwd
+  } catch (err) {
+    // A missing/corrupt index must never stop the host from booting; the
+    // SessionStore already treats ENOENT as empty, so this is belt-and-braces.
+    log.warn('could not derive default cwd from session history:', (err as Error).message)
+    return fallback
+  }
+}
+
 async function boot(): Promise<void> {
+  // Pin the process cwd before anything resolves a relative path. A GUI launch
+  // gives us `/` (macOS) or the install dir (Windows shortcuts), and anything
+  // that falls back to the process cwd — including an SDK subprocess spawned
+  // without an explicit cwd — would otherwise land there.
+  try {
+    process.chdir(homedir())
+  } catch (err) {
+    log.warn('could not chdir to home:', (err as Error).message)
+  }
+
   // Desktop state lives under userData, isolated from the web build's
   // ~/.claude-react-web so the two hosts never share sessions/config.
   const stateDir = join(app.getPath('userData'), 'state')
@@ -177,7 +244,8 @@ async function boot(): Promise<void> {
   // inside the bundle. resolveClaudeBinary() still honors CLAUDE_CODE_BINARY /
   // `which claude` for a system install, which is the right fallback here.
 
-  ctx = await createServerContext({ stateDir, appPlugins: true })
+  const cwd = await resolveDefaultCwd(stateDir)
+  ctx = await createServerContext({ stateDir, appPlugins: true, cwd })
   log.info(`desktop host ready (state=${stateDir})`)
 
   await registerProtocol()
