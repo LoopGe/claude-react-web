@@ -129,6 +129,10 @@ export class SnapshotService {
 
     const existing = await this.store.load(sessionId)
     if (existing?.gitDir) {
+      // Note: on reload, sourceGitDir points at the shadow odb (not the
+      // source repo's .git).  captureTree only uses it for check-ignore,
+      // which gracefully degrades — ignored files may slip into the snapshot
+      // but no incorrect restores occur.  Known limitation; acceptable for v1.
       return {
         repo: { gitDir: existing.gitDir, worktree: existing.worktree, scope: existing.scope },
         sourceGitDir: existing.gitDir,
@@ -201,23 +205,15 @@ export class SnapshotService {
 
   /**
    * Record an anchor: the tree captured just before a user message was sent.
-   * Call after `capture()` succeeds.
+   * Call after `capture()` succeeds.  No-ops when meta is missing or has no
+   * gitDir (capture must run first in the normal flow).
+   * The session pump serializes send → recordAnchor → appendPatch per turn,
+   * so no additional lock is needed here.
    */
-  async recordAnchor(sessionId: string, cwd: string, messageId: string, tree: string): Promise<void> {
+  async recordAnchor(sessionId: string, _cwd: string, messageId: string, tree: string): Promise<void> {
     await this.store.update(sessionId, (prev) => {
-      if (prev) {
-        return { ...prev, byMessage: { ...prev.byMessage, [messageId]: { start: tree } } }
-      }
-      // Edge case: called before first capture ever wrote meta.
-      const scope = scopeFromCwd(cwd, cwd) ?? '.'
-      return {
-        version: 1 as const,
-        gitDir: '',
-        worktree: cwd,
-        scope,
-        byMessage: { [messageId]: { start: tree } },
-        patches: [],
-      }
+      if (!prev?.gitDir) return prev ?? null
+      return { ...prev, byMessage: { ...prev.byMessage, [messageId]: { start: tree } } }
     })
   }
 
@@ -226,6 +222,8 @@ export class SnapshotService {
    * Uses meta.last?.tree as the start; if the nameOnlyDiff is non-empty,
    * pushes { messageId: assistantUuid, hash: prevTree, files: abs paths }
    * and updates last to endTree.
+   * The session pump serializes turn-finish calls, so no additional lock
+   * is needed here (only capture and rewind are concurrent-safe via lock).
    */
   async appendPatch(sessionId: string, assistantUuid: string, endTree: string): Promise<void> {
     const meta = await this.store.load(sessionId)

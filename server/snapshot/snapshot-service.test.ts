@@ -82,6 +82,12 @@ describe('SnapshotService', () => {
     expect(await svc.listAnchors('nonexistent')).toEqual([])
   })
 
+  it('recordAnchor is a no-op when no meta exists yet (capture must run first)', async () => {
+    await svc.recordAnchor('no-meta', wt, 'U1', 'fake-tree-hash')
+    const anchors = await svc.listAnchors('no-meta')
+    expect(anchors).toEqual([])
+  })
+
   it('appendPatch records changed files and updates last tree', async () => {
     const tree1 = await svc.capture({ sessionId: 's4', cwd: wt })
     expect(tree1).toBeTruthy()
