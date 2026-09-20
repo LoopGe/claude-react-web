@@ -124,6 +124,11 @@ export interface FullServerConfig {
   /** When true, acceptEdits/bypassPermissions also auto-approve edits/commands
    *  targeting sensitive config paths (.git/, .claude/, shell configs, …). */
   allowSensitivePathEdits: boolean
+  /** Enable shadow-repo file snapshots. Default: true. */
+  fileSnapshots: boolean
+  /** Maximum total bytes of untracked files the sidecar ingests per capture.
+   *  Default: 2 MiB. */
+  fileSnapshotsMaxUntrackedBytes: number
   defaults: Defaults
   /** All provider profiles (multi-profile mode). Undefined when profiles are disabled. */
   profiles?: ProviderProfile[]

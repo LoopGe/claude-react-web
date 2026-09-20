@@ -13,5 +13,7 @@
   "subagentHistoryCap": 300,
   "forwardSubagentText": true,
   "maxGroupPanels": 3,
-  "allowSensitivePathEdits": false
+  "allowSensitivePathEdits": false,
+  "fileSnapshots": true,
+  "fileSnapshotsMaxUntrackedBytes": 2097152
 }
