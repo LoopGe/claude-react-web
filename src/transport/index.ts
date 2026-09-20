@@ -8,7 +8,14 @@
 import { createWebTransport } from './web'
 import { createDesktopTransport, type DesktopRealtimeBridge } from './desktop'
 import type { Transport } from './types'
-import type { DesktopMenuCommand } from '../../shared/desktop-bridge'
+import type {
+  DesktopEditAction,
+  DesktopMenuCommand,
+  DesktopPlatform,
+  DesktopViewAction,
+  DesktopWindowAction,
+  TitlebarThemePayload,
+} from '../../shared/desktop-bridge'
 
 export { toApiError } from './types'
 export type {
@@ -20,16 +27,30 @@ export type {
   TransportRequestOptions,
 } from './types'
 
-export type { DesktopMenuCommand } from '../../shared/desktop-bridge'
+export type {
+  DesktopEditAction,
+  DesktopMenuCommand,
+  DesktopPlatform,
+  DesktopViewAction,
+  DesktopWindowAction,
+  TitlebarThemePayload,
+} from '../../shared/desktop-bridge'
 
 /** Bridge the desktop (Electron) preload exposes on window. The realtime
  *  channel is the only transport concern (desktop REST still goes through
  *  `fetch`, because the host proxies /api/* from the `crw://` custom scheme
- *  into the in-process app). `onMenu` is a UI concern carried on the same
- *  bridge; it is optional so a preload without it (or a test fake) still
- *  satisfies the type. */
+ *  into the in-process app). UI concerns (menu, window controls) ride the
+ *  same bridge and are optional so a preload without them (or a test fake)
+ *  still satisfies the type. */
 export interface DesktopBridge extends DesktopRealtimeBridge {
   onMenu?(handler: (command: DesktopMenuCommand) => void): () => void
+  platform?: DesktopPlatform
+  windowAction?(action: DesktopWindowAction): void
+  editAction?(action: DesktopEditAction): void
+  viewAction?(action: DesktopViewAction): void
+  setTitlebarTheme?(theme: TitlebarThemePayload): void
+  onMaximizeChange?(handler: (maximized: boolean) => void): () => void
+  requestMaximizeState?(): void
 }
 
 declare global {

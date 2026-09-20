@@ -1,11 +1,11 @@
 // Electron preload: the only bridge between the renderer and the desktop host.
 //
-// Exposes window.__CRW_DESKTOP__ — the REALTIME half of the transport only.
-// REST needs no bridge: the host serves the renderer from `crw://app` and
-// proxies /api/* into the in-process Hono app, so the client's ordinary
-// `fetch('/api/...')` works unchanged (with the same timeout/abort/error
-// semantics as the web build). Only the WebSocket has no equivalent, so the
-// realtime channel is bridged over a MessagePort.
+// Exposes window.__CRW_DESKTOP__ with:
+//   - the REALTIME half of the transport (MessagePort; REST still uses fetch
+//     against the host-proxied /api/* under `crw://app`)
+//   - UI concerns for the custom titlebar: platform, window/edit/view actions,
+//     caption-overlay theme sync, maximize-state mirror
+//   - native-menu command subscription (macOS/Linux menu bar → renderer)
 //
 // contextIsolation stays on: the renderer never sees ipcRenderer, Node, or the
 // host process, only this narrow typed surface.
@@ -13,7 +13,21 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import type { WsClientFrame } from '../shared/ws-protocol.js'
-import { DESKTOP_MENU_CHANNEL, type DesktopMenuCommand } from '../shared/desktop-bridge.js'
+import {
+  DESKTOP_MAXIMIZE_CHANNEL,
+  DESKTOP_MENU_CHANNEL,
+  DESKTOP_EDIT_ACTION_CHANNEL,
+  DESKTOP_GET_MAXIMIZE_CHANNEL,
+  DESKTOP_TITLEBAR_THEME_CHANNEL,
+  DESKTOP_VIEW_ACTION_CHANNEL,
+  DESKTOP_WINDOW_ACTION_CHANNEL,
+  type DesktopEditAction,
+  type DesktopMenuCommand,
+  type DesktopPlatform,
+  type DesktopViewAction,
+  type DesktopWindowAction,
+  type TitlebarThemePayload,
+} from '../shared/desktop-bridge.js'
 
 interface FrameHandlers {
   onFrame(raw: unknown): void
@@ -29,16 +43,58 @@ interface DesktopBridge {
   }
   /** Subscribe to native-menu commands. Returns an unsubscribe fn. */
   onMenu(handler: (command: DesktopMenuCommand) => void): () => void
+  /** Host OS. Fixed for a given packaged build. */
+  platform: DesktopPlatform
+  /** Drive the chrome window (custom titlebar buttons / ☰ menu). */
+  windowAction(action: DesktopWindowAction): void
+  /** Forward an edit-menu action to the focused webContents. */
+  editAction(action: DesktopEditAction): void
+  /** View-menu actions (reload / devtools / zoom / fullscreen). */
+  viewAction(action: DesktopViewAction): void
+  /** Keep the Windows caption overlay colours in sync with the app theme. */
+  setTitlebarTheme(theme: TitlebarThemePayload): void
+  /** Maximize-state changes (for ☰ Window menu labels). */
+  onMaximizeChange(handler: (maximized: boolean) => void): () => void
+  /** Request an initial maximize snapshot (fires onMaximizeChange once). */
+  requestMaximizeState(): void
 }
 
 /** One live connection at a time (the hub opens exactly one). */
 let activePort: MessagePort | null = null
 
 const bridge: DesktopBridge = {
+  platform: process.platform as DesktopPlatform,
+
   onMenu(handler: (command: DesktopMenuCommand) => void) {
     const listener = (_ev: IpcRendererEvent, command: DesktopMenuCommand) => handler(command)
     ipcRenderer.on(DESKTOP_MENU_CHANNEL, listener)
     return () => ipcRenderer.off(DESKTOP_MENU_CHANNEL, listener)
+  },
+
+  windowAction(action: DesktopWindowAction) {
+    ipcRenderer.send(DESKTOP_WINDOW_ACTION_CHANNEL, action)
+  },
+
+  editAction(action: DesktopEditAction) {
+    ipcRenderer.send(DESKTOP_EDIT_ACTION_CHANNEL, action)
+  },
+
+  viewAction(action: DesktopViewAction) {
+    ipcRenderer.send(DESKTOP_VIEW_ACTION_CHANNEL, action)
+  },
+
+  setTitlebarTheme(theme: TitlebarThemePayload) {
+    ipcRenderer.send(DESKTOP_TITLEBAR_THEME_CHANNEL, theme)
+  },
+
+  onMaximizeChange(handler: (maximized: boolean) => void) {
+    const listener = (_ev: IpcRendererEvent, maximized: boolean) => handler(maximized)
+    ipcRenderer.on(DESKTOP_MAXIMIZE_CHANNEL, listener)
+    return () => ipcRenderer.off(DESKTOP_MAXIMIZE_CHANNEL, listener)
+  },
+
+  requestMaximizeState() {
+    ipcRenderer.send(DESKTOP_GET_MAXIMIZE_CHANNEL)
   },
 
   connect(handlers: FrameHandlers) {

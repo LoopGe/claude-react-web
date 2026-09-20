@@ -1,0 +1,73 @@
+/* Custom desktop titlebar (Electron host, win32/darwin only).
+ *
+ * The web build never gets `.titlebar-win` / `.titlebar-mac` on the root, so
+ * every rule below is a no-op there. Drag regions use the Chromium
+ * `-webkit-app-region` property; interactive children must opt out with
+ * `no-drag` or they stop receiving clicks.
+ */
+
+/* ── Drag strip ─────────────────────────────────────────────────────
+ * The existing brand row (sidebar) and main-header (toolbar) ARE the
+ * titlebar. Mark the containers as drag and every descendant as no-drag.
+ */
+.titlebar-win .brand,
+.titlebar-win .main-header,
+.titlebar-mac .brand,
+.titlebar-mac .main-header {
+  -webkit-app-region: drag;
+  app-region: drag;
+  /* Match the OS caption overlay / traffic-light strip exactly. */
+  min-height: var(--titlebar-height);
+}
+.titlebar-win .brand *,
+.titlebar-win .main-header *,
+.titlebar-mac .brand *,
+.titlebar-mac .main-header * {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* ── Windows: reserve room for the system caption overlay ───────────
+ * titleBarOverlay paints min/max/close at the window's top-right. The
+ * overlay is 138px wide (3×46); pad the toolbar so its buttons never
+ * sit underneath.
+ */
+.titlebar-win .main-header {
+  padding-right: calc(var(--space-3) + var(--titlebar-caption-width));
+}
+
+/* ── macOS: reserve room for traffic lights ─────────────────────────
+ * Red/yellow/green sit at the top-left of the window. They overlap the
+ * brand row when the sidebar is open, and the main-header when it is
+ * collapsed OR when the ≤768px drawer layout moves the brand off the
+ * top row (Electron minWidth is 720, so that range is reachable).
+ */
+.titlebar-mac .brand {
+  padding-left: var(--titlebar-traffic-width);
+  justify-content: flex-start;
+}
+.titlebar-mac.sidebar-collapsed .main-header {
+  padding-left: var(--titlebar-traffic-width);
+}
+@media (max-width: 768px) {
+  .titlebar-mac .main-header {
+    padding-left: var(--titlebar-traffic-width);
+  }
+}
+
+/* ── ☰ app menu (Windows only — macOS uses the native menu bar) ───── */
+.titlebar-app-menu-trigger {
+  /* Keep the trigger optically aligned in the 40px strip; .btn-icon
+     already handles the rest. */
+  flex-shrink: 0;
+}
+.titlebar-app-menu {
+  min-width: 220px;
+}
+.titlebar-app-menu-accel {
+  margin-left: var(--space-4);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}

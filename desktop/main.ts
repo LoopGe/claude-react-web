@@ -27,6 +27,8 @@ import { pickLastUsedCwd } from '../server/default-cwd.js'
 import { SessionConnection } from '../server/frame-bridge.js'
 import { PortFrameSink } from './frame-sink-ipc.js'
 import { installAppMenu } from './menu.js'
+import { attachMaximizeMirror, wireWindowControls } from './window-controls.js'
+import { TITLEBAR_HEIGHT_PX } from '../shared/desktop-bridge.js'
 import { setupAutoUpdate } from './updater.js'
 import type { WsClientFrame } from '../shared/ws-protocol.js'
 import { createLogger } from '../server/log.js'
@@ -119,6 +121,33 @@ function buildWindow(): BrowserWindow {
     minWidth: 720,
     minHeight: 480,
     backgroundColor: '#1a1d24',
+    // Custom titlebar: hide the OS chrome and let the renderer draw the drag
+    // strip. macOS keeps traffic lights (hidden titleBarStyle); Windows gets
+    // the system caption buttons as an overlay on top of our header row.
+    // Linux keeps the native frame — no custom chrome there.
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hidden' as const,
+          trafficLightPosition: { x: 14, y: 14 },
+        }
+      : {}),
+    ...(process.platform === 'win32'
+      ? {
+          // titleBarStyle:'hidden' + titleBarOverlay is the supported Windows
+          // custom-titlebar pair (keeps non-client hit-testing / snap). Do
+          // NOT also set frame:false — that forces a fully frameless window
+          // and drops those behaviours.
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: {
+            // Transparent so the app's --bg-elev header shows through; the
+            // renderer re-syncs symbolColor on theme change via
+            // crw:titlebar-theme.
+            color: '#00000000',
+            symbolColor: '#e6e8eb',
+            height: TITLEBAR_HEIGHT_PX,
+          },
+        }
+      : {}),
     webPreferences: {
       preload: join(here, 'preload.cjs'),
       contextIsolation: true,
@@ -126,6 +155,7 @@ function buildWindow(): BrowserWindow {
       sandbox: false,
     },
   })
+  attachMaximizeMirror(win)
   void win.loadURL('crw://app/index.html')
   return win
 }
@@ -141,7 +171,11 @@ function wireIpc(): void {
     const sink = new PortFrameSink(port1, () => {
       // Overflow: tell the renderer to re-subscribe; it re-establishes and the
       // bridge re-serves a replay.
-      try { port1.postMessage(JSON.stringify({ kind: 'error', message: 'ipc queue overflow; re-subscribe' })) } catch { /* gone */ }
+      try {
+        port1.postMessage(JSON.stringify({ kind: 'error', message: 'ipc queue overflow; re-subscribe' }))
+      } catch {
+        /* gone */
+      }
     })
     const conn = new SessionConnection(
       { sm: ctx.sessionManager, appPlugins: ctx.appPluginEnabled ? ctx.appPluginManager : undefined },
@@ -172,7 +206,6 @@ function wireIpc(): void {
       connections.delete(id)
     }
   })
-
 }
 
 /** True when `path` is an existing directory a session could actually use.
@@ -250,6 +283,7 @@ async function boot(): Promise<void> {
 
   await registerProtocol()
   wireIpc()
+  wireWindowControls()
   const win = buildWindow()
   // Menu items target the focused window; fall back to the one we just built.
   installAppMenu(() => BrowserWindow.getFocusedWindow() ?? win ?? BrowserWindow.getAllWindows()[0] ?? null)
@@ -263,10 +297,13 @@ async function boot(): Promise<void> {
   })
 }
 
-app.whenReady().then(boot).catch((err) => {
-  log.error('desktop boot failed:', err)
-  app.quit()
-})
+app
+  .whenReady()
+  .then(boot)
+  .catch((err) => {
+    log.error('desktop boot failed:', err)
+    app.quit()
+  })
 
 app.on('window-all-closed', () => {
   // Quit on all platforms (including macOS): this is a tool window, not a

@@ -1,9 +1,12 @@
-// Native application menu.
+// Native application menu — macOS and Linux.
 //
-// The web build has no menu bar; the desktop host provides the standard
-// macOS/Windows menu so familiar shortcuts (reload, devtools, quit, copy/paste,
-// zoom) work without the app implementing them. Everything here is standard
-// Electron roles except two app-specific items that drive the renderer.
+// Windows uses the custom titlebar (frame: false + titleBarOverlay) with a
+// renderer ☰ dropdown instead of a native menu bar; installing one there
+// would fight the frameless chrome (Alt would pop a menu row that steals the
+// drag strip). macOS and Linux keep the platform-standard menu so familiar
+// shortcuts and app-menu conventions hold. Edit shortcuts on Windows still
+// work inside inputs via Chromium; app-level shortcuts live in the renderer's
+// useKeyboardShortcuts + the ☰ menu.
 
 import { Menu, shell, app, type BrowserWindow, type MenuItemConstructorOptions } from 'electron'
 import { DESKTOP_MENU_CHANNEL, type DesktopMenuCommand } from '../shared/desktop-bridge.js'
@@ -101,7 +104,14 @@ export function buildAppMenu(getWindow: () => BrowserWindow | null): Menu {
   return Menu.buildFromTemplate(template)
 }
 
-/** Install the application menu. Called once after the first window exists. */
+/** Install the application menu. Called once after the first window exists.
+ *  Windows clears it (custom titlebar + ☰); macOS and Linux keep the full
+ *  native template — Linux has no custom chrome and would otherwise lose
+ *  every role accelerator with no replacement. */
 export function installAppMenu(getWindow: () => BrowserWindow | null): void {
+  if (process.platform === 'win32') {
+    Menu.setApplicationMenu(null)
+    return
+  }
   Menu.setApplicationMenu(buildAppMenu(getWindow))
 }

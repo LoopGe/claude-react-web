@@ -194,6 +194,15 @@
   --size-26px: 26px;
   --size-28px: 28px;
   --app-header-height: 43px;
+  /* Custom titlebar (desktop win/darwin). Derived from the header height so
+     there is ONE CSS source of truth. TITLEBAR_HEIGHT_PX in
+     shared/desktop-bridge.ts is only the Electron spawn-time default (before
+     CSS loads); the renderer re-syncs the overlay from this token at runtime.
+     Caption/traffic widths reserve space so header controls never sit under
+     the OS buttons. */
+  --titlebar-height: var(--app-header-height);
+  --titlebar-caption-width: 138px;
+  --titlebar-traffic-width: 84px;
   --msg-tool-bg: #101820;
   --msg-tool-border: #1c2a36;
   --msg-tool-result-bg: #14202a;

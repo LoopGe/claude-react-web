@@ -45,6 +45,9 @@ import { IconSettings, IconBellToggle, IconMenu, IconSidebar, IconFolderSearch }
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { useUpdateNag, nagDismissValueFor, writeNagDismiss } from './hooks/useUpdateNag'
 import type { UpdateDialogMode } from './components/UpdateDialog'
+import { getHostCapabilities } from './host-capabilities'
+import { DesktopAppMenu } from './components/DesktopAppMenu'
+import { TITLEBAR_HEIGHT_PX } from '../shared/desktop-bridge'
 import { useUiState } from './hooks/useUiState'
 import { sessionStoreRegistry } from './session-store/registry'
 import { useAppOverlays } from './app/useAppOverlays'
@@ -739,6 +742,47 @@ export function App() {
       if (command === 'crw:menu-new-session') setNewSessionDialogOpen(true)
     })
   }, [])
+
+  // Host capabilities (stable for the life of the page). Drives the custom
+  // titlebar class, the Windows ☰ menu, and the caption-overlay theme sync.
+  const hostCaps = useMemo(() => getHostCapabilities(), [])
+
+  // Keep the Windows caption overlay colours in sync with the app theme.
+  // The overlay is painted by the OS; without this it stays on the spawn-time
+  // dark symbolColor after a switch to light mode. `theme === 'system'` does
+  // not change when the OS flips, so we also watch prefers-color-scheme.
+  const themeForOverlay = theme
+  const skinForOverlay = skin
+  useEffect(() => {
+    if (!hostCaps.customTitlebar || hostCaps.desktopPlatform !== 'win32') return
+    const bridge = window.__CRW_DESKTOP__
+    if (!bridge?.setTitlebarTheme) return
+    const apply = () => {
+      const cs = getComputedStyle(document.documentElement)
+      const fg = cs.getPropertyValue('--fg').trim() || '#e6e8eb'
+      // Prefer the live CSS token so --app-header-height tweaks flow through;
+      // TITLEBAR_HEIGHT_PX is only the pre-CSS / Electron spawn default.
+      const h = Number.parseInt(cs.getPropertyValue('--titlebar-height'), 10)
+      bridge.setTitlebarTheme!({
+        // Transparent overlay: the header's own --bg-elev paints underneath.
+        color: '#00000000',
+        symbolColor: fg,
+        height: Number.isFinite(h) && h > 0 ? h : TITLEBAR_HEIGHT_PX,
+      })
+    }
+    apply()
+    // Re-apply after the theme attribute flips (tokens live on :root /
+    // [data-theme] / [data-skin]).
+    const id = window.setTimeout(apply, 0)
+    // OS appearance change while theme is 'system'.
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const onOsTheme = () => apply()
+    mq.addEventListener('change', onOsTheme)
+    return () => {
+      window.clearTimeout(id)
+      mq.removeEventListener('change', onOsTheme)
+    }
+  }, [hostCaps.customTitlebar, hostCaps.desktopPlatform, themeForOverlay, skinForOverlay])
 
   // Listen for SW notification action callbacks. When the user clicks
   // Allow/Deny on an OS notification, the SW calls the decide API
@@ -2624,11 +2668,84 @@ export function App() {
           },
           description: 'Close focused panel',
         },
-        {
-          combo: 'alt+n',
-          handler: () => setNewSessionDialogOpen(true),
-          description: 'New session',
-        },
+        // Alt+N is the web-safe New Session combo (browsers hard-bind Ctrl+N).
+        // Windows desktop additionally registers mod+n below — skip alt+n
+        // there so CommandPalette doesn't list two identical rows.
+        ...(hostCaps.desktopPlatform === 'win32'
+          ? []
+          : [
+              {
+                combo: 'alt+n',
+                handler: () => setNewSessionDialogOpen(true),
+                description: 'New session',
+              } satisfies Shortcut,
+            ]),
+        // Desktop Windows has no native menu (custom titlebar + ☰), so the
+        // conventional app accelerators must be registered here. allowInInput
+        // is required: the composer holds focus most of the time, and the
+        // dispatcher's default input-safe skip would make these dead keys.
+        // macOS/Linux keep the native menu's roles, so this block is win32-only.
+        ...(hostCaps.desktopPlatform === 'win32'
+          ? [
+              {
+                combo: 'mod+n',
+                handler: () => setNewSessionDialogOpen(true),
+                allowInInput: true,
+                description: 'New session',
+              } satisfies Shortcut,
+              {
+                combo: 'mod+,',
+                handler: () => setGlobalSettingsOpen(true),
+                allowInInput: true,
+                description: 'Settings',
+              } satisfies Shortcut,
+              {
+                combo: 'mod+r',
+                handler: () => window.__CRW_DESKTOP__?.viewAction?.('reload'),
+                allowInInput: true,
+                description: 'Reload',
+              } satisfies Shortcut,
+              {
+                combo: 'mod+shift+i',
+                handler: () => window.__CRW_DESKTOP__?.viewAction?.('toggle-devtools'),
+                allowInInput: true,
+                description: 'Toggle Developer Tools',
+              } satisfies Shortcut,
+              {
+                combo: 'mod+=',
+                handler: () => window.__CRW_DESKTOP__?.viewAction?.('zoom-in'),
+                allowInInput: true,
+                description: 'Zoom in',
+              } satisfies Shortcut,
+              {
+                // Ctrl+Shift+= is the physical "+" on most US layouts.
+                // (Numpad '+' would be e.key === '+' → 'mod++', which the
+                // combo parser cannot express — '+' is the delimiter.)
+                combo: 'mod+shift+=',
+                handler: () => window.__CRW_DESKTOP__?.viewAction?.('zoom-in'),
+                allowInInput: true,
+                description: 'Zoom in',
+              } satisfies Shortcut,
+              {
+                combo: 'f11',
+                handler: () => window.__CRW_DESKTOP__?.viewAction?.('toggle-fullscreen'),
+                allowInInput: true,
+                description: 'Toggle full screen',
+              } satisfies Shortcut,
+              {
+                combo: 'mod+-',
+                handler: () => window.__CRW_DESKTOP__?.viewAction?.('zoom-out'),
+                allowInInput: true,
+                description: 'Zoom out',
+              } satisfies Shortcut,
+              {
+                combo: 'mod+0',
+                handler: () => window.__CRW_DESKTOP__?.viewAction?.('zoom-reset'),
+                allowInInput: true,
+                description: 'Reset zoom',
+              } satisfies Shortcut,
+            ]
+          : []),
         {
           combo: 'mod+shift+x',
           handler: () => setStructuredOpen(true),
@@ -3777,7 +3894,18 @@ export function App() {
   return (
     <ErrorBoundary>
     <div
-      className={`app${isMobile && drawerOpen ? ' drawer-open' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}
+      className={[
+        'app',
+        isMobile && drawerOpen ? 'drawer-open' : '',
+        sidebarCollapsed ? 'sidebar-collapsed' : '',
+        hostCaps.customTitlebar
+          ? hostCaps.desktopPlatform === 'win32'
+            ? 'titlebar-win'
+            : 'titlebar-mac'
+          : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
       style={{ ['--sidebar-width' as string]: `${effectiveSidebarWidth}px` }}
     >
       {/* Behind the whole grid (z-index: -1) and inert to the pointer. Keyed by
@@ -3883,6 +4011,14 @@ export function App() {
             The aria-label on <main> names the region; this names the page. */}
         <h1 className="sr-only">Chat</h1>
         <header className="main-header">
+          {/* Windows custom titlebar: ☰ app menu replaces the native File/Edit
+              bar. macOS keeps the native menu (no ☰). */}
+          {hostCaps.customTitlebar && hostCaps.desktopPlatform === 'win32' && (
+            <DesktopAppMenu
+              onNewSession={() => setNewSessionDialogOpen(true)}
+              onOpenSettings={() => setGlobalSettingsOpen(true)}
+            />
+          )}
           {/* Hamburger toggles the drawer sidebar. Rendered only on mobile;
               CSS pushes it to the left edge (margin-right: auto) so the rest
               of the toolbar stays flush-right. */}
