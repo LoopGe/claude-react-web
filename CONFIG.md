@@ -318,6 +318,46 @@ Set to `false` to stop injecting git tools by default:
 
 ---
 
+### `fileSnapshots`
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+
+Enable the shadow-repo snapshot sidecar that powers offline file rewind. When enabled, each session captures a lightweight git snapshot at every user message, allowing files to be restored to any prior message state even after the session has gone dormant or been terminated. When disabled, `GET /sessions/:id/file-snapshots` reports `available: false` with reason `disabled`, and `POST /sessions/:id/rewind-files` / `GET /sessions/:id/snapshot-diff` return 400.
+
+Sessions started outside a git repository are never snapshotted regardless of this flag (they report `available: false` with reason `not-git`).
+
+Writable at runtime via the in-app settings panel or `claude-react-web config set`:
+
+```json
+{
+  "fileSnapshots": true
+}
+```
+
+---
+
+### `fileSnapshotsMaxUntrackedBytes`
+
+| | |
+|---|---|
+| Type | `number` (bytes) |
+| Default | `2097152` (2 MB) |
+
+Maximum total size of untracked files captured in each snapshot. When the combined size of untracked files in the worktree exceeds this threshold during a capture, untracked files are excluded from the snapshot to keep the shadow repo lean. Tracked (git-indexed) files are always included regardless of this limit.
+
+```json
+{
+  "fileSnapshotsMaxUntrackedBytes": 5242880
+}
+```
+
+Must be a positive integer. Writable at runtime via the in-app settings panel or `claude-react-web config set`.
+
+---
+
 ## Priority order
 
 Configuration values are resolved in this order (highest priority first):
