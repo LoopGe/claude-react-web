@@ -1,0 +1,438 @@
+# Review package: 41a467f..HEAD
+
+## Commits
+04eb43a test(upload): fix memory metric, add control group, add e2e script
+
+## Files changed
+ eslint.config.js                 |   4 +
+ scripts/e2e-stream-upload.mjs    | 166 ++++++++++++++++++++++++++++++
+ scripts/verify-stream-upload.mjs | 211 +++++++++++++++++++++++++++++++++------
+ 3 files changed, 351 insertions(+), 30 deletions(-)
+
+## Diff
+diff --git a/eslint.config.js b/eslint.config.js
+index 96968e8..c366052 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -75,20 +75,24 @@ export default [
+         process: 'readonly',
+         setInterval: 'readonly',
+         clearInterval: 'readonly',
+         setTimeout: 'readonly',
+         clearTimeout: 'readonly',
+         setImmediate: 'readonly',
+         Buffer: 'readonly',
+         FormData: 'readonly',
+         File: 'readonly',
+         Request: 'readonly',
++        URL: 'readonly',
++        ReadableStream: 'readonly',
++        Response: 'readonly',
++        fetch: 'readonly',
+       },
+     },
+     rules: {
+       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+       '@typescript-eslint/no-explicit-any': 'off',
+     },
+   },
+ 
+   prettier,
+ ]
+diff --git a/scripts/e2e-stream-upload.mjs b/scripts/e2e-stream-upload.mjs
+new file mode 100644
+index 0000000..97a90e3
+--- /dev/null
++++ b/scripts/e2e-stream-upload.mjs
+@@ -0,0 +1,166 @@
++// Automated end-to-end test for streaming file upload.
++// Boots the built server on a free port with a temp state-dir, uploads a >32 MB
++// multipart file to /api/background/upload, verifies HTTP 200 + {url}, GET 200
++// with correct content-type, Range: bytes=0-3 → 206, no *.part residue.
++// Run: npx tsx scripts/e2e-stream-upload.mjs
++import { mkdtempSync, rmSync, readdirSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { spawn } from 'node:child_process'
++import { createServer } from 'node:net'
++import { fileURLToPath } from 'node:url'
++
++const thisDir = fileURLToPath(new URL('.', import.meta.url))
++const projectRoot = join(thisDir, '..')
++
++/** Find a free port by briefly binding to port 0. */
++function getFreePort() {
++  return new Promise((resolve, reject) => {
++    const srv = createServer()
++    srv.listen(0, '127.0.0.1', () => {
++      const port = srv.address().port
++      srv.close(() => resolve(port))
++    })
++    srv.on('error', reject)
++  })
++}
++
++/** Wait for the server to become healthy. */
++async function waitForHealth(port, timeoutMs = 15_000) {
++  const deadline = Date.now() + timeoutMs
++  while (Date.now() < deadline) {
++    try {
++      const res = await fetch(`http://127.0.0.1:${port}/api/health`)
++      if (res.ok) return true
++    } catch { /* not ready yet */ }
++    await new Promise((r) => setTimeout(r, 200))
++  }
++  throw new Error('server did not become healthy within timeout')
++}
++
++let exitCode = 0
++let serverProc = null
++const stateDir = mkdtempSync(join(tmpdir(), 'crw-e2e-'))
++
++try {
++  // ── Start server ────────────────────────────────────────────────────
++  const port = await getFreePort()
++  console.log(`starting server on port ${port}...`)
++  serverProc = spawn(process.execPath, [
++    join(projectRoot, 'dist', 'cli.mjs'),
++    '--port', String(port),
++    '--no-open',
++    '--state-dir', stateDir,
++    '--host', '127.0.0.1',
++  ], { stdio: 'pipe', cwd: projectRoot })
++
++  // Capture server stderr for diagnostics on failure.
++  let _serverStderr = ''
++  serverProc.stderr.on('data', (d) => { _serverStderr += d.toString() })
++
++  await waitForHealth(port)
++  console.log('server is ready.')
++
++  const baseUrl = `http://127.0.0.1:${port}`
++
++  // ── Create a >32 MB test file ───────────────────────────────────────
++  const MB = 1024 * 1024
++  const FILE_SIZE = 40 * MB
++  const fileData = Buffer.alloc(FILE_SIZE, 0)
++  // Write a minimal MP4 ftyp header so it's recognisable.
++  fileData.writeUInt32BE(0x0000001C, 0)
++  fileData.write('ftypisom', 4)
++
++  // ── Upload ──────────────────────────────────────────────────────────
++  console.log(`uploading ${FILE_SIZE / MB} MB file...`)
++  const form = new FormData()
++  form.append('file', new File([fileData], 'test-video.mp4', { type: 'video/mp4' }))
++  const uploadRes = await fetch(`${baseUrl}/api/background/upload`, {
++    method: 'POST',
++    body: form,
++  })
++  const uploadBody = await uploadRes.json()
++
++  if (uploadRes.status !== 200) {
++    console.error(`FAIL — upload returned HTTP ${uploadRes.status}, expected 200`)
++    console.error('body:', JSON.stringify(uploadBody))
++    exitCode = 1
++  } else if (!uploadBody.url) {
++    console.error('FAIL — upload response missing { url }')
++    console.error('body:', JSON.stringify(uploadBody))
++    exitCode = 1
++  } else {
++    console.log(`upload: HTTP ${uploadRes.status}, url=${uploadBody.url}`)
++  }
++
++  // ── GET uploaded file ───────────────────────────────────────────────
++  if (exitCode === 0) {
++    console.log('GET uploaded file...')
++    const getRes = await fetch(`${baseUrl}${uploadBody.url}`)
++    const getBuf = Buffer.from(await getRes.arrayBuffer())
++
++    if (getRes.status !== 200) {
++      console.error(`FAIL — GET returned HTTP ${getRes.status}, expected 200`)
++      exitCode = 1
++    } else if (getRes.headers.get('content-type') !== 'video/mp4') {
++      console.error(`FAIL — content-type is ${getRes.headers.get('content-type')}, expected video/mp4`)
++      exitCode = 1
++    } else if (getBuf.length !== FILE_SIZE) {
++      console.error(`FAIL — response body is ${getBuf.length} bytes, expected ${FILE_SIZE}`)
++      exitCode = 1
++    } else {
++      console.log(`GET: HTTP ${getRes.status}, content-type=${getRes.headers.get('content-type')}, size=${getBuf.length}`)
++    }
++  }
++
++  // ── Range request ───────────────────────────────────────────────────
++  if (exitCode === 0) {
++    console.log('Range request bytes=0-3...')
++    const rangeRes = await fetch(`${baseUrl}${uploadBody.url}`, {
++      headers: { Range: 'bytes=0-3' },
++    })
++    const rangeBuf = Buffer.from(await rangeRes.arrayBuffer())
++
++    if (rangeRes.status !== 206) {
++      console.error(`FAIL — Range request returned HTTP ${rangeRes.status}, expected 206`)
++      exitCode = 1
++    } else if (rangeBuf.length !== 4) {
++      console.error(`FAIL — Range response body is ${rangeBuf.length} bytes, expected 4`)
++      exitCode = 1
++    } else {
++      console.log(`Range: HTTP ${rangeRes.status}, body=${rangeBuf.length} bytes`)
++    }
++  }
++
++  // ── Check no .part files ────────────────────────────────────────────
++  if (exitCode === 0) {
++    const bgDir = join(stateDir, 'backgrounds')
++    const files = readdirSync(bgDir)
++    const partFiles = files.filter((f) => f.endsWith('.part'))
++    if (partFiles.length > 0) {
++      console.error(`FAIL — ${partFiles.length} .part file(s) found: ${partFiles.join(', ')}`)
++      exitCode = 1
++    } else {
++      console.log(`no .part files found (${files.length} file(s) in backgrounds/) — PASS`)
++    }
++  }
++
++  if (exitCode === 0) {
++    console.log()
++    console.log('ALL E2E CHECKS PASSED')
++  }
++} catch (e) {
++  console.error(`ERROR: ${e.message}`)
++  exitCode = 1
++} finally {
++  // ── Stop server ─────────────────────────────────────────────────────
++  if (serverProc) {
++    serverProc.kill('SIGTERM')
++    // Give it a moment to shut down cleanly.
++    await new Promise((r) => setTimeout(r, 1000))
++    if (!serverProc.killed) serverProc.kill('SIGKILL')
++  }
++  rmSync(stateDir, { recursive: true, force: true })
++}
++
++process.exit(exitCode)
+diff --git a/scripts/verify-stream-upload.mjs b/scripts/verify-stream-upload.mjs
+index 5631a9d..7b9e34a 100644
+--- a/scripts/verify-stream-upload.mjs
++++ b/scripts/verify-stream-upload.mjs
+@@ -1,39 +1,190 @@
+ // Proves the upload path truly streams: feeds a large synthetic multipart body
+-// through streamUploads and prints the peak heap growth. A buffering
+-// implementation grows ~linearly with the file; a streaming one stays flat.
++// through streamUploads and prints the peak RSS growth, then does the same
++// through a knowingly-buffering path as a control group. A streaming
++// implementation stays flat; a buffering one grows ~linearly with the file.
++// The control proves the metric actually discriminates.
++//
++// Metric choice: `process.memoryUsage().rss` (Resident Set Size). This is the
++// total physical memory the process occupies, including V8 heap, ArrayBuffer
++// backing stores (Buffer/TypedArray), code, and stack. `heapUsed` alone misses
++// external ArrayBuffer data — where both busboy chunks and the Uint8Array
++// backing store live — so a buffering implementation holding 200 MB via
++// `Buffer.concat(chunks)` would show the same ~1 MB heapUsed growth as
++// streaming, making the test unable to distinguish them.
++//
++// Each path runs in its own subprocess. Raw multipart data is generated
++// directly (not via FormData/Request) to avoid the ~200 MB encoding buffer
++// that Node's undici creates, which would inflate both paths equally and
++// obscure the real difference.
++//
+ // Run: npx tsx scripts/verify-stream-upload.mjs
+-import { mkdtempSync, rmSync, statSync } from 'node:fs'
++import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import { join } from 'node:path'
+-import { streamUploads } from '../server/stream-upload.ts'
++import { execFileSync } from 'node:child_process'
++import { fileURLToPath, pathToFileURL } from 'node:url'
+ 
+ const MB = 1024 * 1024
+ const SIZE = 200 * MB
++
+ const dir = mkdtempSync(join(tmpdir(), 'verify-up-'))
++const thisDir = fileURLToPath(new URL('.', import.meta.url))
++const projectRoot = join(thisDir, '..')
++const tsxBin = join(projectRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs')
++const streamUploadUrl = pathToFileURL(join(projectRoot, 'server', 'stream-upload.ts')).href
++
++let exitCode = 0
++
++try {
++  // ── Streaming path (subprocess) ─────────────────────────────────────
++  const streamScript = join(dir, 'run-stream.mjs')
++  writeFileSync(streamScript, [
++    `import { statSync } from 'node:fs'`,
++    `import { join } from 'node:path'`,
++    `import { Readable } from 'node:stream'`,
++    `import { streamUploads } from '${streamUploadUrl}'`,
++    ``,
++    `const MB = 1024 * 1024`,
++    `const SIZE = ${SIZE}`,
++    `const dir = ${JSON.stringify(dir)}`,
++    `const BOUNDARY = '----verify-boundary'`,
++    `const CT = 'multipart/form-data; boundary=' + BOUNDARY`,
++    ``,
++    `// Build a raw multipart body as a ReadableStream, chunk by chunk,`,
++    `// so we never hold the whole file in memory for encoding.`,
++    `const HEADER = Buffer.from(`,
++    `  '--' + BOUNDARY + '\\r\\n' +`,
++    `  'Content-Disposition: form-data; name="file"; filename="big.bin"\\r\\n' +`,
++    `  'Content-Type: application/octet-stream\\r\\n\\r\\n'`,
++    `)`,
++    `const FOOTER = Buffer.from('\\r\\n--' + BOUNDARY + '--\\r\\n')`,
++    `const CHUNK = 64 * 1024`,
++    `let offset = 0`,
++    `const body = new ReadableStream({`,
++    `  pull(controller) {`,
++    `    if (offset === 0) { controller.enqueue(HEADER); offset++; return }`,
++    `    const start = (offset - 1) * CHUNK`,
++    `    if (start >= SIZE) { controller.enqueue(FOOTER); controller.close(); return }`,
++    `    const end = Math.min(start + CHUNK, SIZE)`,
++    `    controller.enqueue(Buffer.alloc(end - start, 0))`,
++    `    offset++`,
++    `  }`,
++    `})`,
++    ``,
++    `if (globalThis.gc) globalThis.gc()`,
++    `const baseRss = process.memoryUsage().rss`,
++    `const saved = await streamUploads({`,
++    `  body,`,
++    `  contentType: CT,`,
++    `  maxFileBytes: 500 * MB,`,
++    `  place: ({ index }) => ({`,
++    `    tmp: join(dir, 'stream-' + index + '.part'),`,
++    `    final: join(dir, 'stream-' + index + '-big.bin'),`,
++    `    name: 'big.bin',`,
++    `  }),`,
++    `})`,
++    `const endRss = process.memoryUsage().rss`,
++    `const onDisk = statSync(saved[0].path).size`,
++    `console.log(JSON.stringify({ baseRss, endRss, onDisk }))`,
++  ].join('\n'))
++
++  // ── Buffering control (subprocess) ──────────────────────────────────
++  const bufScript = join(dir, 'run-buffer.mjs')
++  writeFileSync(bufScript, [
++    `import { writeFileSync } from 'node:fs'`,
++    `import { join } from 'node:path'`,
++    `import { Readable } from 'node:stream'`,
++    `import { createRequire } from 'node:module'`,
++    ``,
++    `const MB = 1024 * 1024`,
++    `const SIZE = ${SIZE}`,
++    `const dir = ${JSON.stringify(dir)}`,
++    `const projectRoot = ${JSON.stringify(projectRoot)}`,
++    `const BOUNDARY = '----verify-boundary'`,
++    `const CT = 'multipart/form-data; boundary=' + BOUNDARY`,
++    ``,
++    `// Same raw multipart body as streaming path.`,
++    `const HEADER = Buffer.from(`,
++    `  '--' + BOUNDARY + '\\r\\n' +`,
++    `  'Content-Disposition: form-data; name="file"; filename="big.bin"\\r\\n' +`,
++    `  'Content-Type: application/octet-stream\\r\\n\\r\\n'`,
++    `)`,
++    `const FOOTER = Buffer.from('\\r\\n--' + BOUNDARY + '--\\r\\n')`,
++    `const CHUNK = 64 * 1024`,
++    `let offset = 0`,
++    `const body = new ReadableStream({`,
++    `  pull(controller) {`,
++    `    if (offset === 0) { controller.enqueue(HEADER); offset++; return }`,
++    `    const start = (offset - 1) * CHUNK`,
++    `    if (start >= SIZE) { controller.enqueue(FOOTER); controller.close(); return }`,
++    `    const end = Math.min(start + CHUNK, SIZE)`,
++    `    controller.enqueue(Buffer.alloc(end - start, 0))`,
++    `    offset++`,
++    `  }`,
++    `})`,
++    ``,
++    `if (globalThis.gc) globalThis.gc()`,
++    `const baseRss = process.memoryUsage().rss`,
++    `const Busboy = createRequire(projectRoot + '/package.json')('busboy')`,
++    `const bb = Busboy({ headers: { 'content-type': CT } })`,
++    `const filePromise = new Promise((resolve, reject) => {`,
++    `  bb.on('file', (_field, stream, info) => {`,
++    `    const chunks = []`,
++    `    stream.on('data', (chunk) => chunks.push(chunk))`,
++    `    stream.on('end', () => resolve({ chunks, info }))`,
++    `    stream.on('error', reject)`,
++    `  })`,
++    `  bb.on('error', reject)`,
++    `})`,
++    `Readable.fromWeb(body).pipe(bb)`,
++    `const { chunks } = await filePromise`,
++    `const buf = Buffer.concat(chunks)`,
++    `const endRss = process.memoryUsage().rss`,
++    `writeFileSync(join(dir, 'buffer-big.bin'), buf)`,
++    `console.log(JSON.stringify({ baseRss, endRss, size: buf.length }))`,
++  ].join('\n'))
++
++  console.log('measuring streaming path...')
++  const streamOut = execFileSync(process.execPath, [tsxBin, streamScript], {
++    encoding: 'utf8',
++    timeout: 120_000,
++    cwd: projectRoot,
++    maxBuffer: 1024 * 1024,
++  })
++  const stream = JSON.parse(streamOut.trim().split('\n').pop())
++  const streamGrowth = (stream.endRss - stream.baseRss) / MB
++  console.log('streaming done.')
++
++  console.log('measuring buffering control...')
++  const bufOut = execFileSync(process.execPath, [tsxBin, bufScript], {
++    encoding: 'utf8',
++    timeout: 120_000,
++    cwd: projectRoot,
++    maxBuffer: 1024 * 1024,
++  })
++  const buf = JSON.parse(bufOut.trim().split('\n').pop())
++  const bufGrowth = (buf.endRss - buf.baseRss) / MB
++  console.log('buffering done.')
++
++  // ── Report ─────────────────────────────────────────────────────────
++  console.log()
++  console.log(`streaming: wrote ${stream.onDisk / MB} MB, RSS growth ${streamGrowth.toFixed(1)} MB`)
++  console.log(`buffering: RSS growth ${bufGrowth.toFixed(1)} MB (control group)`)
++  console.log()
++  if (streamGrowth > 60) {
++    console.log('FAIL — streaming RSS grew past 60 MB (should stay flat)')
++    exitCode = 1
++  } else if (bufGrowth < streamGrowth * 2) {
++    console.log('FAIL — buffering control did not grow much more than streaming; metric may be unreliable')
++    exitCode = 1
++  } else {
++    console.log(`PASS — streaming is ${((1 - streamGrowth / bufGrowth) * 100).toFixed(0)}% smaller than buffering; memory stayed flat`)
++  }
++} catch (e) {
++  console.error(`ERROR: ${e.message}`)
++  exitCode = 1
++} finally {
++  rmSync(dir, { recursive: true, force: true })
++}
+ 
+-const form = new FormData()
+-form.append('file', new File([new Uint8Array(SIZE)], 'big.bin', { type: 'application/octet-stream' }))
+-const req = new Request('http://localhost/upload', { method: 'POST', body: form })
+-
+-let peak = 0
+-const sample = setInterval(() => {
+-  peak = Math.max(peak, process.memoryUsage().heapUsed)
+-}, 5)
+-
+-const base = process.memoryUsage().heapUsed
+-const saved = await streamUploads({
+-  body: req.body,
+-  contentType: req.headers.get('content-type'),
+-  maxFileBytes: 500 * MB,
+-  place: ({ index }) => ({ tmp: join(dir, `${index}.part`), final: join(dir, `${index}-big.bin`), name: 'big.bin' }),
+-})
+-clearInterval(sample)
+-
+-const onDisk = statSync(saved[0].path).size
+-const growth = (peak - base) / MB
+-console.log(`wrote ${onDisk / MB} MB to disk`)
+-console.log(`peak heap growth: ${growth.toFixed(1)} MB`)
+-console.log(growth < 60 ? 'PASS — memory stayed flat (streaming)' : 'FAIL — heap grew with the file (buffering)')
+-
+-rmSync(dir, { recursive: true, force: true })
+-process.exit(growth < 60 ? 0 : 1)
++process.exit(exitCode)

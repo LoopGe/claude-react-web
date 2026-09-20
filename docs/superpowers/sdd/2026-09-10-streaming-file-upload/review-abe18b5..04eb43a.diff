@@ -1,0 +1,1894 @@
+# Review package: abe18b5..HEAD
+
+## Commits
+04eb43a test(upload): fix memory metric, add control group, add e2e script
+41a467f test(upload): memory-flatness verification script for streamUploads
+5446a86 fix(upload): widen requestTimeout so slow large uploads are not killed
+1c01e12 feat(background): refuse an over-size file client-side before uploading
+89ba70e feat(config): one upload-size knob; pasted images keep an internal cap
+3d28286 feat(upload): exempt streaming upload routes from the global body limit
+036f399 feat(upload): stream the session uploads route to disk
+5614196 feat(upload): stream the background upload route to disk
+4d284a4 feat(upload): streaming multipart helper (busboy, temp + atomic rename)
+
+## Files changed
+ eslint.config.js                         |   7 ++
+ package-lock.json                        |  31 +++++
+ package.json                             |   2 +
+ scripts/e2e-stream-upload.mjs            | 166 +++++++++++++++++++++++++++
+ scripts/verify-stream-upload.mjs         | 190 +++++++++++++++++++++++++++++++
+ server/app.ts                            |  24 ++--
+ server/background-routes.test.ts         |  25 +++-
+ server/background-routes.ts              |  52 +++++----
+ server/cli.ts                            |   6 +
+ server/config.test.ts                    |   2 +-
+ server/config.ts                         |   8 +-
+ server/routes/config-routes.ts           |   3 +-
+ server/routes/uploads.test.ts            |  29 ++++-
+ server/routes/uploads.ts                 |  89 +++++++--------
+ server/stream-upload.test.ts             | 107 +++++++++++++++++
+ server/stream-upload.ts                  | 133 ++++++++++++++++++++++
+ src/App.tsx                              |   3 +-
+ src/components/BackgroundPicker.test.tsx |  17 +++
+ src/components/BackgroundPicker.tsx      |   8 ++
+ src/components/GlobalSettingsModal.tsx   |   2 +-
+ src/hooks/config-store.ts                |  10 ++
+ src/hooks/usePastedImages.test.ts        |  21 ++++
+ src/hooks/usePastedImages.ts             |   4 +-
+ src/types/config.ts                      |   4 +
+ 24 files changed, 855 insertions(+), 88 deletions(-)
+
+## Diff
+diff --git a/eslint.config.js b/eslint.config.js
+index c4e5a75..c366052 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -72,20 +72,27 @@ export default [
+       sourceType: 'module',
+       globals: {
+         console: 'readonly',
+         process: 'readonly',
+         setInterval: 'readonly',
+         clearInterval: 'readonly',
+         setTimeout: 'readonly',
+         clearTimeout: 'readonly',
+         setImmediate: 'readonly',
+         Buffer: 'readonly',
++        FormData: 'readonly',
++        File: 'readonly',
++        Request: 'readonly',
++        URL: 'readonly',
++        ReadableStream: 'readonly',
++        Response: 'readonly',
++        fetch: 'readonly',
+       },
+     },
+     rules: {
+       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+       '@typescript-eslint/no-explicit-any': 'off',
+     },
+   },
+ 
+   prettier,
+ ]
+diff --git a/package-lock.json b/package-lock.json
+index 3c65013..dfb3725 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -7,20 +7,21 @@
+     "": {
+       "name": "claude-react-web",
+       "version": "0.7.2",
+       "license": "MIT",
+       "dependencies": {
+         "@anthropic-ai/claude-agent-sdk": "^0.3.252",
+         "@hono/node-server": "^1.13.7",
+         "@modelcontextprotocol/sdk": "^1.29.0",
+         "@types/diff": "^7.0.2",
+         "ansicolor": "^2.0.3",
++        "busboy": "^1.6.0",
+         "diff": "^9.0.0",
+         "highlight.js": "^11.11.1",
+         "hono": "^4.7.0",
+         "idb": "^8.0.3",
+         "lowlight": "^3.3.0",
+         "motion": "^12.42.2",
+         "open": "^10.1.0",
+         "qrcode": "^1.5.4",
+         "react": "^19.0.0",
+         "react-dom": "^19.0.0",
+@@ -30,20 +31,21 @@
+         "remark-gfm": "^4.0.1",
+         "ws": "^8.20.0",
+         "zod": "^4.3.6"
+       },
+       "bin": {
+         "claude-react-web": "dist/cli.mjs"
+       },
+       "devDependencies": {
+         "@eslint/js": "^9.39.4",
+         "@testing-library/react": "^16.3.2",
++        "@types/busboy": "^1.5.4",
+         "@types/node": "^22.10.0",
+         "@types/qrcode": "^1.5.6",
+         "@types/react": "^19.0.0",
+         "@types/react-dom": "^19.0.0",
+         "@types/ws": "^8.18.1",
+         "@vitejs/plugin-react": "^4.3.0",
+         "concurrently": "^9.1.0",
+         "esbuild": "^0.25.0",
+         "eslint": "^9.39.4",
+         "eslint-config-prettier": "^10.1.8",
+@@ -1955,20 +1957,30 @@
+     "node_modules/@types/babel__traverse": {
+       "version": "7.28.0",
+       "resolved": "https://registry.npmjs.org/@types/babel__traverse/-/babel__traverse-7.28.0.tgz",
+       "integrity": "sha512-8PvcXf70gTDZBgt9ptxJ8elBeBjcLOAcOtoO/mPJjtji1+CdGbHgm77om1GrsPxsiE+uXIpNSK64UYaIwQXd4Q==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "@babel/types": "^7.28.2"
+       }
+     },
++    "node_modules/@types/busboy": {
++      "version": "1.5.4",
++      "resolved": "https://registry.npmjs.org/@types/busboy/-/busboy-1.5.4.tgz",
++      "integrity": "sha512-kG7WrUuAKK0NoyxfQHsVE6j1m01s6kMma64E+OZenQABMQyTJop1DumUWcLwAQ2JzpefU7PDYoRDKl8uZosFjw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/node": "*"
++      }
++    },
+     "node_modules/@types/chai": {
+       "version": "5.2.3",
+       "resolved": "https://registry.npmjs.org/@types/chai/-/chai-5.2.3.tgz",
+       "integrity": "sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "@types/deep-eql": "*",
+         "assertion-error": "^2.0.1"
+       }
+@@ -2777,20 +2789,31 @@
+       "dependencies": {
+         "run-applescript": "^7.0.0"
+       },
+       "engines": {
+         "node": ">=18"
+       },
+       "funding": {
+         "url": "https://github.com/sponsors/sindresorhus"
+       }
+     },
++    "node_modules/busboy": {
++      "version": "1.6.0",
++      "resolved": "https://registry.npmjs.org/busboy/-/busboy-1.6.0.tgz",
++      "integrity": "sha512-8SFQbg/0hQ9xy3UNTB0YEnsNBbWfhf7RtnzpL7TkBiTBRfrQ9Fxcnz7VJsleJpyp6rVLvXiuORqjlHi5q+PYuA==",
++      "dependencies": {
++        "streamsearch": "^1.1.0"
++      },
++      "engines": {
++        "node": ">=10.16.0"
++      }
++    },
+     "node_modules/bytes": {
+       "version": "3.1.2",
+       "resolved": "https://registry.npmjs.org/bytes/-/bytes-3.1.2.tgz",
+       "integrity": "sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.8"
+       }
+     },
+     "node_modules/cac": {
+@@ -6913,20 +6936,28 @@
+         "node": ">= 0.8"
+       }
+     },
+     "node_modules/std-env": {
+       "version": "3.10.0",
+       "resolved": "https://registry.npmjs.org/std-env/-/std-env-3.10.0.tgz",
+       "integrity": "sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==",
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/streamsearch": {
++      "version": "1.1.0",
++      "resolved": "https://registry.npmjs.org/streamsearch/-/streamsearch-1.1.0.tgz",
++      "integrity": "sha512-Mcc5wHehp9aXz1ax6bZUyY5afg9u2rv5cqQI3mRrYkGC8rW2hM02jWuwjtL++LS5qinSyhj2QfLyNsuc+VsExg==",
++      "engines": {
++        "node": ">=10.0.0"
++      }
++    },
+     "node_modules/string-width": {
+       "version": "4.2.3",
+       "resolved": "https://registry.npmjs.org/string-width/-/string-width-4.2.3.tgz",
+       "integrity": "sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g==",
+       "license": "MIT",
+       "dependencies": {
+         "emoji-regex": "^8.0.0",
+         "is-fullwidth-code-point": "^3.0.0",
+         "strip-ansi": "^6.0.1"
+       },
+diff --git a/package.json b/package.json
+index 6986eac..d8be8fb 100644
+--- a/package.json
++++ b/package.json
+@@ -51,40 +51,42 @@
+     "verify": "npm run typecheck && npm run lint && npm test && npm run build",
+     "prepublishOnly": "npm run build",
+     "analyze:bundle": "npm run build:client && node scripts/analyze-bundle.mjs"
+   },
+   "dependencies": {
+     "@anthropic-ai/claude-agent-sdk": "^0.3.252",
+     "@hono/node-server": "^1.13.7",
+     "@modelcontextprotocol/sdk": "^1.29.0",
+     "@types/diff": "^7.0.2",
+     "ansicolor": "^2.0.3",
++    "busboy": "^1.6.0",
+     "diff": "^9.0.0",
+     "highlight.js": "^11.11.1",
+     "hono": "^4.7.0",
+     "idb": "^8.0.3",
+     "lowlight": "^3.3.0",
+     "motion": "^12.42.2",
+     "open": "^10.1.0",
+     "qrcode": "^1.5.4",
+     "react": "^19.0.0",
+     "react-dom": "^19.0.0",
+     "react-markdown": "^9.1.0",
+     "react-virtuoso": "^4.18.6",
+     "remark-breaks": "^4.0.0",
+     "remark-gfm": "^4.0.1",
+     "ws": "^8.20.0",
+     "zod": "^4.3.6"
+   },
+   "devDependencies": {
+     "@eslint/js": "^9.39.4",
+     "@testing-library/react": "^16.3.2",
++    "@types/busboy": "^1.5.4",
+     "@types/node": "^22.10.0",
+     "@types/qrcode": "^1.5.6",
+     "@types/react": "^19.0.0",
+     "@types/react-dom": "^19.0.0",
+     "@types/ws": "^8.18.1",
+     "@vitejs/plugin-react": "^4.3.0",
+     "concurrently": "^9.1.0",
+     "esbuild": "^0.25.0",
+     "eslint": "^9.39.4",
+     "eslint-config-prettier": "^10.1.8",
+diff --git a/scripts/e2e-stream-upload.mjs b/scripts/e2e-stream-upload.mjs
+new file mode 100644
+index 0000000..97a90e3
+--- /dev/null
++++ b/scripts/e2e-stream-upload.mjs
+@@ -0,0 +1,166 @@
++// Automated end-to-end test for streaming file upload.
++// Boots the built server on a free port with a temp state-dir, uploads a >32 MB
++// multipart file to /api/background/upload, verifies HTTP 200 + {url}, GET 200
++// with correct content-type, Range: bytes=0-3 → 206, no *.part residue.
++// Run: npx tsx scripts/e2e-stream-upload.mjs
++import { mkdtempSync, rmSync, readdirSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { spawn } from 'node:child_process'
++import { createServer } from 'node:net'
++import { fileURLToPath } from 'node:url'
++
++const thisDir = fileURLToPath(new URL('.', import.meta.url))
++const projectRoot = join(thisDir, '..')
++
++/** Find a free port by briefly binding to port 0. */
++function getFreePort() {
++  return new Promise((resolve, reject) => {
++    const srv = createServer()
++    srv.listen(0, '127.0.0.1', () => {
++      const port = srv.address().port
++      srv.close(() => resolve(port))
++    })
++    srv.on('error', reject)
++  })
++}
++
++/** Wait for the server to become healthy. */
++async function waitForHealth(port, timeoutMs = 15_000) {
++  const deadline = Date.now() + timeoutMs
++  while (Date.now() < deadline) {
++    try {
++      const res = await fetch(`http://127.0.0.1:${port}/api/health`)
++      if (res.ok) return true
++    } catch { /* not ready yet */ }
++    await new Promise((r) => setTimeout(r, 200))
++  }
++  throw new Error('server did not become healthy within timeout')
++}
++
++let exitCode = 0
++let serverProc = null
++const stateDir = mkdtempSync(join(tmpdir(), 'crw-e2e-'))
++
++try {
++  // ── Start server ────────────────────────────────────────────────────
++  const port = await getFreePort()
++  console.log(`starting server on port ${port}...`)
++  serverProc = spawn(process.execPath, [
++    join(projectRoot, 'dist', 'cli.mjs'),
++    '--port', String(port),
++    '--no-open',
++    '--state-dir', stateDir,
++    '--host', '127.0.0.1',
++  ], { stdio: 'pipe', cwd: projectRoot })
++
++  // Capture server stderr for diagnostics on failure.
++  let _serverStderr = ''
++  serverProc.stderr.on('data', (d) => { _serverStderr += d.toString() })
++
++  await waitForHealth(port)
++  console.log('server is ready.')
++
++  const baseUrl = `http://127.0.0.1:${port}`
++
++  // ── Create a >32 MB test file ───────────────────────────────────────
++  const MB = 1024 * 1024
++  const FILE_SIZE = 40 * MB
++  const fileData = Buffer.alloc(FILE_SIZE, 0)
++  // Write a minimal MP4 ftyp header so it's recognisable.
++  fileData.writeUInt32BE(0x0000001C, 0)
++  fileData.write('ftypisom', 4)
++
++  // ── Upload ──────────────────────────────────────────────────────────
++  console.log(`uploading ${FILE_SIZE / MB} MB file...`)
++  const form = new FormData()
++  form.append('file', new File([fileData], 'test-video.mp4', { type: 'video/mp4' }))
++  const uploadRes = await fetch(`${baseUrl}/api/background/upload`, {
++    method: 'POST',
++    body: form,
++  })
++  const uploadBody = await uploadRes.json()
++
++  if (uploadRes.status !== 200) {
++    console.error(`FAIL — upload returned HTTP ${uploadRes.status}, expected 200`)
++    console.error('body:', JSON.stringify(uploadBody))
++    exitCode = 1
++  } else if (!uploadBody.url) {
++    console.error('FAIL — upload response missing { url }')
++    console.error('body:', JSON.stringify(uploadBody))
++    exitCode = 1
++  } else {
++    console.log(`upload: HTTP ${uploadRes.status}, url=${uploadBody.url}`)
++  }
++
++  // ── GET uploaded file ───────────────────────────────────────────────
++  if (exitCode === 0) {
++    console.log('GET uploaded file...')
++    const getRes = await fetch(`${baseUrl}${uploadBody.url}`)
++    const getBuf = Buffer.from(await getRes.arrayBuffer())
++
++    if (getRes.status !== 200) {
++      console.error(`FAIL — GET returned HTTP ${getRes.status}, expected 200`)
++      exitCode = 1
++    } else if (getRes.headers.get('content-type') !== 'video/mp4') {
++      console.error(`FAIL — content-type is ${getRes.headers.get('content-type')}, expected video/mp4`)
++      exitCode = 1
++    } else if (getBuf.length !== FILE_SIZE) {
++      console.error(`FAIL — response body is ${getBuf.length} bytes, expected ${FILE_SIZE}`)
++      exitCode = 1
++    } else {
++      console.log(`GET: HTTP ${getRes.status}, content-type=${getRes.headers.get('content-type')}, size=${getBuf.length}`)
++    }
++  }
++
++  // ── Range request ───────────────────────────────────────────────────
++  if (exitCode === 0) {
++    console.log('Range request bytes=0-3...')
++    const rangeRes = await fetch(`${baseUrl}${uploadBody.url}`, {
++      headers: { Range: 'bytes=0-3' },
++    })
++    const rangeBuf = Buffer.from(await rangeRes.arrayBuffer())
++
++    if (rangeRes.status !== 206) {
++      console.error(`FAIL — Range request returned HTTP ${rangeRes.status}, expected 206`)
++      exitCode = 1
++    } else if (rangeBuf.length !== 4) {
++      console.error(`FAIL — Range response body is ${rangeBuf.length} bytes, expected 4`)
++      exitCode = 1
++    } else {
++      console.log(`Range: HTTP ${rangeRes.status}, body=${rangeBuf.length} bytes`)
++    }
++  }
++
++  // ── Check no .part files ────────────────────────────────────────────
++  if (exitCode === 0) {
++    const bgDir = join(stateDir, 'backgrounds')
++    const files = readdirSync(bgDir)
++    const partFiles = files.filter((f) => f.endsWith('.part'))
++    if (partFiles.length > 0) {
++      console.error(`FAIL — ${partFiles.length} .part file(s) found: ${partFiles.join(', ')}`)
++      exitCode = 1
++    } else {
++      console.log(`no .part files found (${files.length} file(s) in backgrounds/) — PASS`)
++    }
++  }
++
++  if (exitCode === 0) {
++    console.log()
++    console.log('ALL E2E CHECKS PASSED')
++  }
++} catch (e) {
++  console.error(`ERROR: ${e.message}`)
++  exitCode = 1
++} finally {
++  // ── Stop server ─────────────────────────────────────────────────────
++  if (serverProc) {
++    serverProc.kill('SIGTERM')
++    // Give it a moment to shut down cleanly.
++    await new Promise((r) => setTimeout(r, 1000))
++    if (!serverProc.killed) serverProc.kill('SIGKILL')
++  }
++  rmSync(stateDir, { recursive: true, force: true })
++}
++
++process.exit(exitCode)
+diff --git a/scripts/verify-stream-upload.mjs b/scripts/verify-stream-upload.mjs
+new file mode 100644
+index 0000000..7b9e34a
+--- /dev/null
++++ b/scripts/verify-stream-upload.mjs
+@@ -0,0 +1,190 @@
++// Proves the upload path truly streams: feeds a large synthetic multipart body
++// through streamUploads and prints the peak RSS growth, then does the same
++// through a knowingly-buffering path as a control group. A streaming
++// implementation stays flat; a buffering one grows ~linearly with the file.
++// The control proves the metric actually discriminates.
++//
++// Metric choice: `process.memoryUsage().rss` (Resident Set Size). This is the
++// total physical memory the process occupies, including V8 heap, ArrayBuffer
++// backing stores (Buffer/TypedArray), code, and stack. `heapUsed` alone misses
++// external ArrayBuffer data — where both busboy chunks and the Uint8Array
++// backing store live — so a buffering implementation holding 200 MB via
++// `Buffer.concat(chunks)` would show the same ~1 MB heapUsed growth as
++// streaming, making the test unable to distinguish them.
++//
++// Each path runs in its own subprocess. Raw multipart data is generated
++// directly (not via FormData/Request) to avoid the ~200 MB encoding buffer
++// that Node's undici creates, which would inflate both paths equally and
++// obscure the real difference.
++//
++// Run: npx tsx scripts/verify-stream-upload.mjs
++import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { execFileSync } from 'node:child_process'
++import { fileURLToPath, pathToFileURL } from 'node:url'
++
++const MB = 1024 * 1024
++const SIZE = 200 * MB
++
++const dir = mkdtempSync(join(tmpdir(), 'verify-up-'))
++const thisDir = fileURLToPath(new URL('.', import.meta.url))
++const projectRoot = join(thisDir, '..')
++const tsxBin = join(projectRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs')
++const streamUploadUrl = pathToFileURL(join(projectRoot, 'server', 'stream-upload.ts')).href
++
++let exitCode = 0
++
++try {
++  // ── Streaming path (subprocess) ─────────────────────────────────────
++  const streamScript = join(dir, 'run-stream.mjs')
++  writeFileSync(streamScript, [
++    `import { statSync } from 'node:fs'`,
++    `import { join } from 'node:path'`,
++    `import { Readable } from 'node:stream'`,
++    `import { streamUploads } from '${streamUploadUrl}'`,
++    ``,
++    `const MB = 1024 * 1024`,
++    `const SIZE = ${SIZE}`,
++    `const dir = ${JSON.stringify(dir)}`,
++    `const BOUNDARY = '----verify-boundary'`,
++    `const CT = 'multipart/form-data; boundary=' + BOUNDARY`,
++    ``,
++    `// Build a raw multipart body as a ReadableStream, chunk by chunk,`,
++    `// so we never hold the whole file in memory for encoding.`,
++    `const HEADER = Buffer.from(`,
++    `  '--' + BOUNDARY + '\\r\\n' +`,
++    `  'Content-Disposition: form-data; name="file"; filename="big.bin"\\r\\n' +`,
++    `  'Content-Type: application/octet-stream\\r\\n\\r\\n'`,
++    `)`,
++    `const FOOTER = Buffer.from('\\r\\n--' + BOUNDARY + '--\\r\\n')`,
++    `const CHUNK = 64 * 1024`,
++    `let offset = 0`,
++    `const body = new ReadableStream({`,
++    `  pull(controller) {`,
++    `    if (offset === 0) { controller.enqueue(HEADER); offset++; return }`,
++    `    const start = (offset - 1) * CHUNK`,
++    `    if (start >= SIZE) { controller.enqueue(FOOTER); controller.close(); return }`,
++    `    const end = Math.min(start + CHUNK, SIZE)`,
++    `    controller.enqueue(Buffer.alloc(end - start, 0))`,
++    `    offset++`,
++    `  }`,
++    `})`,
++    ``,
++    `if (globalThis.gc) globalThis.gc()`,
++    `const baseRss = process.memoryUsage().rss`,
++    `const saved = await streamUploads({`,
++    `  body,`,
++    `  contentType: CT,`,
++    `  maxFileBytes: 500 * MB,`,
++    `  place: ({ index }) => ({`,
++    `    tmp: join(dir, 'stream-' + index + '.part'),`,
++    `    final: join(dir, 'stream-' + index + '-big.bin'),`,
++    `    name: 'big.bin',`,
++    `  }),`,
++    `})`,
++    `const endRss = process.memoryUsage().rss`,
++    `const onDisk = statSync(saved[0].path).size`,
++    `console.log(JSON.stringify({ baseRss, endRss, onDisk }))`,
++  ].join('\n'))
++
++  // ── Buffering control (subprocess) ──────────────────────────────────
++  const bufScript = join(dir, 'run-buffer.mjs')
++  writeFileSync(bufScript, [
++    `import { writeFileSync } from 'node:fs'`,
++    `import { join } from 'node:path'`,
++    `import { Readable } from 'node:stream'`,
++    `import { createRequire } from 'node:module'`,
++    ``,
++    `const MB = 1024 * 1024`,
++    `const SIZE = ${SIZE}`,
++    `const dir = ${JSON.stringify(dir)}`,
++    `const projectRoot = ${JSON.stringify(projectRoot)}`,
++    `const BOUNDARY = '----verify-boundary'`,
++    `const CT = 'multipart/form-data; boundary=' + BOUNDARY`,
++    ``,
++    `// Same raw multipart body as streaming path.`,
++    `const HEADER = Buffer.from(`,
++    `  '--' + BOUNDARY + '\\r\\n' +`,
++    `  'Content-Disposition: form-data; name="file"; filename="big.bin"\\r\\n' +`,
++    `  'Content-Type: application/octet-stream\\r\\n\\r\\n'`,
++    `)`,
++    `const FOOTER = Buffer.from('\\r\\n--' + BOUNDARY + '--\\r\\n')`,
++    `const CHUNK = 64 * 1024`,
++    `let offset = 0`,
++    `const body = new ReadableStream({`,
++    `  pull(controller) {`,
++    `    if (offset === 0) { controller.enqueue(HEADER); offset++; return }`,
++    `    const start = (offset - 1) * CHUNK`,
++    `    if (start >= SIZE) { controller.enqueue(FOOTER); controller.close(); return }`,
++    `    const end = Math.min(start + CHUNK, SIZE)`,
++    `    controller.enqueue(Buffer.alloc(end - start, 0))`,
++    `    offset++`,
++    `  }`,
++    `})`,
++    ``,
++    `if (globalThis.gc) globalThis.gc()`,
++    `const baseRss = process.memoryUsage().rss`,
++    `const Busboy = createRequire(projectRoot + '/package.json')('busboy')`,
++    `const bb = Busboy({ headers: { 'content-type': CT } })`,
++    `const filePromise = new Promise((resolve, reject) => {`,
++    `  bb.on('file', (_field, stream, info) => {`,
++    `    const chunks = []`,
++    `    stream.on('data', (chunk) => chunks.push(chunk))`,
++    `    stream.on('end', () => resolve({ chunks, info }))`,
++    `    stream.on('error', reject)`,
++    `  })`,
++    `  bb.on('error', reject)`,
++    `})`,
++    `Readable.fromWeb(body).pipe(bb)`,
++    `const { chunks } = await filePromise`,
++    `const buf = Buffer.concat(chunks)`,
++    `const endRss = process.memoryUsage().rss`,
++    `writeFileSync(join(dir, 'buffer-big.bin'), buf)`,
++    `console.log(JSON.stringify({ baseRss, endRss, size: buf.length }))`,
++  ].join('\n'))
++
++  console.log('measuring streaming path...')
++  const streamOut = execFileSync(process.execPath, [tsxBin, streamScript], {
++    encoding: 'utf8',
++    timeout: 120_000,
++    cwd: projectRoot,
++    maxBuffer: 1024 * 1024,
++  })
++  const stream = JSON.parse(streamOut.trim().split('\n').pop())
++  const streamGrowth = (stream.endRss - stream.baseRss) / MB
++  console.log('streaming done.')
++
++  console.log('measuring buffering control...')
++  const bufOut = execFileSync(process.execPath, [tsxBin, bufScript], {
++    encoding: 'utf8',
++    timeout: 120_000,
++    cwd: projectRoot,
++    maxBuffer: 1024 * 1024,
++  })
++  const buf = JSON.parse(bufOut.trim().split('\n').pop())
++  const bufGrowth = (buf.endRss - buf.baseRss) / MB
++  console.log('buffering done.')
++
++  // ── Report ─────────────────────────────────────────────────────────
++  console.log()
++  console.log(`streaming: wrote ${stream.onDisk / MB} MB, RSS growth ${streamGrowth.toFixed(1)} MB`)
++  console.log(`buffering: RSS growth ${bufGrowth.toFixed(1)} MB (control group)`)
++  console.log()
++  if (streamGrowth > 60) {
++    console.log('FAIL — streaming RSS grew past 60 MB (should stay flat)')
++    exitCode = 1
++  } else if (bufGrowth < streamGrowth * 2) {
++    console.log('FAIL — buffering control did not grow much more than streaming; metric may be unreliable')
++    exitCode = 1
++  } else {
++    console.log(`PASS — streaming is ${((1 - streamGrowth / bufGrowth) * 100).toFixed(0)}% smaller than buffering; memory stayed flat`)
++  }
++} catch (e) {
++  console.error(`ERROR: ${e.message}`)
++  exitCode = 1
++} finally {
++  rmSync(dir, { recursive: true, force: true })
++}
++
++process.exit(exitCode)
+diff --git a/server/app.ts b/server/app.ts
+index 0643667..33503c0 100644
+--- a/server/app.ts
++++ b/server/app.ts
+@@ -15,32 +15,33 @@ import { buildApiRouter } from './routes/index.js'
+ import { buildFsRouter } from './fs-routes.js'
+ import { buildGitRouter } from './git-routes.js'
+ import { buildEditLocateRouter } from './edit-locate-routes.js'
+ import { buildBackgroundRouter } from './background-routes.js'
+ import { buildMcpConfigRouter } from './mcp-routes.js'
+ import { buildSnippetRouter } from './snippet-routes.js'
+ import { buildAgentDefinitionsRouter } from './agent-definition-routes.js'
+ import type { AgentDefinitionStore } from './agent-definition-store.js'
+ import { buildUiStateRouter } from './routes/ui-state-routes.js'
+ import { buildResetRouter } from './routes/reset.js'
+-import { config as serverConfig } from './config.js'
++import { config as serverConfig, MAX_PASTED_IMAGE_BYTES } from './config.js'
+ import { createLogger } from './log.js'
+ import type { SessionStore } from './persistence.js'
+ import type { McpConfigStore } from './mcp-config.js'
+ import type { SnippetStore } from './snippet-store.js'
+ import type { UploadStore } from './upload-store.js'
+ import type { UiStateStore } from './ui-state-store.js'
+ import type { MpStore } from './mp-store.js'
+ import type { AppPluginManager } from './app-plugins/app-plugin-manager.js'
+ import { buildAppPluginRouter } from './app-plugins/routes.js'
+ import type { AppPluginMarketplaceStore } from './app-plugins/marketplace-store.js'
+ import { buildAppPluginMarketplaceRouter } from './app-plugins/marketplace-routes.js'
++import { isStreamingUploadPath } from './stream-upload.js'
+ 
+ const appLog = createLogger('app')
+ 
+ /** Check if an Origin header value is a trusted address for CORS.
+  *  Always allows localhost/loopback. When `allowLan` is true (server bound
+  *  to a non-loopback host), also allows private/LAN IP ranges. */
+ function isTrustedOrigin(origin: string, allowLan: boolean): boolean {
+   try {
+     const { hostname } = new URL(origin)
+     if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1') return true
+@@ -175,33 +176,33 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
+   // omitted because inline scripts and eval are used by the client bundle;
+   // adding it incorrectly would break the app.
+   app.use('*', async (c, next) => {
+     await next()
+     c.res.headers.set('X-Content-Type-Options', 'nosniff')
+     c.res.headers.set('X-Frame-Options', 'DENY')
+     c.res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+     c.res.headers.set('X-XSS-Protection', '1; mode=block')
+   })
+ 
+-  // Reject oversized request bodies early. This covers JSON payloads and
+-  // multipart uploads — the cap is generous (32 MB) to allow the 28 MB
+-  // base64 image payload plus JSON wrapper overhead.
+-  //
+-  // Uses Hono's built-in bodyLimit middleware which correctly handles
+-  // chunked transfer encoding by reading the actual stream when
+-  // Content-Length is absent — our previous Content-Length-only check
+-  // was bypassable by omitting that header.
++  // Reject oversized request bodies early. This covers the *buffered* paths —
++  // JSON message payloads (base64 images inflate ~1.33x) and the config/store
++  // routes. The two file-upload routes are exempt: they stream, and Hono's
++  // bodyLimit reads a chunked body into memory before calling next(), which
++  // would defeat that. Their size limit is enforced by streamUploads while it
++  // writes. Keep this default (the small one) — only listed paths are exempt,
++  // so a path-detection mistake fails closed.
+   const MAX_BODY_BYTES = 32 * 1024 * 1024
+-  app.use('*', bodyLimit({
++  const smallBodyLimit = bodyLimit({
+     maxSize: MAX_BODY_BYTES,
+     onError: (c) => c.json({ error: 'request body too large' }, 413),
+-  }))
++  })
++  app.use('*', (c, next) => (isStreamingUploadPath(c.req.path) ? next() : smallBodyLimit(c, next)))
+ 
+   // Web access gate. No-op unless auth is enabled (set by cli.ts when
+   // bound to a non-loopback host or when an access token is configured).
+   // Runs after CORS + body-limit, before logging + routes + static, so an
+   // unauthenticated request never reaches the API, the WS, or the client
+   // bundle.
+   app.use('*', buildAuthMiddleware())
+ 
+   const httpLog = createLogger('http')
+   app.use('*', async (c, next) => {
+@@ -227,20 +228,21 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
+     c.json({
+       configured: !!serverConfig.authToken,
+       defaults: {
+         cwd: opts.defaults?.cwd ?? process.cwd(),
+         model: opts.defaults?.model ?? serverConfig.defaultModel,
+       },
+       models: serverConfig.modelList,
+       modelGroups: serverConfig.modelGroups,
+       maxGroupPanels: serverConfig.maxGroupPanels,
+       maxUploadBytes: serverConfig.maxUploadBytes,
++      maxPastedImageBytes: MAX_PASTED_IMAGE_BYTES,
+       showPinnedUserMessage: serverConfig.showPinnedUserMessage,
+       autoRecap: serverConfig.autoRecap,
+       toolGroupCards: serverConfig.toolGroupCards,
+       appToolsGit: serverConfig.appToolsGit,
+       firstPartyTools: serverConfig.firstPartyTools,
+       activeProfileId: serverConfig.activeProfileId,
+       activeProfileName: serverConfig.profiles.find((p) => p.id === serverConfig.activeProfileId)?.name ?? 'Default',
+     }),
+   )
+ 
+diff --git a/server/background-routes.test.ts b/server/background-routes.test.ts
+index 3517d8c..0b4248d 100644
+--- a/server/background-routes.test.ts
++++ b/server/background-routes.test.ts
+@@ -1,13 +1,13 @@
+ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+ import { Hono } from 'hono'
+-import { rmSync, existsSync } from 'node:fs'
++import { rmSync, existsSync, readdirSync } from 'node:fs'
+ import { join } from 'node:path'
+ import { createErrorHandler } from './errors.js'
+ import { buildBackgroundRouter } from './background-routes.js'
+ import { tempDir } from './__test-utils__/index.js'
+ 
+ function makeApp(dir: string, maxUploadBytes = 1024) {
+   const app = new Hono()
+   app.onError(createErrorHandler('[test]'))
+   app.route('/api/background', buildBackgroundRouter({ dir, maxUploadBytes }))
+   return app
+@@ -74,20 +74,43 @@ describe('background routes', () => {
+       const res = await app.request('/api/background/upload', { method: 'POST', body: form })
+       expect(res.status).toBe(400)
+     })
+ 
+     it('rejects an over-size file (413)', async () => {
+       const form = new FormData()
+       form.append('file', new File([new Uint8Array(1025)], 'big.png', { type: 'image/png' }))
+       const res = await app.request('/api/background/upload', { method: 'POST', body: form })
+       expect(res.status).toBe(413)
+     })
++
++    it('400s when the request carries no file', async () => {
++      const form = new FormData()
++      form.append('note', 'no file here')
++      const res = await app.request('/api/background/upload', { method: 'POST', body: form })
++      expect(res.status).toBe(400)
++    })
++
++    it('400s on a malformed multipart body', async () => {
++      const res = await app.request('/api/background/upload', {
++        method: 'POST',
++        headers: { 'content-type': 'multipart/form-data; boundary=nope' },
++        body: 'not-a-real-multipart-body',
++      })
++      expect(res.status).toBe(400)
++    })
++
++    it('leaves no .part file behind after a rejected upload', async () => {
++      const form = new FormData()
++      form.append('file', new File(['x'], 'a.gif', { type: 'image/gif' }))
++      await app.request('/api/background/upload', { method: 'POST', body: form })
++      expect(readdirSync(dir).filter((f) => f.endsWith('.part'))).toEqual([])
++    })
+   })
+ 
+   describe('GET /api/background/files/:name', () => {
+     it('serves an uploaded file with its content type', async () => {
+       const form = new FormData()
+       form.append('file', new File(['fake-png'], 'wall.png', { type: 'image/png' }))
+       const posted = (await (await app.request('/api/background/upload', { method: 'POST', body: form })).json()) as { url: string }
+       const res = await app.request(posted.url)
+       expect(res.status).toBe(200)
+       expect(res.headers.get('content-type')).toBe('image/png')
+diff --git a/server/background-routes.ts b/server/background-routes.ts
+index f1ed73d..81871a3 100644
+--- a/server/background-routes.ts
++++ b/server/background-routes.ts
+@@ -1,24 +1,25 @@
+ // Global background-image upload routes. Unlike session uploads (which land
+ // in the session's cwd, server/routes/uploads.ts), a background is a global
+ // appearance file stored under <stateDir>/backgrounds/ and served back as a
+ // same-origin URL. Filenames are server-assigned <uuid>.<ext> — user-supplied
+ // names are never trusted. Every read/delete is containment-checked.
+ 
+ import { Hono } from 'hono'
+-import { mkdir, writeFile, stat, unlink } from 'node:fs/promises'
++import { mkdir, stat, unlink } from 'node:fs/promises'
+ import { createReadStream } from 'node:fs'
+ import { Readable } from 'node:stream'
+ import { resolve, join, sep } from 'node:path'
+ import { randomUUID } from 'node:crypto'
+ import { config as serverConfig } from './config.js'
+ import { createLogger } from './log.js'
++import { streamUploads, UploadError, type SavedUpload } from './stream-upload.js'
+ 
+ const log = createLogger('background')
+ 
+ /** Acceptable upload content types → file extension. Video is limited to the
+  *  two containers every target browser plays natively (mp4/H.264, webm) — an
+  *  accepted-but-unplayable file would be a wallpaper that silently does
+  *  nothing, so `.mov`/`.avi` are refused rather than stored. */
+ const ALLOWED_UPLOAD: Record<string, string> = {
+   'image/jpeg': '.jpg',
+   'image/png': '.png',
+@@ -94,43 +95,52 @@ function parseRange(header: string | undefined, size: number): { start: number;
+ export function buildBackgroundRouter(opts: { dir: string; maxUploadBytes?: number }): Hono {
+   const app = new Hono()
+   const dir = opts.dir
+   const maxBytes = opts.maxUploadBytes ?? serverConfig.maxUploadBytes
+ 
+   app.post('/upload', async (c) => {
+     const ct = c.req.header('content-type') ?? ''
+     if (!ct.toLowerCase().startsWith('multipart/form-data')) {
+       return c.json({ error: 'expected multipart/form-data' }, 400)
+     }
+-    const body = await c.req.parseBody({ all: true }).catch(() => null)
+-    if (!body) return c.json({ error: 'invalid multipart payload' }, 400)
++    if (!c.req.raw.body) return c.json({ error: 'no file in request' }, 400)
+ 
+-    let file: File | undefined
+-    for (const v of Object.values(body)) {
+-      if (v instanceof File) { file = v; break }
+-    }
+-    if (!file) return c.json({ error: 'no file in request' }, 400)
+-
+-    // `hasOwn` — a bare index is a prototype-chain lookup, so a part declaring
+-    // e.g. `Content-Type: constructor` would resolve to Object and bypass the
+-    // allow-list, storing a file whose name can never be served.
+-    const ext = Object.hasOwn(ALLOWED_UPLOAD, file.type) ? ALLOWED_UPLOAD[file.type] : undefined
+-    if (!ext) return c.json({ error: `unsupported file type '${file.type}'` }, 400)
+-    if (file.size > maxBytes) {
+-      return c.json({ error: `file exceeds ${maxBytes} bytes` }, 413 as 400 | 404 | 410 | 500)
++    await mkdir(dir, { recursive: true })
++    let saved: SavedUpload[]
++    try {
++      saved = await streamUploads({
++        body: c.req.raw.body,
++        contentType: ct,
++        maxFileBytes: maxBytes,
++        maxFiles: 1,
++        accept: ALLOWED_UPLOAD,
++        place: ({ mimeType }) => {
++          // The allow-list already passed, so the extension is present.
++          const name = `${randomUUID()}${ALLOWED_UPLOAD[mimeType]}`
++          return { tmp: join(dir, `${name}.part`), final: join(dir, name), name }
++        },
++      })
++    } catch (e) {
++      if (!(e instanceof UploadError)) throw e
++      const f = e.failure
++      if (f.kind === 'too-large') {
++        return c.json({ error: `file exceeds ${f.limit} bytes` }, 413 as 400 | 404 | 410 | 500)
++      }
++      if (f.kind === 'bad-type') {
++        return c.json({ error: `unsupported file type '${f.mimeType}'` }, 400)
++      }
++      return c.json({ error: 'invalid multipart payload' }, 400)
+     }
+ 
+-    await mkdir(dir, { recursive: true })
+-    const name = `${randomUUID()}${ext}`
+-    await writeFile(join(dir, name), Buffer.from(await file.arrayBuffer()))
+-    log.info(`upload background name=${name} bytes=${file.size}`)
+-    return c.json({ url: `/api/background/files/${name}` })
++    if (saved.length === 0) return c.json({ error: 'no file in request' }, 400)
++    log.info(`upload background name=${saved[0].name} bytes=${saved[0].size}`)
++    return c.json({ url: `/api/background/files/${saved[0].name}` })
+   })
+ 
+   app.get('/files/:name', async (c) => {
+     const name = c.req.param('name')
+     if (!isSafeName(name)) return c.json({ error: 'invalid filename' }, 400)
+     const target = join(dir, name)
+     if (!isInside(dir, target)) return c.json({ error: 'invalid filename' }, 400)
+     const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase()
+     // `isSafeName` already proved `ext` is a key; the guarded read keeps this
+     // lookup on the same footing as the upload allow-list rather than reaching
+diff --git a/server/cli.ts b/server/cli.ts
+index 4c448fa..2d6d211 100644
+--- a/server/cli.ts
++++ b/server/cli.ts
+@@ -321,20 +321,26 @@ async function runServer(args: CliArgs): Promise<void> {
+   // listener, and an 'error' event with NO listener crashes the whole process
+   // ("Unhandled 'error' event … read ECONNRESET"; reproduced by hard-exiting
+   // a single WS client). Swallow it here: every real consumer (hono, ws) has
+   // its own error/close handling — this only stops the fatal unhandled-event
+   // path. 'connection' fires for every TCP socket the server accepts,
+   // including the ones later upgraded to WebSocket.
+   server.on('connection', (socket) => {
+     socket.on('error', () => {})
+   })
+ 
++  // Node's default `requestTimeout` (~300s) covers receiving the ENTIRE request,
++  // so a large file over a slow link (phone on LAN) can be killed mid-upload.
++  // Raise it well past a 500 MB upload at ~1 MB/s; a finite value keeps some
++  // slowloris protection rather than disabling the timeout outright.
++  ;(server as unknown as Server).requestTimeout = 30 * 60 * 1000
++
+   // Attach the WebSocket multiplexer to the same HTTP server. The
+   // returned shutdown fn closes every live socket during SIGINT.
+   // @hono/node-server returns a Node http.Server (same shape), so cast
+   // is safe.
+   const wsShutdown = attachWebSocket(server as unknown as Server, sessionManager, args.disableAppPlugins ? undefined : appPluginManager)
+ 
+   // Diagnostic: sample event-loop delay so a synchronous stall (which makes
+   // unrelated sessions appear to hang) shows up in the logs as a max spike.
+   // Default-on; disable with EVENT_LOOP_PROBE=0.
+   const elProbe = startEventLoopProbe()
+diff --git a/server/config.test.ts b/server/config.test.ts
+index 359a824..5461c3c 100644
+--- a/server/config.test.ts
++++ b/server/config.test.ts
+@@ -10,21 +10,21 @@ describe('config', () => {
+ 
+   beforeEach(() => {
+     dir = tempDir('config')
+   })
+ 
+   afterEach(() => {
+     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+   })
+ 
+   it('exports sensible hardcoded defaults', () => {
+-    expect(config.maxUploadBytes).toBe(25 * 1024 * 1024)
++    expect(config.maxUploadBytes).toBe(500 * 1024 * 1024)
+     expect(config.historyCap).toBe(500)
+     expect(config.modelList.length).toBeGreaterThan(0)
+     expect(config.defaultModel).toBeTruthy()
+     expect(config.recapModel).toBeTruthy()
+   })
+ 
+   it('config object is frozen', () => {
+     expect(Object.isFrozen(config)).toBe(true)
+     expect(() => { (config as any).historyCap = 999 }).toThrow()
+   })
+diff --git a/server/config.ts b/server/config.ts
+index 54b67b9..907027a 100644
+--- a/server/config.ts
++++ b/server/config.ts
+@@ -218,21 +218,21 @@ export interface ServerConfig {
+ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
+   modelList: Object.freeze([
+     'anthropic/claude-sonnet-4-20250514',
+     'claude-opus-4-20250514',
+     'claude-haiku-3-5-20241022',
+   ]),
+   modelGroups: Object.freeze([]),
+   defaultModel: 'anthropic/claude-sonnet-4-20250514',
+   recapModel: 'claude-haiku-4-5-20251001',
+   commitMessageModel: 'claude-haiku-4-5-20251001',
+-  maxUploadBytes: 25 * 1024 * 1024,
++  maxUploadBytes: 500 * 1024 * 1024,
+   historyCap: 500,
+   subagentHistoryCap: 300,
+   forwardSubagentText: true,
+   workingStuckMs: 60 * 60 * 1000,
+   maxGroupPanels: 3,
+   authToken: undefined,
+   baseUrl: 'https://api.anthropic.com',
+   accessToken: '',
+   logToFile: false,
+   updateCheckRegistry: 'https://registry.npmjs.org',
+@@ -245,20 +245,26 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
+   toolGroupCards: true,
+   cliDebug: false,
+   appToolsGit: true,
+   firstPartyTools: Object.freeze({ apptools: Object.freeze({ enabled: true }) }),
+   allowSensitivePathEdits: false,
+   maxOutputTokens: 0,
+   profiles: Object.freeze([]),
+   activeProfileId: 'default',
+ })
+ 
++/** Hard cap on the total size of pasted images in one message. NOT a user
++ *  setting: those bytes ride the buffered JSON message body (base64, ~1.33x),
++ *  so this is a memory-safety limit, not a preference. The user-facing file
++ *  upload knob is `maxUploadBytes`. */
++export const MAX_PASTED_IMAGE_BYTES = 25 * 1024 * 1024
++
+ /** Synthetic fallback profile derived from DEFAULTS. Used as the migration
+  *  source, the coerce fallback, and resolveActiveProfile's last resort. */
+ export const DEFAULT_PROFILE: ProviderProfile = Object.freeze({
+   id: 'default',
+   name: 'Default',
+   authToken: '',
+   baseUrl: DEFAULTS.baseUrl,
+   modelList: Object.freeze([...DEFAULTS.modelList]),
+   modelGroups: Object.freeze([...DEFAULTS.modelGroups]),
+   recapModel: DEFAULTS.recapModel,
+diff --git a/server/routes/config-routes.ts b/server/routes/config-routes.ts
+index 5384b79..34f7d45 100644
+--- a/server/routes/config-routes.ts
++++ b/server/routes/config-routes.ts
+@@ -3,21 +3,21 @@
+ import { Hono } from 'hono'
+ import { readFile } from 'node:fs/promises'
+ import { join as joinPath } from 'node:path'
+ import { homedir } from 'node:os'
+ import { SessionManager } from '../session-manager.js'
+ import { HttpError } from '../errors.js'
+ import { createLogger } from '../log.js'
+ import { safeJson } from './index.js'
+ 
+ const log = createLogger('config')
+-import { config as serverConfig, loadConfig, readConfigFile, updateConfigFile } from '../config.js'
++import { config as serverConfig, loadConfig, readConfigFile, updateConfigFile, MAX_PASTED_IMAGE_BYTES } from '../config.js'
+ import {
+   LOG_LEVELS, getLogConfig, setLogConfig, type LogLevel,
+   enableFileLogging, disableFileLogging, isFileLoggingEnabled, getLogFilePath,
+ } from '../log.js'
+ import { writeAtomic } from '../json-file-store.js'
+ import { maskToken } from '../profiles.js'
+ 
+ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono {
+   const app = new Hono()
+ 
+@@ -175,20 +175,21 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono
+         authTokenMasked: maskToken(p.authToken),
+         baseUrl: p.baseUrl,
+         modelList: p.modelList,
+         modelGroups: p.modelGroups,
+         recapModel: p.recapModel,
+         commitMessageModel: p.commitMessageModel,
+         isActive: p.id === serverConfig.activeProfileId,
+       })),
+       activeProfileId: serverConfig.activeProfileId,
+       maxUploadBytes: serverConfig.maxUploadBytes,
++      maxPastedImageBytes: MAX_PASTED_IMAGE_BYTES,
+       historyCap: serverConfig.historyCap,
+       maxGroupPanels: serverConfig.maxGroupPanels,
+       workingStuckMs: serverConfig.workingStuckMs,
+       updateCheckRegistry: serverConfig.updateCheckRegistry,
+       skillLoadMode: serverConfig.skillLoadMode,
+       enabledSkills: serverConfig.enabledSkills,
+       showPinnedUserMessage: serverConfig.showPinnedUserMessage,
+       autoRecap: serverConfig.autoRecap,
+       toolGroupCards: serverConfig.toolGroupCards,
+       appToolsGit: serverConfig.appToolsGit,
+diff --git a/server/routes/uploads.test.ts b/server/routes/uploads.test.ts
+index a42b5d2..944de71 100644
+--- a/server/routes/uploads.test.ts
++++ b/server/routes/uploads.test.ts
+@@ -1,19 +1,20 @@
+ // Tests for the uploads router: recording on POST, the manager routes
+ // (GET /uploads, DELETE /uploads/:id), path-escape validation, and the
+ // chips-DELETE → registry sync.
+ 
+ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+ import { Hono } from 'hono'
+-import { rmSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
++import { rmSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
+ import { join } from 'node:path'
+ import { createErrorHandler } from '../errors.js'
++import { __setConfigForTest, config as serverConfig } from '../config.js'
+ import { buildUploadRouter } from './uploads.js'
+ import { UploadStore } from '../upload-store.js'
+ import { tempDir } from '../__test-utils__/index.js'
+ import type { SessionManager } from '../session-manager.js'
+ 
+ function makeSm(cwd: string, title = 'My Session'): SessionManager {
+   // The router only uses sm.get(id) → { cwd, title }.
+   return { get: () => ({ cwd, title }) } as unknown as SessionManager
+ }
+ 
+@@ -61,20 +62,46 @@ describe('uploads routes', () => {
+     })
+ 
+     it('still succeeds without a store (unrecorded)', async () => {
+       const bare = makeApp(makeSm(cwd))
+       const form = new FormData()
+       form.append('file', new File(['x'], 'b.txt'))
+       const res = await bare.request('/sessions/s1/uploads', { method: 'POST', body: form })
+       expect(res.status).toBe(200)
+       expect(store.list()).toHaveLength(0)
+     })
++
++    it('persists two files in one request', async () => {
++      const form = new FormData()
++      form.append('file', new File(['one'], 'a.txt', { type: 'text/plain' }))
++      form.append('file', new File(['two'], 'b.txt', { type: 'text/plain' }))
++      const res = await app.request('/sessions/s1/uploads', { method: 'POST', body: form })
++      expect(res.status).toBe(200)
++      const body = (await res.json()) as { uploads: Array<{ name: string }> }
++      expect(body.uploads.map((u) => u.name).sort()).toEqual(['a.txt', 'b.txt'])
++    })
++
++    it('413s an over-size file and leaves no partial file', async () => {
++      const before = serverConfig.maxUploadBytes
++      __setConfigForTest({ maxUploadBytes: 10 })
++      try {
++        const form = new FormData()
++        form.append('file', new File([new Uint8Array(50)], 'big.bin'))
++        const res = await app.request('/sessions/s1/uploads', { method: 'POST', body: form })
++        expect(res.status).toBe(413)
++        const dir = join(cwd, 'claude-web-uploads')
++        const leftover = existsSync(dir) ? readdirSync(dir) : []
++        expect(leftover.filter((f) => f.endsWith('.part'))).toEqual([])
++      } finally {
++        __setConfigForTest({ maxUploadBytes: before })
++      }
++    })
+   })
+ 
+   describe('GET /uploads', () => {
+     it('lists entries with live exists flags', async () => {
+       const updir = join(cwd, 'claude-web-uploads')
+       mkdirSync(updir, { recursive: true })
+       const kept = join(updir, '1-kept.txt')
+       const gone = join(updir, '2-gone.txt')
+       writeFileSync(kept, 'keep')
+       writeFileSync(gone, 'gone')
+diff --git a/server/routes/uploads.ts b/server/routes/uploads.ts
+index e0ad86e..4e270f0 100644
+--- a/server/routes/uploads.ts
++++ b/server/routes/uploads.ts
+@@ -1,24 +1,24 @@
+ // Upload routes: upload, delete, and (since the Uploads Manager) list
+ // uploaded per-session files. Every UI upload is recorded in the
+ // UploadStore registry so the manager dialog can list/audit/delete it —
+ // including uploads whose session has since been deleted (orphans).
+ 
+ import { Hono } from 'hono'
+-import { mkdir, writeFile, unlink, stat } from 'node:fs/promises'
+-import { resolve as resolvePath } from 'node:path'
++import { mkdir, unlink, stat } from 'node:fs/promises'
++import { resolve as resolvePath, join } from 'node:path'
+ import { randomUUID } from 'node:crypto'
+ import { SessionManager } from '../session-manager.js'
+ import { config as serverConfig } from '../config.js'
+ import { createLogger } from '../log.js'
+ import { UploadStore, UPLOAD_SUBDIR } from '../upload-store.js'
+-import type { UploadEntry } from '../../shared/uploads.js'
++import { streamUploads, UploadError, type SavedUpload } from '../stream-upload.js'
+ 
+ const log = createLogger('uploads')
+ 
+ /** Live on-disk existence check for a registry entry. Only a clean ENOENT
+  *  reports missing — any other stat error reports present (and logs), so a
+  *  transient FS hiccup never invites deleting a healthy file. */
+ async function fileExists(path: string): Promise<boolean> {
+   try {
+     await stat(path)
+     return true
+@@ -36,78 +36,73 @@ export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore)
+   app.post('/sessions/:id/uploads', async (c) => {
+     const id = c.req.param('id')
+     const info = sm.get(id)
+     if (!info.cwd) {
+       return c.json({ error: 'session has no cwd; uploads require a working directory' }, 400)
+     }
+     const contentType = c.req.header('content-type') ?? ''
+     if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
+       return c.json({ error: 'expected multipart/form-data' }, 400)
+     }
++    if (!c.req.raw.body) return c.json({ error: 'no files in request' }, 400)
+ 
+-    const body = await c.req.parseBody({ all: true }).catch(() => null)
+-    if (!body) {
+-      log.warn(`upload session=${id} parseBody failed`)
+-      return c.json({ error: 'invalid multipart payload' }, 400)
+-    }
+-
+-    const files: File[] = []
+-    for (const v of Object.values(body)) {
+-      if (v instanceof File) files.push(v)
+-      else if (Array.isArray(v)) for (const x of v) if (x instanceof File) files.push(x)
+-    }
+-    if (files.length === 0) return c.json({ error: 'no files in request' }, 400)
+-
+-    const uploadDir = resolvePath(info.cwd, UPLOAD_SUBDIR)
++    const cwd = info.cwd
++    const uploadDir = resolvePath(cwd, UPLOAD_SUBDIR)
+     await mkdir(uploadDir, { recursive: true })
+-
+     const now = Date.now()
+-    const saved: Array<{ path: string; name: string; size: number }> = []
+-    const recorded: UploadEntry[] = []
+-    for (const f of files) {
+-      if (f.size > serverConfig.maxUploadBytes) {
++
++    let files: SavedUpload[]
++    try {
++      files = await streamUploads({
++        body: c.req.raw.body,
++        contentType,
++        maxFileBytes: serverConfig.maxUploadBytes,
++        maxFiles: 20,
++        place: ({ filename, index }) => {
++          const baseName = filename.split(/[\\/]/).pop() || 'upload'
++          const safeName = baseName.replace(/[\0/\\]/g, '_').slice(0, 200) || 'upload'
++          const destName = `${now}-${safeName}`
++          return { tmp: join(uploadDir, `${destName}.${index}.part`), final: join(uploadDir, destName), name: safeName }
++        },
++      })
++    } catch (e) {
++      if (!(e instanceof UploadError)) throw e
++      const f = e.failure
++      if (f.kind === 'too-large') {
+         return c.json(
+-          { error: `file ${f.name} exceeds ${serverConfig.maxUploadBytes} bytes` },
++          { error: `file ${f.filename} exceeds ${f.limit} bytes` },
+           413 as 400 | 404 | 410 | 500,
+         )
+       }
+-      const rawName = f.name || 'upload'
+-      const baseName = rawName.split(/[\\/]/).pop() || 'upload'
+-      const safeName = baseName.replace(/[\0/\\]/g, '_').slice(0, 200) || 'upload'
+-      const destName = `${now}-${safeName}`
+-      const dest = resolvePath(uploadDir, destName)
+-      const buf = Buffer.from(await f.arrayBuffer())
+-      await writeFile(dest, buf)
+-      saved.push({ path: dest, name: safeName, size: f.size })
+-      if (uploadStore) {
+-        recorded.push({
+-          id: randomUUID(),
+-          path: dest,
+-          cwd: resolvePath(info.cwd),
+-          name: safeName,
+-          size: f.size,
+-          uploadedAt: now,
+-          sessionTitle: info.title ?? '',
+-        })
+-      }
++      return c.json({ error: 'invalid multipart payload' }, 400)
+     }
+ 
+-    // Registry recording must never fail the upload itself — persistence
+-    // errors inside the store are already logged by the JsonFileStore base.
+-    if (uploadStore && recorded.length > 0) {
++    if (files.length === 0) return c.json({ error: 'no files in request' }, 400)
++
++    const saved = files.map((f) => ({ path: f.path, name: f.name, size: f.size }))
++    if (uploadStore) {
+       try {
+-        uploadStore.record(recorded)
++        uploadStore.record(
++          files.map((f) => ({
++            id: randomUUID(),
++            path: f.path,
++            cwd: resolvePath(cwd),
++            name: f.name,
++            size: f.size,
++            uploadedAt: now,
++            sessionTitle: info.title ?? '',
++          })),
++        )
+       } catch (e) {
+         log.warn(`upload registry record failed: ${(e as Error).message}`)
+       }
+     }
+-
+     log.info(`upload session=${id} files=${saved.length} totalBytes=${saved.reduce((s, f) => s + f.size, 0)}`)
+     return c.json({ uploads: saved })
+   })
+ 
+   // ── Uploads Manager routes (only mounted when a store is wired) ──
+   if (uploadStore) {
+     // List every recorded upload with a live exists flag.
+     app.get('/uploads', async (c) => {
+       const uploads = await Promise.all(
+         uploadStore.list().map(async (u) => ({ ...u, exists: await fileExists(u.path) })),
+diff --git a/server/stream-upload.test.ts b/server/stream-upload.test.ts
+new file mode 100644
+index 0000000..af98894
+--- /dev/null
++++ b/server/stream-upload.test.ts
+@@ -0,0 +1,107 @@
++import { describe, it, expect, beforeEach, afterEach } from 'vitest'
++import { readdirSync, readFileSync, rmSync } from 'node:fs'
++import { join } from 'node:path'
++import { streamUploads, UploadError, isStreamingUploadPath } from './stream-upload.js'
++import { tempDir } from './__test-utils__/index.js'
++
++/** Build a real multipart body + its content-type header from a FormData. */
++function form(files: Array<{ body: string | Uint8Array; filename?: string; type?: string }>) {
++  const fd = new FormData()
++  for (const f of files) {
++    if (f.filename === undefined) fd.append('file', f.body as string)
++    else fd.append('file', new File([f.body], f.filename, { type: f.type }))
++  }
++  const req = new Request('http://localhost/upload', { method: 'POST', body: fd })
++  return { body: req.body!, contentType: req.headers.get('content-type')! }
++}
++
++describe('streamUploads', () => {
++  let dir: string
++  beforeEach(() => { dir = tempDir('su') })
++  afterEach(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }))
++
++  const place = ({ filename, index }: { filename: string; index: number }) => ({
++    tmp: join(dir, `${index}.part`),
++    final: join(dir, `${index}-${filename}`),
++    name: filename,
++  })
++
++  const noParts = () => readdirSync(dir).filter((f) => f.endsWith('.part'))
++
++  it('writes one file and reports its size', async () => {
++    const { body, contentType } = form([{ body: 'hello', filename: 'a.txt', type: 'text/plain' }])
++    const saved = await streamUploads({ body, contentType, maxFileBytes: 1024, place })
++    expect(saved).toHaveLength(1)
++    expect(readFileSync(saved[0].path, 'utf8')).toBe('hello')
++    expect(saved[0].size).toBe(5)
++    expect(saved[0].name).toBe('a.txt')
++    expect(noParts()).toEqual([])
++  })
++
++  it('rejects a type outside the allow-list and writes nothing', async () => {
++    const { body, contentType } = form([{ body: 'x', filename: 'a.gif', type: 'image/gif' }])
++    await expect(
++      streamUploads({ body, contentType, maxFileBytes: 1024, accept: { 'image/png': '.png' }, place }),
++    ).rejects.toMatchObject({ failure: { kind: 'bad-type' } })
++    expect(readdirSync(dir)).toEqual([])
++  })
++
++  it('uses Object.hasOwn for the allow-list (prototype keys are rejected)', async () => {
++    const { body, contentType } = form([{ body: 'x', filename: 'a', type: 'constructor' }])
++    await expect(
++      streamUploads({ body, contentType, maxFileBytes: 1024, accept: { 'image/png': '.png' }, place }),
++    ).rejects.toBeInstanceOf(UploadError)
++  })
++
++  it('rejects an over-size file and leaves no temp behind', async () => {
++    const { body, contentType } = form([{ body: new Uint8Array(2000), filename: 'big.bin', type: 'application/octet-stream' }])
++    await expect(
++      streamUploads({ body, contentType, maxFileBytes: 100, place }),
++    ).rejects.toMatchObject({ failure: { kind: 'too-large' } })
++    expect(readdirSync(dir)).toEqual([])
++  })
++
++  it('returns [] when the body has no file part', async () => {
++    const { body, contentType } = form([{ body: 'field-value' }])
++    expect(await streamUploads({ body, contentType, maxFileBytes: 1024, place })).toEqual([])
++  })
++
++  it('persists multiple files', async () => {
++    const { body, contentType } = form([
++      { body: 'one', filename: 'a.txt', type: 'text/plain' },
++      { body: 'two', filename: 'b.txt', type: 'text/plain' },
++    ])
++    const saved = await streamUploads({ body, contentType, maxFileBytes: 1024, maxFiles: 5, place })
++    expect(saved.map((s) => s.name).sort()).toEqual(['a.txt', 'b.txt'])
++  })
++
++  it('honours maxFiles', async () => {
++    const { body, contentType } = form([
++      { body: 'one', filename: 'a.txt', type: 'text/plain' },
++      { body: 'two', filename: 'b.txt', type: 'text/plain' },
++    ])
++    const saved = await streamUploads({ body, contentType, maxFileBytes: 1024, maxFiles: 1, place })
++    expect(saved).toHaveLength(1)
++  })
++
++  it('cleans up its temp when the client aborts mid-stream', async () => {
++    const enc = new TextEncoder()
++    const body = new ReadableStream<Uint8Array>({
++      start(c) {
++        c.enqueue(enc.encode('--x\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'))
++        c.error(new Error('client aborted'))
++      },
++    })
++    await expect(
++      streamUploads({ body, contentType: 'multipart/form-data; boundary=x', maxFileBytes: 1_000_000, place }),
++    ).rejects.toBeInstanceOf(UploadError)
++    expect(noParts()).toEqual([])
++  })
++
++  it('recognises only the streaming upload routes', () => {
++    expect(isStreamingUploadPath('/api/background/upload')).toBe(true)
++    expect(isStreamingUploadPath('/api/sessions/abc/uploads')).toBe(true)
++    expect(isStreamingUploadPath('/api/sessions/abc/messages')).toBe(false)
++    expect(isStreamingUploadPath('/api/background/files/x.png')).toBe(false)
++  })
++})
+diff --git a/server/stream-upload.ts b/server/stream-upload.ts
+new file mode 100644
+index 0000000..d62446f
+--- /dev/null
++++ b/server/stream-upload.ts
+@@ -0,0 +1,133 @@
++// Streams a multipart/form-data body to disk without ever holding the whole
++// file in memory. Shared by the global background upload and the per-session
++// file upload. Each part is written to `<final>.<index>.part` and atomically
++// renamed on success, so a truncated upload never becomes visible at a
++// servable path.
++//
++// These routes must NOT be wrapped in Hono's `bodyLimit`: in the chunked case
++// it reads the entire body into memory before calling next() (see
++// node_modules/hono/dist/middleware/body-limit/index.js). The size limit is
++// enforced here, while writing.
++
++import Busboy from 'busboy'
++import { Readable } from 'node:stream'
++import { pipeline } from 'node:stream/promises'
++import { createWriteStream } from 'node:fs'
++import { rename, unlink } from 'node:fs/promises'
++
++export interface SavedUpload {
++  path: string
++  name: string
++  filename: string
++  mimeType: string
++  size: number
++}
++
++export interface PlaceArgs {
++  filename: string
++  mimeType: string
++  index: number
++}
++
++export interface StreamUploadOptions {
++  body: ReadableStream<Uint8Array>
++  contentType: string
++  maxFileBytes: number
++  maxFiles?: number
++  /** mime → ext allow-list. Omitted = accept any type. */
++  accept?: Record<string, string>
++  place: (args: PlaceArgs) => { tmp: string; final: string; name: string }
++}
++
++export type UploadFailure =
++  | { kind: 'too-large'; filename: string; limit: number }
++  | { kind: 'bad-type'; filename: string; mimeType: string }
++  | { kind: 'parse'; message: string }
++
++export class UploadError extends Error {
++  constructor(readonly failure: UploadFailure) {
++    super(`upload failed: ${failure.kind}`)
++    this.name = 'UploadError'
++  }
++}
++
++/** The routes served by streamUploads — exempt from the global bodyLimit. */
++const STREAM_UPLOAD_PATTERNS = [/^\/api\/background\/upload$/, /^\/api\/sessions\/[^/]+\/uploads$/]
++
++export function isStreamingUploadPath(path: string): boolean {
++  return STREAM_UPLOAD_PATTERNS.some((re) => re.test(path))
++}
++
++interface Pending {
++  tmp: string
++  final: string
++  name: string
++  filename: string
++  mimeType: string
++  size: number
++}
++
++export async function streamUploads(o: StreamUploadOptions): Promise<SavedUpload[]> {
++  const maxFiles = o.maxFiles ?? 1
++  const temps: string[] = []
++  const pending: Pending[] = []
++  const writes: Promise<void>[] = []
++  let failure: UploadFailure | null = null
++  let index = 0
++
++  const bb = Busboy({
++    headers: { 'content-type': o.contentType },
++    limits: { fileSize: o.maxFileBytes, files: maxFiles },
++  })
++
++  bb.on('file', (_field, stream, info) => {
++    const i = index++
++    if (o.accept && !Object.hasOwn(o.accept, info.mimeType)) {
++      failure ??= { kind: 'bad-type', filename: info.filename, mimeType: info.mimeType }
++      stream.resume() // drain so the parser can advance
++      return
++    }
++    if (failure) {
++      stream.resume()
++      return
++    }
++
++    const dest = o.place({ filename: info.filename, mimeType: info.mimeType, index: i })
++    temps.push(dest.tmp)
++    const ws = createWriteStream(dest.tmp)
++    let size = 0
++    let limited = false
++    stream.on('data', (chunk: Buffer) => { size += chunk.length })
++    stream.on('limit', () => { limited = true })
++    writes.push(
++      pipeline(stream, ws).then(
++        () => {
++          if (limited) {
++            failure ??= { kind: 'too-large', filename: info.filename, limit: o.maxFileBytes }
++            return
++          }
++          pending.push({ tmp: dest.tmp, final: dest.final, name: dest.name, filename: info.filename, mimeType: info.mimeType, size })
++        },
++        (e: Error) => { failure ??= { kind: 'parse', message: e.message } },
++      ),
++    )
++  })
++
++  bb.on('error', (e: Error) => { failure ??= { kind: 'parse', message: e.message } })
++
++  await new Promise<void>((resolve) => {
++    const src = Readable.fromWeb(o.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>)
++    src.on('error', (e: Error) => { failure ??= { kind: 'parse', message: e.message }; resolve() })
++    bb.on('close', resolve)
++    src.pipe(bb)
++  })
++  await Promise.all(writes)
++
++  if (failure) {
++    // Every temp the caller handed us goes — the successful writes too.
++    for (const t of temps) await unlink(t).catch(() => {})
++    throw new UploadError(failure)
++  }
++  for (const p of pending) await rename(p.tmp, p.final)
++  return pending.map((p) => ({ path: p.final, name: p.name, filename: p.filename, mimeType: p.mimeType, size: p.size }))
++}
+diff --git a/src/App.tsx b/src/App.tsx
+index 6017cf8..28b0f07 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -80,21 +80,21 @@ import {
+   SIDEBAR_MIN_KEY,
+   SIDEBAR_MAX_KEY,
+   SIDEBAR_MIN_DEFAULT,
+   SIDEBAR_MAX_DEFAULT,
+   PANEL_MIN_RATIO_KEY,
+   PANEL_MIN_RATIO_DEFAULT,
+   LAST_SEEN_TURN_KEY,
+   clampMaxOpen,
+ } from './constants/storageKeys'
+ import type { Defaults, ConfigResponse } from './types/config'
+-import { setMaxUploadBytes } from './hooks/config-store'
++import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
+ import { closeGroupPanelsState } from './utils/group-panels'
+ import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
+ import { buildNewLikeThisForm } from './utils/new-like-this'
+ import { notificationTooltip } from './utils/notifications'
+ import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
+ import { randomId } from './utils/uuid'
+ import { escapeAction } from './utils/escape-action'
+ import { prepareGroupFlip } from './utils/flip'
+ 
+ /** Shallow-compare two SessionInfo objects across every own property.
+@@ -448,20 +448,21 @@ export function App() {
+   useEffect(() => {
+     void api
+       .get<ConfigResponse>('/config')
+       .then((r) => {
+         setIsConfigured(r.configured !== false)
+         if (r.configured === false) return
+         setDefaults(r.defaults)
+         if (r.models?.length) setServerModels(r.models)
+         if (r.maxGroupPanels != null) setServerMaxOpen(r.maxGroupPanels)
+         if (r.maxUploadBytes != null) setMaxUploadBytes(r.maxUploadBytes)
++        if (r.maxPastedImageBytes != null) setMaxPastedImageBytes(r.maxPastedImageBytes)
+         setGlobalPrefs({
+           showPinnedUserMessage: r.showPinnedUserMessage ?? true,
+           autoRecap: r.autoRecap ?? true,
+           toolGroupCards: r.toolGroupCards ?? true,
+           firstPartyTools: r.firstPartyTools,
+         })
+       })
+       .catch(() => setIsConfigured(true))
+   }, [])
+ 
+diff --git a/src/components/BackgroundPicker.test.tsx b/src/components/BackgroundPicker.test.tsx
+index e0ff630..0402ef4 100644
+--- a/src/components/BackgroundPicker.test.tsx
++++ b/src/components/BackgroundPicker.test.tsx
+@@ -3,20 +3,21 @@ import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
+ import { BackgroundPicker } from './BackgroundPicker'
+ import { useBackground } from '../hooks/useBackground'
+ import {
+   BACKGROUND_KEY,
+   BACKGROUND_DEFAULT_OPACITY,
+   BACKGROUND_DEFAULT_BLUR,
+   BACKGROUND_DEFAULT_SURFACE,
+   BACKGROUND_SRC_MAX,
+   type BackgroundSetting,
+ } from '../theme'
++import { setMaxUploadBytes } from '../hooks/config-store'
+ 
+ const MP4_UPLOAD = '/api/background/files/7c9e6679-7425-40de-944b-e07fc1f90ae7.mp4'
+ const PNG_UPLOAD = '/api/background/files/7c9e6679-7425-40de-944b-e07fc1f90ae7.png'
+ 
+ function setting(pref: BackgroundSetting['pref'], opacity = 0.85): BackgroundSetting {
+   return { pref, opacity }
+ }
+ 
+ /** The seam the `vi.fn()` onChange tests above cannot see: the picker wired to
+  *  its real owner (as App.tsx does) against real localStorage, so a write that
+@@ -24,20 +25,21 @@ function setting(pref: BackgroundSetting['pref'], opacity = 0.85): BackgroundSet
+ function WithRealBackgroundOwner() {
+   const { setting, setSetting } = useBackground('default')
+   return <BackgroundPicker setting={setting} onChange={setSetting} />
+ }
+ 
+ describe('BackgroundPicker', () => {
+   afterEach(() => {
+     cleanup()
+     vi.restoreAllMocks()
+     vi.unstubAllGlobals()
++    setMaxUploadBytes(25 * 1024 * 1024) // config-store is module-global
+   })
+ 
+   it('renders None/Image/Video and defaults to None active', () => {
+     render(<BackgroundPicker setting={setting({ kind: 'none' })} onChange={() => {}} />)
+     expect(screen.getByRole('radio', { name: 'None' })).toBeTruthy()
+     expect(screen.getByRole('radio', { name: 'Image' })).toBeTruthy()
+     expect(screen.getByRole('radio', { name: 'Video' })).toBeTruthy()
+   })
+ 
+   it('applies a valid http(s) image URL on submit', () => {
+@@ -154,20 +156,35 @@ describe('BackgroundPicker', () => {
+     await screen.findByText('Applied')
+ 
+     expect(fetchMock).toHaveBeenCalledWith(MP4_UPLOAD, { method: 'DELETE' })
+     expect(onChange).toHaveBeenCalledWith({
+       pref: { kind: 'custom', src: PNG_UPLOAD, media: 'image' },
+       opacity: 0.85,
+       lastSrc: PNG_UPLOAD,
+       lastMedia: 'image',
+     })
+   })
++
++  it('refuses an over-size file before sending any request', async () => {
++    setMaxUploadBytes(10) // 10 bytes
++    const fetchMock = vi.fn()
++    vi.stubGlobal('fetch', fetchMock)
++    render(<BackgroundPicker setting={setting({ kind: 'none' })} onChange={() => {}} />)
++    fireEvent.click(screen.getByRole('radio', { name: 'Video' }))
++    fireEvent.click(screen.getByText('Upload video…'))
++    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!
++    fireEvent.change(input, { target: { files: [new File([new Uint8Array(50)], 'big.mp4', { type: 'video/mp4' })] } })
++
++    const alert = await screen.findByRole('alert')
++    expect(alert.textContent).toMatch(/too large/i)
++    expect(fetchMock).not.toHaveBeenCalled()
++  })
+ })
+ 
+ describe('BackgroundPicker against its real owner', () => {
+   // Real hook + real localStorage, no mocks: the `vi.fn()` onChange tests above
+   // cannot see a write the owner rejects, because nothing feeds it back.
+   beforeEach(() => {
+     window.localStorage.clear()
+   })
+   afterEach(() => {
+     cleanup()
+diff --git a/src/components/BackgroundPicker.tsx b/src/components/BackgroundPicker.tsx
+index e564c09..f7f0216 100644
+--- a/src/components/BackgroundPicker.tsx
++++ b/src/components/BackgroundPicker.tsx
+@@ -1,19 +1,21 @@
+ // Background section body for the Appearance popover (default/glow skins).
+ // Lets the user pick None, a Custom image, or a Custom video — via a remote
+ // http(s) URL or a local file uploaded to /api/background — and tune how the
+ // chrome sits over it (fill opacity + frost strength).
+ //
+ // The media is an explicit choice, never inferred from the src: a remote URL
+ // carries no reliable extension, and the wrong kind renders as nothing at all.
+ 
+ import { useEffect, useRef, useState } from 'react'
++import { getMaxUploadBytes } from '../hooks/config-store'
++import { formatBytes } from '../utils/format'
+ import {
+   BACKGROUND_OPACITY_MIN,
+   BACKGROUND_OPACITY_MAX,
+   BACKGROUND_OPACITY_STEP,
+   BACKGROUND_BLUR_MIN,
+   BACKGROUND_BLUR_MAX,
+   BACKGROUND_BLUR_STEP,
+   BACKGROUND_DEFAULT_BLUR,
+   BACKGROUND_SURFACE_MIN,
+   BACKGROUND_SURFACE_MAX,
+@@ -210,20 +212,26 @@ export function BackgroundPicker({ setting, onChange }: Props) {
+     if (!applied) {
+       const named = mediaOfExtension(next)
+       setError(named && named !== media
+         ? `That is ${MEDIA_UI[named].noun} file. Pick ${ui.noun} URL, or switch to the ${named} background.`
+         : `Only an http(s) URL, or one of your own uploads, can be used as the ${media} background.`)
+     }
+   }
+ 
+   const handleUpload = async (file: File) => {
+     const forMedia = media
++    const max = getMaxUploadBytes()
++    if (file.size > max) {
++      setApplied(false)
++      setError(`File too large (${formatBytes(file.size)}). Max ${formatBytes(max)}.`)
++      return
++    }
+     const form = new FormData()
+     form.append('file', file, file.name)
+     try {
+       const res = await fetch('/api/background/upload', { method: 'POST', body: form })
+       const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string }
+       if (!res.ok || !body.url) throw new Error(body.error || `upload failed (HTTP ${res.status})`)
+       // An upload takes seconds. If the user walked away from this media row
+       // meanwhile — switched it off, or moved to the other radio — committing
+       // now would turn a wallpaper they just dismissed back on. Nothing would
+       // reference the file, so it goes with the intent.
+diff --git a/src/components/GlobalSettingsModal.tsx b/src/components/GlobalSettingsModal.tsx
+index ad023b5..cdf5d54 100644
+--- a/src/components/GlobalSettingsModal.tsx
++++ b/src/components/GlobalSettingsModal.tsx
+@@ -578,21 +578,21 @@ function ServerTab({
+ 
+   return (
+     <div className="settings-stack">
+       <section className="settings-group">
+         <div className="settings-group-head">
+           <h4>Limits</h4>
+           <span className="settings-group-desc">Server-wide caps applied to every session.</span>
+         </div>
+         <SettingsRow
+           title="Max upload size"
+-          hint="Largest pasted image or uploaded file accepted. 0 = no override (server default 25 MB)."
++          hint="Largest uploaded file accepted (backgrounds, session files). Pasted images are capped separately. 0 = no override (server default 500 MB)."
+         >
+           <Stepper
+             ariaLabel="Max upload size, in megabytes"
+             value={uploadMb}
+             min={0}
+             step={1}
+             suffix="MB"
+             onChange={(mb) => onMaxUploadBytesChange(mb * MB)}
+           />
+         </SettingsRow>
+diff --git a/src/hooks/config-store.ts b/src/hooks/config-store.ts
+index bbff764..fc8e920 100644
+--- a/src/hooks/config-store.ts
++++ b/src/hooks/config-store.ts
+@@ -4,10 +4,20 @@
+ 
+ let _maxUploadBytes = 25 * 1024 * 1024 // 25 MB default, overwritten on config load
+ 
+ export function getMaxUploadBytes(): number {
+   return _maxUploadBytes
+ }
+ 
+ export function setMaxUploadBytes(v: number): void {
+   if (v > 0) _maxUploadBytes = v
+ }
++
++let _maxPastedImageBytes = 25 * 1024 * 1024
++
++export function getMaxPastedImageBytes(): number {
++  return _maxPastedImageBytes
++}
++
++export function setMaxPastedImageBytes(v: number): void {
++  if (v > 0) _maxPastedImageBytes = v
++}
+diff --git a/src/hooks/usePastedImages.test.ts b/src/hooks/usePastedImages.test.ts
+new file mode 100644
+index 0000000..dcf61f6
+--- /dev/null
++++ b/src/hooks/usePastedImages.test.ts
+@@ -0,0 +1,21 @@
++import { describe, it, expect, beforeEach } from 'vitest'
++import { renderHook, act } from '@testing-library/react'
++import { usePastedImages } from './usePastedImages'
++import { setMaxUploadBytes, setMaxPastedImageBytes } from './config-store'
++
++describe('usePastedImages cap', () => {
++  beforeEach(() => {
++    setMaxUploadBytes(500 * 1024 * 1024)
++    setMaxPastedImageBytes(25 * 1024 * 1024)
++  })
++
++  it('caps the pasted-image total by the pasted-image cap, not the upload cap', async () => {
++    setMaxPastedImageBytes(5) // 5 bytes
++    const { result } = renderHook(() => usePastedImages())
++    await act(async () => {
++      await result.current.addImage(new File([new Uint8Array(10)], 'a.png', { type: 'image/png' }))
++    })
++    expect(result.current.error).toMatch(/too large/i)
++    expect(result.current.images).toHaveLength(0)
++  })
++})
+diff --git a/src/hooks/usePastedImages.ts b/src/hooks/usePastedImages.ts
+index 18ef953..f93478c 100644
+--- a/src/hooks/usePastedImages.ts
++++ b/src/hooks/usePastedImages.ts
+@@ -1,14 +1,14 @@
+ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+ import { formatBytes } from '../utils/format'
+ import { randomId } from '../utils/uuid'
+-import { getMaxUploadBytes } from './config-store'
++import { getMaxPastedImageBytes } from './config-store'
+ import type { PastedImage } from '../types'
+ 
+ const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
+ const MAX_PER_IMAGE = 10 * 1024 * 1024 // 10 MB
+ 
+ export interface UsePastedImages {
+   images: PastedImage[]
+   error: string | null
+   addImage: (file: File) => Promise<void>
+   removeImage: (id: string) => void
+@@ -58,21 +58,21 @@ export function usePastedImages(): UsePastedImages {
+ 
+     if (!ALLOWED_TYPES.has(file.type)) {
+       setError(`Unsupported image type: ${file.type || 'unknown'}. Use JPEG, PNG, GIF, or WebP.`)
+       return
+     }
+     if (file.size > MAX_PER_IMAGE) {
+       setError(`Image too large (${formatBytes(file.size)}). Max ${formatBytes(MAX_PER_IMAGE)} per image.`)
+       return
+     }
+     const currentTotal = imagesRef.current.reduce((sum, i) => sum + i.size, 0)
+-    const maxTotal = getMaxUploadBytes()
++    const maxTotal = getMaxPastedImageBytes()
+     if (currentTotal + file.size > maxTotal) {
+       setError(`Total image size too large. Max ${formatBytes(maxTotal)} across all images.`)
+       return
+     }
+ 
+     const id = randomId()
+     const previewUrl = URL.createObjectURL(file)
+     allUrlsRef.current.add(previewUrl)
+     const generation = clearGenerationRef.current
+ 
+diff --git a/src/types/config.ts b/src/types/config.ts
+index e2ceef5..decc793 100644
+--- a/src/types/config.ts
++++ b/src/types/config.ts
+@@ -29,20 +29,23 @@ export interface Defaults {
+ }
+ 
+ /** Lightweight config returned by GET /api/config (startup). */
+ export interface ConfigResponse {
+   configured?: boolean
+   defaults: Defaults
+   models?: string[]
+   modelGroups?: ModelGroupConfig[]
+   maxGroupPanels?: number
+   maxUploadBytes?: number
++  /** Internal cap on the total size of pasted images in one message (bytes).
++   *  NOT a user setting — these bytes ride the buffered JSON message body. */
++  maxPastedImageBytes?: number
+   /** Global default for the pinned "current question" header. Sessions
+    *  without an explicit override inherit this. */
+   showPinnedUserMessage?: boolean
+   /** Global default for idle auto-recap. Sessions without an explicit
+    *  override inherit this. */
+   autoRecap?: boolean
+   /** Global default for the transcript's collapsible tool-group cards.
+    *  Sessions without an explicit override inherit this. */
+   toolGroupCards?: boolean
+   /** Global default for the first-party `apptools` git MCP server. Sessions
+@@ -60,20 +63,21 @@ export interface ConfigResponse {
+ /** Full config returned by GET /api/config/full (settings modal). */
+ export interface FullServerConfig {
+   configured?: boolean
+   authTokenMasked?: string
+   baseUrl: string
+   modelList: string[]
+   modelGroups?: ModelGroupConfig[]
+   recapModel: string
+   commitMessageModel: string
+   maxUploadBytes: number
++  maxPastedImageBytes?: number
+   historyCap: number
+   maxGroupPanels: number
+   workingStuckMs: number
+   logToFile?: boolean
+   /** Empty string when the user hasn't configured a registry — the
+    *  update checker treats that as "disabled". */
+   updateCheckRegistry: string
+   skillLoadMode: SkillLoadMode
+   enabledSkills: string[]
+   /** Global default for the pinned "current question" header. */

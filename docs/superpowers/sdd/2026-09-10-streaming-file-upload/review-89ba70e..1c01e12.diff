@@ -1,0 +1,148 @@
+# Review package: 89ba70e..HEAD
+
+## Commits
+1c01e12 feat(background): refuse an over-size file client-side before uploading
+
+## Files changed
+ src/components/BackgroundPicker.test.tsx | 17 +++++++++++++++++
+ src/components/BackgroundPicker.tsx      |  8 ++++++++
+ 2 files changed, 25 insertions(+)
+
+## Diff
+diff --git a/src/components/BackgroundPicker.test.tsx b/src/components/BackgroundPicker.test.tsx
+index e0ff630..0402ef4 100644
+--- a/src/components/BackgroundPicker.test.tsx
++++ b/src/components/BackgroundPicker.test.tsx
+@@ -3,20 +3,21 @@ import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
+ import { BackgroundPicker } from './BackgroundPicker'
+ import { useBackground } from '../hooks/useBackground'
+ import {
+   BACKGROUND_KEY,
+   BACKGROUND_DEFAULT_OPACITY,
+   BACKGROUND_DEFAULT_BLUR,
+   BACKGROUND_DEFAULT_SURFACE,
+   BACKGROUND_SRC_MAX,
+   type BackgroundSetting,
+ } from '../theme'
++import { setMaxUploadBytes } from '../hooks/config-store'
+ 
+ const MP4_UPLOAD = '/api/background/files/7c9e6679-7425-40de-944b-e07fc1f90ae7.mp4'
+ const PNG_UPLOAD = '/api/background/files/7c9e6679-7425-40de-944b-e07fc1f90ae7.png'
+ 
+ function setting(pref: BackgroundSetting['pref'], opacity = 0.85): BackgroundSetting {
+   return { pref, opacity }
+ }
+ 
+ /** The seam the `vi.fn()` onChange tests above cannot see: the picker wired to
+  *  its real owner (as App.tsx does) against real localStorage, so a write that
+@@ -24,20 +25,21 @@ function setting(pref: BackgroundSetting['pref'], opacity = 0.85): BackgroundSet
+ function WithRealBackgroundOwner() {
+   const { setting, setSetting } = useBackground('default')
+   return <BackgroundPicker setting={setting} onChange={setSetting} />
+ }
+ 
+ describe('BackgroundPicker', () => {
+   afterEach(() => {
+     cleanup()
+     vi.restoreAllMocks()
+     vi.unstubAllGlobals()
++    setMaxUploadBytes(25 * 1024 * 1024) // config-store is module-global
+   })
+ 
+   it('renders None/Image/Video and defaults to None active', () => {
+     render(<BackgroundPicker setting={setting({ kind: 'none' })} onChange={() => {}} />)
+     expect(screen.getByRole('radio', { name: 'None' })).toBeTruthy()
+     expect(screen.getByRole('radio', { name: 'Image' })).toBeTruthy()
+     expect(screen.getByRole('radio', { name: 'Video' })).toBeTruthy()
+   })
+ 
+   it('applies a valid http(s) image URL on submit', () => {
+@@ -154,20 +156,35 @@ describe('BackgroundPicker', () => {
+     await screen.findByText('Applied')
+ 
+     expect(fetchMock).toHaveBeenCalledWith(MP4_UPLOAD, { method: 'DELETE' })
+     expect(onChange).toHaveBeenCalledWith({
+       pref: { kind: 'custom', src: PNG_UPLOAD, media: 'image' },
+       opacity: 0.85,
+       lastSrc: PNG_UPLOAD,
+       lastMedia: 'image',
+     })
+   })
++
++  it('refuses an over-size file before sending any request', async () => {
++    setMaxUploadBytes(10) // 10 bytes
++    const fetchMock = vi.fn()
++    vi.stubGlobal('fetch', fetchMock)
++    render(<BackgroundPicker setting={setting({ kind: 'none' })} onChange={() => {}} />)
++    fireEvent.click(screen.getByRole('radio', { name: 'Video' }))
++    fireEvent.click(screen.getByText('Upload video…'))
++    const input = document.querySelector<HTMLInputElement>('input[type="file"]')!
++    fireEvent.change(input, { target: { files: [new File([new Uint8Array(50)], 'big.mp4', { type: 'video/mp4' })] } })
++
++    const alert = await screen.findByRole('alert')
++    expect(alert.textContent).toMatch(/too large/i)
++    expect(fetchMock).not.toHaveBeenCalled()
++  })
+ })
+ 
+ describe('BackgroundPicker against its real owner', () => {
+   // Real hook + real localStorage, no mocks: the `vi.fn()` onChange tests above
+   // cannot see a write the owner rejects, because nothing feeds it back.
+   beforeEach(() => {
+     window.localStorage.clear()
+   })
+   afterEach(() => {
+     cleanup()
+diff --git a/src/components/BackgroundPicker.tsx b/src/components/BackgroundPicker.tsx
+index e564c09..f7f0216 100644
+--- a/src/components/BackgroundPicker.tsx
++++ b/src/components/BackgroundPicker.tsx
+@@ -1,19 +1,21 @@
+ // Background section body for the Appearance popover (default/glow skins).
+ // Lets the user pick None, a Custom image, or a Custom video — via a remote
+ // http(s) URL or a local file uploaded to /api/background — and tune how the
+ // chrome sits over it (fill opacity + frost strength).
+ //
+ // The media is an explicit choice, never inferred from the src: a remote URL
+ // carries no reliable extension, and the wrong kind renders as nothing at all.
+ 
+ import { useEffect, useRef, useState } from 'react'
++import { getMaxUploadBytes } from '../hooks/config-store'
++import { formatBytes } from '../utils/format'
+ import {
+   BACKGROUND_OPACITY_MIN,
+   BACKGROUND_OPACITY_MAX,
+   BACKGROUND_OPACITY_STEP,
+   BACKGROUND_BLUR_MIN,
+   BACKGROUND_BLUR_MAX,
+   BACKGROUND_BLUR_STEP,
+   BACKGROUND_DEFAULT_BLUR,
+   BACKGROUND_SURFACE_MIN,
+   BACKGROUND_SURFACE_MAX,
+@@ -210,20 +212,26 @@ export function BackgroundPicker({ setting, onChange }: Props) {
+     if (!applied) {
+       const named = mediaOfExtension(next)
+       setError(named && named !== media
+         ? `That is ${MEDIA_UI[named].noun} file. Pick ${ui.noun} URL, or switch to the ${named} background.`
+         : `Only an http(s) URL, or one of your own uploads, can be used as the ${media} background.`)
+     }
+   }
+ 
+   const handleUpload = async (file: File) => {
+     const forMedia = media
++    const max = getMaxUploadBytes()
++    if (file.size > max) {
++      setApplied(false)
++      setError(`File too large (${formatBytes(file.size)}). Max ${formatBytes(max)}.`)
++      return
++    }
+     const form = new FormData()
+     form.append('file', file, file.name)
+     try {
+       const res = await fetch('/api/background/upload', { method: 'POST', body: form })
+       const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string }
+       if (!res.ok || !body.url) throw new Error(body.error || `upload failed (HTTP ${res.status})`)
+       // An upload takes seconds. If the user walked away from this media row
+       // meanwhile — switched it off, or moved to the other radio — committing
+       // now would turn a wallpaper they just dismissed back on. Nothing would
+       // reference the file, so it goes with the intent.

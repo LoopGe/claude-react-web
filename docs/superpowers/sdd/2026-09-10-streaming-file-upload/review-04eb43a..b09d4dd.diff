@@ -1,0 +1,187 @@
+# Review package: 04eb43a..HEAD
+
+## Commits
+b09d4dd fix(upload): address four minor review findings
+
+## Files changed
+ .../specs/2026-09-10-streaming-file-upload-design.md       |  1 +
+ scripts/e2e-stream-upload.mjs                              |  7 ++++++-
+ server/stream-upload.test.ts                               | 14 ++++++++++++++
+ src/components/BackgroundPicker.test.tsx                   |  4 ++--
+ src/hooks/config-store.ts                                  |  6 +++++-
+ 5 files changed, 28 insertions(+), 4 deletions(-)
+
+## Diff
+diff --git a/docs/superpowers/specs/2026-09-10-streaming-file-upload-design.md b/docs/superpowers/specs/2026-09-10-streaming-file-upload-design.md
+index b016ba9..bc4ac2e 100644
+--- a/docs/superpowers/specs/2026-09-10-streaming-file-upload-design.md
++++ b/docs/superpowers/specs/2026-09-10-streaming-file-upload-design.md
+@@ -227,20 +227,21 @@ security backstop. This is accepted, not hidden.
+ 
+ | Scenario | Behaviour |
+ |---|---|
+ | Video ≤ `maxUploadBytes`, Content-Length present | streamed to a temp file, renamed, served; memory flat |
+ | Video ≤ limit, chunked encoding (e.g. via Vite proxy) | same — the helper counts bytes itself |
+ | Video > `maxUploadBytes`, client pre-check active | friendly client-side refusal; **no request sent** |
+ | Video > `maxUploadBytes`, pre-check bypassed | 413 while streaming; may surface as a network error (accepted) |
+ | Disallowed type (`.mov`, `.gif`, `'constructor'`) | 400, nothing written |
+ | Client disconnects mid-upload | temp deleted, no orphan |
+ | Two files in one session-upload request | both persisted (distinct temp indices) |
++| More than 20 file parts in one session-upload request | first 20 persisted; excess silently dropped by busboy `files` limit |
+ | Pasted images | unchanged — still buffered, still capped by the internal constant |
+ | `maxUploadBytes` raised in Settings | streaming upload paths honour the new value |
+ | Raising `maxUploadBytes` | pasted-image cap **unchanged** |
+ 
+ ## Files touched
+ 
+ | File | Change |
+ |---|---|
+ | `server/stream-upload.ts` | **new** — streaming multipart → temp file → atomic rename |
+ | `server/background-routes.ts` | `POST /upload` uses the helper |
+diff --git a/scripts/e2e-stream-upload.mjs b/scripts/e2e-stream-upload.mjs
+index 97a90e3..dbc1e58 100644
+--- a/scripts/e2e-stream-upload.mjs
++++ b/scripts/e2e-stream-upload.mjs
+@@ -1,25 +1,30 @@
+ // Automated end-to-end test for streaming file upload.
+ // Boots the built server on a free port with a temp state-dir, uploads a >32 MB
+ // multipart file to /api/background/upload, verifies HTTP 200 + {url}, GET 200
+ // with correct content-type, Range: bytes=0-3 → 206, no *.part residue.
+ // Run: npx tsx scripts/e2e-stream-upload.mjs
+-import { mkdtempSync, rmSync, readdirSync } from 'node:fs'
++import { mkdtempSync, rmSync, readdirSync, existsSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import { join } from 'node:path'
+ import { spawn } from 'node:child_process'
+ import { createServer } from 'node:net'
+ import { fileURLToPath } from 'node:url'
+ 
+ const thisDir = fileURLToPath(new URL('.', import.meta.url))
+ const projectRoot = join(thisDir, '..')
+ 
++if (!existsSync(join(projectRoot, 'dist', 'cli.mjs'))) {
++  console.error('dist/cli.mjs not found — run `npm run build` first.')
++  process.exit(1)
++}
++
+ /** Find a free port by briefly binding to port 0. */
+ function getFreePort() {
+   return new Promise((resolve, reject) => {
+     const srv = createServer()
+     srv.listen(0, '127.0.0.1', () => {
+       const port = srv.address().port
+       srv.close(() => resolve(port))
+     })
+     srv.on('error', reject)
+   })
+diff --git a/server/stream-upload.test.ts b/server/stream-upload.test.ts
+index af98894..9f1b480 100644
+--- a/server/stream-upload.test.ts
++++ b/server/stream-upload.test.ts
+@@ -91,17 +91,31 @@ describe('streamUploads', () => {
+         c.enqueue(enc.encode('--x\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'))
+         c.error(new Error('client aborted'))
+       },
+     })
+     await expect(
+       streamUploads({ body, contentType: 'multipart/form-data; boundary=x', maxFileBytes: 1_000_000, place }),
+     ).rejects.toBeInstanceOf(UploadError)
+     expect(noParts()).toEqual([])
+   })
+ 
++  it('a write failure produces no file at the final path', async () => {
++    // Point tmp into a directory that does not exist so createWriteStream errors.
++    const badPlace = ({ filename, index }: { filename: string; index: number }) => ({
++      tmp: join(dir, 'does-not-exist', `${index}.part`),
++      final: join(dir, `${index}-${filename}`),
++      name: filename,
++    })
++    const { body, contentType } = form([{ body: 'hello', filename: 'a.txt', type: 'text/plain' }])
++    await expect(
++      streamUploads({ body, contentType, maxFileBytes: 1024, place: badPlace }),
++    ).rejects.toBeInstanceOf(UploadError)
++    expect(readdirSync(dir)).toEqual([])
++  })
++
+   it('recognises only the streaming upload routes', () => {
+     expect(isStreamingUploadPath('/api/background/upload')).toBe(true)
+     expect(isStreamingUploadPath('/api/sessions/abc/uploads')).toBe(true)
+     expect(isStreamingUploadPath('/api/sessions/abc/messages')).toBe(false)
+     expect(isStreamingUploadPath('/api/background/files/x.png')).toBe(false)
+   })
+ })
+diff --git a/src/components/BackgroundPicker.test.tsx b/src/components/BackgroundPicker.test.tsx
+index 0402ef4..d38d94a 100644
+--- a/src/components/BackgroundPicker.test.tsx
++++ b/src/components/BackgroundPicker.test.tsx
+@@ -3,21 +3,21 @@ import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
+ import { BackgroundPicker } from './BackgroundPicker'
+ import { useBackground } from '../hooks/useBackground'
+ import {
+   BACKGROUND_KEY,
+   BACKGROUND_DEFAULT_OPACITY,
+   BACKGROUND_DEFAULT_BLUR,
+   BACKGROUND_DEFAULT_SURFACE,
+   BACKGROUND_SRC_MAX,
+   type BackgroundSetting,
+ } from '../theme'
+-import { setMaxUploadBytes } from '../hooks/config-store'
++import { setMaxUploadBytes, DEFAULT_MAX_UPLOAD_BYTES } from '../hooks/config-store'
+ 
+ const MP4_UPLOAD = '/api/background/files/7c9e6679-7425-40de-944b-e07fc1f90ae7.mp4'
+ const PNG_UPLOAD = '/api/background/files/7c9e6679-7425-40de-944b-e07fc1f90ae7.png'
+ 
+ function setting(pref: BackgroundSetting['pref'], opacity = 0.85): BackgroundSetting {
+   return { pref, opacity }
+ }
+ 
+ /** The seam the `vi.fn()` onChange tests above cannot see: the picker wired to
+  *  its real owner (as App.tsx does) against real localStorage, so a write that
+@@ -25,21 +25,21 @@ function setting(pref: BackgroundSetting['pref'], opacity = 0.85): BackgroundSet
+ function WithRealBackgroundOwner() {
+   const { setting, setSetting } = useBackground('default')
+   return <BackgroundPicker setting={setting} onChange={setSetting} />
+ }
+ 
+ describe('BackgroundPicker', () => {
+   afterEach(() => {
+     cleanup()
+     vi.restoreAllMocks()
+     vi.unstubAllGlobals()
+-    setMaxUploadBytes(25 * 1024 * 1024) // config-store is module-global
++    setMaxUploadBytes(DEFAULT_MAX_UPLOAD_BYTES) // config-store is module-global
+   })
+ 
+   it('renders None/Image/Video and defaults to None active', () => {
+     render(<BackgroundPicker setting={setting({ kind: 'none' })} onChange={() => {}} />)
+     expect(screen.getByRole('radio', { name: 'None' })).toBeTruthy()
+     expect(screen.getByRole('radio', { name: 'Image' })).toBeTruthy()
+     expect(screen.getByRole('radio', { name: 'Video' })).toBeTruthy()
+   })
+ 
+   it('applies a valid http(s) image URL on submit', () => {
+diff --git a/src/hooks/config-store.ts b/src/hooks/config-store.ts
+index fc8e920..065a85d 100644
+--- a/src/hooks/config-store.ts
++++ b/src/hooks/config-store.ts
+@@ -1,15 +1,19 @@
+ // Minimal shared config store. Updated by App.tsx once the /api/config
+ // response arrives; read by hooks (e.g. usePastedImages) that need
+ // server-driven limits without prop-drilling through 4 component layers.
+ 
+-let _maxUploadBytes = 25 * 1024 * 1024 // 25 MB default, overwritten on config load
++/** Fallback for maxUploadBytes when the /api/config fetch has not arrived yet.
++ *  Must match the server default in `server/config.ts`. */
++export const DEFAULT_MAX_UPLOAD_BYTES = 500 * 1024 * 1024 // 500 MB
++
++let _maxUploadBytes = DEFAULT_MAX_UPLOAD_BYTES
+ 
+ export function getMaxUploadBytes(): number {
+   return _maxUploadBytes
+ }
+ 
+ export function setMaxUploadBytes(v: number): void {
+   if (v > 0) _maxUploadBytes = v
+ }
+ 
+ let _maxPastedImageBytes = 25 * 1024 * 1024

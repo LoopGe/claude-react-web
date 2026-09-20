@@ -1,0 +1,234 @@
+# Review package: 5614196..HEAD
+
+## Commits
+036f399 feat(upload): stream the session uploads route to disk
+
+## Files changed
+ server/routes/uploads.test.ts | 29 +++++++++++++-
+ server/routes/uploads.ts      | 89 ++++++++++++++++++++-----------------------
+ 2 files changed, 70 insertions(+), 48 deletions(-)
+
+## Diff
+diff --git a/server/routes/uploads.test.ts b/server/routes/uploads.test.ts
+index a42b5d2..944de71 100644
+--- a/server/routes/uploads.test.ts
++++ b/server/routes/uploads.test.ts
+@@ -1,19 +1,20 @@
+ // Tests for the uploads router: recording on POST, the manager routes
+ // (GET /uploads, DELETE /uploads/:id), path-escape validation, and the
+ // chips-DELETE → registry sync.
+ 
+ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+ import { Hono } from 'hono'
+-import { rmSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
++import { rmSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
+ import { join } from 'node:path'
+ import { createErrorHandler } from '../errors.js'
++import { __setConfigForTest, config as serverConfig } from '../config.js'
+ import { buildUploadRouter } from './uploads.js'
+ import { UploadStore } from '../upload-store.js'
+ import { tempDir } from '../__test-utils__/index.js'
+ import type { SessionManager } from '../session-manager.js'
+ 
+ function makeSm(cwd: string, title = 'My Session'): SessionManager {
+   // The router only uses sm.get(id) → { cwd, title }.
+   return { get: () => ({ cwd, title }) } as unknown as SessionManager
+ }
+ 
+@@ -61,20 +62,46 @@ describe('uploads routes', () => {
+     })
+ 
+     it('still succeeds without a store (unrecorded)', async () => {
+       const bare = makeApp(makeSm(cwd))
+       const form = new FormData()
+       form.append('file', new File(['x'], 'b.txt'))
+       const res = await bare.request('/sessions/s1/uploads', { method: 'POST', body: form })
+       expect(res.status).toBe(200)
+       expect(store.list()).toHaveLength(0)
+     })
++
++    it('persists two files in one request', async () => {
++      const form = new FormData()
++      form.append('file', new File(['one'], 'a.txt', { type: 'text/plain' }))
++      form.append('file', new File(['two'], 'b.txt', { type: 'text/plain' }))
++      const res = await app.request('/sessions/s1/uploads', { method: 'POST', body: form })
++      expect(res.status).toBe(200)
++      const body = (await res.json()) as { uploads: Array<{ name: string }> }
++      expect(body.uploads.map((u) => u.name).sort()).toEqual(['a.txt', 'b.txt'])
++    })
++
++    it('413s an over-size file and leaves no partial file', async () => {
++      const before = serverConfig.maxUploadBytes
++      __setConfigForTest({ maxUploadBytes: 10 })
++      try {
++        const form = new FormData()
++        form.append('file', new File([new Uint8Array(50)], 'big.bin'))
++        const res = await app.request('/sessions/s1/uploads', { method: 'POST', body: form })
++        expect(res.status).toBe(413)
++        const dir = join(cwd, 'claude-web-uploads')
++        const leftover = existsSync(dir) ? readdirSync(dir) : []
++        expect(leftover.filter((f) => f.endsWith('.part'))).toEqual([])
++      } finally {
++        __setConfigForTest({ maxUploadBytes: before })
++      }
++    })
+   })
+ 
+   describe('GET /uploads', () => {
+     it('lists entries with live exists flags', async () => {
+       const updir = join(cwd, 'claude-web-uploads')
+       mkdirSync(updir, { recursive: true })
+       const kept = join(updir, '1-kept.txt')
+       const gone = join(updir, '2-gone.txt')
+       writeFileSync(kept, 'keep')
+       writeFileSync(gone, 'gone')
+diff --git a/server/routes/uploads.ts b/server/routes/uploads.ts
+index e0ad86e..4e270f0 100644
+--- a/server/routes/uploads.ts
++++ b/server/routes/uploads.ts
+@@ -1,24 +1,24 @@
+ // Upload routes: upload, delete, and (since the Uploads Manager) list
+ // uploaded per-session files. Every UI upload is recorded in the
+ // UploadStore registry so the manager dialog can list/audit/delete it —
+ // including uploads whose session has since been deleted (orphans).
+ 
+ import { Hono } from 'hono'
+-import { mkdir, writeFile, unlink, stat } from 'node:fs/promises'
+-import { resolve as resolvePath } from 'node:path'
++import { mkdir, unlink, stat } from 'node:fs/promises'
++import { resolve as resolvePath, join } from 'node:path'
+ import { randomUUID } from 'node:crypto'
+ import { SessionManager } from '../session-manager.js'
+ import { config as serverConfig } from '../config.js'
+ import { createLogger } from '../log.js'
+ import { UploadStore, UPLOAD_SUBDIR } from '../upload-store.js'
+-import type { UploadEntry } from '../../shared/uploads.js'
++import { streamUploads, UploadError, type SavedUpload } from '../stream-upload.js'
+ 
+ const log = createLogger('uploads')
+ 
+ /** Live on-disk existence check for a registry entry. Only a clean ENOENT
+  *  reports missing — any other stat error reports present (and logs), so a
+  *  transient FS hiccup never invites deleting a healthy file. */
+ async function fileExists(path: string): Promise<boolean> {
+   try {
+     await stat(path)
+     return true
+@@ -36,78 +36,73 @@ export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore)
+   app.post('/sessions/:id/uploads', async (c) => {
+     const id = c.req.param('id')
+     const info = sm.get(id)
+     if (!info.cwd) {
+       return c.json({ error: 'session has no cwd; uploads require a working directory' }, 400)
+     }
+     const contentType = c.req.header('content-type') ?? ''
+     if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
+       return c.json({ error: 'expected multipart/form-data' }, 400)
+     }
++    if (!c.req.raw.body) return c.json({ error: 'no files in request' }, 400)
+ 
+-    const body = await c.req.parseBody({ all: true }).catch(() => null)
+-    if (!body) {
+-      log.warn(`upload session=${id} parseBody failed`)
+-      return c.json({ error: 'invalid multipart payload' }, 400)
+-    }
+-
+-    const files: File[] = []
+-    for (const v of Object.values(body)) {
+-      if (v instanceof File) files.push(v)
+-      else if (Array.isArray(v)) for (const x of v) if (x instanceof File) files.push(x)
+-    }
+-    if (files.length === 0) return c.json({ error: 'no files in request' }, 400)
+-
+-    const uploadDir = resolvePath(info.cwd, UPLOAD_SUBDIR)
++    const cwd = info.cwd
++    const uploadDir = resolvePath(cwd, UPLOAD_SUBDIR)
+     await mkdir(uploadDir, { recursive: true })
+-
+     const now = Date.now()
+-    const saved: Array<{ path: string; name: string; size: number }> = []
+-    const recorded: UploadEntry[] = []
+-    for (const f of files) {
+-      if (f.size > serverConfig.maxUploadBytes) {
++
++    let files: SavedUpload[]
++    try {
++      files = await streamUploads({
++        body: c.req.raw.body,
++        contentType,
++        maxFileBytes: serverConfig.maxUploadBytes,
++        maxFiles: 20,
++        place: ({ filename, index }) => {
++          const baseName = filename.split(/[\\/]/).pop() || 'upload'
++          const safeName = baseName.replace(/[\0/\\]/g, '_').slice(0, 200) || 'upload'
++          const destName = `${now}-${safeName}`
++          return { tmp: join(uploadDir, `${destName}.${index}.part`), final: join(uploadDir, destName), name: safeName }
++        },
++      })
++    } catch (e) {
++      if (!(e instanceof UploadError)) throw e
++      const f = e.failure
++      if (f.kind === 'too-large') {
+         return c.json(
+-          { error: `file ${f.name} exceeds ${serverConfig.maxUploadBytes} bytes` },
++          { error: `file ${f.filename} exceeds ${f.limit} bytes` },
+           413 as 400 | 404 | 410 | 500,
+         )
+       }
+-      const rawName = f.name || 'upload'
+-      const baseName = rawName.split(/[\\/]/).pop() || 'upload'
+-      const safeName = baseName.replace(/[\0/\\]/g, '_').slice(0, 200) || 'upload'
+-      const destName = `${now}-${safeName}`
+-      const dest = resolvePath(uploadDir, destName)
+-      const buf = Buffer.from(await f.arrayBuffer())
+-      await writeFile(dest, buf)
+-      saved.push({ path: dest, name: safeName, size: f.size })
+-      if (uploadStore) {
+-        recorded.push({
+-          id: randomUUID(),
+-          path: dest,
+-          cwd: resolvePath(info.cwd),
+-          name: safeName,
+-          size: f.size,
+-          uploadedAt: now,
+-          sessionTitle: info.title ?? '',
+-        })
+-      }
++      return c.json({ error: 'invalid multipart payload' }, 400)
+     }
+ 
+-    // Registry recording must never fail the upload itself — persistence
+-    // errors inside the store are already logged by the JsonFileStore base.
+-    if (uploadStore && recorded.length > 0) {
++    if (files.length === 0) return c.json({ error: 'no files in request' }, 400)
++
++    const saved = files.map((f) => ({ path: f.path, name: f.name, size: f.size }))
++    if (uploadStore) {
+       try {
+-        uploadStore.record(recorded)
++        uploadStore.record(
++          files.map((f) => ({
++            id: randomUUID(),
++            path: f.path,
++            cwd: resolvePath(cwd),
++            name: f.name,
++            size: f.size,
++            uploadedAt: now,
++            sessionTitle: info.title ?? '',
++          })),
++        )
+       } catch (e) {
+         log.warn(`upload registry record failed: ${(e as Error).message}`)
+       }
+     }
+-
+     log.info(`upload session=${id} files=${saved.length} totalBytes=${saved.reduce((s, f) => s + f.size, 0)}`)
+     return c.json({ uploads: saved })
+   })
+ 
+   // ── Uploads Manager routes (only mounted when a store is wired) ──
+   if (uploadStore) {
+     // List every recorded upload with a live exists flag.
+     app.get('/uploads', async (c) => {
+       const uploads = await Promise.all(
+         uploadStore.list().map(async (u) => ({ ...u, exists: await fileExists(u.path) })),

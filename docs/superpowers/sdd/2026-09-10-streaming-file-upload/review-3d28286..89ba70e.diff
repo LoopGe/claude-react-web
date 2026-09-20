@@ -1,0 +1,419 @@
+# Review package: 3d28286..HEAD
+
+## Commits
+89ba70e feat(config): one upload-size knob; pasted images keep an internal cap
+
+## Files changed
+ server/app.ts                          |  3 ++-
+ server/config.test.ts                  |  2 +-
+ server/config.ts                       |  8 +++++++-
+ server/routes/config-routes.ts         |  3 ++-
+ src/App.tsx                            |  3 ++-
+ src/components/GlobalSettingsModal.tsx |  2 +-
+ src/hooks/config-store.ts              | 10 ++++++++++
+ src/hooks/usePastedImages.test.ts      | 21 +++++++++++++++++++++
+ src/hooks/usePastedImages.ts           |  4 ++--
+ src/types/config.ts                    |  4 ++++
+ 10 files changed, 52 insertions(+), 8 deletions(-)
+
+## Diff
+diff --git a/server/app.ts b/server/app.ts
+index a708914..33503c0 100644
+--- a/server/app.ts
++++ b/server/app.ts
+@@ -15,21 +15,21 @@ import { buildApiRouter } from './routes/index.js'
+ import { buildFsRouter } from './fs-routes.js'
+ import { buildGitRouter } from './git-routes.js'
+ import { buildEditLocateRouter } from './edit-locate-routes.js'
+ import { buildBackgroundRouter } from './background-routes.js'
+ import { buildMcpConfigRouter } from './mcp-routes.js'
+ import { buildSnippetRouter } from './snippet-routes.js'
+ import { buildAgentDefinitionsRouter } from './agent-definition-routes.js'
+ import type { AgentDefinitionStore } from './agent-definition-store.js'
+ import { buildUiStateRouter } from './routes/ui-state-routes.js'
+ import { buildResetRouter } from './routes/reset.js'
+-import { config as serverConfig } from './config.js'
++import { config as serverConfig, MAX_PASTED_IMAGE_BYTES } from './config.js'
+ import { createLogger } from './log.js'
+ import type { SessionStore } from './persistence.js'
+ import type { McpConfigStore } from './mcp-config.js'
+ import type { SnippetStore } from './snippet-store.js'
+ import type { UploadStore } from './upload-store.js'
+ import type { UiStateStore } from './ui-state-store.js'
+ import type { MpStore } from './mp-store.js'
+ import type { AppPluginManager } from './app-plugins/app-plugin-manager.js'
+ import { buildAppPluginRouter } from './app-plugins/routes.js'
+ import type { AppPluginMarketplaceStore } from './app-plugins/marketplace-store.js'
+@@ -228,20 +228,21 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
+     c.json({
+       configured: !!serverConfig.authToken,
+       defaults: {
+         cwd: opts.defaults?.cwd ?? process.cwd(),
+         model: opts.defaults?.model ?? serverConfig.defaultModel,
+       },
+       models: serverConfig.modelList,
+       modelGroups: serverConfig.modelGroups,
+       maxGroupPanels: serverConfig.maxGroupPanels,
+       maxUploadBytes: serverConfig.maxUploadBytes,
++      maxPastedImageBytes: MAX_PASTED_IMAGE_BYTES,
+       showPinnedUserMessage: serverConfig.showPinnedUserMessage,
+       autoRecap: serverConfig.autoRecap,
+       toolGroupCards: serverConfig.toolGroupCards,
+       appToolsGit: serverConfig.appToolsGit,
+       firstPartyTools: serverConfig.firstPartyTools,
+       activeProfileId: serverConfig.activeProfileId,
+       activeProfileName: serverConfig.profiles.find((p) => p.id === serverConfig.activeProfileId)?.name ?? 'Default',
+     }),
+   )
+ 
+diff --git a/server/config.test.ts b/server/config.test.ts
+index 359a824..5461c3c 100644
+--- a/server/config.test.ts
++++ b/server/config.test.ts
+@@ -10,21 +10,21 @@ describe('config', () => {
+ 
+   beforeEach(() => {
+     dir = tempDir('config')
+   })
+ 
+   afterEach(() => {
+     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+   })
+ 
+   it('exports sensible hardcoded defaults', () => {
+-    expect(config.maxUploadBytes).toBe(25 * 1024 * 1024)
++    expect(config.maxUploadBytes).toBe(500 * 1024 * 1024)
+     expect(config.historyCap).toBe(500)
+     expect(config.modelList.length).toBeGreaterThan(0)
+     expect(config.defaultModel).toBeTruthy()
+     expect(config.recapModel).toBeTruthy()
+   })
+ 
+   it('config object is frozen', () => {
+     expect(Object.isFrozen(config)).toBe(true)
+     expect(() => { (config as any).historyCap = 999 }).toThrow()
+   })
+diff --git a/server/config.ts b/server/config.ts
+index 54b67b9..907027a 100644
+--- a/server/config.ts
++++ b/server/config.ts
+@@ -218,21 +218,21 @@ export interface ServerConfig {
+ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
+   modelList: Object.freeze([
+     'anthropic/claude-sonnet-4-20250514',
+     'claude-opus-4-20250514',
+     'claude-haiku-3-5-20241022',
+   ]),
+   modelGroups: Object.freeze([]),
+   defaultModel: 'anthropic/claude-sonnet-4-20250514',
+   recapModel: 'claude-haiku-4-5-20251001',
+   commitMessageModel: 'claude-haiku-4-5-20251001',
+-  maxUploadBytes: 25 * 1024 * 1024,
++  maxUploadBytes: 500 * 1024 * 1024,
+   historyCap: 500,
+   subagentHistoryCap: 300,
+   forwardSubagentText: true,
+   workingStuckMs: 60 * 60 * 1000,
+   maxGroupPanels: 3,
+   authToken: undefined,
+   baseUrl: 'https://api.anthropic.com',
+   accessToken: '',
+   logToFile: false,
+   updateCheckRegistry: 'https://registry.npmjs.org',
+@@ -245,20 +245,26 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
+   toolGroupCards: true,
+   cliDebug: false,
+   appToolsGit: true,
+   firstPartyTools: Object.freeze({ apptools: Object.freeze({ enabled: true }) }),
+   allowSensitivePathEdits: false,
+   maxOutputTokens: 0,
+   profiles: Object.freeze([]),
+   activeProfileId: 'default',
+ })
+ 
++/** Hard cap on the total size of pasted images in one message. NOT a user
++ *  setting: those bytes ride the buffered JSON message body (base64, ~1.33x),
++ *  so this is a memory-safety limit, not a preference. The user-facing file
++ *  upload knob is `maxUploadBytes`. */
++export const MAX_PASTED_IMAGE_BYTES = 25 * 1024 * 1024
++
+ /** Synthetic fallback profile derived from DEFAULTS. Used as the migration
+  *  source, the coerce fallback, and resolveActiveProfile's last resort. */
+ export const DEFAULT_PROFILE: ProviderProfile = Object.freeze({
+   id: 'default',
+   name: 'Default',
+   authToken: '',
+   baseUrl: DEFAULTS.baseUrl,
+   modelList: Object.freeze([...DEFAULTS.modelList]),
+   modelGroups: Object.freeze([...DEFAULTS.modelGroups]),
+   recapModel: DEFAULTS.recapModel,
+diff --git a/server/routes/config-routes.ts b/server/routes/config-routes.ts
+index 5384b79..34f7d45 100644
+--- a/server/routes/config-routes.ts
++++ b/server/routes/config-routes.ts
+@@ -3,21 +3,21 @@
+ import { Hono } from 'hono'
+ import { readFile } from 'node:fs/promises'
+ import { join as joinPath } from 'node:path'
+ import { homedir } from 'node:os'
+ import { SessionManager } from '../session-manager.js'
+ import { HttpError } from '../errors.js'
+ import { createLogger } from '../log.js'
+ import { safeJson } from './index.js'
+ 
+ const log = createLogger('config')
+-import { config as serverConfig, loadConfig, readConfigFile, updateConfigFile } from '../config.js'
++import { config as serverConfig, loadConfig, readConfigFile, updateConfigFile, MAX_PASTED_IMAGE_BYTES } from '../config.js'
+ import {
+   LOG_LEVELS, getLogConfig, setLogConfig, type LogLevel,
+   enableFileLogging, disableFileLogging, isFileLoggingEnabled, getLogFilePath,
+ } from '../log.js'
+ import { writeAtomic } from '../json-file-store.js'
+ import { maskToken } from '../profiles.js'
+ 
+ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono {
+   const app = new Hono()
+ 
+@@ -175,20 +175,21 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono
+         authTokenMasked: maskToken(p.authToken),
+         baseUrl: p.baseUrl,
+         modelList: p.modelList,
+         modelGroups: p.modelGroups,
+         recapModel: p.recapModel,
+         commitMessageModel: p.commitMessageModel,
+         isActive: p.id === serverConfig.activeProfileId,
+       })),
+       activeProfileId: serverConfig.activeProfileId,
+       maxUploadBytes: serverConfig.maxUploadBytes,
++      maxPastedImageBytes: MAX_PASTED_IMAGE_BYTES,
+       historyCap: serverConfig.historyCap,
+       maxGroupPanels: serverConfig.maxGroupPanels,
+       workingStuckMs: serverConfig.workingStuckMs,
+       updateCheckRegistry: serverConfig.updateCheckRegistry,
+       skillLoadMode: serverConfig.skillLoadMode,
+       enabledSkills: serverConfig.enabledSkills,
+       showPinnedUserMessage: serverConfig.showPinnedUserMessage,
+       autoRecap: serverConfig.autoRecap,
+       toolGroupCards: serverConfig.toolGroupCards,
+       appToolsGit: serverConfig.appToolsGit,
+diff --git a/src/App.tsx b/src/App.tsx
+index 6017cf8..28b0f07 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -80,21 +80,21 @@ import {
+   SIDEBAR_MIN_KEY,
+   SIDEBAR_MAX_KEY,
+   SIDEBAR_MIN_DEFAULT,
+   SIDEBAR_MAX_DEFAULT,
+   PANEL_MIN_RATIO_KEY,
+   PANEL_MIN_RATIO_DEFAULT,
+   LAST_SEEN_TURN_KEY,
+   clampMaxOpen,
+ } from './constants/storageKeys'
+ import type { Defaults, ConfigResponse } from './types/config'
+-import { setMaxUploadBytes } from './hooks/config-store'
++import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
+ import { closeGroupPanelsState } from './utils/group-panels'
+ import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
+ import { buildNewLikeThisForm } from './utils/new-like-this'
+ import { notificationTooltip } from './utils/notifications'
+ import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
+ import { randomId } from './utils/uuid'
+ import { escapeAction } from './utils/escape-action'
+ import { prepareGroupFlip } from './utils/flip'
+ 
+ /** Shallow-compare two SessionInfo objects across every own property.
+@@ -448,20 +448,21 @@ export function App() {
+   useEffect(() => {
+     void api
+       .get<ConfigResponse>('/config')
+       .then((r) => {
+         setIsConfigured(r.configured !== false)
+         if (r.configured === false) return
+         setDefaults(r.defaults)
+         if (r.models?.length) setServerModels(r.models)
+         if (r.maxGroupPanels != null) setServerMaxOpen(r.maxGroupPanels)
+         if (r.maxUploadBytes != null) setMaxUploadBytes(r.maxUploadBytes)
++        if (r.maxPastedImageBytes != null) setMaxPastedImageBytes(r.maxPastedImageBytes)
+         setGlobalPrefs({
+           showPinnedUserMessage: r.showPinnedUserMessage ?? true,
+           autoRecap: r.autoRecap ?? true,
+           toolGroupCards: r.toolGroupCards ?? true,
+           firstPartyTools: r.firstPartyTools,
+         })
+       })
+       .catch(() => setIsConfigured(true))
+   }, [])
+ 
+diff --git a/src/components/GlobalSettingsModal.tsx b/src/components/GlobalSettingsModal.tsx
+index ad023b5..cdf5d54 100644
+--- a/src/components/GlobalSettingsModal.tsx
++++ b/src/components/GlobalSettingsModal.tsx
+@@ -578,21 +578,21 @@ function ServerTab({
+ 
+   return (
+     <div className="settings-stack">
+       <section className="settings-group">
+         <div className="settings-group-head">
+           <h4>Limits</h4>
+           <span className="settings-group-desc">Server-wide caps applied to every session.</span>
+         </div>
+         <SettingsRow
+           title="Max upload size"
+-          hint="Largest pasted image or uploaded file accepted. 0 = no override (server default 25 MB)."
++          hint="Largest uploaded file accepted (backgrounds, session files). Pasted images are capped separately. 0 = no override (server default 500 MB)."
+         >
+           <Stepper
+             ariaLabel="Max upload size, in megabytes"
+             value={uploadMb}
+             min={0}
+             step={1}
+             suffix="MB"
+             onChange={(mb) => onMaxUploadBytesChange(mb * MB)}
+           />
+         </SettingsRow>
+diff --git a/src/hooks/config-store.ts b/src/hooks/config-store.ts
+index bbff764..fc8e920 100644
+--- a/src/hooks/config-store.ts
++++ b/src/hooks/config-store.ts
+@@ -4,10 +4,20 @@
+ 
+ let _maxUploadBytes = 25 * 1024 * 1024 // 25 MB default, overwritten on config load
+ 
+ export function getMaxUploadBytes(): number {
+   return _maxUploadBytes
+ }
+ 
+ export function setMaxUploadBytes(v: number): void {
+   if (v > 0) _maxUploadBytes = v
+ }
++
++let _maxPastedImageBytes = 25 * 1024 * 1024
++
++export function getMaxPastedImageBytes(): number {
++  return _maxPastedImageBytes
++}
++
++export function setMaxPastedImageBytes(v: number): void {
++  if (v > 0) _maxPastedImageBytes = v
++}
+diff --git a/src/hooks/usePastedImages.test.ts b/src/hooks/usePastedImages.test.ts
+new file mode 100644
+index 0000000..dcf61f6
+--- /dev/null
++++ b/src/hooks/usePastedImages.test.ts
+@@ -0,0 +1,21 @@
++import { describe, it, expect, beforeEach } from 'vitest'
++import { renderHook, act } from '@testing-library/react'
++import { usePastedImages } from './usePastedImages'
++import { setMaxUploadBytes, setMaxPastedImageBytes } from './config-store'
++
++describe('usePastedImages cap', () => {
++  beforeEach(() => {
++    setMaxUploadBytes(500 * 1024 * 1024)
++    setMaxPastedImageBytes(25 * 1024 * 1024)
++  })
++
++  it('caps the pasted-image total by the pasted-image cap, not the upload cap', async () => {
++    setMaxPastedImageBytes(5) // 5 bytes
++    const { result } = renderHook(() => usePastedImages())
++    await act(async () => {
++      await result.current.addImage(new File([new Uint8Array(10)], 'a.png', { type: 'image/png' }))
++    })
++    expect(result.current.error).toMatch(/too large/i)
++    expect(result.current.images).toHaveLength(0)
++  })
++})
+diff --git a/src/hooks/usePastedImages.ts b/src/hooks/usePastedImages.ts
+index 18ef953..f93478c 100644
+--- a/src/hooks/usePastedImages.ts
++++ b/src/hooks/usePastedImages.ts
+@@ -1,14 +1,14 @@
+ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+ import { formatBytes } from '../utils/format'
+ import { randomId } from '../utils/uuid'
+-import { getMaxUploadBytes } from './config-store'
++import { getMaxPastedImageBytes } from './config-store'
+ import type { PastedImage } from '../types'
+ 
+ const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
+ const MAX_PER_IMAGE = 10 * 1024 * 1024 // 10 MB
+ 
+ export interface UsePastedImages {
+   images: PastedImage[]
+   error: string | null
+   addImage: (file: File) => Promise<void>
+   removeImage: (id: string) => void
+@@ -58,21 +58,21 @@ export function usePastedImages(): UsePastedImages {
+ 
+     if (!ALLOWED_TYPES.has(file.type)) {
+       setError(`Unsupported image type: ${file.type || 'unknown'}. Use JPEG, PNG, GIF, or WebP.`)
+       return
+     }
+     if (file.size > MAX_PER_IMAGE) {
+       setError(`Image too large (${formatBytes(file.size)}). Max ${formatBytes(MAX_PER_IMAGE)} per image.`)
+       return
+     }
+     const currentTotal = imagesRef.current.reduce((sum, i) => sum + i.size, 0)
+-    const maxTotal = getMaxUploadBytes()
++    const maxTotal = getMaxPastedImageBytes()
+     if (currentTotal + file.size > maxTotal) {
+       setError(`Total image size too large. Max ${formatBytes(maxTotal)} across all images.`)
+       return
+     }
+ 
+     const id = randomId()
+     const previewUrl = URL.createObjectURL(file)
+     allUrlsRef.current.add(previewUrl)
+     const generation = clearGenerationRef.current
+ 
+diff --git a/src/types/config.ts b/src/types/config.ts
+index e2ceef5..decc793 100644
+--- a/src/types/config.ts
++++ b/src/types/config.ts
+@@ -29,20 +29,23 @@ export interface Defaults {
+ }
+ 
+ /** Lightweight config returned by GET /api/config (startup). */
+ export interface ConfigResponse {
+   configured?: boolean
+   defaults: Defaults
+   models?: string[]
+   modelGroups?: ModelGroupConfig[]
+   maxGroupPanels?: number
+   maxUploadBytes?: number
++  /** Internal cap on the total size of pasted images in one message (bytes).
++   *  NOT a user setting — these bytes ride the buffered JSON message body. */
++  maxPastedImageBytes?: number
+   /** Global default for the pinned "current question" header. Sessions
+    *  without an explicit override inherit this. */
+   showPinnedUserMessage?: boolean
+   /** Global default for idle auto-recap. Sessions without an explicit
+    *  override inherit this. */
+   autoRecap?: boolean
+   /** Global default for the transcript's collapsible tool-group cards.
+    *  Sessions without an explicit override inherit this. */
+   toolGroupCards?: boolean
+   /** Global default for the first-party `apptools` git MCP server. Sessions
+@@ -60,20 +63,21 @@ export interface ConfigResponse {
+ /** Full config returned by GET /api/config/full (settings modal). */
+ export interface FullServerConfig {
+   configured?: boolean
+   authTokenMasked?: string
+   baseUrl: string
+   modelList: string[]
+   modelGroups?: ModelGroupConfig[]
+   recapModel: string
+   commitMessageModel: string
+   maxUploadBytes: number
++  maxPastedImageBytes?: number
+   historyCap: number
+   maxGroupPanels: number
+   workingStuckMs: number
+   logToFile?: boolean
+   /** Empty string when the user hasn't configured a registry — the
+    *  update checker treats that as "disabled". */
+   updateCheckRegistry: string
+   skillLoadMode: SkillLoadMode
+   enabledSkills: string[]
+   /** Global default for the pinned "current question" header. */

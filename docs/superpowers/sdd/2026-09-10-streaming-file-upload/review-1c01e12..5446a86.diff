@@ -1,0 +1,41 @@
+# Review package: 1c01e12..HEAD
+
+## Commits
+5446a86 fix(upload): widen requestTimeout so slow large uploads are not killed
+
+## Files changed
+ server/cli.ts | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+## Diff
+diff --git a/server/cli.ts b/server/cli.ts
+index 4c448fa..2d6d211 100644
+--- a/server/cli.ts
++++ b/server/cli.ts
+@@ -321,20 +321,26 @@ async function runServer(args: CliArgs): Promise<void> {
+   // listener, and an 'error' event with NO listener crashes the whole process
+   // ("Unhandled 'error' event … read ECONNRESET"; reproduced by hard-exiting
+   // a single WS client). Swallow it here: every real consumer (hono, ws) has
+   // its own error/close handling — this only stops the fatal unhandled-event
+   // path. 'connection' fires for every TCP socket the server accepts,
+   // including the ones later upgraded to WebSocket.
+   server.on('connection', (socket) => {
+     socket.on('error', () => {})
+   })
+ 
++  // Node's default `requestTimeout` (~300s) covers receiving the ENTIRE request,
++  // so a large file over a slow link (phone on LAN) can be killed mid-upload.
++  // Raise it well past a 500 MB upload at ~1 MB/s; a finite value keeps some
++  // slowloris protection rather than disabling the timeout outright.
++  ;(server as unknown as Server).requestTimeout = 30 * 60 * 1000
++
+   // Attach the WebSocket multiplexer to the same HTTP server. The
+   // returned shutdown fn closes every live socket during SIGINT.
+   // @hono/node-server returns a Node http.Server (same shape), so cast
+   // is safe.
+   const wsShutdown = attachWebSocket(server as unknown as Server, sessionManager, args.disableAppPlugins ? undefined : appPluginManager)
+ 
+   // Diagnostic: sample event-loop delay so a synchronous stall (which makes
+   // unrelated sessions appear to hang) shows up in the logs as a max spike.
+   // Default-on; disable with EVENT_LOOP_PROBE=0.
+   const elProbe = startEventLoopProbe()

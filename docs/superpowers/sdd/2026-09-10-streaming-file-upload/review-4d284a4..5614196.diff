@@ -1,0 +1,178 @@
+# Review package: 4d284a4..HEAD
+
+## Commits
+5614196 feat(upload): stream the background upload route to disk
+
+## Files changed
+ server/background-routes.test.ts | 25 ++++++++++++++++++-
+ server/background-routes.ts      | 52 ++++++++++++++++++++++++----------------
+ 2 files changed, 55 insertions(+), 22 deletions(-)
+
+## Diff
+diff --git a/server/background-routes.test.ts b/server/background-routes.test.ts
+index 3517d8c..0b4248d 100644
+--- a/server/background-routes.test.ts
++++ b/server/background-routes.test.ts
+@@ -1,13 +1,13 @@
+ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+ import { Hono } from 'hono'
+-import { rmSync, existsSync } from 'node:fs'
++import { rmSync, existsSync, readdirSync } from 'node:fs'
+ import { join } from 'node:path'
+ import { createErrorHandler } from './errors.js'
+ import { buildBackgroundRouter } from './background-routes.js'
+ import { tempDir } from './__test-utils__/index.js'
+ 
+ function makeApp(dir: string, maxUploadBytes = 1024) {
+   const app = new Hono()
+   app.onError(createErrorHandler('[test]'))
+   app.route('/api/background', buildBackgroundRouter({ dir, maxUploadBytes }))
+   return app
+@@ -74,20 +74,43 @@ describe('background routes', () => {
+       const res = await app.request('/api/background/upload', { method: 'POST', body: form })
+       expect(res.status).toBe(400)
+     })
+ 
+     it('rejects an over-size file (413)', async () => {
+       const form = new FormData()
+       form.append('file', new File([new Uint8Array(1025)], 'big.png', { type: 'image/png' }))
+       const res = await app.request('/api/background/upload', { method: 'POST', body: form })
+       expect(res.status).toBe(413)
+     })
++
++    it('400s when the request carries no file', async () => {
++      const form = new FormData()
++      form.append('note', 'no file here')
++      const res = await app.request('/api/background/upload', { method: 'POST', body: form })
++      expect(res.status).toBe(400)
++    })
++
++    it('400s on a malformed multipart body', async () => {
++      const res = await app.request('/api/background/upload', {
++        method: 'POST',
++        headers: { 'content-type': 'multipart/form-data; boundary=nope' },
++        body: 'not-a-real-multipart-body',
++      })
++      expect(res.status).toBe(400)
++    })
++
++    it('leaves no .part file behind after a rejected upload', async () => {
++      const form = new FormData()
++      form.append('file', new File(['x'], 'a.gif', { type: 'image/gif' }))
++      await app.request('/api/background/upload', { method: 'POST', body: form })
++      expect(readdirSync(dir).filter((f) => f.endsWith('.part'))).toEqual([])
++    })
+   })
+ 
+   describe('GET /api/background/files/:name', () => {
+     it('serves an uploaded file with its content type', async () => {
+       const form = new FormData()
+       form.append('file', new File(['fake-png'], 'wall.png', { type: 'image/png' }))
+       const posted = (await (await app.request('/api/background/upload', { method: 'POST', body: form })).json()) as { url: string }
+       const res = await app.request(posted.url)
+       expect(res.status).toBe(200)
+       expect(res.headers.get('content-type')).toBe('image/png')
+diff --git a/server/background-routes.ts b/server/background-routes.ts
+index f1ed73d..81871a3 100644
+--- a/server/background-routes.ts
++++ b/server/background-routes.ts
+@@ -1,24 +1,25 @@
+ // Global background-image upload routes. Unlike session uploads (which land
+ // in the session's cwd, server/routes/uploads.ts), a background is a global
+ // appearance file stored under <stateDir>/backgrounds/ and served back as a
+ // same-origin URL. Filenames are server-assigned <uuid>.<ext> — user-supplied
+ // names are never trusted. Every read/delete is containment-checked.
+ 
+ import { Hono } from 'hono'
+-import { mkdir, writeFile, stat, unlink } from 'node:fs/promises'
++import { mkdir, stat, unlink } from 'node:fs/promises'
+ import { createReadStream } from 'node:fs'
+ import { Readable } from 'node:stream'
+ import { resolve, join, sep } from 'node:path'
+ import { randomUUID } from 'node:crypto'
+ import { config as serverConfig } from './config.js'
+ import { createLogger } from './log.js'
++import { streamUploads, UploadError, type SavedUpload } from './stream-upload.js'
+ 
+ const log = createLogger('background')
+ 
+ /** Acceptable upload content types → file extension. Video is limited to the
+  *  two containers every target browser plays natively (mp4/H.264, webm) — an
+  *  accepted-but-unplayable file would be a wallpaper that silently does
+  *  nothing, so `.mov`/`.avi` are refused rather than stored. */
+ const ALLOWED_UPLOAD: Record<string, string> = {
+   'image/jpeg': '.jpg',
+   'image/png': '.png',
+@@ -94,43 +95,52 @@ function parseRange(header: string | undefined, size: number): { start: number;
+ export function buildBackgroundRouter(opts: { dir: string; maxUploadBytes?: number }): Hono {
+   const app = new Hono()
+   const dir = opts.dir
+   const maxBytes = opts.maxUploadBytes ?? serverConfig.maxUploadBytes
+ 
+   app.post('/upload', async (c) => {
+     const ct = c.req.header('content-type') ?? ''
+     if (!ct.toLowerCase().startsWith('multipart/form-data')) {
+       return c.json({ error: 'expected multipart/form-data' }, 400)
+     }
+-    const body = await c.req.parseBody({ all: true }).catch(() => null)
+-    if (!body) return c.json({ error: 'invalid multipart payload' }, 400)
++    if (!c.req.raw.body) return c.json({ error: 'no file in request' }, 400)
+ 
+-    let file: File | undefined
+-    for (const v of Object.values(body)) {
+-      if (v instanceof File) { file = v; break }
+-    }
+-    if (!file) return c.json({ error: 'no file in request' }, 400)
+-
+-    // `hasOwn` — a bare index is a prototype-chain lookup, so a part declaring
+-    // e.g. `Content-Type: constructor` would resolve to Object and bypass the
+-    // allow-list, storing a file whose name can never be served.
+-    const ext = Object.hasOwn(ALLOWED_UPLOAD, file.type) ? ALLOWED_UPLOAD[file.type] : undefined
+-    if (!ext) return c.json({ error: `unsupported file type '${file.type}'` }, 400)
+-    if (file.size > maxBytes) {
+-      return c.json({ error: `file exceeds ${maxBytes} bytes` }, 413 as 400 | 404 | 410 | 500)
++    await mkdir(dir, { recursive: true })
++    let saved: SavedUpload[]
++    try {
++      saved = await streamUploads({
++        body: c.req.raw.body,
++        contentType: ct,
++        maxFileBytes: maxBytes,
++        maxFiles: 1,
++        accept: ALLOWED_UPLOAD,
++        place: ({ mimeType }) => {
++          // The allow-list already passed, so the extension is present.
++          const name = `${randomUUID()}${ALLOWED_UPLOAD[mimeType]}`
++          return { tmp: join(dir, `${name}.part`), final: join(dir, name), name }
++        },
++      })
++    } catch (e) {
++      if (!(e instanceof UploadError)) throw e
++      const f = e.failure
++      if (f.kind === 'too-large') {
++        return c.json({ error: `file exceeds ${f.limit} bytes` }, 413 as 400 | 404 | 410 | 500)
++      }
++      if (f.kind === 'bad-type') {
++        return c.json({ error: `unsupported file type '${f.mimeType}'` }, 400)
++      }
++      return c.json({ error: 'invalid multipart payload' }, 400)
+     }
+ 
+-    await mkdir(dir, { recursive: true })
+-    const name = `${randomUUID()}${ext}`
+-    await writeFile(join(dir, name), Buffer.from(await file.arrayBuffer()))
+-    log.info(`upload background name=${name} bytes=${file.size}`)
+-    return c.json({ url: `/api/background/files/${name}` })
++    if (saved.length === 0) return c.json({ error: 'no file in request' }, 400)
++    log.info(`upload background name=${saved[0].name} bytes=${saved[0].size}`)
++    return c.json({ url: `/api/background/files/${saved[0].name}` })
+   })
+ 
+   app.get('/files/:name', async (c) => {
+     const name = c.req.param('name')
+     if (!isSafeName(name)) return c.json({ error: 'invalid filename' }, 400)
+     const target = join(dir, name)
+     if (!isInside(dir, target)) return c.json({ error: 'invalid filename' }, 400)
+     const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase()
+     // `isSafeName` already proved `ext` is a key; the guarded read keeps this
+     // lookup on the same footing as the upload allow-list rather than reaching
