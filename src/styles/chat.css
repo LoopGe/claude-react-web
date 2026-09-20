@@ -258,6 +258,13 @@
   right: 0;
   bottom: 0;
   z-index: 2;
+  background: transparent;
+  /* Anchor content to the BOTTOM of the capped box. Without this a dock
+     taller than max-height lays out downward from the top and gets clipped
+     by .chat-panel-body (Send unreachable). flex-end makes the overflow
+     spill UP over the transcript instead — the direction the spacer
+     (max(rect, scrollHeight)) already reserves room for. */
+  justify-content: flex-end;
   /* THE height constraint for everything below the live-streaming text. The
      stack can never eat the transcript: past 45% the cards shrink (column
      flex + min-height:0 all the way to their scrolling lists) instead of the
@@ -276,12 +283,18 @@
 /* The cards. Wrapped (and measured separately from the stack) so the
    jump-to-bottom button can clear just the cards, not the transient live
    bubble stacked above them. A flex column of its own so the cards' bottom
-   margins count toward the measured height instead of collapsing out. */
+   margins count toward the measured height instead of collapsing out.
+
+   overflow stays `visible` (NOT auto/hidden): a scroll container here makes
+   Chromium treat the region as a backdrop root, so the frosted cards inside
+   sample an empty layer and paint as a flat grey slab over the transcript. */
 .chat-bottom-overlay {
   flex: 0 1 auto;
   min-height: 0;
+  overflow: visible;
   display: flex;
   flex-direction: column;
+  background: transparent;
 }
 /* The streaming region itself is a plain block inside .chat-streaming-clip. It
    keeps pointer-events: none so the live bubble never blocks clicks on the
@@ -317,6 +330,7 @@
 .virtuoso-bottom-spacer {
   flex: 0 0 auto;
   pointer-events: none;
+  background: transparent;
 }
 @keyframes streaming-region-in {
   from {
@@ -582,25 +596,23 @@
   font-size: var(--fs-xs);
   font-weight: 700;
 }
-/* Context-usage progress bar, sits between the message list and composer.
-   The composer below owns the top divider; this component just sits flush
-   against it. */
-.ctx-bar-row {
-  display: flex;
-  align-items: stretch;
+/* Context-usage bar.
+   Default (SettingsPanel Context tab): full-width strip with elevated
+   fill — the historical layout.
+   Inside .ctx-orb-pop: chrome is stripped and labels stack, because the
+   popover is narrow. Scoped there so the settings mount is untouched. */
+.ctx-bar {
+  padding: 6px var(--chat-reading-inset) 4px;
   background: var(--bg-elev);
   border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
-/* ContextBar takes the full width of the row; it owns the single hairline
-   top border. */
-.ctx-bar-row .ctx-bar {
-  flex: 1;
-  min-width: 0;
+.ctx-orb-pop .ctx-bar {
+  padding: 0;
+  background: transparent;
   border-top: none;
-}
-/* "Run as agent" delegation trigger sits to the right of the context bar. */
-.ctx-bar-row .composer-aux-btn {
-  margin: auto 8px;
 }
 /* In-session "run as agent" delegation control modal. */
 .runasagent-field {
@@ -619,14 +631,9 @@
   color: var(--fg-muted);
   margin-top: var(--space-1-5);
 }
-.ctx-bar {
-  padding: 6px var(--chat-reading-inset) 4px;
-  background: var(--bg-elev);
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
+/* Label row. Default (SettingsPanel): one space-between row — percentages
+   left, token/cache right. Inside the ContextOrb popover the row stacks
+   (percentages above tokens) because the panel is only ~320px wide. */
 .ctx-bar-label {
   display: flex;
   justify-content: space-between;
@@ -634,18 +641,27 @@
   color: var(--fg-muted);
   font-family: var(--mono);
 }
+.ctx-orb-pop .ctx-bar-label {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
 .ctx-bar-nums {
   letter-spacing: 0.02em;
   /* Yields to the percentage readout when the row is too narrow: it can
      shrink (with an ellipsis) so the readout's values — and on hover its
-     revealed labels — are never clipped. At rest on a wide row nothing
-     shrinks; only when readout + nums cannot both fit does the token count
-     trim its tail instead of the readout losing its rightmost cell. */
+     revealed labels — are never clipped. */
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.ctx-orb-pop .ctx-bar-nums {
+  flex: none;
+  max-width: 100%;
+  font-size: var(--fs-xs);
+  opacity: 0.9;
 }
 .ctx-bar-out {
   color: var(--fg-muted);
@@ -654,12 +670,9 @@
   color: var(--fg-muted);
 }
 /* The three always-on percentages (used · compact · until), each a label +
-   value pair. Positioning is stable whether or not a value exists yet.
-   `.ctx-bar-stats` wraps the natural-width readout and is sized to it
-   (flex: 0 0 auto, never shrinks): the values and the hover-revealed labels
-   therefore always fit, and when the row is too narrow the token numbers to
-   the right ellipsize instead of the readout being clipped. It is deliberately
-   NOT the hover target — the natural-width readout inside it is. */
+   value pair. First row of the stacked label. `.ctx-bar-stats` wraps the
+   natural-width readout; it is deliberately NOT the hover target — the
+   natural-width readout inside it is. */
 .ctx-bar-stats {
   flex: 0 0 auto;
   min-width: 0;
@@ -897,16 +910,18 @@
   background: var(--btn-hover-bg);
   color: var(--fg);
 }
-/* Markdown preview area shown in place of the textarea in preview mode. */
+/* Markdown preview area shown in place of the textarea in preview mode.
+   Nested inside the floating card: no second border (the card is the
+   frame), same horizontal inset as the editor via .composer-main. */
 .composer-preview {
   flex: 1 1 auto;
   min-height: 200px;
   max-height: min(600px, 70vh);
   overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: var(--space-2-5) var(--space-3);
-  background: var(--bg);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) 0;
+  background: transparent;
 }
 .composer-preview-empty {
   color: var(--fg-muted);
@@ -915,43 +930,93 @@
   padding: 40px 0;
 }
 
+/* ── Composer: floating card inside a reading-column dock ──────────────
+   The outer .chat-composer is the DOCK — it only provides the horizontal
+   reading-column inset and the bottom breathing room. It paints no fill
+   and no border. The visual surface (fill / border / radius / shadow /
+   focus ring / drag state) lives on the inner .composer-card, so the
+   input reads as lifted off the panel instead of a full-bleed strip.
+   Card edges therefore land on the same inset the message column uses. */
 .chat-composer {
-  border-top: 1px solid var(--border);
-  /* Keep the border + background full-width, but center the inner controls
-     inside the same reading column the messages use. The inline padding
-     grows to whatever space is left beside that column, clamped to the
-     shared message inset so narrow screens line up too. */
-  padding: 12px var(--chat-reading-inset);
-  background: var(--bg-elev);
-  display: flex;
-  gap: var(--space-2);
+  /* Inset + bottom rhythm live on .chat-dock (same contract as
+     .todo-panel / .working-bar / .monitor-bar). This box is layout-only. */
+  padding: 0;
+  background: transparent;
+  display: block;
   position: relative;
-  transition:
-    background var(--motion-duration-fast) var(--motion-ease-standard),
-    outline-color var(--motion-duration-fast) var(--motion-ease-standard);
-  outline: 2px dashed transparent;
-  outline-offset: -8px;
 }
-/* Drag-over state ?outline in-set so it frames the composer without
-   shifting any layout. */
-.chat-composer-drag {
-  background: var(--drag-over-bg);
-  outline-color: var(--accent);
+/* Slot in MessageList's bottomOverlay — display:contents so .chat-dock is
+   the stack's flex item (same trick as .working-bubble-slot). */
+.chat-dock-slot {
+  display: contents;
 }
-/* When a ContextBar is present just above, it owns the divider. */
-.ctx-bar + .chat-composer,
-.ctx-bar-row + .chat-composer {
-  border-top: none;
+/* Bottom dock (error + composer) inside .chat-bottom-stack — same mount
+   path AND the same margin contract as TodoChecklist / WorkingBubble /
+   MonitorBar: reading-column inset + --chat-row-gap bottom. Never shrinks:
+   the stack's 45% cap squeezes the cards above, not the input.
+   pointer-events re-enabled because the stack base is click-through. */
+.chat-dock {
+  flex: 0 0 auto;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
 }
-/* Main column holds attachment chips + textarea; actions column holds the
-   paperclip / send / interrupt buttons. Flex-column so chips can sit on
-   top of the textarea without disturbing the existing action column. */
+.composer-card {
+  display: flex;
+  flex-direction: column;
+  /* Same frosted recipe as .todo-panel / .monitor-bar: translucent fill +
+     backdrop-filter ON THIS BOX. No transitions/animations here — a
+     composited property on the same box as backdrop-filter makes Chromium
+     drop the backdrop sample and the card paints solid. Focus/drag chrome
+     changes are instant snaps instead. */
+  background: color-mix(in srgb, var(--bg-elev) 72%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--card-shadow);
+  /* visible (not clip) so the context-orb popover can escape the card.
+     Content is inset via padding, so the rounded frame still reads clean. */
+  overflow: visible;
+}
+/* Focus glow is a property of the CARD, not the textarea — one ring for
+   the whole control (editor + toolbar). Mouse focus still lights it via
+   :focus-within; keyboard users get the same ring (no separate
+   :focus-visible second outline). */
+.composer-card:focus-within {
+  border-color: var(--accent);
+  box-shadow:
+    var(--card-shadow),
+    0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+/* Drag-over: dashed accent frame + tinted frost, no layout shift. */
+.chat-composer-drag .composer-card {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: color-mix(in srgb, var(--drag-over-bg) 72%, transparent);
+}
+/* Main column holds attachment chips + the editor. Flex-column so chips
+   sit on top of the textarea. ONE horizontal inset for everything inside
+   the card — the editor's own .textarea padding is zeroed below so a new
+   indicator row cannot forget to align. */
 .composer-main {
   flex: 1;
   display: flex;
   flex-direction: column;
   gap: var(--space-1-5);
   min-width: 0;
+  padding: 0 var(--space-2-5);
+}
+.composer-main .attachments,
+.composer-main .image-previews,
+.composer-main .scheduled-sends,
+.composer-main .composer-expanded-tabs {
+  padding-top: var(--space-2);
+}
+.composer-main .composer-bash-indicator {
+  margin-top: var(--space-2);
 }
 /* `!` bash-mode indicator shown above the textarea when the input starts
    with `!`. Tells the user the command runs locally, not through the model. */
@@ -989,48 +1054,143 @@
   min-height: 40px;
   max-height: 180px;
   resize: none;
+  /* Strip the shared .textarea chrome — the floating card is the frame.
+     Horizontal padding is owned by .composer-main so chips and the editor
+     share one inset. */
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding-left: 0;
+  padding-right: 0;
   transition:
     max-height var(--motion-duration-base) var(--motion-ease-standard),
-    min-height var(--motion-duration-base) var(--motion-ease-standard),
-    /* Focus glow. The soft box-shadow + accent border below are the single
-       focus indicator; animating them eases the ring in instead of a hard
-       snap. box-shadow is paint-only — no layout reflow on focus. */
-    border-color var(--motion-duration-moderate) var(--motion-ease-standard),
-    box-shadow var(--motion-duration-moderate) var(--motion-ease-standard);
+    min-height var(--motion-duration-base) var(--motion-ease-standard);
 }
-/* One animated focus indicator for the composer textarea: accent border
-   (also set by `.textarea:focus`) plus a soft translucent accent glow that
-   fades in/out. The global `:focus-visible` offset outline is suppressed so
-   keyboard focus shows this single ring instead of a redundant second one
-   around the border. */
+/* The card's :focus-within is the single focus indicator. Suppress the
+   editor's own border/shadow (from `.textarea:focus` and the old
+   composer-local ring) so there is never a double frame. */
 .chat-composer .rich-prompt:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  border: none;
+  box-shadow: none;
 }
 @media (prefers-reduced-motion: reduce) {
-  /* Focus must stay clearly visible — just without the fade. Drop the
-     border/box-shadow transition so the glow appears instantly on focus
-     (keep the functional expand/collapse transitions). */
+  /* Editor keeps only the functional expand/collapse height transitions.
+     The card itself never transitions (see .composer-card) so the frosted
+     backdrop-filter surface stays unstolen by compositing. */
   .chat-composer .rich-prompt {
     transition:
       max-height var(--motion-duration-base) var(--motion-ease-standard),
       min-height var(--motion-duration-base) var(--motion-ease-standard);
   }
 }
-.chat-composer-actions {
+/* Bottom toolbar of the floating card. Attach + optional schedule on the
+   left, circular send/interrupt on the right. Replaces the old vertical
+   .chat-composer-actions column. */
+.composer-bar {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
   gap: var(--space-1-5);
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  min-height: 44px;
 }
-/* The send/interrupt button always stretches to fill the actions column
-   height (which follows the textarea via flex row align-items:stretch).
-   When the textarea's max-height transitions on expand/collapse, the
-   button follows smoothly because flex layout re-computes each frame.
-   Always-on flex:1 (no class toggle) so both directions animate. */
-.chat-composer-actions .btn-icon:last-child {
+.composer-bar-spacer {
   flex: 1;
-  min-height: 30px;
+  min-width: 0;
+}
+/* Send is a circle rather than the square .btn-icon default — matches the
+   floating-card language (and the mock's round CTA). Fixed 32×32 so the
+   morph between send/interrupt never resizes the bar. */
+.composer-send {
+  border-radius: var(--radius-circle);
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  flex: none;
+}
+
+/* ── Context orb (pure ring) + hover panel ─────────────────────────────
+   Circular trigger sitting left of Send. JUST the SVG ring — no button
+   chrome (fill / border / hover wash). Arc length = used %; numbers and
+   the auto-compact threshold live in the popover. */
+.ctx-orb-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+/* Empty slot in the composer bar until Chat portals ContextOrb in. */
+.ctx-orb-slot {
+  display: contents;
+}
+.ctx-orb {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-circle);
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: inherit;
+}
+.ctx-orb:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.ctx-orb-ring {
+  width: 100%;
+  height: 100%;
+  /* start the arc at 12 o'clock */
+  transform: rotate(-90deg);
+  overflow: visible;
+}
+.ctx-orb-ring .track {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 2.5;
+}
+.ctx-orb-ring .fill {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+  transition: stroke var(--motion-duration-moderate) var(--motion-ease-standard);
+}
+.ctx-orb.warn .ctx-orb-ring .fill { stroke: var(--warn); }
+.ctx-orb.danger .ctx-orb-ring .fill { stroke: var(--danger); }
+/* Popover hosts ContextBar. Escapes the card (card is overflow:visible
+   so the rounded frame still paints; the pop sits above with z-index). */
+.ctx-orb-pop {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  width: min(320px, calc(100vw - 48px));
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  padding: 8px 12px 10px;
+  z-index: var(--z-popover);
+}
+.ctx-orb-pop::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  right: 14px;
+  border: 6px solid transparent;
+  border-top-color: var(--bg-elev);
+  filter: drop-shadow(0 1px 0 var(--border));
 }
 /* Spin the loader glyph during the brief optimistic-send window (before the
    server flips `working` true and the button swaps to Interrupt). Reuses the
@@ -2000,14 +2160,38 @@
   margin-top: var(--space-1);
 }
 
-/* "Thinking" bar ?compact status strip shown above the context bar
-   when the SDK is mid-turn. Pulses a subtle accent border and shows
-   bouncing dots + elapsed time. */
+/* Working status card — frosted member of the transcript's bottom-overlay
+   stack. Settled messages scroll behind it and show through. Portaled from
+   Chat via .working-bubble-slot so MessageList's memo stays stable.
+
+   Chromium bug this structure exists to avoid: putting an infinite CSS
+   animation AND backdrop-filter on the SAME box force-layerizes it, the
+   backdrop sample comes back empty, and the card paints as a solid slab
+   over the transcript. So:
+     .working-bar          → animated halo + border only (transparent fill)
+     .working-bar::before  → STATIC glass surface (fill + backdrop-filter)
+   box-shadow animation is not a backdrop-root property, so the ::before
+   still samples the messages underneath. */
+.working-bubble-slot {
+  /* Empty slot contributes no height; when the portal mounts a child the
+     child's own margins participate in the stack. `contents` so .working-bar
+     is the flex item (matches the sibling cards' layout role). */
+  display: contents;
+}
 .working-bar {
-  padding: 5px var(--chat-reading-inset);
-  background: var(--bg-elev);
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
+  position: relative;
+  pointer-events: auto;
+  /* Never shrink: it is a status card, not a scroll region. Under the
+     stack's 45% cap flexbox would otherwise squeeze it (the dock is
+     flex:0 0 auto) and spill the swarm pill past the rounded border. */
+  flex: 0 0 auto;
+  min-height: 0;
+  margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-xl);
+  box-shadow: var(--drawer-shadow);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2016,26 +2200,34 @@
   font-family: var(--mono);
   color: var(--fg-muted);
   animation: working-bubble-pulse 1.8s ease-in-out infinite;
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   /* No max-height. There used to be one (120px) paired with the overflow
      clip, but the bar's own content is what has to stay short — a hard clip
      silently ate whatever landed past it, and because the "+N more" badge
      rendered LAST it was the first thing to disappear. Height is now bounded
      at the source: the subagent group is ALWAYS a single constant-height pill
-     (SubagentSwarmPill), so no fan-out width can grow the bar. overflow stays
-     for the BFC + to keep a pathological single token from bleeding past the
-     border. */
-  overflow: hidden;
+     (SubagentSwarmPill), so no fan-out width can grow the bar. */
+}
+/* Static glass plate. Owns fill + blur; never animates. */
+.working-bar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg-elev) 48%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  z-index: 0;
+}
+/* Keep status content above the glass plate. */
+.working-bar > * {
+  position: relative;
+  z-index: 1;
 }
 /* Slightly tighter spacing when the subagent group is present (the swarm
    pill below). */
 .working-bar-with-agents {
   row-gap: 6px;
-}
-/* When immediately followed by ctx-bar, collapse the double border. */
-.working-bar + .ctx-bar,
-.working-bar + .ctx-bar-row {
-  border-top: none;
 }
 .working-bar-label {
   color: var(--accent-text);
@@ -2156,13 +2348,18 @@
     opacity: 1;
   }
 }
+/* Halo rides on the outer box's box-shadow (which also carries the drawer
+   lift). Restating --drawer-shadow keeps the elevation from vanishing on
+   the off-pulse frames. */
 @keyframes working-bubble-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+    box-shadow: var(--drawer-shadow);
   }
   50% {
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+    box-shadow:
+      var(--drawer-shadow),
+      0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
   }
 }
 /* Waiting state: the parent turn has ended but background subagents are
@@ -2180,10 +2377,11 @@
 /* Idle-with-tasks: the turn has fully ended and the only remnant is a
    background-task count pill (ambient/housekeeping tasks still in flight,
    or the user dismissed the Waiting banner). Nothing is actively working,
-   so kill the pulse + accent border and drop the timer/dots/rate. */
+   so kill the pulse halo + accent rim; keep the glass lift. */
 .working-bar-idle {
   animation: none;
   border-color: var(--border);
+  box-shadow: var(--drawer-shadow);
 }
 /* Dismiss ✕ on the Waiting state. Muted, right-aligned; collapses the
    Waiting banner down to the quiet idle pill (tasks stay visible in the
@@ -2435,10 +2633,13 @@
 .subagent-swarm-row.selected .subagent-swarm-row-open {
   opacity: 1;
 }
-/* Reduced motion: skip the phase crossfade + the swarm pill's entrance,
-   render final states immediately. The dots/elapsed timer keep their
-   (essential) motion. */
+/* Reduced motion: skip the phase crossfade, the swarm pill's entrance and
+   the card halo pulse — render final states immediately. The dots/elapsed
+   timer keep their (essential) motion. */
 @media (prefers-reduced-motion: reduce) {
+  .working-bar {
+    animation: none;
+  }
   .working-bar-label,
   .subagent-swarm {
     animation: none;
@@ -3599,8 +3800,9 @@
   font-size: var(--fs-xs);
   color: var(--msg-error-fg);
 }
-/* Stack attach + send vertically, mirroring the main composer's
-   .chat-composer-actions column so the two footers read the same. */
+/* Stack attach + send vertically in the Side Chat drawer. The main
+   composer moved to a horizontal bottom bar inside a floating card; the
+   drawer footer keeps its own compact vertical stack (narrow column). */
 .side-chat-drawer-actions {
   display: flex;
   flex-direction: column;

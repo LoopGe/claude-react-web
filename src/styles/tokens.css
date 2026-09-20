@@ -832,13 +832,11 @@
    These apply the effect tokens to concrete elements across the whole
    app so the glow language is consistent (not just the sidebar). */
 
-/* Elevated surfaces pick up the faint top sheen. Only SINGLE, tall-enough
-   surfaces are listed here — NOT the bottom dock (.ctx-bar + .chat-composer).
-   That dock is several short stacked bars sharing one bg with no dividers;
-   a top-anchored gradient on a 32px-tall .ctx-bar never fades out within its
-   own height, leaving the whole bar brighter than the composer below it — a
-   visible seam. So the dock stays flat bg-elev and looks identical to the
-   default skin; the glow lives in its focus state instead. */
+/* Elevated surfaces pick up the faint top sheen. The floating
+   .composer-card is deliberately NOT listed: it carries backdrop-filter,
+   and a background-image sheen on that same box competes with the frost
+   (reads as a grey film at rest). Its glow lives in the focus-within rule
+   below. */
 [data-skin="glow"] .session-list-top,
 [data-skin="glow"] .chat-header,
 [data-skin="glow"] .model-picker,
@@ -926,15 +924,13 @@
 
 /* ── glow · chat area (the surfaces the user stares at most) ──────────── */
 
-/* Composer: shares one continuous bottom dock with the ctx-bar above it
-   (same bg-elev, no divider between them). The whole dock stays flat bg-elev
-   in glow — no surface gradient — because a top-anchored sheen on the short
-   ctx-bar can't fade out within its own height and leaves it brighter than
-   the composer (a visible seam). So the composer matches the ctx-bar at rest
-   and only lights up on focus — the meaningful moment. */
-[data-skin="glow"] .chat-composer:focus-within {
+/* Composer: the floating card inside the dock lights up on focus. The dock
+   itself is transparent, so the glow targets .composer-card — same inset
+   accent ring + soft fill as the old full-bleed dock, now on the card. */
+[data-skin="glow"] .composer-card:focus-within {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
+  box-shadow: var(--card-shadow),
+              inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
               inset 0 0 20px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 /* Side Chat footer is the drawer's composer equivalent. Without this it

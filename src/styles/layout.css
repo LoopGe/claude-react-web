@@ -1564,12 +1564,33 @@ body.resizing-col .app {
   text-align: center;
 }
 
+/* Error / status strip.
+   Default (App-level reconnect banner between header and main-body) stays a
+   full-bleed bar — it is global chrome, not part of a reading column.
+   Inside a chat reading column (panel errors, Side Chat) it becomes a
+   floating card matching WorkingBubble / composer so the bottom stack shares
+   one language. Empty state stays sr-only via .error-bar-empty and is
+   excluded from the card treatment so the 1×1 live region never paints. */
 .error-bar {
   padding: 8px 18px;
   background: var(--msg-error-bg);
   border-bottom: 1px solid var(--msg-error-border);
   color: var(--msg-error-fg);
   font-size: var(--fs-base);
+}
+.chat .error-bar:not(.error-bar-empty),
+.side-chat-drawer .error-bar:not(.error-bar-empty) {
+  margin: var(--space-2) var(--chat-reading-inset);
+  padding: 8px 12px;
+  border: 1px solid var(--msg-error-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--card-shadow);
+  font-size: var(--fs-sm);
+}
+/* Inside the bottom dock the dock already owns the reading-column inset —
+   only stack the error a tight gap above the composer. */
+.chat-dock > .error-bar:not(.error-bar-empty) {
+  margin: 0 0 var(--space-2);
 }
 /* Visually-hide the error-bar when empty WITHOUT removing it from the
  * a11y tree. Keeping the live region permanently mounted (instead of

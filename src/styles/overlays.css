@@ -781,6 +781,13 @@ mark.search-hl.search-hl-active {
   gap: var(--space-2);
   margin-top: var(--space-2);
 }
+/* ContextOrb slot on the ended banner — inline so the ring sits next to
+   the text instead of starting a new row. */
+.session-ended .session-ended-orb {
+  display: inline-flex;
+  margin-top: var(--space-2);
+  align-self: center;
+}
 
 /* ── Global toast host ─────────────────────────────────────────────
    Fixed-position PILE anchored top-center. Toasts render newest-first

@@ -124,6 +124,11 @@ interface Props {
   scheduled?: Pick<ScheduledSendsApi, 'schedules' | 'now' | 'cancel' | 'dismiss'>
   /** Called when the user picks a fire-at time from the schedule popover. */
   onSendScheduled?: (fireAtMs: number) => void
+
+  /** Slot for the ContextOrb, portaled in by the host. Usage frames change
+   *  identity every WS tick — keeping the orb outside Composer's props is
+   *  what lets React.memo skip re-rendering the rich editor on each one. */
+  contextOrbSlotRef?: (el: HTMLSpanElement | null) => void
 }
 
 export const Composer = memo(function Composer({
@@ -165,6 +170,7 @@ export const Composer = memo(function Composer({
   suggestion,
   scheduled,
   onSendScheduled,
+  contextOrbSlotRef,
 }: Props) {
   // RichPromptInput monkey-patches the RichPromptHandle methods onto this
   // div in a useLayoutEffect (deps: [value, ref, onChange]).  The ref's
@@ -582,6 +588,10 @@ export const Composer = memo(function Composer({
               Fork from last completed turn
             </button>
           </div>
+          {/* Keep the orb slot mounted so Chat can still portal ContextOrb
+              (disabled) — the user may want to inspect how full the window
+              was when the session died. */}
+          <span ref={contextOrbSlotRef} className="ctx-orb-slot session-ended-orb" />
         </div>
       )
     }
@@ -589,17 +599,23 @@ export const Composer = memo(function Composer({
       <div className="session-ended">
         <span>This session has ended{reasonText ? `: ${reasonText}` : ''}.</span>
         <span className="session-ended-hint">Create a new session to continue.</span>
+        <span ref={contextOrbSlotRef} className="ctx-orb-slot session-ended-orb" />
       </div>
     )
   }
 
   return (
+    // Outer element is the dock: horizontal reading-column inset + bottom
+    // breathing room only. The visual surface (fill / border / radius /
+    // focus ring) lives on the floating .composer-card inside it, so the
+    // card reads as lifted off the panel instead of a full-bleed strip.
     <div
       className={`chat-composer ${dragOver ? 'chat-composer-drag' : ''}`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
+      <div className="composer-card">
       <div className="composer-main">
         {attachments.length > 0 && (
           <div className="attachments">
@@ -863,7 +879,11 @@ export const Composer = memo(function Composer({
           />
         )}
       </div>
-      <div className="chat-composer-actions">
+      {/* Bottom toolbar inside the floating card. Replaces the old right-side
+          vertical action column: attach lives left, send/interrupt is a
+          circular control on the right. Same buttons, same titles — only the
+          axis and the send chrome changed. */}
+      <div className="composer-bar">
         <button
           className="btn btn-icon"
           type="button"
@@ -886,6 +906,9 @@ export const Composer = memo(function Composer({
             <IconClock size={18} />
           </button>
         )}
+        <span className="composer-bar-spacer" aria-hidden />
+        {/* ContextOrb is portaled here by Chat — see contextOrbSlotRef. */}
+        <span ref={contextOrbSlotRef} className="ctx-orb-slot" />
         {/* Send / Interrupt share one stable control — a two-state morph
             (arrow → stop-square) so the composer's height never changes.
             Background (Ctrl+B semantics) is NOT a button state: keying it on
@@ -896,7 +919,7 @@ export const Composer = memo(function Composer({
             title and the aria-label (which screen readers announce) can't
             drift apart on the pluralization again. */}
         <button
-          className={'btn btn-icon ' + (canInterrupt ? 'btn-danger' : 'btn-primary')}
+          className={'btn btn-icon composer-send ' + (canInterrupt ? 'btn-danger' : 'btn-primary')}
           type="button"
           onClick={canInterrupt ? onInterrupt : onSend}
           disabled={!canInterrupt && !canSend}
@@ -920,6 +943,7 @@ export const Composer = memo(function Composer({
             />
           )}
         </button>
+      </div>
       </div>
       <input
         ref={fileInputRef}

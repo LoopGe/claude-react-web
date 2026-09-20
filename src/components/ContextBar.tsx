@@ -22,6 +22,29 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import type { ContextUsage } from '../hooks/useChatStream'
+
+/** Shared used%/threshold/level math for every context-usage surface
+ *  (the bar itself and the composer's ContextOrb ring). One ladder so the
+ *  resting ring tint can never drift from the panel it opens. */
+export function contextUsageStats(usage: ContextUsage | null | undefined) {
+  const max = usage?.rawMaxTokens ?? usage?.maxTokens
+  const hasData = usage != null && max != null && max > 0
+  const usedTokens = hasData && usage ? (usage.totalTokens ?? 0) : null
+  // Prefer SDK's percentage (it may weigh differently than raw tokens / max)
+  // but fall back to a straight division if absent.
+  const bounded =
+    hasData && usage && usedTokens != null && max != null
+      ? Math.min(100, Math.max(0, usage.percentage ?? (usedTokens / max) * 100))
+      : null
+  const level: 'ok' | 'warn' | 'danger' =
+    bounded == null ? 'ok' : bounded >= 90 ? 'danger' : bounded >= 70 ? 'warn' : 'ok'
+  const threshold = hasData && usage ? usage.autoCompactThreshold : undefined
+  const thresholdPct =
+    typeof threshold === 'number' && threshold > 0 && max != null
+      ? (threshold / max) * 100
+      : null
+  return { max, hasData, usedTokens, bounded, level, threshold, thresholdPct }
+}
 import { formatTokens } from '../utils/format'
 import { windowForAutoCompactThreshold } from '../../shared/auto-compact'
 
@@ -69,7 +92,9 @@ export const ContextBar = memo(function ContextBar({
 }: Props) {
   // Prefer rawMaxTokens (the model's real advertised context window) over
   // maxTokens (which may be reduced by compaction headroom reserves).
-  const max = usage?.rawMaxTokens ?? usage?.maxTokens
+  // Shared used%/threshold/level math — one ladder for the bar and the orb.
+  const { max, hasData, usedTokens, bounded, level: barLevel, threshold, thresholdPct } =
+    contextUsageStats(usage)
 
   // ── drag / keyboard state ─────────────────────────────────────────────
   // All hooks are declared unconditionally (before the empty-state early
@@ -149,25 +174,6 @@ export const ContextBar = memo(function ContextBar({
   // threshold / until auto-compact). When there's no data yet — no usage
   // snapshot, or a window of unknown/zero size — every stat falls back to a
   // `—` placeholder so the label row's size stays stable (no layout jump).
-  const hasData = usage != null && max != null && max > 0
-
-  const usedTokens = hasData && usage ? (usage.totalTokens ?? 0) : null
-  // Prefer SDK's percentage (it may weigh differently than raw tokens / max)
-  // but fall back to a straight division if absent.
-  const bounded =
-    hasData && usage && usedTokens != null
-      ? Math.min(100, Math.max(0, usage.percentage ?? (usedTokens / max) * 100))
-      : null
-  const barLevel: 'ok' | 'warn' | 'danger' =
-    bounded == null ? 'ok' : bounded >= 90 ? 'danger' : bounded >= 70 ? 'warn' : 'ok'
-
-  // Threshold-relative stats only exist once `autoCompactThreshold` is known
-  // (i.e. after the first `result` supplies the model's context window).
-  const threshold = hasData && usage ? usage.autoCompactThreshold : undefined
-  const thresholdPct =
-    typeof threshold === 'number' && threshold > 0 && max != null
-      ? (threshold / max) * 100
-      : null
   let percentLeft: number | null = null
   let untilLevel: 'ok' | 'warn' | 'danger' = 'ok'
   if (hasData && typeof threshold === 'number' && threshold > 0 && usedTokens != null) {

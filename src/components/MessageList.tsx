@@ -614,9 +614,22 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   useLayoutEffect(() => {
     const el = bottomStackRef.current
     if (!el) return
+    // Also watch the overlay + dock: once the stack is clamped at 45%, a
+    // dock-only grow (preview, chips) changes scrollHeight but not the
+    // border box, so a stack-only RO would go silent and leave the spacer
+    // stale.
+    const dock = el.querySelector<HTMLElement>('.chat-dock')
+    const overlay = el.querySelector<HTMLElement>('.chat-bottom-overlay')
 
     const updateHeight = () => {
-      const height = Math.ceil(el.getBoundingClientRect().height)
+      // max(rect, scrollHeight): the stack is max-height:45%, so a tall
+      // composer dock (expanded preview, many chips) can overflow the cap.
+      // getBoundingClientRect() only reports the clamped box — reserving
+      // just that leaves the overflowing dock painting over the last
+      // messages with no spacer to scroll them clear.
+      const height = Math.ceil(
+        Math.max(el.getBoundingClientRect().height, el.scrollHeight),
+      )
       setBottomStackHeight((prev) => (prev === height ? prev : height))
     }
 
@@ -624,6 +637,8 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     if (typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(updateHeight)
     ro.observe(el)
+    if (dock) ro.observe(dock)
+    if (overlay) ro.observe(overlay)
     return () => ro.disconnect()
   }, [])
 
@@ -636,7 +651,12 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     if (!el) return
 
     const updateHeight = () => {
-      const height = Math.ceil(el.getBoundingClientRect().height)
+      // Same max(rect, scrollHeight) contract as the stack spacer: under
+      // the 45% cap the overlay's border box shrinks while the dock inside
+      // still paints taller, so the jump pill would land inside the card.
+      const height = Math.ceil(
+        Math.max(el.getBoundingClientRect().height, el.scrollHeight),
+      )
       setBottomOverlayHeight((prev) => (prev === height ? prev : height))
     }
 

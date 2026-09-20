@@ -9,6 +9,7 @@
 // the sessions themselves are long-lived on the server.
 
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 // SettingsPanel and GitPanel are split into their own chunks: both are
 // per-panel overlays that many sessions never open, so keeping them out of
@@ -44,14 +45,8 @@ import { useElicitationChannel } from '../hooks/useElicitationChannel'
 import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
 import { usePhaseDwell } from '../hooks/usePhaseDwell'
 import { Composer } from './Composer'
-import { ContextBar } from './ContextBar'
-import { RunAsAgentControl } from './agent-definitions/RunAsAgentControl'
+import { ContextOrb } from './ContextOrb'
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
-
-// The "Run as agent" delegation control is temporarily HIDDEN pending a UI
-// redesign (it rendered as an untidy composer button). The component + tests
-// stay; flip this back to `true` to restore the entry point.
-const SHOW_RUN_AS_AGENT = false
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog, type QuestionDraft } from './QuestionDialog'
 import { ElicitationDialog } from './ElicitationDialog'
@@ -473,8 +468,6 @@ export const Chat = memo(function Chat({
   // section below) because it gates the recap/pinned presence hooks, which
   // hide those overlays while search is open so the search bar isn't covered.
   const [searchOpen, setSearchOpen] = useState(false)
-  // In-session "run a custom agent" delegation control open state.
-  const [agentRunOpen, setAgentRunOpen] = useState(false)
   // Effective UI prefs: a per-session override (session.<field>) wins,
   // otherwise the global default (globalPrefs.<field>, server-backed) applies.
   // Computed inline so a SettingsPanel override or a global-settings save
@@ -1917,9 +1910,21 @@ export const Chat = memo(function Chat({
   // re-rendering the whole virtualized transcript for nothing. Every other
   // prop at that call site is referentially stable, so this was the only one
   // that could break the memo.
+  // WorkingBubble + the composer dock portal into stable slots inside
+  // MessageList's `bottomOverlay` (same stack as TodoChecklist / MonitorBar):
+  // messages scroll behind and show through the frosted surfaces. The slots
+  // are referentially stable so high-frequency re-renders (timer, token
+  // rate, composer keystrokes) never invalidate MessageList's memo.
+  const [workingSlot, setWorkingSlot] = useState<HTMLDivElement | null>(null)
+  const [dockSlot, setDockSlot] = useState<HTMLDivElement | null>(null)
+  // ContextOrb portals into the composer bar. Held outside Composer's props
+  // so a new contextUsage object every WS tick does not re-render the editor.
+  const [orbSlot, setOrbSlot] = useState<HTMLSpanElement | null>(null)
+
   const bottomOverlay = useMemo(
     () => (
       <>
+        <div ref={setWorkingSlot} className="working-bubble-slot" />
         <TodoChecklist
           messages={stream.messages}
           working={session.working}
@@ -1928,6 +1933,10 @@ export const Chat = memo(function Chat({
           sessionId={session.id}
         />
         <MonitorBar messages={stream.messages} clearing={effectiveClearing} />
+        {/* Composer dock is last so it stays pinned to the panel bottom;
+            MessageList measures the overlay and reserves a Virtuoso footer
+            spacer equal to its height. */}
+        <div ref={setDockSlot} className="chat-dock-slot" />
       </>
     ),
     [stream.messages, session.working, skin, effectiveClearing, session.id],
@@ -2289,117 +2298,108 @@ export const Chat = memo(function Chat({
         </WorkflowProvider>
       </SubagentProvider>
 
-      {/* Always-mounted live region ?see `.error-bar-empty` in styles.css.
-          Keeping the region in the DOM (just visually hidden when empty)
-          guarantees a screen reader announces the content mutation when an
-          error arrives, instead of relying on the SR to notice that a
-          fresh role="alert" element appeared with text already inside. */}
-      <div
-        className={`error-bar${error ? '' : ' error-bar-empty'}`}
-        role="alert"
-        aria-live="polite"
-      >
-        {error ?? ''}
-      </div>
-      {/* Render the bubble while a turn is active, while waiting on
-          background work, OR while live task/subagent work remains. The
-          task/subagent terms are gated on !session.terminated — a dead
-          session's records are stale and would otherwise read as a live
-          "Background tasks running" pill. They keep the count pill (the only
-          entry to TasksPanel) and the subagent swarm pill on screen even when
-          work is all ambient/skipTranscript or the user dismissed the
-          Waiting          banner (the bubble then collapses to the quiet idle state). */}
-      {(turnActive || waiting || (!session.terminated && (taskCount > 0 || hasTranscriptBackground || hasLiveSyncSubagent))) && (
-        <WorkingBubble
-          active={turnActive}
-          startedAt={turnStartedAt}
-          activeSubagents={stream.activeSubagents}
-          tokenRate={stream.tokenRate}
-          thinkingTokens={stream.thinkingTokens}
-          activePhase={displayPhase}
-          recapping={session.compacting ?? false}
-          waiting={waiting}
-          runningTaskCount={indicatorTaskCount}
-          totalTaskCount={taskCount}
-          onOpenTasks={openTasksPanel}
-          onOpenSubagent={openSubagent}
-          onDismissWaiting={dismissWaiting}
-        />
-      )}
-
-      <div className="ctx-bar-row">
-        <ContextBar
-          usage={stream.contextUsage}
-          editable
-          custom={session.autoCompactWindow != null}
-          disabled={session.terminated || !session.running}
-          onSetWindow={commitWindow}
-        />
-        {SHOW_RUN_AS_AGENT && (
-          <button
-            type="button"
-            className="btn composer-aux-btn"
-            title="Run an enabled custom agent with a task"
-            onClick={() => setAgentRunOpen(true)}
-            disabled={session.terminated || !session.running}
-          >
-            Run as agent
-          </button>
+      {/* Bottom dock (error + composer) portaled into MessageList's
+          bottom-overlay stack — identical mount path as WorkingBubble /
+          TodoChecklist, so the frosted cards sit over the transcript and
+          messages scroll behind them. */}
+      {dockSlot &&
+        createPortal(
+          <div className="chat-dock">
+            {/* Always-mounted live region — see `.error-bar-empty`. */}
+            <div
+              className={`error-bar${error ? '' : ' error-bar-empty'}`}
+              role="alert"
+              aria-live="polite"
+            >
+              {error ?? ''}
+            </div>
+            <Composer
+              suggestion={stream.promptSuggestion}
+              input={input}
+              setInput={setInput}
+              sending={sending}
+              disabled={session.terminated}
+              terminated={session.terminated}
+              terminatedReason={session.terminatedReason}
+              canRetryResume={session.canRetryResume}
+              error={session.error}
+              onResume={onResume ? () => onResume(session.id) : undefined}
+              onForkFromLastCompleted={
+                onForkFromLastCompleted ? () => onForkFromLastCompleted(session.id) : undefined
+              }
+              canAttach={!!session.cwd}
+              attachments={attachments.attachments}
+              uploading={attachments.uploading}
+              dragOver={attachments.dragOver}
+              onUploadFiles={handleUploadFiles}
+              onRemoveAttachment={attachments.removeAttachment}
+              onDragOver={onDragOver}
+              onDragLeave={onDragLeave}
+              onDrop={onDrop}
+              history={history}
+              commands={mergedCommands}
+              pastedImages={pastedImages.images}
+              onPasteImage={pastedImages.addImage}
+              onRemovePastedImage={pastedImages.removeImage}
+              onAddPastedText={addPastedText}
+              onSend={handleSend}
+              onInterrupt={handleInterrupt}
+              canInterrupt={session.working}
+              queuedCount={queuedCount}
+              focusSignal={effectiveComposerFocusSignal}
+              onRecap={recap.refresh}
+              canRecap={!!session.lastTurnAt}
+              snippets={snippets}
+              onOpenSnippetsManager={onOpenSnippetsManager}
+              onSaveCurrentAsSnippet={handleSaveCurrentAsSnippet}
+              scheduled={{
+                schedules: scheduled.schedules,
+                now: scheduled.now,
+                cancel: scheduled.cancel,
+                dismiss: scheduled.dismiss,
+              }}
+              onSendScheduled={handleSendScheduled}
+              contextOrbSlotRef={setOrbSlot}
+            />
+          </div>,
+          dockSlot,
         )}
-      </div>
 
-      {SHOW_RUN_AS_AGENT && agentRunOpen && (
-        <RunAsAgentControl sessionId={session.id} onClose={() => setAgentRunOpen(false)} />
-      )}
+      {orbSlot &&
+        stream.contextUsage != null &&
+        createPortal(
+          <ContextOrb
+            usage={stream.contextUsage}
+            editable
+            custom={session.autoCompactWindow != null}
+            disabled={session.terminated || !session.running}
+            onSetWindow={commitWindow}
+          />,
+          orbSlot,
+        )}
 
-      <Composer
-      suggestion={stream.promptSuggestion}
-      input={input}
-      setInput={setInput}
-      sending={sending}
-      // Any terminated session shows the ended banner / choice UI and has its
-      // input disabled. A transiently-terminated (canRetryResume) one gets the
-      // Resume / Fork-from-last-completed choice banner — the user decides.
-      disabled={session.terminated}
-      terminated={session.terminated}
-      terminatedReason={session.terminatedReason}
-      canRetryResume={session.canRetryResume}
-      error={session.error}
-      onResume={onResume ? () => onResume(session.id) : undefined}
-      onForkFromLastCompleted={onForkFromLastCompleted ? () => onForkFromLastCompleted(session.id) : undefined}
-      canAttach={!!session.cwd}
-      attachments={attachments.attachments}
-      uploading={attachments.uploading}
-      dragOver={attachments.dragOver}
-      onUploadFiles={handleUploadFiles}
-      onRemoveAttachment={attachments.removeAttachment}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
-      history={history}
-      commands={mergedCommands}
-      pastedImages={pastedImages.images}
-      onPasteImage={pastedImages.addImage}
-      onRemovePastedImage={pastedImages.removeImage}
-      onAddPastedText={addPastedText}
-      onSend={handleSend}
-      onInterrupt={handleInterrupt}
-      canInterrupt={session.working}
-      queuedCount={queuedCount}
-      focusSignal={effectiveComposerFocusSignal}
-      onRecap={recap.refresh}
-      canRecap={!!session.lastTurnAt}
-      snippets={snippets}
-      onOpenSnippetsManager={onOpenSnippetsManager}
-      onSaveCurrentAsSnippet={handleSaveCurrentAsSnippet}
-      scheduled={{
-        schedules: scheduled.schedules,
-        now: scheduled.now,
-        cancel: scheduled.cancel,
-        dismiss: scheduled.dismiss,
-      }}
-      onSendScheduled={handleSendScheduled}
-      />
+      {/* WorkingBubble — same portal-into-bottomOverlay path as the dock. */}
+      {workingSlot &&
+        createPortal(
+          turnActive || waiting || (!session.terminated && (taskCount > 0 || hasTranscriptBackground || hasLiveSyncSubagent)) ? (
+            <WorkingBubble
+              active={turnActive}
+              startedAt={turnStartedAt}
+              activeSubagents={stream.activeSubagents}
+              tokenRate={stream.tokenRate}
+              thinkingTokens={stream.thinkingTokens}
+              activePhase={displayPhase}
+              recapping={session.compacting ?? false}
+              waiting={waiting}
+              runningTaskCount={indicatorTaskCount}
+              totalTaskCount={taskCount}
+              onOpenTasks={openTasksPanel}
+              onOpenSubagent={openSubagent}
+              onDismissWaiting={dismissWaiting}
+            />
+          ) : null,
+          workingSlot,
+        )}
 
       {/* Pending permission dialogs. The question dialog closes
           immediately on submit ?the parent drops it from the pending

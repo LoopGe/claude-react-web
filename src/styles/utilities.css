@@ -2567,12 +2567,20 @@ button.tool-group-failed-jump:focus-visible {
     padding-top: env(safe-area-inset-top);
   }
 
-  /* Bottom composer: lift the controls above the home-indicator and clear
-     the side insets (relevant in landscape, where the notch is sideways). */
-  .chat-composer {
-    padding-left: max(var(--chat-reading-min-inset), env(safe-area-inset-left));
-    padding-right: max(var(--chat-reading-min-inset), env(safe-area-inset-right));
-    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  /* Bottom dock + stack cards: keep clear of the home-indicator / notch.
+     Horizontal safe-area is folded into each card's reading-column MARGIN
+     (not added as padding) so every surface in the stack shares one edge
+     clearance and stays aligned with the transcript. */
+  .chat-dock,
+  .working-bar,
+  .todo-panel,
+  .monitor-bar,
+  .chat .error-bar:not(.error-bar-empty) {
+    margin-left: max(var(--chat-reading-inset), env(safe-area-inset-left));
+    margin-right: max(var(--chat-reading-inset), env(safe-area-inset-right));
+  }
+  .chat-dock {
+    padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - var(--chat-row-gap)));
   }
 
   /* The composer textarea inherits .textarea's 12.5px. iOS Safari auto-zooms
@@ -2583,10 +2591,22 @@ button.tool-group-failed-jump:focus-visible {
     font-size: var(--fs-lg);
   }
 
-  /* Send / Interrupt are text buttons (.btn, ~30px tall), below the 44px
-     touch target. The paperclip is a .btn-icon already covered above; this
-     lifts the text buttons in the actions column to the same floor. */
-  .chat-composer-actions .btn {
+  /* Bottom-bar controls (attach + circular send) must clear the 44px
+     touch-target floor. Send is a 44×44 circle — more specific than the
+     generic .btn floor so it never stretches into an oval. */
+  .composer-bar .btn {
+    min-height: 44px;
+  }
+  .composer-bar .composer-send {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .composer-bar .ctx-orb {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
     min-height: 44px;
   }
 }
