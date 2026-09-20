@@ -739,11 +739,6 @@ export function App() {
   const handleDesktopMenuCommand = useCallback((command: string) => {
     if (command === 'crw:menu-new-session') setNewSessionDialogOpen(true)
     else if (command === 'crw:menu-open-settings') setGlobalSettingsOpen(true)
-    else if (command === 'crw:menu-project-home') {
-      const bridge = window.__CRW_DESKTOP__
-      if (bridge?.openExternal) bridge.openExternal('https://github.com/LoopGe/claude-react-web')
-      else void window.open('https://github.com/LoopGe/claude-react-web', '_blank', 'noopener,noreferrer')
-    }
   }, [])
 
   useEffect(() => {
@@ -760,8 +755,6 @@ export function App() {
   // The overlay is painted by the OS; without this it stays on the spawn-time
   // dark symbolColor after a switch to light mode. `theme === 'system'` does
   // not change when the OS flips, so we also watch prefers-color-scheme.
-  const themeForOverlay = theme
-  const skinForOverlay = skin
   useEffect(() => {
     if (!hostCaps.customTitlebar || hostCaps.desktopPlatform !== 'win32') return
     const bridge = window.__CRW_DESKTOP__
@@ -780,18 +773,15 @@ export function App() {
       })
     }
     apply()
-    // Re-apply after the theme attribute flips (tokens live on :root /
-    // [data-theme] / [data-skin]).
-    const id = window.setTimeout(apply, 0)
     // OS appearance change while theme is 'system'.
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
     const onOsTheme = () => apply()
     mq.addEventListener('change', onOsTheme)
     return () => {
-      window.clearTimeout(id)
       mq.removeEventListener('change', onOsTheme)
     }
-  }, [hostCaps.customTitlebar, hostCaps.desktopPlatform, themeForOverlay, skinForOverlay])
+    // theme/skin are the attributes useTheme flips; re-read tokens after they change.
+  }, [hostCaps.customTitlebar, hostCaps.desktopPlatform, theme, skin])
 
   // Listen for SW notification action callbacks. When the user clicks
   // Allow/Deny on an OS notification, the SW calls the decide API
@@ -4016,21 +4006,6 @@ export function App() {
           {hostCaps.customTitlebar && hostCaps.desktopPlatform === 'win32' && (
             <DesktopAppMenu onCommand={handleDesktopMenuCommand} />
           )}
-          {/* Open-panel tabs in the custom titlebar (desktop win/darwin).
-              Mirror openSessions — click focuses, × closes, + starts new. */}
-          {hostCaps.customTitlebar && (
-            <DesktopTitlebarTabs
-              sessions={openSessions}
-              focusedId={focusedId}
-              onSelect={(id) => void handleSelect(id)}
-              onClose={closeSession}
-              onNew={() => setNewSessionDialogOpen(true)}
-              maxOpen={maxOpen}
-            />
-          )}
-          {/* Drag island: absorbs leftover header width so the custom
-              titlebar always has a grab target (tabs/toolbar are no-drag). */}
-          {hostCaps.customTitlebar && <div className="titlebar-drag-spacer" aria-hidden />}
           {/* Hamburger toggles the drawer sidebar. Rendered only on mobile;
               CSS pushes it to the left edge (margin-right: auto) so the rest
               of the toolbar stays flush-right. */}
@@ -4044,12 +4019,6 @@ export function App() {
               <IconMenu size={18} />
             </button>
           )}
-          {/* The header used to echo the focused session's title / model /
-              mode / cwd, but with up to three panels open that information
-              is already visible inside each ChatPanel header — duplicating
-              it at the top was both redundant and subtly wrong (it looked
-              like "the active session" when all three are active). Now the
-              row holds only the app-level toolbar. */}
           {/* Desktop sidebar hide/show toggle. Rendered only on desktop — on mobile
               the sidebar is a drawer controlled by the hamburger (drawer-toggle). */}
           {!isMobile && (
@@ -4064,6 +4033,25 @@ export function App() {
             </button>
           )}
           <ProfileSwitcher onManageProfiles={() => setGlobalSettingsOpen(true)} />
+          {/* Open-panel tabs in the custom titlebar (desktop win/darwin).
+              Mirror openSessions — click focuses, × closes, + starts new.
+              Sits AFTER the left chrome cluster (☰ / sidebar / profile) so
+              the drag spacer below cannot shove those buttons to the right. */}
+          {hostCaps.customTitlebar && (
+            <DesktopTitlebarTabs
+              sessions={openSessions}
+              focusedId={focusedId}
+              onSelect={(id) => void handleSelect(id)}
+              onClose={closeSession}
+              onNew={() => setNewSessionDialogOpen(true)}
+              maxOpen={maxOpen}
+            />
+          )}
+          {/* Drag island between the left chrome cluster and the right-hand
+              toolbar. flex:1 absorbs leftover width — it must stay HERE, not
+              between ☰ and the sidebar toggle, or the toggle/profile/toolbar
+              get pushed flush-right when the sidebar collapses. */}
+          {hostCaps.customTitlebar && <div className="titlebar-drag-spacer" aria-hidden />}
           {/* role="group" rather than "toolbar": ARIA's toolbar pattern
               expects arrow-key roving between items, which we don't
               implement (Tab walks the cluster like ordinary buttons).

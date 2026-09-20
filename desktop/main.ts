@@ -133,10 +133,11 @@ function buildWindow(): BrowserWindow {
       : {}),
     ...(process.platform === 'win32'
       ? {
-          // titleBarStyle:'hidden' + titleBarOverlay is the supported Windows
-          // custom-titlebar pair (keeps non-client hit-testing / snap). Do
-          // NOT also set frame:false — that forces a fully frameless window
-          // and drops those behaviours.
+          // frame:false + titleBarStyle:'hidden' + titleBarOverlay is the
+          // combination opencode ships and the one that reliably honours
+          // -webkit-app-region: drag on Windows. titleBarStyle alone has
+          // been observed to leave the window undraggable.
+          frame: false,
           titleBarStyle: 'hidden' as const,
           titleBarOverlay: {
             // Transparent so the app's --bg-elev header shows through; the

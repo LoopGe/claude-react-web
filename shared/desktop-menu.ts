@@ -13,7 +13,7 @@ import type {
   DesktopMenuCommand,
   DesktopViewAction,
   DesktopWindowAction,
-} from './desktop-bridge'
+} from './desktop-bridge.js'
 
 /** Platforms a menu entry can appear on. */
 export type DesktopMenuPlatform = 'macos' | 'windows' | 'linux'
@@ -139,10 +139,21 @@ export const DESKTOP_MENU: DesktopMenuGroup[] = [
       {
         id: 'close',
         label: 'Close Window',
+        electronAccelerator: 'CmdOrCtrl+W',
         // mac uses the Close role; Windows ☰ uses Window → Close instead
         // (a single-window app does not need both Quit and Close).
-        platforms: ['macos', 'linux'],
+        platforms: ['macos'],
         action: { kind: 'role', role: 'close' },
+      },
+      {
+        id: 'quit-linux',
+        label: 'Quit',
+        electronAccelerator: 'CmdOrCtrl+Q',
+        // Linux has no app-name menu; Quit must live under File. Windows ☰
+        // uses Window → Close (single-window app).
+        platforms: ['linux'],
+        danger: true,
+        action: { kind: 'role', role: 'quit' },
       },
     ],
   },
@@ -153,7 +164,10 @@ export const DESKTOP_MENU: DesktopMenuGroup[] = [
       // On mac/linux these are native roles; on Windows ☰ they forward to
       // webContents and must keepFocus so the composer keeps the caret.
       { id: 'undo', label: 'Undo', accelerator: 'mod+z', electronAccelerator: 'CmdOrCtrl+Z', keepFocus: true, action: { kind: 'edit', action: 'undo' } },
-      { id: 'redo', label: 'Redo', accelerator: 'mod+y', electronAccelerator: 'CmdOrCtrl+Y', keepFocus: true, action: { kind: 'edit', action: 'redo' } },
+      // No electronAccelerator on Redo: the Electron 'redo' role already
+      // carries the platform default (Cmd+Shift+Z on macOS, Ctrl+Y on Win).
+      // Forcing CmdOrCtrl+Y would override the mac convention.
+      { id: 'redo', label: 'Redo', accelerator: 'mod+y', keepFocus: true, action: { kind: 'edit', action: 'redo' } },
       { type: 'separator', id: 'edit-sep-1' },
       { id: 'cut', label: 'Cut', accelerator: 'mod+x', electronAccelerator: 'CmdOrCtrl+X', keepFocus: true, action: { kind: 'edit', action: 'cut' } },
       { id: 'copy', label: 'Copy', accelerator: 'mod+c', electronAccelerator: 'CmdOrCtrl+C', keepFocus: true, action: { kind: 'edit', action: 'copy' } },
@@ -200,10 +214,9 @@ export const DESKTOP_MENU: DesktopMenuGroup[] = [
       {
         id: 'project-home',
         label: 'Project Home',
-        // href is opened by the host (shell.openExternal on mac/linux native
-        // menu; the Windows ☰ routes it through the same IPC command so we
-        // never window.open a raw BrowserWindow).
-        action: { kind: 'command', command: 'crw:menu-project-home' },
+        // Native menu: shell.openExternal directly (no renderer round-trip).
+        // Windows ☰: DesktopAppMenu maps href → preload openExternal.
+        action: { kind: 'href', href: 'https://github.com/LoopGe/claude-react-web' },
       },
     ],
   },

@@ -120,9 +120,9 @@ function buildGroup(
     return { role: 'windowMenu', label: group.label, submenu: items }
   }
   if (group.role === 'app') {
-    // The macOS application menu (under the app name). Roles in the shared
-    // data (about/services/hide/quit/…) map 1:1 onto Electron roles.
-    return { label: group.label || app.name, submenu: items }
+    // Always the real productName — the shared data's label is a placeholder
+    // for the Windows ☰ flatten (which skips this group entirely).
+    return { label: app.name, submenu: items }
   }
   return { label: group.label, submenu: items }
 }
@@ -132,12 +132,6 @@ export function buildAppMenu(getWindow: () => BrowserWindow | null): Menu {
   const template = DESKTOP_MENU.map((g) => buildGroup(g, platform, getWindow)).filter(
     (x): x is MenuItemConstructorOptions => x !== null,
   )
-  // The app-name menu should show the real productName, not the data label.
-  for (const row of template) {
-    if (row.label === 'claude-react-web' && process.platform === 'darwin') {
-      row.label = app.name
-    }
-  }
   return Menu.buildFromTemplate(template)
 }
 

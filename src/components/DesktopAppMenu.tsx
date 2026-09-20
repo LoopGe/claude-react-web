@@ -78,10 +78,25 @@ export function DesktopAppMenu({ onCommand }: Props) {
     return off
   }, [])
 
+  // Continuously track the last focused element OUTSIDE the trigger/menu.
+  // Covers both mouse (mousedown on the trigger would otherwise steal it)
+  // and keyboard opens (Enter/Space never fire mousedown).
+  useEffect(() => {
+    const onFocusIn = (e: FocusEvent) => {
+      const t = e.target
+      if (!(t instanceof HTMLElement)) return
+      if (triggerRef.current?.contains(t)) return
+      if (menuRef.current?.contains(t)) return
+      lastFocusedRef.current = t
+    }
+    document.addEventListener('focusin', onFocusIn)
+    return () => document.removeEventListener('focusin', onFocusIn)
+  }, [])
+
+  // mousedown on the trigger is redundant with the focusin tracker above.
   const openMenu = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect()
     if (!rect) return
-    lastFocusedRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     setAnchor({ x: rect.left, y: rect.bottom + 4 })
     setOpen(true)
   }, [])
@@ -128,6 +143,20 @@ export function DesktopAppMenu({ onCommand }: Props) {
       if (entry.id === 'maximize-win') label = maximized ? 'Restore' : 'Maximize'
       rows.push({ kind: 'item', item: entry, label })
     }
+  }
+  // Collapse separators left dangling by platform filters (e.g. File's
+  // sep-before-Close when Close is mac-only) so the ☰ never opens with a
+  // stray divider under Settings.
+  const cleanedRows: typeof rows = []
+  for (const row of rows) {
+    if (row.kind === 'sep') {
+      if (cleanedRows.length === 0) continue
+      if (cleanedRows[cleanedRows.length - 1].kind === 'sep') continue
+    }
+    cleanedRows.push(row)
+  }
+  while (cleanedRows.length > 0 && cleanedRows[cleanedRows.length - 1].kind === 'sep') {
+    cleanedRows.pop()
   }
 
   const runItem = (item: DesktopMenuItem) => {
@@ -191,7 +220,7 @@ export function DesktopAppMenu({ onCommand }: Props) {
             onMouseDown={(e) => e.stopPropagation()}
             onKeyDown={onMenuKeyDown}
           >
-            {rows.map((row) =>
+            {cleanedRows.map((row) =>
               row.kind === 'sep' ? (
                 <div key={row.id} className="ctx-menu-sep" role="separator" />
               ) : (

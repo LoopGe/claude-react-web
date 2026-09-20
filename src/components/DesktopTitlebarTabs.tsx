@@ -39,7 +39,7 @@ export const DesktopTitlebarTabs = memo(function DesktopTitlebarTabs({
   if (sessions.length === 0) {
     // Still render the + so the empty titlebar offers a start path.
     return (
-      <div className="titlebar-tabs" role="tablist" aria-label="Open sessions">
+      <div className="titlebar-tabs" role="group" aria-label="Open sessions">
         <button
           type="button"
           className="titlebar-tab-new btn btn-icon"
@@ -54,16 +54,19 @@ export const DesktopTitlebarTabs = memo(function DesktopTitlebarTabs({
   }
 
   return (
-    <div className="titlebar-tabs" role="tablist" aria-label="Open sessions">
+    // role="group" not "tablist": the ARIA tab pattern promises Left/Right
+    // roving focus, which this strip does not implement (same call as
+    // App.tsx's .main-toolbar). Tabs remain clickable/focusable buttons.
+    <div className="titlebar-tabs" role="group" aria-label="Open sessions">
       {sessions.map((s) => {
         const selected = s.id === focusedId
         return (
           <div
             key={s.id}
             className={`titlebar-tab${selected ? ' active' : ''}${s.working ? ' working' : ''}`}
-            role="tab"
-            aria-selected={selected}
-            tabIndex={selected ? 0 : -1}
+            role="button"
+            aria-pressed={selected}
+            tabIndex={0}
             title={tabLabel(s)}
             onClick={() => onSelect(s.id)}
             onKeyDown={(e) => {

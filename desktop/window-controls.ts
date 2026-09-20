@@ -105,7 +105,13 @@ function applyViewAction(win: BrowserWindow, action: DesktopViewAction): void {
 function isTitlebarTheme(value: unknown): value is TitlebarThemePayload {
   if (typeof value !== 'object' || value === null) return false
   const v = value as Record<string, unknown>
-  return typeof v.color === 'string' && typeof v.symbolColor === 'string' && typeof v.height === 'number'
+  return (
+    typeof v.color === 'string' &&
+    typeof v.symbolColor === 'string' &&
+    typeof v.height === 'number' &&
+    Number.isFinite(v.height) &&
+    v.height > 0
+  )
 }
 
 /**

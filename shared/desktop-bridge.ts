@@ -8,10 +8,7 @@
 export const DESKTOP_MENU_CHANNEL = 'crw:menu'
 
 /** Commands the native application menu can dispatch to the renderer. */
-export type DesktopMenuCommand =
-  | 'crw:menu-new-session'
-  | 'crw:menu-open-settings'
-  | 'crw:menu-project-home'
+export type DesktopMenuCommand = 'crw:menu-new-session' | 'crw:menu-open-settings'
 
 /** Host OS as reported by the preload (`process.platform`). */
 export type DesktopPlatform = 'darwin' | 'win32' | 'linux'

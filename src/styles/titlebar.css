@@ -1,14 +1,15 @@
 /* Custom desktop titlebar (Electron host, win32/darwin only).
  *
  * The web build never gets `.titlebar-win` / `.titlebar-mac` on the root, so
- * every rule below is a no-op there. Drag regions use the Chromium
- * `-webkit-app-region` property; interactive children must opt out with
- * `no-drag` or they stop receiving clicks.
+ * every rule below is a no-op there.
+ *
+ * Drag model is OPT-OUT: the header containers are drag regions, and only
+ * interactive descendants flip to no-drag. A universal `* { no-drag }` plus a
+ * spacer override is one specificity miss away from "window won't move".
  */
 
 /* ── Drag strip ─────────────────────────────────────────────────────
- * The existing brand row (sidebar) and main-header (toolbar) ARE the
- * titlebar. Mark the containers as drag and every descendant as no-drag.
+ * The brand row (sidebar) and main-header (toolbar) ARE the titlebar.
  */
 .titlebar-win .brand,
 .titlebar-win .main-header,
@@ -19,12 +20,42 @@
   /* Match the OS caption overlay / traffic-light strip exactly. */
   min-height: var(--titlebar-height);
 }
-.titlebar-win .brand *,
-.titlebar-win .main-header *,
-.titlebar-mac .brand *,
-.titlebar-mac .main-header * {
+
+/* Interactive bits must receive clicks, so they leave the drag region.
+   Tag/role based — covers buttons, pickers, tabs, and the profile chip
+   without painting every decorative span as no-drag. The flexible spacer
+   and empty header padding inherit drag from the parent above. */
+.titlebar-win .brand button,
+.titlebar-win .brand a,
+.titlebar-win .brand input,
+.titlebar-win .brand [role='button'],
+.titlebar-win .main-header button,
+.titlebar-win .main-header a,
+.titlebar-win .main-header input,
+.titlebar-win .main-header [role='button'],
+.titlebar-win .main-header .titlebar-tabs,
+.titlebar-win .main-header .profile-switcher,
+.titlebar-mac .brand button,
+.titlebar-mac .brand a,
+.titlebar-mac .brand input,
+.titlebar-mac .brand [role='button'],
+.titlebar-mac .main-header button,
+.titlebar-mac .main-header a,
+.titlebar-mac .main-header input,
+.titlebar-mac .main-header [role='button'],
+.titlebar-mac .main-header .titlebar-tabs,
+.titlebar-mac .main-header .profile-switcher {
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+/* Flexible drag island between the left chrome cluster and the right-hand
+   toolbar. Inherits drag from .main-header — this rule only supplies layout. */
+.titlebar-win .titlebar-drag-spacer,
+.titlebar-mac .titlebar-drag-spacer {
+  flex: 1 1 auto;
+  min-width: var(--space-4);
+  align-self: stretch;
 }
 
 /* ── Windows: reserve room for the system caption overlay ───────────
@@ -39,7 +70,7 @@
 /* ── macOS: reserve room for traffic lights ─────────────────────────
  * Red/yellow/green sit at the top-left of the window. They overlap the
  * brand row when the sidebar is open, and the main-header when it is
- * collapsed OR when the ≤768px drawer layout moves the brand off the
+ * collapsed OR when the <=768px drawer layout moves the brand off the
  * top row (Electron minWidth is 720, so that range is reachable).
  */
 .titlebar-mac .brand {
@@ -57,7 +88,6 @@
 
 /* ── ☰ app menu (Windows only — macOS uses the native menu bar) ───── */
 .titlebar-app-menu-trigger {
-  /* Keep the trigger optically aligned in the strip; .btn-icon handles rest. */
   flex-shrink: 0;
 }
 .titlebar-app-menu {
@@ -72,7 +102,7 @@
 }
 
 /* ── Open-panel tabs in the custom titlebar ─────────────────────────
- * A no-drag island inside the drag strip so clicks land on tabs.
+ * A no-drag island (listed above) so clicks land on tabs, not window-move.
  */
 .titlebar-tabs {
   display: flex;
@@ -80,13 +110,11 @@
   gap: var(--space-1);
   min-width: 0;
   /* Do NOT stretch: a full-width no-drag island would leave the collapsed
-     sidebar layout with almost no grab target. The flex spacer below is
-     the drag surface. */
+     sidebar layout with almost no grab target. The flex spacer is the drag
+     surface. */
   flex: 0 1 auto;
   overflow-x: auto;
   scrollbar-width: none;
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
   padding-right: var(--space-2);
 }
 .titlebar-tabs::-webkit-scrollbar {
@@ -108,8 +136,6 @@
   cursor: pointer;
   user-select: none;
   flex-shrink: 0;
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
 }
 .titlebar-tab:hover {
   background: var(--btn-hover-bg);
@@ -153,8 +179,6 @@
   cursor: pointer;
   opacity: 0.55;
   flex-shrink: 0;
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
 }
 .titlebar-tab-close:hover {
   opacity: 1;
@@ -166,17 +190,4 @@
   height: 28px;
   font-size: 16px;
   line-height: 1;
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
-}
-
-/* Flexible drag island between the tabs and the right-hand toolbar.
-   Every interactive child of .main-header is no-drag; without this spacer
-   a collapsed-sidebar layout has almost nowhere to grab the window. */
-.titlebar-drag-spacer {
-  flex: 1 1 auto;
-  min-width: var(--space-4);
-  align-self: stretch;
-  -webkit-app-region: drag;
-  app-region: drag;
 }
