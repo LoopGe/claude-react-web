@@ -22,10 +22,9 @@ const log = createLogger('anthropic-api')
  *  come from `effectiveProfileFor(session.profileId)`), so sending its recap
  *  through the active profile's endpoint would put one profile's model id on
  *  another profile's URL — a 401/404 for every gateway. Callers with no
- *  session context omit `target` and get the global config: that is only the
- *  app-plugin AI broker today (server/app-plugins/host/ai-broker.ts, which
- *  has no session in its request shape), and it therefore still uses the
- *  active profile. */
+ *  session context omit `target` and get the global config; the only such
+ *  caller is the app-plugin AI broker, and only for a plugin request that
+ *  carries no `sessionId` (see server/app-plugins/host/ai-broker.ts). */
 export interface AuxLlmTarget {
   /** Fully resolved model. For recap / commit message it is the session
    *  profile's own override, else the session's model group haiku tier, else
@@ -50,7 +49,7 @@ interface CallOptions {
   messages?: Array<{ role: string; content: string }>
   /** Metrics label for the observability histogram — which server feature
    *  is calling. Finite enum: 'recap' | 'commit-message' | 'auto-classifier'
-   *  | 'compact-summary' | 'unknown' (the app-plugin AI broker passes none). */
+   *  | 'compact-summary' | 'app-plugin-ai' | 'unknown'. */
   caller?: string
   /** Per-session endpoint + credential. See AuxLlmTarget. */
   target?: AuxLlmTarget

@@ -130,6 +130,15 @@ export interface AiRequestParams {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>
   model?: string
   maxTokens?: number
+  /** The session this call is being made for — pass `context.sessionId`
+   *  whenever the invocation has one. The host then authenticates as THAT
+   *  session's profile (its endpoint, token and aux model) instead of the
+   *  globally active profile, so a session pinned elsewhere is billed to its
+   *  own subscription and never gets a model id its provider cannot route.
+   *  Omit it only when the plugin genuinely has no session context (a
+   *  background service), where the host config applies. An unknown id is
+   *  rejected rather than silently falling back. */
+  sessionId?: string
 }
 export interface AiRequestResult {
   content: string

@@ -16,6 +16,14 @@ describe('translator — buildPrompt', () => {
   it('falls back to the code when the target is unknown', () => {
     expect(buildPrompt('xx', 'hi').system).toMatch(/\bxx\b/)
   })
+
+  it('carries the session id so the host bills that session\'s profile', () => {
+    // Without it the host falls back to the active profile: a session pinned
+    // to another profile would have its translation billed to the wrong
+    // subscription (and could send a model id that profile cannot route).
+    expect(buildPrompt('ja', 'hello', undefined, 's-1').sessionId).toBe('s-1')
+    expect(buildPrompt('ja', 'hello').sessionId).toBeUndefined()
+  })
 })
 
 describe('translator — parseTranslation', () => {

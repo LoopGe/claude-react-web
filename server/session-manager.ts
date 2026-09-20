@@ -5254,7 +5254,7 @@ export class SessionManager {
    *  dormant sessions alike. See model-groups.auxFallbackModel(). */
   auxTargetFor(
     id: string,
-    field: 'recap' | 'commitMessage' | 'classifier',
+    field: 'recap' | 'commitMessage' | 'classifier' | 'pluginAi',
   ): AuxLlmTarget | undefined {
     const live = this.sessions.get(id)
     const session = live ?? this.store?.get(id)
@@ -5276,11 +5276,16 @@ export class SessionManager {
     // Applying it to a session on another provider would hand that provider a
     // model id it does not serve — the exact misroute this resolution exists to
     // prevent.
+    // `pluginAi` (an app plugin's `ai.request` scoped to a session) has no
+    // config field of its own, so it takes the tier chain: the model group's
+    // haiku slot when the session has one — a small fast model is the right
+    // class for the short side tasks plugins ask for — else the session's own
+    // model, exactly like the other aux calls.
     const override = field === 'recap'
       ? profile.recapModel
       : field === 'commitMessage'
         ? profile.commitMessageModel
-        : profile.id === defaultConfig.activeProfileId
+        : field === 'classifier' && profile.id === defaultConfig.activeProfileId
           ? defaultConfig.autoClassifierModel
           : ''
     return {

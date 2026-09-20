@@ -27,9 +27,12 @@ export function targetName(target) {
  *  into `target`. The LLM is asked to return the translation on the first
  *  line and the source language on the second — simpler + faster than
  *  asking for JSON (less output tokens, no format "thinking"). Does NOT
- *  hardcode a model — the host's defaultModel is used (configurable per
- *  user via the optional `model` setting in the plugin config). */
-export function buildPrompt(target, text, model) {
+ *  hardcode a model — the host picks the session's aux model (or its
+ *  defaultModel when the plugin is called outside a session), configurable
+ *  per user via the optional `model` setting in the plugin config.
+ *  `sessionId` rides along so the host authenticates as THAT session's
+ *  profile rather than the globally active one. */
+export function buildPrompt(target, text, model, sessionId) {
   const name = targetName(target)
   const system =
     `Translate into ${name}. Respond with JSON: {"translation":"<translated text>","source":"<source language name>"}. No markdown, no code fences.`
@@ -40,6 +43,7 @@ export function buildPrompt(target, text, model) {
     maxTokens: 1024,
   }
   if (model) params.model = model
+  if (sessionId) params.sessionId = sessionId
   return params
 }
 
@@ -97,9 +101,11 @@ export function toPopover(invocationId, { translation, source }) {
 }
 
 /** The full translate flow, with `callHost` injected so it's testable without
- *  a subprocess or real LLM credentials. Returns a PluginCommandResult
+ *  a subprocess or real LLM credentials. `sessionId` (the command
+ *  context's) scopes the host-side call to that session's profile.
+ *  Returns a PluginCommandResult
  *  (popover on success / cache hit; notification on ai failure). */
-export async function translate({ invocationId, text, target, useCache, model, callHost }) {
+export async function translate({ invocationId, text, target, useCache, model, sessionId, callHost }) {
   const tgt = target || 'zh-CN'
   const key = cacheKey(text, tgt)
 
@@ -118,7 +124,7 @@ export async function translate({ invocationId, text, target, useCache, model, c
   // Translate via the host's LLM.
   let content
   try {
-    const res = await callHost('ai.request', buildPrompt(tgt, text, model))
+    const res = await callHost('ai.request', buildPrompt(tgt, text, model, sessionId))
     content = res?.content ?? ''
   } catch (e) {
     return {

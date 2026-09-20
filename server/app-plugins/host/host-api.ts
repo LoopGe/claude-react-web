@@ -59,7 +59,7 @@ export function registerHostApi(peer: RpcPeer, ctx: HostContext): {
   const secrets = new SecretsService(ctx.pluginId, ctx.stateDir)
   const config = new ConfigurationStore(ctx.pluginId, ctx.dataDir)
   const network = new NetworkBroker(checker)
-  const ai = new AiBroker(checker)
+  const ai = new AiBroker(checker, (id) => ctx.sm.auxTargetFor(id, 'pluginAi'))
   const subscriptions = new SessionSubscriptionRegistry({ getSession: (id) => ctx.sm.get(id) as unknown as Session })
   const sessions = new SessionAdapter(ctx.sm, checker, peer, subscriptions)
   const git = new GitAdapter(checker)
@@ -93,7 +93,7 @@ export function registerHostApi(peer: RpcPeer, ctx: HostContext): {
     return network.fetch(params)
   })
   peer.registerHandler('ai.request', async (p) => {
-    const params = requireParams(p, ['purpose', 'messages']) as { purpose: string; system?: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; model?: string; maxTokens?: number }
+    const params = requireParams(p, ['purpose', 'messages']) as { purpose: string; system?: string; messages: Array<{ role: 'user' | 'assistant'; content: string }>; model?: string; maxTokens?: number; sessionId?: string }
     return ai.request(params)
   })
   peer.registerHandler('sessions.read', async (p) => {

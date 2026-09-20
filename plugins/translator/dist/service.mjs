@@ -45,7 +45,9 @@ const handlers = {
     const target = config['translator.claude-react-web.target'] || 'zh-CN'
     const useCache = config['translator.claude-react-web.cache'] !== false && !context?._skipCache
     const model = config['translator.claude-react-web.model'] || undefined
-    return translate({ invocationId, text, target, useCache, model, callHost })
+    // The command's context carries the session it was invoked from; passing
+    // it along makes the host's ai.request spend THAT session's profile.
+    return translate({ invocationId, text, target, useCache, model, sessionId: context?.sessionId, callHost })
   },
 }
 

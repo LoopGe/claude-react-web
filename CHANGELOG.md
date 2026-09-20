@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **App Plugin `ai.request` can now spend the invoking session's profile** — the host broker always
+  authenticated against the globally active profile, so a plugin invoked from a session pinned
+  elsewhere (the `translator`, run from a message selection) billed the wrong subscription and
+  could hand that endpoint a model id it cannot route. `ai.request` takes an optional `sessionId`
+  — the command context already carries it, and the translator now forwards it — and resolves the
+  endpoint, token and aux model from that session (`SessionManager.auxTargetFor`). An unknown id is
+  rejected instead of quietly falling back to the active profile; a plugin with no session context
+  (a background service) keeps using the host config, and an explicit `model` still wins while the
+  credentials stay the session's.
 - **Sessions pinned to a non-active profile now spend their OWN subscription for recaps, compact
   summaries, commit messages and auto-mode classification** — those calls read the model override
   and the endpoint/token from the globally *active* profile, while the session's CLI subprocess
