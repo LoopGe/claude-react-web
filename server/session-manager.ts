@@ -2718,13 +2718,15 @@ export class SessionManager {
     if (!cwd) return
     void (async () => {
       try {
-        // 2s timeout: a slow git subprocess must not leave the capture
-        // pending indefinitely — the lock would stall later captures for
-        // the same session. Resolve null on timeout; the capture Promise
-        // continues in the background and eventually releases the lock.
+        // 15s timeout: a slow git subprocess (especially the first capture
+        // on a large repo, which must seed the shadow index) must not leave
+        // the capture pending indefinitely — the lock would stall later
+        // captures for the same session. Resolve null on timeout; the
+        // capture Promise continues in the background and eventually
+        // releases the lock.
         const tree = await Promise.race([
           this.snapshots.capture({ sessionId: id, cwd }),
-          new Promise<null>((r) => setTimeout(() => r(null), 2000)),
+          new Promise<null>((r) => setTimeout(() => r(null), 15_000)),
         ])
         if (tree) await this.snapshots.recordAnchor(id, cwd, userUuid, tree)
       } catch (err) {

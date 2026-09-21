@@ -87,4 +87,23 @@ describe('SnapshotStore', () => {
     await store.remove('x')
     expect(await store.load('x')).toBeNull()
   })
+
+  it('remove also deletes the odb directory', async () => {
+    const { mkdir } = await import('node:fs/promises')
+    const odbPath = join(dir, 'snapshots', 'odb', 'x', 'objects')
+    await mkdir(odbPath, { recursive: true })
+    await store.save('x', empty())
+    await store.remove('x')
+    // odb directory should be gone
+    await expect(
+      import('node:fs/promises').then((fs) => fs.access(join(dir, 'snapshots', 'odb', 'x'))),
+    ).rejects.toThrow()
+  })
+
+  it('remove is ENOENT-tolerant when odb dir is missing', async () => {
+    await store.save('x', empty())
+    // Should not throw even though odb/x does not exist
+    await store.remove('x')
+    expect(await store.load('x')).toBeNull()
+  })
 })

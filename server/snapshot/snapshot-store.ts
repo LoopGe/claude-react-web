@@ -1,8 +1,8 @@
-import { readFile, unlink } from 'node:fs/promises'
+import { readFile, unlink, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createLogger } from '../log.js'
 import { writeAtomic } from '../json-file-store.js'
-import { metaFile, snapshotRoot } from './paths.js'
+import { metaFile, odbDir, snapshotRoot } from './paths.js'
 
 const log = createLogger('snapshots')
 
@@ -111,6 +111,15 @@ export class SnapshotStore {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
       if (code !== 'ENOENT') log.warn(`remove failed for ${sessionId}: ${(err as Error).message ?? err}`)
+    }
+    // Also remove the shadow odb directory so git objects are not leaked.
+    if (this.dir) {
+      try {
+        await rm(odbDir(this.dir, sessionId), { recursive: true, force: true })
+      } catch {
+        // ENOENT-tolerant — odb dir may not exist if the session was
+        // never captured or was already cleaned up.
+      }
     }
   }
 }

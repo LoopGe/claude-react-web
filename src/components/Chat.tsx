@@ -1167,9 +1167,10 @@ export const Chat = memo(function Chat({
   // ── File-snapshot rewind (shadow-repo sidecar) ───────────────────
   /** Prefetched file-snapshot anchors: the set of user-message ids that
    *  have a recorded snapshot and can be rewound to. Fetched once per
-   *  session mount (like discardAnchors) — zero latency on right-click. */
+   *  session mount and refreshed when the context menu opens so newly
+   *  captured anchors are visible without a page reload. */
   const [rewindAnchors, setRewindAnchors] = useState<{ available: boolean; anchorIds: Set<string> }>({ available: false, anchorIds: new Set() })
-  useEffect(() => {
+  const refreshRewindAnchors = useCallback(() => {
     let cancelled = false
     void api.get<{ available: boolean; reason?: string; anchors: Array<{ messageId: string }> }>(
       `/sessions/${session.id}/file-snapshots`,
@@ -1178,9 +1179,10 @@ export const Chat = memo(function Chat({
         if (cancelled) return
         setRewindAnchors({ available: res.available, anchorIds: new Set(res.anchors.map((a) => a.messageId)) })
       })
-      .catch(() => { setRewindAnchors({ available: false, anchorIds: new Set() }) })
+      .catch(() => { if (!cancelled) setRewindAnchors({ available: false, anchorIds: new Set() }) })
     return () => { cancelled = true }
   }, [session.id])
+  useEffect(() => { return refreshRewindAnchors() }, [refreshRewindAnchors])
 
   /** True when `uuid` resolves to a top-level user message in the current
    *  transcript. Such a row's id IS the server-minted prompt uuid the
@@ -2172,6 +2174,9 @@ export const Chat = memo(function Chat({
             const targetEl = (e.target as HTMLElement).closest('[data-message-id]')
             const targetId = targetEl?.getAttribute('data-message-id') ?? undefined
             setExportMenuPos({ x: e.clientX, y: e.clientY, selection, targetId })
+            // Refresh rewind anchors so newly-captured snapshots are
+            // visible in the context menu without a page reload.
+            refreshRewindAnchors()
           }}
         >
         <MessageList

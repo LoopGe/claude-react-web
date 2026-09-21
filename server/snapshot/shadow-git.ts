@@ -145,6 +145,12 @@ export async function captureTree(
     ),
   )
   if (candidates.length > 0) {
+    // Track which candidates are untracked (from ls-files --others) vs
+    // tracked-but-modified (from diff-files). The size check only applies
+    // to untracked files — tracked files are always captured regardless
+    // of size.
+    const untracked = new Set(others.stdout.split('\0').filter(Boolean))
+
     // Ignore filter against SOURCE repo rules when available
     let ignored = new Set<string>()
     if (opts?.sourceGitDir) {
@@ -160,7 +166,7 @@ export async function captureTree(
     const max = opts?.maxUntrackedBytes ?? 2 * 1024 * 1024
     const oversized: string[] = []
     for (const c of candidates) {
-      if (ignored.has(c)) continue
+      if (ignored.has(c) || !untracked.has(c)) continue
       try {
         const st = await fs.stat(join(repo.worktree, c))
         if (st.isFile() && st.size > max) oversized.push(c)
@@ -168,6 +174,8 @@ export async function captureTree(
         /* ignore */
       }
     }
+    // rm --cached: drop ignored files AND oversized untracked files from
+    // the shadow index. Tracked (diff-files) files are never dropped.
     const drop = [...ignored, ...oversized]
     if (drop.length) {
       await runStdin(
@@ -204,10 +212,16 @@ export async function treeHasPath(repo: ShadowRepo, tree: string, relPath: strin
 
 export async function restorePaths(repo: ShadowRepo, tree: string, relPaths: string[]): Promise<void> {
   if (!relPaths.length) return
-  await run(
-    repo.worktree,
-    args(repo, ['checkout', tree, '--', ...relPaths.map((p) => `:(top,literal)${p}`)]),
-  )
+  // --force: overwrite untracked files that would otherwise abort the
+  // checkout. Batching avoids argv-length limits on large restores.
+  const BATCH = 50
+  for (let i = 0; i < relPaths.length; i += BATCH) {
+    const batch = relPaths.slice(i, i + BATCH)
+    await run(
+      repo.worktree,
+      args(repo, ['checkout', '--force', tree, '--', ...batch.map((p) => `:(top,literal)${p}`)]),
+    )
+  }
 }
 
 export async function deletePaths(_repo: ShadowRepo, absPaths: string[]): Promise<void> {

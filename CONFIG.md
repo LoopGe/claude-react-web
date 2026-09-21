@@ -325,11 +325,11 @@ Set to `false` to stop injecting git tools by default:
 | Type | `boolean` |
 | Default | `true` |
 
-Enable the shadow-repo snapshot sidecar that powers offline file rewind. When enabled, each session captures a lightweight git snapshot at every user message, allowing files to be restored to any prior message state even after the session has gone dormant or been terminated. When disabled, `GET /sessions/:id/file-snapshots` reports `available: false` with reason `disabled`, and `POST /sessions/:id/rewind-files` / `GET /sessions/:id/snapshot-diff` return 400.
+Enable the shadow-repo snapshot sidecar that powers offline file rewind. When enabled, each session captures a lightweight git snapshot at every user message, allowing files to be restored to any prior message state even after the session has gone dormant or been terminated. When disabled, `GET /sessions/:id/file-snapshots` reports `available: false` with reason `disabled`.
 
 Sessions started outside a git repository are never snapshotted regardless of this flag (they report `available: false` with reason `not-git`).
 
-Writable at runtime via the in-app settings panel or `claude-react-web config set`:
+**Boot-time only.** Although this field is listed in `WRITABLE_CONFIG_KEYS` (so the settings panel and `config set` can write it to `config.json`), the running `SnapshotService` reads it once at construction. A written change takes effect on the next server restart; existing sessions keep their spawn-time behavior.
 
 ```json
 {
@@ -346,7 +346,9 @@ Writable at runtime via the in-app settings panel or `claude-react-web config se
 | Type | `number` (bytes) |
 | Default | `2097152` (2 MB) |
 
-Maximum total size of untracked files captured in each snapshot. When the combined size of untracked files in the worktree exceeds this threshold during a capture, untracked files are excluded from the snapshot to keep the shadow repo lean. Tracked (git-indexed) files are always included regardless of this limit.
+Per-file size limit applied **only to untracked files** during each snapshot capture. An untracked file whose byte size exceeds this value is excluded from the snapshot (the file stays in the working directory untouched). Tracked (git-indexed) files are always captured regardless of size. Ignored files are also excluded (via `check-ignore` against the source repo rules).
+
+**Boot-time only.** Same restart requirement as `fileSnapshots` above.
 
 ```json
 {
@@ -354,7 +356,7 @@ Maximum total size of untracked files captured in each snapshot. When the combin
 }
 ```
 
-Must be a positive integer. Writable at runtime via the in-app settings panel or `claude-react-web config set`.
+Must be a positive integer.
 
 ---
 
