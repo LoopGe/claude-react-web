@@ -52,7 +52,14 @@ export function useSessionField<K extends keyof SessionSnapshot>(
  *
  *  `all` = every non-terminal task, ambient included. NOT an indicator count:
  *  it only answers "is there anything in the TasksPanel worth opening", which
- *  keeps the panel reachable while ambient housekeeping runs. */
+ *  keeps the panel reachable while ambient housekeeping runs.
+ *
+ *  `indicator <= all` always, and structurally so: both counters increment in
+ *  the SAME pass over the same non-terminal set, with `indicator++` gated on a
+ *  subset of the iterations (`!skipTranscript && !ambient`). So `indicator > 0`
+ *  implies `all > 0` — the WorkingBubble's mount gate relies on exactly that
+ *  implication (see Chat.tsx), and any change that lets `indicator` count
+ *  something the `all` pass skips would break it. */
 export function useSessionTaskCounts(sessionId: string): { all: number; indicator: number } {
   const store = sessionStoreRegistry.getOrCreate(sessionId)
   const prevRef = useRef<{ all: number; indicator: number } | null>(null)

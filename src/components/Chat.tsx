@@ -873,8 +873,12 @@ export const Chat = memo(function Chat({
    *  refresh after a server restart would lose the Waiting bubble even
    *  though the subagent is still running.
    *
-   *  Gated on `!session.terminated`: a dead session will never receive the
-   *  completion signal. */
+   *  NOT itself gated on session liveness — the flag is term-agnostic, and the
+   *  `!terminated` guard lives in its consumers (`computeWaiting`'s `terminated`
+   *  param and the mount clause's own `!session.terminated &&`). A dead session
+   *  never receives the completion signal, so the bare flag would mount an
+   *  eternal Waiting; hoisting it into another mount path must carry that guard
+   *  along. */
   const hasTranscriptBackground = stream.activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false
   const waiting = computeWaiting({
     turnActive,
@@ -2329,10 +2333,19 @@ export const Chat = memo(function Chat({
           orbSlot,
         )}
 
-      {/* WorkingBubble — same portal-into-bottomOverlay path as the dock. */}
+      {/* WorkingBubble — same portal-into-bottomOverlay path as the dock.
+          Deliberately no separate `waiting` disjunct here: `waiting` requires
+          !turnActive && !terminated && (indicatorTaskCount > 0 ||
+          hasTranscriptBackground), and indicatorTaskCount > 0 implies
+          taskCount > 0 (`all` is a superset of `indicator` — both are counted
+          in one pass over the same non-terminal set, see
+          useSessionTaskCounts), while hasTranscriptBackground is already in
+          the clause below. So `waiting` is only ever true when that clause is
+          already true, and listing it would read as an independent mount
+          reason that does not exist. */}
       {workingSlot &&
         createPortal(
-          turnActive || waiting || (!session.terminated && (taskCount > 0 || hasTranscriptBackground || hasLiveSyncSubagent)) ? (
+          turnActive || (!session.terminated && (taskCount > 0 || hasTranscriptBackground || hasLiveSyncSubagent)) ? (
             <WorkingBubble
               active={turnActive}
               startedAt={turnStartedAt}
