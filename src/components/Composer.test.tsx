@@ -426,6 +426,28 @@ describe('Composer', () => {
       expect(setInput).toHaveBeenCalledWith('newer prompt')
     })
 
+    it('navigates on wheel down while the editor height is mid-tween', () => {
+      // Regression: the editor tweens its height on typing, so clientHeight is
+      // the animated value. A growing box used to read as "still scrollable"
+      // and swallow the wheel-down. The box's target is style.height (set by
+      // syncEditorHeight), which is where it will settle.
+      const setInput = vi.fn()
+      const next = vi.fn(() => 'newer prompt')
+      const { container } = render(
+        <Composer {...defaultProps} setInput={setInput} history={historyStub({ next, isBrowsing: () => true })} />,
+      )
+      const editor = getEditor(container)
+      editor.focus()
+      editor.style.height = '76px' // settled target
+      Object.defineProperty(editor, 'scrollHeight', { value: 76, configurable: true })
+      Object.defineProperty(editor, 'clientHeight', { value: 40, configurable: true }) // mid-tween
+      Object.defineProperty(editor, 'scrollTop', { value: 0, configurable: true })
+      const e = wheel(editor, 120)
+      expect(next).toHaveBeenCalled()
+      expect(setInput).toHaveBeenCalledWith('newer prompt')
+      expect(e.defaultPrevented).toBe(true)
+    })
+
     it('does not navigate on wheel down when not browsing history', () => {
       const setInput = vi.fn()
       const next = vi.fn(() => null)

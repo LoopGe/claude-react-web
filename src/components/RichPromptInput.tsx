@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 import { joinTokens, tokenize } from '../utils/pastedText'
 import { renderTokens, serializeTokens, domRepresentsValue } from '../utils/richPromptDom'
+import { syncEditorHeight } from '../utils/editor-height'
 import { offsetOf, slashWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
 import { selectionOffsets, placeCaretIn, selectAll } from './richPromptApi'
 
@@ -294,14 +295,31 @@ export function RichPromptInput({
     if (hadCaret && !placeCaretAtOffset(el, caret)) selection!.collapse(el, 0)
   }, [value, ref])
 
-  // Grow instead of scrolling: measure the editor's content box. `scrollHeight`
-  // on a contenteditable reflects its content, so reset to auto first.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
+    syncEditorHeight(el)
   }, [value, ref])
+
+  // The height is an explicit px (see syncEditorHeight), so nothing re-measures
+  // it when the box re-wraps for a reason other than typing — dragging the
+  // panel divider, opening a second panel, a window resize. Without this the
+  // box keeps a stale height and `.rich-prompt { overflow: hidden }` clips the
+  // extra lines with no scrollbar and no way to reach them. Width only:
+  // reacting to height would feed the write above straight back into the
+  // observer.
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let lastWidth = el.clientWidth
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === lastWidth) return
+      lastWidth = el.clientWidth
+      syncEditorHeight(el)
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [ref])
 
   /**
    * Drop caret-host residue the browser keeps behind emptied content — a

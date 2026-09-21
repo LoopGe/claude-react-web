@@ -6,7 +6,7 @@
 // history, bare ↑/↓ walks history only at the text edge so multi-line
 // drafts stay editable.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { formatBytes } from '../utils/format'
 import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
@@ -16,6 +16,7 @@ import { writeClipboard } from '../hooks/useCopy'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
 import { selectionOffsets, placeCaretIn, pasteAtCaret } from './richPromptApi'
 import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
+import { AnimatedCollapse } from './AnimatedCollapse'
 import type { PastedImage, SlashCommand } from '../types'
 import { CommandPicker, pickerFlatCommands } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
@@ -356,10 +357,23 @@ export const Composer = memo(function Composer({
       // Scroll-edge guard: let a long draft scroll internally first. When it
       // diverts to native scroll the delta is consumed by the draft scroll,
       // so drop the surplus.
-      const scrollable = el.scrollHeight > el.clientHeight + 1
+      //
+      // The editor TWEENS its height on typing (syncEditorHeight), so
+      // `clientHeight` mid-tween is the animated value, not where the box will
+      // settle. Testing the live box would make one that is merely growing read
+      // as still having room to scroll and swallow the wheel-down that should
+      // have recalled history. Judge against the TARGET height instead: the
+      // inline px is the settled size, clamped by max-height (a long draft
+      // writes its full content height there while max-height holds it short).
+      const maxHeight = Number.parseFloat(getComputedStyle(el).maxHeight)
+      const target = Number.parseFloat(el.style.height)
+      const settledHeight = Number.isFinite(target)
+        ? (Number.isFinite(maxHeight) ? Math.min(target, maxHeight) : target)
+        : el.clientHeight
+      const scrollable = el.scrollHeight > settledHeight + 1
       if (scrollable) {
         if (dy < 0 && el.scrollTop > 0) { wheelAccumRef.current = 0; return }
-        if (dy > 0 && el.scrollTop + el.clientHeight < el.scrollHeight - 1) { wheelAccumRef.current = 0; return }
+        if (dy > 0 && el.scrollTop + settledHeight < el.scrollHeight - 1) { wheelAccumRef.current = 0; return }
       }
 
       // Time gate: one step per notch; clamps fast trackpad momentum. On a
@@ -604,6 +618,131 @@ export const Composer = memo(function Composer({
     )
   }
 
+  // The stack above the editor is built as ONE list and the collapse is keyed
+  // off its length. Previously a hand-mirrored `hasComposerRows` predicate had
+  // to be kept in sync with the five render conditions below; any new row that
+  // forgot one side made the wrapper either not open or never collapse. A
+  // single array removes the chance to disagree.
+  const composerRows: ReactNode[] = []
+  if (attachments.length > 0) {
+    composerRows.push(
+      <div className="attachments" key="attachments">
+        {attachments.map((a) => (
+          <span key={a.path} className="attachment-chip" title={a.path}>
+            <span className="attachment-chip-name">
+              <IconPaperclip size={12} aria-hidden /> {a.name}
+            </span>
+            <span className="attachment-chip-size">{formatBytes(a.size)}</span>
+            <button
+              type="button"
+              className="attachment-chip-remove"
+              onClick={() => onRemoveAttachment(a.path)}
+              aria-label={`Remove ${a.name}`}
+            >
+              <IconX size={12} />
+            </button>
+          </span>
+        ))}
+        {uploading && <span className="attachment-chip attachment-chip-ghost">uploading…</span>}
+      </div>,
+    )
+  }
+  if (SCHEDULE_SEND_ENABLED && (pendingScheduled.length > 0 || failedScheduled.length > 0) && scheduled) {
+    composerRows.push(
+      <div className="scheduled-sends" key="scheduled-sends">
+        {pendingScheduled.map((s) => (
+          <span key={s.id} className="scheduled-chip" title={formatScheduledExact(s.fireAt)}>
+            <IconClock size={12} aria-hidden />
+            <span>{formatScheduledRelative(s.fireAt, scheduled.now)}</span>
+            <button
+              type="button"
+              className="scheduled-chip-cancel"
+              aria-label={`Cancel scheduled message ${s.id}`}
+              onClick={() => void scheduled.cancel(s.id)}
+            >
+              <IconX size={12} />
+            </button>
+          </span>
+        ))}
+        {failedScheduled.map((s) => (
+          <span key={s.id} className="scheduled-chip scheduled-chip-failed" title={s.error}>
+            <IconAlertTriangle size={12} aria-hidden />
+            <span className="scheduled-chip-failed-reason">{s.error ?? 'Scheduled send failed'}</span>
+            <button
+              type="button"
+              className="scheduled-chip-dismiss"
+              aria-label={`Dismiss failed schedule ${s.id}`}
+              onClick={() => void scheduled.dismiss(s.id)}
+            >
+              <IconX size={12} />
+            </button>
+          </span>
+        ))}
+      </div>,
+    )
+  }
+  if (pastedImages.length > 0) {
+    composerRows.push(
+      <div className="image-previews" key="image-previews">
+        {pastedImages.map((img) => (
+          <div key={img.id} className="image-preview-card">
+            <img src={img.previewUrl} alt="Pasted image" />
+            <button
+              type="button"
+              className="image-preview-remove"
+              onClick={() => onRemovePastedImage(img.id)}
+              aria-label="Remove image"
+            >
+              <IconX size={12} />
+            </button>
+          </div>
+        ))}
+      </div>,
+    )
+  }
+  if (bashMode) {
+    composerRows.push(
+      <div className="composer-bash-indicator" aria-label="Bash mode" key="bash-indicator">
+        <span className="composer-bash-badge" aria-hidden>{sharedMode ? '!!' : '!'}</span>
+        <span className="composer-bash-label">
+          {sharedMode
+            ? 'bash mode (shared) — command runs locally AND its output is shared with the model'
+            : 'bash mode — command runs in the session cwd, not sent to the model'}
+        </span>
+      </div>,
+    )
+  }
+  if (expanded) {
+    composerRows.push(
+      <div className="composer-expanded-tabs" key="expanded-tabs">
+        <button
+          type="button"
+          className={`composer-expanded-tab${!previewMode ? ' active' : ''}`}
+          onClick={() => setPreviewMode(false)}
+        >
+          <IconPencil size={12} />
+          Edit
+        </button>
+        <button
+          type="button"
+          className={`composer-expanded-tab${previewMode ? ' active' : ''}`}
+          onClick={() => setPreviewMode(true)}
+        >
+          <IconFileText size={12} />
+          Preview
+        </button>
+        <button
+          type="button"
+          className="composer-expanded-close"
+          onClick={() => { setExpanded(false); setPreviewMode(false) }}
+          aria-label="Exit expanded mode"
+        >
+          <IconX size={14} />
+        </button>
+      </div>,
+    )
+  }
+
   return (
     // Outer element is the dock: horizontal reading-column inset + bottom
     // breathing room only. The visual surface (fill / border / radius /
@@ -617,114 +756,18 @@ export const Composer = memo(function Composer({
     >
       <div className="composer-card">
       <div className="composer-main">
-        {attachments.length > 0 && (
-          <div className="attachments">
-            {attachments.map((a) => (
-              <span key={a.path} className="attachment-chip" title={a.path}>
-                <span className="attachment-chip-name">
-                  <IconPaperclip size={12} aria-hidden /> {a.name}
-                </span>
-                <span className="attachment-chip-size">{formatBytes(a.size)}</span>
-                <button
-                  type="button"
-                  className="attachment-chip-remove"
-                  onClick={() => onRemoveAttachment(a.path)}
-                  aria-label={`Remove ${a.name}`}
-                >
-                  <IconX size={12} />
-                </button>
-              </span>
-            ))}
-            {uploading && <span className="attachment-chip attachment-chip-ghost">uploading…</span>}
-          </div>
-        )}
-        {SCHEDULE_SEND_ENABLED && (pendingScheduled.length > 0 || failedScheduled.length > 0) && scheduled && (
-          <div className="scheduled-sends">
-            {pendingScheduled.map((s) => (
-              <span key={s.id} className="scheduled-chip" title={formatScheduledExact(s.fireAt)}>
-                <IconClock size={12} aria-hidden />
-                <span>{formatScheduledRelative(s.fireAt, scheduled.now)}</span>
-                <button
-                  type="button"
-                  className="scheduled-chip-cancel"
-                  aria-label={`Cancel scheduled message ${s.id}`}
-                  onClick={() => void scheduled.cancel(s.id)}
-                >
-                  <IconX size={12} />
-                </button>
-              </span>
-            ))}
-            {failedScheduled.map((s) => (
-              <span key={s.id} className="scheduled-chip scheduled-chip-failed" title={s.error}>
-                <IconAlertTriangle size={12} aria-hidden />
-                <span className="scheduled-chip-failed-reason">{s.error ?? 'Scheduled send failed'}</span>
-                <button
-                  type="button"
-                  className="scheduled-chip-dismiss"
-                  aria-label={`Dismiss failed schedule ${s.id}`}
-                  onClick={() => void scheduled.dismiss(s.id)}
-                >
-                  <IconX size={12} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-        {pastedImages.length > 0 && (
-          <div className="image-previews">
-            {pastedImages.map((img) => (
-              <div key={img.id} className="image-preview-card">
-                <img src={img.previewUrl} alt="Pasted image" />
-                <button
-                  type="button"
-                  className="image-preview-remove"
-                  onClick={() => onRemovePastedImage(img.id)}
-                  aria-label="Remove image"
-                >
-                  <IconX size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {bashMode && (
-          <div className="composer-bash-indicator" aria-label="Bash mode">
-            <span className="composer-bash-badge" aria-hidden>{sharedMode ? '!!' : '!'}</span>
-            <span className="composer-bash-label">
-              {sharedMode
-                ? 'bash mode (shared) — command runs locally AND its output is shared with the model'
-                : 'bash mode — command runs in the session cwd, not sent to the model'}
-            </span>
-          </div>
-        )}
-        {expanded && (
-          <div className="composer-expanded-tabs">
-            <button
-              type="button"
-              className={`composer-expanded-tab${!previewMode ? ' active' : ''}`}
-              onClick={() => setPreviewMode(false)}
-            >
-              <IconPencil size={12} />
-              Edit
-            </button>
-            <button
-              type="button"
-              className={`composer-expanded-tab${previewMode ? ' active' : ''}`}
-              onClick={() => setPreviewMode(true)}
-            >
-              <IconFileText size={12} />
-              Preview
-            </button>
-            <button
-              type="button"
-              className="composer-expanded-close"
-              onClick={() => { setExpanded(false); setPreviewMode(false) }}
-              aria-label="Exit expanded mode"
-            >
-              <IconX size={14} />
-            </button>
-          </div>
-        )}
+        {/* Rows above the editor. One AnimatedCollapse owns their height, so a
+            row appearing or disappearing tweens instead of jumping the card —
+            and it renders the same `composerRows` array its `open` is derived
+            from, so the two can never drift. */}
+        <AnimatedCollapse
+          open={composerRows.length > 0}
+          animateResize
+          className="composer-rows"
+          contentClassName="composer-rows-content"
+        >
+          {composerRows}
+        </AnimatedCollapse>
         {expanded && previewMode ? (
           <div className="composer-preview" ref={setPreviewOs}>
             {input.trim() ? (

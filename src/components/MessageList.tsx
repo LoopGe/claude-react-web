@@ -303,11 +303,26 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // below) while `clearing` is true — the view-only blur that signals a
   // clear in progress during the POST. There is no panel-level veil anymore;
   // the fresh session Y plays `.entering` on mount.
-  const [bottomStackHeight, setBottomStackHeight] = useState(0)
-  /** Height of the cards alone (the `bottomOverlay` contents) — what the
-   *  jump-to-bottom button offsets by. Distinct from `bottomStackHeight`,
-   *  which also covers the live streaming bubble above them. */
-  const [bottomOverlayHeight, setBottomOverlayHeight] = useState(0)
+  // Both heights live in ONE state object on purpose. They are produced by the
+  // SAME ResizeObserver burst (a fold resizes the stack and the overlay it
+  // contains in lockstep), so a separate `useState` for each meant two state
+  // writes per frame for the length of every tween. One atomic update keeps the
+  // pair consistent and halves the RO-driven writes. (`stack` also covers the
+  // live streaming bubble above the overlay; `overlay` is the cards alone,
+  // which is what the jump-to-bottom button clears — the bubble's height churns
+  // every token and would make the pill bob.)
+  //
+  // Measured: a 14-frame composer fold produces 28 commits — one for this
+  // update, one for `useTranscriptScroll`'s spacer-keyed geometry sync. The RO
+  // firing per frame is not itself a defect: a CSS height transition IS a new
+  // size each frame, and the spacer must track it or the reserved room desyncs
+  // (the sync's own setStates are value-guarded, so a fold that changes nothing
+  // observable commits nothing). The win here is removing the duplicate write,
+  // not eliminating the per-frame one. The hook's listener registration is
+  // deliberately kept OFF this state so the fold can't churn its listeners.
+  const [bottomMetrics, setBottomMetrics] = useState({ stack: 0, overlay: 0 })
+  const bottomStackHeight = bottomMetrics.stack
+  const bottomOverlayHeight = bottomMetrics.overlay
   // Easter-egg: triple-clicking the empty-state sparkle swaps in a hidden
   // dino-style game. Local UI state only — no session/persistence concerns.
   const [gameOpen, setGameOpen] = useState(false)
@@ -611,6 +626,13 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // reserved room — the newest settled message would sit behind the cards for
   // that frame. Both observed elements are rendered unconditionally, so a ref
   // is always assigned by the time this runs.
+  //
+  // One observer and one `setState` for BOTH heights (see bottomMetrics): the
+  // stack and the overlay inside it resize together, so a second observer only
+  // doubled the per-frame commits. `max(rect, scrollHeight)` is used for each:
+  // under the 45% cap the border box is the ancestor's, while the dock/task list
+  // inside can still paint taller — reserving just the clamped box would let the
+  // overflow cover the last messages.
   useLayoutEffect(() => {
     const el = bottomStackRef.current
     if (!el) return
@@ -621,16 +643,17 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const dock = el.querySelector<HTMLElement>('.chat-dock')
     const overlay = el.querySelector<HTMLElement>('.chat-bottom-overlay')
 
+    const readHeight = (node: HTMLElement) =>
+      Math.ceil(Math.max(node.getBoundingClientRect().height, node.scrollHeight))
+
     const updateHeight = () => {
-      // max(rect, scrollHeight): the stack is max-height:45%, so a tall
-      // composer dock (expanded preview, many chips) can overflow the cap.
-      // getBoundingClientRect() only reports the clamped box — reserving
-      // just that leaves the overflowing dock painting over the last
-      // messages with no spacer to scroll them clear.
-      const height = Math.ceil(
-        Math.max(el.getBoundingClientRect().height, el.scrollHeight),
-      )
-      setBottomStackHeight((prev) => (prev === height ? prev : height))
+      const stack = readHeight(el)
+      const nextOverlay = overlay ? readHeight(overlay) : 0
+      setBottomMetrics((prev) => (
+        prev.stack === stack && prev.overlay === nextOverlay
+          ? prev
+          : { stack, overlay: nextOverlay }
+      ))
     }
 
     updateHeight()
@@ -639,31 +662,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     ro.observe(el)
     if (dock) ro.observe(dock)
     if (overlay) ro.observe(overlay)
-    return () => ro.disconnect()
-  }, [])
-
-  // Measured separately from the stack: the jump-to-bottom button must clear
-  // the CARDS, and the stack also contains the live streaming bubble, whose
-  // height churns every token — offsetting by the stack would make the pill
-  // bob during a turn and could push it off the top of the stage.
-  useLayoutEffect(() => {
-    const el = bottomOverlayRef.current
-    if (!el) return
-
-    const updateHeight = () => {
-      // Same max(rect, scrollHeight) contract as the stack spacer: under
-      // the 45% cap the overlay's border box shrinks while the dock inside
-      // still paints taller, so the jump pill would land inside the card.
-      const height = Math.ceil(
-        Math.max(el.getBoundingClientRect().height, el.scrollHeight),
-      )
-      setBottomOverlayHeight((prev) => (prev === height ? prev : height))
-    }
-
-    updateHeight()
-    if (typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(updateHeight)
-    ro.observe(el)
     return () => ro.disconnect()
   }, [])
 

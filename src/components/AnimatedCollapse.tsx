@@ -114,9 +114,30 @@ export function AnimatedCollapse({
     cleanupRef.current = null
   }, [])
 
+  // aria-hidden is managed imperatively rather than through JSX. Applying it in
+  // the same commit that flips `open` false would cover whatever control the
+  // user just pressed — the remove button of the row that is leaving — and
+  // Chrome refuses to hide a subtree that still contains the focused element
+  // (logging "Blocked aria-hidden on an element because its descendant retained
+  // focus"). So it lands only once the fold has SETTLED shut. At that point the
+  // focused descendant is either gone (unmountOnExit) or about to become
+  // unreachable, so blur it first and the write is accepted.
+  const clearBodyAriaHidden = useCallback(() => {
+    bodyRef.current?.removeAttribute('aria-hidden')
+  }, [])
+
+  const hideClosedBody = useCallback(() => {
+    const body = bodyRef.current
+    if (!body) return
+    const active = document.activeElement
+    if (active instanceof HTMLElement && body.contains(active)) active.blur()
+    body.setAttribute('aria-hidden', 'true')
+  }, [])
+
   const finishOpen = useCallback((height: number) => {
     const body = bodyRef.current
     if (!body) return
+    clearBodyAriaHidden()
     lastHeightRef.current = height
     if (unmountOnExit) setMounted(true)
     body.style.height = `${height}px`
@@ -138,7 +159,7 @@ export function AnimatedCollapse({
         body.style.height = `${measured.height}px`
       }
     }
-  }, [remeasureWhileClamped, unmountOnExit])
+  }, [clearBodyAriaHidden, remeasureWhileClamped, unmountOnExit])
 
   const finishClosed = useCallback(() => {
     const body = bodyRef.current
@@ -149,9 +170,13 @@ export function AnimatedCollapse({
       body.classList.remove('animating')
     }
     animatingRef.current = false
+    // The fold has settled: for a body that stays mounted (unmountOnExit off),
+    // now is when the closed content is safe to hide from assistive tech. With
+    // unmountOnExit on the body is about to disappear, so nothing to mark.
     if (unmountOnExit) setMounted(false)
+    else hideClosedBody()
     onExitComplete?.()
-  }, [onExitComplete, unmountOnExit])
+  }, [hideClosedBody, onExitComplete, unmountOnExit])
 
   const animateHeight = useCallback((from: number, to: number, nextOpen: boolean, fade: boolean) => {
     const body = bodyRef.current
@@ -211,6 +236,35 @@ export function AnimatedCollapse({
 
   const rendered = mounted || open || !unmountOnExit
 
+  // Keep the last OPEN children mounted through the exit tween.
+  //
+  // Callers routinely gate each row on the same condition that flips `open`
+  // (the composer does exactly this: removing the final attachment drops the
+  // row in the SAME commit that drives open=false). Without freezing, the
+  // collapse would tween a box that is already empty — the chip disappears
+  // instantly and the user watches a blank strip shrink. Recording the last
+  // children while open and rendering those while closed (and still mounted)
+  // makes the exit animate what the user saw. Only needed with unmountOnExit:
+  // when it is off the caller owns the children's lifetime and they stay
+  // mounted regardless, so live children are rendered untouched.
+  const lastOpenChildrenRef = useRef(children)
+  const [frozenChildren, setFrozenChildren] = useState(children)
+  // Track the latest children while open (a ref write in an effect, never a
+  // render-time read — the compiler lint forbids the latter).
+  useLayoutEffect(() => {
+    if (open) lastOpenChildrenRef.current = children
+  }, [children, open])
+  // On the close transition adopt them as the frozen content. This is a
+  // layout-effect state update, so it re-renders (and paints the frozen rows)
+  // before the exit tween is shown — the first close render's empty children
+  // are never visible. It only runs on the transition, so there is no loop.
+  // Gated on unmountOnExit: with it off, `renderedChildren` uses the live
+  // children anyway, so the extra render would buy nothing.
+  useLayoutEffect(() => {
+    if (!open && unmountOnExit) setFrozenChildren(lastOpenChildrenRef.current)
+  }, [open, unmountOnExit])
+  const renderedChildren = open || !unmountOnExit ? children : frozenChildren
+
   useLayoutEffect(() => {
     if (!rendered) return
     const body = bodyRef.current
@@ -246,6 +300,20 @@ export function AnimatedCollapse({
     const startHeight = body.getBoundingClientRect().height || lastHeightRef.current || content.scrollHeight
     animateHeight(startHeight, 0, false, true)
   }, [animateHeight, appear, open, rendered, unmountOnExit])
+
+  // Apply / drop aria-hidden AFTER the height effect above, so `animatingRef`
+  // already reflects a fold that just started. See hideClosedBody for why the
+  // attribute cannot simply track `!open` in JSX.
+  useLayoutEffect(() => {
+    const body = bodyRef.current
+    if (!body) return
+    if (open) {
+      clearBodyAriaHidden()
+      return
+    }
+    if (animatingRef.current) return
+    hideClosedBody()
+  }, [clearBodyAriaHidden, hideClosedBody, open, rendered])
 
   useEffect(() => {
     if (!open || !rendered || !('ResizeObserver' in window)) return
@@ -324,14 +392,13 @@ export function AnimatedCollapse({
     <div
       ref={bodyRef}
       className={`animated-collapse${className ? ` ${className}` : ''}`}
-      aria-hidden={!open}
     >
       <div
         ref={contentRef}
         id={id}
         className={`animated-collapse-content${contentClassName ? ` ${contentClassName}` : ''}`}
       >
-        {children}
+        {renderedChildren}
       </div>
     </div>
   )

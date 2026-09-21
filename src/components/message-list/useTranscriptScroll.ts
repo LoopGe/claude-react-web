@@ -1109,7 +1109,26 @@ export function useTranscriptScroll({
       document.removeEventListener('pointerdown', onPointerOnThumb, true)
       document.removeEventListener('pointermove', onPointerOnThumb, true)
     }
-  }, [rowCount, syncBottomGeometry, bottomStackHeight, emitVisibleTop, transcriptRevealKey])
+    // NO `bottomStackHeight` here. It used to be a dep so this effect re-ran —
+    // and re-synced the spacer-aware geometry — whenever the spacer resized.
+    // But a CSS height transition (a composer fold) resizes the spacer on EVERY
+    // frame, so that also tore down and re-registered all seven listeners ~14
+    // times per fold. The geometry re-sync now lives in its own effect below;
+    // the listener lifetime is keyed only on things that actually replace the
+    // scroller or its content shape.
+  }, [rowCount, syncBottomGeometry, emitVisibleTop, transcriptRevealKey])
+
+  // Re-read the spacer-aware geometry when the spacer COMMITS a new height.
+  //
+  // `syncBottomGeometry` reads the spacer from the DOM (getBottomSpacerHeight),
+  // not from this number, so the value here is only a trigger: a taller task
+  // list / dock widens the dead zone and can flip `atBottom` / `canJumpToBottom`.
+  // Split out of the listener effect above so the height churn of a fold does
+  // not re-bind listeners. Both setStates inside are value-guarded, so a fold
+  // that changes nothing observable commits nothing.
+  useEffect(() => {
+    syncBottomGeometry(scrollerRef.current, 'confirm-away')
+  }, [bottomStackHeight, syncBottomGeometry])
 
   // Clean up the follow debounce timer on unmount.
   useEffect(() => () => {

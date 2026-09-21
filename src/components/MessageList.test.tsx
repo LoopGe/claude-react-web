@@ -2327,6 +2327,37 @@ describe('MessageList', () => {
     expect(spacer).not.toBeNull()
     expect(Number.parseFloat(spacer!.style.height)).toBe(64)
   })
+
+  it('does not re-register the transcript listeners as the bottom stack tweens', () => {
+    // Regression: `bottomStackHeight` used to be a dependency of the listener
+    // effect, so every frame of a fold (the spacer resizes continuously) tore
+    // down and re-bound all seven scroll/touch/pointer listeners. The spacer
+    // re-sync now runs in its own effect; the listener lifetime must not key on
+    // the height, or a 240ms fold re-registers them ~14 times.
+    const msgs = [
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'Settled' }] } }),
+    ]
+    const { container } = render(<MessageList items={toItems(msgs as SdkMessage[])} />)
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    expect(scroller).not.toBeNull()
+
+    let stackHeight = 0
+    Object.defineProperty(stack, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
+    })
+
+    // Spy AFTER mount: the initial registration has already happened, so any
+    // call here is a re-registration caused by the fold.
+    const spy = vi.spyOn(scroller, 'addEventListener')
+    for (let i = 1; i <= 14; i++) {
+      stackHeight = i * 3
+      act(() => { fireResize(stack) })
+    }
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
 })
 
 describe('SendMessage tool card', () => {

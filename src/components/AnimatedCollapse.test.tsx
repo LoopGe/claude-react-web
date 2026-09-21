@@ -52,6 +52,68 @@ function mockRectHeight(el: Element, height: number) {
   vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({ height } as DOMRect)
 }
 
+describe('AnimatedCollapse — exit keeps the last visible content', () => {
+  /** The body must be tall enough to tween (jsdom has no layout). */
+  function armTween(body: HTMLElement, content: HTMLElement) {
+    mockRectHeight(body, 40)
+    mockRectHeight(content, 40)
+  }
+
+  it('renders the last OPEN children while the exit tween runs (not an empty box)', () => {
+    vi.useFakeTimers()
+    const { container, rerender } = render(
+      <AnimatedCollapse open>
+        <span>attachment chip</span>
+      </AnimatedCollapse>,
+    )
+    const body = container.querySelector('.animated-collapse') as HTMLElement
+    const content = container.querySelector('.animated-collapse-content') as HTMLElement
+    armTween(body, content)
+
+    // The row is dropped in the SAME commit that flips open=false — exactly
+    // what the composer does when the last attachment is removed.
+    rerender(<AnimatedCollapse open={false}>{null}</AnimatedCollapse>)
+
+    // Mid-tween the body is still mounted and must still paint the chip.
+    expect(container.querySelector('.animated-collapse-content')?.textContent).toBe('attachment chip')
+
+    act(() => { vi.advanceTimersByTime(400) })
+    // Settled: unmountOnExit drops the body entirely.
+    expect(container.querySelector('.animated-collapse')).toBeNull()
+  })
+
+  it('does not apply aria-hidden until the exit settles, and never over focus', () => {
+    vi.useFakeTimers()
+    const { container, rerender } = render(
+      <AnimatedCollapse open unmountOnExit={false}>
+        <button type="button">remove</button>
+      </AnimatedCollapse>,
+    )
+    const body = container.querySelector('.animated-collapse') as HTMLElement
+    const content = container.querySelector('.animated-collapse-content') as HTMLElement
+    const button = container.querySelector('button') as HTMLElement
+    armTween(body, content)
+    act(() => { button.focus() })
+    expect(document.activeElement).toBe(button)
+
+    rerender(
+      <AnimatedCollapse open={false} unmountOnExit={false}>
+        <button type="button">remove</button>
+      </AnimatedCollapse>,
+    )
+
+    // During the tween the focused control is still in the subtree, so hiding
+    // it would make Chrome refuse the aria-hidden write and warn.
+    expect(body.getAttribute('aria-hidden')).toBeNull()
+    expect(document.activeElement).toBe(button)
+
+    act(() => { vi.advanceTimersByTime(400) })
+    // Settled shut: focus is released first, then the body is hidden.
+    expect(body.getAttribute('aria-hidden')).toBe('true')
+    expect(document.activeElement).not.toBe(button)
+  })
+})
+
 describe('AnimatedCollapse — intrinsic content growth while open', () => {
   it('snaps the body height by default (animateResize off)', () => {
     const { container } = render(
