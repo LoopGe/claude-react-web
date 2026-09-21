@@ -479,13 +479,6 @@ export function getEnterPlanToolUseIds(msg: SdkMessage): string[] {
   return ids
 }
 
-/** True when the WorkingBubble should stay mounted in its "Waiting..." state:
- *  the parent turn has ended but work is still in flight. `runningCount` is the
- *  authoritative task-store count of running background tasks (already filtered
- *  to non-terminal, non-skipTranscript — see Chat.tsx); `hasTranscriptBackground`
- *  covers the transcript-derived pending/background subagent chips. Either one
- *  keeps the bubble alive. Gated on `!terminated`: a dead session will never
- *  receive a completion signal, so an eternal Waiting would be a dead state. */
 /** Pick the description used to auto-generate a session title: prefer the
  *  user's typed text, fall back to the composed (preamble + text) message
  *  (image-only first turns have empty typed text), then trim and truncate
@@ -535,6 +528,14 @@ export function recentMessagesDescription(
   return joined.length > maxChars ? joined.slice(0, maxChars) : joined
 }
 
+/** True when the WorkingBubble should stay mounted in its "Waiting..." state:
+ *  the parent turn has ended but work is still in flight. `runningCount` is the
+ *  authoritative task-store count of running background tasks (already filtered
+ *  to non-terminal, non-ambient, non-skipTranscript — see Chat.tsx);
+ *  `hasTranscriptBackground` covers the transcript-derived pending/background
+ *  subagent chips. Either one keeps the bubble alive. Gated on `!terminated`: a
+ *  dead session will never receive a completion signal, so an eternal Waiting
+ *  would be a dead state. */
 export function computeWaiting(args: {
   turnActive: boolean
   terminated: boolean

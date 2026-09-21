@@ -11,7 +11,7 @@ import type { ActiveSubagent } from '../../session-store/types'
 import { formatTokens } from '../../utils/format'
 import { ElapsedTimer } from '../ElapsedTimer'
 import { useCountUp } from '../../hooks/useCountUp'
-import { IconListTodo, IconX, IconZap } from '../icons/ToolIcons'
+import { IconListTodo, IconZap } from '../icons/ToolIcons'
 import { SubagentSwarmPill } from './SubagentSwarm'
 
 /** Stable empty fallback so the `activeSubagents ?? …` default doesn't hand a
@@ -31,7 +31,6 @@ export const WorkingBubble = memo(function WorkingBubble({
   onOpenTasks,
   onOpenSubagent,
   active: _active,
-  onDismissWaiting,
 }: {
   startedAt?: number
   activeSubagents?: ActiveSubagent[]
@@ -77,11 +76,6 @@ export const WorkingBubble = memo(function WorkingBubble({
    *  "idle": the turn ended and only a task-count remnant remains, so it
    *  collapses to a quiet pill with no "Working" label or animated dots. */
   active?: boolean
-  /** Renders a dismiss ✕ in the Waiting state. Wired by the host (Chat) so
-   *  the user can silence a phantom "Waiting..." banner — e.g. a task record
-   *  the server never folded to terminal (the SDK exposes no task-list query
-   *  and the server only evicts terminal records). */
-  onDismissWaiting?: () => void
 }) {
   const subagents = activeSubagents ?? EMPTY_SUBAGENTS
   const hasSubagents = subagents.length > 0
@@ -202,23 +196,6 @@ export const WorkingBubble = memo(function WorkingBubble({
           (label, progressSummary, lastToolName, elapsed) lives in the pill's
           popover, which is also the drill-in path to SubagentOverlay. */}
       {hasSubagents && <SubagentSwarmPill subagents={subagents} onOpenSubagent={onOpenSubagent} />}
-      {/* Dismiss ✕ for the Waiting state. The SDK exposes no task-list query
-          and the server only evicts terminal records, so a task record that
-          never folds to terminal would otherwise leave the Waiting banner
-          mounted forever with no exit. Dismiss collapses the bubble to the
-          quiet idle pill (the task count / TasksPanel entry survives) — the
-          banner returns when a new waiting episode or turn begins. */}
-      {waiting && onDismissWaiting && (
-        <button
-          type="button"
-          className="working-dismiss"
-          onClick={onDismissWaiting}
-          aria-label="Dismiss waiting state"
-          title="Dismiss — hide this banner (tasks stay visible in the Tasks panel)"
-        >
-          <IconX size={12} aria-hidden />
-        </button>
-      )}
     </div>
   )
 })

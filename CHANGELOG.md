@@ -127,6 +127,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`--help` lists `--disable-app-plugins` and `--safe-mode`** — both were
   parsed and honoured, but neither appeared in the help output.
 
+### Removed
+
+- **The Waiting banner's dismiss ✕** — the WorkingBubble's `Waiting...` row no
+  longer carries a ✕ to hide itself. The banner simply reflects the server's
+  task state now: it stays mounted while a non-terminal *indicator* task (a
+  subagent, shell or workflow — ambient/housekeeping records excluded, those
+  show the quiet idle pill instead) or a `pending`/`background` subagent
+  remains, and clears on its own when those settle.
+
 ## [0.7.1] — 2026-09-02
 
 A focused patch release on top of `0.7.0` — **59 commits**. Headline work is

@@ -164,7 +164,7 @@ A working bar appears above the composer and reflects the current phase:
 | --- | --- |
 | `Thinking...` / `Writing...` / `Calling <tool>...` | Thinking / writing the answer / calling a tool |
 | `Recap (auto)...` | Auto-compacting the context |
-| `Waiting...` | The turn ended but a background subagent is still running (the `IconX` only hides the banner — the task stays in the Tasks panel) |
+| `Waiting...` | The turn ended but a background subagent is still running (the task stays in the Tasks panel) |
 | Side labels | Elapsed time, `N tok/s`, `~N tok` thinking estimate, task-count pill, subagent pill |
 
 ### 3.2 Tool cards

@@ -164,7 +164,7 @@ npm i -g claude-react-web && claude-react-web
 | --- | --- |
 | `Thinking...` / `Writing...` / `Calling <工具名>...` | 思考 / 写回答 / 调工具三态 |
 | `Recap (auto)...` | 正在自动压缩上下文 |
-| `Waiting...` | 回合已结束，但后台子代理还在跑（可点 `IconX` 只隐藏横幅，任务仍在 Tasks 面板里） |
+| `Waiting...` | 回合已结束，但后台子代理还在跑（任务仍留在 Tasks 面板里） |
 | 旁边的小标签 | 已用时长、`N tok/s`、`~N tok` 思考估算、任务数胶囊、子代理胶囊 |
 
 ### 3.2 工具卡片
@@ -320,7 +320,7 @@ npm i -g claude-react-web && claude-react-web
 - **任务胶囊**（`IconListTodo` + 数量）：点击打开 Tasks 面板；
 - **子代理胶囊**（如 `1 agent 8s`）：点击弹出浮层，逐个列出在飞的子代理、进度摘要、最后调用的工具与耗时，点一行可钻进它的完整对话。
 
-**把前台任务扔到后台**：按 `Alt+B`（等价于 CLI 的 Ctrl+B）。后台跑着的任务结束后，横幅会变成 `Waiting...`，此时会话状态徽标也变成 `waiting`。
+**把前台任务扔到后台**：按 `Alt+B`（等价于 CLI 的 Ctrl+B）。后台任务在回合结束后仍在运行时，横幅显示 `Waiting...`，此时会话状态徽标也变成 `waiting`。
 
 ![Tasks 面板](screenshots/manual/ch6-tasks-panel.png)
 

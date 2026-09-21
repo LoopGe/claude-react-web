@@ -874,66 +874,17 @@ export const Chat = memo(function Chat({
    *  though the subagent is still running.
    *
    *  Gated on `!session.terminated`: a dead session will never receive the
-   *  completion signal, so showing "Waiting..." forever (with only manual
-   *  dismiss as an exit) would be a dead state. */
+   *  completion signal. */
   const hasTranscriptBackground = stream.activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false
-  const waitingRaw = computeWaiting({
+  const waiting = computeWaiting({
     turnActive,
     terminated: session.terminated,
     runningCount: indicatorTaskCount,
     hasTranscriptBackground,
   })
-  // The Waiting banner is dismissible. The SDK exposes no task-list query and
-  // the server only evicts terminal records, so a task record that never
-  // folds to terminal would otherwise leave the banner mounted forever with
-  // no exit. Dismissing collapses the bubble to the quiet idle pill.
-  //
-  // The dismissal is re-armed when the waiting set GROWS — a fresh task or
-  // subagent is a new episode the user should see — but preserved while the
-  // set shrinks or stays put. Deliberately NOT re-armed on `turnActive`:
-  // resetting on every new turn would make dismiss a one-turn snooze for a
-  // stuck/phantom task (the banner would reappear after every send instead
-  // of being a real escape).
-  const [waitingDismissed, setWaitingDismissed] = useState(false)
-  const waiting = waitingRaw && !waitingDismissed
-  // The subagent ids the Waiting state tracks (pending or background), for
-  // detecting when a NEW element joins the waiting set.
-  const waitingSubagentIds = useMemo(
-    () =>
-      (stream.activeSubagents ?? [])
-        .filter((a) => a.status === 'pending' || a.status === 'background')
-        .map((a) => a.toolUseId)
-        .sort(),
-    [stream.activeSubagents],
-  )
-  const somethingWaiting = indicatorTaskCount > 0 || waitingSubagentIds.length > 0
-  // Compact signature of the current waiting set (count + sorted subagent
-  // ids). Identity-churn of `activeSubagents` is irrelevant — the string is
-  // the dependency that matters.
-  const waitingKey = `${indicatorTaskCount}|${waitingSubagentIds.join(',')}`
-  const prevWaitingKeyRef = useRef(waitingKey)
-  useEffect(() => {
-    const prevKey = prevWaitingKeyRef.current
-    prevWaitingKeyRef.current = waitingKey
-    if (!somethingWaiting) {
-      setWaitingDismissed(false)
-      return
-    }
-    const [prevCountStr, prevIdsStr] = prevKey.split('|')
-    const prevCount = Number(prevCountStr ?? 0)
-    const prevIds = prevIdsStr ? new Set(prevIdsStr.split(',')) : new Set<string>()
-    const isNewEpisode = prevCount === 0 && prevIds.size === 0
-    const grew =
-      indicatorTaskCount > prevCount ||
-      waitingSubagentIds.some((id) => !prevIds.has(id))
-    if (isNewEpisode || grew) setWaitingDismissed(false)
-  }, [waitingKey, somethingWaiting, indicatorTaskCount, waitingSubagentIds])
   /** Open this panel's Tasks overlay. Stable callback so the memoized
    *  WorkingBubble count pill doesn't re-render on every Chat render. */
   const openTasksPanel = useCallback(() => onOpenTasksPanel?.(session.id), [onOpenTasksPanel, session.id])
-  /** Stable callback so the memoized WorkingBubble doesn't re-render on every
-   *  Chat render just because the dismiss arrow identity changed. */
-  const dismissWaiting = useCallback(() => setWaitingDismissed(true), [])
 
   // 鈹€鈹€ Subagent overlay state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // Stack of toolUseIds: empty = closed; otherwise the last entry is the
@@ -2395,7 +2346,6 @@ export const Chat = memo(function Chat({
               totalTaskCount={taskCount}
               onOpenTasks={openTasksPanel}
               onOpenSubagent={openSubagent}
-              onDismissWaiting={dismissWaiting}
             />
           ) : null,
           workingSlot,

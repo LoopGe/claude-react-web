@@ -93,16 +93,13 @@ export interface ActiveSubagent {
    *  `interrupted`) because the async subagent is still running and its
    *  completion signal is expected to arrive later — possibly well after the
    *  parent turn ended. `pending` is INCLUDED in `getRunningSubagents` so the
-   *  WorkingBubble stays mounted in its `Waiting` state (the pill row is
-   *  dismissible); the completion branch STILL accepts it (unlike
-   *  `interrupted`/`dismissed`) so a late task_notification can flip it to
-   *  `done`.
+   *  WorkingBubble stays mounted in its `Waiting` state; the completion branch
+   *  STILL accepts it (unlike `interrupted`/`dismissed`) so a late
+   *  task_notification can flip it to `done`.
    *
    *  `dismissed` is set ONLY by an explicit user action — the × in
    *  SubagentOverlay (`Chat.tsx` → `useChatStream.dismissSubagent` →
-   *  `DISMISS_SUBAGENT`). The Waiting bubble's own ✕ is NOT this action: it
-   *  merely sets Chat's local `waitingDismissed` flag, hiding the banner
-   *  without touching any record. It is distinct from `interrupted`
+   *  `DISMISS_SUBAGENT`). It is distinct from `interrupted`
    *  (which means the subagent was aborted/errored) so the inline
    *  SubagentCard can render a neutral "tracking dismissed" state instead of
    *  a false error. The completion branch excludes `dismissed` (the user gave
