@@ -178,13 +178,23 @@ export function cacheClear() {
 export function useChatStream(
   sessionId: string,
   permissions: PermissionHandlers,
-  running?: boolean,
+  /** The session's lifecycle facts, which the message channel cannot show:
+   *  `running` is merged into the subscribe/replay effect's deps, and
+   *  `terminated` gates the SESSION_TERMINATED sweep (see below).
+   *
+   *  BOTH REQUIRED. They are a pair of facts about the session, not tuning
+   *  knobs, and every value is meaningful — `terminated: false` means "still
+   *  live, do not sweep". Defaulting them would let a new caller omit the
+   *  argument and silently disable the termination sweep, reinstating the
+   *  stranded-record bug with no type error; the omission has to be a compile
+   *  error. (`useChatStream('')` — no session — passes false for both.) */
+  running: boolean,
   /** True once the session is `terminated`. No further frame of any kind will
    *  arrive for it, so the store must run the turn-end sweep itself — see the
    *  SESSION_TERMINATED action. Passed in (rather than inferred) because the
    *  hook only sees the message channel, and termination is a session-info
    *  fact. */
-  terminated?: boolean,
+  terminated: boolean,
 ): ChatStream {
   const hub = useWsHub()
   const hubStatus = useWsHubStatus()

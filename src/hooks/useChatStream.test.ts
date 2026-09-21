@@ -140,7 +140,7 @@ describe('useChatStream', () => {
 
   it('buffers replay messages and applies on replay-done', async () => {
     const { result } = renderHook(
-      ({ sid }) => useChatStream(sid, noopPerms),
+      ({ sid }) => useChatStream(sid, noopPerms, false, false),
       { initialProps: { sid: 's1' } },
     )
 
@@ -169,7 +169,7 @@ describe('useChatStream', () => {
 
   it('queues live messages until replay-done, then flushes', async () => {
     const { result } = renderHook(
-      ({ sid }) => useChatStream(sid, noopPerms),
+      ({ sid }) => useChatStream(sid, noopPerms, false, false),
       { initialProps: { sid: 's2' } },
     )
 
@@ -199,7 +199,7 @@ describe('useChatStream', () => {
 
   it('appends live messages after replay is done', async () => {
     const { result } = renderHook(
-      ({ sid }) => useChatStream(sid, noopPerms),
+      ({ sid }) => useChatStream(sid, noopPerms, false, false),
       { initialProps: { sid: 's3' } },
     )
 
@@ -235,7 +235,7 @@ describe('useChatStream', () => {
 
   it('applies a tail replay frame immediately (renders before replay-done)', async () => {
     const { result } = renderHook(
-      () => useChatStream('tail1', noopPerms),
+      () => useChatStream('tail1', noopPerms, false, false),
     )
 
     // ONLY the tail frame dispatches — no replay-done yet. The old
@@ -260,7 +260,7 @@ describe('useChatStream', () => {
 
   it('prepends backfill frames above the tail, newest chunk first', async () => {
     const { result } = renderHook(
-      () => useChatStream('tail2', noopPerms),
+      () => useChatStream('tail2', noopPerms, false, false),
     )
 
     act(() => {
@@ -306,7 +306,7 @@ describe('useChatStream', () => {
       createdAt: 1,
     }
     const { result } = renderHook(
-      () => useChatStream('tail3', noopPerms),
+      () => useChatStream('tail3', noopPerms, false, false),
     )
 
     // The snapshots ride the tail frame itself (same shape as the ordinary
@@ -331,7 +331,7 @@ describe('useChatStream', () => {
 
   it('does not advance the reconnect anchor until the burst completes', async () => {
     const { result } = renderHook(
-      () => useChatStream('tail5', noopPerms),
+      () => useChatStream('tail5', noopPerms, false, false),
     )
 
     act(() => {
@@ -367,7 +367,7 @@ describe('useChatStream', () => {
     // burst ref the re-subscribe would send it as `sinceUuid` and the
     // server would skip the still-unsent backfill chunks.
     const { rerender } = renderHook(
-      ({ running }) => useChatStream('tail7', noopPerms, running),
+      ({ running }) => useChatStream('tail7', noopPerms, running, false),
       { initialProps: { running: false } },
     )
 
@@ -409,7 +409,7 @@ describe('useChatStream', () => {
     // the tailMode latch; otherwise replay-done takes the tailMode branch
     // and silently drops the buffered incremental messages.
     const { result } = renderHook(
-      () => useChatStream('tail6', noopPerms),
+      () => useChatStream('tail6', noopPerms, false, false),
     )
 
     act(() => {
@@ -447,7 +447,7 @@ describe('useChatStream', () => {
 
   it('ignores backfill frames that race in after a session-cleared', async () => {
     const { result } = renderHook(
-      () => useChatStream('tail4', noopPerms),
+      () => useChatStream('tail4', noopPerms, false, false),
     )
 
     act(() => {
@@ -480,7 +480,7 @@ describe('useChatStream', () => {
 
   it('resets messages when sessionId changes', () => {
     const { result, rerender } = renderHook(
-      ({ sid }) => useChatStream(sid, noopPerms),
+      ({ sid }) => useChatStream(sid, noopPerms, false, false),
       { initialProps: { sid: 's1' } },
     )
 
@@ -504,7 +504,7 @@ describe('useChatStream', () => {
     const onRequest = vi.fn()
     const onResolved = vi.fn()
     renderHook(
-      () => useChatStream('s1', { onRequest, onResolved }),
+      () => useChatStream('s1', { onRequest, onResolved }, false, false),
     )
 
     act(() => {
@@ -524,7 +524,7 @@ describe('useChatStream', () => {
   it('dispatches permission-resolved to handler', () => {
     const onResolved = vi.fn()
     renderHook(
-      () => useChatStream('s1', { onRequest: vi.fn(), onResolved }),
+      () => useChatStream('s1', { onRequest: vi.fn(), onResolved }, false, false),
     )
 
     act(() => {
@@ -544,7 +544,7 @@ describe('useChatStream', () => {
   it('dispatches elicitation-request to handler', () => {
     const onElicitationRequest = vi.fn()
     renderHook(
-      () => useChatStream('s1', { ...noopPerms, onElicitationRequest }),
+      () => useChatStream('s1', { ...noopPerms, onElicitationRequest }, false, false),
     )
 
     act(() => {
@@ -563,7 +563,7 @@ describe('useChatStream', () => {
   it('dispatches elicitation-resolved to handler', () => {
     const onElicitationResolved = vi.fn()
     renderHook(
-      () => useChatStream('s1', { ...noopPerms, onElicitationResolved }),
+      () => useChatStream('s1', { ...noopPerms, onElicitationResolved }, false, false),
     )
 
     act(() => {
@@ -583,7 +583,7 @@ describe('useChatStream', () => {
   it('seeds elicitations from replay frames', () => {
     const onElicitationRequest = vi.fn()
     renderHook(
-      () => useChatStream('s1', { ...noopPerms, onElicitationRequest }),
+      () => useChatStream('s1', { ...noopPerms, onElicitationRequest }, false, false),
     )
 
     act(() => {
@@ -613,7 +613,7 @@ describe('useChatStream', () => {
 
   it('updates context-usage', () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     act(() => {
@@ -633,7 +633,7 @@ describe('useChatStream', () => {
 
   it('surfaces session-scope errors', () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     act(() => {
@@ -649,7 +649,7 @@ describe('useChatStream', () => {
 
   it('clears error on clearError()', () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     act(() => {
@@ -671,7 +671,7 @@ describe('useChatStream', () => {
 
   it('computes token rate from stream_event message_delta', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     // Dispatch replay + replay-done + both message_delta events all in a
@@ -721,7 +721,7 @@ describe('useChatStream', () => {
 
   it('sidechain content_block_start events do not flip the top-level phase', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     act(() => {
@@ -768,7 +768,7 @@ describe('useChatStream', () => {
 
   it('sidechain text starts seed the char-estimate rate without flipping the parent phase', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -846,7 +846,7 @@ describe('useChatStream', () => {
 
   it('resets token rate on result (message_stop clears baseline)', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -903,7 +903,7 @@ describe('useChatStream', () => {
 
   it('char-fallback rate uses the sliding window with the 500ms throttle', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -979,7 +979,7 @@ describe('useChatStream', () => {
 
   it('freezes the displayed rate across a long idle (tool-call gap)', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -1022,7 +1022,7 @@ describe('useChatStream', () => {
 
   it('recomputes from fresh samples after a long idle (pre-idle samples pruned)', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -1071,7 +1071,7 @@ describe('useChatStream', () => {
 
   it('estimate→real seam: first real delta resets the window and keeps the displayed value', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -1131,7 +1131,7 @@ describe('useChatStream', () => {
 
   it('keeps the frozen rate when post-idle deltas report no token growth', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -1181,7 +1181,7 @@ describe('useChatStream', () => {
 
   it('resets all state on reset()', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     // Populate state.
@@ -1222,7 +1222,7 @@ describe('useChatStream', () => {
 
   it('wipes transcript + state on a session-cleared frame', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     // Populate the transcript.
@@ -1252,7 +1252,7 @@ describe('useChatStream', () => {
 
   it('does not resurrect old messages from a replay after a clear', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     act(() => {
@@ -1278,7 +1278,7 @@ describe('useChatStream', () => {
     // REPLAY_REPLACE would re-apply the buffered pre-clear messages on top of
     // the reset store and resurrect the cleared transcript.
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     act(() => {
@@ -1307,7 +1307,7 @@ describe('useChatStream', () => {
     // replayReady MUST flip true on session-cleared, otherwise MessageList
     // shows an infinite skeleton until the user sends a message.
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     // Populate + ready the transcript first.
@@ -1333,7 +1333,7 @@ describe('useChatStream', () => {
 
   it('subscribes to hub on mount and unsubscribes on unmount', () => {
     const { unmount } = renderHook(
-      () => useChatStream('s1', noopPerms),
+      () => useChatStream('s1', noopPerms, false, false),
     )
 
     // `force` because this listener needs the history itself, not just a live
@@ -1362,7 +1362,7 @@ describe('useChatStream', () => {
     // same reason (a channel that went dormant is gone). One mechanism, no
     // "did this instance observe the transition" bookkeeping.
     const { rerender } = renderHook(
-      ({ running }) => useChatStream('s1', noopPerms, running),
+      ({ running }) => useChatStream('s1', noopPerms, running, false),
       { initialProps: { running: false } },
     )
     expect(mockSubscribe).toHaveBeenCalledTimes(1)
@@ -1382,7 +1382,7 @@ describe('useChatStream', () => {
   })
 
   it('clears a stale channel error only when the server confirms the channel', () => {
-    const { result } = renderHook(() => useChatStream('s1', noopPerms, false))
+    const { result } = renderHook(() => useChatStream('s1', noopPerms, false, false))
 
     act(() => {
       dispatchToSession('s1', { kind: 'error', sessionId: 's1', message: 'session not loaded' })
