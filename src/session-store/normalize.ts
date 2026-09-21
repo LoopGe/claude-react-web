@@ -1,4 +1,4 @@
-import type { Block, SdkMessage } from '../types'
+import type { Block, SdkMessage, TaskRecordUi } from '../types'
 import type {
   ActiveSubagent,
   PlanStatus,
@@ -13,6 +13,7 @@ import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, SKILL_TOOL_NAME, ENTER_PLAN_MODE_
 import { extractMessagePlainText } from '../search'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 import { isEmptyResultFrame } from '../../shared/results.js'
+import { isTerminalTaskStatus } from '../../shared/tasks.js'
 /** Strings the SDK / canUseTool deny path uses to mean "user said no".
  *  Matched against tool_result.content text — case-insensitive substring
  *  match. Both Anthropic CLI and our own deny path land here.
@@ -543,6 +544,69 @@ export function computeWaiting(args: {
   hasTranscriptBackground: boolean
 }): boolean {
   return !args.turnActive && !args.terminated && (args.runningCount > 0 || args.hasTranscriptBackground)
+}
+
+/** Whether a turn is live for layout purposes: the server reports it working,
+ *  the optimistic send bridge is still armed, or the SDK is mid-stream (an
+ *  auto-continuation turn — e.g. the model processing a background subagent's
+ *  task-notification after the parent turn ended).
+ *
+ *  Gated as a WHOLE on `!terminated`. `activePhase` is only cleared by a result
+ *  frame, so a crashed/killed subprocess that never emits one would otherwise
+ *  leave it non-null and stick the WorkingBubble on a dead session; and the
+ *  bridge outlives termination by up to its 30s safety net, which would keep
+ *  `turnActive` true — and the bubble in its ACTIVE state — on a dead session.
+ *  Gating the whole predicate makes "no turnActive on a terminated session"
+ *  true BY CONSTRUCTION, rather than depending on the bridge's own clearing
+ *  effect landing first. */
+export function computeTurnActive(args: {
+  working: boolean
+  pendingTurnSince: number | null
+  hasActivePhase: boolean
+  terminated: boolean
+}): boolean {
+  return !args.terminated
+    && (args.working || args.pendingTurnSince != null || args.hasActivePhase)
+}
+
+/** Count a task map into the two activity numbers `useSessionTaskCounts`
+ *  publishes: `all` = every non-terminal task (ambient housekeeping included),
+ *  `indicator` = the subset that counts as activity (not skipTranscript /
+ *  ambient). Both come from ONE pass, with `indicator++` gated on a subset of
+ *  the iterations that bump `all` — which is what makes `indicator <= all`
+ *  STRUCTURAL rather than merely intended, so `indicator > 0` implies
+ *  `all > 0`. That implication is load-bearing: the WorkingBubble mount gate
+ *  (shouldMountWorkingBubble) carries no separate `computeWaiting` disjunct
+ *  precisely because of it.
+ *
+ *  Terminal statuses come from the canonical shared list (shared/tasks.ts)
+ *  rather than a local literal, so this count cannot drift from the server's.
+ *  NOTE: TasksPanel and the reducer still hand-roll the same set locally, so a
+ *  new terminal status has to be added there too — which is why this comment
+ *  can't claim the client is uniformly canonical. */
+export function countTaskActivity(tasks: Iterable<TaskRecordUi>): { all: number; indicator: number } {
+  let all = 0
+  let indicator = 0
+  for (const t of tasks) {
+    if (isTerminalTaskStatus(t.status)) continue
+    all++
+    if (!t.skipTranscript && !t.ambient) indicator++
+  }
+  return { all, indicator }
+}
+
+/** Whether the mirrored transcript still holds a subagent in flight — the
+ *  transcript-side liveness leg of both the Waiting state (computeWaiting) and
+ *  the WorkingBubble mount gate (shouldMountWorkingBubble). Shared so the main
+ *  panel and the side drawer cannot disagree about which statuses count.
+ *
+ *  Accepts both `pending` (the normal post-turn-end form: the sweep ran) AND
+ *  `background` (the form after a server-restart replay, where the CLI
+ *  transcript carries no `result` frame for the sweep to fire on, so the record
+ *  would otherwise stay `background` and the Waiting state would be lost on a
+ *  page refresh). */
+export function hasTranscriptBackground(activeSubagents: readonly ActiveSubagent[] | undefined): boolean {
+  return activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false
 }
 
 export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {

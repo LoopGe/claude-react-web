@@ -22,6 +22,8 @@ import { usePastedTexts } from '../hooks/usePastedTexts'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
+import { shouldMountWorkingBubble } from '../utils/task-actions'
+import { computeWaiting, hasTranscriptBackground } from '../session-store/normalize'
 
 interface SendMessageResponse {
   ok: boolean
@@ -81,11 +83,36 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   // Paste policy — the rich editor handles Backspace/Delete/arrows natively.
   const { placePastedText } = usePastedTextEditing({ addPastedText })
   /** Waiting = a background subagent is still in flight after the side-chat
-   *  turn ended. Mirrors Chat.tsx's derivation (checks both `pending` and
-   *  `background` — the latter survives a server-restart replay where no
-   *  `result` frame is on disk to sweep background→pending). Gated on
-   *  !terminated (a dead session never gets completion). */
-  const waiting = !session.working && !session.terminated && (stream.activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false)
+   *  turn ended. Uses the SHARED predicates (computeWaiting /
+   *  shouldMountWorkingBubble) so the RULE is the main panel's, with the task
+   *  leg deliberately zeroed out: the drawer passes no `onOpenTasks` (the Tasks
+   *  overlay is owned by the main panel), and WorkingBubble renders the count
+   *  pill only when `onOpenTasks` is present — so a wait driven purely by a
+   *  background task record would be an empty `Waiting...` bar with no pill and
+   *  no entry point.
+   *
+   *  The INPUTS are the drawer's own, not Chat's: `turnActive` is
+   *  `session.working` alone — no optimistic `pendingTurnSince` bridge and no
+   *  `activePhase` leg. That mirrors the drawer's existing behaviour (it can
+   *  show nothing during an SDK auto-continuation turn while the main panel
+   *  shows its bubble); it is not a claim that the two surfaces agree on which
+   *  turns count. The transcript-side leg is shared (hasTranscriptBackground).
+   */
+  const hasBackgroundSubagent = hasTranscriptBackground(stream.activeSubagents)
+  const waiting = computeWaiting({
+    turnActive: session.working,
+    terminated: session.terminated,
+    runningCount: 0,
+    hasTranscriptBackground: hasBackgroundSubagent,
+  })
+  /** Same shared predicate as the main panel, task leg zeroed (see above). */
+  const mountBubble = shouldMountWorkingBubble({
+    turnActive: session.working,
+    terminated: session.terminated,
+    taskCount: 0,
+    hasTranscriptBackground: hasBackgroundSubagent,
+    hasLiveSyncSubagent: false,
+  })
 
   // Destructure the stable callbacks off `stream` so `handleSend`'s dep
   // list can name them directly. Depending on bare `stream` would rebuild
@@ -239,7 +266,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
             </div>
           )}
         />
-        {(session.working || waiting) && (
+        {mountBubble && (
           <WorkingBubble
             active={session.working}
             startedAt={session.workingSince}

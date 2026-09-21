@@ -67,8 +67,8 @@ import { useScheduledSends } from '../hooks/useScheduledSends'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { useSessionTaskCounts } from '../session-store/selectors'
-import { computeWaiting, autoTitleDescription, topLevelUserPromptSignature, countQueuedUserTurns } from '../session-store/normalize'
-import { createDedupGuard, shouldOfferBackgroundAction } from '../utils/task-actions'
+import { computeWaiting, computeTurnActive, hasTranscriptBackground, autoTitleDescription, topLevelUserPromptSignature, countQueuedUserTurns } from '../session-store/normalize'
+import { createDedupGuard, shouldMountWorkingBubble, shouldOfferBackgroundAction } from '../utils/task-actions'
 import { composeOutgoing } from '../utils/outgoing-text'
 import { planSubmission } from '../utils/submission'
 import { parseReferences, type PastedTextMap } from '../utils/pastedText'
@@ -530,13 +530,18 @@ export const Chat = memo(function Chat({
   // include `session.working`, so reading it directly there would be stale.
   const workingRef = useRef(session.working)
   workingRef.current = session.working
-  // Ref mirror of the FULL turn-active signal (server working OR the
-  // pendingTurn bridge above). App polls it via the registered getter
-  // (onRegisterTurnActive) for the escape handler's send-gap decision and
-  // Alt+B's guard — a ref so the getter stays fresh without re-registering
-  // on every transition.
+  // Ref mirror of the turn-active signal for App's Escape / Alt+B guards. It
+  // deliberately omits the `activePhase` leg (an SDK auto-continuation turn is
+  // not the user's own turn), and goes through the same tested predicate as
+  // `turnActive` below so the liveness gate can't be dropped from this copy
+  // without failing a test.
   const turnActiveRef = useRef(false)
-  turnActiveRef.current = session.working || pendingTurnSince != null
+  turnActiveRef.current = computeTurnActive({
+    working: session.working,
+    pendingTurnSince,
+    hasActivePhase: false,
+    terminated: session.terminated,
+  })
   const [localError, setLocalError] = useState<string | null>(null)
   /** Local /clear signal. No producer sets this to `true` today — the local
    *  `/clear` command drives the animation via the App-owned `clearingProp`,
@@ -598,13 +603,19 @@ export const Chat = memo(function Chat({
   // safety net covers a hung turn (POST resolved, neither signal ever came).
   useEffect(() => {
     if (pendingTurnSince == null) return
-    if (session.working || stream.activePhase != null) {
+    // Clear the bridge the moment the server contradicts it: the turn started
+    // (`session.working` / `activePhase`), or the session died, where no
+    // confirmation can ever arrive. The termination arm matters because the
+    // bridge otherwise keeps `turnActive`, `turnActiveRef` and the
+    // WorkingBubble's ACTIVE state true on a dead session until the safety net
+    // fires 30s later.
+    if (session.terminated || session.working || stream.activePhase != null) {
       setPendingTurnSince(null)
       return
     }
     const t = setTimeout(() => setPendingTurnSince(null), PENDING_TURN_SAFETY_MS)
     return () => clearTimeout(t)
-  }, [pendingTurnSince, session.working, stream.activePhase])
+  }, [pendingTurnSince, session.working, stream.activePhase, session.terminated])
   // Drop any pending bridge when switching the panel to another session.
   useEffect(() => {
     setPendingTurnSince(null)
@@ -838,13 +849,15 @@ export const Chat = memo(function Chat({
   // stays false and `pendingTurnSince` is null, but `stream.activePhase` is
   // non-null while the SDK streams its response. `activePhase` is cleared by
   // the result frame (in both replay and live), so this never false-fires on
-  // a reconnect replay whose final state has no live turn. Gated on
-  // `!session.terminated` because `liveTurn` is only cleared by a result
-  // frame — a crashed/killed subprocess that never emits one would otherwise
-  // leave `activePhase` non-null and stick the WorkingBubble on a dead
-  // session; a terminated session has `working=false` and `terminated=true`,
-  // so the gate drops the bubble exactly when it should.
-  const turnActive = session.working || pendingTurnSince != null || (stream.activePhase != null && !session.terminated)
+  // a reconnect replay whose final state has no live turn.
+  // The liveness gate lives in computeTurnActive — see it for why the whole
+  // predicate (not just the `activePhase` term) is the thing being gated.
+  const turnActive = computeTurnActive({
+    working: session.working,
+    pendingTurnSince,
+    hasActivePhase: stream.activePhase != null,
+    terminated: session.terminated,
+  })
   // Dwelled phase label for the WorkingBubble — transient sub-300ms blips
   // between phases don't churn the label. `turnActive` above keeps the raw
   // activePhase so turn-end detection stays immediate.
@@ -860,31 +873,23 @@ export const Chat = memo(function Chat({
   //     decide whether the bubble/pill stays mounted as the TasksPanel entry
   //     point while ambient housekeeping runs; never rendered as a count.
   const { all: taskCount, indicator: indicatorTaskCount } = useSessionTaskCounts(session.id)
-  /** A background (async) subagent still in flight after the parent turn
-   *  ended. The WorkingBubble stays mounted in a `Waiting` state while any
-   *  such subagent exists, so the user sees that background work is ongoing
-   *  — instead of the bubble silently unmounting and the only trace being a
-   *  card buried in the transcript.
-   *
-   *  Checks both `pending` (the normal post-turn-end form: sweep ran) AND
-   *  `background` (the form after a server-restart replay, where the CLI
-   *  transcript has no `result` frame so the sweep never fires and the
-   *  record stays `background`). Without accepting `background`, a page
-   *  refresh after a server restart would lose the Waiting bubble even
-   *  though the subagent is still running.
+  /** A background (async) subagent still in flight after the parent turn ended
+   *  — see hasTranscriptBackground for which statuses count. The WorkingBubble
+   *  stays mounted in a `Waiting` state while any such subagent exists, so the
+   *  user sees that background work is ongoing — instead of the bubble silently
+   *  unmounting and the only trace being a card buried in the transcript.
    *
    *  NOT itself gated on session liveness — the flag is term-agnostic, and the
    *  `!terminated` guard lives in its consumers (`computeWaiting`'s `terminated`
-   *  param and the mount clause's own `!session.terminated &&`). A dead session
-   *  never receives the completion signal, so the bare flag would mount an
-   *  eternal Waiting; hoisting it into another mount path must carry that guard
-   *  along. */
-  const hasTranscriptBackground = stream.activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false
+   *  param and the mount predicate). A dead session never receives the
+   *  completion signal, so the bare flag would mount an eternal Waiting;
+   *  hoisting it into another mount path must carry that guard along. */
+  const transcriptBackground = hasTranscriptBackground(stream.activeSubagents)
   const waiting = computeWaiting({
     turnActive,
     terminated: session.terminated,
     runningCount: indicatorTaskCount,
-    hasTranscriptBackground,
+    hasTranscriptBackground: transcriptBackground,
   })
   /** Open this panel's Tasks overlay. Stable callback so the memoized
    *  WorkingBubble count pill doesn't re-render on every Chat render. */
@@ -1835,6 +1840,17 @@ export const Chat = memo(function Chat({
   // subagent is genuinely mid-flight and the session is live. A live sync
   // subagent record keeps the action available for that window.
   const hasLiveSyncSubagent = stream.activeSubagents?.some((a) => a.status === 'running' && !a.isAsync) ?? false
+  /** Whether this panel mounts the WorkingBubble at all. A tested predicate
+   *  (utils/task-actions) rather than an inline expression: the mount condition
+   *  is subtle — it deliberately carries no separate `waiting` disjunct, and
+   *  the reason is an invariant of useSessionTaskCounts. See its doc. */
+  const mountWorkingBubble = shouldMountWorkingBubble({
+    turnActive,
+    terminated: session.terminated,
+    taskCount,
+    hasTranscriptBackground: transcriptBackground,
+    hasLiveSyncSubagent,
+  })
   const backgroundToolAction = shouldOfferBackgroundAction({
     turnActive,
     terminated: session.terminated,
@@ -2333,19 +2349,12 @@ export const Chat = memo(function Chat({
           orbSlot,
         )}
 
-      {/* WorkingBubble — same portal-into-bottomOverlay path as the dock.
-          Deliberately no separate `waiting` disjunct here: `waiting` requires
-          !turnActive && !terminated && (indicatorTaskCount > 0 ||
-          hasTranscriptBackground), and indicatorTaskCount > 0 implies
-          taskCount > 0 (`all` is a superset of `indicator` — both are counted
-          in one pass over the same non-terminal set, see
-          useSessionTaskCounts), while hasTranscriptBackground is already in
-          the clause below. So `waiting` is only ever true when that clause is
-          already true, and listing it would read as an independent mount
-          reason that does not exist. */}
+      {/* WorkingBubble — same portal-into-bottomOverlay path as the dock. The
+          mount condition (and why it carries no separate `waiting` disjunct)
+          lives in shouldMountWorkingBubble. */}
       {workingSlot &&
         createPortal(
-          turnActive || (!session.terminated && (taskCount > 0 || hasTranscriptBackground || hasLiveSyncSubagent)) ? (
+          mountWorkingBubble ? (
             <WorkingBubble
               active={turnActive}
               startedAt={turnStartedAt}

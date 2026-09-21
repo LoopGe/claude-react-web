@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, autoTitleDescription, recentMessagesDescription, countQueuedUserTurns, getActiveWorktree, subagentChildArgSummary, getSubagentChildStarts, toTranscriptItem } from './normalize'
-import type { SdkMessage } from '../types'
+import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, computeTurnActive, countTaskActivity, autoTitleDescription, recentMessagesDescription, countQueuedUserTurns, getActiveWorktree, subagentChildArgSummary, getSubagentChildStarts, toTranscriptItem } from './normalize'
+import type { SdkMessage, TaskRecordUi } from '../types'
+import { TERMINAL_TASK_STATUSES } from '../../shared/tasks.js'
+
+function task(overrides: Partial<TaskRecordUi> = {}): TaskRecordUi {
+  return { taskId: 't', description: 'work', status: 'running', updatedAt: 0, ...overrides }
+}
 
 /** Build a top-level `user` message with the given text content (string or
  *  text-block array), mirroring how the CLI writes slash-command logs. */
@@ -56,6 +61,111 @@ describe('computeWaiting', () => {
 
   it('is false when nothing is running', () => {
     expect(computeWaiting({ turnActive: false, terminated: false, runningCount: 0, hasTranscriptBackground: false })).toBe(false)
+  })
+})
+
+describe('computeTurnActive', () => {
+  const base = { working: false, pendingTurnSince: null, hasActivePhase: false, terminated: false }
+
+  it('is true for a server-reported working turn', () => {
+    expect(computeTurnActive({ ...base, working: true })).toBe(true)
+  })
+
+  it('is true for the optimistic send bridge, before `working` arrives', () => {
+    expect(computeTurnActive({ ...base, pendingTurnSince: 1234 })).toBe(true)
+  })
+
+  it('is true during an SDK auto-continuation turn (activePhase with working false)', () => {
+    expect(computeTurnActive({ ...base, hasActivePhase: true })).toBe(true)
+  })
+
+  it('is false when nothing is running', () => {
+    expect(computeTurnActive(base)).toBe(false)
+  })
+
+  it('is false on a terminated session for EVERY other input — the gate covers the whole predicate', () => {
+    // The regression this pins: the terminated guard used to cover only the
+    // `activePhase` term, so the optimistic send bridge (which outlives
+    // termination by up to its 30s safety net) kept turnActive true and the
+    // WorkingBubble mounted in its ACTIVE state on a dead session.
+    for (const working of [false, true]) {
+      for (const pendingTurnSince of [null, 1234]) {
+        for (const hasActivePhase of [false, true]) {
+          expect(computeTurnActive({ working, pendingTurnSince, hasActivePhase, terminated: true })).toBe(false)
+        }
+      }
+    }
+  })
+})
+
+describe('countTaskActivity', () => {
+  // The counting rule is the one place the mount gate's equivalence rests on:
+  // `indicator > 0 => all > 0` is what makes a separate `computeWaiting`
+  // disjunct in shouldMountWorkingBubble dead logic (utils/task-actions). These
+  // assert the relation HERE, where it is owned, and task-actions.test.ts then
+  // derives its counts from this same function — so a change that lets
+  // `indicator` count something the `all` pass skips fails there rather than
+  // silently unmounting the WorkingBubble on a live session.
+  const statuses = ['running', 'pending', 'paused', 'completed', 'failed', 'killed', 'stopped'] as const
+
+  it('keeps indicator <= all for every status, ambient and skipTranscript combination', () => {
+    // Expectations are pinned to a LITERAL, not to isTerminalTaskStatus: deriving
+    // them from the predicate the implementation calls would make this
+    // tautological (both sides would move together).
+    const TERMINAL = ['completed', 'failed', 'killed', 'stopped']
+    for (const status of statuses) {
+      for (const ambient of [false, true]) {
+        for (const skipTranscript of [false, true]) {
+          const { all, indicator } = countTaskActivity([task({ status, ambient, skipTranscript })])
+          expect(indicator).toBeLessThanOrEqual(all)
+          // and the boundary cases are exact, so the relation is not vacuous
+          expect(indicator).toBe(TERMINAL.includes(status) || ambient || skipTranscript ? 0 : 1)
+          expect(all).toBe(TERMINAL.includes(status) ? 0 : 1)
+        }
+      }
+    }
+  })
+
+  it('keeps indicator <= all across a mixed set, and equals all when nothing is housekeeping', () => {
+    const mixed = [
+      task({ taskId: 'a', status: 'running' }),
+      task({ taskId: 'b', status: 'paused' }),
+      task({ taskId: 'c', status: 'running', ambient: true }),
+      task({ taskId: 'd', status: 'running', skipTranscript: true }),
+      task({ taskId: 'e', status: 'completed' }),
+      task({ taskId: 'f', status: 'stopped', ambient: true }),
+    ]
+    const { all, indicator } = countTaskActivity(mixed)
+    expect(all).toBe(4) // a, b, c, d — the terminal e/f are excluded from both
+    expect(indicator).toBe(2) // a, b
+    expect(indicator).toBeLessThanOrEqual(all)
+
+    // With no housekeeping at all, every non-terminal task is an indicator task
+    // — the equality case the mount gate's implication is tightest at.
+    const plain = [task({ taskId: 'a', status: 'running' }), task({ taskId: 'b', status: 'paused' })]
+    const counts = countTaskActivity(plain)
+    expect(counts.indicator).toBe(counts.all)
+    expect(counts.all).toBe(2)
+  })
+
+  it('counts an empty task set as zeroes', () => {
+    expect(countTaskActivity([])).toEqual({ all: 0, indicator: 0 })
+  })
+
+  it('pins the canonical terminal set, and treats exactly those statuses as terminal', () => {
+    // Pinned to a LITERAL on both sides. The previous version iterated
+    // TERMINAL_TASK_STATUSES and expected the outcome of isTerminalTaskStatus —
+    // the same list the implementation reads — so it could never fail and could
+    // not detect the drift it claimed to guard. Changing the canonical set now
+    // fails here deliberately (and the local copies in TasksPanel / reducer must
+    // be updated with it).
+    expect([...TERMINAL_TASK_STATUSES].sort()).toEqual(['completed', 'failed', 'killed', 'stopped'])
+    for (const status of ['completed', 'failed', 'killed', 'stopped'] as const) {
+      expect(countTaskActivity([task({ status })])).toEqual({ all: 0, indicator: 0 })
+    }
+    for (const status of ['pending', 'running', 'paused'] as const) {
+      expect(countTaskActivity([task({ status })])).toEqual({ all: 1, indicator: 1 })
+    }
   })
 })
 

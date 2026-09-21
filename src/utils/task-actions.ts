@@ -1,6 +1,7 @@
 // Small pure helpers backing Chat's background-task actions (Alt+B / the
-// per-card "Background this task" buttons). Extracted from Chat so the
-// timing-sensitive dedup and the action-offering gate are unit-testable.
+// per-card "Background this task" buttons) and its WorkingBubble mount gate.
+// Extracted from Chat so the timing-sensitive dedup and the action-offering /
+// mount gates are unit-testable.
 
 /** In-flight guard that dedupes a burst of identical actions (e.g. two
  *  clicks on the same "Background this task" button). A key is held for a
@@ -89,4 +90,34 @@ export function shouldOfferBackgroundAction(args: {
   hasLiveSyncSubagent: boolean
 }): boolean {
   return args.turnActive || (!args.terminated && args.hasLiveSyncSubagent)
+}
+
+/** Whether Chat should mount the WorkingBubble at all. A live turn mounts it
+ *  unconditionally; outside a turn it stays up while there is anything to
+ *  report — any non-terminal task record (`taskCount`, ambient housekeeping
+ *  included: the count pill is the TasksPanel entry point), a
+ *  pending/background subagent, or a still-running sync subagent during the
+ *  SDK's auto-continuation window.
+ *
+ *  Gated on `!terminated`: a dead session receives no completion signal, so
+ *  the bubble would otherwise stay mounted forever.
+ *
+ *  Deliberately holds NO `computeWaiting` term. `waiting` requires
+ *  `!turnActive && !terminated && (indicatorCount > 0 || hasTranscriptBackground)`,
+ *  every part of which this clause already covers — `indicatorCount > 0`
+ *  implies `taskCount > 0`. That superset relation is asserted where it is
+ *  owned (`countTaskActivity` / session-store/normalize.test.ts), and the
+ *  implication itself is asserted in task-actions.test.ts against counts
+ *  derived from that same rule, so a separate disjunct never decides a mount
+ *  and only misleads a reader into treating it as an independent reason. */
+export function shouldMountWorkingBubble(args: {
+  turnActive: boolean
+  terminated: boolean
+  taskCount: number
+  hasTranscriptBackground: boolean
+  hasLiveSyncSubagent: boolean
+}): boolean {
+  return args.turnActive
+    || (!args.terminated
+      && (args.taskCount > 0 || args.hasTranscriptBackground || args.hasLiveSyncSubagent))
 }

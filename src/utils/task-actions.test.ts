@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { createDedupGuard, shouldOfferBackgroundAction } from './task-actions'
+import { createDedupGuard, shouldMountWorkingBubble, shouldOfferBackgroundAction } from './task-actions'
+import { computeWaiting, countTaskActivity } from '../session-store/normalize'
+import type { TaskRecordUi } from '../types'
+
+function task(overrides: Partial<TaskRecordUi> = {}): TaskRecordUi {
+  return { taskId: 't', description: 'work', status: 'running', updatedAt: 0, ...overrides }
+}
 
 describe('createDedupGuard', () => {
   afterEach(() => {
@@ -85,5 +91,107 @@ describe('shouldOfferBackgroundAction', () => {
 
   it('does not offer when idle with nothing running', () => {
     expect(shouldOfferBackgroundAction({ turnActive: false, terminated: false, hasLiveSyncSubagent: false })).toBe(false)
+  })
+})
+
+describe('shouldMountWorkingBubble', () => {
+  const base = {
+    turnActive: false,
+    terminated: false,
+    taskCount: 0,
+    hasTranscriptBackground: false,
+    hasLiveSyncSubagent: false,
+  }
+
+  it('mounts for a live turn', () => {
+    expect(shouldMountWorkingBubble({ ...base, turnActive: true })).toBe(true)
+  })
+
+  it('mounts outside a turn while a task record or a background subagent remains', () => {
+    expect(shouldMountWorkingBubble({ ...base, taskCount: 2 })).toBe(true)
+    expect(shouldMountWorkingBubble({ ...base, hasTranscriptBackground: true })).toBe(true)
+    expect(shouldMountWorkingBubble({ ...base, hasLiveSyncSubagent: true })).toBe(true)
+  })
+
+  it('does not mount when idle with nothing running', () => {
+    expect(shouldMountWorkingBubble(base)).toBe(false)
+  })
+
+  it('never mounts on a terminated session while the only reason is leftover work', () => {
+    for (const live of ['taskCount', 'hasTranscriptBackground', 'hasLiveSyncSubagent'] as const) {
+      const args = { ...base, terminated: true, [live]: live === 'taskCount' ? 5 : true }
+      expect(shouldMountWorkingBubble(args)).toBe(false)
+    }
+  })
+
+  it('honors turnActive ungated — the gate relies on Chat never pairing it with terminated', () => {
+    // Documented reliance, not an accident: `turnActive` is deliberately not
+    // wrapped in `!terminated` (same shape as shouldOfferBackgroundAction), and
+    // that is only safe because Chat cannot produce turnActive on a dead
+    // session — the server reports `working=false`, the `activePhase` term
+    // carries its own `!terminated`, and pendingTurnSince's effect clears the
+    // bridge the moment the session terminates. If this assertion ever starts
+    // looking wrong, check that effect first.
+    expect(shouldMountWorkingBubble({ ...base, terminated: true, turnActive: true })).toBe(true)
+  })
+
+  // The invariant the removed `waiting` disjunct rested on: `waiting` implies a
+  // mount, so listing it in the gate was dead logic. The counts are derived from
+  // the REAL rule (countTaskActivity) rather than assumed — the superset relation
+  // itself is asserted where it is owned (session-store/normalize.test.ts), and
+  // this test would fail if the implication stopped holding for any task set the
+  // store can actually produce (e.g. only ambient housekeeping running: all > 0
+  // but indicator === 0, so Waiting is false and the gate must not be asked to
+  // explain it).
+  it('is implied by computeWaiting for every task set the store can produce', () => {
+    const sets: TaskRecordUi[][] = [
+      [],
+      [task({ status: 'running' })],
+      [task({ status: 'running', ambient: true })],
+      [task({ status: 'running', skipTranscript: true })],
+      [task({ status: 'paused' })],
+      [task({ status: 'completed' })],
+      [task({ status: 'running', ambient: true }), task({ status: 'paused' })],
+      [task({ status: 'killed', skipTranscript: true }), task({ status: 'running' })],
+    ]
+    for (const set of sets) {
+      const { all: taskCount, indicator: indicatorCount } = countTaskActivity(set)
+      for (const turnActive of [false, true]) {
+        for (const terminated of [false, true]) {
+          for (const hasTranscriptBackground of [false, true]) {
+            for (const hasLiveSyncSubagent of [false, true]) {
+              const waiting = computeWaiting({ turnActive, terminated, runningCount: indicatorCount, hasTranscriptBackground })
+              if (!waiting) continue
+              expect(
+                shouldMountWorkingBubble({ turnActive, terminated, taskCount, hasTranscriptBackground, hasLiveSyncSubagent }),
+              ).toBe(true)
+            }
+          }
+        }
+      }
+    }
+  })
+
+  it("mounts for the drawer's zeroed task leg exactly as its old hand-rolled gate did", () => {
+    // SideChatDrawer keeps its own inputs (no optimistic bridge, no activePhase
+    // leg, task leg zeroed) but must go through THIS predicate. Pinned against
+    // the expression it replaced so that equivalence can't silently rot:
+    //   old gate = working || (!working && !terminated && hasBackgroundSubagent)
+    for (const working of [false, true]) {
+      for (const terminated of [false, true]) {
+        for (const hasBackgroundSubagent of [false, true]) {
+          const oldGate = working || (!working && !terminated && hasBackgroundSubagent)
+          expect(
+            shouldMountWorkingBubble({
+              turnActive: working,
+              terminated,
+              taskCount: 0,
+              hasTranscriptBackground: hasBackgroundSubagent,
+              hasLiveSyncSubagent: false,
+            }),
+          ).toBe(oldGate)
+        }
+      }
+    }
   })
 })

@@ -1,7 +1,7 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react'
 import { sessionStoreRegistry } from './registry'
 import type { SessionSnapshot, SessionState } from './types'
-import { getActiveWorktree, type ActiveWorktree } from './normalize'
+import { countTaskActivity, getActiveWorktree, type ActiveWorktree } from './normalize'
 
 export function useSessionSnapshot(sessionId: string): SessionSnapshot {
   const store = sessionStoreRegistry.getOrCreate(sessionId)
@@ -54,12 +54,14 @@ export function useSessionField<K extends keyof SessionSnapshot>(
  *  it only answers "is there anything in the TasksPanel worth opening", which
  *  keeps the panel reachable while ambient housekeeping runs.
  *
- *  `indicator <= all` always, and structurally so: both counters increment in
- *  the SAME pass over the same non-terminal set, with `indicator++` gated on a
- *  subset of the iterations (`!skipTranscript && !ambient`). So `indicator > 0`
- *  implies `all > 0` — the WorkingBubble's mount gate relies on exactly that
- *  implication (see Chat.tsx), and any change that lets `indicator` count
- *  something the `all` pass skips would break it. */
+ *  `indicator <= all` always, and structurally so — both are produced by
+ *  `countTaskActivity`'s single pass (normalize.ts), with `indicator++` gated
+ *  on a subset of the iterations (`!skipTranscript && !ambient`). So
+ *  `indicator > 0` implies `all > 0`, and the WorkingBubble's mount gate
+ *  relies on exactly that implication (see Chat.tsx / shouldMountWorkingBubble).
+ *  normalize.test.ts asserts the relation directly, so a change that let
+ *  `indicator` count something the `all` pass skips fails there rather than
+ *  silently unmounting the bubble. */
 export function useSessionTaskCounts(sessionId: string): { all: number; indicator: number } {
   const store = sessionStoreRegistry.getOrCreate(sessionId)
   const prevRef = useRef<{ all: number; indicator: number } | null>(null)
@@ -68,16 +70,7 @@ export function useSessionTaskCounts(sessionId: string): { all: number; indicato
     [store],
   )
   const getSnapshot = useCallback(() => {
-    let all = 0
-    let indicator = 0
-    for (const t of store.getSnapshot().tasks) {
-      if (
-        t.status === 'completed' || t.status === 'failed' ||
-        t.status === 'killed' || t.status === 'stopped'
-      ) continue
-      all++
-      if (!t.skipTranscript && !t.ambient) indicator++
-    }
+    const { all, indicator } = countTaskActivity(store.getSnapshot().tasks)
     if (prevRef.current && prevRef.current.all === all && prevRef.current.indicator === indicator) {
       return prevRef.current
     }
