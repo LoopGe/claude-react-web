@@ -101,7 +101,7 @@ function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Rec
     const err = validateStringArray(name, rest[name])
     if (err) return { ok: false, error: err }
   }
-  for (const name of ['includePartialMessages', 'includeHookEvents', 'enableFileCheckpointing']) {
+  for (const name of ['includePartialMessages', 'includeHookEvents']) {
     const v = rest[name]
     if (v !== undefined && typeof v !== 'boolean') {
       return { ok: false, error: `${name} must be a boolean` }

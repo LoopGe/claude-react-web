@@ -685,6 +685,11 @@ export interface Session {
    *  sessions spawned before this field existed (treated as empty → no bridge,
    *  signature fallback handles dedup). */
   promptUuids?: PromptUuidEntry[]
+  /** Snapshot anchor captures deferred because send() fired while the
+   *  session was working (pendingTurns>0, queueDepth>0, etc). Each uuid
+   *  is a user message that needs capture+recordAnchor when the turn
+   *  finishes and the message is consumed. Cleared on consume. */
+  pendingSnapshotAnchors?: string[]
 }
 
 /** End every subscriber in a collection and clear it. Works on both

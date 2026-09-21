@@ -1927,8 +1927,10 @@ export class SessionManager {
     {
       const keepPatchIds = new Set(inherited.map((a) => a.assistantUuid))
       const keepMessageIds = new Set<string>()
-      // historySeed carries the rewritten user uuids (server uuids after
-      // rewriteSeedPromptUuids) — most accurate when present.
+      // PRIMARY source: historySeed carries the rewritten user uuids
+      // (server uuids after rewriteSeedPromptUuids) — most accurate when
+      // present. Collect ALL user messages from the seed (up to and
+      // including the anchor), which covers the kept turns.
       if (historySeed) {
         for (const m of historySeed) {
           if ((m as { type?: string }).type === 'user') {
@@ -1936,26 +1938,49 @@ export class SessionManager {
             if (typeof u === 'string') keepMessageIds.add(u)
           }
         }
-      }
-      // promptUuids is the authority on send order. The in-memory list
-      // (liveX.promptUuids) is the freshest — the sidecar is only
-      // persisted on SDK echo, so a live session with un-echoed prompts
-      // has more entries in memory than on disk. Each user message
-      // starts the next turn, so the first (anchorIdx + 1) entries
-      // correspond to the kept turns. Fall back to the sidecar for
-      // dormant sources.
-      const inMemory = liveX?.promptUuids
-      if (inMemory && inMemory.length > 0) {
-        for (let i = 0; i <= anchorIdx && i < inMemory.length; i++) {
-          const u = inMemory[i].u
-          if (typeof u === 'string') keepMessageIds.add(u)
-        }
       } else {
-        const sidecar = await this.promptUuidStore.load(id)
-        if (sidecar) {
-          for (let i = 0; i <= anchorIdx && i < sidecar.length; i++) {
-            const u = sidecar[i].u
-            if (typeof u === 'string') keepMessageIds.add(u)
+        // FALLBACK: no historySeed (both ring and disk read failed).
+        // Use promptUuids positional slice — but this is a lossy
+        // approximation when failed turns are present (promptUuids
+        // entries don't map 1:1 to turn anchors). Walk the history ring
+        // or disk page to collect actual kept user ids instead.
+        const collected: string[] = []
+        if (liveX) {
+          // Walk the in-memory ring up to (and including) the anchor.
+          for (const entry of liveX.history) {
+            const m = entry as { type?: string; uuid?: string; parent_tool_use_id?: string | null }
+            if (m.type === 'user' && m.parent_tool_use_id == null && typeof m.uuid === 'string') {
+              collected.push(m.uuid)
+            }
+            if (m.uuid === fromAssistantUuid) break // anchor reached
+          }
+        }
+        if (collected.length === 0) {
+          // Dormant session — try disk page.
+          try {
+            const page = await this.readProviderHistoryPage(providerX, id, { limit: this.historyCap })
+            for (const m of page.messages) {
+              const msg = m as { type?: string; uuid?: string; parent_tool_use_id?: string | null }
+              if (msg.type === 'user' && msg.parent_tool_use_id == null && typeof msg.uuid === 'string') {
+                collected.push(msg.uuid)
+              }
+              if (msg.uuid === fromAssistantUuid) break
+            }
+          } catch { /* ignore — fall through to promptUuids as last resort */ }
+        }
+        if (collected.length > 0) {
+          for (const u of collected) keepMessageIds.add(u)
+        } else {
+          // Last resort: promptUuids positional slice. Known limitation:
+          // assumes 1:1 between promptUuids entries and turn anchors,
+          // which breaks when failed turns are present.
+          const inMemory = liveX?.promptUuids
+          const list = inMemory && inMemory.length > 0 ? inMemory : await this.promptUuidStore.load(id)
+          if (list) {
+            for (let i = 0; i <= anchorIdx && i < list.length; i++) {
+              const u = list[i].u
+              if (typeof u === 'string') keepMessageIds.add(u)
+            }
           }
         }
       }
@@ -2715,10 +2740,26 @@ export class SessionManager {
   }
 
   /** Fire-and-forget snapshot capture + anchor recording for send/sendContent.
-   *  See `send()` for the rationale. Never throws to the caller. */
+   *  See `send()` for the rationale. Never throws to the caller.
+   *
+   *  When the session is idle (no pending turns, no queued input), the
+   *  capture fires immediately — the tree is the clean pre-turn state.
+   *  When NOT idle, the capture is deferred: the uuid is stashed in
+   *  `pendingSnapshotAnchors` and captured when the message is consumed
+   *  (onInputConsumed), so the anchor reflects the actual pre-turn tree
+   *  rather than a mid-previous-turn snapshot. */
   private captureAnchor(id: string, s: Session, userUuid: string): void {
     const cwd = s.cwd
     if (!cwd) return
+    // Idle predicate: matches phaseOf === 'idle' but without the method call.
+    const isIdle = s.pendingTurns === 0 && s.handle.queueDepth === 0 && s.pending.size === 0
+    if (!isIdle) {
+      // Defer — capture on consume when the session is between turns.
+      if (!s.pendingSnapshotAnchors) s.pendingSnapshotAnchors = []
+      s.pendingSnapshotAnchors.push(userUuid)
+      log.debug(`[session ${id}] snapshot anchor deferred for ${userUuid.slice(0, 8)} (session working)`)
+      return
+    }
     void (async () => {
       try {
         // 15s timeout: a slow git subprocess (especially the first capture
@@ -4684,6 +4725,9 @@ export class SessionManager {
     if (!live && !meta) {
       throw new HttpError(404, `session ${id} not found`)
     }
+    if (this.snapshots.isDisabled()) {
+      throw new HttpError(400, 'file snapshots are disabled')
+    }
     const phase = live ? this.phaseOf(live) : (meta?.terminated ? 'terminated' : 'dormant')
     if (phase === 'working' && !opts?.dryRun) {
       throw new HttpError(
@@ -5092,6 +5136,19 @@ export class SessionManager {
         if (entry?.type === 'user' && entry.uuid === uuid) {
           stampConsumedAt(entry, consumedAt)
           break
+        }
+      }
+      // Process deferred snapshot anchors: if this uuid was deferred at
+      // send time (session was working), capture now and record the anchor.
+      // At consume time the session is between turns — the tree reflects
+      // the actual pre-turn state, not a mid-previous-turn snapshot.
+      const anchors = s.pendingSnapshotAnchors
+      if (anchors) {
+        const idx = anchors.indexOf(uuid)
+        if (idx !== -1) {
+          anchors.splice(idx, 1)
+          if (anchors.length === 0) s.pendingSnapshotAnchors = undefined
+          this.captureAnchor(id, s, uuid)
         }
       }
     }

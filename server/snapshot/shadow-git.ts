@@ -151,16 +151,32 @@ export async function captureTree(
     // of size.
     const untracked = new Set(others.stdout.split('\0').filter(Boolean))
 
-    // Ignore filter against SOURCE repo rules when available.
-    // Only check untracked files — check-ignore --no-index also reports
-    // tracked-but-gitignored files (e.g. force-added .env), which should
-    // NOT be dropped from the snapshot.
-    let ignored = new Set<string>()
+    // Query the SOURCE repo's tracked set for the scope. Files that are
+    // tracked in the source (e.g. committed or git-added mid-session) but
+    // untracked in the shadow index should NOT be size-dropped or ignore-
+    // dropped — they are real tracked files, just not yet in the shadow.
+    let sourceTracked = new Set<string>()
     if (opts?.sourceGitDir && untracked.size > 0) {
+      const st = await run(
+        repo.worktree,
+        ['--git-dir', opts.sourceGitDir, '--work-tree', repo.worktree, 'ls-files', '-z', '--', pathspec],
+      ).catch(() => null)
+      if (st) {
+        sourceTracked = new Set(st.stdout.split('\0').filter(Boolean))
+      }
+    }
+
+    // Ignore filter against SOURCE repo rules when available.
+    // Only check files that are truly untracked in BOTH repos — files
+    // tracked in the source (committed/git-added mid-session) bypass
+    // both ignore and size checks.
+    const trulyUntracked = new Set([...untracked].filter((f) => !sourceTracked.has(f)))
+    let ignored = new Set<string>()
+    if (opts?.sourceGitDir && trulyUntracked.size > 0) {
       const check = await runStdin(
         repo.worktree,
         ['--git-dir', opts.sourceGitDir, '--work-tree', repo.worktree, 'check-ignore', '--no-index', '--stdin', '-z'],
-        [...untracked].join('\0') + '\0',
+        [...trulyUntracked].join('\0') + '\0',
       ).catch(() => null)
       if (check && (check.code === 0 || check.code === 1)) {
         ignored = new Set(check.stdout.split('\0').filter(Boolean))
@@ -169,7 +185,9 @@ export async function captureTree(
     const max = opts?.maxUntrackedBytes ?? 2 * 1024 * 1024
     const oversized: string[] = []
     for (const c of candidates) {
-      if (ignored.has(c) || !untracked.has(c)) continue
+      // Source-tracked files bypass size checks — they are real tracked
+      // files that just haven't been added to the shadow index yet.
+      if (ignored.has(c) || !trulyUntracked.has(c)) continue
       try {
         const st = await fs.stat(join(repo.worktree, c))
         if (st.isFile() && st.size > max) oversized.push(c)
@@ -177,8 +195,9 @@ export async function captureTree(
         /* ignore */
       }
     }
-    // rm --cached: drop ignored files AND oversized untracked files from
-    // the shadow index. Tracked (diff-files) files are never dropped.
+    // rm --cached: drop ignored files AND oversized truly-untracked files
+    // from the shadow index. Source-tracked and diff-files tracked files
+    // are never dropped.
     const drop = [...ignored, ...oversized]
     if (drop.length) {
       await runStdin(
@@ -235,6 +254,10 @@ export async function deletePaths(_repo: ShadowRepo, absPaths: string[]): Promis
 
 /** Max lines per unified-diff patch body. Matches git.ts MAX_DIFF_LINES. */
 const MAX_PATCH_LINES = 500
+
+/** Max number of files to process in structuredDiff. Prevents unbounded
+ *  per-file patch spawns when the diff is very large. */
+const MAX_DIFF_FILES = 200
 
 /** Parse NUL-terminated numstat output (`-z`): each entry is `adds\tdels\tpath\0`
  *  (tabs as field separator, NUL as line terminator — NOT NUL-delimited fields).
@@ -302,6 +325,14 @@ export async function structuredDiff(
   const names = await nameOnlyDiff(repo, from, to)
   if (names.length === 0) return []
 
+  // Cap the number of files processed to prevent unbounded per-file patch
+  // spawns on very large diffs. Sort for deterministic truncation.
+  const capped = names.length > MAX_DIFF_FILES
+  const processNames = capped ? names.sort().slice(0, MAX_DIFF_FILES) : names
+  if (capped) {
+    log.warn(`structuredDiff: ${names.length} files exceeds cap ${MAX_DIFF_FILES}, processing first ${MAX_DIFF_FILES}`)
+  }
+
   // Two bulk passes: name-status and numstat for all files at once.
   const [statusBulk, numstatBulk] = await Promise.all([
     run(repo.worktree, args(repo, ['diff', '--name-status', '-z', '--no-renames', from, to, '--'])),
@@ -312,7 +343,7 @@ export async function structuredDiff(
   const numstatMap = parseNumstatZ(numstatBulk.stdout)
 
   const out: Array<{ file: string; status: 'added'|'deleted'|'modified'; additions: number; deletions: number; patch?: string }> = []
-  for (const file of names) {
+  for (const file of processNames) {
     const code = statusMap.get(file) ?? 'M'
     const status = code === 'A' ? 'added' : code === 'D' ? 'deleted' : 'modified'
     const num = numstatMap.get(file)

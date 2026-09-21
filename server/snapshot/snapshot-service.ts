@@ -9,7 +9,6 @@ import {
   initShadowRepo,
   captureTree,
   nameOnlyDiff,
-  treeHasPath,
   restorePaths,
   deletePaths,
   structuredDiff,
@@ -137,10 +136,6 @@ export class SnapshotService {
     sessionId: string,
     cwd: string,
   ): Promise<ResolvedRepo | null> {
-    // Normalize 8.3 short names so cwd matches the long-form paths
-    // that `git rev-parse --show-toplevel` returns.
-    cwd = await resolveLongPath(cwd)
-
     const existing = await this.store.load(sessionId)
     if (existing?.gitDir) {
       // Prefer the persisted sourceGitDir (the real repo's .git) for
@@ -152,6 +147,11 @@ export class SnapshotService {
         sourceGitDir: existing.sourceGitDir ?? existing.gitDir,
       }
     }
+
+    // Normalize 8.3 short names so cwd matches the long-form paths
+    // that `git rev-parse --show-toplevel` returns. Only needed on first
+    // capture (existing?.gitDir already skipped above).
+    cwd = await resolveLongPath(cwd)
 
     const isGit = await safeExec(cwd, ['rev-parse', '--is-inside-work-tree'])
     if (!isGit || isGit.code !== 0 || isGit.stdout.trim() !== 'true') return null
@@ -309,6 +309,7 @@ export class SnapshotService {
     deletions: number
     patch?: string
   }>> {
+    if (!this.fileSnapshots) throw new Error('file snapshots are disabled')
     return this.lock(sessionId, async () => {
       const meta = await this.store.load(sessionId)
       if (!meta?.gitDir) throw new Error('no snapshot data for session')
@@ -328,6 +329,7 @@ export class SnapshotService {
    *  Uses diffStats (2 bulk spawns, no per-file patches) since patches
    *  are not sent over the wire for dryRun/rewind. */
   async dryRun(sessionId: string, messageId: string): Promise<RewindPreview> {
+    if (!this.fileSnapshots) return { canRewind: false, error: 'file snapshots are disabled' }
     return this.lock(sessionId, async () => {
       const meta = await this.store.load(sessionId)
       if (!meta) return { canRewind: false, error: 'no snapshot for session' }
@@ -359,6 +361,7 @@ export class SnapshotService {
    * are not sent over the wire for dryRun/rewind.
    */
   async rewind(sessionId: string, messageId: string): Promise<RewindPreview> {
+    if (!this.fileSnapshots) return { canRewind: false, error: 'file snapshots are disabled' }
     return this.lock(sessionId, async () => {
       const meta = await this.store.load(sessionId)
       if (!meta) return { canRewind: false, error: 'no snapshot for session' }
@@ -371,13 +374,28 @@ export class SnapshotService {
         if (!current) return { canRewind: false, error: 'capture failed' }
         const files = await nameOnlyDiff(repo, anchor.start, current)
 
+        // Classify files in bulk using name-status: 'A' (added since anchor)
+        // → toDelete (absent from start tree); everything else → toRestore.
         const toRestore: string[] = []
         const toDelete: string[] = []
-        for (const file of files) {
-          if (await treeHasPath(repo, anchor.start, file)) {
-            toRestore.push(file)
-          } else {
-            toDelete.push(join(meta.worktree, file))
+        if (files.length > 0) {
+          const { stdout } = await execFileAsync('git', [
+            '--git-dir', repo.gitDir, '--work-tree', repo.worktree,
+            'diff', '--name-status', '-z', '--no-renames', anchor.start, current, '--',
+          ], { cwd: repo.worktree, encoding: 'utf8', windowsHide: true, timeout: 30_000 })
+          // Parse NUL-delimited name-status: STATUS\0FILE\0 pairs
+          const statusMap = new Map<string, string>()
+          const parts = stdout.split('\0').filter(Boolean)
+          for (let i = 0; i + 1 < parts.length; i += 2) {
+            statusMap.set(parts[i + 1], parts[i])
+          }
+          for (const file of files) {
+            const code = statusMap.get(file) ?? 'M'
+            if (code === 'A') {
+              toDelete.push(join(meta.worktree, file))
+            } else {
+              toRestore.push(file)
+            }
           }
         }
 
