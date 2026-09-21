@@ -2760,6 +2760,18 @@ export class SessionManager {
       log.debug(`[session ${id}] snapshot anchor deferred for ${userUuid.slice(0, 8)} (session working)`)
       return
     }
+    this.captureAnchorNow(id, s, userUuid)
+  }
+
+  /** Capture + recordAnchor unconditionally. Used by captureAnchor (idle
+   *  path) and by onInputConsumed for deferred anchors — at consume time
+   *  pendingTurns is still >= 1 (the pump keeps it at 1 when more input is
+   *  queued), so re-entering captureAnchor would defer forever. Consume
+   *  time IS the correct pre-turn tree: the SDK read the message but has
+   *  not started its tools yet. */
+  private captureAnchorNow(id: string, s: Session, userUuid: string): void {
+    const cwd = s.cwd
+    if (!cwd) return
     void (async () => {
       try {
         // 15s timeout: a slow git subprocess (especially the first capture
@@ -5140,15 +5152,16 @@ export class SessionManager {
       }
       // Process deferred snapshot anchors: if this uuid was deferred at
       // send time (session was working), capture now and record the anchor.
-      // At consume time the session is between turns — the tree reflects
-      // the actual pre-turn state, not a mid-previous-turn snapshot.
+      // MUST use captureAnchorNow — captureAnchor re-checks idle, and at
+      // consume time pendingTurns is still >= 1, which would re-defer
+      // forever and orphan the anchor.
       const anchors = s.pendingSnapshotAnchors
       if (anchors) {
         const idx = anchors.indexOf(uuid)
         if (idx !== -1) {
           anchors.splice(idx, 1)
           if (anchors.length === 0) s.pendingSnapshotAnchors = undefined
-          this.captureAnchor(id, s, uuid)
+          this.captureAnchorNow(id, s, uuid)
         }
       }
     }

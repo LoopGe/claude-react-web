@@ -142,7 +142,16 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         if (!promptIter || done || drainInFlight) return
         drainInFlight = true
         promptIter.next().then((r) => {
-          if (!r.done) handle.consumed.push(r.value)
+          if (!r.done) {
+            handle.consumed.push(r.value)
+            // Mirror the real SDK: onUserMessageConsumed fires when a
+            // queued user message is dequeued for the next turn.
+            const consumedCb = (options as { onUserMessageConsumed?: (m: unknown) => void })
+              .onUserMessageConsumed
+            if (typeof consumedCb === 'function') {
+              try { consumedCb(r.value) } catch { /* never break iteration */ }
+            }
+          }
         }).finally(() => { drainInFlight = false })
       }
       // Initial drain: SDK consumes the first user message to start its
@@ -2772,6 +2781,34 @@ describe('SessionManager', () => {
     expect(sent.uuid).toBeTruthy()
     // The user message reached the ring (dispatch ran).
     expect(sm.getHistory(info.id)?.some((m) => (m as { uuid?: string }).uuid === sent.uuid)).toBe(true)
+  })
+
+  it('queued send defers the anchor and captures on consume (no re-defer loop)', async () => {
+    const spies = spySnapshots()
+    spies.capture.mockResolvedValue('tree-q')
+    const info = sm.create({ cwd: dir })
+    // First send starts a turn — session is now working.
+    sm.send(info.id, 'first')
+    // Second send is queued while working: must NOT capture at enqueue.
+    const queued = sm.send(info.id, 'second')
+    expect(spies.capture).toHaveBeenCalledTimes(1) // only the idle first send
+    // Consume time is the correct pre-turn tree. Call onInputConsumed
+    // directly (the critical regression: captureAnchor re-checks idle, and
+    // at consume time pendingTurns is still >= 1, which would re-defer
+    // forever and orphan the anchor).
+    const smAny = sm as unknown as {
+      onInputConsumed: (id: string, msg: unknown) => void
+    }
+    smAny.onInputConsumed(info.id, {
+      type: 'user',
+      uuid: queued.uuid,
+      parent_tool_use_id: null,
+      message: { role: 'user', content: 'second' },
+    })
+    await tick()
+    await tick()
+    expect(spies.capture).toHaveBeenCalledTimes(2)
+    expect(spies.recordAnchor).toHaveBeenCalledWith(info.id, dir, queued.uuid, 'tree-q')
   })
 
   // --- readFile: SDK readFile + CLI read-state seeding (seedReadState) ---
