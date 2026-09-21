@@ -56,6 +56,7 @@ import {
   getParentToolUseId,
   applyTaskEvent,
   reconcileTasksFromStopHook as reconcileTaskMapFromStopHook,
+  settleTasksOnProcessExit,
   type StopHookTaskSummary,
   reapplyAutoCompactWindow,
   applySdkAutoCompactFacts,
@@ -696,6 +697,24 @@ export class SessionManager {
     // timeout → auto-resume commonly re-arms the same watcher, and a settle
     // there would flap stopped→done).
     this.settleBackgroundWatchersOnProcessExit(s)
+    // The watcher above only covers the subagent dispatches IT tracks; every
+    // other record in the task map (background shell / workflow / ambient) is
+    // equally orphaned by the exit and would otherwise spin in the TasksPanel
+    // forever, since neither the sweep (no Stop hook) nor a completion frame
+    // can arrive. Same reasoning and same `stopped` landing as the watcher's
+    // fallback; see settleTasksOnProcessExit. Broadcast the info frame too —
+    // the settled records can include subagents the watcher did not track, and
+    // the sidebar count reads the same map. Still before the recovery ladder /
+    // termination below, so the frame reaches subscribers.
+    // `info()`'s only task-derived fields (backgroundSubagentCount / phase /
+    // working) come from SUBAGENT records, so a settle that touched nothing but
+    // shell / workflow / ambient records changes no observable field — broadcast
+    // only when the count actually moved. The settled RECORDS still reach open
+    // panels either way: settleTasksOnProcessExit pushes a task snapshot.
+    const countBefore = this.backgroundSubagentCount(s)
+    if (settleTasksOnProcessExit(s) && this.backgroundSubagentCount(s) !== countBefore) {
+      this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+    }
 
     // Determine reason / message. spawnError takes priority — it's a
     // structured failure from ProcessMonitor's 'error' event and carries

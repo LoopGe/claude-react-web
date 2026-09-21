@@ -592,6 +592,15 @@ export type SessionAction =
   /** Latest authoritative CLI session state (`system/session_state_changed`
    *  frame). Ephemeral — never transcript content; drives derived status. */
   | { type: 'SESSION_STATE'; state: CliSessionState }
+  /** The session reached `terminated` — no further frame of ANY kind will
+   *  arrive for it. Runs the same turn-end sweep as the `result` frame, which
+   *  a dead session never delivers: without it a stranded SYNC (foreground)
+   *  subagent record keeps `status: 'running'` forever, so its card spins on a
+   *  dead session with nothing left that can settle it. TASKS_SNAPSHOT
+   *  deliberately leaves that record running (a `running` record is what the
+   *  result-frame merge needs to attach the subagent's output to), so this is
+   *  the terminal-state counterpart it assumes exists. */
+  | { type: 'SESSION_TERMINATED' }
   /** The SDK read a queued user turn off its input queue. Flips the
    *  matching message's deliveryStatus from 'queued' to 'consumed'. */
   | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }

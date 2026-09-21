@@ -159,6 +159,37 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       return withMirror(state, { ...state.mirror, promptSuggestion: action.suggestion })
     case 'SESSION_STATE':
       return withMirror(state, { ...state.mirror, sessionState: action.state })
+    case 'SESSION_TERMINATED': {
+      // Same sweep the `result` frame runs, for the session state in which no
+      // result frame can ever arrive. Without it a stranded SYNC subagent
+      // record stays `running` forever and its card spins on a dead session —
+      // the case TASKS_SNAPSHOT deliberately skips below on the assumption
+      // that the result-frame sweep covers it. `liveTurn: null` and the
+      // placeholder clear match that branch's reasoning: the SDK is finished,
+      // so no echo is expected for anything still marked as sending.
+      //
+      // Idempotent by design: the dispatcher fires again after each replay (a
+      // reload of a terminated session rebuilds the records the sweep must
+      // then re-examine), so a no-op re-dispatch must NOT churn every
+      // subscriber or dirty a persist. sweepAtTurnEnd returns the same mirror
+      // reference when nothing needed sweeping.
+      const swept = sweepAtTurnEnd(state.mirror)
+      const intent = clearSendingPlaceholders(state.intent)
+      // `apiRetry` is transient in exactly the same way as the slots above: it
+      // lives outside the transcript because it is "only meaningful while a
+      // retry is in flight", and its ONLY clearer is the next non-retry
+      // message — which a terminated session never delivers. Without this a
+      // "Retrying in Ns…" divider hangs on a session that can never retry.
+      // (`thinkingTokens` needs nothing here: it is rendered only by the
+      // WorkingBubble, which does not mount once the session is terminated.)
+      const transientCleared = state.mirror.liveTurn !== null || state.mirror.apiRetry !== null
+      if (swept === state.mirror && !transientCleared && intent === state.intent) return state
+      return {
+        sessionId: state.sessionId,
+        mirror: { ...swept, liveTurn: null, apiRetry: null },
+        intent,
+      }
+    }
     case 'TASKS_SNAPSHOT': {
       // Replace the whole task list, then enrich matching subagent records.
       // Joining by toolUseId (not taskId) because activeSubagents are keyed
@@ -200,8 +231,14 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         // told us the task was backgrounded. A sync record is deliberately
         // excluded: its real output arrives as the Agent tool_result, and that
         // merge branch requires status 'running', so settling here first would
-        // swallow the subagent's output. Stranded sync records are already
-        // covered by the turn-end result-frame sweep.
+        // swallow the subagent's output.
+        //
+        // The assumption this exclusion used to rest on — "stranded sync records
+        // are already covered by the turn-end result-frame sweep" — holds only
+        // while a result frame is still coming. A session that TERMINATES never
+        // delivers one, so SESSION_TERMINATED runs that same sweep for exactly
+        // this case; without it a sync record stays `running` forever and its
+        // card spins on a dead session.
         //
         // 'stopped' maps to 'done' when a result was captured (the work landed,
         // only the bookend was lost) and 'interrupted' otherwise; a later REAL

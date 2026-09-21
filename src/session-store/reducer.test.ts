@@ -301,6 +301,51 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(after?.status).toBe('interrupted')
   })
 
+  it('sweeps a stranded SYNC subagent at SESSION_TERMINATED — no result frame will ever come', () => {
+    // The exact record TASKS_SNAPSHOT deliberately leaves `running`: a sync
+    // record's real output arrives as the Agent tool_result, so settling it
+    // there would swallow the payload. The turn-end sweep normally covers it —
+    // but that sweep hangs off the result frame, and a terminated session
+    // never delivers one, so the card used to spin on a dead session forever.
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse })
+    expect(state.mirror.activeSubagents.get('tu_agent')?.status).toBe('running')
+
+    state = reduceSessionState(state, { type: 'SESSION_TERMINATED' })
+    const after = state.mirror.activeSubagents.get('tu_agent')
+    expect(after?.status).toBe('interrupted')
+    expect(after?.endedAt).toBeGreaterThan(0)
+    // Same live-only concerns the result branch clears: the SDK is finished.
+    expect(state.mirror.liveTurn).toBeNull()
+  })
+
+  it('clears the transient apiRetry slot at SESSION_TERMINATED', () => {
+    // `apiRetry` lives outside the transcript precisely because it is "only
+    // meaningful while a retry is in flight", and its ONLY clearer is the next
+    // non-retry message — which a terminated session never delivers. Left
+    // alone, the "Retrying in Ns…" divider would hang forever on a session
+    // that can never retry.
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: { type: 'system', subtype: 'api_retry', uuid: 'r-1' } as unknown as SdkMessage,
+    })
+    expect(state.mirror.apiRetry).not.toBeNull()
+
+    state = reduceSessionState(state, { type: 'SESSION_TERMINATED' })
+    expect(state.mirror.apiRetry).toBeNull()
+  })
+
+  it('is a true no-op when re-dispatched after the sweep (no subscriber churn)', () => {
+    // The dispatcher re-fires after every replay of a terminated session, so
+    // a second dispatch must return the IDENTICAL state — otherwise each
+    // replay notifies every subscriber and dirties a persist for nothing.
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse })
+    const settled = reduceSessionState(state, { type: 'SESSION_TERMINATED' })
+    expect(reduceSessionState(settled, { type: 'SESSION_TERMINATED' })).toBe(settled)
+  })
+
   it('launch-ack tool_result is skipped entirely (D2-B): record stays running, TASKS_SNAPSHOT flips to background', () => {
     // D2-B: the launch-ack tool_result is skipped (record stays 'running');
     // TASKS_SNAPSHOT (isBackgrounded:true) is the sole authority for

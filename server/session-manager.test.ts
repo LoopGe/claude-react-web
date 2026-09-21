@@ -5081,6 +5081,63 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       }
     })
 
+    it("settles the session's non-terminal TASK records on crash, not just tracked subagents", async () => {
+      // The companion to the watcher settle above. That one only holds entries
+      // for the subagent dispatches IT tracked, so every other record in the
+      // task map — background shell / workflow / ambient — was orphaned by the
+      // crash and stayed `running` for the rest of the session's life: a
+      // spinner in the TasksPanel on a dead session, with no path that ever
+      // clears it (the stop-hook sweep needs a Stop hook, and a terminated
+      // session never fires one). Observed live before this fix: a background
+      // `sleep` shell record survived its session's CLI being killed.
+      sm = new SessionManager({ store }) // recovery disabled → terminate on crash
+      const info = sm.create({ cwd: '/tmp/workspace' })
+      const sessions = (sm as unknown as {
+        sessions: Map<string, { tasks: Map<string, { status: string; endedAt?: number }> }>
+      }).sessions
+      // Hold the Map itself: termination may drop the session from the pool,
+      // but the map the settle mutates is this object.
+      const live = sessions.get(info.id)!
+      mockHandles.at(-1)!.emit({
+        type: 'system', subtype: 'task_started', task_id: 'sh-crash', task_type: 'local_bash', tool_use_id: 'tu_sh',
+      })
+      await tick()
+      expect(live.tasks.get('sh-crash')?.status).toBe('running')
+
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => sm.get(info.id).terminated === true)
+
+      const after = live.tasks.get('sh-crash')!
+      expect(after.status).toBe('stopped')
+      expect(after.endedAt).toBeGreaterThan(0)
+    })
+
+    it('settles task records on the CLEAN-exit dead end too, not only a crash', async () => {
+      // The sibling dead end for the same bug: a clean exit (code 0) that
+      // declines to resume reaches the terminal state through cleanupPump
+      // instead of handleProcessExit's crash branch, and used to strand records
+      // identically. `settleTasksOnProcessExit` is not called from the
+      // handleProcessExit clean-exit branch (an idle exit is normally followed
+      // by auto-resume, where settling would flap stopped→done), so this pins
+      // the pump-tail call that covers the terminate-after-clean-exit case.
+      sm = new SessionManager({ store }) // no autoResume → the tail terminates
+      const info = sm.create({ cwd: '/tmp/workspace' })
+      const sessions = (sm as unknown as {
+        sessions: Map<string, { tasks: Map<string, { status: string }> }>
+      }).sessions
+      const live = sessions.get(info.id)!
+      mockHandles.at(-1)!.emit({
+        type: 'system', subtype: 'task_started', task_id: 'sh-clean', task_type: 'local_bash', tool_use_id: 'tu_sh2',
+      })
+      await tick()
+      expect(live.tasks.get('sh-clean')?.status).toBe('running')
+
+      fireCrash(sm, info.id, { code: 0, signal: null, killed: false }) // clean exit
+      await waitFor(() => sm.get(info.id).terminated === true)
+
+      expect(live.tasks.get('sh-clean')?.status).toBe('stopped')
+    })
+
     it('honours a real terminal frame written just before the crash (completed, not stopped)', async () => {
       // If the subagent finished (terminal stop_reason on disk) moments before
       // the host crashed, the settle prefers its real output over a synthesized

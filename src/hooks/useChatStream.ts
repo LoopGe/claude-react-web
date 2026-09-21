@@ -179,6 +179,12 @@ export function useChatStream(
   sessionId: string,
   permissions: PermissionHandlers,
   running?: boolean,
+  /** True once the session is `terminated`. No further frame of any kind will
+   *  arrive for it, so the store must run the turn-end sweep itself — see the
+   *  SESSION_TERMINATED action. Passed in (rather than inferred) because the
+   *  hook only sees the message channel, and termination is a session-info
+   *  fact. */
+  terminated?: boolean,
 ): ChatStream {
   const hub = useWsHub()
   const hubStatus = useWsHubStatus()
@@ -244,6 +250,27 @@ export function useChatStream(
   useEffect(() => {
     permsRef.current = permissions
   }, [permissions])
+
+  useEffect(() => {
+    // Gated on replayReady, NOT just `terminated`: this effect also runs on
+    // mount, which for a reloaded terminated session happens BEFORE the replay
+    // lands — exactly when the store is still empty, and one frame before the
+    // transcript (and any subagent record in it) is rebuilt. Sweeping there
+    // would be a no-op on the empty store and then leave the just-replayed
+    // records unswept (terminated never flips again), and it would also beat a
+    // replayed Agent tool_result to the punch — that merge needs status
+    // 'running', so an early sweep would drop a finished subagent's output.
+    // Waiting for replayReady means the records exist and any payload has
+    // already been applied.
+    if (!terminated || !replayReady) return
+    // A terminated session never delivers the `result` frame that normally
+    // drives the turn-end sweep, so a sync (foreground) subagent record — the
+    // one TASKS_SNAPSHOT leaves `running` on the assumption that the
+    // result-frame sweep will cover it — would otherwise keep its card
+    // spinning forever on a dead session. Idempotent (see the action), so
+    // re-firing per replay and on a terminate→resume→terminate cycle is safe.
+    store.dispatch({ type: 'SESSION_TERMINATED' })
+  }, [terminated, replayReady, store])
 
   useEffect(() => {
     sessionStoreRegistry.retain(sessionId)

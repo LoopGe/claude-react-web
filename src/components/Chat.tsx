@@ -578,7 +578,7 @@ export const Chat = memo(function Chat({
       setInput(text)
       setComposerFocusSignal((n) => n + 1)
     },
-  }, session.running)
+  }, session.running, session.terminated)
 
   // Mirror the live values into refs so the fire-and-forget auto-title guard
   // inside `send` reads CURRENT messages/title without recreating `send` on

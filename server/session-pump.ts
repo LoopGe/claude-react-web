@@ -493,6 +493,48 @@ export function reconcileTasksFromStopHook(session: Session, summaries: StopHook
   return true
 }
 
+/** Settle EVERY non-terminal task record once the CLI process is gone.
+ *
+ *  `reconcileTasksFromStopHook` cannot cover this case. It needs a Stop hook
+ *  (a process that has exited never fires one), and it deliberately exempts
+ *  ambient / skipTranscript / `paused` records on the premise that absence from
+ *  the in-flight list proves nothing while the process is alive. Neither
+ *  premise survives the exit: there is no in-flight set left and nothing can
+ *  resume, so every exemption there just means "left running forever". A record
+ *  left behind renders a spinner in the TasksPanel on a dead session with no
+ *  path that ever clears it (observed: a background `sleep` shell record stayed
+ *  `running` after its session's CLI was killed).
+ *
+ *  Lands them on `stopped` — the same status the subagent watcher's own
+ *  process-exit fallback uses, meaning "ended, no completion evidence", never
+ *  an assertion of failure. Callers must NOT run this on the clean-exit path:
+ *  an idle-timeout exit is followed by auto-resume, and settling there would
+ *  flap records to stopped while the work continues. A late real completion
+ *  still overrides an over-eager `stopped`, since a task_notification frame
+ *  writes its own status.
+ *
+ *  Returns true when anything changed. */
+export function settleTasksOnProcessExit(session: Session): boolean {
+  const now = Date.now()
+  let changed = false
+  for (const [taskId, rec] of session.tasks) {
+    if (isTerminalTaskStatus(rec.status)) continue
+    session.tasks.set(taskId, {
+      ...rec,
+      status: 'stopped',
+      endedAt: rec.endedAt ?? now,
+      progressSummary: undefined,
+      lastToolName: undefined,
+      updatedAt: now,
+    })
+    changed = true
+  }
+  if (!changed) return false
+  pruneTerminalTasks(session)
+  pushTasksSnapshot(session)
+  return true
+}
+
 /** Extract the SDK-reported `fast_mode_state` from a message, if present.
  *  The field rides on `system/init` and `result` (success + error) messages
  *  (see sdk.d.ts: SDKSystemMessage, SDKResultSuccess, SDKResultError). We
@@ -1403,6 +1445,16 @@ async function cleanupPump(session: Session, deps: PumpDeps, pumpHandle: Provide
     session.recovering = false
     session.lastCrash = undefined
     session.terminated = true
+    // This is the other dead end for task records, reached through a CLEAN
+    // exit that declined to resume (an error was set, or autoResume was
+    // exhausted / threw) rather than through a crash. Same reasoning as the
+    // crash path in handleProcessExit: the CLI is gone, so no Stop hook and no
+    // completion frame will ever settle what is left in the map, and a
+    // `running` record would spin in the TasksPanel for the rest of the
+    // session's life. Runs before endAllSubscribers so the snapshot reaches
+    // live panels, and before persist so the terminating broadcast below reads
+    // the settled counts.
+    settleTasksOnProcessExit(session)
     // Only set terminatedReason if it hasn't already been set by
     // handleProcessExit (which provides more specific values like
     // 'process_killed' or 'process_exited').

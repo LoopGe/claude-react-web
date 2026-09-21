@@ -535,7 +535,7 @@ export const ChatPanel = memo(function ChatPanel({
     onRequest: sideChatPermissions.onRequest,
     onResolved: sideChatPermissions.onResolved,
     onCleared: sideChatPermissions.clearError,
-  }, sideChatSession?.running ?? false)
+  }, sideChatSession?.running ?? false, sideChatSession?.terminated ?? false)
 
   const commitModel = (next: string) => {
     const value = next.trim()

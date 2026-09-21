@@ -3,6 +3,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   applyBackgroundTasksChanged,
   reconcileTasksFromStopHook,
+  settleTasksOnProcessExit,
   applyTaskEvent,
   backgroundSubagentLaunches,
   compactingOf,
@@ -1696,6 +1697,62 @@ describe('reconcileTasksFromStopHook', () => {
     session.tasks.set('live', rec({ taskId: 'live' }))
     reconcileTasksFromStopHook(session, [{ id: 'live', status: 'completed' }])
     expect(session.tasks.get('live')?.status).toBe('running')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// settleTasksOnProcessExit
+//
+// The counterpart for a CLI that is GONE: unlike the stop-hook sweep above it
+// takes no list and honours no exemptions, because once the process has exited
+// there is no in-flight set to be absent from and nothing left that could
+// resume. Every non-terminal record is orphaned and must be settled, or it
+// spins in the TasksPanel for the rest of the session's life.
+// ---------------------------------------------------------------------------
+
+describe('settleTasksOnProcessExit', () => {
+  const rec = (over: Partial<TaskRecordUi> & { taskId: string }): TaskRecordUi => ({
+    description: 'work', status: 'running', updatedAt: 1, ...over,
+  })
+
+  it('settles EVERY non-terminal record, including the ones the sweep exempts', () => {
+    const { session, snapshots } = makeTaskSession()
+    session.tasks.set('plain', rec({ taskId: 'plain', progressSummary: 'stale', lastToolName: 'Bash' }))
+    session.tasks.set('amb', rec({ taskId: 'amb', ambient: true }))
+    session.tasks.set('skip', rec({ taskId: 'skip', skipTranscript: true }))
+    session.tasks.set('paused', rec({ taskId: 'paused', status: 'paused' }))
+    expect(settleTasksOnProcessExit(session)).toBe(true)
+    for (const id of ['plain', 'amb', 'skip', 'paused']) {
+      const after = session.tasks.get(id)!
+      expect(after.status).toBe('stopped')
+      expect(after.endedAt).toBeGreaterThan(0)
+    }
+    // The stale progress affordances are dropped, as in the sweep.
+    expect(session.tasks.get('plain')!.progressSummary).toBeUndefined()
+    expect(session.tasks.get('plain')!.lastToolName).toBeUndefined()
+    expect(snapshots).toHaveLength(1)
+  })
+
+  it('leaves terminal records alone', () => {
+    const { session } = makeTaskSession()
+    session.tasks.set('done', rec({ taskId: 'done', status: 'completed', endedAt: 500 }))
+    session.tasks.set('failed', rec({ taskId: 'failed', status: 'failed' }))
+    expect(settleTasksOnProcessExit(session)).toBe(false)
+    expect(session.tasks.get('done')).toMatchObject({ status: 'completed', endedAt: 500 })
+    expect(session.tasks.get('failed')?.status).toBe('failed')
+  })
+
+  it('keeps an already-recorded endedAt rather than overwriting it', () => {
+    const { session } = makeTaskSession()
+    session.tasks.set('t', rec({ taskId: 't', status: 'paused', endedAt: 42 }))
+    expect(settleTasksOnProcessExit(session)).toBe(true)
+    expect(session.tasks.get('t')?.endedAt).toBe(42)
+  })
+
+  it('is a no-op (no snapshot) when there is nothing to settle', () => {
+    const { session, snapshots } = makeTaskSession()
+    expect(settleTasksOnProcessExit(session)).toBe(false)
+    expect(snapshots).toHaveLength(0)
   })
 })
 

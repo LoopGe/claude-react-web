@@ -82,6 +82,60 @@ describe('useChatStream', () => {
     vi.restoreAllMocks()
   })
 
+  // ── Terminated session ─────────────────────────────────────────
+
+  const syncAgentFrame = {
+    type: 'assistant',
+    uuid: 'a-sync',
+    message: {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'tu_term', name: 'Agent', input: { description: 'sync work' } }],
+    },
+  }
+  const replaySyncAgent = (sid: string) => {
+    dispatchToSession(sid, { kind: 'replay', sessionId: sid, messages: [syncAgentFrame] })
+    dispatchToSession(sid, { kind: 'replay-done', sessionId: sid })
+  }
+  const subagentStatus = (sid: string) =>
+    getSessionStore(sid).getState().mirror.activeSubagents.get('tu_term')?.status
+
+  it('sweeps a stranded sync subagent on a RELOADED terminated session', async () => {
+    // The reload flow: on mount the store is empty and `terminated` is already
+    // true, so a sweep at mount would no-op — the record only exists once the
+    // replay lands. Gating the dispatch on replayReady is what makes the sweep
+    // hit the rebuilt record, and it also lets a replayed Agent tool_result
+    // (whose merge needs status 'running') be applied BEFORE the sweep.
+    renderHook(() => useChatStream('term-reload', noopPerms, false, true))
+    act(() => { replaySyncAgent('term-reload') })
+
+    await waitFor(() => expect(subagentStatus('term-reload')).toBe('interrupted'))
+  })
+
+  it('sweeps a stranded sync subagent when a session terminates LIVE', async () => {
+    // The common case: the session replayed while alive, then terminated. The
+    // record is running first (the in-flight subagent) and must settle when
+    // `terminated` flips — no result frame will ever arrive to do it.
+    const { rerender } = renderHook(
+      ({ terminated }: { terminated: boolean }) => useChatStream('term-live', noopPerms, false, terminated),
+      { initialProps: { terminated: false } },
+    )
+    act(() => { replaySyncAgent('term-live') })
+    await waitFor(() => expect(subagentStatus('term-live')).toBe('running'))
+
+    rerender({ terminated: true })
+    await waitFor(() => expect(subagentStatus('term-live')).toBe('interrupted'))
+  })
+
+  it('leaves a live session alone (terminated=false must not sweep)', async () => {
+    // An in-flight sync subagent must keep running on a live session — its
+    // output still arrives as the tool_result, and settling early would
+    // swallow it.
+    renderHook(() => useChatStream('term-alive', noopPerms, true, false))
+    act(() => { replaySyncAgent('term-alive') })
+
+    await waitFor(() => expect(subagentStatus('term-alive')).toBe('running'))
+  })
+
   // ── Replay buffering ──────────────────────────────────────────
 
   it('buffers replay messages and applies on replay-done', async () => {
