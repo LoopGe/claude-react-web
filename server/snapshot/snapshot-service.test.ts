@@ -202,4 +202,34 @@ describe('SnapshotService', { timeout: 30_000 }, () => {
     expect(dry.diffs![0].patch).toContain('@@')
     expect(dry.diffs![0].additions).toBeGreaterThan(0)
   })
+
+  it('real rewind invalidates later anchors (F5)', async () => {
+    // Record 3 anchors at different states
+    const tree1 = await svc.capture({ sessionId: 's-f5', cwd: wt })
+    expect(tree1).toBeTruthy()
+    await svc.recordAnchor('s-f5', wt, 'U1', tree1!)
+
+    await writeFile(join(wt, 'a.txt'), 'two\n')
+    const tree2 = await svc.capture({ sessionId: 's-f5', cwd: wt })
+    expect(tree2).toBeTruthy()
+    await svc.recordAnchor('s-f5', wt, 'U2', tree2!)
+
+    await writeFile(join(wt, 'b.txt'), 'b\n')
+    const tree3 = await svc.capture({ sessionId: 's-f5', cwd: wt })
+    expect(tree3).toBeTruthy()
+    await svc.recordAnchor('s-f5', wt, 'U3', tree3!)
+
+    // All 3 anchors present
+    let anchors = await svc.listAnchors('s-f5')
+    expect(anchors).toHaveLength(3)
+
+    // Rewind to the first anchor
+    const result = await svc.rewind('s-f5', 'U1')
+    expect(result.canRewind).toBe(true)
+
+    // Only the first anchor should remain — later ones were invalidated
+    anchors = await svc.listAnchors('s-f5')
+    expect(anchors).toHaveLength(1)
+    expect(anchors[0].messageId).toBe('U1')
+  })
 })

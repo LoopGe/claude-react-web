@@ -1,4 +1,4 @@
-import { readFile, unlink, rm } from 'node:fs/promises'
+import { readFile, unlink, rm, cp, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createLogger } from '../log.js'
 import { writeAtomic } from '../json-file-store.js'
@@ -6,11 +6,19 @@ import { metaFile, odbDir, snapshotRoot } from './paths.js'
 
 const log = createLogger('snapshots')
 
+/** Maximum number of rewind anchors (byMessage entries) per session.
+ *  Oldest entries are evicted when the cap is exceeded. */
+const MAX_ANCHORS = 500
+
 export interface SessionSnapshotMeta {
   version: 1
   gitDir: string
   worktree: string
   scope: string
+  /** The real repo's .git dir, persisted so check-ignore works on reload.
+   *  Set on first capture; may be absent for sessions captured before this
+   *  field was added. */
+  sourceGitDir?: string
   byMessage: Record<string, { start: string }>
   patches: Array<{ messageId: string; hash: string; files: string[] }>
   last?: { tree: string; at: number }
@@ -19,6 +27,11 @@ export interface SessionSnapshotMeta {
 export class SnapshotStore {
   private readonly dir: string | null
   private readonly writing = new Map<string, Promise<void>>()
+  /** Tombstone set: sessions whose meta + odb were explicitly removed.
+   *  update()/save() no-op for these ids so a fire-and-forget capture
+   *  cannot resurrect a deleted session's sidecar. copyForFork clears
+   *  the toId entry so the fork is not accidentally tombstoned. */
+  private readonly removed = new Set<string>()
 
   constructor(stateDir: string | undefined) {
     this.dir = stateDir ?? null
@@ -57,18 +70,23 @@ export class SnapshotStore {
 
   async save(sessionId: string, meta: SessionSnapshotMeta): Promise<void> {
     if (!this.dir) return
+    if (this.removed.has(sessionId)) return
+    const capped = capAnchors(meta)
     const file = this.file(sessionId)!
-    await this.chain(sessionId, () => writeAtomic(join(snapshotRoot(this.dir!), 'meta'), file, meta))
+    await this.chain(sessionId, () => writeAtomic(join(snapshotRoot(this.dir!), 'meta'), file, capped))
   }
 
   async update(
     sessionId: string,
     fn: (prev: SessionSnapshotMeta | null) => SessionSnapshotMeta | null,
   ): Promise<void> {
+    if (this.removed.has(sessionId)) return
     await this.chain(sessionId, async () => {
+      if (this.removed.has(sessionId)) return
       const prev = await this.load(sessionId)
-      const next = fn(prev)
+      let next = fn(prev)
       if (!next) return
+      next = capAnchors(next)
       const file = this.file(sessionId)
       if (!file || !this.dir) return
       await writeAtomic(join(snapshotRoot(this.dir), 'meta'), file, next)
@@ -88,22 +106,35 @@ export class SnapshotStore {
       if (keepMessageIds.has(k)) byMessage[k] = v
     }
     const patches = src.patches.filter((p) => keepPatchMessageIds.has(p.messageId))
-    // NOTE: the fork inherits src.gitDir/worktree/scope, so it reuses the
-    // source's shadow odb at odb/<src.id>. This is deliberate for v1: the
-    // inherited byMessage/patches reference tree SHAs that live in the
-    // source's odb, and the fork needs them to honor rewinds to inherited
-    // anchors. The trade-off is a theoretical concurrency risk — if the
-    // source's fire-and-forget captureAnchor is still in flight after
-    // discard, it writes to odb/<src.id> while the fork's captures also
-    // write there, racing on the git index lockfile. In practice
-    // captureAnchor finishes in <500ms and discard runs after the turn
-    // completes, so the race window is negligible. A future hardening
-    // pass should copy the odb directory to odb/<toId> and rewrite
-    // gitDir, eliminating the race while preserving inherited SHAs.
-    await this.save(toId, { ...src, byMessage, patches, last: undefined })
+    // Copy the odb directory so the fork has its own git objects.
+    // This eliminates the concurrency risk where remove(fromId) would
+    // destroy objects the fork still references. The fork's byMessage/
+    // patches reference tree SHAs that live in the copied odb.
+    if (this.dir) {
+      const srcOdb = odbDir(this.dir, fromId)
+      const dstOdb = odbDir(this.dir, toId)
+      try {
+        await mkdir(dstOdb, { recursive: true })
+        await cp(srcOdb, dstOdb, { recursive: true, force: true })
+      } catch {
+        // ENOENT-tolerant — source odb may not exist if the session was
+        // never captured. The fork just won't have an odb until its first
+        // capture creates one.
+      }
+    }
+    // Clear tombstone in case the fork id was previously used and removed.
+    this.removed.delete(toId)
+    await this.save(toId, {
+      ...src,
+      gitDir: this.dir ? odbDir(this.dir, toId) : src.gitDir,
+      byMessage,
+      patches,
+      last: undefined,
+    })
   }
 
   async remove(sessionId: string): Promise<void> {
+    this.removed.add(sessionId)
     const file = this.file(sessionId)
     if (!file) return
     try {
@@ -122,4 +153,25 @@ export class SnapshotStore {
       }
     }
   }
+}
+
+/** Evict oldest byMessage entries and patches beyond MAX_ANCHORS.
+ *  JS object key order for string keys is insertion order, so the first
+ *  keys are the oldest. byMessage keys are user UUIDs; patches[].messageId
+ *  are assistant UUIDs — they are capped independently. */
+function capAnchors(meta: SessionSnapshotMeta): SessionSnapshotMeta {
+  let result = meta
+  const keys = Object.keys(result.byMessage)
+  if (keys.length > MAX_ANCHORS) {
+    const drop = new Set(keys.slice(0, keys.length - MAX_ANCHORS))
+    const byMessage: SessionSnapshotMeta['byMessage'] = {}
+    for (const [k, v] of Object.entries(result.byMessage)) {
+      if (!drop.has(k)) byMessage[k] = v
+    }
+    result = { ...result, byMessage }
+  }
+  if (result.patches.length > MAX_ANCHORS) {
+    result = { ...result, patches: result.patches.slice(result.patches.length - MAX_ANCHORS) }
+  }
+  return result
 }

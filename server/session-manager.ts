@@ -2676,7 +2676,7 @@ export class SessionManager {
     )
     // Capture the pre-turn worktree state as a snapshot anchor so this
     // user message can be rewound to later. Fire-and-forget with an
-    // internal 2s timeout — the capture starts before dispatch (so it
+    // internal 15s timeout — the capture starts before dispatch (so it
     // has a head start over the SDK's tool_use), but a slow git subprocess
     // must not block the HTTP send path. On any failure (timeout, non-git
     // cwd, git error) log.warn and continue; the anchor is best-effort,
@@ -6377,12 +6377,11 @@ export class SessionManager {
 
 /** Narrow a SnapshotService `RewindPreview` (the in-house shadow-repo
  *  rewind result, which carries a structured `diffs` array) into the
- *  wire `RewindFilesResult` shape the client already consumes. The
- *  client doesn't render the structured diffs from this endpoint (it
- *  pulls them via the separate diff route), so we drop `diffs` and keep
- *  only the fields the wire type promises. `skippedLinks` is always
- *  absent (the shadow-repo path has no symlink/hard-link safety
- *  refusal), and the rest passes through verbatim. */
+ *  wire `RewindFilesResult` shape the client already consumes. We drop
+ *  `diffs` — diffs are reserved for a future Review UI; not sent on
+ *  this wire type. `skippedLinks` is always absent (the shadow-repo
+ *  path has no symlink/hard-link safety refusal), and the rest passes
+ *  through verbatim. */
 function narrowRewindPreview(p: RewindPreview): RewindFilesResult {
   const out: RewindFilesResult = { canRewind: p.canRewind === true }
   if (typeof p.error === 'string' && p.error) out.error = p.error

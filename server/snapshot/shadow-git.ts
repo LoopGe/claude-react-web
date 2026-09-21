@@ -151,13 +151,16 @@ export async function captureTree(
     // of size.
     const untracked = new Set(others.stdout.split('\0').filter(Boolean))
 
-    // Ignore filter against SOURCE repo rules when available
+    // Ignore filter against SOURCE repo rules when available.
+    // Only check untracked files — check-ignore --no-index also reports
+    // tracked-but-gitignored files (e.g. force-added .env), which should
+    // NOT be dropped from the snapshot.
     let ignored = new Set<string>()
-    if (opts?.sourceGitDir) {
+    if (opts?.sourceGitDir && untracked.size > 0) {
       const check = await runStdin(
         repo.worktree,
         ['--git-dir', opts.sourceGitDir, '--work-tree', repo.worktree, 'check-ignore', '--no-index', '--stdin', '-z'],
-        candidates.join('\0') + '\0',
+        [...untracked].join('\0') + '\0',
       ).catch(() => null)
       if (check && (check.code === 0 || check.code === 1)) {
         ignored = new Set(check.stdout.split('\0').filter(Boolean))
@@ -230,26 +233,54 @@ export async function deletePaths(_repo: ShadowRepo, absPaths: string[]): Promis
   }
 }
 
-/** Structured per-file diffs between two trees (Review / dry-run). */
+/** Max lines per unified-diff patch body. Matches git.ts MAX_DIFF_LINES. */
+const MAX_PATCH_LINES = 500
+
+/** Structured per-file diffs between two trees (Review / dry-run).
+ *  Uses 2 bulk spawns (name-status + numstat for all files) plus
+ *  per-file unified patch spawns, truncated at MAX_PATCH_LINES. */
 export async function structuredDiff(
   repo: ShadowRepo,
   from: string,
   to: string,
 ): Promise<Array<{ file: string; status: 'added'|'deleted'|'modified'; additions: number; deletions: number; patch?: string }>> {
   const names = await nameOnlyDiff(repo, from, to)
+  if (names.length === 0) return []
+
+  // Two bulk passes: name-status and numstat for all files at once.
+  const [statusBulk, numstatBulk] = await Promise.all([
+    run(repo.worktree, args(repo, ['diff', '--name-status', '-z', '--no-renames', from, to, '--'])),
+    run(repo.worktree, args(repo, ['diff', '--numstat', '--no-renames', from, to, '--'])),
+  ])
+
+  // Parse name-status with -z: STATUS\0FILE\0 pairs
+  const statusMap = new Map<string, string>()
+  {
+    const parts = statusBulk.stdout.split('\0').filter(Boolean)
+    for (let i = 0; i + 1 < parts.length; i += 2) {
+      statusMap.set(parts[i + 1], parts[i]) // file → status code
+    }
+  }
+
+  // Parse numstat (newline-delimited): "adds\tdels\tfile" per line
+  const numstatMap = new Map<string, { a: string; d: string }>()
+  {
+    for (const line of numstatBulk.stdout.split('\n')) {
+      if (!line) continue
+      const parts = line.split('\t')
+      if (parts.length >= 3) {
+        numstatMap.set(parts[2], { a: parts[0], d: parts[1] })
+      }
+    }
+  }
+
   const out: Array<{ file: string; status: 'added'|'deleted'|'modified'; additions: number; deletions: number; patch?: string }> = []
   for (const file of names) {
-    const statusR = await run(
-      repo.worktree,
-      args(repo, ['diff', '--name-status', '--no-renames', from, to, '--', `:(top,literal)${file}`]),
-    )
-    const code = statusR.stdout.trim().charAt(0)
+    const code = statusMap.get(file) ?? 'M'
     const status = code === 'A' ? 'added' : code === 'D' ? 'deleted' : 'modified'
-    const num = await run(
-      repo.worktree,
-      args(repo, ['diff', '--numstat', '--no-renames', from, to, '--', `:(top,literal)${file}`]),
-    )
-    const [a, d] = num.stdout.split('\t')
+    const num = numstatMap.get(file)
+    const a = num?.a ?? '0'
+    const d = num?.d ?? '0'
     const binary = a === '-' || d === '-'
     let patch: string | undefined
     if (!binary) {
@@ -257,13 +288,18 @@ export async function structuredDiff(
         repo.worktree,
         args(repo, ['diff', '--unified=3', '--no-renames', from, to, '--', `:(top,literal)${file}`]),
       )
-      patch = p.stdout
+      const lines = p.stdout.split('\n')
+      if (lines.length > MAX_PATCH_LINES) {
+        patch = lines.slice(0, MAX_PATCH_LINES).join('\n') + '\n... (truncated)'
+      } else {
+        patch = p.stdout
+      }
     }
     out.push({
       file,
       status,
-      additions: binary ? 0 : Number(a ?? 0) || 0,
-      deletions: binary ? 0 : Number(d ?? 0) || 0,
+      additions: binary ? 0 : Number(a) || 0,
+      deletions: binary ? 0 : Number(d) || 0,
       patch,
     })
   }

@@ -142,13 +142,13 @@ export class SnapshotService {
 
     const existing = await this.store.load(sessionId)
     if (existing?.gitDir) {
-      // Note: on reload, sourceGitDir points at the shadow odb (not the
-      // source repo's .git).  captureTree only uses it for check-ignore,
-      // which gracefully degrades — ignored files may slip into the snapshot
-      // but no incorrect restores occur.  Known limitation; acceptable for v1.
+      // Prefer the persisted sourceGitDir (the real repo's .git) for
+      // check-ignore. Fall back to the shadow odb gitDir for sessions
+      // captured before sourceGitDir was persisted — check-ignore will
+      // gracefully degrade (ignored files may slip into snapshots).
       return {
         repo: { gitDir: existing.gitDir, worktree: existing.worktree, scope: existing.scope },
-        sourceGitDir: existing.gitDir,
+        sourceGitDir: existing.sourceGitDir ?? existing.gitDir,
       }
     }
 
@@ -195,7 +195,12 @@ export class SnapshotService {
         })
         if (!tree) return null
         await this.store.update(input.sessionId, (prev) => {
-          if (prev) return { ...prev, last: { tree, at: Date.now() } }
+          if (prev) {
+            // Persist sourceGitDir if not already set (sessions captured
+            // before this field was added).
+            const sourceGitDir = prev.sourceGitDir ?? info.sourceGitDir
+            return { ...prev, sourceGitDir, last: { tree, at: Date.now() } }
+          }
           // resolveRepo already initialized the shadow repo but meta
           // hasn't been persisted yet (first capture ever).
           return {
@@ -203,6 +208,7 @@ export class SnapshotService {
             gitDir: info.repo.gitDir,
             worktree: info.repo.worktree,
             scope: info.repo.scope,
+            sourceGitDir: info.sourceGitDir,
             byMessage: {},
             patches: [],
             last: { tree, at: Date.now() },
@@ -308,7 +314,10 @@ export class SnapshotService {
       const anchor = meta.byMessage[messageId]
       if (!anchor) throw new Error(`no snapshot anchor for message ${messageId}`)
       const repo: ShadowRepo = { gitDir: meta.gitDir, worktree: meta.worktree, scope: meta.scope }
-      const current = await captureTree(repo, { maxUntrackedBytes: this.maxUntrackedBytes })
+      const current = await captureTree(repo, {
+        maxUntrackedBytes: this.maxUntrackedBytes,
+        sourceGitDir: meta.sourceGitDir,
+      })
       if (!current) throw new Error('capture failed')
       return structuredDiff(repo, anchor.start, current)
     })
@@ -323,7 +332,10 @@ export class SnapshotService {
       if (!anchor) return { canRewind: false, error: 'no snapshot for message' }
       try {
         const repo: ShadowRepo = { gitDir: meta.gitDir, worktree: meta.worktree, scope: meta.scope }
-        const current = await captureTree(repo, { maxUntrackedBytes: this.maxUntrackedBytes })
+        const current = await captureTree(repo, {
+          maxUntrackedBytes: this.maxUntrackedBytes,
+          sourceGitDir: meta.sourceGitDir,
+        })
         if (!current) return { canRewind: false, error: 'capture failed' }
         const files = await nameOnlyDiff(repo, anchor.start, current)
         const diffs = await structuredDiff(repo, anchor.start, current)
@@ -342,6 +354,8 @@ export class SnapshotService {
    * Real rewind: restore worktree to the state at `messageId`.
    * Files in the start tree are restored via `git checkout`;
    * files absent from start tree (created since) are deleted.
+   * After a successful real rewind, later anchors are dropped so the
+   * menu cannot re-apply discarded edits (F5).
    */
   async rewind(sessionId: string, messageId: string): Promise<RewindPreview> {
     return this.lock(sessionId, async () => {
@@ -351,7 +365,8 @@ export class SnapshotService {
       if (!anchor) return { canRewind: false, error: 'no snapshot for message' }
       try {
         const repo: ShadowRepo = { gitDir: meta.gitDir, worktree: meta.worktree, scope: meta.scope }
-        const current = await captureTree(repo, { maxUntrackedBytes: this.maxUntrackedBytes })
+        const captureOpts = { maxUntrackedBytes: this.maxUntrackedBytes, sourceGitDir: meta.sourceGitDir }
+        const current = await captureTree(repo, captureOpts)
         if (!current) return { canRewind: false, error: 'capture failed' }
         const files = await nameOnlyDiff(repo, anchor.start, current)
 
@@ -368,11 +383,36 @@ export class SnapshotService {
         if (toRestore.length) await restorePaths(repo, anchor.start, toRestore)
         if (toDelete.length) await deletePaths(repo, toDelete)
 
-        const after = await captureTree(repo, { maxUntrackedBytes: this.maxUntrackedBytes })
+        const after = await captureTree(repo, captureOpts)
         const diffs = after ? await structuredDiff(repo, anchor.start, after) : []
         let insertions = 0
         let deletions = 0
         for (const d of diffs) { insertions += d.additions; deletions += d.deletions }
+
+        // F5: drop later anchors and patches so the UI cannot re-apply
+        // edits that were discarded by this rewind. Keep the rewound
+        // anchor and all earlier ones (insertion order).
+        await this.store.update(sessionId, (prev) => {
+          if (!prev) return prev
+          const keys = Object.keys(prev.byMessage)
+          const idx = keys.indexOf(messageId)
+          if (idx < 0) return prev
+          const keep = new Set(keys.slice(0, idx + 1))
+          const byMessage: typeof prev.byMessage = {}
+          for (const [k, v] of Object.entries(prev.byMessage)) {
+            if (keep.has(k)) byMessage[k] = v
+          }
+          // Drop patches whose messageId does not correspond to a kept
+          // byMessage entry. Since patch messageIds are assistant UUIDs
+          // (different from user UUID keys), we keep patches whose hash
+          // (the tree SHA at the start of that turn) matches the rewound
+          // anchor or earlier — but the simplest safe approach is to drop
+          // all patches (they reference post-rewind state) and let new
+          // turns re-record patches. The rewound anchor's start tree is
+          // preserved in byMessage, which is what matters for future rewinds.
+          return { ...prev, byMessage, patches: [] }
+        })
+
         return { canRewind: true, filesChanged: files, insertions, deletions, diffs }
       } catch (err) {
         log.warn(`rewind failed for ${sessionId}/${messageId}: ${(err as Error).message ?? err}`)

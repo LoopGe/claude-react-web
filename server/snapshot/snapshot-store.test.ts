@@ -106,4 +106,57 @@ describe('SnapshotStore', () => {
     await store.remove('x')
     expect(await store.load('x')).toBeNull()
   })
+
+  it('copyForFork copies odb so remove(fromId) does not destroy fork objects', async () => {
+    const { mkdir, writeFile, access } = await import('node:fs/promises')
+    // Create source odb with a dummy object
+    const srcOdb = join(dir, 'snapshots', 'odb', 'x', 'objects', 'pack')
+    await mkdir(srcOdb, { recursive: true })
+    await writeFile(join(srcOdb, 'dummy'), 'data')
+    await store.save('x', empty({
+      gitDir: join(dir, 'snapshots', 'odb', 'x'),
+      byMessage: { U1: { start: 'a' }, U2: { start: 'b' } },
+      patches: [
+        { messageId: 'A1', hash: 'a', files: ['/w/f1'] },
+        { messageId: 'A2', hash: 'b', files: ['/w/f2'] },
+      ],
+    }))
+    await store.copyForFork('x', 'y', new Set(['U1']), new Set(['A1']))
+    // Fork's gitDir should point to its own odb, not the source's
+    const y = await store.load('y')
+    expect(y?.gitDir).toBe(join(dir, 'snapshots', 'odb', 'y'))
+    expect(y?.gitDir).not.toBe(join(dir, 'snapshots', 'odb', 'x'))
+    // Fork's odb directory should exist with copied content
+    await expect(access(join(dir, 'snapshots', 'odb', 'y', 'objects', 'pack', 'dummy'))).resolves.toBeUndefined()
+    // Remove source — fork should still be intact
+    await store.remove('x')
+    expect(await store.load('x')).toBeNull()
+    const yAfter = await store.load('y')
+    expect(yAfter).not.toBeNull()
+    expect(yAfter?.gitDir).toBe(join(dir, 'snapshots', 'odb', 'y'))
+    await expect(access(join(dir, 'snapshots', 'odb', 'y', 'objects', 'pack', 'dummy'))).resolves.toBeUndefined()
+  })
+
+  it('remove then update does not recreate the file (tombstone)', async () => {
+    await store.save('x', empty({ last: { tree: 'old', at: 100 } }))
+    await store.remove('x')
+    expect(await store.load('x')).toBeNull()
+    // A concurrent fire-and-forget update should not resurrect the session
+    await store.update('x', () => empty({ last: { tree: 'new', at: 200 } }))
+    expect(await store.load('x')).toBeNull()
+  })
+
+  it('capAnchors evicts oldest byMessage entries beyond MAX_ANCHORS', async () => {
+    const byMessage: Record<string, { start: string }> = {}
+    for (let i = 0; i < 502; i++) {
+      byMessage[`U${i}`] = { start: `tree${i}` }
+    }
+    await store.save('x', empty({ byMessage }))
+    const loaded = await store.load('x')
+    // Only the last 500 entries should survive
+    const keys = Object.keys(loaded!.byMessage)
+    expect(keys.length).toBe(500)
+    expect(keys[0]).toBe('U2')
+    expect(keys[keys.length - 1]).toBe('U501')
+  })
 })
