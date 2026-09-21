@@ -2,8 +2,19 @@
 // top-left ProfileSwitcher. Lets them choose which live (idle, follow-global)
 // sessions to restart into the newly-active profile now, instead of those
 // sessions silently keeping their old spawn-time profile until a manual
-// restart. Reuses the same Overlay `perm` variant + `.modal-*` chrome family
-// as ConfirmDialog/PermissionDialog.
+// restart. Reuses the `.modal-*` chrome family shared by the other dialogs.
+//
+// The `modal` variant (not `perm`) is load-bearing, not cosmetic. `perm` is a
+// PANEL-scoped variant: `.perm-overlay` is `position: absolute`, so `inset: 0`
+// resolves against the nearest positioned ancestor. The ProfileSwitcher mounts
+// this dialog from the app header, where that ancestor is `.profile-switcher`
+// (`position: relative`, the size of the trigger button, ~150x30). The card
+// then clips to that sliver — invisible — while its focus trap stays active and
+// pulls focus back out of whatever the user clicks next, so the whole app reads
+// as frozen and the switch can never be confirmed. `modal` is one of the
+// FIXED_BACKDROP_VARIANTS (see Overlay.tsx), so it portals to <body> and covers
+// the viewport regardless of who mounts it. `profile-activate-card` pins the
+// card's layout for that layer (git-panel.css) — see the note there.
 
 import { useState } from 'react'
 import { Overlay } from './Overlay'
@@ -36,7 +47,8 @@ export function ProfileActivateDialog({ profileName, sessions, busy = false, onC
 
   return (
     <Overlay
-      variant="perm"
+      variant="modal"
+      cardClassName="profile-activate-card"
       ariaLabel="Restart sessions"
       motion="motion"
       onClose={onCancel}

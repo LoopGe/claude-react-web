@@ -893,6 +893,31 @@
   cursor: default;
   opacity: 0.6;
 }
+/* Card layout across the perm→modal migration. The dialog mounts on the
+   portalled `.modal` layer because it is opened from the app header, where a
+   panel-scoped `perm` backdrop resolves inset:0 against `.profile-switcher`
+   (~150px wide) and squeezes the card into a sliver whose focus trap still
+   holds the app.
+   Only the LAYOUT is pinned here; the card deliberately keeps the `modal`
+   family's chrome (radius --radius-lg, shadow --modal-shadow) so it matches the
+   other app-level modals (NewSession / ResetConfig / DirectoryPicker) rather
+   than its old panel-scoped `.perm-card` look.
+   - width: `.modal` defaults to 680/92vw; the session list reads better at the
+     520 the dialog shipped with (same convention as `.modal-new-session`).
+   - flex-shrink: the modal sheet has no header/footer guard; the 260px list cap
+     keeps the section from overflowing today, but this makes it robust.
+   The `modal` class is kept on the selector so the width does not depend on
+   sheet import order: the `.modal` width it overrides lives at (0,1,0) in
+   messages.css. (No chrome is set here, so there is no glass.css shadow chain
+   to out-rank.) */
+.modal.profile-activate-card {
+  width: min(520px, calc(100vw - 32px));
+}
+.profile-activate-card .modal-header,
+.profile-activate-card .modal-footer {
+  flex-shrink: 0;
+}
+
 /* Profile-switch restart dialog session list. Mirrors the self-drawn checkbox
    look from .confirm-dialog-checkbox so default/glow/hc skins stay consistent. */
 .profile-activate-sessions {

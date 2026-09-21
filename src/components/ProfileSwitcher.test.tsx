@@ -3,6 +3,7 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import * as useProfiles from '../hooks/useProfiles'
 import { ProfileSwitcher } from './ProfileSwitcher'
+import { expectPortaledToBody } from './portal-test-utils'
 import { ToastProvider } from './ToastProvider'
 import type { SessionInfo } from '../types'
 import type { ProviderProfile } from '../types/config'
@@ -68,13 +69,18 @@ describe('ProfileSwitcher', () => {
     // One follow-global (idle) session and one that is pinned or busy — only
     // the former is a candidate for restart.
     getMock.mockResolvedValue({ sessions: [session('s1'), { ...session('s2'), profileId: 'x' }] })
-    render(<ToastProvider><ProfileSwitcher /></ToastProvider>)
+    const { container } = render(<ToastProvider><ProfileSwitcher /></ToastProvider>)
     fireEvent.click(screen.getByRole('button'))
     fireEvent.click(screen.getByText('B'))
 
     // Dialog appears with the candidate session, not the pinned one.
     await waitFor(() => expect(screen.getByText(/Switch profile to “B”/)).toBeTruthy())
     expect(screen.queryByText('Session s2')).toBeNull()
+    // …and it must ESCAPE the header to do it. Mounted inside `.profile-switcher`
+    // (a ~150x30 positioned box) an absolutely-positioned backdrop is clipped to
+    // that sliver while its focus trap keeps stealing focus from the rest of the
+    // app — the "clicking the profile switcher freezes everything" bug.
+    expectPortaledToBody(container, '.modal-backdrop')
     fireEvent.click(screen.getByText('Restart 1 session'))
     await waitFor(() => expect(activate).toHaveBeenCalledWith('b', ['s1']))
   })

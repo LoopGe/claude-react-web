@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, cleanup, fireEvent } from '@testing-library/react'
 import { ProfileActivateDialog } from './ProfileActivateDialog'
+import { expectPortaledToBody } from './portal-test-utils'
 import type { SessionInfo } from '../types'
 
 afterEach(() => cleanup())
@@ -66,6 +67,20 @@ describe('ProfileActivateDialog', () => {
     render(<ProfileActivateDialog {...props} />)
     fireEvent.keyDown(document.body, { key: 'Escape' })
     expect(props.onCancel).toHaveBeenCalledOnce()
+  })
+
+  // The switcher mounts this dialog from the app header, inside
+  // `.profile-switcher` — a `position: relative` box the size of the trigger
+  // button. An absolutely-positioned (panel-scoped) backdrop would resolve
+  // `inset: 0` against THAT box instead of the viewport: the card gets clipped
+  // to a ~150x30 sliver and its focus trap then steals focus back from the rest
+  // of the app on every click. Portalling to <body> is the fix, so pin it.
+  it('portals to <body> so the header trigger cannot become its containing block', () => {
+    const { container } = render(<ProfileActivateDialog {...baseProps()} />)
+    expectPortaledToBody(container, '.modal-backdrop')
+    // The layout-pinning class has to ride the card, or the width / header
+    // guard that compensates for the `modal` layer never matches.
+    expect(document.querySelector('.modal.profile-activate-card')).not.toBeNull()
   })
 
   it('shows "Switch" when there are no sessions and leaves it enabled', () => {
