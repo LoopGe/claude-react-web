@@ -157,8 +157,8 @@ describe('countTaskActivity', () => {
     // TERMINAL_TASK_STATUSES and expected the outcome of isTerminalTaskStatus —
     // the same list the implementation reads — so it could never fail and could
     // not detect the drift it claimed to guard. Changing the canonical set now
-    // fails here deliberately (and the local copies in TasksPanel / reducer must
-    // be updated with it).
+    // fails here deliberately, and this single assertion covers every client
+    // consumer, since they all read the shared list.
     expect([...TERMINAL_TASK_STATUSES].sort()).toEqual(['completed', 'failed', 'killed', 'stopped'])
     for (const status of ['completed', 'failed', 'killed', 'stopped'] as const) {
       expect(countTaskActivity([task({ status })])).toEqual({ all: 0, indicator: 0 })

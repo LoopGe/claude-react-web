@@ -17,6 +17,7 @@ vi.mock('../hooks/useOverlayScrollbar', () => ({ useOverlayScrollbar: () => () =
 vi.mock('./SubagentTranscriptDialog', () => ({ SubagentTranscriptDialog: () => null }))
 
 import { TasksPanel } from './TasksPanel'
+import { countTaskActivity } from '../session-store/normalize'
 
 function task(over: Partial<TaskRecordUi> & { taskId: string }): TaskRecordUi {
   return { description: 'work', status: 'running', updatedAt: 0, ...over }
@@ -24,14 +25,11 @@ function task(over: Partial<TaskRecordUi> & { taskId: string }): TaskRecordUi {
 
 function setup(tasks: TaskRecordUi[]): HTMLElement {
   tasksRef.current = tasks
-  let all = 0
-  let indicator = 0
-  for (const t of tasks) {
-    if (['completed', 'failed', 'killed', 'stopped'].includes(t.status)) continue
-    all++
-    if (!t.skipTranscript && !t.ambient) indicator++
-  }
-  countsRef.current = { all, indicator }
+  // Derive the mocked counts with the REAL rule (countTaskActivity — what
+  // useSessionTaskCounts wraps) rather than a local literal: a hand-rolled copy
+  // here is the same drift this work removed from the panel itself, and it
+  // would keep passing after a status is added to the canonical list.
+  countsRef.current = countTaskActivity(tasks)
   const { container } = render(<TasksPanel sessionId="s1" onClose={() => {}} />)
   return container
 }

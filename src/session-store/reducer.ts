@@ -1,3 +1,4 @@
+import { isTerminalTaskStatus } from '../../shared/tasks.js'
 import type { PermissionRequest, SdkMessage } from '../types'
 import {
   createInitialClientIntent,
@@ -172,9 +173,7 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         if (activeSubagents === state.mirror.activeSubagents) {
           activeSubagents = new Map(activeSubagents)
         }
-        const isTerminal =
-          task.status === 'completed' || task.status === 'failed' ||
-          task.status === 'killed' || task.status === 'stopped'
+        const isTerminal = isTerminalTaskStatus(task.status)
         // ★ 权威写入:server 给了布尔就覆盖(双向;live 与 terminal 都写)。
         const nextIsAsync = typeof task.isBackgrounded === 'boolean'
           ? task.isBackgrounded
@@ -1121,8 +1120,7 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
   const liveBgToolUseIds = new Set<string>()
   for (const t of mirror.tasks) {
     if (!t.toolUseId) continue
-    const term = t.status === 'completed' || t.status === 'failed' ||
-      t.status === 'killed' || t.status === 'stopped'
+    const term = isTerminalTaskStatus(t.status)
     if (!term && t.isBackgrounded === true) liveBgToolUseIds.add(t.toolUseId)
   }
 

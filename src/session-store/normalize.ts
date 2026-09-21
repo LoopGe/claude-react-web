@@ -581,9 +581,9 @@ export function computeTurnActive(args: {
  *
  *  Terminal statuses come from the canonical shared list (shared/tasks.ts)
  *  rather than a local literal, so this count cannot drift from the server's.
- *  NOTE: TasksPanel and the reducer still hand-roll the same set locally, so a
- *  new terminal status has to be added there too — which is why this comment
- *  can't claim the client is uniformly canonical. */
+ *  Every client-side terminal check now reads that same list (TasksPanel, the
+ *  reducer and this counting rule) — the copies these notes used to warn about
+ *  are gone, so a new terminal status is a one-place change. */
 export function countTaskActivity(tasks: Iterable<TaskRecordUi>): { all: number; indicator: number } {
   let all = 0
   let indicator = 0

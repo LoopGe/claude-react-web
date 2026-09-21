@@ -25,15 +25,9 @@ import { useCountUp } from '../hooks/useCountUp'
 import { ElapsedTimer } from './ElapsedTimer'
 import { formatElapsed } from '../utils/format'
 import type { TaskRecordUi } from '../types'
+import { isTerminalTaskStatus } from '../../shared/tasks.js'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
 import { IconX, IconCheck, IconAlertCircle, IconClock, IconLoader, IconTerminal, IconBot, IconListTodo, IconWorkflow, IconFileText } from './icons/ToolIcons'
-
-/** Terminal statuses — shared/tasks.ts keeps the canonical list, but
- *  re-declaring the check locally avoids importing server-typed helpers
- *  into the bundle for one boolean. Keep in sync. */
-function isTerminal(status: TaskRecordUi['status']): boolean {
-  return status === 'completed' || status === 'failed' || status === 'killed' || status === 'stopped'
-}
 
 function StatusIcon({ status }: { status: TaskRecordUi['status'] }) {
   if (status === 'running' || status === 'pending') {
@@ -114,8 +108,8 @@ export const TasksPanel = memo(function TasksPanel({
     [sessionId, toast],
   )
 
-  const active = tasks.filter((t) => !isTerminal(t.status))
-  const finished = tasks.filter((t) => isTerminal(t.status))
+  const active = tasks.filter((t) => !isTerminalTaskStatus(t.status))
+  const finished = tasks.filter((t) => isTerminalTaskStatus(t.status))
   // The header count comes from the SHARED indicator selector, not from
   // `active.length`: the panel lists ambient housekeeping (the SDK says it may
   // appear in a tasks panel) but must not COUNT it, because the WorkingBubble
@@ -190,7 +184,7 @@ const TaskRow = memo(function TaskRow({
   onStop: (taskId: string) => void
   onViewTranscript?: (task: TaskRecordUi) => void
 }) {
-  const terminal = isTerminal(task.status)
+  const terminal = isTerminalTaskStatus(task.status)
   // Only finished subagent rows can open the disk-transcript viewer: their
   // taskId is the Agent's agentId that keys subagents/agent-<id>.jsonl.
   const canViewTranscript = terminal && (task.taskType === 'subagent' || Boolean(task.subagentType))
