@@ -3907,6 +3907,9 @@
   overflow-wrap: anywhere;
   outline: none;
   cursor: text;
+  /* Default clip, so a box growing between two px heights never flashes a
+     scrollbar. syncEditorHeight flips the inline `overflow-y` to `auto` once
+     the content passes max-height — the clipped tail has to stay reachable. */
   overflow: hidden;
 }
 

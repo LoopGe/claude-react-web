@@ -14,12 +14,18 @@ import { syncEditorHeight } from './editor-height'
 describe('syncEditorHeight', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  /** Records every write to `el.style.height`, and fakes the two measurements
-   *  the function reads: `scrollHeight` (the content height) and the computed
-   *  `height` (the RENDERED height). */
-  function probe(el: HTMLElement, scrollHeight: number, renderedHeight: string) {
+  /** Records every write to `el.style.height` / `el.style.overflowY`, and fakes
+   *  the measurements the function reads: `scrollHeight` (the content height),
+   *  the computed `height` (the RENDERED height) and `maxHeight` (the cap). */
+  function probe(
+    el: HTMLElement,
+    scrollHeight: number,
+    renderedHeight: string,
+    maxHeight = 'none',
+  ) {
     const writes: string[] = []
     let current = el.style.height
+    let overflowY = ''
     const style = {
       get height() {
         return current
@@ -28,6 +34,12 @@ describe('syncEditorHeight', () => {
         writes.push(v)
         current = v
       },
+      get overflowY() {
+        return overflowY
+      },
+      set overflowY(v: string) {
+        overflowY = v
+      },
     }
     // happy-dom's `el.style` rejects defineProperty, so the whole declaration
     // is shadowed on the instance instead.
@@ -35,13 +47,14 @@ describe('syncEditorHeight', () => {
     Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => scrollHeight })
     vi.spyOn(window, 'getComputedStyle').mockReturnValue({
       height: renderedHeight,
+      maxHeight,
     } as unknown as CSSStyleDeclaration)
-    return writes
+    return { writes, overflow: () => overflowY }
   }
 
   it('lands directly on the content height when there is no rendered height yet', () => {
     const el = document.createElement('div')
-    const writes = probe(el, 76, 'auto')
+    const { writes } = probe(el, 76, 'auto')
 
     syncEditorHeight(el)
 
@@ -51,7 +64,7 @@ describe('syncEditorHeight', () => {
 
   it('re-states the rendered height as the tween start before writing the new one', () => {
     const el = document.createElement('div')
-    const writes = probe(el, 76, '56px')
+    const { writes } = probe(el, 76, '56px')
 
     syncEditorHeight(el)
 
@@ -63,7 +76,7 @@ describe('syncEditorHeight', () => {
     // The bug this guards: restarting from the previous TARGET makes fast
     // typing jump. The computed height is where the box actually is.
     const el = document.createElement('div')
-    const writes = probe(el, 96, '66px')
+    const { writes } = probe(el, 96, '66px')
 
     syncEditorHeight(el)
 
@@ -76,7 +89,7 @@ describe('syncEditorHeight', () => {
     // would hold the box still and then snap.
     const el = document.createElement('div')
     el.style.height = '296px'
-    const writes = probe(el, 40, '180px')
+    const { writes } = probe(el, 40, '180px')
 
     syncEditorHeight(el)
 
@@ -88,10 +101,44 @@ describe('syncEditorHeight', () => {
     // forcing a reflow to line up a transition between two identical lengths
     // is pure cost — and that reflow is ~5x the rest of the sync.
     const el = document.createElement('div')
-    const writes = probe(el, 76, '76px')
+    const { writes } = probe(el, 76, '76px')
 
     syncEditorHeight(el)
 
     expect(writes).toEqual(['auto', '76px'])
+  })
+
+  it('keeps the clipping rule while the content still fits under max-height', () => {
+    // `overflow: hidden` is what suppresses the transient scrollbar while the
+    // box tweens between two heights. A short draft must not become a scroll
+    // container.
+    const el = document.createElement('div')
+    const { overflow } = probe(el, 76, '56px', '180px')
+
+    syncEditorHeight(el)
+
+    expect(overflow()).toBe('hidden')
+  })
+
+  it('switches to a real scroll container once the content passes max-height', () => {
+    // Regression: a long draft writes its full content height (e.g. 400px)
+    // into `style.height`, `max-height` clamps the box to 180px, and with
+    // `overflow: hidden` the tail was unreachable — no wheel, touch, or
+    // scrollbar. The capped box must scroll.
+    const el = document.createElement('div')
+    const { overflow } = probe(el, 400, '180px', '180px')
+
+    syncEditorHeight(el)
+
+    expect(overflow()).toBe('auto')
+  })
+
+  it('drops back to hidden when a shrinking draft fits again', () => {
+    const el = document.createElement('div')
+    const { overflow } = probe(el, 40, '180px', '180px')
+
+    syncEditorHeight(el)
+
+    expect(overflow()).toBe('hidden')
   })
 })
