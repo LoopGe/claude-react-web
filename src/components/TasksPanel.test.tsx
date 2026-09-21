@@ -77,3 +77,57 @@ describe('TasksPanel header count', () => {
     expect(container.querySelector('.tasks-panel-count-ambient')).toBeNull()
   })
 })
+
+describe('TasksPanel status icons', () => {
+  // The single row locator for both tests below. Keyed by the rendered
+  // description (the row markup carries no data-task-id), and LOUD on both
+  // failure modes: a duplicate description would otherwise silently keep only
+  // the last row, and a missing one would surface as an opaque
+  // "cannot read properties of undefined" rather than naming the row.
+  function svgByDesc(container: HTMLElement, desc: string): Element {
+    const matches = [...container.querySelectorAll('.tasks-row')]
+      .filter((row) => row.querySelector('.tasks-row-desc')?.textContent === desc)
+    if (matches.length !== 1) {
+      throw new Error(`expected exactly 1 row described "${desc}", found ${matches.length}`)
+    }
+    const svg = matches[0].querySelector('.tasks-row-icon svg')
+    if (!svg) throw new Error(`row "${desc}" has no status icon`)
+    return svg
+  }
+  const classByDesc = (container: HTMLElement, desc: string): string =>
+    svgByDesc(container, desc).getAttribute('class') ?? ''
+
+  it('gives only failed/killed the error styling — stopped renders neutral', () => {
+    // The contract stated in server/session-pump.ts (reconcileTasksFromStopHook):
+    // a swept record lands on `stopped` because leaving the in-flight set is not
+    // proof of failure, so it must NOT look like one. This used to be expressed
+    // by a `tasks-row-error` class that could never take effect (the svg carries
+    // its own colour), so `stopped` fell through to the error icon along with
+    // failed/killed. Locked here so the distinction can't be lost again.
+    const container = setup([
+      task({ taskId: 'a', description: 'failed one', status: 'failed' }),
+      task({ taskId: 'b', description: 'killed one', status: 'killed' }),
+      task({ taskId: 'c', description: 'stopped one', status: 'stopped' }),
+      task({ taskId: 'd', description: 'done one', status: 'completed' }),
+      task({ taskId: 'e', description: 'paused one', status: 'paused' }),
+      task({ taskId: 'f', description: 'live one', status: 'running' }),
+    ])
+    expect(classByDesc(container, 'failed one')).toContain('tasks-icon-err')
+    expect(classByDesc(container, 'killed one')).toContain('tasks-icon-err')
+    expect(classByDesc(container, 'stopped one')).toContain('tasks-icon-muted')
+    expect(classByDesc(container, 'stopped one')).not.toContain('tasks-icon-err')
+    expect(classByDesc(container, 'done one')).toContain('tasks-icon-ok')
+    expect(classByDesc(container, 'paused one')).toContain('tasks-icon-muted')
+    expect(classByDesc(container, 'live one')).toContain('tasks-row-spin')
+  })
+
+  it('keeps the two muted states on distinct glyphs', () => {
+    const container = setup([
+      task({ taskId: 'e', description: 'paused one', status: 'paused' }),
+      task({ taskId: 'c', description: 'stopped one', status: 'stopped' }),
+    ])
+    // Same colour class, different shapes — otherwise the two states read
+    // identically and the distinction this change restored is cosmetic only.
+    expect(svgByDesc(container, 'paused one').innerHTML).not.toBe(svgByDesc(container, 'stopped one').innerHTML)
+  })
+})

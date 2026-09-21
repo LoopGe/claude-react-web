@@ -27,7 +27,7 @@ import { formatElapsed } from '../utils/format'
 import type { TaskRecordUi } from '../types'
 import { isTerminalTaskStatus } from '../../shared/tasks.js'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
-import { IconX, IconCheck, IconAlertCircle, IconClock, IconLoader, IconTerminal, IconBot, IconListTodo, IconWorkflow, IconFileText } from './icons/ToolIcons'
+import { IconX, IconCheck, IconCircle, IconAlertCircle, IconClock, IconLoader, IconTerminal, IconBot, IconListTodo, IconWorkflow, IconFileText } from './icons/ToolIcons'
 
 function StatusIcon({ status }: { status: TaskRecordUi['status'] }) {
   if (status === 'running' || status === 'pending') {
@@ -35,6 +35,17 @@ function StatusIcon({ status }: { status: TaskRecordUi['status'] }) {
   }
   if (status === 'completed') return <IconCheck size={14} className="tasks-icon-ok" aria-hidden />
   if (status === 'paused') return <IconClock size={14} className="tasks-icon-muted" aria-hidden />
+  // `stopped` renders NEUTRAL: it means "ended, and no completion evidence was
+  // found" — never an assertion of failure. Every producer establishes that
+  // first: the Stop-hook sweep settles a record that left the CLI's in-flight
+  // list (reconcileTasksFromStopHook), the watcher reads the subagent's own
+  // completion from its transcript before falling back to `stopped`
+  // (subagent-watcher.ts), and the maxMs backstop synthesizes it only when no
+  // completion ever arrived. Only failed/killed — where the CLI DID report a
+  // failure — take the error styling, which is the contract stated in
+  // server/session-pump.ts. Distinct glyph from paused's clock so the two muted
+  // states stay tellable apart.
+  if (status === 'stopped') return <IconCircle size={14} className="tasks-icon-muted" aria-hidden />
   return <IconAlertCircle size={14} className="tasks-icon-err" aria-hidden />
 }
 
@@ -189,7 +200,7 @@ const TaskRow = memo(function TaskRow({
   // taskId is the Agent's agentId that keys subagents/agent-<id>.jsonl.
   const canViewTranscript = terminal && (task.taskType === 'subagent' || Boolean(task.subagentType))
   return (
-    <div className={`tasks-row${terminal ? ' tasks-row-terminal' : ''}${task.status === 'failed' || task.status === 'killed' ? ' tasks-row-error' : ''}`}>
+    <div className={`tasks-row${terminal ? ' tasks-row-terminal' : ''}`}>
       <span className="tasks-row-icon">
         <StatusIcon status={task.status} />
       </span>

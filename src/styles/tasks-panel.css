@@ -157,7 +157,6 @@
 }
 
 .tasks-row-terminal { opacity: 0.7; animation: none; }
-.tasks-row-error .tasks-row-icon { color: var(--danger); }
 .tasks-icon-ok { color: var(--ok); }
 .tasks-icon-err { color: var(--danger); }
 .tasks-icon-muted { color: var(--fg-muted); }
