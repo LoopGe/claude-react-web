@@ -2262,7 +2262,7 @@ export const Chat = memo(function Chat({
             title="Rewind files to this message?"
             message={
               <>
-                <p>Files created after this message will be deleted and existing files will be restored to their state when this message was sent. The conversation is not truncated.</p>
+                <p>Files created after this message will be deleted (except gitignored or very large untracked files) and existing files will be restored to their state when this message was sent. The conversation is not truncated.</p>
                 {rewindConfirm.dryError && (
                   <p className="confirm-dialog-hint">Preview failed: {rewindConfirm.dryError}</p>
                 )}
@@ -2292,6 +2292,8 @@ export const Chat = memo(function Chat({
             confirmLabel="Rewind files"
             destructive
             busy={rewindConfirm.busy}
+            confirmDisabled={session.working}
+            confirmDisabledHint={session.working ? 'Wait for the current turn to finish before rewinding.' : undefined}
             onConfirm={async () => {
               setRewindConfirm((prev) => prev && { ...prev, busy: true })
               try {

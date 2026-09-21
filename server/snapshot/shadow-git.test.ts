@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { odbDir, metaFile, snapshotRoot } from './paths.js'
 import {
   initShadowRepo, captureTree, nameOnlyDiff, treeHasPath,
-  restorePaths, deletePaths,
+  restorePaths, deletePaths, diffStats, structuredDiff,
 } from './shadow-git.js'
 
 const execFileAsync = promisify(execFile)
@@ -84,5 +84,39 @@ describe('shadow-git capture/restore', () => {
     await deletePaths(repo, [join(worktree, 'scope', 'born.txt')])
     expect(await readFile(join(worktree, 'scope', 'a.txt'), 'utf8')).toBe('one\n')
     await expect(access(join(worktree, 'scope', 'born.txt'))).rejects.toThrow()
+  })
+
+  it('diffStats returns file list and aggregate line counts without patches', async () => {
+    await writeFile(join(worktree, 'scope', 'a.txt'), 'one\n')
+    await rm(join(worktree, 'scope', 'new.txt')).catch(() => {})
+    await copyFile(join(sourceGitDir, 'index'), join(gitDir, 'index')).catch(() => {})
+    const t1 = await captureTree(repo, { sourceGitDir })
+    await writeFile(join(worktree, 'scope', 'a.txt'), 'modified\n')
+    await writeFile(join(worktree, 'scope', 'extra.txt'), 'new\n')
+    const t2 = await captureTree(repo, { sourceGitDir })
+    const stats = await diffStats(repo, t1!, t2!)
+    expect(stats.files.sort()).toEqual(['scope/a.txt', 'scope/extra.txt'])
+    expect(stats.insertions).toBeGreaterThan(0)
+    expect(stats.deletions).toBeGreaterThan(0)
+  })
+
+  it('structuredDiff and nameOnlyDiff handle non-ASCII filenames', async () => {
+    await writeFile(join(worktree, 'scope', 'a.txt'), 'one\n')
+    await rm(join(worktree, 'scope', 'new.txt')).catch(() => {})
+    await copyFile(join(sourceGitDir, 'index'), join(gitDir, 'index')).catch(() => {})
+    const t1 = await captureTree(repo, { sourceGitDir })
+    // Create a file with non-ASCII characters in the name
+    await writeFile(join(worktree, 'scope', '测试.ts'), 'export const x = 1\n')
+    const t2 = await captureTree(repo, { sourceGitDir })
+    const files = await nameOnlyDiff(repo, t1!, t2!)
+    expect(files).toContain('scope/测试.ts')
+    const stats = await diffStats(repo, t1!, t2!)
+    expect(stats.files).toContain('scope/测试.ts')
+    expect(stats.insertions).toBeGreaterThan(0)
+    const diffs = await structuredDiff(repo, t1!, t2!)
+    const found = diffs.find((d) => d.file === 'scope/测试.ts')
+    expect(found).toBeDefined()
+    expect(found!.status).toBe('added')
+    expect(found!.additions).toBeGreaterThan(0)
   })
 })

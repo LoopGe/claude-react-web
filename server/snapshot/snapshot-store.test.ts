@@ -159,4 +159,19 @@ describe('SnapshotStore', () => {
     expect(keys[0]).toBe('U2')
     expect(keys[keys.length - 1]).toBe('U501')
   })
+
+  it('revive clears tombstone so a re-created session can write again', async () => {
+    await store.save('x', empty({ last: { tree: 'old', at: 100 } }))
+    await store.remove('x')
+    expect(await store.load('x')).toBeNull()
+    // Tombstone prevents update
+    await store.update('x', () => empty({ last: { tree: 'new', at: 200 } }))
+    expect(await store.load('x')).toBeNull()
+    // Revive clears the tombstone
+    store.revive('x')
+    await store.update('x', () => empty({ last: { tree: 'new', at: 200 } }))
+    const loaded = await store.load('x')
+    expect(loaded).not.toBeNull()
+    expect(loaded?.last?.tree).toBe('new')
+  })
 })

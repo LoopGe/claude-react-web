@@ -187,7 +187,7 @@ describe('SnapshotService', { timeout: 30_000 }, () => {
     await expect(access(join(wt, 'brand-new.txt'))).rejects.toThrow()
   })
 
-  it('structured diffs include patch text', async () => {
+  it('dryRun returns file stats without patches (diffStats)', async () => {
     const start = await svc.capture({ sessionId: 's9', cwd: wt })
     expect(start).toBeTruthy()
     await svc.recordAnchor('s9', wt, 'U1', start!)
@@ -196,11 +196,26 @@ describe('SnapshotService', { timeout: 30_000 }, () => {
 
     const dry = await svc.dryRun('s9', 'U1')
     expect(dry.canRewind).toBe(true)
-    expect(dry.diffs).toHaveLength(1)
-    expect(dry.diffs![0].file).toBe('a.txt')
-    expect(dry.diffs![0].status).toBe('modified')
-    expect(dry.diffs![0].patch).toContain('@@')
-    expect(dry.diffs![0].additions).toBeGreaterThan(0)
+    // dryRun uses diffStats (no per-file patches) — patches are reserved
+    // for the GET /snapshot-diff endpoint (structuredDiff).
+    expect(dry.filesChanged).toContain('a.txt')
+    expect(dry.insertions).toBeGreaterThan(0)
+    expect(dry.diffs).toBeUndefined()
+  })
+
+  it('diffFromAnchor returns structured patches for review UI', async () => {
+    const start = await svc.capture({ sessionId: 's9-diff', cwd: wt })
+    expect(start).toBeTruthy()
+    await svc.recordAnchor('s9-diff', wt, 'U1', start!)
+
+    await writeFile(join(wt, 'a.txt'), 'two\n')
+
+    const diffs = await svc.diffFromAnchor('s9-diff', 'U1')
+    expect(diffs).toHaveLength(1)
+    expect(diffs[0].file).toBe('a.txt')
+    expect(diffs[0].status).toBe('modified')
+    expect(diffs[0].patch).toContain('@@')
+    expect(diffs[0].additions).toBeGreaterThan(0)
   })
 
   it('real rewind invalidates later anchors (F5)', async () => {

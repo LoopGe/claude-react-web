@@ -2624,6 +2624,9 @@ export class SessionManager {
     }
 
     session.pumpTask = this.pump(session)
+    // Clear any snapshot tombstone from a previous session with this id,
+    // so the new session's sidecar writes are not silently suppressed.
+    this.snapshotStore.revive(id)
     this.sessions.set(id, session)
     metrics.gauge('sessions_active', this.sessions.size)
     log.info(`[session ${id}] spawned model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)

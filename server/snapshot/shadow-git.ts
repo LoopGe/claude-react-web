@@ -202,7 +202,7 @@ export async function captureTree(
 }
 
 export async function nameOnlyDiff(repo: ShadowRepo, from: string, to: string): Promise<string[]> {
-  const r = await run(repo.worktree, args(repo, ['diff', '--name-only', '-z', from, to, '--']))
+  const r = await run(repo.worktree, args(repo, ['diff', '--name-only', '-z', '--no-renames', from, to, '--']))
   return r.stdout.split('\0').filter(Boolean)
 }
 
@@ -236,9 +236,64 @@ export async function deletePaths(_repo: ShadowRepo, absPaths: string[]): Promis
 /** Max lines per unified-diff patch body. Matches git.ts MAX_DIFF_LINES. */
 const MAX_PATCH_LINES = 500
 
-/** Structured per-file diffs between two trees (Review / dry-run).
- *  Uses 2 bulk spawns (name-status + numstat for all files) plus
- *  per-file unified patch spawns, truncated at MAX_PATCH_LINES. */
+/** Parse NUL-terminated numstat output (`-z`): each entry is `adds\tdels\tpath\0`
+ *  (tabs as field separator, NUL as line terminator — NOT NUL-delimited fields).
+ *  Binary files use `-\t-\tpath\0`. */
+function parseNumstatZ(raw: string): Map<string, { a: string; d: string }> {
+  const map = new Map<string, { a: string; d: string }>()
+  // Split on NUL to get individual entries, then split each on tabs.
+  for (const entry of raw.split('\0')) {
+    if (!entry) continue
+    const parts = entry.split('\t')
+    if (parts.length >= 3) {
+      map.set(parts[2], { a: parts[0], d: parts[1] })
+    }
+  }
+  return map
+}
+
+/** Parse NUL-delimited name-status output (`-z`): STATUS\0FILE\0 pairs. */
+function parseNameStatusZ(raw: string): Map<string, string> {
+  const map = new Map<string, string>()
+  const parts = raw.split('\0').filter(Boolean)
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    map.set(parts[i + 1], parts[i])
+  }
+  return map
+}
+
+/** Lighter diff that returns only aggregate stats (no per-file patches).
+ *  Uses 2 bulk spawns (name-status -z + numstat -z) — no per-file patch
+ *  spawns. Suitable for dryRun/rewind where patches are not needed. */
+export async function diffStats(
+  repo: ShadowRepo,
+  from: string,
+  to: string,
+): Promise<{ files: string[]; insertions: number; deletions: number }> {
+  const names = await nameOnlyDiff(repo, from, to)
+  if (names.length === 0) return { files: [], insertions: 0, deletions: 0 }
+
+  // Only numstat is needed for aggregate stats — the file list comes from
+  // nameOnlyDiff and name-status is not used here (unlike structuredDiff
+  // which needs per-file status codes for added/deleted/modified).
+  const numstatBulk = await run(repo.worktree, args(repo, ['diff', '--numstat', '-z', '--no-renames', from, to, '--']))
+  const numstatMap = parseNumstatZ(numstatBulk.stdout)
+
+  let insertions = 0
+  let deletions = 0
+  for (const file of names) {
+    const num = numstatMap.get(file)
+    const a = num?.a ?? '0'
+    const d = num?.d ?? '0'
+    if (a !== '-') insertions += Number(a) || 0
+    if (d !== '-') deletions += Number(d) || 0
+  }
+  return { files: names, insertions, deletions }
+}
+
+/** Structured per-file diffs between two trees (Review / GET snapshot-diff).
+ *  Uses 2 bulk spawns (name-status -z + numstat -z) plus per-file unified
+ *  patch spawns, truncated at MAX_PATCH_LINES. */
 export async function structuredDiff(
   repo: ShadowRepo,
   from: string,
@@ -250,29 +305,11 @@ export async function structuredDiff(
   // Two bulk passes: name-status and numstat for all files at once.
   const [statusBulk, numstatBulk] = await Promise.all([
     run(repo.worktree, args(repo, ['diff', '--name-status', '-z', '--no-renames', from, to, '--'])),
-    run(repo.worktree, args(repo, ['diff', '--numstat', '--no-renames', from, to, '--'])),
+    run(repo.worktree, args(repo, ['diff', '--numstat', '-z', '--no-renames', from, to, '--'])),
   ])
 
-  // Parse name-status with -z: STATUS\0FILE\0 pairs
-  const statusMap = new Map<string, string>()
-  {
-    const parts = statusBulk.stdout.split('\0').filter(Boolean)
-    for (let i = 0; i + 1 < parts.length; i += 2) {
-      statusMap.set(parts[i + 1], parts[i]) // file → status code
-    }
-  }
-
-  // Parse numstat (newline-delimited): "adds\tdels\tfile" per line
-  const numstatMap = new Map<string, { a: string; d: string }>()
-  {
-    for (const line of numstatBulk.stdout.split('\n')) {
-      if (!line) continue
-      const parts = line.split('\t')
-      if (parts.length >= 3) {
-        numstatMap.set(parts[2], { a: parts[0], d: parts[1] })
-      }
-    }
-  }
+  const statusMap = parseNameStatusZ(statusBulk.stdout)
+  const numstatMap = parseNumstatZ(numstatBulk.stdout)
 
   const out: Array<{ file: string; status: 'added'|'deleted'|'modified'; additions: number; deletions: number; patch?: string }> = []
   for (const file of names) {

@@ -13,6 +13,7 @@ import {
   restorePaths,
   deletePaths,
   structuredDiff,
+  diffStats,
 } from './shadow-git.js'
 import { SnapshotStore } from './snapshot-store.js'
 
@@ -323,7 +324,9 @@ export class SnapshotService {
     })
   }
 
-  /** Dry-run rewind: structured diff preview without touching the worktree. */
+  /** Dry-run rewind: stats-only preview without touching the worktree.
+   *  Uses diffStats (2 bulk spawns, no per-file patches) since patches
+   *  are not sent over the wire for dryRun/rewind. */
   async dryRun(sessionId: string, messageId: string): Promise<RewindPreview> {
     return this.lock(sessionId, async () => {
       const meta = await this.store.load(sessionId)
@@ -337,12 +340,8 @@ export class SnapshotService {
           sourceGitDir: meta.sourceGitDir,
         })
         if (!current) return { canRewind: false, error: 'capture failed' }
-        const files = await nameOnlyDiff(repo, anchor.start, current)
-        const diffs = await structuredDiff(repo, anchor.start, current)
-        let insertions = 0
-        let deletions = 0
-        for (const d of diffs) { insertions += d.additions; deletions += d.deletions }
-        return { canRewind: true, filesChanged: files, insertions, deletions, diffs }
+        const stats = await diffStats(repo, anchor.start, current)
+        return { canRewind: true, filesChanged: stats.files, insertions: stats.insertions, deletions: stats.deletions }
       } catch (err) {
         log.warn(`dryRun failed for ${sessionId}/${messageId}: ${(err as Error).message ?? err}`)
         return { canRewind: false, error: 'dry-run failed' }
@@ -356,6 +355,8 @@ export class SnapshotService {
    * files absent from start tree (created since) are deleted.
    * After a successful real rewind, later anchors are dropped so the
    * menu cannot re-apply discarded edits (F5).
+   * Uses diffStats (2 bulk spawns, no per-file patches) since patches
+   * are not sent over the wire for dryRun/rewind.
    */
   async rewind(sessionId: string, messageId: string): Promise<RewindPreview> {
     return this.lock(sessionId, async () => {
@@ -384,10 +385,7 @@ export class SnapshotService {
         if (toDelete.length) await deletePaths(repo, toDelete)
 
         const after = await captureTree(repo, captureOpts)
-        const diffs = after ? await structuredDiff(repo, anchor.start, after) : []
-        let insertions = 0
-        let deletions = 0
-        for (const d of diffs) { insertions += d.additions; deletions += d.deletions }
+        const afterStats = after ? await diffStats(repo, anchor.start, after) : { files: [], insertions: 0, deletions: 0 }
 
         // F5: drop later anchors and patches so the UI cannot re-apply
         // edits that were discarded by this rewind. Keep the rewound
@@ -413,7 +411,7 @@ export class SnapshotService {
           return { ...prev, byMessage, patches: [] }
         })
 
-        return { canRewind: true, filesChanged: files, insertions, deletions, diffs }
+        return { canRewind: true, filesChanged: afterStats.files, insertions: afterStats.insertions, deletions: afterStats.deletions }
       } catch (err) {
         log.warn(`rewind failed for ${sessionId}/${messageId}: ${(err as Error).message ?? err}`)
         return { canRewind: false, error: 'rewind failed' }

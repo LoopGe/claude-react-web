@@ -110,16 +110,27 @@ export class SnapshotStore {
     // This eliminates the concurrency risk where remove(fromId) would
     // destroy objects the fork still references. The fork's byMessage/
     // patches reference tree SHAs that live in the copied odb.
+    let odbCopyFailed = false
     if (this.dir) {
       const srcOdb = odbDir(this.dir, fromId)
       const dstOdb = odbDir(this.dir, toId)
       try {
         await mkdir(dstOdb, { recursive: true })
         await cp(srcOdb, dstOdb, { recursive: true, force: true })
-      } catch {
-        // ENOENT-tolerant — source odb may not exist if the session was
-        // never captured. The fork just won't have an odb until its first
-        // capture creates one.
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        if (code === 'ENOENT') {
+          // Source odb never created — session was never captured.
+          // The fork just won't have an odb until its first capture.
+          // Inherited anchors are safe (they're just empty or point at
+          // trees that don't need an odb).
+        } else {
+          // Non-ENOENT: odb copy genuinely failed. Anchors reference
+          // tree SHAs in the odb that may not have been fully copied,
+          // so the fork starts clean to avoid broken references.
+          log.warn(`copyForFork odb copy failed for ${fromId} → ${toId}: ${(err as Error).message ?? err}`)
+          odbCopyFailed = true
+        }
       }
     }
     // Clear tombstone in case the fork id was previously used and removed.
@@ -127,10 +138,17 @@ export class SnapshotStore {
     await this.save(toId, {
       ...src,
       gitDir: this.dir ? odbDir(this.dir, toId) : src.gitDir,
-      byMessage,
-      patches,
+      byMessage: odbCopyFailed ? {} : byMessage,
+      patches: odbCopyFailed ? [] : patches,
       last: undefined,
     })
+  }
+
+  /** Clear the tombstone for a session so a newly-created session with the
+   *  same id is not accidentally suppressed by a prior remove(). Call from
+   *  SessionManager.spawn() when creating a NEW session. */
+  revive(sessionId: string): void {
+    this.removed.delete(sessionId)
   }
 
   async remove(sessionId: string): Promise<void> {
