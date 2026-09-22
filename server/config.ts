@@ -11,6 +11,7 @@
 import { promises as fs } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { writeAtomic } from './json-file-store.js'
 import type { SkillLoadMode } from '../shared/skills.js'
 import type { RowGapPreset } from '../shared/row-gap.js'
 import { isRowGapPreset, DEFAULT_ROW_GAP } from '../shared/row-gap.js'
@@ -456,7 +457,10 @@ export async function loadConfig(stateDir: string): Promise<void> {
   applyParsedConfig(migrated as unknown as ConfigFile, stateDir, file)
 }
 
-const LEGACY_PROFILE_KEYS = ['authToken', 'baseUrl', 'modelList', 'modelGroups', 'recapModel', 'commitMessageModel'] as const
+/** The pre-`profiles` top-level credential/model keys. Exported because writers
+ *  that materialize a profile also have to retire them in the same pass —
+ *  leaving one behind lets a later empty `profiles` resurrect a stale value. */
+export const LEGACY_PROFILE_KEYS = ['authToken', 'baseUrl', 'modelList', 'modelGroups', 'recapModel', 'commitMessageModel'] as const
 
 /** Hard-migrate the six legacy top-level credential/model fields into a
  *  `profiles[0]` + `activeProfileId` on first load. Runs once: when `profiles`
@@ -473,7 +477,7 @@ async function migrateLegacyProfiles(
   const migrated: Record<string, unknown> = { ...parsed, profiles: [profile], activeProfileId: 'default' }
   for (const k of LEGACY_PROFILE_KEYS) delete migrated[k]
   try {
-    await fs.writeFile(file, JSON.stringify(migrated, null, 2), 'utf8')
+    await writeAtomic(dirname(file), file, migrated)
     log.info(`migrated legacy authToken/model fields into profiles[0] (${file})`)
   } catch (err) {
     log.warn(`could not write back migrated config:`, (err as Error).message)
@@ -508,7 +512,13 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
   const activeProfileId = rawActiveId || 'default'
   const active = resolveActiveProfile(profiles, activeProfileId, DEFAULT_PROFILE)
   ;(merged as { profiles: readonly ProviderProfile[] }).profiles = Object.freeze(profiles)
-  ;(merged as { activeProfileId: string }).activeProfileId = activeProfileId
+  // Report the profile the reader RESOLVED, not the raw string. A dangling
+  // activeProfileId survives otherwise, and then every profile reports
+  // `isActive: false` (GET /profiles) while DELETE /profiles/:id's "cannot delete
+  // the active profile" guard matches nothing — so the profile actually in use
+  // could be deleted out from under the server. Writers normalize too; doing it
+  // in the reader covers every writer (PUT /config, activate, hand edits) at once.
+  ;(merged as { activeProfileId: string }).activeProfileId = active.id
   ;(merged as { modelList: readonly string[] }).modelList = Object.freeze([...active.modelList])
   ;(merged as { modelGroups: readonly ModelGroupConfig[] }).modelGroups = Object.freeze([...active.modelGroups])
   ;(merged as { defaultModel: string }).defaultModel = profileDefaultModel(active)
@@ -824,7 +834,11 @@ async function doUpdateConfigFile(
     }
   }
   const file = getConfigPath(stateDir)
-  await fs.writeFile(file, JSON.stringify(existing, null, 2), 'utf8')
+  // Atomic (tmp + rename): a torn config.json is unrecoverable — the next load
+  // falls back to defaults and the write after that persists them, wiping every
+  // credential and setting. The queue below serializes writers; this makes each
+  // individual write crash-safe.
+  await writeAtomic(dirname(file), file, existing)
   // Apply the merged result directly instead of re-reading from disk.
   applyParsedConfig(existing as unknown as ConfigFile, stateDir, file)
 }
@@ -853,7 +867,7 @@ async function doRawConfigUpdate(
   const existing = await readConfigFile(stateDir)
   await mutate(existing)
   const file = getConfigPath(stateDir)
-  await fs.writeFile(file, JSON.stringify(existing, null, 2), 'utf8')
+  await writeAtomic(dirname(file), file, existing)
   applyParsedConfig(existing as unknown as ConfigFile, stateDir, file)
 }
 

@@ -2,8 +2,8 @@
 
 import { Hono } from 'hono'
 import { serverDefaultCwd } from '../default-cwd.js'
-import { readFile } from 'node:fs/promises'
-import { dirname, join as joinPath } from 'node:path'
+import { copyFile, readFile } from 'node:fs/promises'
+import { join as joinPath } from 'node:path'
 import { claudeConfigDir } from '../claude-config-dir.js'
 import { SessionManager } from '../session-manager.js'
 import { HttpError } from '../errors.js'
@@ -11,13 +11,12 @@ import { createLogger } from '../log.js'
 import { safeJson } from './index.js'
 
 const log = createLogger('config')
-import { config as serverConfig, getConfigPath, loadConfig, readConfigFile, updateConfigFile, MAX_PASTED_IMAGE_BYTES } from '../config.js'
+import { config as serverConfig, DEFAULT_PROFILE, getConfigPath, LEGACY_PROFILE_KEYS, queueConfigWrite, readConfigFile, updateConfigFile, MAX_PASTED_IMAGE_BYTES } from '../config.js'
 import {
   LOG_LEVELS, getLogConfig, setLogConfig, type LogLevel,
   enableFileLogging, disableFileLogging, isFileLoggingEnabled, getLogFilePath,
 } from '../log.js'
-import { writeAtomic } from '../json-file-store.js'
-import { maskToken } from '../profiles.js'
+import { coerceProfileEntries, maskToken, normalizeModelList, profileFromLegacyFields, resolveActiveProfile, type LegacyProfileFields } from '../profiles.js'
 
 export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono {
   const app = new Hono()
@@ -35,69 +34,152 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       commitMessageModel?: string
       updateCheckRegistry?: string
     }>(c.req)
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new HttpError(400, 'Body must be a JSON object')
+    }
+    // An existing config.json that cannot be read as an OBJECT must not block the
+    // wizard — App renders SetupPage INSTEAD of the app shell while the server is
+    // unconfigured, so Settings and the About tab's "clear configuration" (which
+    // would otherwise have healed this) are both unreachable from here — and it
+    // must not be silently destroyed either. Copy it aside, warn, and carry on:
+    // the heal below writes a working config, and the original stays recoverable
+    // next to it.
     const configPath = getConfigPath(configDir)
-    let existing: Record<string, unknown> = {}
     try {
-      existing = JSON.parse(await readFile(configPath, 'utf8'))
-    } catch { /* file may not exist */ }
+      const parsed = JSON.parse(await readFile(configPath, 'utf8'))
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error('valid JSON but not an object')
+      }
+    } catch (err) {
+      // ENOENT just means there is no file yet, which is a normal first run.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        const backup = `${configPath}.unreadable-${Date.now()}`
+        try {
+          await copyFile(configPath, backup)
+        } catch {
+          // Cannot even back it up: refuse rather than destroy it.
+          throw new HttpError(400, `${configPath} is unreadable and could not be backed up — fix or remove it, then retry`)
+        }
+        log.warn(`config.json was unreadable (${(err as Error).message}); backed up to ${backup} and continuing`)
+      }
+    }
+    // The whole read-modify-write runs INSIDE the serialized config write queue
+    // — the same queue every other config.json writer uses (updateConfigFile /
+    // queueConfigWrite). Reading and writing this file by hand let a concurrent
+    // writer (PUT /config, /profiles/*, clearCredentials, PUT /log) land in
+    // between: ours clobbered its change, or its write clobbered ours and the
+    // token was lost with the wizard left un-leavable. config.ts states the rule
+    // — queueConfigWrite "MUST be used for any direct config.json edit". The
+    // 400s thrown below propagate to the caller, and do not poison the queue.
+    //
+    // The queue hands us the raw config through readConfigFile, so valid JSON
+    // that is not an object (`null`, `"x"`, `[1]`) arrives as {} exactly like a
+    // missing file — parsing it here would hand the heal a null to read
+    // properties off, or an array to write `profiles` onto (JSON.stringify drops
+    // an array's non-index properties, so the submission would vanish).
+    await queueConfigWrite(configDir, (existing) => {
+      // Heal a config the reader cannot resolve a profile out of BEFORE writing,
+      // because every write below targets a profile entry. A `profiles` key that
+      // is absent, empty, or holds no entry surviving coercion all make
+      // applyParsedConfig fall back to its synthetic default — so the legacy
+      // top-level keys this route used to write were never read back, and the
+      // wizard reported success while staying unconfigured with no way out.
+      // Materialize the profile the reader is ALREADY falling back to instead,
+      // seeded from any pre-migration top-level credential.
+      const rawActiveId = typeof existing.activeProfileId === 'string' ? existing.activeProfileId.trim() : ''
+      let entries = coerceProfileEntries(existing.profiles, DEFAULT_PROFILE)
+      if (entries.length === 0) {
+        const seeded = profileFromLegacyFields(existing as unknown as LegacyProfileFields, DEFAULT_PROFILE)
+        // PREPEND rather than replace. Entries that fail coercion are invisible to
+        // the reader but may still hold a credential the user typed, so replacing
+        // the array would destroy it silently. Prepending cannot shadow: an entry
+        // only survives coercion with a non-blank id AND name, and any entry like
+        // that would have made `entries` non-empty.
+        const raw = Array.isArray(existing.profiles) ? (existing.profiles as unknown[]) : []
+        existing.profiles = [seeded, ...raw]
+        entries = coerceProfileEntries(existing.profiles, DEFAULT_PROFILE)
+      }
+      // Retire the legacy top-level keys UNCONDITIONALLY, not only when the seed
+      // above absorbed them. applyParsedConfig no longer reads them, so any
+      // survivor is a second, dead source of truth: GET /config/full prefers the
+      // raw key when masking, and if `profiles` is later removed,
+      // migrateLegacyProfiles would resurrect the stale value over the token just
+      // saved. MUST run after the seed, which is what reads these fields.
+      for (const key of LEGACY_PROFILE_KEYS) delete existing[key]
 
-    if (Array.isArray(existing.profiles) && existing.profiles.length > 0) {
-      // Post-migration: write setup fields into profiles[0]. The top-level
-      // authToken/baseUrl/model* keys are derived from the active profile
-      // on load, so writing them top-level would be silently ignored.
+      // Write the setup fields into the profile the server actually READS — the
+      // one `activeProfileId` names. applyParsedConfig derives the top-level
+      // authToken/baseUrl/model* fields from that profile, so writing profiles[0]
+      // addresses the WRONG profile whenever the active one is not first. That is
+      // the normal case: `POST /profiles` appends and `POST /profiles/activate`
+      // selects the appended profile. It made the wizard impossible to leave —
+      // the token was saved, `configured` stayed false, and the next page load
+      // returned the user to the wizard.
+      //
+      // Resolved through the same code path the read side uses, so the two cannot
+      // drift apart again: coerceProfileEntries (which `coerceProfiles` is a
+      // projection of) then resolveActiveProfile's
+      // findProfile(activeProfileId) ?? profiles[0].
+      const active = resolveActiveProfile(
+        entries.map((entry) => entry.profile),
+        rawActiveId || DEFAULT_PROFILE.id,
+        DEFAULT_PROFILE,
+      )
+      // Point activeProfileId at what the reader actually resolved. A dangling id
+      // survives loadConfig as-is (applyParsedConfig keeps the stale string while
+      // falling back to profiles[0]), which leaves every profile reporting
+      // `isActive: false` in Settings and defeats DELETE /profiles/:id's
+      // "cannot delete the active profile" guard.
+      if (existing.activeProfileId !== active.id) existing.activeProfileId = active.id
+      // The RAW index the reader will consult. Identity comparison is exact:
+      // `active` is either one of these entries or the synthetic fallback, never
+      // a lookalike. Re-deriving the index by matching `id` by hand would disagree
+      // with the coercion on trimmed ids and on duplicate ids (last one wins) —
+      // which is exactly how this route came to write a profile nobody reads.
+      const hit = entries.find((entry) => entry.profile === active)
+      // Unreachable after the heal above, which guarantees an entry — but writing
+      // an index the reader ignores is the bug this route exists to avoid, so fail
+      // loudly rather than guess one.
+      if (!hit) throw new HttpError(500, 'no resolvable provider profile after config heal')
       const profilesArr = existing.profiles as unknown[]
-      const p0 = { ...(profilesArr[0] as Record<string, unknown>) }
-      if (body.authToken?.trim()) {
-        p0.authToken = body.authToken.trim()
-      } else if (!p0.authToken) {
+      const prof = { ...(profilesArr[hit.index] as Record<string, unknown>) }
+      if (typeof body.authToken === 'string' && body.authToken.trim()) {
+        prof.authToken = body.authToken.trim()
+      } else if (!active.authToken) {
+        // Test the COERCED token, not the raw one: coerceProfiles trims (and
+        // string-checks) authToken, so a stored '   ' or 12345 is '' to the
+        // reader. Checking the raw value would let that pass, keep an unusable
+        // token, and answer 200 configured:false — reporting a profile-selection
+        // problem where the real one is a blank token.
         throw new HttpError(400, 'authToken is required')
       }
-      if (body.baseUrl?.trim()) {
-        p0.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
+      if (typeof body.baseUrl === 'string' && body.baseUrl.trim()) {
+        prof.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
       }
-      if (Array.isArray(body.modelList) && body.modelList.length > 0) {
-        p0.modelList = body.modelList.filter((m) => typeof m === 'string' && m.trim())
-      }
+      // Only an explicitly-sent, usable list replaces the stored one — absent and
+      // all-blank both mean "leave it alone". normalizeModelList filters before
+      // deciding, so an all-blank list cannot persist `modelList: []` (which the
+      // reader treats as absent and replaces with the hardcoded DEFAULTS ids,
+      // unroutable on a third-party gateway).
+      const nextModelList = normalizeModelList(body.modelList, [])
+      if (nextModelList.length > 0) prof.modelList = nextModelList
       // Stored as '' rather than dropped: '' is the explicit "unset — use
       // the session's own model" value. (A deleted key would resurrect the
       // DEFAULTS value if that ever became a real model id again.)
       if (typeof body.recapModel === 'string') {
-        p0.recapModel = body.recapModel.trim()
+        prof.recapModel = body.recapModel.trim()
       }
       if (typeof body.commitMessageModel === 'string') {
-        p0.commitMessageModel = body.commitMessageModel.trim()
+        prof.commitMessageModel = body.commitMessageModel.trim()
       }
-      profilesArr[0] = p0
-    } else {
-      // Legacy: top-level writes (migration folds them into profiles[0] on load).
-      if (body.authToken?.trim()) {
-        existing.authToken = body.authToken.trim()
-      } else if (!existing.authToken) {
-        throw new HttpError(400, 'authToken is required')
+      profilesArr[hit.index] = prof
+      if (typeof body.updateCheckRegistry === 'string') {
+        // Persist verbatim (trimmed) — empty string is a valid value meaning
+        // "update checks disabled", so we write it rather than dropping it.
+        existing.updateCheckRegistry = body.updateCheckRegistry.trim()
       }
-      if (body.baseUrl?.trim()) {
-        existing.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
-      }
-      if (Array.isArray(body.modelList) && body.modelList.length > 0) {
-        existing.modelList = body.modelList.filter((m) => typeof m === 'string' && m.trim())
-      }
-      // Legacy top-level writes — same '' = unset semantics as above; the
-      // migration into profiles[0] carries the value through unchanged.
-      if (typeof body.recapModel === 'string') {
-        existing.recapModel = body.recapModel.trim()
-      }
-      if (typeof body.commitMessageModel === 'string') {
-        existing.commitMessageModel = body.commitMessageModel.trim()
-      }
-    }
-    if (typeof body.updateCheckRegistry === 'string') {
-      // Persist verbatim (trimmed) — empty string is a valid value meaning
-      // "update checks disabled", so we write it rather than dropping it.
-      existing.updateCheckRegistry = body.updateCheckRegistry.trim()
-    }
-    await writeAtomic(dirname(configPath), configPath, existing)
-    await loadConfig(configDir)
-    log.info('config/setup saved and reloaded')
+    })
+    log.info('config/setup saved')
     return c.json({ ok: true, configured: !!serverConfig.authToken })
   })
 

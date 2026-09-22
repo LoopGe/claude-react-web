@@ -8,11 +8,17 @@ import { safeJson } from './index.js'
 import {
   config as serverConfig, DEFAULT_PROFILE, loadConfig, queueConfigWrite,
 } from '../config.js'
-import { maskToken } from '../profiles.js'
+import { coerceProfileEntries, maskToken, normalizeModelList, normalizeProfileId } from '../profiles.js'
 import { createLogger } from '../log.js'
 import type { SessionManager } from '../session-manager.js'
 
 const log = createLogger('profiles')
+
+/** A raw profile entry's normalized id — '' for a malformed entry. */
+function profileEntryId(entry: unknown): string {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return ''
+  return normalizeProfileId((entry as { id?: unknown }).id)
+}
 
 function toWire(profiles: readonly unknown[], activeProfileId: string) {
   return {
@@ -59,9 +65,7 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
       authToken: typeof body.authToken === 'string' ? body.authToken.trim() : '',
       baseUrl: typeof body.baseUrl === 'string' && body.baseUrl.trim()
         ? body.baseUrl.trim().replace(/\/+$/, '') : active?.baseUrl ?? DEFAULT_PROFILE.baseUrl,
-      modelList: Array.isArray(body.modelList) && body.modelList.length > 0
-        ? body.modelList.filter((m) => typeof m === 'string' && m.trim())
-        : active?.modelList ?? DEFAULT_PROFILE.modelList,
+      modelList: normalizeModelList(body.modelList, active?.modelList ?? DEFAULT_PROFILE.modelList),
       modelGroups: Array.isArray(body.modelGroups) ? body.modelGroups : active?.modelGroups ?? DEFAULT_PROFILE.modelGroups,
       // An explicitly-sent value wins on create too — including '' and null
       // ("unset", the same rule PUT /profiles/:id applies, since the settings
@@ -87,12 +91,18 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
     if (!configDir) throw new HttpError(500, 'configDir not set')
     const id = c.req.param('id')
     const body = await safeJson<Record<string, unknown>>(c.req)
-    let found = false
     await queueConfigWrite(configDir, (existing) => {
       const profiles = Array.isArray(existing.profiles) ? existing.profiles : []
-      const idx = profiles.findIndex((p) => (p as Record<string, unknown>).id === id)
-      if (idx === -1) throw new HttpError(404, `profile ${id} not found`)
-      found = true
+      // Resolve through the coercion, exactly as the reader does. Ids are trimmed
+      // and deduped (last one wins) there, so comparing the RAW id string by hand
+      // misses a stored ' p_two ' — a 404 for a profile GET /profiles happily
+      // lists — and picks the FIRST of two duplicates while the reader uses the
+      // last, so the save lands on the profile nobody reads.
+      const hit = coerceProfileEntries(existing.profiles, DEFAULT_PROFILE).find((e) => e.profile.id === id)
+      // Propagates out through queueConfigWrite's returned promise (the queue itself
+      // stays unpoisoned), so the handler never reaches a stale-success path.
+      if (!hit) throw new HttpError(404, `profile ${id} not found`)
+      const idx = hit.index
       const prev = profiles[idx] as Record<string, unknown>
       const next: Record<string, unknown> = { ...prev }
       // Every field the card can send is either applied or REJECTED — never
@@ -118,9 +128,7 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
         next.baseUrl = body.baseUrl.trim().replace(/\/+$/, '')
       }
       if (body.modelList !== undefined) {
-        const list = Array.isArray(body.modelList)
-          ? body.modelList.filter((m) => typeof m === 'string' && m.trim())
-          : []
+        const list = normalizeModelList(body.modelList, [])
         if (list.length === 0) throw new HttpError(400, 'a profile needs at least one model')
         next.modelList = list
       }
@@ -142,7 +150,6 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
       profiles[idx] = next
       existing.profiles = profiles
     })
-    if (!found) throw new HttpError(404, `profile ${id} not found`)
     await loadConfig(configDir)
     log.info(`profile updated id=${id}`)
     return c.json({ ok: true })
@@ -158,8 +165,13 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
       throw new HttpError(400, 'cannot delete the last remaining profile')
     }
     await queueConfigWrite(configDir, (existing) => {
-      const profiles = Array.isArray(existing.profiles) ? existing.profiles : []
-      existing.profiles = profiles.filter((p) => (p as Record<string, unknown>).id !== id)
+      // Drop EVERY raw entry that normalizes to this id. Matching raw strings
+      // misses a stored ' p_two ' (answering ok while the profile survives every
+      // refresh), and removing only the winning index would leave a SHADOWED
+      // duplicate behind — the id would still resolve, so the delete would report
+      // success and the profile would still be listed.
+      const raw = Array.isArray(existing.profiles) ? existing.profiles : []
+      existing.profiles = raw.filter((p) => profileEntryId(p) !== id)
     })
     await loadConfig(configDir)
     log.info(`profile deleted id=${id}`)

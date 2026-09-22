@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 import { buildProfilesRouter } from './profiles.js'
 import { createErrorHandler } from '../errors.js'
+import { loadConfig } from '../config.js'
 
 // The test route dynamically imports the real probe; stub it so these tests
 // assert which model the route asks it to test, without touching the network.
@@ -45,6 +46,40 @@ describe('profiles router', () => {
 
     const del = await app.request('/profiles/default', { method: 'DELETE' })
     expect(del.status).toBe(400) // active profile cannot be deleted
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it('templates an all-blank modelList from the active profile instead of storing []', async () => {
+    // A stored `modelList: []` reads back as absent, so the reader would
+    // substitute the hardcoded DEFAULT ids — unroutable on a third-party
+    // gateway. POST is the third writer of this field; PUT /profiles/:id 400s
+    // on an empty list and /config/setup filters first.
+    const { promises: fs } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const dir = await fs.mkdtemp(join(tmpdir(), 'crw-profiles-blank-models-'))
+    await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{ id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['gw/model-x'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' }],
+      activeProfileId: 'default',
+    }))
+    const app = appWith(dir)
+    // POST /profiles templates the missing fields from the ACTIVE profile, which
+    // it reads off the live config — so this fixture has to be loaded, not just
+    // written. (Sibling tests get this for free from an earlier write's
+    // applyParsedConfig; this one must not depend on that ordering.)
+    await loadConfig(dir)
+
+    const created = await app.request('/profiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Second', modelList: ['', '   '] }),
+    })
+    expect(created.status).toBe(201)
+
+    const written = JSON.parse(await fs.readFile(join(dir, 'config.json'), 'utf8')) as {
+      profiles: { name: string; modelList: string[] }[]
+    }
+    expect(written.profiles.find((p) => p.name === 'Second')?.modelList).toEqual(['gw/model-x'])
     await fs.rm(dir, { recursive: true, force: true })
   })
 
@@ -193,6 +228,70 @@ describe('profiles router', () => {
     // '' is the "unset" convention, so it must mean "no model" (the free
     // sentinel probe), not "fall back to modelList[0]".
     expect(mockProbe.mock.calls[0][2]).toMatchObject({ model: '' })
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it('deletes every copy when two raw entries share an id', async () => {
+    // The reader resolves the LAST copy (dedup, last wins). Removing only that
+    // index would leave a shadowed duplicate that the id still resolves to, so
+    // the delete would report success while GET /profiles kept listing it.
+    const { promises: fs } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const dir = await fs.mkdtemp(join(tmpdir(), 'crw-profiles-dup-id-'))
+    await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
+      profiles: [
+        { id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['m1'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
+        { id: 'p_b', name: 'B-first', authToken: 't1', baseUrl: 'https://gw', modelList: ['m1'], modelGroups: [], recapModel: '', commitMessageModel: '' },
+        { id: 'p_b', name: 'B-second', authToken: 't2', baseUrl: 'https://gw', modelList: ['m1'], modelGroups: [], recapModel: '', commitMessageModel: '' },
+      ],
+      activeProfileId: 'default',
+    }))
+    const app = appWith(dir)
+    await loadConfig(dir)
+
+    const del = await app.request('/profiles/p_b', { method: 'DELETE' })
+    expect(del.status).toBe(200)
+
+    const listed = (await (await app.request('/profiles')).json()) as { profiles: { id: string }[] }
+    expect(listed.profiles.map((p) => p.id)).toEqual(['default'])
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it('edits and deletes the entry a padded raw id resolves to', async () => {
+    // The coercion TRIMS ids, so GET /profiles lists 'p_two' while the raw entry
+    // reads ' p_two '. Hand-matching the raw string 404s the edit and silently
+    // no-ops the delete — a profile the UI shows but can never change.
+    const { promises: fs } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const dir = await fs.mkdtemp(join(tmpdir(), 'crw-profiles-padded-id-'))
+    await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
+      profiles: [
+        { id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['m1'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
+        { id: ' p_two ', name: 'Second', authToken: 'tok-two', baseUrl: 'https://gw2', modelList: ['m2'], modelGroups: [], recapModel: '', commitMessageModel: '' },
+      ],
+      activeProfileId: 'default',
+    }))
+    const app = appWith(dir)
+    await loadConfig(dir)
+
+    const put = await app.request('/profiles/p_two', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed' }),
+    })
+    expect(put.status).toBe(200)
+
+    const del = await app.request('/profiles/p_two', { method: 'DELETE' })
+    expect(del.status).toBe(200)
+
+    const written = JSON.parse(await fs.readFile(join(dir, 'config.json'), 'utf8')) as {
+      profiles: { id: string; name: string }[]
+    }
+    // The padded entry is the one that was renamed and removed.
+    expect(written.profiles).toHaveLength(1)
+    expect(written.profiles[0].id).toBe('default')
     await fs.rm(dir, { recursive: true, force: true })
   })
 })

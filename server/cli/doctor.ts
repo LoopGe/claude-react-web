@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs'
 import { CliContext, CliGroup } from './types.js'
 import { ParsedOptions, scalar } from './parser.js'
-import { config, getConfigPath } from '../config.js'
+import { config, getConfigPath, readConfigFile } from '../config.js'
 import { resolveClaudeBinary } from '../claude-binary.js'
 import { table, maskToken } from './render.js'
 
@@ -23,15 +23,30 @@ async function runDoctor(ctx: CliContext, parsed: ParsedOptions): Promise<Doctor
     name: 'authToken',
     ok: !!config.authToken,
     detail: config.authToken ? maskToken(config.authToken) ?? '' : 'not configured',
-    fix: config.authToken ? undefined : `edit ${getConfigPath(ctx.stateDir)} → profiles[0].authToken`,
+    fix: config.authToken ? undefined : `edit ${getConfigPath(ctx.stateDir)} → the authToken of the ACTIVE profile (id: ${config.activeProfileId || 'default'})`,
   })
   checks.push({ name: 'baseUrl', ok: !!config.baseUrl, detail: config.baseUrl })
   const profile = config.profiles.find((p) => p.id === config.activeProfileId)
+  // applyParsedConfig normalizes activeProfileId to the profile it RESOLVED, so a
+  // typo in the file would otherwise be invisible here (the in-memory id always
+  // names a real profile). Compare against what the file actually says, so the
+  // misconfiguration stays diagnosable.
+  const rawActiveId = (await readConfigFile(ctx.stateDir)).activeProfileId
+  const rawId = typeof rawActiveId === 'string' ? rawActiveId.trim() : ''
+  const mismatch = rawId !== '' && rawId !== config.activeProfileId
   checks.push({
     name: 'activeProfile',
-    ok: !!profile,
-    detail: profile ? `${profile.id} (${profile.name})` : 'none',
-    fix: profile ? undefined : 'set activeProfileId in config.json',
+    ok: !!profile && !mismatch,
+    detail: profile
+      ? mismatch
+        ? `${profile.id} (${profile.name}) — but the file's activeProfileId is "${rawId}", which names no profile`
+        : `${profile.id} (${profile.name})`
+      : 'none — no provider profile configured',
+    fix: !profile
+      ? `run the setup wizard, or add a provider profile to ${getConfigPath(ctx.stateDir)}`
+      : mismatch
+        ? `set activeProfileId in ${getConfigPath(ctx.stateDir)} to an existing profile id`
+        : undefined,
   })
   const bin = resolveClaudeBinary(scalar(parsed, 'claude-binary'))
   checks.push({

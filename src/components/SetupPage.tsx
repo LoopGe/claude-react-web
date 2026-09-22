@@ -466,7 +466,7 @@ export function SetupPage({ onConfigured }: Props) {
         // a retry click should re-invoke onConfigured WITHOUT writing the
         // file again. setupCompleted gates that.
         if (!setupCompleted) {
-          await api.post('/config/setup', {
+          const res = await api.post<{ ok: boolean; configured: boolean }>('/config/setup', {
             authToken: authToken.trim() || undefined,
             baseUrl: baseUrl.trim() || undefined,
             modelList: modelList.length > 0 ? modelList : undefined,
@@ -483,6 +483,33 @@ export function SetupPage({ onConfigured }: Props) {
             // dropped to the server default.
             updateCheckRegistry: updateRegistry.trim(),
           })
+          // Refuse to treat a write that left the server unconfigured as
+          // success. `configured` mirrors GET /config, so a falsy value means
+          // the next page load renders THIS wizard again — proceeding would open
+          // the main UI with sessions that cannot authenticate and bounce the
+          // user straight back here. Throwing keeps the failure visible on this
+          // step, with the retry right where they are.
+          //
+          // This caught the P0 defect, where the token was written to
+          // profiles[0] while the app read whichever profile is active. The
+          // server now targets the active profile, so this guards against the
+          // write and read sides drifting apart again.
+          //
+          // Deliberately does NOT say "open Settings": the app shell — and
+          // therefore Settings — is exactly what is not rendered while the
+          // server is unconfigured, so that would point at nothing.
+          //
+          // `=== false`, not `!res.configured`, to match the convention the rest
+          // of the client uses for this optional field (App.tsx: `configured !==
+          // false`). A 200 whose body is not JSON decodes to a string, leaving
+          // the field absent — reading that as failure would trap the user here
+          // on a wrong diagnosis, while GET /config would have let them in.
+          if (res.configured === false) {
+            throw new Error(
+              'Setup could not be finalized: the server still reports no active credential — '
+              + 'the token did not reach the active profile. Fix the active profile in your config file, then retry.',
+            )
+          }
           setSetupCompleted(true)
         }
         // Await onConfigured so the parent's post-setup work (a /config

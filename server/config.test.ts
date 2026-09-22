@@ -351,10 +351,13 @@ describe('config', () => {
     // skipping all later writes. Verify recovery.
     vi.spyOn(console, 'log').mockImplementation(() => {})
 
-    // First write: bad stateDir → fs.writeFile rejects with ENOENT.
-    const badDir = join(dir, 'does', 'not', 'exist')
+    // First write: the config path's PARENT is a file, not a directory, so
+    // writeAtomic's mkdir rejects. A merely MISSING parent no longer fails —
+    // writeAtomic creates it, which is why this no longer uses a nonexistent dir.
+    const blocker = join(dir, 'not-a-directory')
+    writeFileSync(blocker, 'x')
     await expect(
-      updateConfigFile(badDir, { historyCap: 777 }),
+      updateConfigFile(blocker, { historyCap: 777 }),
     ).rejects.toThrow()
 
     // Second write: real dir. If the queue is poisoned this never runs
@@ -609,6 +612,21 @@ describe('provider-profile migration + derived fields', () => {
     await loadConfig(dir)
     expect(config.activeProfileId).toBe('a')
     expect(config.modelList).toEqual(['ma'])
+  })
+
+  it('normalizes a dangling activeProfileId to the profile the reader resolves', async () => {
+    // Left raw, every profile reports isActive:false (GET /profiles) and DELETE
+    // /profiles/:id's "cannot delete the active profile" guard matches nothing,
+    // so the profile actually in use could be deleted.
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{ id: 'a', name: 'A', authToken: 'tok', baseUrl: 'https://gw', modelList: ['ma'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' }],
+      activeProfileId: 'typo',
+    }))
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.activeProfileId).toBe('a')
+    expect(config.modelList).toEqual(['ma'])
+    log.mockRestore()
   })
 
   it('derives defaultModel from the active profile modelList[0] and WRITABLE_CONFIG_KEYS no longer lists legacy keys', async () => {

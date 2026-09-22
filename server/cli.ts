@@ -87,8 +87,9 @@ async function runServer(args: CliArgs): Promise<void> {
   if (!config.authToken) {
     console.warn(
       '[cli] WARNING: authToken is not configured.\n' +
-      '       Open the web UI to set it, or edit config.json and add:\n' +
-      '         "authToken": "<your token>"',
+      '       Open the web UI to set it, or edit config.json and set authToken on the\n' +
+      `       ACTIVE profile (id: ${config.activeProfileId || 'default'}). A top-level\n` +
+      '       "authToken" is no longer read once a "profiles" key exists.',
     )
   }
 

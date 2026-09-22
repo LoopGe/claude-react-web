@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { ModelGroupConfig, ProviderProfile } from './config.js'
 import {
-  coerceModelGroups, coerceProfiles, findProfile, maskToken,
-  profileDefaultModel, profileFromLegacyFields, resolveActiveProfile,
+  coerceModelGroups, coerceProfileEntries, coerceProfiles, findProfile, maskToken,
+  normalizeModelList, profileDefaultModel, profileFromLegacyFields, resolveActiveProfile,
 } from './profiles.js'
 
 const FALLBACK: ProviderProfile = {
@@ -17,6 +17,86 @@ const FALLBACK: ProviderProfile = {
 }
 const P = (id: string, modelList: string[] = ['a/' + id]): ProviderProfile =>
   ({ ...FALLBACK, id, name: 'P ' + id, modelList })
+
+describe('normalizeModelList', () => {
+  // The single definition of "which model ids does this list actually have",
+  // shared by the reader and every writer so the rule cannot drift.
+  it('keeps the usable ids and drops blanks', () => {
+    expect(normalizeModelList(['a', '', '  ', 'b'], ['fb'])).toEqual(['a', 'b'])
+  })
+
+  it('falls back when nothing usable survives — including an all-blank list', () => {
+    expect(normalizeModelList(['', '   '], ['fb'])).toEqual(['fb'])
+    expect(normalizeModelList([], ['fb'])).toEqual(['fb'])
+    expect(normalizeModelList(undefined, ['fb'])).toEqual(['fb'])
+    expect(normalizeModelList('nope', ['fb'])).toEqual(['fb'])
+  })
+
+  it('trims the ids it keeps', () => {
+    // Every sibling field (id, name, baseUrl, authToken, recap/commit) is
+    // trimmed. A space-padded model id would be stored, become defaultModel, and
+    // spawn sessions with it — a gateway error the user cannot see the cause of.
+    expect(normalizeModelList([' a ', 'b'], ['fb'])).toEqual(['a', 'b'])
+  })
+
+  it('returns a mutable copy of the fallback, not the fallback itself', () => {
+    const fb = ['fb']
+    const out = normalizeModelList(undefined, fb)
+    out.push('x')
+    expect(fb).toEqual(['fb'])
+  })
+})
+
+describe('coerceProfileEntries', () => {
+  // The raw index is what lets a WRITER reach the same entry the reader
+  // resolves. It has to survive coercion exactly: malformed entries dropped,
+  // ids trimmed, duplicate ids resolved last-wins.
+  const raw = (id: unknown, name: unknown) => ({ id, name })
+
+  it('reports the raw index of each surviving entry', () => {
+    const entries = coerceProfileEntries([raw('a', 'A'), { garbage: true }, raw('b', 'B')], FALLBACK)
+    expect(entries.map((e) => [e.profile.id, e.index])).toEqual([['a', 0], ['b', 2]])
+  })
+
+  it('reports the LAST index for a duplicate id, matching the dedup', () => {
+    const entries = coerceProfileEntries([raw('dup', 'First'), raw('dup', 'Second')], FALLBACK)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].index).toBe(1)
+    expect(entries[0].profile.name).toBe('Second')
+  })
+
+  it('trims the id on the profile but keeps the untrimmed raw index', () => {
+    const entries = coerceProfileEntries([raw('a', 'A'), raw(' p ', 'P')], FALLBACK)
+    expect(entries[1].index).toBe(1)
+    expect(entries[1].profile.id).toBe('p')
+  })
+
+  it('coerces to the spelled-out expected profiles', () => {
+    // Asserted against a concrete expectation, NOT against coerceProfileEntries:
+    // coerceProfiles IS `coerceProfileEntries(...).map(e => e.profile)`, so
+    // comparing the two would pass for any coercion result at all — including a
+    // wrong one. Duplicate id → LAST wins; padded id → trimmed; malformed dropped.
+    const input = [raw('a', 'A'), { garbage: true }, raw('p', 'P'), raw('a', 'A2')]
+    const expected = [
+      { ...FALLBACK, id: 'a', name: 'A2' },
+      { ...FALLBACK, id: 'p', name: 'P' },
+    ]
+    expect(coerceProfiles(input, FALLBACK)).toEqual(expected)
+    expect(coerceProfileEntries(input, FALLBACK).map((e) => e.profile)).toEqual(expected)
+  })
+
+  it('falls back to the fallback list for an all-blank stored modelList', () => {
+    // [''] has length > 0 but no usable id — deciding on the raw length would
+    // coerce to [], and `modelList: []` reads as "unset" downstream
+    // (defaultModel becomes '').
+    const entries = coerceProfileEntries([{ id: 'a', name: 'A', modelList: ['', '  '] }], FALLBACK)
+    expect(entries[0].profile.modelList).toEqual(FALLBACK.modelList)
+  })
+
+  it('returns nothing for a non-array', () => {
+    expect(coerceProfileEntries(undefined, FALLBACK)).toEqual([])
+  })
+})
 
 describe('resolveActiveProfile', () => {
   it('returns the active profile by id', () => {

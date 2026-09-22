@@ -93,20 +93,59 @@ export function coerceModelGroups(raw: unknown): ModelGroupConfig[] {
   return [...byId.values()]
 }
 
-/** Narrow untrusted JSON into a ProviderProfile[]. Malformed entries are
- *  dropped (never blocks config load); missing scalar fields fall back to the
- *  synthetic fallback; a blank authToken is allowed (matches the unset-token
- *  starter state — the server still refuses to spawn without one). */
-export function coerceProfiles(raw: unknown, fallback: ProviderProfile): ProviderProfile[] {
+/** The coercion's id normalization, exposed so writers can match exactly the
+ *  entries the reader resolves — a raw string compare misses a padded id. */
+export function normalizeProfileId(raw: unknown): string {
+  return typeof raw === 'string' ? raw.trim() : ''
+}
+
+/** Sanitize a configured model list: keep only non-blank string ids, falling
+ *  back to `fallback` when nothing usable survives.
+ *
+ *  Deciding on the FILTERED result rather than the raw array's length is the
+ *  whole point: a stored all-blank list (['']) has length > 0 but yields
+ *  nothing, and `modelList: []` then reads as "unset" everywhere downstream
+ *  (`config.defaultModel` becomes '', and the session-planning paths lose the
+ *  user's gateway ids). This is the ONE definition of that rule — every reader
+ *  and writer of the field goes through it, so they cannot drift apart. */
+export function normalizeModelList(raw: unknown, fallback: readonly string[]): string[] {
+  const kept = Array.isArray(raw)
+    ? raw.filter((m): m is string => typeof m === 'string' && !!m.trim()).map((m) => m.trim())
+    : []
+  return kept.length > 0 ? kept : [...fallback]
+}
+
+/** A coerced profile paired with the index it came from in the RAW (untrusted)
+ *  array. Callers that WRITE a profile back need this: the reader resolves the
+ *  active profile out of `coerceProfiles`, and only the raw index identifies
+ *  the same entry on disk once malformed entries have been dropped and ids
+ *  have been trimmed. */
+export interface CoercedProfileEntry {
+  profile: ProviderProfile
+  index: number
+}
+
+/** Narrow untrusted JSON into ProviderProfile[], keeping each surviving
+ *  entry's raw index. Malformed entries are dropped (never blocks config
+ *  load); missing scalar fields fall back to the synthetic fallback; a blank
+ *  authToken is allowed (matches the unset-token starter state — the server
+ *  still refuses to spawn without one).
+ *
+ *  `coerceProfiles` is this function's projection, so the normalization is
+ *  defined exactly once: trimmed ids, last-wins on a duplicate id, malformed
+ *  entries dropped. A writer that re-derives any of that by hand will disagree
+ *  with the reader about which entry is which. */
+export function coerceProfileEntries(raw: unknown, fallback: ProviderProfile): CoercedProfileEntry[] {
   if (!Array.isArray(raw)) return []
-  const byId = new Map<string, ProviderProfile>()
-  for (const entry of raw) {
+  const byId = new Map<string, CoercedProfileEntry>()
+  for (let index = 0; index < raw.length; index++) {
+    const entry = raw[index]
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
       log.warn('dropping malformed profile (not an object)')
       continue
     }
     const e = entry as Record<string, unknown>
-    const id = typeof e.id === 'string' ? e.id.trim() : ''
+    const id = normalizeProfileId(e.id)
     const name = typeof e.name === 'string' ? e.name.trim() : ''
     if (!id || !name) {
       log.warn('dropping profile with a missing/blank id or name')
@@ -115,21 +154,27 @@ export function coerceProfiles(raw: unknown, fallback: ProviderProfile): Provide
     const baseUrl = typeof e.baseUrl === 'string' && e.baseUrl.trim()
       ? e.baseUrl.trim().replace(/\/+$/, '')
       : fallback.baseUrl
-    const modelList = Array.isArray(e.modelList) && e.modelList.length > 0
-      ? (e.modelList as unknown[]).filter((m): m is string => typeof m === 'string' && !!m.trim())
-      : [...fallback.modelList]
+    const modelList = normalizeModelList(e.modelList, fallback.modelList)
     const recapModel = typeof e.recapModel === 'string' && e.recapModel.trim()
       ? e.recapModel.trim() : fallback.recapModel
     const commitMessageModel = typeof e.commitMessageModel === 'string' && e.commitMessageModel.trim()
       ? e.commitMessageModel.trim() : fallback.commitMessageModel
     const authToken = typeof e.authToken === 'string' ? e.authToken.trim() : ''
     byId.set(id, {
-      id, name, authToken, baseUrl, modelList,
-      modelGroups: coerceModelGroups(e.modelGroups),
-      recapModel, commitMessageModel,
+      index,
+      profile: {
+        id, name, authToken, baseUrl, modelList,
+        modelGroups: coerceModelGroups(e.modelGroups),
+        recapModel, commitMessageModel,
+      },
     })
   }
   return [...byId.values()]
+}
+
+/** `coerceProfileEntries` without the raw indices — the reader's view. */
+export function coerceProfiles(raw: unknown, fallback: ProviderProfile): ProviderProfile[] {
+  return coerceProfileEntries(raw, fallback).map((entry) => entry.profile)
 }
 
 /** Build a ProviderProfile from the six legacy top-level fields (migration
@@ -144,9 +189,7 @@ export function profileFromLegacyFields(
     authToken: typeof f.authToken === 'string' ? f.authToken.trim() : '',
     baseUrl: typeof f.baseUrl === 'string' && f.baseUrl.trim()
       ? f.baseUrl.trim().replace(/\/+$/, '') : fallback.baseUrl,
-    modelList: Array.isArray(f.modelList) && f.modelList.length > 0
-      ? f.modelList.filter((m) => typeof m === 'string' && m.trim())
-      : [...fallback.modelList],
+    modelList: normalizeModelList(f.modelList, fallback.modelList),
     modelGroups: Array.isArray(f.modelGroups) ? coerceModelGroups(f.modelGroups) : [...fallback.modelGroups],
     recapModel: typeof f.recapModel === 'string' && f.recapModel.trim()
       ? f.recapModel.trim() : fallback.recapModel,
