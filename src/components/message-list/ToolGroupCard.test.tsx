@@ -350,6 +350,7 @@ describe('ToolGroupCard', () => {
     fireEvent.click(toggle) // open
     expect(container.querySelectorAll('.tool-group-member').length).toBe(1)
     fireEvent.click(toggle) // fold
+    expect(container.querySelector('.tool-group-body')).not.toBeNull()
     expect(container.querySelectorAll('.tool-group-member').length).toBe(1)
   })
 
