@@ -1225,65 +1225,18 @@
 }
 
 
-/* Recent-model quick-pick chips under the Model input. */
-.recent-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-  margin-top: var(--space-0-5);
-}
-.recent-chip {
-  display: inline-flex;
-  align-items: stretch;
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  /* No overflow:hidden — it would clip the forget button's expanded hit
-     area (see .recent-chip-forget::after). The children round their own
-     outer corners instead, so hover backgrounds stay within the chip. */
-  font-size: var(--fs-xs);
-}
-.recent-chip-use {
-  background: transparent;
-  border: none;
-  color: var(--accent-text);
-  font-family: var(--mono);
-  padding: 3px 6px;
-  cursor: pointer;
-  border-radius: var(--radius-xs) 0 0 var(--radius-xs);
-}
-.recent-chip-use:hover { background: var(--bg); }
-/* Chip with no forget button: round the right side too. */
-.recent-chip-use:last-child { border-radius: var(--radius-xs); }
-.recent-chip-forget {
-  background: transparent;
-  border: none;
-  border-left: 1px solid var(--border);
-  color: var(--fg-muted);
-  padding: 3px 6px;
-  cursor: pointer;
-  position: relative;
-  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
-}
-/* Extend the ~20px × to the WCAG 2.5.8 24px floor. Vertical only — the
-   adjacent "use" half of the chip is also a touch target. Capped at -2px:
-   the chips row's 4px flex gap (between wrapped rows) and the 2px
-   margin-top (to the Model input above) only absorb 2px each way, so a
-   larger inset would overlap the input or a neighbouring row's × — a
-   click in that band forgets the WRONG model, with no undo. */
-.recent-chip-forget::after {
-  content: '';
-  position: absolute;
-  inset: -2px 0;
-}
-.recent-chip-forget:hover { color: var(--danger-text); background: var(--bg); }
+/* Recent-model chips were replaced by the Model FieldPicker menu (recents
+   with forget live there now); the chip rules are gone with them. */
 
 /* Desktop-style project picker in the New session dialog (ProjectPicker.tsx).
    The trigger replaces the old free-text "Working directory" input + datalist
    + recent chips; the menu is portaled to <body> with fixed viewport
    coordinates so the modal's scroll container can never clip it. Its z-index
-   sits one above --z-modal because the dialog backdrop owns that layer. */
-.project-picker-trigger {
+   sits one above --z-modal because the dialog backdrop owns that layer.
+   `.field-picker-*` (FieldPicker.tsx) shares this chrome so Model / Permission
+   mode / Group pick the same way Project does — keep the two in visual sync. */
+.project-picker-trigger,
+.field-picker-trigger {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -1299,8 +1252,10 @@
   cursor: pointer;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.project-picker-trigger:hover { border-color: var(--fg-muted); }
-.project-picker-trigger[aria-expanded="true"] { border-color: var(--accent); }
+.project-picker-trigger:hover,
+.field-picker-trigger:hover { border-color: var(--fg-muted); }
+.project-picker-trigger[aria-expanded="true"],
+.field-picker-trigger[aria-expanded="true"] { border-color: var(--accent); }
 .project-picker-avatar {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1320,15 +1275,18 @@
   background: var(--bg-elev-2);
   border-color: var(--border);
 }
-.project-picker-name {
+.project-picker-name,
+.field-picker-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
 }
-.project-picker-name.placeholder { color: var(--fg-muted); font-weight: 400; }
-.project-picker-path {
+.project-picker-name.placeholder,
+.field-picker-label.placeholder { color: var(--fg-muted); font-weight: 400; }
+.project-picker-path,
+.field-picker-sub {
   margin-left: auto;
   max-width: 45%;
   overflow: hidden;
@@ -1337,9 +1295,21 @@
   font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
-.project-picker-chevron { flex: 0 0 auto; display: inline-flex; color: var(--fg-muted); }
+.project-picker-chevron,
+.field-picker-chevron { flex: 0 0 auto; display: inline-flex; color: var(--fg-muted); }
 
-.project-picker-menu {
+/* Trigger leading node: Project uses a circular avatar; FieldPicker takes any
+   icon node and only needs the flex slot. */
+.field-picker-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+
+.project-picker-menu,
+.field-picker-menu {
   position: fixed;
   z-index: calc(var(--z-modal) + 1);
   display: flex;
@@ -1352,7 +1322,8 @@
   animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
   transform-origin: top left;
 }
-.project-picker-search {
+.project-picker-search,
+.field-picker-search {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -1360,7 +1331,8 @@
   border-bottom: 1px solid var(--border);
   color: var(--fg-muted);
 }
-.project-picker-search input {
+.project-picker-search input,
+.field-picker-search input {
   flex: 1;
   min-width: 0;
   background: transparent;
@@ -1370,8 +1342,10 @@
   font-family: var(--sans);
   font-size: var(--fs-base);
 }
-.project-picker-search input::placeholder { color: var(--fg-muted); }
-.project-picker-clear {
+.project-picker-search input::placeholder,
+.field-picker-search input::placeholder { color: var(--fg-muted); }
+.project-picker-clear,
+.field-picker-clear {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1384,24 +1358,41 @@
   color: var(--fg-muted);
   cursor: pointer;
 }
-.project-picker-clear:hover { color: var(--fg); background: var(--btn-hover-bg); }
+.project-picker-clear:hover,
+.field-picker-clear:hover { color: var(--fg); background: var(--btn-hover-bg); }
 
-.project-picker-list {
+.project-picker-list,
+.field-picker-list {
   display: flex;
   flex-direction: column;
   gap: 1px;
   padding: var(--space-1);
   overflow-y: auto;
-  max-height: var(--project-picker-list-max, 240px);
 }
-.project-picker-row {
+/* Separate cap vars: a shared fallback would let one picker's positioning
+   write leak into the other's list height. */
+.project-picker-list { max-height: var(--project-picker-list-max, 240px); }
+.field-picker-list { max-height: var(--field-picker-list-max, 240px); }
+/* Non-searchable pickers focus the list on open; keep a visible ring for
+   keyboard users (outline:none would hide the only focus indicator). */
+.field-picker-list:focus { outline: none; }
+.field-picker-list:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+.project-picker-row,
+.field-picker-row {
   display: flex;
   align-items: stretch;
   border-radius: var(--radius-sm);
 }
 .project-picker-row:hover,
-.project-picker-row.active { background: var(--btn-hover-bg); }
-.project-picker-item {
+.project-picker-row.active,
+.field-picker-row:hover,
+.field-picker-row.active { background: var(--btn-hover-bg); }
+.project-picker-item,
+.field-picker-item {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -1418,9 +1409,19 @@
   cursor: pointer;
 }
 .project-picker-item .project-picker-avatar { width: var(--size-20px); height: var(--size-20px); }
-.project-picker-item-main { min-width: 0; display: flex; flex-direction: column; }
-.project-picker-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-picker-item-path {
+.field-picker-item-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+.project-picker-item-main,
+.field-picker-item-main { min-width: 0; display: flex; flex-direction: column; }
+.project-picker-item-name,
+.field-picker-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-picker-item-path,
+.field-picker-item-sub {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1432,8 +1433,10 @@
   font-size: var(--fs-xs);
   color: var(--fg-muted);
 }
-.project-picker-item-spacer { flex: 1; }
-.project-picker-check { flex: 0 0 auto; color: var(--accent-text); }
+.project-picker-item-spacer,
+.field-picker-item-spacer { flex: 1; }
+.project-picker-check,
+.field-picker-check { flex: 0 0 auto; color: var(--accent-text); }
 .project-picker-use-icon {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1446,7 +1449,8 @@
   color: var(--accent-text);
   font-size: var(--fs-xs);
 }
-.project-picker-forget {
+.project-picker-forget,
+.field-picker-forget {
   flex: 0 0 auto;
   width: var(--size-24px);
   margin-right: var(--space-1);
@@ -1463,14 +1467,27 @@
   transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .project-picker-row:hover .project-picker-forget,
-.project-picker-forget:focus-visible { opacity: 1; }
-.project-picker-forget:hover { color: var(--danger-text); background: var(--bg); }
+.project-picker-forget:focus-visible,
+.field-picker-row:hover .field-picker-forget,
+.field-picker-forget:focus-visible { opacity: 1; }
+.project-picker-forget:hover,
+.field-picker-forget:hover { color: var(--danger-text); background: var(--bg); }
 /* No hover on pure-touch devices: reveal the forget affordance instead of
    leaving it invisible-but-tappable. */
 @media (hover: none) {
-  .project-picker-forget { opacity: 1; }
+  .project-picker-forget,
+  .field-picker-forget { opacity: 1; }
 }
-.project-picker-empty {
+.field-picker-heading {
+  padding: var(--space-2) var(--space-2) var(--space-1);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.project-picker-empty,
+.field-picker-empty {
   padding: var(--space-3) var(--space-2);
   text-align: center;
   font-size: var(--fs-sm);

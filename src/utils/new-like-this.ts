@@ -20,6 +20,12 @@ export function buildNewLikeThisForm(
   const form: NewSessionForm = {
     cwd: source.cwd,
     model: source.model,
+    // Deliberately NOT copying `source.modelGroupId`: create() 400s on a
+    // deleted model group while the source session itself self-heals on
+    // respawn. Copying the resolved `model` keeps the copy strictly
+    // no-worse than the source; the user can re-pin a group from ChatPanel.
+    // (Session-group membership IS copied below — that path drops a full
+    // group instead of failing.)
     // Main-thread persona. A copy that silently drops it would be a different
     // kind of session than the one the user pointed at — the same reason the
     // first-party tool overrides are carried below. The create route rejects a

@@ -93,7 +93,9 @@ import {
   LAST_SEEN_TURN_KEY,
   clampMaxOpen,
 } from './constants/storageKeys'
-import type { Defaults, ConfigResponse } from './types/config'
+import type { Defaults, ConfigResponse, ModelGroupConfig } from './types/config'
+import { onProfilesChanged } from './utils/profiles-events'
+import { fetchConfig, markConfigStale, peekConfig, subscribeModelOptions } from './state/modelOptionsStore'
 import type { RowGapPreset } from '../shared/row-gap'
 import { DEFAULT_ROW_GAP, ROW_GAP_PX } from '../shared/row-gap'
 import type { TextSpacingPreset } from '../shared/text-spacing'
@@ -215,6 +217,9 @@ export function App() {
   )
   const [defaults, setDefaults] = useState<Defaults>({})
   const [serverModels, setServerModels] = useState<string[]>([])
+  /** Model Groups from the same /config snapshot as `serverModels` — threaded
+   *  to the New session dialog so it never issues its own /config. */
+  const [modelGroups, setModelGroups] = useState<ModelGroupConfig[]>([])
   /** Global UI-pref defaults (server-backed, config.json). Sessions without
    *  an explicit per-session override inherit these. Refreshed live whenever
    *  the global settings modal saves (handleGlobalSettingsSaved →
@@ -501,31 +506,65 @@ export function App() {
   const openCurrentReleaseNotes = useCallback(() => setUpdateNagDialog('current'), [])
   useUpdateNag(updateInfo.info, openUpdateNagDialog)
 
-  useEffect(() => {
-    void api
-      .get<ConfigResponse>('/config')
-      .then((r) => {
-        setIsConfigured(r.configured !== false)
-        if (r.configured === false) return
-        setDefaults(r.defaults)
-        if (r.models?.length) setServerModels(r.models)
-        if (r.maxGroupPanels != null) setServerMaxOpen(r.maxGroupPanels)
-        if (r.maxUploadBytes != null) setMaxUploadBytes(r.maxUploadBytes)
-        if (r.maxPastedImageBytes != null) setMaxPastedImageBytes(r.maxPastedImageBytes)
-        setGlobalPrefs({
-          showPinnedUserMessage: r.showPinnedUserMessage ?? true,
-          autoRecap: r.autoRecap ?? true,
-          toolGroupCards: r.toolGroupCards ?? true,
-          autoExpandRunningGroups: r.autoExpandRunningGroups ?? true,
-          showMessageHeaders: r.showMessageHeaders ?? true,
-          rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
-          textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
-          fontSize: r.fontSize ?? DEFAULT_FONT_SIZE,
-          firstPartyTools: r.firstPartyTools,
-        })
-      })
-      .catch(() => setIsConfigured(true))
+  /** Apply a /config body to App state. Single copy — the mount fetch,
+   *  refreshConfigResponse and the store subscription all go through here. */
+  const applyConfigResponse = useCallback((r: ConfigResponse) => {
+    setIsConfigured(r.configured !== false)
+    if (r.configured === false) return
+    setDefaults(r.defaults)
+    // `?? []` on BOTH: an omitted models/modelGroups field must clear, not
+    // leave the previous profile's list next to a wiped sibling.
+    setServerModels(r.models ?? [])
+    setModelGroups(r.modelGroups ?? [])
+    if (r.maxGroupPanels != null) setServerMaxOpen(r.maxGroupPanels)
+    if (r.maxUploadBytes != null) setMaxUploadBytes(r.maxUploadBytes)
+    if (r.maxPastedImageBytes != null) setMaxPastedImageBytes(r.maxPastedImageBytes)
+    const nextPrefs = {
+      showPinnedUserMessage: r.showPinnedUserMessage ?? true,
+      autoRecap: r.autoRecap ?? true,
+      toolGroupCards: r.toolGroupCards ?? true,
+      autoExpandRunningGroups: r.autoExpandRunningGroups ?? true,
+      showMessageHeaders: r.showMessageHeaders ?? true,
+      rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
+      textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
+      fontSize: r.fontSize ?? DEFAULT_FONT_SIZE,
+      firstPartyTools: r.firstPartyTools,
+    }
+    // Keep object identity when nothing changed — every store notify runs
+    // this, and a fresh literal would re-render App + all panels for nothing.
+    setGlobalPrefs((prev) =>
+      prev &&
+      prev.showPinnedUserMessage === nextPrefs.showPinnedUserMessage &&
+      prev.autoRecap === nextPrefs.autoRecap &&
+      prev.toolGroupCards === nextPrefs.toolGroupCards &&
+      prev.autoExpandRunningGroups === nextPrefs.autoExpandRunningGroups &&
+      prev.showMessageHeaders === nextPrefs.showMessageHeaders &&
+      prev.rowGap === nextPrefs.rowGap &&
+      prev.textSpacing === nextPrefs.textSpacing &&
+      prev.fontSize === nextPrefs.fontSize &&
+      prev.firstPartyTools === nextPrefs.firstPartyTools
+        ? prev
+        : nextPrefs,
+    )
   }, [])
+
+  useEffect(() => {
+    // Shared store: one /config generation for App AND useModelOptions
+    // (ChatPanel ModelPicker / SettingsPanel). Subscribe so a fetch the
+    // store performed on a consumer's behalf also updates App (otherwise
+    // the New-session dialog would keep a stale serverModels while the
+    // picker showed the fresh list).
+    void fetchConfig()
+      .then(applyConfigResponse)
+      .catch((err) => {
+        console.error('Initial /config fetch failed:', err)
+        setIsConfigured(true)
+      })
+    return subscribeModelOptions(() => {
+      const r = peekConfig()
+      if (r) applyConfigResponse(r)
+    })
+  }, [applyConfigResponse])
 
   // Desktop notifications: refs declared first, then the hook wires
   // the working-flag edge detector + permission gate. See
@@ -3769,22 +3808,30 @@ export function App() {
   )
 
   const refreshConfigResponse = useCallback(async () => {
-    const r = await api.get<ConfigResponse>('/config')
-    setDefaults(r.defaults)
-    if (r.models?.length) setServerModels(r.models)
-    if (r.maxGroupPanels != null) setServerMaxOpen(r.maxGroupPanels)
-    setGlobalPrefs({
-      showPinnedUserMessage: r.showPinnedUserMessage ?? true,
-      autoRecap: r.autoRecap ?? true,
-      toolGroupCards: r.toolGroupCards ?? true,
-      autoExpandRunningGroups: r.autoExpandRunningGroups ?? true,
-      showMessageHeaders: r.showMessageHeaders ?? true,
-      rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
-      textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
-      fontSize: r.fontSize ?? DEFAULT_FONT_SIZE,
-      firstPartyTools: r.firstPartyTools,
-    })
-  }, [])
+    // mark first: a settings save must not join a still-in-flight pre-save
+    // /config (force alone would). Then force so this generation replaces
+    // the old one for App AND every useModelOptions consumer.
+    markConfigStale()
+    const r = await fetchConfig({ force: true })
+    applyConfigResponse(r)
+  }, [applyConfigResponse])
+
+  // Profile mutations change modelList / modelGroups on the active profile.
+  // Refresh the App-level /config snapshot so `serverModels` and `modelGroups`
+  // stay the same generation (previously only useModelOptions refetched, so
+  // the New session dialog's model list and group list could disagree).
+  useEffect(
+    () =>
+      onProfilesChanged(() => {
+        // Surface failures — a silent void would leave serverModels/modelGroups
+        // stale after a profile mutation with no signal (same policy as
+        // handleGlobalSettingsSaved below).
+        refreshConfigResponse().catch((err) => {
+          console.error('Post-profile-change /config refresh failed:', err)
+        })
+      }),
+    [refreshConfigResponse],
+  )
 
   const handleConfigured = useCallback(
     async ({ openNewSession }: { openNewSession: boolean }) => {
@@ -3920,6 +3967,7 @@ export function App() {
           focusedId={focusedId}
           defaults={defaults}
           serverModels={serverModels}
+          modelGroups={modelGroups}
           resumingIds={resuming}
           unread={unread}
           deletingIds={deletingSessionIds}

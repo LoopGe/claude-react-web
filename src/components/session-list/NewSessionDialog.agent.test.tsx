@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { render, fireEvent, waitFor, screen } from '@testing-library/react'
 import { NewSessionDialog } from './NewSessionDialog'
 import type { NewSessionForm } from '../../types'
 
@@ -52,20 +52,25 @@ describe('NewSessionDialog custom agent', () => {
     })
   })
 
-  it('renders an agent dropdown with custom definitions and prefills model', async () => {
+  it('renders an agent field picker with custom definitions and prefills model', async () => {
     const onSubmit = vi.fn()
     render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
 
-    // Wait for the custom agent to appear in the dropdown.
-    let select!: HTMLSelectElement
+    // Wait for the custom agent to appear in the FieldPicker menu.
+    await waitFor(() => expect(screen.getByLabelText('Agent')).toBeTruthy())
+    fireEvent.click(screen.getByLabelText('Agent'))
     await waitFor(() => {
-      const el = Array.from(document.querySelectorAll<HTMLSelectElement>('select')).find((s) =>
-        Array.from(s.options).some((o) => o.value === 'reviewer'),
-      )
-      expect(el).toBeDefined()
-      select = el!
+      expect(
+        Array.from(document.querySelectorAll('.field-picker-item')).some((el) =>
+          el.textContent?.includes('reviewer'),
+        ),
+      ).toBe(true)
     })
-    fireEvent.change(select, { target: { value: 'reviewer' } })
+    fireEvent.click(
+      Array.from(document.querySelectorAll('.field-picker-item')).find((el) =>
+        el.textContent?.includes('reviewer'),
+      )!,
+    )
 
     const buttons = Array.from(document.querySelectorAll('button'))
     const createBtn = buttons.find((b) => b.textContent?.trim() === 'Create')!
@@ -80,13 +85,7 @@ describe('NewSessionDialog custom agent', () => {
   it('omits agent when None is selected', async () => {
     const onSubmit = vi.fn()
     render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
-    await waitFor(() => {
-      expect(
-        Array.from(document.querySelectorAll<HTMLSelectElement>('select')).some((s) =>
-          Array.from(s.options).some((o) => o.value === 'reviewer'),
-        ),
-      ).toBe(true)
-    })
+    await waitFor(() => expect(screen.getByLabelText('Agent')).toBeTruthy())
 
     const buttons = Array.from(document.querySelectorAll('button'))
     const createBtn = buttons.find((b) => b.textContent?.trim() === 'Create')!

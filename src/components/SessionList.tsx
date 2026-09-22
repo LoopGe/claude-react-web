@@ -10,6 +10,7 @@ import { useToast } from '../hooks/useToast'
 import { buildSessionAccentMap } from '../theme'
 import { isAccentLocked, type Skin } from '../utils/theme'
 import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '../types'
+import type { ModelGroupConfig } from '../types/config'
 import { NewSessionDialog } from './session-list/NewSessionDialog'
 import { SessionContextMenu } from './session-list/SessionContextMenu'
 import { AccentPickerPanel } from './AccentPicker'
@@ -42,9 +43,11 @@ interface Props {
   /** The id of the focused panel, or null. Gets the strongest highlight. */
   focusedId: string | null
   defaults: { cwd?: string; model?: string }
-  /** Server-configured model list (from /api/config). Shown as chips
-   *  in the new-session dialog so the user always has a baseline. */
+  /** Server-configured model list (from /api/config). Shown first in the
+   *  new-session dialog's Model picker so the user always has a baseline. */
   serverModels?: string[]
+  /** Model Groups from the same /config snapshot as `serverModels`. */
+  modelGroups?: ModelGroupConfig[]
   /** Ids currently being resumed — item is disabled while the POST is in flight. */
   resumingIds?: Set<string>
   /** Map of sessionId → true when the session has a newer lastTurnAt than
@@ -153,6 +156,7 @@ export const SessionList = memo(function SessionList({
   focusedId,
   defaults,
   serverModels,
+  modelGroups,
   resumingIds,
   unread,
   deletingIds,
@@ -1131,6 +1135,7 @@ export const SessionList = memo(function SessionList({
           open={showDialog}
           defaults={defaults}
           serverModels={serverModels}
+          modelGroups={modelGroups}
           initialCwd={prefilledCwd}
           initialGroupId={activeGroupId ?? undefined}
           groups={groups}

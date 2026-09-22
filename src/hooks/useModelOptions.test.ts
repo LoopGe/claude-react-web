@@ -2,12 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import { useModelOptions } from './useModelOptions'
 import { api } from './useApi'
+import { resetModelOptionsStoreForTest } from '../state/modelOptionsStore'
 
 vi.mock('./useApi', () => ({ api: { get: vi.fn() } }))
 
 describe('useModelOptions', () => {
   beforeEach(() => {
     vi.mocked(api.get).mockReset()
+    resetModelOptionsStoreForTest()
     // readRecentModels() reads localStorage; jsdom starts empty.
     window.localStorage.clear()
   })
@@ -43,7 +45,7 @@ describe('useModelOptions', () => {
     expect(result.current.modelGroups[0]).toMatchObject({ id: 'g2', name: 'Pro', opus: 'px1' })
     // Should NOT have called /config
     expect(api.get).toHaveBeenCalledTimes(1)
-    expect(api.get).toHaveBeenCalledWith('/profiles', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(api.get).toHaveBeenCalledWith('/profiles')
   })
 
   it('refetches on reopen so profile edits made mid-session appear', async () => {
@@ -116,7 +118,7 @@ describe('useModelOptions', () => {
     const { result } = renderHook(() => useModelOptions('s1', true))
     await waitFor(() => expect(result.current.models.length).toBe(1))
     expect(result.current.models.map((m) => m.id)).toEqual(['c1'])
-    expect(api.get).toHaveBeenCalledWith('/config', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(api.get).toHaveBeenCalledWith('/config')
   })
 
   it('falls back to /config when profileId does not match any profile', async () => {
@@ -130,7 +132,16 @@ describe('useModelOptions', () => {
     await waitFor(() => expect(result.current.models.length).toBe(2))
     expect(result.current.models.map((m) => m.id)).toEqual(['c1', 'c2'])
     expect(result.current.defaultModel).toBe('c1')
-    expect(api.get).toHaveBeenCalledWith('/profiles', expect.objectContaining({ signal: expect.any(AbortSignal) }))
-    expect(api.get).toHaveBeenCalledWith('/config', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(api.get).toHaveBeenCalledWith('/profiles')
+    expect(api.get).toHaveBeenCalledWith('/config')
+  })
+
+  it('two hooks on the active profile share one /config fetch', async () => {
+    vi.mocked(api.get).mockResolvedValue({ models: ['m1'], modelGroups: [] })
+    const a = renderHook(() => useModelOptions('s1', true))
+    const b = renderHook(() => useModelOptions('s2', true))
+    await waitFor(() => expect(a.result.current.models.length).toBe(1))
+    await waitFor(() => expect(b.result.current.models.length).toBe(1))
+    expect(api.get).toHaveBeenCalledTimes(1)
   })
 })

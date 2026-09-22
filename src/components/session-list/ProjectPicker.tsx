@@ -122,7 +122,7 @@ export function ProjectPicker({ id, value, recents, onSelect, onForget, onBrowse
 
   // Outside-click dismissal. The trigger is exempt (it toggles the menu), and
   // capture phase makes the menu collapse before any other mousedown handler.
-  useOutsideMouseDown({ ref: menuRef, onClose: close, triggerRef, capture: true })
+  useOutsideMouseDown({ ref: menuRef, onClose: close, triggerRef, capture: true, active: open })
 
   // Focus the search box on open (layout phase, after the stack registration).
   useLayoutEffect(() => {
@@ -160,12 +160,15 @@ export function ProjectPicker({ id, value, recents, onSelect, onForget, onBrowse
       const spaceAbove = rect.top - margin
       const openUp = spaceBelow < menuH && spaceAbove > spaceBelow
       const available = openUp ? spaceAbove : spaceBelow
+      const listMax = Math.max(96, Math.min(MAX_LIST_H, available - chromeH - 8))
+      // Position against the height we will actually render (`listMax` may be
+      // smaller than `naturalList`). Using the uncapped `menuH` here left the
+      // up-flipped menu floating well above its trigger. Same fix as
+      // FieldPicker's update().
+      const posH = chromeH + Math.min(naturalList, listMax)
       menu.style.width = `${width}px`
       menu.style.left = `${left}px`
-      menu.style.top = `${openUp ? Math.max(margin, rect.top - gap - menuH) : rect.bottom + gap}px`
-      // Never exceed the measured natural height: a bigger cap would let the
-      // menu outgrow the height this flip decision was made for.
-      const listMax = Math.max(96, Math.min(MAX_LIST_H, available - chromeH - 8))
+      menu.style.top = `${openUp ? Math.max(margin, rect.top - gap - posH) : rect.bottom + gap}px`
       menu.style.setProperty('--project-picker-list-max', `${listMax}px`)
     }
     update()

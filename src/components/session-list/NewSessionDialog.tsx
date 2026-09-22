@@ -1,12 +1,16 @@
-import { lazy, Suspense, useEffect, useId, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { DirectoryPicker } from '../DirectoryPicker'
 import { ProjectPicker } from './ProjectPicker'
+import { FieldPicker } from '../FieldPicker'
+import type { FieldPickerOption } from '../FieldPicker'
 import { IconX, IconPencil } from '../icons/ToolIcons'
+import { PermissionModeIcon, permissionModeLabel } from '../permission-mode-display'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { api } from '../../hooks/useApi'
 import { AccentPicker } from '../AccentPicker'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
-import { PERMISSION_MODES } from '../../types'
+import type { ModelGroupConfig } from '../../types/config'
+import { PERMISSION_MODES, EFFORT_LEVELS } from '../../types'
 import { useExitPresence } from '../../hooks/useExitPresence'
 import { useAgentDefinitions } from '../../hooks/useAgentDefinitions'
 import { Overlay } from '../Overlay'
@@ -19,6 +23,12 @@ const McpInstaller = lazy(() =>
 import { ONE_M_CONTEXT_BETA } from '../../constants/contextSteps'
 import { RECENT_MODELS_KEY, RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT, RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../../constants/recentKeys'
 
+/** useLocalStorage validator for the recent lists. A corrupt entry (other tab,
+ *  older build, hand-edit) must collapse to [] — iterating a non-array would
+ *  throw and white-screen the dialog. */
+const isStringArray = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.every((x) => typeof x === 'string')
+
 export interface NewSessionDialogProps {
   open?: boolean
   defaults: { cwd?: string; model?: string }
@@ -30,9 +40,13 @@ export interface NewSessionDialogProps {
   onCancel: () => void
   /** Available groups for the group selector. May be empty. */
   groups: SessionGroup[]
-  /** Server-configured model list (from /api/config). Shown as chips
-   *  above the recent-models chips so the user always has a baseline. */
+  /** Server-configured model list (from /api/config). Shown first in the
+   *  Model FieldPicker menu so the user always has a baseline. */
   serverModels?: string[]
+  /** Model Groups from the same /config snapshot as `serverModels`. Threaded
+   *  from App (not fetched here) so the menu never issues its own /config and
+   *  the two lists cannot drift. */
+  modelGroups?: ModelGroupConfig[]
   /** Pre-select this group in the "Add to group" picker. The sidebar's
    *  `activeGroupId` is threaded through so opening the dialog while a
    *  group is active keeps the user's mental model: "this is the group I
@@ -50,7 +64,11 @@ export interface NewSessionDialogProps {
   accentLocked?: boolean
 }
 
-export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, initialGroupId, maxGroupSize, accentLocked, firstPartyTools }: NewSessionDialogProps) {
+/** Stable empty default — a fresh `[]` per render would defeat modelOptions'
+ *  useMemo (new array identity every keystroke). */
+const NO_MODEL_GROUPS: ModelGroupConfig[] = []
+
+export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, modelGroups = NO_MODEL_GROUPS, initialGroupId, maxGroupSize, accentLocked, firstPartyTools }: NewSessionDialogProps) {
   // Per-instance prefix for label↔control id linkage. useId keeps the
   // dialog's ids document-unique even if it ever mounts more than once.
   const uid = useId()
@@ -59,9 +77,12 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // the drag-and-drop prefill and the server-provided defaults.cwd as
   // fallbacks. useLocalStorage reads synchronously, so the first render
   // already sees the stored list.
-  const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [])
+  const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
   const [cwd, setCwd] = useState<string>(initialCwd ?? recentCwds[0] ?? defaults.cwd ?? '')
   const [model, setModel] = useState<string>(defaults.model ?? '')
+  /** Model Group pin. Mutually exclusive with a concrete `model` — selecting
+   *  one clears the other (ChatPanel's ModelPicker has the same contract). */
+  const [modelGroupId, setModelGroupId] = useState('')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [systemPrompt, setSystemPrompt] = useState('')
   const [title, setTitle] = useState('')
@@ -93,19 +114,57 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const enabledAgents = agents.filter((a) => a.enabled)
   const [selectedAgent, setSelectedAgent] = useState('')
 
+  /** Value each agent-prefilled field was set to, plus the user's prior
+   *  choice. Reverted on agent change ONLY while the field still holds the
+   *  agent's value — a later manual pick wins and must not be clobbered.
+   *  Revert restores `before` (the user's pick), not the dialog defaults. */
+  const agentPrefillsRef = useRef<
+    Map<'model' | 'permissionMode' | 'effort', { before: string; after: string }>
+  >(new Map())
+
   /** Selecting an agent PRE-FILLS the model / permission-mode / effort
-   *  fields from the definition (each only when the def declares it, falling
-   *  back to whatever the user already chose). This is the spec's "start-as
-   *  mirrors the def" fallback that works even if the SDK itself doesn't
-   *  inherit those options from `Options.agent`. */
+   *  fields from the definition (each only when the def declares it). Fields
+   *  the previous agent prefilled AND the user has not since overwritten are
+   *  restored to the user's pre-agent value so deselecting the agent (or
+   *  switching to a def that omits them) cannot leak the old def's values
+   *  into the create request — nor clobber a deliberate Default pick. */
   const handleAgentChange = (value: string) => {
+    const p = agentPrefillsRef.current
+    const pre = p.get('model')
+    if (pre && pre.after === model) {
+      setModel(pre.before)
+      setModelGroupId('')
+    }
+    const prePerm = p.get('permissionMode')
+    if (prePerm && prePerm.after === permissionMode) {
+      setPermissionMode((prePerm.before || 'default') as PermissionMode)
+    }
+    const preEffort = p.get('effort')
+    if (preEffort && preEffort.after === effort) {
+      setEffort(preEffort.before)
+    }
+    agentPrefillsRef.current = new Map()
     setSelectedAgent(value)
     if (!value) return
     const def = agents.find((a) => a.name === value)
     if (!def) return
-    if (def.model) setModel(def.model)
-    if (def.permissionMode) setPermissionMode(def.permissionMode as PermissionMode)
-    if (def.effort != null && def.effort !== '') setEffort(String(def.effort))
+    if (def.model) {
+      agentPrefillsRef.current.set('model', { before: model, after: def.model })
+      setModel(def.model)
+      setModelGroupId('')
+    }
+    if (def.permissionMode) {
+      agentPrefillsRef.current.set('permissionMode', {
+        before: permissionMode,
+        after: def.permissionMode,
+      })
+      setPermissionMode(def.permissionMode as PermissionMode)
+    }
+    if (def.effort != null && def.effort !== '') {
+      const e = String(def.effort)
+      agentPrefillsRef.current.set('effort', { before: effort, after: e })
+      setEffort(e)
+    }
   }
 
   // Advanced options
@@ -141,7 +200,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // per-server override model.
   const [firstPartyDiffs, setFirstPartyDiffs] = useState<Record<string, boolean>>({})
 
-  const [recentModels, setRecentModels] = useLocalStorage<string[]>(RECENT_MODELS_KEY, [])
+  const [recentModels, setRecentModels] = useLocalStorage<string[]>(RECENT_MODELS_KEY, [], { validate: isStringArray })
   const [recentModelsCapRaw] = useLocalStorage<number>(RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT)
   const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
   const recentModelsCap = Math.max(3, Math.min(50, Math.round(recentModelsCapRaw)))
@@ -191,15 +250,183 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
 
   const rememberModel = (raw: string) =>
     rememberIn(RECENT_MODELS_KEY, setRecentModels, recentModelsCap, raw)
-  const forgetModel = (name: string) => {
+  const forgetModel = useCallback((name: string) => {
     setRecentModels((prev) => prev.filter((m) => m !== name))
-  }
+  }, [setRecentModels])
 
   const rememberCwd = (raw: string) =>
     rememberIn(RECENT_CWDS_KEY, setRecentCwds, recentCwdsCap, raw)
   const forgetCwd = (name: string) => {
     setRecentCwds((prev) => prev.filter((c) => c !== name))
   }
+
+  // Model menu rows: Model Groups first (ChatPanel ModelPicker order), then
+  // "Default" (clears the pin so the server default wins), then server models,
+  // then recents (forgettable), then the current value when it isn't in either
+  // list (agent prefill / drag-in). Group ↔ concrete model are mutually
+  // exclusive: picking one clears the other.
+  const modelOptions: FieldPickerOption[] = useMemo(() => {
+    // Derived (not raw modelGroupId): a group deleted while the dialog is open
+    // must not stay "selected", and Default must light up instead.
+    const activeMg = modelGroups.find((g) => g.id === modelGroupId)
+    const rows: FieldPickerOption[] = []
+    modelGroups.forEach((g) => {
+      rows.push({
+        key: `mg:${g.id}`,
+        label: g.name,
+        sub: [g.opus, g.sonnet, g.haiku].filter(Boolean).join(' · '),
+        // Stamp on every row: FieldPicker shows it on the first VISIBLE row
+        // of the section, so a filter that drops row 0 still labels the rest.
+        heading: 'Model Groups',
+        selected: activeMg?.id === g.id,
+        onSelect: () => {
+          setModelGroupId(g.id)
+          setModel('')
+        },
+      })
+    })
+    rows.push({
+      key: 'default',
+      // Sub must NOT be a model id — FieldPicker filters on sub too, and a
+      // model id here would make "Default" win the Enter key on a search
+      // that was meant for that model.
+      label: 'Default',
+      sub: 'use server default',
+      selected: !activeMg && model === '',
+      onSelect: () => {
+        setModelGroupId('')
+        setModel('')
+      },
+    })
+    const seen = new Set<string>()
+    const modelRows: FieldPickerOption[] = []
+    const addModelRow = (m: string, extra: Partial<FieldPickerOption>) => {
+      if (!m || seen.has(m)) return
+      seen.add(m)
+      modelRows.push({
+        key: extra.key ?? `m:${m}`,
+        label: m,
+        heading: 'Models',
+        selected: !activeMg && model === m,
+        onSelect: () => {
+          setModelGroupId('')
+          setModel(m)
+        },
+        ...extra,
+      })
+    }
+    for (const m of serverModels ?? []) addModelRow(m, { key: `srv:${m}` })
+    for (const m of recentModels) {
+      addModelRow(m, {
+        key: `recent:${m}`,
+        onForget: () => forgetModel(m),
+        forgetLabel: `Forget ${m}`,
+      })
+    }
+    if (model && !seen.has(model)) {
+      addModelRow(model, { key: `cur:${model}`, selected: !activeMg })
+    }
+    if (modelRows.length > 0) rows.push(...modelRows)
+    return rows
+  }, [modelGroups, modelGroupId, serverModels, recentModels, model, forgetModel])
+
+  // Free-text model ids (proxy models the server list doesn't advertise) get
+  // their own LAST row while typing — same contract as ModelPicker, so Enter
+  // after a filter commits the matched option rather than the filter text.
+  const modelCustomOption = useCallback((q: string): FieldPickerOption | null => {
+    const raw = q.trim()
+    if (!raw) return null
+    const known =
+      (serverModels ?? []).includes(raw) || recentModels.includes(raw) || raw === model
+    if (known) return null
+    return {
+      key: 'custom',
+      label: `Use “${raw}”`,
+      sub: 'custom',
+      onSelect: () => {
+        setModelGroupId('')
+        setModel(raw)
+      },
+    }
+  }, [serverModels, recentModels, model])
+
+  // Derived, not raw state: a group deleted while the dialog is open must not
+  // show as selected on the trigger yet still submit. Submit reads this too.
+  const activeGroup = groups.find((g) => g.id === groupId)
+  const activeModelGroup = modelGroups.find((g) => g.id === modelGroupId)
+
+  const permissionOptions: FieldPickerOption[] = useMemo(
+    () =>
+      PERMISSION_MODES.map((m) => ({
+        key: m,
+        label: permissionModeLabel(m),
+        icon: <PermissionModeIcon mode={m} size={14} />,
+        selected: m === permissionMode,
+        onSelect: () => setPermissionMode(m),
+      })),
+    [permissionMode],
+  )
+
+  const groupOptions: FieldPickerOption[] = useMemo(
+    () => [
+      {
+        key: '',
+        label: 'None (Ungrouped)',
+        selected: !activeGroup,
+        onSelect: () => setGroupId(''),
+      },
+      ...groups.map((g) => {
+        const full = g.sessionIds.length >= maxGroupSize
+        return {
+          key: g.id,
+          label: g.name,
+          sub: `${g.sessionIds.length}/${maxGroupSize}${full ? ' — will replace oldest' : ''}`,
+          selected: groupId === g.id,
+          onSelect: () => setGroupId(g.id),
+        }
+      }),
+    ],
+    [groups, groupId, activeGroup, maxGroupSize],
+  )
+
+  // Tiny static lists — left un-memoized on purpose so the React Compiler can
+  // infer deps. Manual useMemo here made the compiler skip optimizing the
+  // whole component (preserve-manual-memoization).
+  const agentOptions: FieldPickerOption[] = [
+    {
+      key: '',
+      label: 'None',
+      selected: selectedAgent === '',
+      onSelect: () => handleAgentChange(''),
+    },
+    ...enabledAgents.map((a) => ({
+      key: a.name,
+      label: a.name,
+      sub: a.description,
+      selected: selectedAgent === a.name,
+      onSelect: () => handleAgentChange(a.name),
+    })),
+  ]
+
+  const effortOptions: FieldPickerOption[] = [
+    { key: '', label: '(default)', selected: effort === '', onSelect: () => setEffort('') },
+    ...EFFORT_LEVELS.map((e) => ({
+      key: e,
+      label: e,
+      selected: effort === e,
+      onSelect: () => setEffort(e),
+    })),
+  ]
+
+  const thinkingOptions: FieldPickerOption[] = [
+    { key: '', label: '(default)', selected: thinkingMode === '', onSelect: () => setThinkingMode('') },
+    ...(['adaptive', 'enabled', 'disabled'] as const).map((t) => ({
+      key: t,
+      label: t,
+      selected: thinkingMode === t,
+      onSelect: () => setThinkingMode(t),
+    })),
+  ]
 
   const submit = () => {
     if (submitting) return
@@ -234,14 +461,17 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
 
     onSubmit({
       cwd: cwd.trim() || undefined,
-      model: model.trim() || undefined,
+      model: activeModelGroup ? undefined : model.trim() || undefined,
+      // Derived (not raw state): a model group deleted while the dialog is
+      // open must not be posted — create() 400s on an unknown group.
+      modelGroupId: activeModelGroup?.id,
       agent: selectedAgent || undefined,
       permissionMode,
       systemPrompt: systemPrompt.trim() || undefined,
       title: title.trim() || undefined,
       betas: [ONE_M_CONTEXT_BETA],
       accent,
-      groupId: groupId || undefined,
+      groupId: activeGroup?.id,
       // Advanced options — only include when non-empty
       effort: (effort || undefined) as NewSessionForm['effort'],
       thinking,
@@ -387,112 +617,73 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
 
             <div className="settings-field">
               <label htmlFor={uid + '-agent'}>Agent</label>
-              <select
-                className="select"
+              <FieldPicker
                 id={uid + '-agent'}
-                value={selectedAgent}
-                onChange={(e) => handleAgentChange(e.target.value)}
-              >
-                <option value="">None</option>
-                {enabledAgents.map((a) => (
-                  <option key={a.name} value={a.name}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
+                label={selectedAgent}
+                placeholder="None"
+                menuLabel="Agents"
+                searchLabel="Search agents"
+                searchPlaceholder="Search agents…"
+                options={agentOptions}
+              />
             </div>
 
             <div className="settings-field">
               <label htmlFor={uid + '-model'}>Model</label>
-              <input
-                className="input"
+              <FieldPicker
                 id={uid + '-model'}
-                placeholder={serverModels?.[0] ?? defaults.model ?? ''}
-                list="model-options"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
+                // Empty selection reads as "Default" (the chosen state), with
+                // the effective model as the muted sub so the user still sees
+                // what will run — not a concrete id that looks selected.
+                label={activeModelGroup?.name ?? (model || 'Default')}
+                sub={
+                  activeModelGroup
+                    ? [activeModelGroup.opus, activeModelGroup.sonnet, activeModelGroup.haiku]
+                        .filter(Boolean)
+                        .join(' · ') || undefined
+                    : model
+                      ? undefined
+                      : (serverModels?.[0] ?? defaults.model)
+                }
+                placeholder={serverModels?.[0] ?? defaults.model ?? 'Default'}
+                menuLabel="Models"
+                searchLabel="Search models"
+                searchPlaceholder="Search or type a model id…"
+                options={modelOptions}
+                customOption={modelCustomOption}
               />
-              <datalist id="model-options">
-                {(serverModels ?? []).concat(
-                  recentModels.filter((m) => !(serverModels ?? []).includes(m)),
-                ).map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-              {((serverModels && serverModels.length > 0) || recentModels.length > 0) && (
-                <div className="recent-chips">
-                  {(serverModels ?? []).map((m) => (
-                    <span key={`srv:${m}`} className="recent-chip" title={`Use ${m}`}>
-                      <button
-                        type="button"
-                        className="recent-chip-use"
-                        onClick={() => setModel(m)}
-                      >
-                        {m}
-                      </button>
-                    </span>
-                  ))}
-                  {recentModels
-                    .filter((m) => !(serverModels ?? []).includes(m))
-                    .slice(0, 5)
-                    .map((m) => (
-                      <span key={m} className="recent-chip" title={`Use ${m}`}>
-                        <button
-                          type="button"
-                          className="recent-chip-use"
-                          onClick={() => setModel(m)}
-                        >
-                          {m}
-                        </button>
-                        <button
-                          type="button"
-                          className="recent-chip-forget"
-                          onClick={() => forgetModel(m)}
-                          title="Forget this model"
-                          aria-label={`Forget ${m}`}
-                        >
-                          <IconX size={12} />
-                        </button>
-                      </span>
-                    ))}
-                </div>
-              )}
             </div>
 
             <div className="settings-field">
               <label htmlFor={uid + '-permission-mode'}>Permission mode</label>
-              <select
-                className="select"
+              <FieldPicker
                 id={uid + '-permission-mode'}
-                value={permissionMode}
-                onChange={(e) => setPermissionMode(e.target.value as PermissionMode)}
-              >
-                {PERMISSION_MODES.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
+                label={permissionModeLabel(permissionMode)}
+                icon={<PermissionModeIcon mode={permissionMode} size={14} />}
+                menuLabel="Permission modes"
+                searchable={false}
+                options={permissionOptions}
+              />
             </div>
 
             <div className="settings-field">
               <label htmlFor={uid + '-group'}>Group</label>
-              <select
-                className="select"
+              <FieldPicker
                 id={uid + '-group'}
-                value={groupId}
-                onChange={(e) => setGroupId(e.target.value)}
-              >
-                <option value="">None (Ungrouped)</option>
-                {groups.map((g) => {
-                  const full = g.sessionIds.length >= maxGroupSize
-                  return (
-                    <option key={g.id} value={g.id}>
-                      {g.name} ({g.sessionIds.length}/{maxGroupSize}){full ? ' — will replace oldest' : ''}
-                    </option>
-                  )
-                })}
-              </select>
+                label={activeGroup?.name ?? ''}
+                sub={
+                  activeGroup
+                    ? `${activeGroup.sessionIds.length}/${maxGroupSize}${
+                        activeGroup.sessionIds.length >= maxGroupSize ? ' — will replace oldest' : ''
+                      }`
+                    : undefined
+                }
+                placeholder="None"
+                menuLabel="Groups"
+                searchLabel="Search groups"
+                searchPlaceholder="Search groups…"
+                options={groupOptions}
+              />
             </div>
 
             {!accentLocked && (
@@ -527,23 +718,25 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <div className="settings-field">
                     <label htmlFor={uid + '-effort'}>Effort</label>
-                    <select className="select" id={uid + '-effort'} value={effort} onChange={(e) => setEffort(e.target.value)}>
-                      <option value="">(default)</option>
-                      <option value="low">low</option>
-                      <option value="medium">medium</option>
-                      <option value="high">high</option>
-                      <option value="xhigh">xhigh</option>
-                      <option value="max">max</option>
-                    </select>
+                    <FieldPicker
+                      id={uid + '-effort'}
+                      label={effort}
+                      placeholder="(default)"
+                      menuLabel="Effort levels"
+                      searchable={false}
+                      options={effortOptions}
+                    />
                   </div>
                   <div className="settings-field">
                     <label htmlFor={uid + '-thinking'}>Thinking</label>
-                    <select className="select" id={uid + '-thinking'} value={thinkingMode} onChange={(e) => setThinkingMode(e.target.value)}>
-                      <option value="">(default)</option>
-                      <option value="adaptive">adaptive</option>
-                      <option value="enabled">enabled</option>
-                      <option value="disabled">disabled</option>
-                    </select>
+                    <FieldPicker
+                      id={uid + '-thinking'}
+                      label={thinkingMode}
+                      placeholder="(default)"
+                      menuLabel="Thinking modes"
+                      searchable={false}
+                      options={thinkingOptions}
+                    />
                   </div>
                 </div>
                 {thinkingMode === 'enabled' && (

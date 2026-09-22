@@ -98,6 +98,9 @@ export interface NewSessionForm {
   provider?: string
   cwd?: string
   model?: string
+  /** Model Group pin. When set, `model` is omitted — the server resolves the
+   *  group's main slot at create (same contract as ChatPanel's setModelGroup). */
+  modelGroupId?: string
   /** Name of a custom agent definition to start this session as. Omitted
    *  when no agent is selected ("None"). Injected as `Options.agent`. */
   agent?: string
