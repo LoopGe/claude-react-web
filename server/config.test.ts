@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -366,6 +366,36 @@ describe('config', () => {
 
     const written = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
     expect(written.historyCap).toBe(777)
+  })
+
+  it('backs up an unreadable config.json instead of letting a writer discard it', async () => {
+    // readConfigFile collapses a parse failure to {} so a READ stays harmless,
+    // but a WRITER that then stores its own fields over that {} would wipe the
+    // whole file. Every writer gets this through readConfigForWrite, so none has
+    // to reimplement — or forget — the backup.
+    const broken = '{ "profiles": [ }'
+    writeFileSync(join(dir, 'config.json'), broken)
+
+    await updateConfigFile(dir, { historyCap: 999 })
+
+    const backups = readdirSync(dir).filter((f) => f.startsWith('config.json.unreadable-'))
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(dir, backups[0]), 'utf8')).toBe(broken)
+
+    const written = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
+    expect(written.historyCap).toBe(999)
+  })
+
+  it('backs up valid JSON that is not an object, too', async () => {
+    const body = '[1,2,3]'
+    writeFileSync(join(dir, 'config.json'), body)
+
+    await updateConfigFile(dir, { historyCap: 998 })
+
+    const backups = readdirSync(dir).filter((f) => f.startsWith('config.json.unreadable-'))
+    expect(backups).toHaveLength(1)
+    expect(readFileSync(join(dir, backups[0]), 'utf8')).toBe(body)
+    expect(readFileSync(join(dir, 'config.json'), 'utf8')).toBe(JSON.stringify({ historyCap: 998 }, null, 2))
   })
 
   it('loads a global cliDebug default (false) and honors config.json', async () => {

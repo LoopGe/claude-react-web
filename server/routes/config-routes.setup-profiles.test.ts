@@ -331,6 +331,31 @@ describe('POST /config/setup targets the profile the app reads', () => {
     }
   })
 
+  it('takes a single backup across repeated failed writes', async () => {
+    // Each attempt reads the still-broken file (it stays broken because the
+    // mutate throws before any write). Without dedupe that stamps one
+    // timestamped backup per attempt — three clicks, three identical files.
+    const dir = tempDir('setup-backup-dedupe')
+    try {
+      const broken = '{ "profiles": [ }'
+      writeFileSync(join(dir, 'config.json'), broken)
+
+      for (let i = 0; i < 3; i++) {
+        // No token → the guard inside the mutate throws 400, so nothing is written.
+        const res = await setup(sm, dir, {})
+        expect(res.status).toBe(400)
+      }
+
+      const backups = readdirSync(dir).filter((f) => f.startsWith('config.json.unreadable-'))
+      expect(backups).toHaveLength(1)
+      expect(readFileSync(join(dir, backups[0]), 'utf8')).toBe(broken)
+      // The damaged original is untouched.
+      expect(readFileSync(join(dir, 'config.json'), 'utf8')).toBe(broken)
+    } finally {
+      rmRf(dir)
+    }
+  })
+
   it('400s on a non-object body instead of throwing a TypeError', async () => {
     // safeJson guarantees parseable JSON, not an object — a literal `null` body
     // used to reach `body.authToken` and answer an opaque 500.

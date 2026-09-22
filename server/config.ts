@@ -9,7 +9,7 @@
 // throw at runtime, making the "load once" invariant explicit.
 
 import { promises as fs } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { writeAtomic } from './json-file-store.js'
 import type { SkillLoadMode } from '../shared/skills.js'
@@ -419,35 +419,48 @@ export async function loadConfig(stateDir: string): Promise<void> {
   let raw: string
   try {
     raw = await fs.readFile(file, 'utf8')
-  } catch {
+  } catch (err) {
+    // Only a MISSING file may be scaffolded. Any other read failure means the
+    // file exists but cannot be read, and writeAtomic's tmp+rename needs only
+    // DIRECTORY permission — so scaffolding here would atomically replace the
+    // real config (credentials included) with defaults. Leave it alone; the
+    // setup wizard's write path backs it up and heals it instead.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      log.warn(`could not read ${file} (${(err as Error).message}); leaving it untouched`)
+      return
+    }
     // File doesn't exist — scaffold a starter config so the user has a
     // concrete file to edit (fill in authToken, adjust models, etc.).
     try {
+      const scaffold = {
+        profiles: [{
+          id: 'default',
+          name: 'Default',
+          authToken: '',
+          baseUrl: DEFAULTS.baseUrl,
+          modelList: [...config.modelList],
+          modelGroups: [...config.modelGroups],
+          // recapModel / commitMessageModel are deliberately NOT scaffolded:
+          // writing a concrete model id here would bake in a model the
+          // user's provider may not serve (and it is what made a fresh
+          // install's recaps 401 on third-party gateways). Absent = use the
+          // session's own model.
+        }],
+        activeProfileId: 'default',
+        maxUploadBytes: config.maxUploadBytes,
+        historyCap: config.historyCap,
+        maxGroupPanels: config.maxGroupPanels,
+      }
+      // writeAtomic mkdir -p'd its own dir; plain writeFile does not, so the
+      // target directory has to exist first (a --config override pointing into
+      // a missing dir must still scaffold).
       await fs.mkdir(dirname(file), { recursive: true })
-      const scaffold = JSON.stringify(
-        {
-          profiles: [{
-            id: 'default',
-            name: 'Default',
-            authToken: '',
-            baseUrl: DEFAULTS.baseUrl,
-            modelList: [...config.modelList],
-            modelGroups: [...config.modelGroups],
-            // recapModel / commitMessageModel are deliberately NOT scaffolded:
-            // writing a concrete model id here would bake in a model the
-            // user's provider may not serve (and it is what made a fresh
-            // install's recaps 401 on third-party gateways). Absent = use the
-            // session's own model.
-          }],
-          activeProfileId: 'default',
-          maxUploadBytes: config.maxUploadBytes,
-          historyCap: config.historyCap,
-          maxGroupPanels: config.maxGroupPanels,
-        },
-        null,
-        2,
-      )
-      await fs.writeFile(file, scaffold, 'utf8')
+      // Plain writeFile, NOT writeAtomic: the ENOENT guard above means there is no
+      // existing file to clobber, and rename-over-the-path would REPLACE a
+      // dangling symlink instead of healing the target it points at — writeFile
+      // follows it, which is what a dotfiles setup that symlinks this file needs.
+      // mode 0600 because the file holds credentials.
+      await fs.writeFile(file, JSON.stringify(scaffold, null, 2), { encoding: 'utf8', mode: 0o600 })
       log.info(`created ${file} - fill in authToken to get started`)
     } catch (err) {
       log.warn(`could not scaffold ${file}:`, (err as Error).message)
@@ -455,20 +468,13 @@ export async function loadConfig(stateDir: string): Promise<void> {
     return
   }
 
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch (err) {
-    log.warn(`${file} is not valid JSON, using defaults:`, (err as Error).message)
+  const parsed = tryParseConfigObject(raw)
+  if (!parsed.ok) {
+    log.warn(`${file} is unusable (${parsed.why}); using defaults`)
     return
   }
 
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    log.warn(`${file} must be a JSON object, using defaults`)
-    return
-  }
-
-  const migrated = await migrateLegacyProfiles(parsed as Record<string, unknown>, file)
+  const migrated = await migrateLegacyProfiles(parsed.value, file)
   applyParsedConfig(migrated as unknown as ConfigFile, stateDir, file)
 }
 
@@ -787,20 +793,82 @@ export const WRITABLE_CONFIG_KEYS = [
   'fileSnapshotsMaxUntrackedBytes',
 ] as const
 
+/** Parse raw config.json text. Shared by BOTH readers so they cannot disagree
+ *  about what a valid config is — one shape rule, defined once. */
+function tryParseConfigObject(raw: string): { ok: true; value: Record<string, unknown> } | { ok: false; why: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (err) {
+    return { ok: false, why: (err as Error).message }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, why: 'valid JSON but not an object' }
+  }
+  return { ok: true, value: parsed as Record<string, unknown> }
+}
+
 /**
  * Read the raw config.json from disk and return it. Returns an empty object
  * if the file doesn't exist or is malformed.
  */
 export async function readConfigFile(stateDir: string): Promise<Record<string, unknown>> {
-  const file = getConfigPath(stateDir)
   try {
-    const raw = await fs.readFile(file, 'utf8')
-    const parsed = JSON.parse(raw)
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
-  } catch { /* ignore */ }
+    const parsed = tryParseConfigObject(await fs.readFile(getConfigPath(stateDir), 'utf8'))
+    if (parsed.ok) return parsed.value
+  } catch { /* ignore — missing or unreadable both read as no config */ }
   return {}
+}
+
+/** Copy a config.json we could not use beside itself, so the caller can start
+ *  clean WITHOUT destroying it. If even the backup fails there is nothing safe
+ *  left to do: refuse the write with an actionable message rather than let a
+ *  writer run over a file we could not preserve. */
+async function backUpUnreadable(file: string, why: string): Promise<Record<string, unknown>> {
+  // At most ONE backup: a persistently broken config plus repeatedly rejected
+  // writes would otherwise stamp a fresh timestamped copy per attempt. The
+  // first copy already preserves the original damage.
+  const prefix = `${basename(file)}.unreadable-`
+  let names: string[] = []
+  try { names = await fs.readdir(dirname(file)) } catch { /* let copyFile surface it */ }
+  if (names.some((n) => n.startsWith(prefix))) {
+    log.warn(`config.json is unreadable (${why}); keeping the existing backup`)
+    return {}
+  }
+  const backup = `${file}.unreadable-${Date.now()}`
+  try {
+    await fs.copyFile(file, backup)
+  } catch {
+    throw new HttpError(400, `${file} is unreadable (${why}) and could not be backed up — fix or remove it, then retry`)
+  }
+  log.warn(`config.json was unreadable (${why}); backed up to ${backup} and continuing`)
+  return {}
+}
+
+/** The read half of a read-modify-write, for writers.
+ *
+ *  `readConfigFile` collapses "no file" and "file is unusable" into the same
+ *  `{}` — harmless for a read, which just reports unconfigured — but a WRITER
+ *  that then stores its own fields over that `{}` would silently discard
+ *  everything the damaged file still contained. So anything short of "the file
+ *  does not exist" gets backed up first: a read failure (EACCES, a Windows lock,
+ *  EIO) or a parse/shape failure alike. This lives HERE so no writer has to
+ *  reimplement (or forget) it. */
+async function readConfigForWrite(stateDir: string): Promise<Record<string, unknown>> {
+  const file = getConfigPath(stateDir)
+  let raw: string
+  try {
+    raw = await fs.readFile(file, 'utf8')
+  } catch (err) {
+    // Only "no file yet" is a clean slate. Any other error means the file
+    // EXISTS but cannot be read — treat it like an unusable one, or the writer
+    // would clobber the real config with no backup.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    return backUpUnreadable(file, (err as Error).message)
+  }
+  const parsed = tryParseConfigObject(raw)
+  if (!parsed.ok) return backUpUnreadable(file, parsed.why)
+  return parsed.value
 }
 
 /**
@@ -840,7 +908,7 @@ async function doUpdateConfigFile(
   stateDir: string,
   updates: Record<string, unknown>,
 ): Promise<void> {
-  const existing = await readConfigFile(stateDir)
+  const existing = await readConfigForWrite(stateDir)
   for (const key of WRITABLE_CONFIG_KEYS) {
     if (key in updates) {
       const val = updates[key]
@@ -891,7 +959,7 @@ async function doRawConfigUpdate(
   stateDir: string,
   mutate: (existing: Record<string, unknown>) => Promise<void> | void,
 ): Promise<void> {
-  const existing = await readConfigFile(stateDir)
+  const existing = await readConfigForWrite(stateDir)
   await mutate(existing)
   const file = getConfigPath(stateDir)
   await writeAtomic(dirname(file), file, existing)

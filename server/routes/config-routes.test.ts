@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { Hono } from 'hono'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildConfigRouter } from './config-routes.js'
 import { setServerDefaultCwd } from '../default-cwd.js'
-import { setConfigPath } from '../config.js'
+import { setConfigPath, loadConfig } from '../config.js'
+import { createErrorHandler } from '../errors.js'
 import type { SessionManager } from '../session-manager.js'
 
 // The route dynamically imports the real probe; stub it so this file can
@@ -24,6 +26,17 @@ vi.mock('../config-test-connection.js', () => ({
 function makeApp() {
   const sm = {} as unknown as SessionManager
   return buildConfigRouter(sm)
+}
+
+/** `buildConfigRouter` is a SUB-router: the HttpError → JSON translation lives on
+ *  the composition's onError (server/routes/index.ts), not on the router itself.
+ *  Calling it bare turns a deliberate 400 into an opaque 500, so error-path
+ *  assertions must compose it the way the app does. */
+function makeErrorHandlerApp(configDir?: string) {
+  const app = new Hono()
+  app.onError(createErrorHandler('[test]'))
+  app.route('/', buildConfigRouter({} as unknown as SessionManager, configDir))
+  return app
 }
 
 describe('config routes — claude-defaults', () => {
@@ -169,6 +182,93 @@ describe('config routes — full defaults', () => {
       expect(res.status).toBe(200)
       const body = (await res.json()) as { defaults?: { cwd?: string } }
       expect(body.defaults?.cwd).toBe('/resolved/by/boot')
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('config routes — non-object inputs must not 500', () => {
+  it('PUT /log rejects a null body with 400', async () => {
+    // The old guard was `body && typeof body !== 'object'`, which is false for
+    // null, so `body.level` threw a TypeError and answered an opaque 500.
+    const res = await makeErrorHandlerApp().request('/log', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: 'null',
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/must be a JSON object/) })
+  })
+
+  it('POST /config/test-connection rejects a null body and never 500s on odd types', async () => {
+    const app = makeErrorHandlerApp()
+    const nullBody = await app.request('/config/test-connection', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'null',
+    })
+    expect(nullBody.status).toBe(400)
+
+    // A PRESENT but non-string field must be a 400: treating it as absent would
+    // probe the saved credentials and answer 200 ok for values never tested.
+    const oddTypes = await app.request('/config/test-connection', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ authToken: 123, baseUrl: {} }),
+    })
+    expect(oddTypes.status).toBe(400)
+    expect(await oddTypes.json()).toMatchObject({ error: expect.stringMatching(/must be a string/) })
+  })
+
+  it('refuses to write when config.json exists but cannot be read', async () => {
+    // A directory in place of the file makes readFile AND copyFile both fail with
+    // EISDIR — i.e. "exists but unusable, and the backup cannot be taken either".
+    // readConfigForWrite must refuse rather than hand the writer a clean {} (its
+    // first draft treated every read failure as "no file yet", which would have
+    // let the write succeed and destroy the original).
+    const stateDir = mkdtempSync(join(tmpdir(), 'crw-setup-unreadable-'))
+    try {
+      mkdirSync(join(stateDir, 'config.json'))
+
+      const res = await makeErrorHandlerApp(stateDir).request('/config', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ historyCap: 999 }),
+      })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toMatchObject({ error: expect.stringMatching(/could not be backed up/) })
+      // The unreadable entry is still there — nothing was written over it.
+      expect(existsSync(join(stateDir, 'config.json'))).toBe(true)
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  it('GET /config/full tolerates a non-string raw authToken', async () => {
+    // A hand-edited `"authToken": 12345` used to reach `.slice(-4)` and 500 the
+    // Settings surface. `profiles` is present so the legacy migration no-ops and
+    // the raw key survives to this read.
+    const stateDir = mkdtempSync(join(tmpdir(), 'crw-full-nonstr-'))
+    const file = join(stateDir, 'config.json')
+    writeFileSync(file, JSON.stringify({
+      profiles: [{
+        id: 'default', name: 'Default', authToken: '', baseUrl: 'https://api.anthropic.com',
+        modelList: ['m'], modelGroups: [], recapModel: '', commitMessageModel: '',
+      }],
+      activeProfileId: 'default',
+      authToken: 12345,
+    }))
+    try {
+      // The module singleton still holds the token from the setup tests above;
+      // load THIS config so the live token is empty and the raw non-string key is
+      // the only thing left to mask (or not).
+      await loadConfig(stateDir)
+      const res = await buildConfigRouter({} as unknown as SessionManager, stateDir).request('/config/full')
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { authTokenMasked?: string }
+      // Nothing maskable: the live token is empty and the raw one is not a string.
+      expect(body.authTokenMasked).toBeUndefined()
     } finally {
       rmSync(stateDir, { recursive: true, force: true })
     }

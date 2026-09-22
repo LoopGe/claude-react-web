@@ -2,7 +2,7 @@
 
 import { Hono } from 'hono'
 import { serverDefaultCwd } from '../default-cwd.js'
-import { copyFile, readFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { join as joinPath } from 'node:path'
 import { claudeConfigDir } from '../claude-config-dir.js'
 import { SessionManager } from '../session-manager.js'
@@ -11,7 +11,7 @@ import { createLogger } from '../log.js'
 import { safeJson } from './index.js'
 
 const log = createLogger('config')
-import { config as serverConfig, DEFAULT_PROFILE, getConfigPath, LEGACY_PROFILE_KEYS, queueConfigWrite, readConfigFile, updateConfigFile, MAX_PASTED_IMAGE_BYTES } from '../config.js'
+import { config as serverConfig, DEFAULT_PROFILE, LEGACY_PROFILE_KEYS, queueConfigWrite, updateConfigFile, MAX_PASTED_IMAGE_BYTES } from '../config.js'
 import {
   LOG_LEVELS, getLogConfig, setLogConfig, type LogLevel,
   enableFileLogging, disableFileLogging, isFileLoggingEnabled, getLogFilePath,
@@ -37,32 +37,11 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw new HttpError(400, 'Body must be a JSON object')
     }
-    // An existing config.json that cannot be read as an OBJECT must not block the
-    // wizard — App renders SetupPage INSTEAD of the app shell while the server is
-    // unconfigured, so Settings and the About tab's "clear configuration" (which
-    // would otherwise have healed this) are both unreachable from here — and it
-    // must not be silently destroyed either. Copy it aside, warn, and carry on:
-    // the heal below writes a working config, and the original stays recoverable
-    // next to it.
-    const configPath = getConfigPath(configDir)
-    try {
-      const parsed = JSON.parse(await readFile(configPath, 'utf8'))
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        throw new Error('valid JSON but not an object')
-      }
-    } catch (err) {
-      // ENOENT just means there is no file yet, which is a normal first run.
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        const backup = `${configPath}.unreadable-${Date.now()}`
-        try {
-          await copyFile(configPath, backup)
-        } catch {
-          // Cannot even back it up: refuse rather than destroy it.
-          throw new HttpError(400, `${configPath} is unreadable and could not be backed up — fix or remove it, then retry`)
-        }
-        log.warn(`config.json was unreadable (${(err as Error).message}); backed up to ${backup} and continuing`)
-      }
-    }
+    // An unreadable config.json is handled by readConfigForWrite inside
+    // queueConfigWrite (server/config.ts), which backs the original up rather
+    // than letting this write discard it. Deliberately NOT reimplemented here —
+    // the queue covers every writer, and one definition cannot drift.
+    //
     // The whole read-modify-write runs INSIDE the serialized config write queue
     // — the same queue every other config.json writer uses (updateConfigFile /
     // queueConfigWrite). Reading and writing this file by hand let a concurrent
@@ -72,11 +51,10 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
     // — queueConfigWrite "MUST be used for any direct config.json edit". The
     // 400s thrown below propagate to the caller, and do not poison the queue.
     //
-    // The queue hands us the raw config through readConfigFile, so valid JSON
-    // that is not an object (`null`, `"x"`, `[1]`) arrives as {} exactly like a
-    // missing file — parsing it here would hand the heal a null to read
-    // properties off, or an array to write `profiles` onto (JSON.stringify drops
-    // an array's non-index properties, so the submission would vanish).
+    // The queue reads through readConfigForWrite (server/config.ts): a missing file
+    // arrives as {}, and a file that cannot be READ or parsed is copied aside
+    // first, then arrives as {}. So the heal below always operates on a plain
+    // object it can safely write over, and the original is never destroyed.
     await queueConfigWrite(configDir, (existing) => {
       // Heal a config the reader cannot resolve a profile out of BEFORE writing,
       // because every write below targets a profile entry. A `profiles` key that
@@ -201,6 +179,18 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
   // refused by SSRF validation before any probe runs.
   app.post('/config/test-connection', async (c) => {
     const body = await safeJson<{ authToken?: string; baseUrl?: string }>(c.req)
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new HttpError(400, 'Body must be a JSON object')
+    }
+    // A field that is PRESENT but not a string is a caller error — silently
+    // treating it as absent would probe the SAVED credentials and answer
+    // 200 {ok:true} for values that were never tested.
+    if (body.authToken !== undefined && typeof body.authToken !== 'string') {
+      throw new HttpError(400, 'authToken must be a string')
+    }
+    if (body.baseUrl !== undefined && typeof body.baseUrl !== 'string') {
+      throw new HttpError(400, 'baseUrl must be a string')
+    }
     const token = body.authToken?.trim() || serverConfig.authToken
     if (!token) throw new HttpError(400, 'No auth token to test — enter one or save your config first')
     const baseUrl = (body.baseUrl?.trim() || serverConfig.baseUrl).replace(/\/+$/, '')
@@ -257,11 +247,15 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
   // Full config — returns every field the UI needs for the settings modal.
   app.get('/config/full', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
-    const raw = await readConfigFile(configDir)
-    const token = (raw.authToken as string) ?? serverConfig.authToken
+    // Mask the LIVE token only — the one applyParsedConfig derived from the
+    // active profile. A stale legacy top-level key can still sit in a
+    // hand-edited file, and reporting ITS mask alongside `configured: false`
+    // would advertise a credential the server is not using. Type-guarded: a
+    // hand-edited `"authToken": 12345` used to reach `.slice` and 500 this route.
+    const liveToken = typeof serverConfig.authToken === 'string' ? serverConfig.authToken.trim() : ''
     return c.json({
       configured: !!serverConfig.authToken,
-      authTokenMasked: token ? '****' + token.slice(-4) : undefined,
+      authTokenMasked: maskToken(liveToken || undefined),
       baseUrl: serverConfig.baseUrl,
       modelList: serverConfig.modelList as string[],
       modelGroups: serverConfig.modelGroups,
@@ -321,7 +315,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
 
   app.put('/log', async (c) => {
     const body = await safeJson<{ level?: string; scopes?: string[] | null }>(c.req)
-    if (body && typeof body !== 'object') {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw new HttpError(400, 'Body must be a JSON object')
     }
     const update: { level?: LogLevel; scopes?: string[] | null } = {}
