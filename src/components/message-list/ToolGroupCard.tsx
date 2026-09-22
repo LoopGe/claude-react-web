@@ -258,20 +258,29 @@ function ToolGroupCardInner({
   // always does something visible.
   const open = hasSearchHit || live || (fold.userOpen ?? autoOpen)
 
-  // Expand (if needed) and point at the member that failed. The flash is
-  // transient on purpose: it answers "which one?" at the moment it is asked,
-  // while the card's own error badge remains the standing signal.
+  // Body-mount latch. The header is always rendered, but members (BlockView →
+  // tool diffs, lineDiff, useEditDiffInfo) mount only once the group has been
+  // opened at least once. A historical folded group is therefore header-only.
+  // After the first open the latch stays true so a fold does NOT tear members
+  // down (AnimatedCollapse's unmountOnExit={false} state-survival contract).
+  const [bodyMounted, setBodyMounted] = useState(open)
+  useEffect(() => {
+    if (open) setBodyMounted(true)
+  }, [open])
+
   const [flashToolUseId, setFlashToolUseId] = useState<string | null>(null)
   const revealTimersRef = useRef<number[]>([])
   useEffect(() => () => revealTimersRef.current.forEach(window.clearTimeout), [])
 
+  // Expand (if needed) and point at the member that failed. The flash is
+  // transient on purpose: it answers "which one?" at the moment it is asked,
+  // while the card's own error badge remains the standing signal.
   const revealFirstError = () => {
     const target = summary.firstErrorToolUseId
     if (!target) return
     revealTimersRef.current.forEach(window.clearTimeout)
     revealTimersRef.current = []
-    const wasOpen = open
-    if (!wasOpen) dispatch({ type: 'toggle', open: true })
+    if (!open) dispatch({ type: 'toggle', open: true })
     setFlashToolUseId(target)
     revealTimersRef.current.push(
       window.setTimeout(() => setFlashToolUseId(null), FLASH_MS),
@@ -288,7 +297,7 @@ function ToolGroupCardInner({
             return
           }
         }
-      }, wasOpen ? 0 : REVEAL_AFTER_FOLD_MS),
+      }, REVEAL_AFTER_FOLD_MS),
     )
   }
 
@@ -339,7 +348,7 @@ function ToolGroupCardInner({
           type="button"
           className="tool-group-toggle"
           aria-expanded={open}
-          aria-controls={bodyId}
+          aria-controls={bodyMounted ? bodyId : undefined}
           aria-label={`${summary.count} tool call${summary.count === 1 ? '' : 's'}${summary.fullSummary ? `: ${summary.fullSummary}` : ''}`}
           onClick={() => dispatch({ type: 'toggle', open: !open })}
           // Hover on the WHOLE title row (not just the names text) surfaces
@@ -390,32 +399,34 @@ function ToolGroupCardInner({
         contentClassName="tool-group-body"
         id={bodyId}
       >
-        {perMember.map((blocks, mi) => {
-          const isActive =
-            activeMemberItemIndex != null && memberItemIndices[mi] === activeMemberItemIndex
-          return blocks.map((b, bi) => {
-            const toolUseId = extractToolUseId(b)
-            // The wrapper exists so the header's failed badge has something to
-            // scroll to and tint — the tool views themselves are untouched.
-            return (
-              <div
-                key={toolUseId ?? `${mi}-${bi}`}
-                className={
-                  'tool-group-member' +
-                  (toolUseId && toolUseId === flashToolUseId ? ' tool-group-member-flash' : '')
-                }
-                data-member-tool-use-id={toolUseId ?? undefined}
-              >
-                <BlockView
-                  block={b}
-                  searchQuery={searchQuery}
-                  activeMatchIdx={isActive ? activeMatchInItem : undefined}
-                  toolResultActiveMatchIdx={isActive ? activeMatchInItem : undefined}
-                />
-              </div>
-            )
-          })
-        })}
+        {bodyMounted
+          ? perMember.map((blocks, mi) => {
+              const isActive =
+                activeMemberItemIndex != null && memberItemIndices[mi] === activeMemberItemIndex
+              return blocks.map((b, bi) => {
+                const toolUseId = extractToolUseId(b)
+                // The wrapper exists so the header's failed badge has something to
+                // scroll to and tint — the tool views themselves are untouched.
+                return (
+                  <div
+                    key={toolUseId ?? `${mi}-${bi}`}
+                    className={
+                      'tool-group-member' +
+                      (toolUseId && toolUseId === flashToolUseId ? ' tool-group-member-flash' : '')
+                    }
+                    data-member-tool-use-id={toolUseId ?? undefined}
+                  >
+                    <BlockView
+                      block={b}
+                      searchQuery={searchQuery}
+                      activeMatchIdx={isActive ? activeMatchInItem : undefined}
+                      toolResultActiveMatchIdx={isActive ? activeMatchInItem : undefined}
+                    />
+                  </div>
+                )
+              })
+            })
+          : null}
       </AnimatedCollapse>
     </div>
   )

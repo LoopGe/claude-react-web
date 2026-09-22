@@ -257,18 +257,29 @@ describe('ToolGroupCard', () => {
 
     it('scrolls the failing member into view once the fold has settled', () => {
       vi.useFakeTimers()
-      const { container } = renderGroup(twoOfWhichOneFailed())
-      const scrolls: Element[] = []
-      for (const el of container.querySelectorAll('[data-member-tool-use-id]')) {
-        ;(el as HTMLElement).scrollIntoView = () => scrolls.push(el)
+      // Override requestAnimationFrame so React's useEffect scheduler fires
+      // synchronously — vi.useFakeTimers() replaces it with a no-op which
+      // prevents setBodyMounted(true) from ever running.
+      const realRaf = globalThis.requestAnimationFrame
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => setTimeout(cb, 0))
+      try {
+        const { container } = renderGroup(twoOfWhichOneFailed())
+        const scrolls: Element[] = []
+        // First open mounts members + set up scroll handlers.
+        fireEvent.click(container.querySelector('.tool-group-failed-jump')!)
+        act(() => { vi.advanceTimersByTime(0) }) // flush requestAnimationFrame → setBodyMounted
+        for (const el of container.querySelectorAll('[data-member-tool-use-id]')) {
+          ;(el as HTMLElement).scrollIntoView = () => scrolls.push(el)
+        }
+        // Not while the height is still animating — that lands short.
+        expect(scrolls).toHaveLength(0)
+        act(() => {
+          vi.advanceTimersByTime(300)
+        })
+        expect(scrolls.map((el) => el.getAttribute('data-member-tool-use-id'))).toEqual(['t2-tu'])
+      } finally {
+        vi.stubGlobal('requestAnimationFrame', realRaf)
       }
-      fireEvent.click(container.querySelector('.tool-group-failed-jump')!)
-      // Not while the height is still animating — that lands short.
-      expect(scrolls).toHaveLength(0)
-      act(() => {
-        vi.advanceTimersByTime(300)
-      })
-      expect(scrolls.map((el) => el.getAttribute('data-member-tool-use-id'))).toEqual(['t2-tu'])
     })
 
     it('does not turn the badge into a control when no id is resolvable', () => {
@@ -307,6 +318,39 @@ describe('ToolGroupCard', () => {
     // Belt-and-braces: no loader glyph in the waiting badge at all, so even a
     // future unscoped spin rule can't animate it.
     expect(container.querySelector('.tool-status-waiting .icon-loader')).toBeNull()
+  })
+
+  it('does not mount member BlockViews while folded; mounts them on first open', () => {
+    const members = [
+      toolMsg('a', 'Read', { file_path: '/a.ts' }),
+      toolMsg('b', 'Read', { file_path: '/b.ts' }),
+    ]
+    const { container, getByRole } = renderGroup({
+      members,
+      toolStatus: new Map([
+        ['a-tu', 'success'],
+        ['b-tu', 'success'],
+      ]),
+    })
+    // Folded: header only. No member wrappers in the DOM.
+    expect(container.querySelector('.tool-group-member')).toBeNull()
+
+    // First open mounts the body + both members.
+    fireEvent.click(getByRole('button', { name: /2 tool calls/i }))
+    expect(container.querySelectorAll('.tool-group-member').length).toBe(2)
+  })
+
+  it('keeps members mounted after a fold (state survives close)', () => {
+    const members = [toolMsg('a', 'Read', { file_path: '/a.ts' })]
+    const { container, getByRole } = renderGroup({
+      members,
+      toolStatus: new Map([['a-tu', 'success']]),
+    })
+    const toggle = getByRole('button', { name: /1 tool call/i })
+    fireEvent.click(toggle) // open
+    expect(container.querySelectorAll('.tool-group-member').length).toBe(1)
+    fireEvent.click(toggle) // fold
+    expect(container.querySelectorAll('.tool-group-member').length).toBe(1)
   })
 
   it('toggles on header click', () => {
@@ -352,7 +396,7 @@ describe('ToolGroupCard', () => {
   })
 
   it('exposes count + tool summary to assistive tech (aria-label + aria-controls)', () => {
-    const { container } = renderGroup({
+    const { container, getByRole } = renderGroup({
       members: [toolMsg('t1', 'Read'), toolMsg('t2', 'Read'), toolMsg('t3', 'Grep')],
       toolStatus: new Map<string, ToolStatus>([
         ['t1-tu', 'success'],
@@ -370,10 +414,10 @@ describe('ToolGroupCard', () => {
     expect(label).toContain('3')
     expect(label).toContain('Read')
     expect(label).toContain('Grep')
-    // aria-controls must point at the mounted collapsible body (children stay
-    // mounted when folded, so the target is always present). Compare by
-    // attribute rather than a `#` CSS selector — React's useId emits a `:`-ful
-    // id that is a valid IDREF but an awkward CSS selector in some parsers.
+    // Folded: body not yet mounted, so aria-controls is absent.
+    expect(header.getAttribute('aria-controls')).toBeNull()
+    // Open the group — body mounts and aria-controls appears.
+    fireEvent.click(getByRole('button', { name: /3 tool calls/i }))
     const controls = header.getAttribute('aria-controls')!
     expect(controls).toBeTruthy()
     const body = container.querySelector('.tool-group-body')!
