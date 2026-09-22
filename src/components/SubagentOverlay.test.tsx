@@ -108,10 +108,11 @@ describe('SubagentOverlay escape stack', () => {
 })
 
 describe('SubagentOverlay scrim', () => {
-  // The background + backdrop-filter live on a dedicated scrim child so the
-  // panel (and the virtualised transcript inside it) isn't in a
-  // backdrop-filtered render surface. That moves the click-outside target, so
-  // pin both the element's presence and the close behaviour.
+  // The background + fade animation live on a dedicated scrim child, and the
+  // scrim carries no backdrop-filter (WebKit re-samples it on every panel
+  // scroll — see the compositing contract in chat.css). That moves the
+  // click-outside target, so pin both the element's presence and the close
+  // behaviour.
   it('renders the scrim as a sibling of the panel, not as an ancestor', () => {
     const { container } = render(
       <SubagentOverlay

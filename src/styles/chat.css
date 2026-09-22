@@ -2999,14 +2999,16 @@
    covers the rest of the column so the user can click outside the
    panel to close.
 
-   COMPOSITING CONTRACT (shared with .workflow-overlay): the scrim's
-   `backdrop-filter` lives on a dedicated absolutely-positioned SIBLING of the
-   panel, never on this container. An element with a backdrop-filter groups its
-   entire subtree into a separate render surface; with the filter on the
-   container, the panel — and therefore the virtualised transcript scrolling
-   inside it — lived in that surface, so every scroll frame had to re-rasterise
-   the group and re-run the filter instead of taking the cheap scroll path.
-   Keep the filter off any ancestor of a scroll container. */
+   COMPOSITING CONTRACT (shared with .workflow-overlay): NO `backdrop-filter`
+   anywhere in this overlay. An element with a backdrop-filter groups its
+   subtree into a separate render surface, and WebKit re-samples that surface
+   on every repaint of the region — which is exactly what a scroll inside the
+   panel is. With the filter on the container the panel's virtualised
+   transcript re-rasterised on every scroll frame; moving it to a sibling
+   scrim still flickered in Safari, because the scrim sits in the same
+   backdrop root as the panel. The scrim is therefore a plain translucent
+   fill. Keep any backdrop-filter off this overlay and off any ancestor of a
+   scroll container. */
 .subagent-overlay {
   position: absolute;
   inset: 0;
@@ -3030,9 +3032,9 @@
      `z-index: auto` paints ABOVE static siblings, which would cover the
      panel). */
   z-index: 0;
-  background: color-mix(in srgb, var(--bg) 55%, transparent);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
+  /* Deeper than the old 55% so the fill carries the dimming the (now removed)
+     blur used to add. NO backdrop-filter — see the compositing contract above. */
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
   animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) backwards;
 }
 .subagent-overlay[data-state='closing'] .subagent-overlay-scrim {
@@ -3362,10 +3364,10 @@
 /* Two-column layout: phase-tree sidebar (left) + message stream (right).
    Wider than the single-column SubagentOverlay (min(75%, 900px)) so both
    columns stay readable. */
-/* Scrim on a sibling, `backwards` fills on the entrances — see the compositing
-   contract on .subagent-overlay. This panel hosts a MessageList in its right
-   column, so it has exactly the same stake in keeping the scroller out of a
-   backdrop-filtered / permanently-transformed subtree. */
+/* Plain translucent scrim, `backwards` fills on the entrances — see the
+   compositing contract on .subagent-overlay. This panel hosts a MessageList in
+   its right column, so it has exactly the same stake in keeping the scroller
+   out of a backdrop-filtered / permanently-transformed subtree. */
 .workflow-overlay {
   position: absolute;
   inset: 0;
@@ -3377,9 +3379,8 @@
   position: absolute;
   inset: 0;
   z-index: 0;
-  background: color-mix(in srgb, var(--bg) 55%, transparent);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
+  /* NO backdrop-filter — see the compositing contract on .subagent-overlay. */
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
   animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) backwards;
 }
 .workflow-overlay[data-state='closing'] .workflow-overlay-scrim {
