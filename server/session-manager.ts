@@ -2751,9 +2751,8 @@ export class SessionManager {
   private captureAnchor(id: string, s: Session, userUuid: string): void {
     const cwd = s.cwd
     if (!cwd) return
-    // Idle predicate: matches phaseOf === 'idle' but without the method call.
-    const isIdle = s.pendingTurns === 0 && s.handle.queueDepth === 0 && s.pending.size === 0
-    if (!isIdle) {
+    // Must match phaseOf exactly — includes clearing + backgroundSubagentCount.
+    if (this.phaseOf(s) !== 'idle') {
       // Defer — capture on consume when the session is between turns.
       if (!s.pendingSnapshotAnchors) s.pendingSnapshotAnchors = []
       s.pendingSnapshotAnchors.push(userUuid)
@@ -4777,6 +4776,17 @@ export class SessionManager {
     }
     const snapMeta = await this.snapshotStore.load(id)
     if (!snapMeta) {
+      // No snapshot meta yet — probe whether the session cwd is inside a
+      // git worktree so we can report the correct reason.
+      const cwd = live?.cwd ?? (meta as { cwd?: string } | undefined)?.cwd
+      if (cwd) {
+        try {
+          const { isInsideWorkTree } = await import('./git.js')
+          if (!(await isInsideWorkTree(cwd))) {
+            return { available: false, reason: 'not-git', anchors: [] }
+          }
+        } catch { /* probe failed — treat as unknown */ }
+      }
       return { available: false, reason: 'no-snapshot', anchors: [] }
     }
     if (!snapMeta.gitDir) {
@@ -5999,19 +6009,12 @@ export class SessionManager {
           if (!cwd) return
           void (async () => {
             try {
-              // Read the previous last tree BEFORE capture overwrites it
-              // — capture() sets meta.last.tree = endTree, so reading
-              // after would make appendPatch's diff endTree→endTree =
-              // empty. Passing the prev explicitly keeps the diff correct.
-              // (There's a small race if another capture lands between
-              // this load and our capture, but the per-session lock
-              // inside capture serializes them — the load reads what the
-              // previous capture left, which is the pre-turn tree.)
-              const prevMeta = await this.snapshotStore.load(sessionId)
-              const prev = prevMeta?.last?.tree
-              const end = await this.snapshots.capture({ sessionId, cwd })
-              if (!end) return
-              await this.snapshots.appendPatch(sessionId, assistantUuid, end, prev)
+              // captureWithPrev reads prev and captures under the SAME
+              // lock — no race where two concurrent captures both read
+              // the same last.tree.
+              const result = await this.snapshots.captureWithPrev(sessionId, cwd)
+              if (!result) return
+              await this.snapshots.appendPatch(sessionId, assistantUuid, result.tree, result.prev)
             } catch (err) {
               log.warn(`[session ${sessionId}] turn snapshot failed: ${(err as Error).message ?? err}`)
             }

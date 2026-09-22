@@ -9,6 +9,7 @@ import {
   initShadowRepo,
   captureTree,
   nameOnlyDiff,
+  nameStatusDiff,
   restorePaths,
   deletePaths,
   structuredDiff,
@@ -175,8 +176,56 @@ export class SnapshotService {
     if (scope === null) return null
 
     const gitDir = odbDir(this.stateDir, sessionId)
-    await initShadowRepo({ gitDir, worktree, scope, sourceCommonDir })
+    await initShadowRepo({ gitDir, worktree, scope, sourceCommonDir, sourceGitDir })
     return { repo: { gitDir, worktree, scope }, sourceGitDir }
+  }
+
+  /**
+   * Capture current worktree state into the session shadow repo, returning
+   * both the new tree and the previous `last.tree` BEFORE the capture
+   * overwrote it.  The prev read and the capture run under the SAME lock
+   * so concurrent captures cannot read a stale `last.tree`.
+   * Returns null when disabled / non-git / error.
+   */
+  async captureWithPrev(
+    sessionId: string,
+    cwd: string,
+  ): Promise<{ tree: string; prev: string | null } | null> {
+    if (!this.fileSnapshots) return null
+    try {
+      return await this.lock(sessionId, async () => {
+        const info = await this.resolveRepo(sessionId, cwd)
+        if (!info) return null
+        // Read prev BEFORE capture overwrites meta.last.tree
+        const prevMeta = await this.store.load(sessionId)
+        const prev = prevMeta?.last?.tree ?? null
+        const tree = await captureTree(info.repo, {
+          maxUntrackedBytes: this.maxUntrackedBytes,
+          sourceGitDir: info.sourceGitDir,
+        })
+        if (!tree) return null
+        await this.store.update(sessionId, (prev_) => {
+          if (prev_) {
+            const sourceGitDir = prev_.sourceGitDir ?? info.sourceGitDir
+            return { ...prev_, sourceGitDir, last: { tree, at: Date.now() } }
+          }
+          return {
+            version: 1 as const,
+            gitDir: info.repo.gitDir,
+            worktree: info.repo.worktree,
+            scope: info.repo.scope,
+            sourceGitDir: info.sourceGitDir,
+            byMessage: {},
+            patches: [],
+            last: { tree, at: Date.now() },
+          }
+        })
+        return { tree, prev }
+      })
+    } catch (err) {
+      log.warn(`captureWithPrev failed for ${sessionId}: ${(err as Error).message ?? err}`)
+      return null
+    }
   }
 
   /**
@@ -379,16 +428,7 @@ export class SnapshotService {
         const toRestore: string[] = []
         const toDelete: string[] = []
         if (files.length > 0) {
-          const { stdout } = await execFileAsync('git', [
-            '--git-dir', repo.gitDir, '--work-tree', repo.worktree,
-            'diff', '--name-status', '-z', '--no-renames', anchor.start, current, '--',
-          ], { cwd: repo.worktree, encoding: 'utf8', windowsHide: true, timeout: 30_000 })
-          // Parse NUL-delimited name-status: STATUS\0FILE\0 pairs
-          const statusMap = new Map<string, string>()
-          const parts = stdout.split('\0').filter(Boolean)
-          for (let i = 0; i + 1 < parts.length; i += 2) {
-            statusMap.set(parts[i + 1], parts[i])
-          }
+          const statusMap = await nameStatusDiff(repo, anchor.start, current)
           for (const file of files) {
             const code = statusMap.get(file) ?? 'M'
             if (code === 'A') {

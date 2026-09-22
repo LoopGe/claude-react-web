@@ -8,6 +8,7 @@ import { odbDir, metaFile, snapshotRoot } from './paths.js'
 import {
   initShadowRepo, captureTree, nameOnlyDiff, treeHasPath,
   restorePaths, deletePaths, diffStats, structuredDiff,
+  scopeFromCwd,
 } from './shadow-git.js'
 
 const execFileAsync = promisify(execFile)
@@ -118,5 +119,54 @@ describe('shadow-git capture/restore', () => {
     expect(found).toBeDefined()
     expect(found!.status).toBe('added')
     expect(found!.additions).toBeGreaterThan(0)
+  })
+
+  it('deletePaths skips directories and symlinks (never recursive)', async () => {
+    const { mkdir: mk } = await import('node:fs/promises')
+    const dirPath = join(worktree, 'scope', 'subdir')
+    const filePath = join(worktree, 'scope', 'file.txt')
+    await mk(dirPath, { recursive: true })
+    await writeFile(join(dirPath, 'inside.txt'), 'x\n')
+    await writeFile(filePath, 'y\n')
+    // Should skip the directory and delete only the file
+    await deletePaths(repo, [dirPath, filePath])
+    // Directory and its contents should still exist
+    await expect(access(dirPath)).resolves.toBeUndefined()
+    await expect(access(join(dirPath, 'inside.txt'))).resolves.toBeUndefined()
+    // Regular file should be deleted
+    await expect(access(filePath)).rejects.toThrow()
+    // Cleanup
+    await rm(dirPath, { recursive: true, force: true })
+  })
+})
+
+describe('scopeFromCwd', () => {
+  it('returns "." when cwd equals worktree', () => {
+    expect(scopeFromCwd('/repo', '/repo')).toBe('.')
+  })
+
+  it('returns relative path for subdirectory', () => {
+    expect(scopeFromCwd('/repo', '/repo/src')).toBe('src')
+  })
+
+  it('rejects paths outside worktree', () => {
+    expect(scopeFromCwd('/repo', '/other')).toBeNull()
+  })
+
+  it('rejects absolute paths', () => {
+    expect(scopeFromCwd('/repo', 'C:\\other')).toBeNull()
+  })
+
+  it('allows directory names starting with ".." (not escaping)', () => {
+    // A directory literally named "..backup" inside the worktree
+    expect(scopeFromCwd('/repo', '/repo/..backup')).toBe('..backup')
+  })
+
+  it('rejects actual ".." escape', () => {
+    expect(scopeFromCwd('/repo/src', '/repo')).toBeNull()
+  })
+
+  it('rejects "../" escape', () => {
+    expect(scopeFromCwd('/repo/src', '/repo/other')).toBeNull()
   })
 })

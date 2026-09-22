@@ -126,7 +126,7 @@ export interface FullServerConfig {
   allowSensitivePathEdits: boolean
   /** Enable shadow-repo file snapshots. Default: true. */
   fileSnapshots: boolean
-  /** Maximum total bytes of untracked files the sidecar ingests per capture.
+  /** Maximum bytes per untracked file the sidecar ingests per capture.
    *  Default: 2 MiB. */
   fileSnapshotsMaxUntrackedBytes: number
   defaults: Defaults

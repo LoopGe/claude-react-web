@@ -181,9 +181,9 @@ interface ConfigFile {
    *  captures tool-mutated files into a lightweight git sidecar so sessions
    *  can preview or rewind individual file states. Default: true. */
   fileSnapshots?: boolean
-  /** Maximum total bytes of untracked (new) files the snapshot sidecar will
-   *  ingest per capture. Prevents huge one-shot writes from bloating the
-   *  sidecar. Default: 2 MiB. */
+  /** Maximum bytes per untracked (new) file the snapshot sidecar will
+   *  ingest per capture. Files exceeding this limit are skipped.
+   *  Default: 2 MiB. */
   fileSnapshotsMaxUntrackedBytes?: number
 }
 
@@ -262,7 +262,7 @@ export interface ServerConfig {
   readonly maxOutputTokens: number
   /** Enable shadow-repo file snapshots. Default: true. */
   readonly fileSnapshots: boolean
-  /** Maximum total bytes of untracked files the sidecar ingests per capture.
+  /** Maximum bytes per untracked file the sidecar ingests per capture.
    *  Default: 2 MiB. */
   readonly fileSnapshotsMaxUntrackedBytes: number
   readonly profiles: readonly ProviderProfile[]

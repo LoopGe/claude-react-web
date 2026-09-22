@@ -33,7 +33,7 @@ export function scopeFromCwd(worktree: string, cwd: string): string | null {
   const normWt = worktree.split(sep).join('/')
   const normCwd = cwd.split(sep).join('/')
   const rel = relative(normWt, normCwd).split(sep).join('/')
-  if (rel.startsWith('..') || isAbsolute(rel)) return null
+  if (rel === '..' || rel.startsWith('../') || isAbsolute(rel)) return null
   return rel || '.'
 }
 
@@ -74,6 +74,9 @@ async function runStdin(cwd: string, argv: string[], stdin: string) {
         reject(err)
       },
     )
+    // Ignore EPIPE from git exiting early — the execFile callback
+    // already reports the real exit code.
+    child.stdin?.on('error', () => {})
     child.stdin?.end(stdin)
   })
 }
@@ -84,6 +87,8 @@ export async function initShadowRepo(opts: {
   worktree: string
   scope: string
   sourceCommonDir: string
+  /** Per-worktree .git dir (may differ from commonDir in linked worktrees). */
+  sourceGitDir?: string
 }): Promise<void> {
   await fs.mkdir(opts.gitDir, { recursive: true })
   const exists = await fs
@@ -120,10 +125,21 @@ export async function initShadowRepo(opts: {
     /* no chained alternates */
   }
   await fs.writeFile(join(objectsInfo, 'alternates'), alternates.join('\n') + '\n', 'utf8')
+  // Copy the per-worktree index (sourceGitDir) when available — linked
+  // worktrees have their own index that diverges from the common dir.
+  // Fall back to the common dir index for the primary worktree.
+  const indexSrc = opts.sourceGitDir
+    ? join(opts.sourceGitDir, 'index')
+    : join(opts.sourceCommonDir, 'index')
   try {
-    await fs.copyFile(join(opts.sourceCommonDir, 'index'), join(opts.gitDir, 'index'))
+    await fs.copyFile(indexSrc, join(opts.gitDir, 'index'))
   } catch {
-    /* seed index optional */
+    // If sourceGitDir/index doesn't exist (e.g. unborn HEAD), try commonDir
+    if (opts.sourceGitDir) {
+      try {
+        await fs.copyFile(join(opts.sourceCommonDir, 'index'), join(opts.gitDir, 'index'))
+      } catch { /* seed index optional */ }
+    }
   }
   log.debug(`shadow repo ready gitDir=${opts.gitDir} scope=${opts.scope}`)
 }
@@ -225,6 +241,13 @@ export async function nameOnlyDiff(repo: ShadowRepo, from: string, to: string): 
   return r.stdout.split('\0').filter(Boolean)
 }
 
+/** Name-status diff: returns a map of file → status code (A/M/D/etc.).
+ *  Uses NUL-delimited `-z` output so filenames with special chars work. */
+export async function nameStatusDiff(repo: ShadowRepo, from: string, to: string): Promise<Map<string, string>> {
+  const r = await run(repo.worktree, args(repo, ['diff', '--name-status', '-z', '--no-renames', from, to, '--']))
+  return parseNameStatusZ(r.stdout)
+}
+
 export async function treeHasPath(repo: ShadowRepo, tree: string, relPath: string): Promise<boolean> {
   const r = await run(repo.worktree, args(repo, ['ls-tree', '-z', tree, '--', `:(top,literal)${relPath}`]), {
     allowExit: new Set([0, 128]),
@@ -248,7 +271,17 @@ export async function restorePaths(repo: ShadowRepo, tree: string, relPaths: str
 
 export async function deletePaths(_repo: ShadowRepo, absPaths: string[]): Promise<void> {
   for (const p of absPaths) {
-    await fs.rm(p, { recursive: true, force: true })
+    try {
+      const st = await fs.lstat(p)
+      if (!st.isFile()) {
+        log.warn(`deletePaths: skipping non-file ${p} (type=${st.isDirectory() ? 'dir' : st.isSymbolicLink() ? 'symlink' : 'other'})`)
+        continue
+      }
+    } catch {
+      // lstat failed — file already gone; nothing to do.
+      continue
+    }
+    await fs.rm(p, { force: true })
   }
 }
 
@@ -261,16 +294,17 @@ const MAX_DIFF_FILES = 200
 
 /** Parse NUL-terminated numstat output (`-z`): each entry is `adds\tdels\tpath\0`
  *  (tabs as field separator, NUL as line terminator — NOT NUL-delimited fields).
- *  Binary files use `-\t-\tpath\0`. */
+ *  Binary files use `-\t-\tpath\0`.  Path may itself contain tabs, so we
+ *  parse by finding the first two tab positions rather than splitting. */
 function parseNumstatZ(raw: string): Map<string, { a: string; d: string }> {
   const map = new Map<string, { a: string; d: string }>()
-  // Split on NUL to get individual entries, then split each on tabs.
   for (const entry of raw.split('\0')) {
     if (!entry) continue
-    const parts = entry.split('\t')
-    if (parts.length >= 3) {
-      map.set(parts[2], { a: parts[0], d: parts[1] })
-    }
+    const i1 = entry.indexOf('\t')
+    if (i1 < 0) continue
+    const i2 = entry.indexOf('\t', i1 + 1)
+    if (i2 < 0) continue
+    map.set(entry.slice(i2 + 1), { a: entry.slice(0, i1), d: entry.slice(i1 + 1, i2) })
   }
   return map
 }
