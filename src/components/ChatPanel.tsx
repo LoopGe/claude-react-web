@@ -1365,7 +1365,7 @@ export const ChatPanel = memo(function ChatPanel({
               <>
                 <h2>Session is dormant</h2>
                 {session.error ? (
-                  <p>Last resume attempt failed: {session.error}. Click the session in the sidebar to try again.</p>
+                  <p>Last resume attempt failed: {session.error}. Use “Resume session” below to try again.</p>
                 ) : (
                   <p>This session is dormant. Resume it to pick up where you left off.</p>
                 )}

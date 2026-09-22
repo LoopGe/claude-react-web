@@ -1288,7 +1288,13 @@ export class SessionManager {
     // promise so a concurrent second call awaits the SAME spawn.
     const inflight = this.resumeInFlight.get(id)
     if (inflight) return inflight
+    // Meta-write lock held across the WHOLE doResume (probe → spawn →
+    // writeStore). setCwd / rename must not interleave: writeStore is a
+    // wholesale replace from a snapshot captured here, so a field update in
+    // the await window would be silently reverted (TOCTOU).
+    this.metaWriteInFlight.add(id)
     const p = this.doResume(id, opts).finally(() => {
+      this.metaWriteInFlight.delete(id)
       // Only clear if we're still tracked — a later resume may have replaced
       // us while we were settling (don't remove the replacement).
       if (this.resumeInFlight.get(id) === p) this.resumeInFlight.delete(id)
@@ -2417,6 +2423,13 @@ export class SessionManager {
       createdAt,
       lastActivityAt: Date.now(),
       ...metaSnapshot,
+      // Title / cwd are NOT snapshotted from opts alone: writeStore is a
+      // wholesale replace, so a concurrent setCwd / rename (or any future
+      // dormant meta writer) would be reverted by this spawn. Re-read them
+      // like gitStartSha / lastTurnAt / hooks below — the existingMeta
+      // carry-forward is the write-store-level half of the meta-write lock.
+      title: existingMeta?.title ?? metaSnapshot.title,
+      cwd: existingMeta?.cwd ?? metaSnapshot.cwd,
       // Carry a spawn-scoped tool-surface profile. A caller-supplied profile
       // (/clear, fork) wins; otherwise capture any create-body passthrough so
       // it too survives a later /clear. RAM-only — see Session.toolProfile.
@@ -3900,6 +3913,13 @@ export class SessionManager {
    *  and the git anchors (repoRoot / gitStartSha belong to the OLD tree; the
    *  next spawn recaptures them against the new cwd). */
   setCwd(id: string, cwd: string): SessionInfo {
+    if (this.metaWriteInFlight.has(id)) {
+      throw new HttpError(
+        409,
+        `session ${id} has a resume in flight — wait for it to finish, ` +
+        `then change the workspace (the spawn would overwrite it)`,
+      )
+    }
     if (cwdMissing(cwd)) {
       throw new HttpError(400, workingDirMissingMsg(cwd))
     }
@@ -3943,6 +3963,13 @@ export class SessionManager {
    *  pure UI metadata — no SDK call needed). Empty string / whitespace
    *  clears the title so the UI falls back to the id prefix. */
   rename(id: string, title: string): SessionInfo {
+    if (this.metaWriteInFlight.has(id)) {
+      throw new HttpError(
+        409,
+        `session ${id} has a resume in flight — the title would be ` +
+        `overwritten by the spawn; retry once it finishes`,
+      )
+    }
     const trimmed = title.trim() || undefined
     const live = this.sessions.get(id)
     if (live) {
@@ -3953,7 +3980,7 @@ export class SessionManager {
       // transcript so it survives an external `claude --resume` (which prefers
       // the transcript title over this app's metadata). Fire-and-forget — the
       // metadata rename is authoritative and must not block on a failed write.
-      void this.persistTitleToTranscript(live.provider, id, trimmed, live.cwd)
+      void this.persistTitleToTranscript(live.provider, id, trimmed)
       return this.info(live)
     }
     if (!this.store) throw new HttpError(404, `session ${id} not found`)
@@ -3963,7 +3990,7 @@ export class SessionManager {
     this.store.upsert(nextMeta)
     const info = this.infoFromMeta(nextMeta)
     this.broadcastGlobal({ kind: 'update', session: info })
-    void this.persistTitleToTranscript(meta.provider, id, trimmed, meta.cwd)
+    void this.persistTitleToTranscript(meta.provider, id, trimmed)
     return info
   }
 
@@ -3978,7 +4005,6 @@ export class SessionManager {
     providerName: string | undefined,
     id: string,
     title: string | undefined,
-    _cwd?: string,
   ): Promise<void> {
     if (!providerName || !title) return
     try {
@@ -6248,6 +6274,14 @@ export class SessionManager {
    *  Query, leaving a duplicate claude.exe. Coalescing here makes the second
    *  caller await the SAME spawn. */
   private readonly resumeInFlight = new Map<string, Promise<SessionInfo>>()
+
+  /** Ids whose resume() holds the meta-write lock. SessionMeta writers
+   *  (setCwd / rename) refuse while a resume is in flight: spawn()'s
+   *  writeStore is a wholesale replace from a snapshot taken at the start
+   *  of resume, so any interleaved field update is reverted — the PATCH
+   *  cwd vs in-flight resume TOCTOU. Held for the whole doResume span,
+   *  which is a strict superset of the spawn/writeStore window. */
+  private readonly metaWriteInFlight = new Set<string>()
 
   /** Re-spawn a session's Query after a clean exit (idle timeout).
    *  Returns true if the session was successfully re-spawned. */

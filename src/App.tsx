@@ -2043,7 +2043,10 @@ export function App() {
         // !s.slept: a deliberately-slept session isn't woken behind the
         // user's back. !s.terminated: a crashed session must not silently
         // re-run the poison turn — the user chooses via the banner.
-        if (s && !s.running && !s.slept && !s.terminated && !resumingRef.current.has(id)) {
+        // shouldAutoResumeOnSelect(auto:true) also refuses spawn_failed,
+        // so a doomed spawn is not re-armed by group activation (the other
+        // door besides subscribe / handleSelect).
+        if (s && shouldAutoResumeOnSelect(s, { auto: true }) && !resumingRef.current.has(id)) {
           const pm = sessionsRef.current.find((s) => s.id === resumeTargetPanelIdRef.current)?.permissionMode
           void api.post(`/sessions/${id}/resume`, {
             permissionMode: pm,
@@ -3522,7 +3525,9 @@ export function App() {
     // Dormant sessions are resumed on drop. Terminated ones (including
     // recoverable canRetryResume) are NOT — they open to the composer's
     // Resume / Fork-from-last-completed choice banner instead.
-    if (existing && !existing.running && !existing.terminated) {
+    // spawn_failed is likewise not re-armed here: the panel's Resume
+    // button is the only retry (drop is not a "fix my cwd first" signal).
+    if (existing && shouldAutoResumeOnSelect(existing, { auto: false })) {
       try {
         const res = await api.post<{ session: SessionInfo }>(
           `/sessions/${sidebarId}/resume`,

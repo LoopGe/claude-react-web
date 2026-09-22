@@ -2754,6 +2754,71 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.terminatedReason).not.toBe('transcript_missing')
   })
 
+  it('setCwd() 409s while a resume is in flight (spawn writeStore would clobber it)', async () => {
+    // TOCTOU: doResume reads meta, awaits (transcript/history/MCP), then
+    // spawn() writeStores a WHOLESALE replace from that earlier snapshot.
+    // A PATCH cwd landing in the await window is silently reverted. The
+    // meta-write lock makes the two writers mutually exclusive.
+    const info = sm.create({ cwd: dir, model: 'm1' })
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await sm.unload(info.id)
+
+    let releaseProbe!: () => void
+    mockGetSessionInfo.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseProbe = () => resolve({ sessionId: info.id })
+        }),
+    )
+
+    const next = join(dir, 'moved')
+    mkdirSync(next, { recursive: true })
+
+    const resuming = sm.resume(info.id)
+    await tick() // doResume is now parked on the transcript probe
+
+    // Must fail because resume holds the meta-write lock — NOT because the
+    // session looks "running" (it is not in the live map yet).
+    expect(() => sm.setCwd(info.id, next)).toThrow(/resume|busy|in flight/i)
+    // And the rejected write must not have landed.
+    expect(store.get(info.id)!.cwd).toBe(dir)
+
+    releaseProbe()
+    await resuming
+    // After resume completes the lock is released; a later relocate works
+    // once the session is dormant again.
+    await sm.unload(info.id)
+    expect(sm.setCwd(info.id, next).cwd).toBe(next)
+    expect(store.get(info.id)!.cwd).toBe(next)
+  })
+
+  it('rename() 409s while a resume is in flight (same wholesale-replace clobber)', async () => {
+    const info = sm.create({ cwd: dir, model: 'm1' })
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await sm.unload(info.id)
+
+    let releaseProbe!: () => void
+    mockGetSessionInfo.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseProbe = () => resolve({ sessionId: info.id })
+        }),
+    )
+
+    const resuming = sm.resume(info.id)
+    await tick()
+
+    expect(() => sm.rename(info.id, 'Hijacked')).toThrow(/resume|busy|in flight/i)
+    expect(store.get(info.id)!.title).not.toBe('Hijacked')
+
+    releaseProbe()
+    await resuming
+    await sm.unload(info.id)
+    expect(sm.rename(info.id, 'Safe').title).toBe('Safe')
+  })
+
   it('setThinking() persists display so it survives resume', async () => {
     const info = sm.create({})
     await sm.setThinking(info.id, { type: 'adaptive', display: 'omitted' })
