@@ -127,6 +127,41 @@ describe('WorkingBubble subagent display mode', () => {
     // No "N waiting" suffix when there is no running count to contrast with.
     expect(container.querySelector('.subagent-swarm-split')).toBeNull()
   })
+
+  it('aggregate timer uses the oldest RUNNING/BACKGROUND start, ignoring stale rows', () => {
+    // Repro shape of the 14h/38h bug: one stranded record with a historical
+    // startedAt sat next to live work. oldestStart must not pick the stale
+    // row's start — that painted "14:02:11" on the pill while the live agent
+    // was seconds old.
+    const stalePending = agent(0, {
+      status: 'pending',
+      startedAt: Date.now() - 14 * 60 * 60 * 1000,
+      endedAt: Date.now() - 14 * 60 * 60 * 1000 + 60_000,
+    })
+    // Also a stranded `running` row (endedAt never advanced / stuck) — the
+    // call_96c34099 shape from the live dump.
+    const strandedRunning = agent(2, {
+      status: 'running',
+      startedAt: Date.now() - 14 * 60 * 60 * 1000,
+    })
+    const live = agent(1, { status: 'running', startedAt: Date.now() - 5_000 })
+    const { container } = render(
+      <WorkingBubble activeSubagents={[stalePending, strandedRunning, live]} />,
+    )
+    const timer = container.querySelector('.subagent-swarm-timer')!
+    // 5s-old live start renders as "00:05" (or "5s") — never a 14h span.
+    expect(timer.textContent).not.toMatch(/^\d{2,}:/)
+  })
+
+  it('hides the aggregate timer when every agent is pending (no live start to count from)', () => {
+    const allPending = agents(2).map((a, i) => ({
+      ...a,
+      status: 'pending' as const,
+      startedAt: Date.now() - (i + 1) * 60 * 60 * 1000,
+    }))
+    const { container } = render(<WorkingBubble activeSubagents={allPending} />)
+    expect(container.querySelector('.subagent-swarm-timer')).toBeNull()
+  })
 })
 
 describe('subagent swarm popover', () => {

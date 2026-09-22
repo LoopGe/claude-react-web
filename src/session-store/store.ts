@@ -1,5 +1,5 @@
 import { createInitialSessionState, type ServerMirror, type SessionAction, type SessionSnapshot, type SessionState, type TranscriptItem, type LiveTurnSegment } from './types'
-import { rebuildIndexesFromMessages, reduceSessionState, reapplyDismissed, MEMORY_ITEM_CAP } from './reducer'
+import { rebuildIndexesFromMessages, reduceSessionState, reapplyDismissed, settleStaleLiveSubagents, MEMORY_ITEM_CAP } from './reducer'
 import { toTranscriptItem } from './normalize'
 import type { SdkMessage } from '../types'
 import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from '../constants/toolNames'
@@ -486,9 +486,17 @@ export class SessionStore {
             dismissedSubagents: new Set(cached.dismissedSubagents),
           },
         }
-        // Rebuild indexes from the cached messages, THEN re-apply persisted
-        // dismissals so dismissed subagents stay hidden across refresh.
-        this.state = reapplyDismissed(rebuildIndexesFromMessages(seeded, seededMirror.messages))
+        // Rebuild indexes from the cached messages, THEN settle any stranded
+        // live subagent (async Agent whose launch-ack is all the cache holds —
+        // the ack is skipped by design, so a rebuild would otherwise resurrect
+        // it as `running` with a 38h-old `startedAt` until the next turn end),
+        // THEN re-apply persisted dismissals so dismissed subagents stay hidden
+        // across refresh.
+        const rebuilt = rebuildIndexesFromMessages(seeded, seededMirror.messages)
+        this.state = reapplyDismissed({
+          ...rebuilt,
+          mirror: settleStaleLiveSubagents(rebuilt.mirror),
+        })
       }
       // No cache (or empty): leave the empty state as-is — replayReady stays
       // false so the skeleton shows until the WS replay lands.
@@ -589,6 +597,18 @@ export class SessionStore {
             // PREPEND_MESSAGES dedups by uuid against the in-memory LS tail,
             // so any residual overlap doesn't duplicate.
             this.dispatch({ type: 'PREPEND_MESSAGES', messages: msgs })
+            // Cold-load is hydrate, not loadOlder: after the additive index
+            // rebuild, drop stranded background/pending subagents the same way
+            // LS hydrate does. `running` is left alone (see the helper — a
+            // sync tool_result must still be able to merge). Identity-stable
+            // when nothing was stale: skip the extra snapshot+emit entirely so
+            // subscribers don't re-render twice per cold-load.
+            const settledMirror = settleStaleLiveSubagents(this.state.mirror)
+            if (settledMirror !== this.state.mirror) {
+              this.state = { ...this.state, mirror: settledMirror }
+              this.snapshot = this.buildSnapshot(this.state)
+              this.emit()
+            }
           }
         }
       }

@@ -227,11 +227,22 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         //
         // Restricted to records we know carry no pending transcript payload:
         // 'background' / 'pending' (async — their Agent tool_result was only a
-        // launch ack) and 'running' ONLY when the snapshot authority already
-        // told us the task was backgrounded. A sync record is deliberately
-        // excluded: its real output arrives as the Agent tool_result, and that
-        // merge branch requires status 'running', so settling here first would
-        // swallow the subagent's output.
+        // launch ack) and 'running' when the SNAPSHOT AUTHORITY (this task's
+        // `isBackgrounded`, folded into `nextIsAsync`) says the task was an
+        // async/background one. A sync record is deliberately excluded: its
+        // real output arrives as the Agent tool_result, and that merge branch
+        // requires status 'running', so settling here first would swallow the
+        // subagent's output.
+        //
+        // ★ `nextIsAsync`, NOT `record.isAsync`: a fast-completing async agent
+        // can be missing from every non-terminal snapshot (the client
+        // subscribed after it finished, or the only snapshot that ever matched
+        // its toolUseId is the terminal one). In that case `record.isAsync` is
+        // still undefined — reading it here skipped the settle and left the row
+        // `running` forever with its historical `startedAt`, which is exactly
+        // the WorkingBubble "Subagent running for 14h/38h" bug. The snapshot
+        // field is authoritative for THIS frame; the stored flag only fills in
+        // when the task omits `isBackgrounded`.
         //
         // The assumption this exclusion used to rest on — "stranded sync records
         // are already covered by the turn-end result-frame sweep" — holds only
@@ -247,7 +258,7 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         const settleStranded = isTerminal && (
           record.status === 'background' ||
           record.status === 'pending' ||
-          (record.status === 'running' && record.isAsync === true)
+          (record.status === 'running' && nextIsAsync === true)
         )
         const settledStatus = task.status === 'completed'
           ? 'done' as const
@@ -974,6 +985,16 @@ function collectLiveToolUseIds(items: ServerMirror['items']): Set<string> {
   for (const it of items) {
     const m = it.msg
     for (const id of getToolUseStarts(m)) live.add(id)
+    // Subagent/Workflow tool_uses are excluded from getToolUseStarts
+    // (TOOL_STATUS_EXCLUDE — they own their lifecycle maps). Their ids must
+    // still join the live set so those maps can be pruned alongside the rest.
+    // Skill is NOT in TOOL_STATUS_EXCLUDE (its generic tool_result suppression
+    // is load-bearing — see the ReportFindings note in normalize.ts), but
+    // getSkillStarts is listed explicitly so a future exclusion can't silently
+    // drop activeSkills keys from this set.
+    for (const sub of getSubagentStarts(m)) live.add(sub.toolUseId)
+    for (const wf of getWorkflowStarts(m)) live.add(wf.toolUseId)
+    for (const sk of getSkillStarts(m)) live.add(sk.toolUseId)
     for (const id of getPlanToolUseIds(m)) live.add(id)
     for (const id of getQuestionToolUseIds(m)) live.add(id)
     for (const id of getToolResultIds(m)) live.add(id)
@@ -992,6 +1013,30 @@ function pruneMapToLive<V>(map: Map<string, V>, live: Set<string>): Map<string, 
   const next = new Map<string, V>()
   for (const [key, value] of map) {
     if (live.has(key)) next.set(key, value)
+  }
+  return next
+}
+
+/** Like pruneMapToLive, but NEVER drops a record whose lifecycle status is
+ *  still in-flight (`running`/`background`/`pending`) — even when its owner
+ *  tool_use frame has been front-trimmed out of `items`. Dropping those would
+ *  hide live work from the WorkingBubble pill / Waiting gate mid-flight
+ *  (a busy tab can trim past an Agent's tool_use while the subagent is still
+ *  running). Settled rows (done/interrupted/dismissed/…) are pruned normally. */
+function pruneSettledToLive<V extends { status: string }>(
+  map: Map<string, V>,
+  live: Set<string>,
+): Map<string, V> {
+  const isInFlight = (s: string) =>
+    s === 'running' || s === 'background' || s === 'pending'
+  let dropped = false
+  for (const [key, value] of map) {
+    if (!live.has(key) && !isInFlight(value.status)) { dropped = true; break }
+  }
+  if (!dropped) return map
+  const next = new Map<string, V>()
+  for (const [key, value] of map) {
+    if (live.has(key) || isInFlight(value.status)) next.set(key, value)
   }
   return next
 }
@@ -1015,11 +1060,15 @@ function pruneMapToLive<V>(map: Map<string, V>, live: Set<string>): Map<string, 
  *  CAP — acceptable, and bounded because every real turn ends with a
  *  main-thread assistant frame.
  *
- *  The five toolUseId-keyed lifecycle maps (toolStatus, toolResults,
- *  planStatus, planContent, questionAnswers) are pruned to ids still
- *  referenced by the retained items so they don't leak. permissionDecisions
- *  self-caps at 1024 and activeSubagents clears each result frame, so neither
- *  is touched. */
+ *  The toolUseId-keyed lifecycle maps (toolStatus, toolResults, planStatus,
+ *  planContent, questionAnswers, activeSubagents, activeWorkflows,
+ *  activeSkills) are pruned to ids still referenced by the retained items so
+ *  they don't leak. `activeSubagents` used to be skipped here on the belief
+ *  that "it clears each result frame" — false: sweepAtTurnEnd only flips
+ *  status, never deletes, so a long-lived tab accumulated every Agent launch
+ *  it had ever seen and one stranded `running`/`pending` record made
+ *  SubagentSwarm.oldestStart paint a multi-dozen-hour timer. permissionDecisions
+ *  self-caps at 1024 and is left alone. */
 function trimFront(state: SessionState): SessionState {
   const mirror = state.mirror
   if (mirror.items.length <= MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK) return state
@@ -1045,6 +1094,9 @@ function trimFront(state: SessionState): SessionState {
     planStatus: pruneMapToLive(mirror.planStatus, live),
     planContent: pruneMapToLive(mirror.planContent, live),
     questionAnswers: pruneMapToLive(mirror.questionAnswers, live),
+    activeSubagents: pruneSettledToLive(mirror.activeSubagents, live),
+    activeWorkflows: pruneSettledToLive(mirror.activeWorkflows, live),
+    activeSkills: pruneSettledToLive(mirror.activeSkills, live),
   })
 }
 
@@ -1086,6 +1138,11 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
     planStatus: pruneMapToLive(mirror.planStatus, live),
     planContent: pruneMapToLive(mirror.planContent, live),
     questionAnswers: pruneMapToLive(mirror.questionAnswers, live),
+    // Hard prune (unlike trimFront): a retracted leg's records must go even if
+    // they were still in-flight — the frames that owned them no longer exist.
+    activeSubagents: pruneMapToLive(mirror.activeSubagents, live),
+    activeWorkflows: pruneMapToLive(mirror.activeWorkflows, live),
+    activeSkills: pruneMapToLive(mirror.activeSkills, live),
   })
 }
 
@@ -1099,25 +1156,94 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
  *
  *  Identity-stable: returns the same mirror reference when nothing needed
  *  sweeping (clone-on-write per Map). */
-/** Client-side safety-net timeout for stranded `pending` background
- *  subagents. A `pending` record (parent turn ended) is normally cleared by
- *  the SERVER watcher synthesizing a task_notification when the subagent's
- *  own transcript reaches a terminal stop_reason. But if that watcher is lost
- *  (server restart cleared the in-memory watcher map, the SDK's bounded resume
- *  replay didn't re-include the launch ack, or the subagent transcript path
- *  drifted) the record strands at `pending` forever — the WorkingBubble stays
- *  mounted in its Waiting state for the rest of the session and never clears,
- *  because `pending` is part of the running set. This timeout flips such a
- *  stranded record to `interrupted` once its last child-frame activity
- *  (`endedAt`) is older than the threshold, so the row clears.
+/** Client-side safety-net timeout for stranded live subagent records.
+ *
+ *  Covers `running` / `background` / `pending` — every status that keeps a row
+ *  in the WorkingBubble's subagent pill. A live record is normally cleared by
+ *  its completion signal (the Agent tool_result for sync agents; launch-ack is
+ *  skipped and task_notification / terminal TASKS_SNAPSHOT settle async ones).
+ *  When that signal is lost (server restart cleared the watcher map, WS gap
+ *  plus the 50-cap terminal-task eviction, a refresh that rebuilt the record
+ *  from a cached launch-ack whose task is already gone) the record strands and
+ *  SubagentSwarm.oldestStart paints a multi-dozen-hour timer off its historical
+ *  `startedAt`.
  *
  *  Generous (30 min) and RECOVERABLE: a late real completion still overrides
- *  (the task_notification completion branch accepts 'interrupted'). It only
- *  fires for `pending` (post-turn) records whose `endedAt` is stale — a
- *  still-running subagent advances `endedAt` via its child frames, so it is
- *  never false-stopped. The one residual risk (a post-turn subagent
- *  mid-inference with no child frames for >30 min) is rare and recoverable. */
+ *  (the task_notification completion branch accepts 'interrupted'). Fires only
+ *  when `endedAt ?? startedAt` is older than the threshold — a still-working
+ *  subagent advances `endedAt` via its child frames, so it is never
+ *  false-stopped. The one residual risk (mid-inference with no child frames
+ *  for >30 min) is rare and recoverable.
+ *
+ *  `liveBgToolUseIds` (a non-terminal `isBackgrounded` task still tracking the
+ *  id) suppresses the net: the server watcher is provably still polling, so a
+ *  legitimately long background subagent must not flap interrupted↔done. */
 const PENDING_TIMEOUT_MS = 30 * 60 * 1000
+
+/** Plausibility floor: a real server-stamped receivedAt is always post-2001
+ *  epoch ms (> 1e12). A value below that is a non-epoch sentinel (corrupt
+ *  stamp / test fixture) — the safety net must not treat 1970-era values as
+ *  "30 min stale". */
+const EPOCH_PLAUSIBILITY_FLOOR = 1_000_000_000_000
+
+function isStaleLiveSubagent(
+  sub: ActiveSubagent,
+  now: number,
+  includeRunning: boolean,
+): boolean {
+  if (sub.status === 'background' || sub.status === 'pending') {
+    // fall through to the staleness check
+  } else if (includeRunning && sub.status === 'running') {
+    // fall through
+  } else {
+    return false
+  }
+  const lastActivity = sub.endedAt ?? sub.startedAt
+  if (typeof lastActivity !== 'number' || lastActivity < EPOCH_PLAUSIBILITY_FLOOR) return false
+  return now - lastActivity > PENDING_TIMEOUT_MS
+}
+
+/** Flip stale live subagent records to `interrupted`.
+ *
+ *  Defaults to `background`/`pending` only. `running` is excluded because a
+ *  SYNC subagent's real output arrives as the Agent tool_result and that merge
+ *  branch requires `status === 'running'` — settling first would swallow the
+ *  report (the same guard TASKS_SNAPSHOT's settleStranded carries via
+ *  `nextIsAsync === true`). Async `running` rows are settled by TASKS_SNAPSHOT
+ *  (now that it reads `nextIsAsync`) and by the turn-end sweep's
+ *  running→interrupted transition.
+ *
+ *  Used by the LS/IDB hydrate path (`SessionStore.hydrateFromCache` /
+ *  `initIdb`) and by `sweepAtTurnEnd` — rebuild re-seeds every cached async
+ *  `tool_use` as `running` with its historical `startedAt` and the launch-ack
+ *  is skipped, so without a follow-up settle a refresh mid-turn resurrects a
+ *  stranded `background`/`pending` row with a 38h-old `startedAt`.
+ *
+ *  `liveBgToolUseIds` suppresses the flip for ids a live backgrounded task
+ *  still tracks. Identity-stable: same Map reference when nothing was stale. */
+export function settleStaleLiveSubagents(
+  mirror: ServerMirror,
+  opts?: { now?: number; liveBgToolUseIds?: ReadonlySet<string>; includeRunning?: boolean },
+): ServerMirror {
+  const now = opts?.now ?? Date.now()
+  const liveBg = opts?.liveBgToolUseIds
+  const includeRunning = opts?.includeRunning === true
+  let activeSubagents = mirror.activeSubagents
+  for (const [id, sub] of mirror.activeSubagents) {
+    if (!isStaleLiveSubagent(sub, now, includeRunning)) continue
+    if (liveBg?.has(id)) continue
+    if (activeSubagents === mirror.activeSubagents) {
+      activeSubagents = new Map(activeSubagents)
+    }
+    activeSubagents.set(id, {
+      ...sub,
+      status: 'interrupted',
+      childToolCalls: sweepRunningChildCalls(sub.childToolCalls),
+    })
+  }
+  if (activeSubagents === mirror.activeSubagents) return mirror
+  return { ...mirror, activeSubagents }
+}
 
 /** Flip every still-`running` row of a SubagentChildCall list to `error`,
  *  returning the SAME array reference when nothing needed sweeping (so the
@@ -1161,9 +1287,24 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
     if (!term && t.isBackgrounded === true) liveBgToolUseIds.add(t.toolUseId)
   }
 
-  // subagents: running (sync orphan) → interrupted; background (async,
-  // still working) → pending. Completed records survive.
+  // subagents: first drop stranded background/pending records (see
+  // PENDING_TIMEOUT_MS / settleStaleLiveSubagents), then running (sync orphan)
+  // → interrupted; background (async, still working) → pending. Completed
+  // records survive.
   //
+  // Stale-settle runs FIRST so a `background` record that went quiet 38h ago
+  // (launch-ack skipped, task evicted from the 50-cap terminal list, watcher
+  // gone) is interrupted immediately instead of being parked at `pending` and
+  // relying on a later sweep. `liveBgToolUseIds` still suppresses it for ids a
+  // live backgrounded task tracks — see the helper. `running` is left to the
+  // transitions below (and TASKS_SNAPSHOT's nextIsAsync settle) so a sync
+  // subagent's tool_result can still merge.
+  const staleSettled = settleStaleLiveSubagents(
+    { ...mirror, activeSubagents },
+    { liveBgToolUseIds },
+  )
+  activeSubagents = staleSettled.activeSubagents
+
   // Child-call sweep: a subagent record that SETTLES this turn (running →
   // interrupted, the sync-orphan case) may still carry `running` child tool
   // calls whose tool_result never landed — flip those to `error` so the
@@ -1185,43 +1326,6 @@ function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
       activeSubagents.set(id, { ...sub, status: 'pending', endedAt: sub.endedAt ?? sub.startedAt })
     }
-  }
-
-  // Stale-pending safety net (see PENDING_TIMEOUT_MS): flip `pending`
-  // records whose last child-frame activity is older than the threshold to
-  // `interrupted`. `endedAt` is advanced by child frames (the async-detector
-  // branch), so a still-running subagent never trips this — only one that has
-  // gone quiet long enough to be considered stranded. Runs on every turn end
-  // and on replay, so a stranded row clears without needing a reload.
-  const now = Date.now()
-  // Plausibility floor: a real server-stamped receivedAt is always post-2001
-  // epoch ms (> 1e12). A value below that is a non-epoch sentinel (a corrupt
-  // stamp or a test fixture using relative offsets) — the safety net must not
-  // treat 1970-era values as "30 min stale" and false-stop on them.
-  const EPOCH_PLAUSIBILITY_FLOOR = 1_000_000_000_000
-  for (const [id, sub] of activeSubagents) {
-    if (sub.status !== 'pending') continue
-    // Server-watcher-alive guard: if a live (non-terminal, backgrounded) task
-    // record still carries this subagent's toolUseId, the SERVER watcher is
-    // still polling its transcript (BackgroundWatcherRegistry.start seeds a
-    // running `isBackgrounded: true` TaskRecord for the watcher's whole
-    // lifetime, and it flows into `mirror.tasks`). The 30-min net exists ONLY
-    // for the case where that watcher was LOST (server restart, launch-ack not
-    // replayed, transcript path drift) — so while it's provably alive we must
-    // NOT pre-empt it. Firing here anyway makes the row flap
-    // pending→interrupted, then the watcher's real task_notification flips it
-    // back to done: a visible interrupted↔done bounce for any legitimately
-    // long (>30 min) background subagent. `liveBgToolUseIds` is the same set
-    // the sync-orphan branch above uses, so the two decisions stay consistent.
-    if (liveBgToolUseIds.has(id)) continue
-    const lastActivity = sub.endedAt ?? sub.startedAt
-    if (typeof lastActivity !== 'number' || lastActivity < EPOCH_PLAUSIBILITY_FLOOR) continue
-    if (now - lastActivity <= PENDING_TIMEOUT_MS) continue
-    if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
-    // Settle any still-running child rows too — this record is now terminal,
-    // so a `running` row would otherwise keep rendering as in-flight work on a
-    // dead subagent (same reason the sync-orphan branch above sweeps them).
-    activeSubagents.set(id, { ...sub, status: 'interrupted', childToolCalls: sweepChildCalls(sub) })
   }
 
   // workflows: running → interrupted; flip still-running children too.

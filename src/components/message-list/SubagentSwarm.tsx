@@ -55,12 +55,38 @@ function rowDetail(a: ActiveSubagent): string {
   return ''
 }
 
-/** Earliest `startedAt` across the set — the pill shows this ONE timer
- *  ("how long has this fan-out been going") instead of one per agent, so the
- *  always-visible bar ticks once a second no matter how wide the fan-out. */
+/** Statuses that are still actively working (timer keeps counting from `now`).
+ *  Shared by the aggregate pill timer, the popover row timer, and — by
+ *  convention — SubagentCard's `isRunning` gate, so the three can't drift.
+ *  `pending` freezes at `endedAt` (the parent turn is over; the wait must not
+ *  inflate the run time). */
+export function isActivelyWorking(status: ActiveSubagent['status']): boolean {
+  return status === 'running' || status === 'background'
+}
+
+/** Skip a row whose last activity is older than this when picking the
+ *  aggregate start — a stranded record (no child frames / completion signal for
+ *  half an hour) must not paint a multi-dozen-hour timer over live work that
+ *  is seconds old. Matches the reducer's PENDING_TIMEOUT_MS. */
+const STALE_ACTIVITY_MS = 30 * 60 * 1000
+
+/** Earliest `startedAt` among ACTIVELY WORKING agents that still show recent
+ *  activity — the pill shows this ONE timer ("how long has this fan-out been
+ *  going") instead of one per agent, so the always-visible bar ticks once a
+ *  second no matter how wide the fan-out.
+ *
+ *  `pending` is excluded (see isActivelyWorking). Rows whose `endedAt ??
+ *  startedAt` is older than STALE_ACTIVITY_MS are also excluded: a stranded
+ *  `running` record from 14h/38h ago would otherwise dominate oldestStart
+ *  while the live agent is seconds old. A legitimately long-running agent is
+ *  safe — its child frames keep `endedAt` fresh. */
 function oldestStart(subagents: readonly ActiveSubagent[]): number | undefined {
+  const now = Date.now()
   let min: number | undefined
   for (const a of subagents) {
+    if (!isActivelyWorking(a.status)) continue
+    const lastActivity = a.endedAt ?? a.startedAt
+    if (typeof lastActivity === 'number' && now - lastActivity > STALE_ACTIVITY_MS) continue
     if (a.startedAt != null && (min == null || a.startedAt < min)) min = a.startedAt
   }
   return min
@@ -323,10 +349,13 @@ function SubagentSwarmPopover({
                   {a.startedAt != null && (
                     // Rows only exist while the popover is open, so the
                     // per-row 1Hz intervals are short-lived — unlike the old
-                    // always-mounted chip row.
+                    // always-mounted chip row. `live` matches SubagentCard:
+                    // pending freezes at endedAt so the wait after the parent
+                    // turn does not inflate the run time.
                     <ElapsedTimer
                       startedAt={a.startedAt}
-                      live
+                      endedAt={a.endedAt}
+                      live={isActivelyWorking(a.status)}
                       className="subagent-swarm-row-time"
                     />
                   )}

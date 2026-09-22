@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { reduceSessionState, splitReplayAgainstCache, rebuildIndexesFromMessages, reapplyDismissed } from './reducer'
+import { reduceSessionState, splitReplayAgainstCache, rebuildIndexesFromMessages, reapplyDismissed, settleStaleLiveSubagents } from './reducer'
 import { createInitialSessionState, type SessionState, type ServerMirror } from './types'
 import { isTrimBoundary } from './normalize'
 import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
@@ -406,6 +406,94 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     // internal metadata, the real output is the subagent's text.
     expect(record?.result?.content).toEqual([{ type: 'text', text: 'worker output' }])
     expect(record?.result?.isError).toBe(false)
+  })
+
+  it('TASKS_SNAPSHOT settles a running async record even when isAsync was never stamped (14h WorkingBubble bug)', () => {
+    // Repro of the live dump: call_96c34099… sat `status=running`,
+    // `endedAt=null`, `startedAt` 14h earlier, `isAsync` undefined. The agent
+    // was async (its only tool_result was a launch ack, skipped by D2-B) but
+    // the first TASKS_SNAPSHOT that matched its toolUseId was already TERMINAL
+    // — flipToBackground never ran, so `record.isAsync` stayed undefined and
+    // settleStranded's `record.isAsync === true` guard skipped the settle.
+    // SubagentSwarm.oldestStart then painted a 14h (or 38h) timer off the
+    // historical startedAt. The snapshot's own `isBackgrounded` is the
+    // authority for THIS frame and must drive the settle.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 1_789_993_539_462,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_fast', name: 'Agent', input: { description: 'Fix round 4 review findings' } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-1',
+      parent_tool_use_id: null,
+      receivedAt: 1_789_993_539_500,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_fast', content: 'Async agent launched successfully. (internal metadata)' }],
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: ack })
+    // D2-B: ack skipped — still running, isAsync not yet stamped.
+    expect(state.mirror.activeSubagents.get('tu_fast')?.status).toBe('running')
+    expect(state.mirror.activeSubagents.get('tu_fast')?.isAsync).toBeUndefined()
+
+    // The only snapshot that ever matches is TERMINAL + isBackgrounded (the
+    // async agent finished before any non-terminal snapshot landed).
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{
+        taskId: 't-fast',
+        toolUseId: 'tu_fast',
+        description: 'Fix round 4 review findings',
+        status: 'completed',
+        isBackgrounded: true,
+        startedAt: 1_789_993_539_462,
+        endedAt: 1_789_994_159_572,
+        updatedAt: 0,
+      } as TaskRecordUi],
+    })
+    const record = state.mirror.activeSubagents.get('tu_fast')
+    expect(record?.status).toBe('done')
+    expect(record?.isAsync).toBe(true)
+  })
+
+  it('TASKS_SNAPSHOT still does NOT settle a running SYNC record (its tool_result is still owed)', () => {
+    // Safety half of the fix above: a terminal task with isBackgrounded:false
+    // is a sync agent whose real output arrives as the Agent tool_result. That
+    // merge requires status==='running', so settling here would swallow it.
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-1',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_sync_keep', name: 'Agent', input: { description: 'sync work' } }],
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse })
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{
+        taskId: 't-sync',
+        toolUseId: 'tu_sync_keep',
+        description: 'sync work',
+        status: 'completed',
+        isBackgrounded: false,
+        updatedAt: 0,
+      } as TaskRecordUi],
+    })
+    expect(state.mirror.activeSubagents.get('tu_sync_keep')?.status).toBe('running')
+    expect(state.mirror.activeSubagents.get('tu_sync_keep')?.isAsync).toBe(false)
   })
 
   it('flips a background subagent to done when the harness <task-notification> arrives', () => {
@@ -1387,6 +1475,152 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     state = reduceSessionState(state, { type: 'MESSAGE', message: result })
     // Guarded: stays pending (waiting on the live watcher), NOT interrupted.
     expect(state.mirror.activeSubagents.get('tu_long')?.status).toBe('pending')
+  })
+
+  it('settleStaleLiveSubagents interrupts a rebuilt stranded background/pending row (hydrate path)', () => {
+    // LS/IDB hydrate rebuilds indexes from cache. A stranded `background` /
+    // `pending` row (async agent whose completion signal is gone) must not
+    // come back to life with its historical startedAt — SubagentSwarm would
+    // paint 14h/38h onto the pill. `running` is deliberately NOT settled here
+    // (a sync tool_result still has to merge — see the helper's doc).
+    const stale = Date.now() - 38 * 60 * 60 * 1000
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-old',
+      receivedAt: stale,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_old', name: 'Agent', input: { description: 'old work' } }],
+      },
+    } as unknown as SdkMessage
+    const ack: SdkMessage = {
+      type: 'user',
+      uuid: 'u-old',
+      parent_tool_use_id: null,
+      receivedAt: stale + 10,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tu_old', content: 'Async agent launched successfully' }],
+      },
+    } as unknown as SdkMessage
+
+    const fresh = createInitialSessionState('s1')
+    const seeded: SessionState = {
+      sessionId: 's1',
+      mirror: { ...fresh.mirror, messages: [toolUse, ack], replayReady: true },
+      intent: fresh.intent,
+    }
+    let rebuilt = rebuildIndexesFromMessages(seeded, [toolUse, ack])
+    expect(rebuilt.mirror.activeSubagents.get('tu_old')?.status).toBe('running')
+    // Promote to background the way a live non-terminal snapshot would have.
+    rebuilt = reduceSessionState(rebuilt, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{
+        taskId: 't-old', toolUseId: 'tu_old', description: 'old work',
+        status: 'running', isBackgrounded: true, updatedAt: 0,
+      } as TaskRecordUi],
+    })
+    expect(rebuilt.mirror.activeSubagents.get('tu_old')?.status).toBe('background')
+
+    const settled = settleStaleLiveSubagents(rebuilt.mirror)
+    expect(settled.activeSubagents.get('tu_old')?.status).toBe('interrupted')
+  })
+
+  it('settleStaleLiveSubagents leaves a stale `running` record alone (sync tool_result must still merge)', () => {
+    const stale = Date.now() - 35 * 60 * 1000
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-sync',
+      receivedAt: stale,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_sync_wait', name: 'Agent', input: { description: 'long bash' } }],
+      },
+    } as unknown as SdkMessage
+    const state = reduceSessionState(createInitialSessionState('s1'), { type: 'MESSAGE', message: toolUse })
+    const settled = settleStaleLiveSubagents(state.mirror)
+    expect(settled.activeSubagents.get('tu_sync_wait')?.status).toBe('running')
+    expect(settled).toBe(state.mirror)
+  })
+
+  it('settleStaleLiveSubagents keeps a fresh tail record (live in-flight tool survives hydrate)', () => {
+    const recent = Date.now() - 5_000
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-new',
+      receivedAt: recent,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_new', name: 'Agent', input: { description: 'just started' } }],
+      },
+    } as unknown as SdkMessage
+    const state = reduceSessionState(createInitialSessionState('s1'), { type: 'MESSAGE', message: toolUse })
+    const settled = settleStaleLiveSubagents(state.mirror)
+    expect(settled.activeSubagents.get('tu_new')?.status).toBe('running')
+    // Identity-stable when nothing was stale.
+    expect(settled).toBe(state.mirror)
+  })
+
+  it('evictMessages prunes activeSubagents whose owner frame was retracted', () => {
+    const toolUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-evict',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_evict', name: 'Agent', input: { description: 'gone' } }],
+      },
+    } as unknown as SdkMessage
+    let state = reduceSessionState(createInitialSessionState('s1'), { type: 'MESSAGE', message: toolUse })
+    expect(state.mirror.activeSubagents.has('tu_evict')).toBe(true)
+
+    state = reduceSessionState(state, { type: 'EVICT_MESSAGES', uuids: ['a-evict'] })
+    expect(state.mirror.activeSubagents.has('tu_evict')).toBe(false)
+  })
+
+  it('front-trim keeps an in-flight subagent even when its tool_use frame is trimmed away', () => {
+    // A busy tab can trim past an Agent's tool_use while the subagent is still
+    // running. Dropping the record would hide live work from the WorkingBubble
+    // pill / Waiting gate mid-flight.
+    const agentUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-agent-old',
+      receivedAt: 0,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tu_keep', name: 'Agent', input: { description: 'still going' } }],
+      },
+    } as unknown as SdkMessage
+    let state = reduceSessionState(createInitialSessionState('s1'), { type: 'MESSAGE', message: agentUse })
+    // Promote to background so it is unmistakably in-flight.
+    state = reduceSessionState(state, {
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{
+        taskId: 't-keep', toolUseId: 'tu_keep', description: 'still going',
+        status: 'running', isBackgrounded: true, updatedAt: 0,
+      } as TaskRecordUi],
+    })
+    expect(state.mirror.activeSubagents.get('tu_keep')?.status).toBe('background')
+
+    // Pad past MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK with trim-boundary frames
+    // AFTER the agent, so the cut lands on (or before) the agent frame.
+    let padded = state
+    for (let i = 0; i < 1300; i++) {
+      padded = reduceSessionState(padded, {
+        type: 'MESSAGE',
+        message: {
+          type: 'assistant',
+          uuid: `pad-${i}`,
+          receivedAt: i + 1,
+          message: { role: 'assistant', content: [{ type: 'text', text: `pad ${i}` }] },
+          parent_tool_use_id: null,
+        } as unknown as SdkMessage,
+      })
+    }
+    // The agent's own frame is gone from items (front-trimmed) …
+    expect(padded.mirror.items.some((it) => it.id === 'a-agent-old')).toBe(false)
+    // … but the live record survives.
+    expect(padded.mirror.activeSubagents.get('tu_keep')?.status).toBe('background')
   })
 
   it('PREPEND_MESSAGES does NOT sweep live in-flight tools via historical result frames', () => {
@@ -4002,11 +4236,15 @@ describe('reducer: TASKS_SNAPSHOT is the single authority for isAsync (D1/D2)', 
     expect(state.mirror.activeSubagents.get('tu_a')?.status).toBe('background') // 已被翻过的状态不因 false 而回退
   })
 
-  it('writes isAsync from a TERMINAL task record (replay recovery replaces the notification stamp)', () => {
+  it('writes isAsync from a TERMINAL task record AND settles a running async row (replay recovery)', () => {
+    // Terminal + isBackgrounded:true is the async agent whose first matching
+    // snapshot is already the completion one (fast finish / subscribed late).
+    // isAsync must come from the snapshot AND the row must settle — leaving it
+    // `running` was the 14h/38h WorkingBubble timer bug.
     let state = createInitialSessionState('s1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: agentToolUse('tu_a', 'a1') })
     state = snap(state, [task({ toolUseId: 'tu_a', status: 'completed', isBackgrounded: true })])
-    expect(state.mirror.activeSubagents.get('tu_a')).toMatchObject({ status: 'running', isAsync: true })
+    expect(state.mirror.activeSubagents.get('tu_a')).toMatchObject({ status: 'done', isAsync: true })
   })
 
   it('does NOT flip to background for a foreground (isBackgrounded:false) live record', () => {

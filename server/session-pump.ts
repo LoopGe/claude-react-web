@@ -1326,10 +1326,15 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // reads it as "no turn in flight".
           session.turnActive = false
           if (moreQueued) {
-            // Keep pendingTurns=1 and workingSince anchored at its existing
-            // value so the UI continues to show "working" without flicker.
-            // The next result will re-evaluate the queue.
+            // Keep pendingTurns=1 so the UI continues to show "working" without
+            // flicker. workingSince is RE-anchored at a REAL turn boundary (not
+            // an emptyResult bookend): it is the turn timer's start, and leaving
+            // it at the first send of a long queue painted a multi-dozen-hour
+            // "Working" elapsed on back-to-back turns (90 queued inputs over
+            // 38h). Empty results are background-task completions, not turns —
+            // re-anchoring there would snap a live turn's age back to ~0.
             session.pendingTurns = 1
+            if (!emptyResult) session.workingSince = Date.now()
           } else {
             session.pendingTurns = 0
             session.workingSince = undefined
