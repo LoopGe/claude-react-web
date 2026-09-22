@@ -192,6 +192,14 @@ interface ConfigFile {
   /** Max output tokens per model response, passed to the CLI subprocess as
    *  CLAUDE_CODE_MAX_OUTPUT_TOKENS. 0 = use the CLI's own default. */
   maxOutputTokens: number
+  /** Enable shadow-repo file snapshots. When true the snapshot service
+   *  captures tool-mutated files into a lightweight git sidecar so sessions
+   *  can preview or rewind individual file states. Default: true. */
+  fileSnapshots?: boolean
+  /** Maximum bytes per untracked (new) file the snapshot sidecar will
+   *  ingest per capture. Files exceeding this limit are skipped.
+   *  Default: 2 MiB. */
+  fileSnapshotsMaxUntrackedBytes?: number
 }
 
 export interface ServerConfig {
@@ -272,6 +280,11 @@ export interface ServerConfig {
   /** Max output tokens per model response (CLAUDE_CODE_MAX_OUTPUT_TOKENS).
    *  0 = CLI default. */
   readonly maxOutputTokens: number
+  /** Enable shadow-repo file snapshots. Default: true. */
+  readonly fileSnapshots: boolean
+  /** Maximum bytes per untracked file the sidecar ingests per capture.
+   *  Default: 2 MiB. */
+  readonly fileSnapshotsMaxUntrackedBytes: number
   readonly profiles: readonly ProviderProfile[]
   readonly activeProfileId: string
 }
@@ -323,6 +336,8 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   firstPartyTools: Object.freeze({ [GIT_TOOLS_SERVER_NAME]: Object.freeze({ enabled: true }) }),
   allowSensitivePathEdits: false,
   maxOutputTokens: 0,
+  fileSnapshots: true,
+  fileSnapshotsMaxUntrackedBytes: 2 * 1024 * 1024,
   profiles: Object.freeze([]),
   activeProfileId: 'default',
 })
@@ -697,6 +712,16 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { maxOutputTokens: number }).maxOutputTokens = file_.maxOutputTokens
   }
 
+  if (typeof file_.fileSnapshots === 'boolean') {
+    ;(merged as { fileSnapshots: boolean }).fileSnapshots = file_.fileSnapshots
+    log.info(`fileSnapshots: ${merged.fileSnapshots}`)
+  }
+
+  if (typeof file_.fileSnapshotsMaxUntrackedBytes === 'number' && file_.fileSnapshotsMaxUntrackedBytes > 0) {
+    ;(merged as { fileSnapshotsMaxUntrackedBytes: number }).fileSnapshotsMaxUntrackedBytes = Math.round(file_.fileSnapshotsMaxUntrackedBytes)
+    log.info(`fileSnapshotsMaxUntrackedBytes: ${merged.fileSnapshotsMaxUntrackedBytes}`)
+  }
+
   config = Object.freeze(merged)
 
   // Enable or disable file logging based on the loaded config.
@@ -758,6 +783,8 @@ export const WRITABLE_CONFIG_KEYS = [
   'firstPartyTools',
   'allowSensitivePathEdits',
   'maxOutputTokens',
+  'fileSnapshots',
+  'fileSnapshotsMaxUntrackedBytes',
 ] as const
 
 /**

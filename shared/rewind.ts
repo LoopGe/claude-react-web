@@ -1,7 +1,7 @@
-// File-checkpoint rewind (SDK Options.enableFileCheckpointing +
-// Query.rewindFiles): restore tracked files to their state at a given user
-// message. Browser-safe, SDK-agnostic — the server narrows the raw SDK
-// response through coerceRewindResult before it goes over the wire.
+// File-snapshot rewind: restore files to their state at a given user
+// message via the shadow-repo snapshot sidecar. Browser-safe, SDK-agnostic
+// — the server narrows the snapshot-service result before it goes over the
+// wire. coerceRewindResult is a defensive parse kept for forward-compat.
 
 /** Mirrors the SDK's RewindFilesResult. `canRewind: false` carries a
  *  human-readable `error` (checkpointing disabled, message unknown, …);

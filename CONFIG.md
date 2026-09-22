@@ -363,6 +363,48 @@ Set to `false` to stop injecting git tools by default:
 
 ---
 
+### `fileSnapshots`
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+
+Enable the shadow-repo snapshot sidecar that powers offline file rewind. When enabled, each session captures a lightweight git snapshot at every user message, allowing files to be restored to any prior message state even after the session has gone dormant or been terminated. When disabled, `GET /sessions/:id/file-snapshots` reports `available: false` with reason `disabled`.
+
+Sessions started outside a git repository are never snapshotted regardless of this flag (they report `available: false` with reason `not-git`).
+
+**Boot-time only.** Although this field is listed in `WRITABLE_CONFIG_KEYS` (so the settings panel and `config set` can write it to `config.json`), the running `SnapshotService` reads it once at construction. A written change takes effect on the next server restart; existing sessions keep their spawn-time behavior.
+
+```json
+{
+  "fileSnapshots": true
+}
+```
+
+---
+
+### `fileSnapshotsMaxUntrackedBytes`
+
+| | |
+|---|---|
+| Type | `number` (bytes) |
+| Default | `2097152` (2 MB) |
+
+Per-file size limit applied **only to untracked files** during each snapshot capture. An untracked file whose byte size exceeds this value is excluded from the snapshot (the file stays in the working directory untouched). Tracked (git-indexed) files are always captured regardless of size. Ignored files are also excluded (via `check-ignore` against the source repo rules).
+
+**Boot-time only.** Same restart requirement as `fileSnapshots` above.
+
+```json
+{
+  "fileSnapshotsMaxUntrackedBytes": 5242880
+}
+```
+
+Must be a positive integer.
+
+---
+
 ## Priority order
 
 Configuration values are resolved in this order (highest priority first):

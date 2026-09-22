@@ -46,7 +46,6 @@ interface MockQueryHandle {
   setMcpPermissionModeOverride: ReturnType<typeof vi.fn>
   getContextUsage: ReturnType<typeof vi.fn>
   accountInfo: ReturnType<typeof vi.fn>
-  rewindFiles: ReturnType<typeof vi.fn>
   readFile: ReturnType<typeof vi.fn>
   seedReadState: ReturnType<typeof vi.fn>
   generateSessionTitle: ReturnType<typeof vi.fn>
@@ -143,7 +142,16 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         if (!promptIter || done || drainInFlight) return
         drainInFlight = true
         promptIter.next().then((r) => {
-          if (!r.done) handle.consumed.push(r.value)
+          if (!r.done) {
+            handle.consumed.push(r.value)
+            // Mirror the real SDK: onUserMessageConsumed fires when a
+            // queued user message is dequeued for the next turn.
+            const consumedCb = (options as { onUserMessageConsumed?: (m: unknown) => void })
+              .onUserMessageConsumed
+            if (typeof consumedCb === 'function') {
+              try { consumedCb(r.value) } catch { /* never break iteration */ }
+            }
+          }
         }).finally(() => { drainInFlight = false })
       }
       // Initial drain: SDK consumes the first user message to start its
@@ -205,7 +213,6 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         setMcpPermissionModeOverride: vi.fn(async () => ({})),
         getContextUsage: vi.fn(async () => ({})),
         accountInfo: vi.fn(async () => ({})),
-        rewindFiles: vi.fn(async () => ({ canRewind: true })),
         readFile: vi.fn(async () => ({ available: false })),
         seedReadState: vi.fn(async () => {}),
         generateSessionTitle: vi.fn(async (_desc: string, _opts?: { persist?: boolean }) => 'Mock auto title'),
@@ -251,7 +258,6 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         setMcpPermissionModeOverride: handle.setMcpPermissionModeOverride,
         getContextUsage: handle.getContextUsage,
         accountInfo: handle.accountInfo,
-        rewindFiles: handle.rewindFiles,
         readFile: handle.readFile,
         seedReadState: handle.seedReadState,
         generateSessionTitle: handle.generateSessionTitle,
@@ -2744,70 +2750,163 @@ describe('SessionManager', () => {
     await expect(sm.accountInfo('nope')).rejects.toThrow()
   })
 
-  // --- rewindFiles (SDK file-checkpoint rewind) ---
+  // --- rewindFiles (shadow-repo snapshot rewind) ---
 
-  it('rewindFiles() maps the app uuid to the paired SDK uuid and narrows the result', async () => {
+  /** Spy on the SessionManager's internal SnapshotService so tests don't
+   *  spawn a real git subprocess. Returns the spies so each test can wire
+   *  its own resolved values. */
+  const spySnapshots = () => {
+    const any = sm as unknown as { snapshots: { dryRun: ReturnType<typeof vi.fn>; rewind: ReturnType<typeof vi.fn>; capture: ReturnType<typeof vi.fn>; recordAnchor: ReturnType<typeof vi.fn> } }
+    return {
+      dryRun: vi.spyOn(any.snapshots, 'dryRun').mockResolvedValue({ canRewind: false, error: 'stub' }),
+      rewind: vi.spyOn(any.snapshots, 'rewind').mockResolvedValue({ canRewind: false, error: 'stub' }),
+      capture: vi.spyOn(any.snapshots, 'capture').mockResolvedValue(null),
+      recordAnchor: vi.spyOn(any.snapshots, 'recordAnchor').mockResolvedValue(undefined),
+    }
+  }
+
+  it('rewindFiles() delegates to snapshots.dryRun and narrows the result', async () => {
+    const spies = spySnapshots()
     const info = sm.create({})
     const sent = sm.send(info.id, 'edit a file')
-    // The SDK echoes the persisted prompt back with its on-disk uuid —
-    // the pump hands that to onPromptEcho, which pairs u → v.
-    mockHandles[0].emit({ type: 'user', message: { role: 'user', content: 'edit a file' }, parent_tool_use_id: null, uuid: 'sdk-v-1' })
+    // Complete the turn so the session is idle (phase guard passes).
     mockHandles[0].emit({ type: 'result', subtype: 'success' })
     await tick()
-    mockHandles[0].rewindFiles.mockResolvedValueOnce({
+    spies.dryRun.mockResolvedValueOnce({
       canRewind: true,
       filesChanged: ['a.ts', ''],
       insertions: 2,
-      deletions: 'x',
-      junk: 'dropped',
+      deletions: '5', // junk type — narrowed out
+      diffs: [{ file: 'a.ts', status: 'modified', additions: 2, deletions: 1 }],
     })
     const res = await sm.rewindFiles(info.id, sent.uuid!, { dryRun: true })
-    expect(mockHandles[0].rewindFiles).toHaveBeenCalledWith('sdk-v-1', { dryRun: true })
+    // dryRun was called with the server user uuid — no SDK uuid mapping.
+    expect(spies.dryRun).toHaveBeenCalledWith(info.id, sent.uuid)
+    // diffs field dropped; bad types stripped; canRewind + valid stats kept.
     expect(res).toEqual({ canRewind: true, filesChanged: ['a.ts'], insertions: 2 })
+    // Real rewind not called on a dry-run.
+    expect(spies.rewind).not.toHaveBeenCalled()
   })
 
-  it('rewindFiles() collapses a malformed SDK response to a safe error result', async () => {
+  it('rewindFiles() delegates to snapshots.rewind for a real rewind', async () => {
+    const spies = spySnapshots()
     const info = sm.create({})
     const sent = sm.send(info.id, 'edit a file')
-    mockHandles[0].emit({ type: 'user', message: { role: 'user', content: 'edit a file' }, parent_tool_use_id: null, uuid: 'sdk-v-2' })
     mockHandles[0].emit({ type: 'result', subtype: 'success' })
     await tick()
-    mockHandles[0].rewindFiles.mockResolvedValueOnce('garbage')
-    expect(await sm.rewindFiles(info.id, sent.uuid!)).toEqual({
-      canRewind: false,
-      error: 'malformed rewind response',
-    })
+    spies.rewind.mockResolvedValueOnce({ canRewind: true, filesChanged: ['a.ts'] })
+    const res = await sm.rewindFiles(info.id, sent.uuid!)
+    expect(spies.rewind).toHaveBeenCalledWith(info.id, sent.uuid)
+    expect(res.canRewind).toBe(true)
+    expect(res.filesChanged).toEqual(['a.ts'])
   })
 
-  it('rewindFiles() 400s when the message has no paired SDK uuid yet', async () => {
-    const info = sm.create({})
-    const sent = sm.send(info.id, 'hi')
-    mockHandles[0].emit({ type: 'result', subtype: 'success' })
-    await tick()
-    await expect(sm.rewindFiles(info.id, sent.uuid!)).rejects.toThrow('checkpoint target')
-    expect(mockHandles[0].rewindFiles).not.toHaveBeenCalled()
-  })
-
-  it('rewindFiles() 409s while the session is working', async () => {
+  it('rewindFiles() 409s while the session is working on a REAL rewind', async () => {
+    const spies = spySnapshots()
     const info = sm.create({})
     const sent = sm.send(info.id, 'hi') // pendingTurns=1 → phase 'working'
     await expect(sm.rewindFiles(info.id, sent.uuid!)).rejects.toThrow('working')
-    expect(mockHandles[0].rewindFiles).not.toHaveBeenCalled()
+    expect(spies.rewind).not.toHaveBeenCalled()
+    spies.dryRun.mockRestore?.()
+    spies.rewind.mockRestore?.()
+  })
+
+  it('rewindFiles() allows a dry-run while the session is working', async () => {
+    const spies = spySnapshots()
+    const info = sm.create({})
+    const sent = sm.send(info.id, 'hi') // pendingTurns=1 → phase 'working'
+    spies.dryRun.mockResolvedValueOnce({ canRewind: true, filesChanged: ['x.ts'] })
+    const res = await sm.rewindFiles(info.id, sent.uuid!, { dryRun: true })
+    expect(spies.dryRun).toHaveBeenCalledWith(info.id, sent.uuid)
+    expect(res.canRewind).toBe(true)
+  })
+
+  it('rewindFiles() 404s for an unknown session', async () => {
+    const spies = spySnapshots()
+    await expect(sm.rewindFiles('nope', 'U1')).rejects.toThrow(/not found/i)
+    expect(spies.rewind).not.toHaveBeenCalled()
+    expect(spies.dryRun).not.toHaveBeenCalled()
   })
 
   it('rewindFiles() broadcasts a git-status refresh after a real rewind (not a dry run)', async () => {
+    const spies = spySnapshots()
     const bcast = vi.spyOn(sm, 'broadcastGitStatusChanged').mockImplementation(() => {})
     const info = sm.create({})
     const sent = sm.send(info.id, 'edit a file')
-    mockHandles[0].emit({ type: 'user', message: { role: 'user', content: 'edit a file' }, parent_tool_use_id: null, uuid: 'sdk-v-3' })
     mockHandles[0].emit({ type: 'result', subtype: 'success' })
     await tick()
-    mockHandles[0].rewindFiles.mockResolvedValueOnce({ canRewind: true })
+    spies.dryRun.mockResolvedValueOnce({ canRewind: true })
+    spies.rewind.mockResolvedValueOnce({ canRewind: true })
     await sm.rewindFiles(info.id, sent.uuid!, { dryRun: true })
     expect(bcast).not.toHaveBeenCalled()
     await sm.rewindFiles(info.id, sent.uuid!)
     expect(bcast).toHaveBeenCalledWith(info.id)
     bcast.mockRestore()
+  })
+
+  it('rewindFiles() does NOT broadcast when rewind reports canRewind=false', async () => {
+    const spies = spySnapshots()
+    const bcast = vi.spyOn(sm, 'broadcastGitStatusChanged').mockImplementation(() => {})
+    const info = sm.create({})
+    const sent = sm.send(info.id, 'edit a file')
+    mockHandles[0].emit({ type: 'result', subtype: 'success' })
+    await tick()
+    spies.rewind.mockResolvedValueOnce({ canRewind: false, error: 'no snapshot' })
+    await sm.rewindFiles(info.id, sent.uuid!)
+    expect(bcast).not.toHaveBeenCalled()
+    bcast.mockRestore()
+  })
+
+  it('send() captures a snapshot anchor before dispatch (fire-and-forget)', async () => {
+    const spies = spySnapshots()
+    const info = sm.create({ cwd: dir })
+    spies.capture.mockResolvedValueOnce('tree-1')
+    sm.send(info.id, 'hi')
+    // Capture was invoked synchronously (fire-and-forget but started
+    // before dispatch). recordAnchor runs after capture resolves.
+    await tick()
+    await tick()
+    expect(spies.capture).toHaveBeenCalledWith({ sessionId: info.id, cwd: dir })
+    expect(spies.recordAnchor).toHaveBeenCalledWith(info.id, dir, expect.any(String), 'tree-1')
+  })
+
+  it('send() never blocks on capture failure (continues to dispatch)', async () => {
+    const spies = spySnapshots()
+    spies.capture.mockRejectedValueOnce(new Error('git missing'))
+    const info = sm.create({ cwd: dir })
+    // send must not throw even though capture rejects.
+    const sent = sm.send(info.id, 'hi')
+    expect(sent.uuid).toBeTruthy()
+    // The user message reached the ring (dispatch ran).
+    expect(sm.getHistory(info.id)?.some((m) => (m as { uuid?: string }).uuid === sent.uuid)).toBe(true)
+  })
+
+  it('queued send defers the anchor and captures on consume (no re-defer loop)', async () => {
+    const spies = spySnapshots()
+    spies.capture.mockResolvedValue('tree-q')
+    const info = sm.create({ cwd: dir })
+    // First send starts a turn — session is now working.
+    sm.send(info.id, 'first')
+    // Second send is queued while working: must NOT capture at enqueue.
+    const queued = sm.send(info.id, 'second')
+    expect(spies.capture).toHaveBeenCalledTimes(1) // only the idle first send
+    // Consume time is the correct pre-turn tree. Call onInputConsumed
+    // directly (the critical regression: captureAnchor re-checks idle, and
+    // at consume time pendingTurns is still >= 1, which would re-defer
+    // forever and orphan the anchor).
+    const smAny = sm as unknown as {
+      onInputConsumed: (id: string, msg: unknown) => void
+    }
+    smAny.onInputConsumed(info.id, {
+      type: 'user',
+      uuid: queued.uuid,
+      parent_tool_use_id: null,
+      message: { role: 'user', content: 'second' },
+    })
+    await tick()
+    await tick()
+    expect(spies.capture).toHaveBeenCalledTimes(2)
+    expect(spies.recordAnchor).toHaveBeenCalledWith(info.id, dir, queued.uuid, 'tree-q')
   })
 
   // --- readFile: SDK readFile + CLI read-state seeding (seedReadState) ---
@@ -5767,6 +5866,96 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // X's prompt-uuid sidecar is gone too.
       const smAny = sm as unknown as { promptUuidStore: { load: (id: string) => Promise<unknown> } }
       expect(await smAny.promptUuidStore.load(info.id)).toBeNull()
+    })
+
+    it('deleteOriginal also removes the snapshot sidecar for X', async () => {
+      const info = sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      completeTurn(h0, info.id, 'asst-1')
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      await waitFor(async () => (await anchorsOf(info.id)).length > 0)
+
+      // Seed the snapshot sidecar with a fake meta so we can assert the
+      // remove call cleared it (the real service is a no-op capture for
+      // non-git cwds, so we write a placeholder directly).
+      const smAny = sm as unknown as { snapshotStore: { save: (id: string, m: unknown) => Promise<void>; load: (id: string) => Promise<unknown> } }
+      await smAny.snapshotStore.save(info.id, {
+        version: 1, gitDir: '/g', worktree: '/w', scope: '.', byMessage: {}, patches: [],
+      })
+      expect(await smAny.snapshotStore.load(info.id)).not.toBeNull()
+      await sm.discard(info.id, 'asst-1', { deleteOriginal: true })
+      expect(await smAny.snapshotStore.load(info.id)).toBeNull()
+    })
+
+    it('delete() removes the snapshot sidecar', async () => {
+      const info = sm.create({ cwd: dir })
+      const smAny = sm as unknown as { snapshotStore: { save: (id: string, m: unknown) => Promise<void>; load: (id: string) => Promise<unknown>; remove: (id: string) => Promise<void> } }
+      await smAny.snapshotStore.save(info.id, {
+        version: 1, gitDir: '/g', worktree: '/w', scope: '.', byMessage: {}, patches: [],
+      })
+      expect(await smAny.snapshotStore.load(info.id)).not.toBeNull()
+      await sm.delete(info.id)
+      // delete() uses fire-and-forget sidecar removals (matches the
+      // existing promptUuid/turnAnchor/resultFrame pattern). Wait for
+      // the unlink macrotask to land by polling.
+      await waitFor(async () => (await smAny.snapshotStore.load(info.id)) === null)
+    })
+
+    it('discard() invokes snapshotStore.copyForFork with keep sets mirroring the cut', async () => {
+      const info = sm.create({ cwd: dir })
+      // Seed three turn anchors directly so discard has a cut to make.
+      const smAnchors = sm as unknown as { turnAnchorStore: { save: (id: string, entries: Array<{ assistantUuid: string; completedAt: number }>) => Promise<void> } }
+      await smAnchors.turnAnchorStore.save(info.id, [
+        { assistantUuid: 'asst-1', completedAt: 1000 },
+        { assistantUuid: 'asst-2', completedAt: 2000 },
+        { assistantUuid: 'asst-3', completedAt: 3000 },
+      ])
+      // Seed a snapshot sidecar with a byMessage entry for each user uuid
+      // and a patch for each assistant uuid, so we can assert copyForFork
+      // keeps only the ones at/before the cut.
+      const smAny = sm as unknown as { snapshotStore: { save: (id: string, m: unknown) => Promise<void>; load: (id: string) => Promise<unknown>; copyForFork: ReturnType<typeof vi.fn> } }
+      await smAny.snapshotStore.save(info.id, {
+        version: 1,
+        gitDir: '/g',
+        worktree: '/w',
+        scope: '.',
+        byMessage: {
+          'u-1': { start: 't1' },
+          'u-2': { start: 't2' },
+          'u-3': { start: 't3' },
+        },
+        patches: [
+          { messageId: 'asst-1', hash: 't1', files: ['/w/a'] },
+          { messageId: 'asst-2', hash: 't2', files: ['/w/b'] },
+          { messageId: 'asst-3', hash: 't3', files: ['/w/c'] },
+        ],
+      })
+      // Spy on copyForFork (the real store implementation is used; we
+      // intercept to inspect args, then forward by calling the original).
+      const real = smAny.snapshotStore.copyForFork
+      const spy = vi.fn(real.bind(smAny.snapshotStore))
+      ;(smAny.snapshotStore as { copyForFork: typeof spy }).copyForFork = spy
+
+      // Complete one real turn so fork() has a transcript + lastTurnAt.
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      completeTurn(h0, info.id, 'asst-1')
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      // Discard after asst-2 — keep [asst-1, asst-2], drop asst-3.
+      const y = await sm.discard(info.id, 'asst-2')
+      expect(spy).toHaveBeenCalledOnce()
+      const [fromId, toId, keepMsg, keepPatch] = spy.mock.calls[0]
+      expect(fromId).toBe(info.id)
+      expect(toId).toBe(y.id)
+      // Patches kept = inherited anchor assistant uuids.
+      expect(keepPatch).toEqual(new Set(['asst-1', 'asst-2']))
+      // User message ids kept = user uuids in the seed (the rewritten
+      // historySeed's user messages). The mock SDK emits no real disk
+      // transcript, so the seed comes from the in-memory ring's user
+      // message — the 'hi' we sent. Assert it's included.
+      expect(keepMsg.size).toBeGreaterThan(0)
     })
 
     it('listDiscardAnchors returns anchors with previews', async () => {

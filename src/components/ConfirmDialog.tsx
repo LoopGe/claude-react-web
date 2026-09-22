@@ -29,6 +29,12 @@ interface Props {
   /** When true, both buttons are disabled — used for the brief window
    *  between click and the server's response landing. */
   busy?: boolean
+  /** When true, only the confirm button is disabled (Cancel stays active).
+   *  Use when the action is temporarily unavailable but the user can still
+   *  dismiss the dialog. */
+  confirmDisabled?: boolean
+  /** Hint text shown when confirmDisabled is true, explaining why. */
+  confirmDisabledHint?: string
   /** Optional checkbox rendered below the message (e.g. "permanently
    *  delete"). When `checkboxLabel` is set, the checkbox is controlled:
    *  `checkboxChecked` is its state and `onCheckboxChange` flips it.
@@ -50,6 +56,8 @@ export function ConfirmDialog({
   cancelLabel = 'Cancel',
   destructive = false,
   busy = false,
+  confirmDisabled = false,
+  confirmDisabledHint,
   checkboxLabel,
   checkboxChecked = false,
   onCheckboxChange,
@@ -93,6 +101,9 @@ export function ConfirmDialog({
           </label>
         )}
       </div>
+      {confirmDisabled && confirmDisabledHint && (
+        <p className="confirm-dialog-hint">{confirmDisabledHint}</p>
+      )}
       <div className="modal-footer">
         <button
           type="button"
@@ -110,7 +121,7 @@ export function ConfirmDialog({
           type="button"
           className={destructive ? 'btn btn-danger-solid' : 'btn btn-primary'}
           onClick={() => { void onConfirm() }}
-          disabled={busy}
+          disabled={busy || confirmDisabled}
           // Non-destructive dialogs focus confirm so Enter confirms.
           autoFocus={!destructive}
         >

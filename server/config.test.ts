@@ -472,6 +472,37 @@ describe('config', () => {
     expect(WRITABLE_CONFIG_KEYS).toContain('autoExpandRunningGroups')
   })
 
+  it('defaults fileSnapshots on and 2MiB untracked cap', () => {
+    expect(config.fileSnapshots).toBe(true)
+    expect(config.fileSnapshotsMaxUntrackedBytes).toBe(2 * 1024 * 1024)
+  })
+
+  it('ignores non-positive fileSnapshotsMaxUntrackedBytes', async () => {
+    const before = config.fileSnapshotsMaxUntrackedBytes
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ fileSnapshotsMaxUntrackedBytes: -1 }))
+    await loadConfig(dir)
+    expect(config.fileSnapshotsMaxUntrackedBytes).toBe(before)
+  })
+
+  it('honors fileSnapshots false from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ fileSnapshots: false }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.fileSnapshots).toBe(false)
+  })
+
+  it('honors fileSnapshotsMaxUntrackedBytes from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ fileSnapshotsMaxUntrackedBytes: 5 * 1024 * 1024 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.fileSnapshotsMaxUntrackedBytes).toBe(5 * 1024 * 1024)
+  })
+
+  it('exposes fileSnapshots and fileSnapshotsMaxUntrackedBytes as writable config keys', () => {
+    expect(WRITABLE_CONFIG_KEYS).toContain('fileSnapshots')
+    expect(WRITABLE_CONFIG_KEYS).toContain('fileSnapshotsMaxUntrackedBytes')
+  })
+
   describe('clearCredentials', () => {
     it('clears authToken, baseUrl, and accessToken from config.json', async () => {
       writeFileSync(join(dir, 'config.json'), JSON.stringify({

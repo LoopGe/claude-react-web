@@ -144,7 +144,6 @@ export function summarizeSpawn(opts: CreateSessionOptions, sdkOptions: Options):
     forwardSubagentText: sdkOptions.forwardSubagentText,
     promptSuggestions: sdkOptions.promptSuggestions,
     agentProgressSummaries: sdkOptions.agentProgressSummaries,
-    enableFileCheckpointing: sdkOptions.enableFileCheckpointing,
     additionalDirectories: sdkOptions.additionalDirectories,
     mcpServers: sdkOptions.mcpServers ? Object.keys(sdkOptions.mcpServers) : undefined,
     plugins: sdkOptions.plugins,
@@ -325,7 +324,6 @@ export class ClaudeProvider implements AgentProvider {
     supportsContextUsage: true,
     supportsUsage: true,
     supportsAccountInfo: true,
-    supportsRewindFiles: true,
     supportsSessionTitle: true,
     supportsTaskControl: true,
     supportsStructuredOutput: true,
@@ -383,14 +381,6 @@ export class ClaudeProvider implements AgentProvider {
     // prompt cache (~free, ~every 30s per subagent) and it feeds the
     // task_progress.summary the TasksPanel and subagent chips render.
     sdkOptions.agentProgressSummaries = opts.agentProgressSummaries ?? true
-    // Enable file checkpointing by default so Query.rewindFiles works out
-    // of the box (the feature is dead weight without it, and the cost is
-    // bounded backups of files the session modifies). An explicit
-    // `enableFileCheckpointing: false` in the create body reaches
-    // sdkOptions via providerExtras and is left verbatim.
-    if (sdkOptions.enableFileCheckpointing === undefined) {
-      sdkOptions.enableFileCheckpointing = true
-    }
     // The app renders a per-task stop control (POST /sessions/:id/tasks/:taskId/stop)
     // for every background task, so declare the per-task stop affordance to the
     // CLI — it can then route interrupt semantics through the per-task control
