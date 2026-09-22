@@ -15,6 +15,7 @@ import { promisify } from 'node:util'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
 import { MAX_BUFFER_BYTES } from './constants.js'
+import { trimGitErrorOutput } from './git.js'
 
 const log = createLogger('git-clone')
 
@@ -88,6 +89,14 @@ async function runGitOutside(args: readonly string[], cwd?: string, timeoutMs = 
       log.error('git executable not found in PATH')
       throw new HttpError(503, 'git executable not found in PATH')
     }
+    if (e.code === 'ENOBUFS' || e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+      // Same output-size failure runGit handles: NOT a timeout, though older
+      // Node reports ENOBUFS with killed=true (the arm below would misreport
+      // it as a 504). Clone/ls-remote have the largest outputs of any git
+      // call here, so surface the partial stderr tail-trimmed.
+      const partial = trimGitErrorOutput((e.stderr || e.message || '').trim())
+      throw new HttpError(500, `git output exceeded maxBuffer: ${partial}`)
+    }
     if (e.killed) {
       log.error(`git ${args[0]} timed out after ${elapsed}ms`)
       throw new HttpError(504, 'git command timed out')
@@ -95,7 +104,11 @@ async function runGitOutside(args: readonly string[], cwd?: string, timeoutMs = 
     if (typeof e.code === 'number') {
       // Surface stderr — git's diagnostics are far more useful than the
       // wrapping Node error message, which is just "Command failed: ...".
-      const detail = (e.stderr || e.message || '').trim().slice(0, 800)
+      // Head+tail trim (was head-only slice(0, 800)): clone failures echo
+      // the URL at the head and put the actual reason ("Failed to connect
+      // to host …") at the tail, so head-only truncation discarded the one
+      // part that explained anything. Cap moves 800 → 500 to match runGit.
+      const detail = trimGitErrorOutput((e.stderr || e.message || '').trim())
       log.error(`git ${args[0]} exit=${e.code} elapsed=${elapsed}ms: ${detail.slice(0, 200)}`)
       throw new HttpError(500, `git failed (exit ${e.code}): ${detail}`)
     }

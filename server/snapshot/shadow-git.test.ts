@@ -138,6 +138,15 @@ describe('shadow-git capture/restore', () => {
     // Cleanup
     await rm(dirPath, { recursive: true, force: true })
   })
+
+  it('keeps the full diagnostic when a bad rev errors past the old cap', async () => {
+    // A corrupt/pruned snapshot surfaces here as `fatal: bad revision '…'`
+    // with the offending rev embedded (~430 bytes for a 400-char rev). The
+    // old head-only slice(0, 300) beheaded the rev's TAIL, hiding which
+    // rev was bad; the whole diagnostic must survive.
+    const bogus = 'x'.repeat(400) + 'deadbeef'
+    await expect(nameOnlyDiff(repo, bogus, 'HEAD')).rejects.toThrow(/bad revision.*deadbeef/)
+  })
 })
 
 describe('scopeFromCwd', () => {

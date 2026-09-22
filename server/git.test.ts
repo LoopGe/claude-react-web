@@ -37,6 +37,8 @@ import {
   getStatusInRepo,
   getRangeDiffFiles,
   getRangeDiffFile,
+  trimGitErrorOutput,
+  runGit,
 } from './git.js'
 import { Hono } from 'hono'
 import { createErrorHandler } from './errors.js'
@@ -1054,5 +1056,57 @@ describe('getRangeDiff', () => {
     expect(d.text).toContain('+alpha2')
     expect(d.isBinary).toBe(false)
     expect(d.truncated).toBe(false)
+  })
+})
+
+describe('trimGitErrorOutput', () => {
+  // Pure formatter — no git spawn, so no gitOk gate.
+  it('keeps a tail-anchored hook verdict when output exceeds the cap', () => {
+    // Exact layout of the diagnosed commitlint failure: the commit-msg hook
+    // LEADS with a full echo of the commit message and prints the verdict
+    // LAST. The old head-only slice(0, 500) kept the echo and discarded the
+    // verdict — the surfaced tool error then explained nothing.
+    const raw =
+      `--- input ---\n${'m'.repeat(700)}\n` +
+      '✖ subject may not be empty [subject-empty]\n' +
+      '✖ type may not be empty [type-empty]'
+    const out = trimGitErrorOutput(raw)
+    expect(out).toContain('subject may not be empty')
+    expect(out).toContain('type may not be empty')
+    expect(out).toContain('[stderr truncated]')
+    expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(500)
+  })
+
+  it('strips the SGR colour codes hooks keep even when piped', () => {
+    const ESC = String.fromCharCode(27);
+    expect(trimGitErrorOutput(`${ESC}[31m✖ subject may not be empty${ESC}[39m`)).toBe(
+      '✖ subject may not be empty',
+    )
+  })
+
+  it('passes output within the cap through unchanged', () => {
+    expect(trimGitErrorOutput('nothing to commit, working tree clean')).toBe(
+      'nothing to commit, working tree clean',
+    )
+  })
+})
+
+describe('runGit maxBuffer overflow', () => {
+  it('surfaces the partial stderr instead of Node\'s bare overflow message', async () => {
+    const dir = tempDir('git-maxbuf')
+    seedRepo(dir)
+    // `fsck --progress` always writes its progress lines to stderr (~170
+    // bytes in the seeded repo), so a 64-byte maxBuffer makes execFile kill
+    // the child before it finishes. Node attaches the partial stderr it
+    // collected; the error must surface it (trimmed) rather than only
+    // Node's own "stderr maxBuffer length exceeded" — and on Node < 20.12,
+    // where the same rejection carries killed=true, it must NOT be
+    // misreported as the 504 "git command timed out". The partial stderr is
+    // fsck's first progress phase, which starts with "Checking" on every
+    // git we support (the exact phase wording varies by git version).
+    await expect(runGit(dir, ['fsck', '--progress'], { maxBuffer: 64 })).rejects.toMatchObject({
+      status: 500,
+      message: expect.stringMatching(/maxBuffer: Checking/),
+    })
   })
 })

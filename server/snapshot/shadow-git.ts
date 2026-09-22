@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 import { promises as fs } from 'node:fs'
 import { join, relative, sep, isAbsolute } from 'node:path'
 import { createLogger } from '../log.js'
+import { trimGitErrorOutput } from '../git.js'
 
 const log = createLogger('snapshot-git')
 const execFileAsync = promisify(execFile)
@@ -55,7 +56,13 @@ async function run(cwd: string, argv: string[], opts?: { stdin?: string; allowEx
     const e = err as NodeJS.ErrnoException & { code?: string | number; stdout?: string; stderr?: string }
     if (typeof e.code === 'number') {
       if (opts?.allowExit?.has(e.code)) return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', code: e.code }
-      throw new Error(`git ${argv[argv.length - 1]} exited ${e.code}: ${(e.stderr || e.message).slice(0, 300)}`)
+      // Head+tail trim (was head-only slice(0, 300)): a bad revision error
+      // embeds the offending rev after the "fatal: bad revision" prefix, so
+      // head-only truncation beheaded the rev's tail and hid which rev was
+      // bad. Cap moves 300 → 500 to match runGit.
+      throw new Error(
+        `git ${argv[argv.length - 1]} exited ${e.code}: ${trimGitErrorOutput((e.stderr || e.message).trim())}`,
+      )
     }
     throw err
   }

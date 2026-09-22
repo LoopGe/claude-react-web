@@ -89,7 +89,42 @@ interface RunGitResult {
   exitCode: number
 }
 
-async function runGit(cwd: string, args: readonly string[], opts: RunGitOpts = {}): Promise<RunGitResult> {
+/** Hard cap (bytes) on the stderr text embedded in a `git exited N: …`
+ *  error message. Kept at the pre-existing 500 so wire sizes do not grow. */
+const GIT_ERROR_CAP = 500
+
+/** SGR colour-code matcher for hook output. Built via fromCharCode(27)
+ *  and 91 for the literal [ the SGR payload starts with — so this source
+ *  file never embeds a raw control byte or an unescaped bracket. */
+const ANSI_SGR_RE = new RegExp(String.fromCharCode(27, 91) + '[0-9;]*m', 'g')
+
+/** Bound a failed git command's stderr for the `git exited N: …` error.
+ *  Head+tail trim with an elision marker — same family as trimDiffToCap —
+ *  because hook output LEADS with noise and puts the diagnosis at the TAIL:
+ *  commitlint echoes the entire commit message before its verdict, so the
+ *  old head-only slice(0, 500) kept 500 chars of our own message echo and
+ *  discarded the verdict entirely (the MCP git_commit tool then explained
+ *  nothing). Also strips SGR colour codes: hooks keep colour when piped
+ *  (FORCE_COLOR), and raw ESC bytes both eat the cap and garble plain-text
+ *  error surfaces. */
+export function trimGitErrorOutput(raw: string): string {
+  const clean = raw.replace(ANSI_SGR_RE, '')
+  const bytes = Buffer.byteLength(clean, 'utf8')
+  if (bytes <= GIT_ERROR_CAP) return clean
+  const ELISION = '\n... [stderr truncated] ...\n'
+  const headBytes = Math.floor(GIT_ERROR_CAP * 0.6)
+  const tailBytes = GIT_ERROR_CAP - headBytes - ELISION.length
+  const buf = Buffer.from(clean, 'utf8')
+  // Snap to UTF-8 codepoint boundaries (same helpers as trimDiffToCap)
+  // so the seam never lands mid-sequence and emits U+FFFD.
+  const headEnd = snapDownToCodepoint(buf, headBytes)
+  const tailStart = snapUpToCodepoint(buf, bytes - tailBytes)
+  return buf.subarray(0, headEnd).toString('utf8') + ELISION + buf.subarray(tailStart).toString('utf8')
+}
+
+/** The single git-execution choke point every caller in this module goes
+ *  through. Exported so the error paths are unit-testable. */
+export async function runGit(cwd: string, args: readonly string[], opts: RunGitOpts = {}): Promise<RunGitResult> {
   if (!(await isGitAvailable())) {
     throw new HttpError(503, 'git executable not found in PATH')
   }
@@ -112,13 +147,25 @@ async function runGit(cwd: string, args: readonly string[], opts: RunGitOpts = {
       if (opts.allowExitCodes?.has(e.code)) {
         return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', exitCode: e.code }
       }
-      const msg = (e.stderr || e.message || '').trim()
-      throw new HttpError(500, `git exited ${e.code}: ${msg.slice(0, 500)}`)
+      const msg = trimGitErrorOutput((e.stderr || e.message || '').trim())
+      throw new HttpError(500, `git exited ${e.code}: ${msg}`)
     }
     if (e.code === 'ENOENT') {
       // Reset the availability cache so subsequent calls re-probe.
       gitAvailableCache = null
       throw new HttpError(503, 'git executable not found in PATH')
+    }
+    if (e.code === 'ENOBUFS' || e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+      // execFile killed the child because stdout/stderr exceeded maxBuffer —
+      // an output-size failure, NOT a timeout. Older Node reports it as
+      // ENOBUFS with killed=true (which the timeout arm below would
+      // misreport as a 504); newer Node uses
+      // ERR_CHILD_PROCESS_STDIO_MAXBUFFER with no killed flag. Either way
+      // Node attaches the partial output collected so far — surface its
+      // stderr (tail-trimmed) so a hook verdict printed before the flood
+      // still reaches the user.
+      const partial = trimGitErrorOutput((e.stderr || e.message || '').trim())
+      throw new HttpError(500, `git output exceeded maxBuffer: ${partial}`)
     }
     if (e.killed) {
       throw new HttpError(504, 'git command timed out')
