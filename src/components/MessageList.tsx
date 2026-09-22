@@ -43,11 +43,6 @@ import {
 import { useSubagentSyntheticRows } from './message-list/useSubagentSyntheticRows'
 import { useTranscriptAnimations } from './message-list/useTranscriptAnimations'
 import { useTranscriptScroll } from './message-list/useTranscriptScroll'
-import {
-  noteRowMount,
-  registerWhiteoutSource,
-  whiteoutDebugEnabled,
-} from './message-list/whiteout-debug'
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
 export type { ActiveSubagent } from '../session-store/types'
@@ -245,39 +240,6 @@ interface Props {
    *  a card stuck on 'running' can't offer a dead action). */
   onBackgroundTool?: (toolUseId: string) => void
 }
-
-/** TEMPORARY (whiteout investigation): wrap a row's subtree and report how
- *  long its first render + layout took. Mount-only — later re-renders of the
- *  same row are ignored, because the whiteout hypothesis is a MOUNT storm
- *  during fast scroll, not steady-state update cost. Only mounted when the
- *  `crw:debug:whiteout` flag is on (see whiteout-debug.ts); the flag is a
- *  module-load constant, so the branch is free.
- *
- *  `started` is set once per MOUNT (StrictMode's double-invoke is collapsed
- *  by `noted`): a re-render must not re-seed a timestamp the mount effect
- *  will never read, or a concurrent-render discard could leave a stale start
- *  and inflate exactly the ms totals this probe exists to measure. */
-function RowMountTimer({ rowId, kind, children }: { rowId: string; kind: string; children: ReactNode }) {
-  const startedRef = useRef<number | null>(null)
-  const notedRef = useRef(false)
-  if (startedRef.current === null) {
-    // eslint-disable-next-line react-hooks/purity -- TEMPORARY probe: seed the mount-start timestamp exactly once
-    startedRef.current = performance.now()
-  }
-  useLayoutEffect(() => {
-    if (notedRef.current) return
-    notedRef.current = true
-    const started = startedRef.current
-    if (started == null) return
-    noteRowMount(rowId, kind, performance.now() - started)
-    // Mount-only by design; see component comment.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-  return <>{children}</>
-}
-
-/** Cached flag: whiteout-debug reads localStorage once at module load. */
-const WHITEOUT_DEBUG = whiteoutDebugEnabled()
 
 /** Stable empty-Map sentinels. Using `= new Map()` in the parameter
  *  defaults below would allocate a fresh Map on every render and defeat
@@ -590,37 +552,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     replayReady,
     transcriptRevealKey,
   })
-  // TEMPORARY (whiteout investigation): per-frame blank detector. The row
-  // count and the list's own root element are read through refs so the
-  // module-level sampler is registered exactly once and still sees live
-  // values. Unregister leaves a short-lived "ghost" in the sampler so an
-  // ErrorBoundary unmount (hypothesis B) is logged instead of cancelling the
-  // probe at the exact moment it should fire.
-  //
-  // Source id is a per-mount counter, NOT transcriptRevealKey: the reveal key
-  // changes on session switch (and the .chat-messages div is keyed by it), so
-  // keying the registry on it would unregister→ghost→re-register and log a
-  // false B on every session switch. A whiteout is a scroll-time event, so
-  // one id per MessageList mount is the right identity.
-  /* eslint-disable react-hooks/refs -- render-time ref write; idempotent mirror of renderableItems.length */
-  const whiteoutRowCountRef = useRef(renderableItems.length)
-  whiteoutRowCountRef.current = renderableItems.length
-  /* eslint-enable react-hooks/refs */
-  const whiteoutSourceIdRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (!WHITEOUT_DEBUG) return
-    if (whiteoutSourceIdRef.current == null) {
-      whiteoutSourceIdRef.current = `list-${Math.random().toString(36).slice(2, 8)}`
-    }
-    const id = whiteoutSourceIdRef.current
-    return registerWhiteoutSource({
-      id,
-      getRoot: () => messagesElRef.current,
-      getExpectedRows: () => whiteoutRowCountRef.current,
-    })
-    // Mount-only: one registration per MessageList instance.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
   // Fires when the user scrolls to the top. Pull the previous page of
   // history from disk if there's more and we're not already loading.
   const startReached = useCallback(() => {
@@ -1044,16 +975,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         ref={isEntering ? enterNodeRef : undefined}
         onAnimationEnd={isEntering ? handleEnterAnimationEnd : undefined}
       >
-        {WHITEOUT_DEBUG ? (
-          <RowMountTimer
-            rowId={item.id}
-            kind={item.toolGroup ? `toolGroup:${item.toolGroup.members.length}` : `msg:${item.msg.type}`}
-          >
-            {rowBody}
-          </RowMountTimer>
-        ) : (
-          rowBody
-        )}
+        {rowBody}
       </div>
     )
     // The two lifecycle indexes must be deps, not just reads: when a subagent
