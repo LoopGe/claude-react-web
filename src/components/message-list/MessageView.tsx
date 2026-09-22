@@ -18,6 +18,8 @@ import { getBlocks, isHumanUserMessage, isTaskNotificationUserMessage, userMessa
 import { BlockView, ToolResultBlock } from './blocks'
 import { useResultConsumed } from './result-consumed-context'
 import { extractTag, extractUserText, willRenderEmpty } from './rendering'
+import { FoldableBody } from './FoldableBody'
+import { userBodyFoldKey } from './fold-key'
 import {
   ApiRetryView,
   BashMessage,
@@ -91,6 +93,9 @@ export const MessageView = memo(function MessageView({
   showMessageHeaders = true,
   onSwitchModel,
   onAbortBash,
+  foldExpanded,
+  foldSearchHit,
+  onToggleFold,
 }: {
   msg: SdkMessage
   isCompactSummary?: boolean
@@ -134,6 +139,20 @@ export const MessageView = memo(function MessageView({
   /** Force-stop the current in-flight `!`/`!!` command. Forwarded to the
    *  pending bash card's "stop" button. */
   onAbortBash?: () => void
+  /** Whether THIS row's body is currently expanded. Lifted state: MessageList
+   *  keys its Set by userBodyFoldKey(msg) — content-derived, so it survives
+   *  Virtuoso unmounts AND the optimistic→ack row re-key (ackUserMessage
+   *  swaps pendingId for the server uuid; a row-id key would miss and snap
+   *  the body shut mid-send). Required — MessageList is the only caller. */
+  foldExpanded: boolean
+  /** Whether the canonical search view (item.plainText + countMatches — the
+   *  same SSOT the match counter and <mark> renderer use) hits this message.
+   *  Forces the body fully open with no toggle so a navigated-to mark can
+   *  never hide under the fold clamp. Required — see foldExpanded. */
+  foldSearchHit: boolean
+  /** Toggle this row's body expansion. Stable callback from MessageList;
+   *  receives userBodyFoldKey(msg). Required — see foldExpanded. */
+  onToggleFold: (foldKey: string) => void
 }) {
   const type = msg.type
 
@@ -397,14 +416,28 @@ export const MessageView = memo(function MessageView({
         </div>
         )}
         <div className="msg-body">
-          {imageBlocks.length > 0 && (
-            <div className="msg-image-row">
-              {imageBlocks.map((b, i) => (
-                <BlockView key={`img-${i}`} block={b} />
-              ))}
-            </div>
-          )}
-          {userContent && <Markdown text={userContent} breaks searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />}
+          {/* Search-hit override (mirrors ToolGroupCard's hasSearchHit):
+              foldSearchHit comes from MessageList on the canonical plainText
+              view — the same SSOT as the match counter and the <mark>
+              renderer — so a body is pinned open with no toggle exactly
+              when a navigated-to mark exists inside it. Raw-substring
+              probing of the markdown source diverges from that view (a
+              query spanning "**" finds no substring but does find a mark)
+              and would leave the mark clipped under the fold. */}
+          <FoldableBody
+            expanded={foldExpanded}
+            forceOpen={foldSearchHit}
+            onToggle={() => onToggleFold(userBodyFoldKey(msg))}
+          >
+            {imageBlocks.length > 0 && (
+              <div className="msg-image-row">
+                {imageBlocks.map((b, i) => (
+                  <BlockView key={`img-${i}`} block={b} />
+                ))}
+              </div>
+            )}
+            {userContent && <Markdown text={userContent} breaks searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />}
+          </FoldableBody>
         </div>
       </div>
     )

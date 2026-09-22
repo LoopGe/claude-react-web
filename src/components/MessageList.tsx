@@ -29,6 +29,8 @@ import { EasterEggGame } from './EasterEggGame'
 import { ResultConsumedCtx } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed } from './message-list/rendering'
 import { MessageView } from './message-list/MessageView'
+import { userBodyFoldKey } from './message-list/fold-key'
+import { countMatches } from '../search'
 import { ToolGroupCard } from './message-list/ToolGroupCard'
 import { BottomOverlaySpacer } from './message-list/views/frame-views'
 import {
@@ -41,6 +43,11 @@ import {
 import { useSubagentSyntheticRows } from './message-list/useSubagentSyntheticRows'
 import { useTranscriptAnimations } from './message-list/useTranscriptAnimations'
 import { useTranscriptScroll } from './message-list/useTranscriptScroll'
+import {
+  noteRowMount,
+  registerWhiteoutSource,
+  whiteoutDebugEnabled,
+} from './message-list/whiteout-debug'
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
 export type { ActiveSubagent } from '../session-store/types'
@@ -239,6 +246,39 @@ interface Props {
   onBackgroundTool?: (toolUseId: string) => void
 }
 
+/** TEMPORARY (whiteout investigation): wrap a row's subtree and report how
+ *  long its first render + layout took. Mount-only — later re-renders of the
+ *  same row are ignored, because the whiteout hypothesis is a MOUNT storm
+ *  during fast scroll, not steady-state update cost. Only mounted when the
+ *  `crw:debug:whiteout` flag is on (see whiteout-debug.ts); the flag is a
+ *  module-load constant, so the branch is free.
+ *
+ *  `started` is set once per MOUNT (StrictMode's double-invoke is collapsed
+ *  by `noted`): a re-render must not re-seed a timestamp the mount effect
+ *  will never read, or a concurrent-render discard could leave a stale start
+ *  and inflate exactly the ms totals this probe exists to measure. */
+function RowMountTimer({ rowId, kind, children }: { rowId: string; kind: string; children: ReactNode }) {
+  const startedRef = useRef<number | null>(null)
+  const notedRef = useRef(false)
+  if (startedRef.current === null) {
+    // eslint-disable-next-line react-hooks/purity -- TEMPORARY probe: seed the mount-start timestamp exactly once
+    startedRef.current = performance.now()
+  }
+  useLayoutEffect(() => {
+    if (notedRef.current) return
+    notedRef.current = true
+    const started = startedRef.current
+    if (started == null) return
+    noteRowMount(rowId, kind, performance.now() - started)
+    // Mount-only by design; see component comment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return <>{children}</>
+}
+
+/** Cached flag: whiteout-debug reads localStorage once at module load. */
+const WHITEOUT_DEBUG = whiteoutDebugEnabled()
+
 /** Stable empty-Map sentinels. Using `= new Map()` in the parameter
  *  defaults below would allocate a fresh Map on every render and defeat
  *  React.memo equality whenever a parent omits these props. */
@@ -330,6 +370,38 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // doesn't tear down/re-register on every parent re-render.
   const openEasterEgg = useCallback(() => setGameOpen(true), [])
   const closeEasterEgg = useCallback(() => setGameOpen(false), [])
+  // Long user-message body expansion. Lifted HERE rather than inside
+  // FoldableBody: Virtuoso unmounts rows that scroll out of the window, and
+  // a fresh mount must come back already-expanded if the user expanded it
+  // before. Keyed by userBodyFoldKey(msg) — CONTENT, not row id — because
+  // ackUserMessage re-keys the optimistic placeholder from pendingId to the
+  // server uuid after the POST resolves, and a row-id key would miss that
+  // swap and snap the body shut mid-send (review finding). Set (not array)
+  // → toggle is O(1) and idempotent; replaced wholesale per toggle so
+  // React's identity check drives the itemContent re-render. Cleared on
+  // transcriptRevealKey change (session switch / overlay retarget) —
+  // expansions from one transcript are meaningless in the next.
+  const [expandedBodies, setExpandedBodies] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleBodyExpanded = useCallback((foldKey: string) => {
+    setExpandedBodies((prev) => {
+      const next = new Set(prev)
+      if (next.has(foldKey)) next.delete(foldKey)
+      else next.add(foldKey)
+      return next
+    })
+  }, [])
+  // Clear expansions when the transcript identity changes (session switch /
+  // overlay retarget). Stale keys from one transcript can never match rows
+  // in the next (content-keyed), but they would otherwise accumulate for
+  // the panel's lifetime. Render-phase adjustment (setState-during-render
+  // for the SAME component), not an effect: React's documented "adjust
+  // state on prop change" pattern, and it avoids the extra commit-per-mount
+  // an effect would cost.
+  const [prevRevealKey, setPrevRevealKey] = useState(transcriptRevealKey)
+  if (prevRevealKey !== transcriptRevealKey) {
+    setPrevRevealKey(transcriptRevealKey)
+    if (expandedBodies.size > 0) setExpandedBodies(new Set())
+  }
   // An empty string is the turn's pre-text phase: a `liveTurn` already
   // exists (created on the turn's first stream event) but no text delta
   // has flushed yet — the "thinking" phase, or a tool-use turn that never
@@ -518,6 +590,37 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     replayReady,
     transcriptRevealKey,
   })
+  // TEMPORARY (whiteout investigation): per-frame blank detector. The row
+  // count and the list's own root element are read through refs so the
+  // module-level sampler is registered exactly once and still sees live
+  // values. Unregister leaves a short-lived "ghost" in the sampler so an
+  // ErrorBoundary unmount (hypothesis B) is logged instead of cancelling the
+  // probe at the exact moment it should fire.
+  //
+  // Source id is a per-mount counter, NOT transcriptRevealKey: the reveal key
+  // changes on session switch (and the .chat-messages div is keyed by it), so
+  // keying the registry on it would unregister→ghost→re-register and log a
+  // false B on every session switch. A whiteout is a scroll-time event, so
+  // one id per MessageList mount is the right identity.
+  /* eslint-disable react-hooks/refs -- render-time ref write; idempotent mirror of renderableItems.length */
+  const whiteoutRowCountRef = useRef(renderableItems.length)
+  whiteoutRowCountRef.current = renderableItems.length
+  /* eslint-enable react-hooks/refs */
+  const whiteoutSourceIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!WHITEOUT_DEBUG) return
+    if (whiteoutSourceIdRef.current == null) {
+      whiteoutSourceIdRef.current = `list-${Math.random().toString(36).slice(2, 8)}`
+    }
+    const id = whiteoutSourceIdRef.current
+    return registerWhiteoutSource({
+      id,
+      getRoot: () => messagesElRef.current,
+      getExpectedRows: () => whiteoutRowCountRef.current,
+    })
+    // Mount-only: one registration per MessageList instance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   // Fires when the user scrolls to the top. Pull the previous page of
   // history from disk if there's more and we're not already loading.
   const startReached = useCallback(() => {
@@ -862,15 +965,28 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       item.id === lastItemId ? 'transcript-last-item' : '',
       isEntering ? 'msg-enter' : '',
     ].filter(Boolean).join(' ')
-    return (
-      <div
-        className={className}
-        data-message-id={item.id}
-        data-enter-id={isEntering ? item.id : undefined}
-        ref={isEntering ? enterNodeRef : undefined}
-        onAnimationEnd={isEntering ? handleEnterAnimationEnd : undefined}
-      >
-        {item.toolGroup ? (
+    // Fold inputs for a real-user row, computed on the CANONICAL search
+    // view: countMatches over item.plainText is the exact predicate Chat's
+    // match counter uses (types.ts documents plainText as the search SSOT),
+    // so force-open fires exactly when a <mark> exists in this body — a
+    // raw-substring probe over the markdown source diverges (queries
+    // spanning "**" find marks but no substring) and would leave the
+    // navigated-to mark clipped under the fold.
+    const isHumanRow = isHumanUserMessage(item.msg)
+    // Key construction joins the FULL message text (multi-MB on a big
+    // paste) — only pay for it when the Set can actually hold it. With an
+    // empty Set, has() is false for every candidate, so '' is a correct
+    // always-miss answer. The toggle side computes its key on click inside
+    // MessageView, so the empty→non-empty transition never misses.
+    const foldKey = isHumanRow && expandedBodies.size > 0 ? userBodyFoldKey(item.msg) : ''
+    // Search force-open is deliberately independent of foldKey (which is
+    // '' while the Set is empty): gate on row humanness directly so it
+    // works with an empty expansion Set — the common case.
+    const foldSearchHit =
+      isHumanRow &&
+      !!searchQuery?.trim() &&
+      countMatches(item.plainText, searchQuery.trim()) > 0
+    const rowBody = item.toolGroup ? (
           <ToolGroupCard
             members={item.toolGroup.members}
             memberItemIndices={item.toolGroup.memberItemIndices}
@@ -915,7 +1031,28 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
             showMessageHeaders={showMessageHeaders}
             onSwitchModel={onSwitchModel}
             onAbortBash={onAbortBash}
+            foldExpanded={expandedBodies.has(foldKey)}
+            foldSearchHit={foldSearchHit}
+            onToggleFold={toggleBodyExpanded}
           />
+        )
+    return (
+      <div
+        className={className}
+        data-message-id={item.id}
+        data-enter-id={isEntering ? item.id : undefined}
+        ref={isEntering ? enterNodeRef : undefined}
+        onAnimationEnd={isEntering ? handleEnterAnimationEnd : undefined}
+      >
+        {WHITEOUT_DEBUG ? (
+          <RowMountTimer
+            rowId={item.id}
+            kind={item.toolGroup ? `toolGroup:${item.toolGroup.members.length}` : `msg:${item.msg.type}`}
+          >
+            {rowBody}
+          </RowMountTimer>
+        ) : (
+          rowBody
         )}
       </div>
     )
@@ -923,7 +1060,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // settles, a stale closure would leave its group card reading the old map
     // (and so still showing `running`). Both change only on subagent/workflow
     // events, unlike the context values that carry `messages`.
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, subagentCtx?.index, workflowCtx?.index])
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index])
 
   // Key rows by their stable message id instead of Virtuoso's default
   // (offset-space index).

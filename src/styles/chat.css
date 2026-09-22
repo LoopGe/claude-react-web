@@ -1855,6 +1855,60 @@
   border-color: var(--msg-user-pre-border);
 }
 
+/* Long real-user message fold (FoldableBody). The clamp height is applied
+   INLINE from FOLD_MAX_PX — the same constant the overflow measurement
+   compares against — so threshold and max-height cannot drift apart; this
+   block owns only the presentation: the clipped box, the bottom fade, and
+   the toggle chrome. */
+.fold-content.fold-clamped {
+  /* clip (not hidden): an overflow:hidden box stays PROGRAMMATICALLY
+     scrollable — Tab-focusing a descendant below the 240px cut scrolls the
+     inner box while the fixed mask stays put, desyncing the visible slice
+     with no way to scroll back. clip gives the same paint cut without
+     allowing scroll anchoring. hidden first as the pre-clip-engine
+     fallback (identical to the old behaviour). */
+  overflow: hidden;
+  overflow: clip;
+  /* Mask (not a colour gradient): alpha-only, so one rule reads correctly
+     over text, code blocks and images on EVERY theme/skin — no per-theme
+     override, no hex to keep in sync. `black` is the opaque end of the
+     alpha ramp, never painted. */
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 44px), transparent);
+  mask-image: linear-gradient(to bottom, black calc(100% - 44px), transparent);
+}
+.fold-toggle-row {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-1);
+}
+/* Chrome mirrors .compact-summary-toggle (accent pill + hover wash) so the
+   affordance reads as the same family; sentence case because this is a
+   primary reading control, not a system-card label. */
+.fold-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent-text);
+  padding: 1px 8px;
+  font-size: var(--fs-2xs);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+.fold-toggle:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.fold-toggle-chev {
+  transition: transform 150ms ease;
+}
+.fold-toggle-chev.open {
+  transform: rotate(180deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .fold-toggle-chev { transition: none; }
+}
+
 /* Assistant message ?sizes to its content so short replies render as
    compact bubbles instead of full-column blocks. The 900px ceiling
    keeps long prose, code blocks, and tables capped at the readable

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import type { SdkMessage } from '../types'
 import type { TranscriptItem } from '../session-store/types'
@@ -182,6 +182,8 @@ vi.mock('react-virtuoso', async () => {
 })
 // Import AFTER mock.
 import { MessageList, WorkingBubble } from './MessageList'
+import { FOLD_MAX_PX } from './message-list/fold-key'
+import { extractMessagePlainText } from '../search'
 import { shouldArmEnterAnimation } from '../utils/enter-animation'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import type { ActiveSubagent } from '../session-store/types'
@@ -3222,6 +3224,145 @@ describe('worktree markers', () => {
     expect(marker).toBeTruthy()
     expect(marker?.textContent).toContain('Exited worktree')
     expect(marker?.textContent).toContain('kept on disk')
+  })
+})
+
+describe('long user-message body fold', () => {
+  // happy-dom has no layout: script scrollHeight for everything via a
+  // prototype getter, SCOPED to this describe (installed/removed per test)
+  // so the rest of the file keeps native zero-height semantics. The Virtuoso
+  // scroller defines an instance-level scrollHeight that wins over the
+  // prototype, so follow/pin logic below is unaffected while a fold test
+  // runs. Set above/below FOLD_MAX_PX to script "tall" vs "fits".
+  let mockScrollHeight = 0
+  const origScrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
+  beforeEach(() => {
+    mockScrollHeight = 0
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get: () => mockScrollHeight,
+    })
+  })
+  afterEach(() => {
+    if (origScrollHeight) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', origScrollHeight)
+    else delete (HTMLElement.prototype as { scrollHeight?: unknown }).scrollHeight
+  })
+
+  function userItems(text: string) {
+    return toItems([makeMsg('user', { message: { content: [{ type: 'text', text }] } })])
+  }
+
+  // toItems() leaves plainText null, but the real store's toTranscriptItem
+  // fills it via extractMessagePlainText — the documented search SSOT
+  // (session-store/types.ts). Search-dependent fold tests need the real
+  // pipeline or they'd assert against a field the product never has null
+  // for a text-bearing user message.
+  function userItemsWithText(text: string) {
+    const msg = makeMsg('user', { message: { content: [{ type: 'text', text }] } })
+    return [{ id: 'item-0', msg, plainText: extractMessagePlainText(msg), isCompactSummary: false, hiddenByDefault: false }] as TranscriptItem[]
+  }
+
+  it('force-opens when the query matches only the markdown-stripped view', () => {
+    mockScrollHeight = FOLD_MAX_PX + 160
+    // Raw source has "**" between "npm install" and "and", so a substring
+    // probe over msg content misses; plainText strips the emphasis so the
+    // counter AND the <mark>s both see the hit. The body must pin open or
+    // the navigated-to mark stays clipped under the fold.
+    const { container } = render(
+      <MessageList items={userItemsWithText('run **npm install** and build')} searchQuery="npm install and" />,
+    )
+    expect(container.querySelector('.fold-clamped')).toBeNull()
+    expect(container.querySelector('.fold-toggle')).toBeNull()
+  })
+
+  it('carries expansion across the optimistic→ack row re-key', () => {
+    mockScrollHeight = FOLD_MAX_PX + 160
+    const text = 'a very long message pasted while still sending'
+    const before = [{
+      id: 'pending-1',
+      msg: makeMsg('user', { uuid: 'pending-1', message: { content: [{ type: 'text', text }] } }),
+      plainText: text,
+      isCompactSummary: false,
+      hiddenByDefault: false,
+      sending: true,
+    }] as TranscriptItem[]
+    // ackUserMessage re-keys placeholder → server uuid (reducer.ts), so the
+    // row id — and the React/Virtuoso key — changes under the user.
+    const after = [{
+      id: 'server-uuid',
+      msg: makeMsg('user', { uuid: 'server-uuid', message: { content: [{ type: 'text', text }] } }),
+      plainText: text,
+      isCompactSummary: false,
+      hiddenByDefault: false,
+    }] as TranscriptItem[]
+
+    const { container, rerender } = render(<MessageList items={before} />)
+    fireEvent.click(container.querySelector('.fold-toggle')!)
+    expect(container.querySelector('.fold-toggle')!.textContent).toContain('Show less')
+
+    rerender(<MessageList items={after} />)
+    expect(container.querySelector('.fold-toggle')!.textContent).toContain('Show less')
+    expect(container.querySelector('.fold-clamped')).toBeNull()
+  })
+
+  it('offers Show more on a real user message over the threshold and expands on click', () => {
+    mockScrollHeight = FOLD_MAX_PX + 160
+    const { container } = render(<MessageList items={userItems('a very long message')} />)
+    const btn = container.querySelector('.fold-toggle') as HTMLElement
+    expect(btn).toBeTruthy()
+    expect(btn.textContent).toContain('Show more')
+    expect(btn.getAttribute('aria-expanded')).toBe('false')
+    // Clamp applied: the body content carries the clamped class.
+    expect(container.querySelector('.fold-clamped')).toBeTruthy()
+
+    fireEvent.click(btn)
+    const open = container.querySelector('.fold-toggle') as HTMLElement
+    expect(open.textContent).toContain('Show less')
+    expect(open.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('.fold-clamped')).toBeNull()
+  })
+
+  it('keeps expansion after the row unmounts and remounts (state lifted to MessageList)', () => {
+    mockScrollHeight = FOLD_MAX_PX + 160
+    const items = userItems('a very long message')
+    const { container, rerender } = render(<MessageList items={items} />)
+    fireEvent.click(container.querySelector('.fold-toggle')!)
+
+    // Row leaves the rendered set (Virtuoso window shift / filter) and comes
+    // back — the per-row component is a fresh instance; only MessageList's
+    // lifted Set can remember the expansion.
+    rerender(<MessageList items={[]} />)
+    rerender(<MessageList items={items} />)
+    const btn = container.querySelector('.fold-toggle') as HTMLElement
+    expect(btn.textContent).toContain('Show less')
+    expect(container.querySelector('.fold-clamped')).toBeNull()
+  })
+
+  it('shows no toggle when the message fits under the threshold', () => {
+    mockScrollHeight = FOLD_MAX_PX - 40
+    const { container } = render(<MessageList items={userItems('short')} />)
+    expect(container.querySelector('.fold-toggle')).toBeNull()
+    expect(container.querySelector('.fold-clamped')).toBeNull()
+    expect(container.querySelector('.msg.user')).toBeTruthy()
+  })
+
+  it('force-opens without a toggle when searchQuery matches this message', () => {
+    mockScrollHeight = FOLD_MAX_PX + 160
+    const { container } = render(
+      <MessageList items={userItemsWithText('hello zebra world')} searchQuery="zebra" />,
+    )
+    // Search-hit override: never hide the <mark> the user navigated to.
+    expect(container.querySelector('.fold-clamped')).toBeNull()
+    expect(container.querySelector('.fold-toggle')).toBeNull()
+  })
+
+  it('keeps folding when searchQuery does not match this message', () => {
+    mockScrollHeight = FOLD_MAX_PX + 160
+    const { container } = render(
+      <MessageList items={userItemsWithText('hello world')} searchQuery="zebra" />,
+    )
+    expect(container.querySelector('.fold-toggle')).toBeTruthy()
+    expect(container.querySelector('.fold-clamped')).toBeTruthy()
   })
 })
 

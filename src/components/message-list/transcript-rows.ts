@@ -77,6 +77,11 @@ export interface TranscriptRow {
    *  the entrance-animation gate can tell a live arrival (timestamp present)
    *  from disk-restored history (undefined). */
   receivedAt?: number
+  /** Canonical markdown-stripped text view, carried from TranscriptItem
+   *  (the documented search SSOT — session-store/types.ts). Consumed by
+   *  itemContent's foldSearchHit predicate so the user-body force-open
+   *  uses exactly the text the match counter and <mark> renderer see. */
+  plainText: string | null
   /** Present only on a folded group of >=2 consecutive tool-only assistant
    *  rows. `id` stays the FIRST member's uuid so live 1->2 growth is a
    *  same-key height change + mid-list removal of the second row (I3). */
@@ -158,6 +163,7 @@ function pushRow(
     sending: item.sending,
     deliveryStatus: item.deliveryStatus,
     receivedAt: item.receivedAt,
+    plainText: item.plainText,
   })
 }
 
@@ -271,6 +277,9 @@ export function buildTranscriptRows({
       renderableIndex: out.length,
       // No receivedAt, so the entrance-animation gate skips it.
       itemIndex: -2,
+      // Never consumed by the fold predicate (not a human user message),
+      // but the field is required on every row.
+      plainText: null,
     })
   }
 
