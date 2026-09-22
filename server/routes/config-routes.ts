@@ -34,9 +34,6 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       commitMessageModel?: string
       updateCheckRegistry?: string
     }>(c.req)
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new HttpError(400, 'Body must be a JSON object')
-    }
     // An unreadable config.json is handled by readConfigForWrite inside
     // queueConfigWrite (server/config.ts), which backs the original up rather
     // than letting this write discard it. Deliberately NOT reimplemented here —
@@ -179,9 +176,6 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
   // refused by SSRF validation before any probe runs.
   app.post('/config/test-connection', async (c) => {
     const body = await safeJson<{ authToken?: string; baseUrl?: string }>(c.req)
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new HttpError(400, 'Body must be a JSON object')
-    }
     // A field that is PRESENT but not a string is a caller error — silently
     // treating it as absent would probe the SAVED credentials and answer
     // 200 {ok:true} for values that were never tested.
@@ -315,9 +309,6 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
 
   app.put('/log', async (c) => {
     const body = await safeJson<{ level?: string; scopes?: string[] | null }>(c.req)
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new HttpError(400, 'Body must be a JSON object')
-    }
     const update: { level?: LogLevel; scopes?: string[] | null } = {}
     if (body.level != null) {
       if (typeof body.level !== 'string' || !LOG_LEVELS.includes(body.level as LogLevel)) {
@@ -360,9 +351,6 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
   app.put('/log/file', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
     const body = await safeJson<{ enabled?: unknown }>(c.req)
-    if (!body || typeof body !== 'object') {
-      throw new HttpError(400, 'Body must be a JSON object')
-    }
     if (typeof body.enabled !== 'boolean') {
       throw new HttpError(400, 'enabled must be a boolean')
     }
@@ -380,9 +368,6 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
   app.put('/config', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
     const body = await safeJson<Record<string, unknown>>(c.req)
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new HttpError(400, 'Body must be a JSON object')
-    }
     // Detect whether the global skill policy is changing BEFORE the write
     // so we can re-fan-out only when it actually mutates. Reading from the
     // frozen config singleton is cheap and avoids a second disk read.

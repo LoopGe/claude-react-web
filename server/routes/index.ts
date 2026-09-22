@@ -31,14 +31,34 @@ import { ScheduledSendManager } from '../scheduled-send-manager.js'
 import { buildScheduledSendRouter } from './scheduled-sends.js'
 import { buildMetricsRouter } from './metrics.js'
 
-/** Parse JSON body, returning 400 on malformed input instead of silently
- *  falling back to an empty object. */
-export async function safeJson<T>(req: { json<T>(): Promise<T> }): Promise<T> {
+/** Parse a JSON body of ANY shape and return it as T. Malformed input is a 400
+ *  rather than a silent fallback to `{}`; nothing else is validated — use
+ *  safeJson when the handler needs an object. */
+export async function safeJsonValue<T>(req: { json<T>(): Promise<T> }): Promise<T> {
   try {
     return await req.json<T>()
   } catch {
     throw new HttpError(400, 'Malformed JSON body')
   }
+}
+
+/** Parse a JSON body that MUST be an object.
+ *
+ *  The type parameter is an assertion, not a check: a JSON `null` parses fine
+ *  and comes back as null, so a handler reading `body.field` off it threw a
+ *  TypeError and answered an opaque 500 — and a JSON array/array-of-anything
+ *  sailed past per-field guards into a bogus 200. Validating here covers every
+ *  endpoint at once instead of a hand-rolled copy in each one (they had already
+ *  grown to 14 in 4 different spellings, one omitting the array check).
+ *
+ *  Use safeJsonValue for a body that may legitimately be a non-object —
+ *  POST /sessions/:id/sandbox takes a literal `null` to clear the setting. */
+export async function safeJson<T>(req: { json<T>(): Promise<T> }): Promise<T> {
+  const value = await safeJsonValue<unknown>(req)
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new HttpError(400, 'Body must be a JSON object')
+  }
+  return value as T
 }
 
 export function buildApiRouter(

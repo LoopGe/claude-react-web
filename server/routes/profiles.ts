@@ -55,9 +55,6 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
       name?: string; authToken?: string; baseUrl?: string; modelList?: string[];
       modelGroups?: unknown[]; recapModel?: string; commitMessageModel?: string
     }>(c.req)
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new HttpError(400, 'Body must be a JSON object')
-    }
     const name = typeof body.name === 'string' ? body.name.trim() : ''
     if (!name) throw new HttpError(400, 'name is required')
     const active = serverConfig.profiles.find((p) => p.id === serverConfig.activeProfileId) ?? serverConfig.profiles[0]
@@ -94,9 +91,6 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
     if (!configDir) throw new HttpError(500, 'configDir not set')
     const id = c.req.param('id')
     const body = await safeJson<Record<string, unknown>>(c.req)
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new HttpError(400, 'Body must be a JSON object')
-    }
     await queueConfigWrite(configDir, (existing) => {
       const profiles = Array.isArray(existing.profiles) ? existing.profiles : []
       // Resolve through the coercion, exactly as the reader does. Ids are trimmed
@@ -187,9 +181,6 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
   app.post('/profiles/activate', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
     const body = await safeJson<{ profileId?: string; restartSessions?: unknown }>(c.req)
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new HttpError(400, 'Body must be a JSON object')
-    }
     const profileId = body.profileId
     if (typeof profileId !== 'string' || !serverConfig.profiles.some((p) => p.id === profileId)) {
       throw new HttpError(400, `profile ${profileId} not found`)

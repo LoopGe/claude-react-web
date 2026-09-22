@@ -205,7 +205,7 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
    *  overwritten); names that fail validation are reported per-entry. */
   app.post('/claude-import', async (c) => {
     const body = await safeJson<{ names?: unknown }>(c.req)
-    if (!body || typeof body !== 'object' || !Array.isArray(body.names)) {
+    if (!Array.isArray(body.names)) {
       throw new HttpError(400, 'names must be an array of strings')
     }
     const names = body.names.filter((n): n is string => typeof n === 'string' && n.trim().length > 0)

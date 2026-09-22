@@ -27,9 +27,6 @@ export function buildUiStateRouter(store: UiStateStore): Hono {
    *  the canonical view. */
   app.put('/', async (c) => {
     const body = await safeJson<UiState>(c.req)
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new HttpError(400, 'body must be a UiState object')
-    }
     // Validate shape defensively
     if (!Array.isArray(body.groups) || !Array.isArray(body.sidebarOrder)) {
       throw new HttpError(400, 'invalid ui-state shape')
@@ -42,9 +39,6 @@ export function buildUiStateRouter(store: UiStateStore): Hono {
    *  Only writes if ui-state.json does not already exist. */
   app.post('/import', async (c) => {
     const body = await safeJson<UiState>(c.req)
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      throw new HttpError(400, 'body must be a UiState object')
-    }
     const applied = await store.importFromLegacy(body)
     log.info(`import: applied=${applied}`)
     return c.json({ applied, uiState: store.getState() })

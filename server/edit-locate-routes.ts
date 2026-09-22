@@ -26,6 +26,7 @@ import { isAbsolute, relative as relativePath, resolve as resolvePath } from 'no
 import { readFile, stat } from 'node:fs/promises'
 import { structuredPatch } from 'diff'
 import { HttpError, createErrorHandler } from './errors.js'
+import { safeJson } from './routes/index.js'
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024
 const MAX_ANCHORS = 100
@@ -70,10 +71,7 @@ export function buildEditLocateRouter(): Hono {
   app.onError(createErrorHandler('[edit-locate]'))
 
   app.post('/', async (c) => {
-    const body = (await c.req.json().catch(() => null)) as
-      | { cwd?: unknown; path?: unknown; anchors?: unknown }
-      | null
-    if (!body || typeof body !== 'object') throw new HttpError(400, 'JSON body required')
+    const body = await safeJson<{ cwd?: unknown; path?: unknown; anchors?: unknown }>(c.req)
 
     const { cwd, path: filePath, anchors } = body
     if (typeof cwd !== 'string' || !isAbsolute(cwd)) {

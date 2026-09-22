@@ -5,7 +5,7 @@ import { serverDefaultCwd, withDefaultCwd } from '../default-cwd.js'
 import { isAbsolute } from 'node:path'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
 import { SessionManager } from '../session-manager.js'
-import { safeJson } from './index.js'
+import { safeJson, safeJsonValue } from './index.js'
 import type { MpStore } from '../mp-store.js'
 import { agentUnusableReason, normalizeAgentName, type AgentDefinitionStore } from '../agent-definition-store.js'
 import { isUserSelectablePermissionMode, permissionModeList } from '../permission-modes.js'
@@ -612,9 +612,6 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
   // fork respawn (both carry the profile) — NOT mid-turn.
   app.put('/sessions/:id/tool-profile', async (c) => {
     const body = await safeJson<{ toolProfile?: unknown }>(c.req)
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return c.json({ error: 'body must be a JSON object' }, 400)
-    }
     const profile = coerceToolProfile(body.toolProfile)
     // Only a malformed known field is a 400. An empty/absent payload (coerce
     // returns undefined) CLEARS the profile back to defaults — distinct from
@@ -854,7 +851,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
   // survives resume / fork / clear / restart.
   app.post('/sessions/:id/sandbox', async (c) => {
     const id = c.req.param('id')
-    const body = await safeJson<unknown>(c.req)
+    const body = await safeJsonValue<unknown>(c.req) // `null` clears the setting
     if (body === null) {
       return c.json({ session: await sm.setSandbox(id, null) })
     }
