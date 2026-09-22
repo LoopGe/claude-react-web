@@ -29,7 +29,7 @@ import { shortenPath } from '../utils/paths'
 import { gitChipText } from '../utils/git-chip'
 import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff, IconMask } from './icons/ToolIcons'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
-import { PermissionModeIcon, permissionModeLabel } from './permission-mode-display'
+import { PermissionModeIcon, permissionModeLabel, permissionModeShortLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingSetting } from '../types'
 import type { Skin } from '../utils/theme'
 import type { SettingsTabName } from '../local-commands'
@@ -719,7 +719,7 @@ export const ChatPanel = memo(function ChatPanel({
       prevPermModeRef.current = permMode
     }
   }, [permMode])
-  /** Mode labels vary in width ("default" vs "bypassPermissions"), so the
+  /** Mode labels vary in width ("ask" vs "accept edits"), so the
    *  wrap would otherwise snap to the new width the instant the label
    *  swaps and teleport every chip after it (fast, effort, model). On a
    *  transition we pin the wrap to the OLD width on the first painted
@@ -893,7 +893,7 @@ export const ChatPanel = memo(function ChatPanel({
                 aria-hidden
               >
                 <PermissionModeIcon mode={modeTransitionFrom} />
-                <span className="chat-panel-mode-label"><span>{modeTransitionFrom}</span></span>
+                <span className="chat-panel-mode-label"><span>{permissionModeShortLabel(modeTransitionFrom)}</span></span>
               </span>
             )}
             <button
@@ -910,7 +910,7 @@ export const ChatPanel = memo(function ChatPanel({
               }}
             >
               <PermissionModeIcon mode={permMode} />
-              <span className="chat-panel-mode-label"><span>{permMode}</span></span>
+              <span className="chat-panel-mode-label"><span>{permissionModeShortLabel(permMode)}</span></span>
             </button>
           </span>
         </Tooltip>
@@ -1080,7 +1080,7 @@ export const ChatPanel = memo(function ChatPanel({
               y={permMenu.y}
               onClose={() => setPermMenu(null)}
               items={PERMISSION_MODES.map((m) => ({
-                label: m,
+                label: permissionModeShortLabel(m),
                 icon: (session.permissionMode ?? 'default') === m ? <IconCheck size={14} /> : ' ',
                 onClick: () => commitPermissionMode(m),
               }))}

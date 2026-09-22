@@ -339,7 +339,7 @@ describe('NewSessionDialog field pickers (model / permission mode / group)', () 
     expect(texts.some((t) => t?.includes('Plan mode'))).toBe(true)
     // Raw enum values must not be the visible labels.
     expect(texts.some((t) => t?.trim() === 'bypassPermissions')).toBe(false)
-    expect(texts.some((t) => t?.includes('Bypass permissions'))).toBe(true)
+    expect(texts.some((t) => t?.includes('Bypass (allow all)'))).toBe(true)
 
     fireEvent.click(fieldItems().find((el) => el.textContent?.includes('Plan mode'))!)
     const form = await clickCreate(onSubmit)

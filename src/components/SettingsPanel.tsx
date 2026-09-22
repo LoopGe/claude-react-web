@@ -36,6 +36,7 @@ import { SettingsRow } from './SettingsRow'
 import { AgentDefinitionsSection } from './agent-definitions/AgentDefinitionsSection'
 import ToolsTab from './tools/ToolsTab'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
+import { permissionModeShortLabel } from './permission-mode-display'
 
 // MarketplaceTab and McpInstaller are heavy modal-within-modal
 // components opened only on user intent (Browse plugins / Add MCP).
@@ -1032,7 +1033,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           >
             {PERMISSION_MODES.map((m) => (
               <option key={m} value={m}>
-                {m}
+                {permissionModeShortLabel(m)}
               </option>
             ))}
           </select>
