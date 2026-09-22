@@ -256,7 +256,6 @@ export function useNotifications(options?: UseNotificationsOptions): UseNotifica
   )
 
   const swRegRef = options?.swRegRef
-  /* eslint-disable react-hooks/preserve-manual-memoization -- swRegRef is a ref object; .current is read inside the callback at call time, not capture time */
 
   /** Fetch every SW-shown notification carrying `tag` and close each.
    *  One bad (detached / already-collected) Notification must not skip
@@ -329,7 +328,7 @@ export function useNotifications(options?: UseNotificationsOptions): UseNotifica
       // Fallback: SW unavailable — use plain Notification (no buttons).
       return notify(payload)
     },
-    [enabled, notify, swRegRef],
+    [enabled, notify, swRegRef, closeSwByTag],
   )
 
   const closeByTag = useCallback(async (tag: string) => {
@@ -369,7 +368,6 @@ export function useNotifications(options?: UseNotificationsOptions): UseNotifica
       console.warn('[notifications] plain close failed:', err)
     }
   }, [swRegRef])
-  /* eslint-enable react-hooks/preserve-manual-memoization */
 
   return { enabled, permission, toggle, notify, notifyWithActions, closeByTag }
 }

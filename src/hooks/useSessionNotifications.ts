@@ -283,14 +283,14 @@ export function useSessionNotifications({
             onClick: () => { handleSelectRef.current?.(sessionId) },
           })
       if (shown) {
-        // Fresh entry — tearDownPermSurface above already cleared whatever
-        // was live, so only the OS surface is up now.
+        // Fresh entry — the cross-surface teardown above already cleared
+        // whatever was live, so only the OS surface is up now.
         permLiveRef.current.set(sessionId, { osShown: true })
       }
-      // When !shown nothing is live; tearDownPermSurface already deleted
+      // When !shown nothing is live; the teardown above already deleted
       // the old entry, so there is deliberately nothing to write.
     },
-    [focusedIdRef, sessionsRef, handleSelectRef, tearDownPermSurface],
+    [focusedIdRef, sessionsRef, handleSelectRef],
   )
 
   const maybeCliNotify = useCallback(
