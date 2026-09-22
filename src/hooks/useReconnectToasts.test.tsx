@@ -11,18 +11,34 @@
 // Only `useWsHubStatus` is mocked (no real WebSocket). ToastProvider is the
 // real thing so assertions run against actual show/dismiss.
 
-import { StrictMode, useEffect, useState } from 'react'
+import { StrictMode, useEffect, useState, useSyncExternalStore } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import { ToastProvider } from '../components/ToastProvider'
 import { useToast, useToastList } from './useToast'
 import type { WsHubStatus } from './useWsHub'
 
-// Mutable status the mocked hook reads. Bump `rerender` via the harness to
-// flush a React pass after flipping it.
+// Mutable status backed by a real subscription. A plain `() => hubStatus`
+// mock returns the module-level variable but never tells React to
+// re-render, so a component under test that is NOT a descendant of the
+// element being bumped would silently keep its previous render — assertions
+// on it would pass vacuously. useSyncExternalStore + publishStatus makes a
+// status flip actually reach every subscriber.
 let hubStatus: WsHubStatus = 'online'
+const statusListeners = new Set<() => void>()
+function publishStatus(next: WsHubStatus) {
+  hubStatus = next
+  statusListeners.forEach((l) => l())
+}
 vi.mock('./useWsHub', () => ({
-  useWsHubStatus: () => hubStatus,
+  useWsHubStatus: () =>
+    useSyncExternalStore(
+      (cb: () => void) => {
+        statusListeners.add(cb)
+        return () => statusListeners.delete(cb)
+      },
+      () => hubStatus,
+    ),
 }))
 
 // Import AFTER the mock so the hook picks up the mocked module.
@@ -106,8 +122,7 @@ function setup(opts?: { strict?: boolean; initialStatus?: WsHubStatus }) {
   const utils = render(opts?.strict ? <StrictMode>{tree}</StrictMode> : tree)
   const messages = () => latest
   const setStatus = (s: WsHubStatus) => {
-    hubStatus = s
-    act(() => rerenderRef.current())
+    act(() => publishStatus(s))
   }
   return { ...utils, messages, setStatus, apiRef, rerenderRef }
 }
@@ -216,33 +231,90 @@ describe('useReconnectToasts', () => {
 })
 
 describe('ReconnectToasts live region', () => {
+  function renderLive(opts?: { initialStatus?: WsHubStatus }) {
+    hubStatus = opts?.initialStatus ?? 'online'
+    const rerenderRef: { current: () => void } = { current: () => {} }
+    render(
+      <ToastProvider>
+        <ReconnectToasts />
+        <Harness rerenderRef={rerenderRef} />
+      </ToastProvider>,
+    )
+    const live = document.querySelector('[role="status"]')
+    expect(live).toBeTruthy()
+    const setStatus = (s: WsHubStatus) => {
+      act(() => publishStatus(s))
+    }
+    const rerender = () => act(() => rerenderRef.current())
+    return { live: live!, setStatus, rerender }
+  }
+
   it('mutates the always-mounted region for outage AND recovery', () => {
     // ToastHost inserts nodes with text already present (unreliable for
     // some SR/browser combos). This region must stay mounted and only
     // change its text — and it must carry "Reconnected" too, not just
     // the outage string.
-    const apiRef: { current: ToastApi | null } = { current: null }
-    const rerenderRef: { current: () => void } = { current: () => {} }
-    render(
-      <ToastProvider>
-        <ReconnectToasts />
-        <Harness apiRef={apiRef} rerenderRef={rerenderRef} />
-      </ToastProvider>,
-    )
-    const live = document.querySelector('[aria-live]')
-    expect(live).toBeTruthy()
-    expect(live!.textContent).toBe('')
+    const { live, setStatus } = renderLive()
+    expect(live.textContent).toBe('')
 
-    act(() => {
-      hubStatus = 'reconnecting'
-      rerenderRef.current()
-    })
-    expect(live!.textContent).toBe(RECONNECT_MSG)
+    setStatus('reconnecting')
+    expect(live.textContent).toBe(RECONNECT_MSG)
 
-    act(() => {
-      hubStatus = 'online'
-      rerenderRef.current()
-    })
-    expect(live!.textContent).toBe(RECONNECTED_MSG)
+    setStatus('online')
+    expect(live.textContent).toBe(RECONNECTED_MSG)
+  })
+
+  it('keeps the text stable across unrelated re-renders (no spurious SR announcement)', () => {
+    // The live region must only mutate at outage/recovery boundaries.
+    // Recomputing the text from a ref that an effect resets would flip
+    // "Reconnected" → "" on the next unrelated render, which some SRs
+    // announce as a second, empty utterance.
+    const { live, setStatus, rerender } = renderLive()
+    setStatus('reconnecting')
+    expect(live.textContent).toBe(RECONNECT_MSG)
+    rerender()
+    expect(live.textContent).toBe(RECONNECT_MSG)
+
+    setStatus('online')
+    expect(live.textContent).toBe(RECONNECTED_MSG)
+    rerender()
+    expect(live.textContent).toBe(RECONNECTED_MSG)
+    rerender()
+    expect(live.textContent).toBe(RECONNECTED_MSG)
+  })
+
+  it('keeps the outage text through a connecting retry hop, then announces recovery', () => {
+    const { live, setStatus } = renderLive()
+    setStatus('reconnecting')
+    expect(live.textContent).toBe(RECONNECT_MSG)
+    // 'connecting' is still offline — the text must not clear here, or the
+    // retry hop would read as a recovery.
+    setStatus('connecting')
+    expect(live.textContent).toBe(RECONNECT_MSG)
+    setStatus('online')
+    expect(live.textContent).toBe(RECONNECTED_MSG)
+  })
+
+  it('shows the outage text when the region mounts during reconnecting', () => {
+    // Mount-during-reconnect: the region must carry the outage text even
+    // though there was no prior render to transition from.
+    const { live } = renderLive({ initialStatus: 'reconnecting' })
+    expect(live.textContent).toBe(RECONNECT_MSG)
+  })
+
+  it('does not clear a prior recovery when a later hop returns to online', () => {
+    // After an episode closes, the region must go quiet — no further
+    // mutations at all. Clearing "Reconnected" back to '' on some later
+    // non-outage online would be a second mutation, which some SRs announce
+    // as an empty utterance.
+    const { live, setStatus } = renderLive()
+    setStatus('reconnecting')
+    setStatus('online')
+    expect(live.textContent).toBe(RECONNECTED_MSG)
+
+    setStatus('connecting')
+    expect(live.textContent).toBe(RECONNECTED_MSG)
+    setStatus('online')
+    expect(live.textContent).toBe(RECONNECTED_MSG)
   })
 })
