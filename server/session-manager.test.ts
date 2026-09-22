@@ -2225,6 +2225,22 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.terminatedReason).toBe('transcript_missing')
   })
 
+  it('resume() 400s with "Working directory not found" when the session cwd is gone (no spawn)', async () => {
+    // Node's spawn reports ENOENT for a missing cwd as well as a missing
+    // binary. Without a pre-spawn probe the user is told to reinstall the
+    // CLI while the real fault is a moved/deleted project directory.
+    const gone = join(dir, 'moved-away')
+    const info = sm.create({ cwd: gone, model: 'm1' })
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await sm.unload(info.id)
+    const before = mockHandles.length
+
+    await expect(sm.resume(info.id)).rejects.toThrow(/Working directory not found/)
+    // The doomed Query must never be constructed.
+    expect(mockHandles.length).toBe(before)
+  })
+
   it('resume() unloads and re-spawns a live transiently-terminated zombie (crash while server is running)', async () => {
     // The pump's cleanup tail sets terminated=true but does NOT unload, so a
     // crashed session lingers in the live map as a dead zombie. resume() must
@@ -2619,6 +2635,123 @@ describe('SessionManager', () => {
     await sm.setThinking(info.id, { type: 'enabled', budgetTokens: 8192, display: 'summarized' })
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(8192, 'summarized')
     expect(sm.get(info.id).thinking).toEqual({ type: 'enabled', budgetTokens: 8192, display: 'summarized' })
+  })
+
+  it('setCwd() relocates the workspace and clears a stale spawn_failed error', async () => {
+    const info = sm.create({ cwd: dir, model: 'm1' })
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await sm.unload(info.id)
+    // Simulate the spawn_failed aftermath we are recovering from.
+    const stale = store.get(info.id)!
+    store.upsert({
+      ...stale,
+      terminated: false,
+      terminatedReason: 'spawn_failed',
+      error: 'Working directory not found: /gone',
+    })
+
+    const next = join(dir, 'moved', 'web')
+    mkdirSync(next, { recursive: true })
+    const updated = sm.setCwd(info.id, next)
+
+    expect(updated.cwd).toBe(next)
+    expect(store.get(info.id)!.cwd).toBe(next)
+    // A workspace fix is exactly how the user clears this class of failure.
+    expect(store.get(info.id)!.error).toBeUndefined()
+    expect(store.get(info.id)!.terminatedReason).toBeUndefined()
+    // Git anchors belong to the OLD tree and must not keep grouping this
+    // session with the previous repo's snapshots.
+    expect(store.get(info.id)!.repoRoot).toBeUndefined()
+    expect(store.get(info.id)!.gitStartSha).toBeUndefined()
+  })
+
+  it('setCwd() 409s on a running session (the live CLI keeps its spawn cwd)', () => {
+    const info = sm.create({ cwd: dir, model: 'm1' })
+    const next = join(dir, 'moved')
+    mkdirSync(next, { recursive: true })
+    expect(() => sm.setCwd(info.id, next)).toThrow(/sleep it first/)
+    expect(store.get(info.id)!.cwd ?? sm.get(info.id).cwd).toBe(dir)
+  })
+
+  it('setCwd() 400s when the directory does not exist', () => {
+    const info = sm.create({ cwd: dir, model: 'm1' })
+    mockHandles[0].emit({ type: 'result' })
+    return (async () => {
+      await tick()
+      await sm.unload(info.id)
+      expect(() => sm.setCwd(info.id, join(dir, 'no-such-subdir'))).toThrow(
+        /Working directory not found/,
+      )
+      expect(store.get(info.id)!.cwd).toBe(dir)
+    })()
+  })
+
+  it('setCwd() 400s on an empty cwd string', () => {
+    const info = sm.create({ cwd: dir, model: 'm1' })
+    mockHandles[0].emit({ type: 'result' })
+    return (async () => {
+      await tick()
+      await sm.unload(info.id)
+      expect(() => sm.setCwd(info.id, '')).toThrow(/Working directory not found/)
+    })()
+  })
+
+  it('setCwd() un-kills a transcript_missing session (relocating is the recovery)', async () => {
+    const info = sm.create({ cwd: dir, model: 'm1' })
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await sm.unload(info.id)
+    // The pre-id-scoped hasTranscript bug used to mark relocated sessions
+    // transcript_missing. PATCH cwd must let the id-scoped probe retry.
+    store.upsert({
+      ...store.get(info.id)!,
+      terminated: true,
+      terminatedReason: 'transcript_missing',
+    })
+    const next = join(dir, 'moved')
+    mkdirSync(next, { recursive: true })
+    const updated = sm.setCwd(info.id, next)
+    expect(updated.terminated).toBe(false)
+    expect(store.get(info.id)!.terminated).toBe(false)
+    expect(store.get(info.id)!.terminatedReason).toBeUndefined()
+  })
+
+  it('setCwd() 400s when the path is a file, not a directory', () => {
+    const info = sm.create({ cwd: dir, model: 'm1' })
+    mockHandles[0].emit({ type: 'result' })
+    const file = join(dir, 'notes.txt')
+    writeFileSync(file, 'x')
+    return (async () => {
+      await tick()
+      await sm.unload(info.id)
+      expect(() => sm.setCwd(info.id, file)).toThrow(/Working directory not found/)
+    })()
+  })
+
+  it('resume() after setCwd still finds the transcript (probe is id-scoped, not cwd-scoped)', async () => {
+    // Regression for the relocate path: hasTranscript used to pass `dir:
+    // meta.cwd`, so after PATCH cwd the probe looked in the NEW path's
+    // encoded projects/ subtree, missed the jsonl under the OLD encoding,
+    // and markTranscriptMissing permanently killed the session.
+    const info = sm.create({ cwd: dir, model: 'm1' })
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    await sm.unload(info.id)
+
+    const next = join(dir, 'moved')
+    mkdirSync(next, { recursive: true })
+    sm.setCwd(info.id, next)
+    mockGetSessionInfo.mockClear()
+
+    const resumed = await sm.resume(info.id)
+    expect(resumed.id).toBe(info.id)
+    expect(mockGetSessionInfo).toHaveBeenCalled()
+    // Id-scoped: no `dir` argument that would scope the lookup to `next`.
+    const probeArgs = mockGetSessionInfo.mock.calls[0]
+    expect(probeArgs?.[1]?.dir).toBeUndefined()
+    expect(store.get(info.id)?.terminatedReason).not.toBe('transcript_missing')
   })
 
   it('setThinking() persists display so it survives resume', async () => {
@@ -3197,7 +3330,10 @@ describe('SessionManager', () => {
     const renamed = sm.rename(info.id, '  My Title  ')
     expect(renamed.title).toBe('My Title')
     await tick()
-    expect(mockRenameSession).toHaveBeenCalledWith(info.id, 'My Title', { dir: '/tmp' })
+    // Id-scoped (no `dir`): same rationale as hasTranscript — a title write
+    // after a project move must still find the jsonl under the OLD encoding.
+    // The SDK shim forwards a third arg; it must be undefined (no dir scope).
+    expect(mockRenameSession).toHaveBeenCalledWith(info.id, 'My Title', undefined)
   })
 
   it('rename() does not write an empty/cleared title to the CLI transcript', async () => {
@@ -3911,7 +4047,7 @@ describe('SessionManager', () => {
     it('synthesises a SessionMeta from getSessionInfo and resumes', async () => {
       mockGetSessionInfo.mockResolvedValueOnce({
         sessionId: 'orphan',
-        cwd: '/tmp/orphan',
+        cwd: dir,
         summary: 'Orphaned session',
         lastModified: 1234,
         createdAt: 1000,
@@ -3933,7 +4069,7 @@ describe('SessionManager', () => {
       // silently dropping to the model's default 200K window.
       mockGetSessionInfo.mockResolvedValueOnce({
         sessionId: 'orphan-cli',
-        cwd: '/tmp/orphan',
+        cwd: dir,
         summary: 'CLI session',
         lastModified: 1234,
         createdAt: 1000,
@@ -3954,7 +4090,7 @@ describe('SessionManager', () => {
     it('coalesces concurrent resume() calls into a single spawn (no duplicate process)', async () => {
       mockGetSessionInfo.mockResolvedValueOnce({
         sessionId: 'orphan',
-        cwd: '/tmp/orphan',
+        cwd: dir,
         summary: 'Orphaned session',
         lastModified: 1234,
         createdAt: 1000,
@@ -4884,7 +5020,9 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       const dormant = sm.get(info.id)
       expect(dormant.terminated).toBe(false)
       expect(dormant.terminatedReason).toBe('spawn_failed')
-      expect(dormant.error).toMatch(/not found|ENOENT/)
+      // cwd exists (dir) → ENOENT is the binary, not the workspace.
+      expect(dormant.error).toMatch(/binary not found/i)
+      expect(dormant.error).not.toMatch(/Working directory not found/)
       expect(mockHandles).toHaveLength(1) // no auto-recovery respawn (retrying would fail identically)
 
       // The binary being missing is transient + user-fixable, so the session
@@ -4893,6 +5031,25 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(mockHandles.length).toBeGreaterThanOrEqual(2)
       expect(sm.get(info.id).running).toBe(true)
       expect(sm.get(info.id).error).toBeUndefined()
+    })
+
+    it('spawn ENOENT with a missing cwd blames the working directory, not the binary', async () => {
+      sm = new SessionManager({ store, crashRecovery: true })
+      const missingCwd = join(dir, 'moved-away')
+      const info = sm.create({ cwd: missingCwd })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      fireCrash(sm, info.id, { code: null, signal: null, killed: false, spawnError: { code: 'ENOENT', message: 'spawn claude.exe ENOENT' } })
+      await waitFor(() => sm.get(info.id).running === false)
+
+      const dormant = sm.get(info.id)
+      expect(dormant.error).toMatch(/Working directory not found/)
+      expect(dormant.error).toContain('moved-away')
+      // The old blanket message sent users to reinstall a perfectly good CLI.
+      expect(dormant.error).not.toMatch(/binary not found/i)
     })
 
     it('ladder exhausted: a 3rd crash gives up transiently (no auto-fork) so the client can offer Resume/Fork', async () => {

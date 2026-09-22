@@ -4,7 +4,7 @@ import { Hono } from 'hono'
 import { serverDefaultCwd, withDefaultCwd } from '../default-cwd.js'
 import { isAbsolute } from 'node:path'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
-import { SessionManager } from '../session-manager.js'
+import { SessionManager, cwdMissing, workingDirMissingMsg } from '../session-manager.js'
 import { safeJson, safeJsonValue } from './index.js'
 import type { MpStore } from '../mp-store.js'
 import { agentUnusableReason, normalizeAgentName, type AgentDefinitionStore } from '../agent-definition-store.js'
@@ -319,12 +319,25 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     return c.json({ ok: true })
   })
 
-  // Patch session metadata (title).
+  // Patch session metadata (title and/or cwd). `cwd` is how a user recovers
+  // a session whose project directory was moved — without it the only fix is
+  // hand-editing sessions.json (which a live server overwrites).
   app.patch('/sessions/:id', async (c) => {
     const id = c.req.param('id')
-    const body = await safeJson<{ title?: string }>(c.req)
-    if (typeof body.title !== 'string') return c.json({ error: 'title is required' }, 400)
-    const info = sm.rename(id, body.title)
+    const body = await safeJson<{ title?: string; cwd?: string }>(c.req)
+    const hasTitle = typeof body.title === 'string'
+    const hasCwd = typeof body.cwd === 'string'
+    if (!hasTitle && !hasCwd) {
+      return c.json({ error: 'title or cwd is required' }, 400)
+    }
+    if (hasCwd && cwdMissing(body.cwd)) {
+      return c.json({ error: workingDirMissingMsg(body.cwd!) }, 400)
+    }
+    // Cwd first: it can 400/409 after the existsSync pre-check (TOCTOU, live
+    // session). Applying rename first would persist a title the caller
+    // treats as part of a failed patch.
+    let info = hasCwd ? sm.setCwd(id, body.cwd as string) : undefined
+    if (hasTitle) info = sm.rename(id, body.title as string)
     return c.json({ session: info })
   })
 

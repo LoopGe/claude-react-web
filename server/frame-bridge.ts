@@ -489,6 +489,20 @@ export class SessionConnection {
       // user's back by a reconnecting subscriber — only an explicit
       // resume should wake it. It falls through to the error path
       // below, same as any other not-loaded session.
+      //
+      // A spawn_failed session is the same story, with higher stakes:
+      // unloadSpawnFailed returns it to dormant, so without this guard
+      // every subscribe (reconnect, panel remount, StrictMode) re-arms
+      // resume() and the failed spawn loops — observed at 796 spawn
+      // ENOENTs in one day. Only POST /resume may retry.
+      const spawnFailed = known.terminatedReason === 'spawn_failed'
+      if (spawnFailed && !known.running) {
+        // Surface the recorded spawn error rather than the generic
+        // "session not found" the subscribe path would produce for a
+        // non-live session — the whole point of the guard is that this
+        // session exists and its error is actionable.
+        throw new Error(known.error || `session ${sessionId} failed to spawn`)
+      }
       if (!known.running && !known.slept) {
         // Key diagnostic: this auto-resume runs BEFORE the replay is
         // built (the ring only exists after spawn seeds it). A slow

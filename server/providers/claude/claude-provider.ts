@@ -676,7 +676,14 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   async hasTranscript(meta: SessionMeta): Promise<boolean> {
-    const info = await getSessionInfo(meta.id, meta.cwd ? { dir: meta.cwd } : undefined)
+    // Deliberately omit `dir`. Session ids are globally unique and the SDK
+    // scans every project directory when dir is absent (the CLI's own
+    // resume-by-id fallback). Passing cwd scopes the lookup to that path's
+    // encoded projects/ subtree — after a project move (setCwd / PATCH cwd)
+    // the jsonl still lives under the OLD encoding and a dir-scoped probe
+    // false-negatives into markTranscriptMissing, permanently killing a
+    // perfectly recoverable session.
+    const info = await getSessionInfo(meta.id)
     return !!info
   }
 

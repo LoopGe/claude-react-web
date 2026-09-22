@@ -28,6 +28,29 @@ describe('shouldAutoResumeOnSelect', () => {
     expect(shouldAutoResumeOnSelect({ running: false, terminated: true, canRetryResume: false })).toBe(false)
   })
 
+  it('does NOT auto-resume a spawn_failed session (explicit Resume only)', () => {
+    // unloadSpawnFailed leaves terminated:false so the session stays
+    // resumable — which means the running/terminated gates do not catch it.
+    // Auto-resume on select/refresh would re-arm the doomed spawn and
+    // recreate the subscribe-time storm from the other door.
+    expect(
+      shouldAutoResumeOnSelect({
+        running: false,
+        terminated: false,
+        slept: false,
+        terminatedReason: 'spawn_failed',
+      }),
+    ).toBe(false)
+    // Same for an explicit sidebar click — the panel's Resume button is
+    // the retry path, so the user sees the error first.
+    expect(
+      shouldAutoResumeOnSelect(
+        { running: false, terminated: false, terminatedReason: 'spawn_failed' },
+        { auto: false },
+      ),
+    ).toBe(false)
+  })
+
   it('does NOT auto-resume a transiently-terminated session (canRetryResume) either', () => {
     // Terminated sessions are NEVER auto-resumed. Recoverable (canRetryResume)
     // ones open to the composer's Resume / Fork-from-last-completed choice

@@ -24,6 +24,7 @@ import {
 import type { ProcessExitInfo } from './process-monitor.js'
 import type { AuxLlmTarget } from './anthropic-api.js'
 import { randomUUID } from 'node:crypto'
+import { statSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
@@ -173,6 +174,36 @@ const TRANSIENT_TERMINATED_REASONS = new Set([
 
 function isTransientTerminatedReason(reason?: string): boolean {
   return !!reason && TRANSIENT_TERMINATED_REASONS.has(reason)
+}
+
+/** Node's spawn reports ENOENT for a missing `cwd` as well as a missing
+ *  executable — the old blanket "install the CLI" message sent users to
+ *  reinstall a perfectly good binary when the project directory had been
+ *  moved or deleted. Shared so the resume pre-check, the spawn-error
+ *  classifier, and the PATCH /cwd route all speak with one voice. */
+export function workingDirMissingMsg(cwd: string): string {
+  return (
+    `Working directory not found: ${cwd}. ` +
+    `The project may have been moved — update the session's cwd ` +
+    `or restore the directory, then resume.`
+  )
+}
+
+/** True when `p` is absent or not a directory. An unset cwd is not a
+ *  failure (the SDK would fall back to the process cwd). Requires a real
+ *  directory — `existsSync` alone accepts regular files, which would let
+ *  PATCH /cwd store a file path and fail later with ENOTDIR. */
+export function cwdMissing(p: string | undefined): boolean {
+  // `undefined` = no cwd configured (SDK falls back to process cwd) — not a
+  // failure. Empty string IS a failure: it would be stored as the workspace
+  // and then rejected by spawn with a confusing ERR_INVALID_ARG_VALUE.
+  if (p == null) return false
+  if (p.length === 0) return true
+  try {
+    return !statSync(p).isDirectory()
+  } catch {
+    return true
+  }
 }
 
 /** Extract the model name from the first assistant frame in a history seed.
@@ -767,10 +798,13 @@ export class SessionManager {
       const enoent = spawnError.code === 'ENOENT'
       const eacces = spawnError.code === 'EACCES'
       if (enoent) {
-        errorMsg =
-          'claude CLI binary not found (ENOENT). Install it ' +
-          '(npm i -g @anthropic-ai/claude-code) or set CLAUDE_CODE_BINARY ' +
-          'to the path of an existing binary.'
+        // ENOENT covers both a missing executable and a missing cwd —
+        // attribute the failure to whichever one is actually gone.
+        errorMsg = cwdMissing(s.cwd)
+          ? workingDirMissingMsg(s.cwd!)
+          : 'claude CLI binary not found (ENOENT). Install it ' +
+            '(npm i -g @anthropic-ai/claude-code) or set CLAUDE_CODE_BINARY ' +
+            'to the path of an existing binary.'
       } else if (eacces) {
         errorMsg =
           `claude CLI binary is not executable (EACCES${spawnError.message ? `: ${spawnError.message}` : ''}). ` +
@@ -1294,6 +1328,9 @@ export class SessionManager {
     // After this first resume the session is "known" like any other.
     const meta = this.store.get(id) ?? (await this.adoptDiskSession(id, this.defaultProvider))
     if (!meta) throw new HttpError(404, `session ${id} not found`)
+    // Terminal gate FIRST: a hard-ended session is 410 regardless of the
+    // workspace. Checking cwd before this sent users to "restore the
+    // directory, then resume" for sessions that could never resume anyway.
     if (meta.terminated) {
       if (isTransientTerminatedReason(meta.terminatedReason)) {
         // Auto-recovery failed (process crash / query error / spawn failure),
@@ -1311,6 +1348,12 @@ export class SessionManager {
       } else {
         throw new HttpError(410, `session ${id} has ended and cannot be resumed`)
       }
+    }
+    // Pre-spawn probe: a missing workspace is the real fault behind a whole
+    // class of spawn ENOENTs. Catch it here so the user gets an actionable
+    // 400 instead of a doomed Query and a misleading "binary not found".
+    if (cwdMissing(meta.cwd)) {
+      throw new HttpError(400, workingDirMissingMsg(meta.cwd!))
     }
     // Ground-truth resume gate: probe the SDK's on-disk transcript FIRST.
     // `lastTurnAt` is only a fallible in-memory proxy (the pump sets it
@@ -3849,6 +3892,53 @@ export class SessionManager {
     return this.info(s)
   }
 
+  /** Relocate a session's workspace (e.g. the project directory was moved).
+   *  Dormant-only: a live Query's subprocess keeps its original cwd, so a
+   *  running session must be slept first — otherwise metadata and the
+   *  process silently disagree. Clears stale spawn_failed / transcript_missing
+   *  state (updating the cwd is how a user recovers from a gone workspace)
+   *  and the git anchors (repoRoot / gitStartSha belong to the OLD tree; the
+   *  next spawn recaptures them against the new cwd). */
+  setCwd(id: string, cwd: string): SessionInfo {
+    if (cwdMissing(cwd)) {
+      throw new HttpError(400, workingDirMissingMsg(cwd))
+    }
+    const live = this.sessions.get(id)
+    if (live) {
+      throw new HttpError(
+        409,
+        `session ${id} is running — sleep it first, then change the workspace ` +
+        `(a live CLI keeps the cwd it was spawned with)`,
+      )
+    }
+    if (!this.store) throw new HttpError(404, `session ${id} not found`)
+    const meta = this.store.get(id)
+    if (!meta) throw new HttpError(404, `session ${id} not found`)
+    // Both reasons mean "the old path was wrong/missing". transcript_missing
+    // is how the pre-id-scoped hasTranscript false-negative used to
+    // permanently kill relocated sessions — a PATCH cwd is the user saying
+    // "here is where the project lives now", so re-arm resume. The id-scoped
+    // probe will authoritatively accept or refuse the transcript.
+    const cleared =
+      meta.terminatedReason === 'spawn_failed' ||
+      meta.terminatedReason === 'transcript_missing'
+    const nextMeta: SessionMeta = {
+      ...meta,
+      cwd,
+      lastActivityAt: Date.now(),
+      // Git anchors were captured against the OLD tree.
+      repoRoot: undefined,
+      gitStartSha: undefined,
+      ...(cleared
+        ? { terminated: false, terminatedReason: undefined, error: undefined }
+        : {}),
+    }
+    this.store.upsert(nextMeta)
+    const info = this.infoFromMeta(nextMeta)
+    this.broadcastGlobal({ kind: 'update', session: info })
+    return info
+  }
+
   /** Rename a session. Accepts both live and dormant sessions (title is
    *  pure UI metadata — no SDK call needed). Empty string / whitespace
    *  clears the title so the UI falls back to the id prefix. */
@@ -3888,12 +3978,14 @@ export class SessionManager {
     providerName: string | undefined,
     id: string,
     title: string | undefined,
-    cwd?: string,
+    _cwd?: string,
   ): Promise<void> {
     if (!providerName || !title) return
     try {
       const provider = this.providers.get(providerName)
-      await provider?.renameSession?.(id, title, cwd ? { dir: cwd } : undefined)
+      // Same id-scoped probe as hasTranscript: omit `dir` so a title write
+      // after a project move still finds the jsonl under the OLD encoding.
+      await provider?.renameSession?.(id, title)
     } catch (err) {
       log.warn(`[session ${id}] renameSession (transcript title) failed; app title kept:`, err)
     }

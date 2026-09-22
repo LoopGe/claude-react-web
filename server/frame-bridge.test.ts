@@ -86,6 +86,8 @@ class FakeSink implements FrameSink {
 interface FakeSession {
   running: boolean
   slept: boolean
+  terminatedReason?: string
+  error?: string
   history: SDKMessage[]
   messages: Chan<SDKMessage>
   perms: Chan<PermissionEvent>
@@ -103,10 +105,21 @@ class FakeBroadcaster implements SessionBroadcaster {
   globalUnsubs = 0
   private sessions = new Map<string, FakeSession>()
 
-  addSession(id: string, opts: { running?: boolean; slept?: boolean; history?: SDKMessage[] } = {}): FakeSession {
+  addSession(
+    id: string,
+    opts: {
+      running?: boolean
+      slept?: boolean
+      terminatedReason?: string
+      error?: string
+      history?: SDKMessage[]
+    } = {},
+  ): FakeSession {
     const s: FakeSession = {
       running: opts.running ?? false,
       slept: opts.slept ?? false,
+      terminatedReason: opts.terminatedReason,
+      error: opts.error,
       history: opts.history ?? [],
       messages: chan<SDKMessage>(),
       perms: chan<PermissionEvent>(),
@@ -133,7 +146,12 @@ class FakeBroadcaster implements SessionBroadcaster {
 
   get(id: string): SessionInfo {
     const s = this.require(id)
-    return { running: s.running, slept: s.slept } as unknown as SessionInfo
+    return {
+      running: s.running,
+      slept: s.slept,
+      terminatedReason: s.terminatedReason,
+      error: s.error,
+    } as unknown as SessionInfo
   }
 
   async resume(id: string): Promise<SessionInfo> {
@@ -337,6 +355,32 @@ describe('SessionConnection (in-memory sink)', () => {
     await tick()
     expect(sm.resumed).toEqual([])
     expect(sink.kinds('error')[0]).toMatchObject({ message: expect.stringMatching(/not found/i) })
+    expect(sink.kinds('subscribe-result')[0]).toMatchObject({ ok: false, reason: 'refused' })
+  })
+
+  it('does NOT auto-resume a spawn_failed session — subscribe must not storm-respawn it', async () => {
+    // Every WS subscribe used to sm.resume() a dormant session. Combined
+    // with unloadSpawnFailed (which returns it to dormant), a permanently
+    // failing spawn produced hundreds of ENOENT spawns per open tab. Only
+    // an explicit POST /resume may retry a spawn_failed session.
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', {
+      running: false,
+      terminatedReason: 'spawn_failed',
+      error: 'Working directory not found: /gone',
+      history: [assistant('old', 'u1')],
+    })
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    expect(sm.resumed).toEqual([])
+    // The recorded spawn error is what the user needs to see — not a
+    // generic "not found" for a session sitting in their sidebar.
+    expect(sink.kinds('error')[0]).toMatchObject({
+      message: expect.stringMatching(/Working directory not found/),
+    })
     expect(sink.kinds('subscribe-result')[0]).toMatchObject({ ok: false, reason: 'refused' })
   })
 
