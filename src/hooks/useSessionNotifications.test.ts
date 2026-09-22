@@ -5,31 +5,38 @@
 //   - desktop → window not focused: desktop notify fires, toast does NOT.
 // Both `maybeNotify` (turn complete) and `maybePermissionNotify` are covered.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import type { RefObject } from 'react'
 import type { SessionInfo } from '../types'
 
 // --- Mocks for the two surfaces the hook dispatches to ------------------
-const notify = vi.fn()
+// notify / notifyWithActions return `true` = "a notification was actually
+// displayed" — the production hook gates its close bookkeeping on that.
+const notify = vi.fn().mockReturnValue(true)
+const notifyWithActions = vi.fn().mockReturnValue(true)
+const closeByTag = vi.fn().mockResolvedValue(undefined)
 vi.mock('./useNotifications', () => ({
   useNotifications: () => ({
     enabled: true,
     permission: 'granted',
     toggle: vi.fn(),
     notify,
+    notifyWithActions,
+    closeByTag,
   }),
 }))
 
-const toastInfo = vi.fn()
+const toastInfo = vi.fn().mockReturnValue('toast-1')
 const toastError = vi.fn()
+const toastDismiss = vi.fn()
 vi.mock('./useToast', () => ({
   useToast: () => ({
     info: toastInfo,
     error: toastError,
     success: vi.fn(),
     show: vi.fn(),
-    dismiss: vi.fn(),
+    dismiss: toastDismiss,
   }),
 }))
 
@@ -44,8 +51,15 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return { id: 's1', title: 'Session One', working: false, ...overrides } as SessionInfo
 }
 
+let hasFocusSpy: ReturnType<typeof vi.spyOn> | null = null
 function setFocus(windowFocused: boolean) {
-  vi.spyOn(document, 'hasFocus').mockReturnValue(windowFocused)
+  // Re-spying on an already-spied function stacks a second tinyspy and
+  // mockRestore only peels one layer. Switch the existing spy instead.
+  if (hasFocusSpy) {
+    hasFocusSpy.mockReturnValue(windowFocused)
+    return
+  }
+  hasFocusSpy = vi.spyOn(document, 'hasFocus').mockReturnValue(windowFocused)
 }
 
 function setup(focusedId: string | null) {
@@ -63,6 +77,13 @@ function setup(focusedId: string | null) {
 describe('useSessionNotifications — three-state dispatch', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+  afterEach(() => {
+    // setFocus's spy must not leak into the next test — a leftover
+    // mockReturnValue would silently flip presentation() for tests that
+    // don't call setFocus themselves.
+    hasFocusSpy?.mockRestore()
+    hasFocusSpy = null
   })
 
   describe('maybeNotify (turn complete)', () => {
@@ -236,6 +257,126 @@ describe('useSessionNotifications — three-state dispatch', () => {
       api.maybeCliNotify('s1', { ...n, priority: 'immediate' })
       expect(notify).toHaveBeenCalledTimes(1)
       expect(notify.mock.calls[0][0].silent).toBe(false)
+    })
+  })
+
+  describe('dismissPermissionToast / pruneSession close the OS notification', () => {
+    it('dismissPermissionToast closes the OS notification tagged :perm when one was shown', () => {
+      // Desktop path (window unfocused) → OS notification with the :perm tag.
+      setFocus(false)
+      const { api } = setup('s1')
+      api.maybePermissionNotify('s1', 'Bash')
+      expect(notify).toHaveBeenCalledTimes(1)
+      api.dismissPermissionToast('s1')
+      expect(closeByTag).toHaveBeenCalledWith('s1:perm')
+    })
+
+    it('dismissPermissionToast skips closeByTag when no OS notification was shown (hot-path guard)', () => {
+      // Toast path (window focused, other session) → in-app toast only,
+      // no OS notification. closeByTag would be a wasted getNotifications IPC.
+      setFocus(true)
+      const { api } = setup('other')
+      api.maybePermissionNotify('s1', 'Bash')
+      expect(toastInfo).toHaveBeenCalledTimes(1)
+      api.dismissPermissionToast('s1')
+      expect(closeByTag).not.toHaveBeenCalled()
+    })
+
+    it('dismissPermissionToast dismisses the sticky in-app toast when one is live', () => {
+      setFocus(true)
+      const { api } = setup('other')
+      // Arm a sticky permission toast so permLiveRef has an entry.
+      api.maybePermissionNotify('s1', 'Bash')
+      api.dismissPermissionToast('s1')
+      expect(toastDismiss).toHaveBeenCalledWith('toast-1')
+    })
+
+    it('pruneSession dismisses the sticky in-app toast so a deleted session leaves no lingering toast', () => {
+      setFocus(true)
+      const { api } = setup('other')
+      api.maybePermissionNotify('s1', 'Bash')
+      api.pruneSession('s1')
+      expect(toastDismiss).toHaveBeenCalledWith('toast-1')
+    })
+
+    it('pruneSession also closes the OS notification so a deleted session leaves no lingering toast', () => {
+      setFocus(false)
+      const { api } = setup('s1')
+      api.maybePermissionNotify('s1', 'Bash')
+      api.pruneSession('s1')
+      expect(closeByTag).toHaveBeenCalledWith('s1:perm')
+    })
+
+    it('closes the OS notification for the notifyWithActions path (permission with id + action buttons)', () => {
+      // This is the production hot path for actionable permissions —
+      // SW showNotification with Allow/Deny buttons. Must reach closeByTag
+      // just like the plain fallback.
+      setFocus(false)
+      const { api } = setup('s1')
+      api.maybePermissionNotify('s1', 'Bash', 'permission', 'pid-1', { cmd: 'ls' })
+      expect(notifyWithActions).toHaveBeenCalledTimes(1)
+      expect(notify).not.toHaveBeenCalled()
+      api.dismissPermissionToast('s1')
+      expect(closeByTag).toHaveBeenCalledWith('s1:perm')
+    })
+
+    it('switching from desktop to toast presentation tears down the prior OS notification', () => {
+      // focusedId is 'other' throughout, so the same session is never the
+      // one on screen — toast mode is reachable when the window is focused.
+      const { api } = setup('other')
+      // First request unfocused → OS notification.
+      setFocus(false)
+      api.maybePermissionNotify('s1', 'Bash', 'permission', 'pA', { cmd: 'ls' })
+      expect(notifyWithActions).toHaveBeenCalledTimes(1)
+      // Second request arrives while the user is in-app on another session
+      // → toast presentation. The stale OS toast (whose Allow/Deny buttons
+      // target the superseded pA) must be torn down.
+      setFocus(true)
+      api.maybePermissionNotify('s1', 'Bash', 'permission', 'pB', { cmd: 'rm' })
+      expect(toastInfo).toHaveBeenCalledTimes(1)
+      expect(closeByTag).toHaveBeenCalledWith('s1:perm')
+    })
+
+    it('switching from toast to desktop presentation dismisses the prior sticky toast', () => {
+      setFocus(true)
+      const { api } = setup('other')
+      api.maybePermissionNotify('s1', 'Bash')
+      expect(toastInfo).toHaveBeenCalledTimes(1)
+      // User alt-tabs away; a new request arrives → desktop presentation.
+      setFocus(false)
+      api.maybePermissionNotify('s1', 'Bash', 'permission', 'pB', { cmd: 'rm' })
+      expect(notifyWithActions).toHaveBeenCalledTimes(1)
+      // The prior sticky toast must not linger.
+      expect(toastDismiss).toHaveBeenCalledWith('toast-1')
+    })
+
+    it('does not arm the OS close path when notify reports nothing was displayed', () => {
+      // Notifications disabled / browser permission revoked: notify()
+      // short-circuits and returns false. We must not record osShown, or
+      // dismissPermissionToast would pay a getNotifications IPC to close
+      // nothing.
+      notifyWithActions.mockReturnValueOnce(false)
+      setFocus(false)
+      const { api } = setup('s1')
+      api.maybePermissionNotify('s1', 'Bash', 'permission', 'pA', { cmd: 'ls' })
+      expect(notifyWithActions).toHaveBeenCalledTimes(1)
+      api.dismissPermissionToast('s1')
+      expect(closeByTag).not.toHaveBeenCalled()
+    })
+
+    it('same-surface OS replacement does NOT call closeByTag (tag-coalescing owns it)', () => {
+      // desktop → desktop is the SAME surface under the SAME tag. Calling
+      // closeByTag here would be an async close racing an immediate re-show
+      // of the same tag — closeByTag's epoch guard would (correctly) refuse
+      // to close anything, so the call is pure waste. OS tag-coalescing
+      // replaces the toast; that is the intended mechanism.
+      setFocus(false)
+      const { api } = setup('s1')
+      api.maybePermissionNotify('s1', 'Bash', 'permission', 'pA', { cmd: 'ls' })
+      expect(notifyWithActions).toHaveBeenCalledTimes(1)
+      api.maybePermissionNotify('s1', 'Bash', 'permission', 'pB', { cmd: 'rm' })
+      expect(notifyWithActions).toHaveBeenCalledTimes(2)
+      expect(closeByTag).not.toHaveBeenCalled()
     })
   })
 })

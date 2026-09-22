@@ -23,8 +23,9 @@ vi.mock('../hooks/useNotifications', () => ({
     enabled: false,
     permission: 'default',
     toggle: vi.fn(async () => {}),
-    notify: vi.fn(),
-    notifyWithActions: vi.fn(),
+    notify: vi.fn(() => false),
+    notifyWithActions: vi.fn(() => false),
+    closeByTag: vi.fn(async () => {}),
   }),
 }))
 vi.mock('../hooks/useUpdateInfo', () => ({

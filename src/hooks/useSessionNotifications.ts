@@ -51,6 +51,15 @@ function presentation(windowFocused: boolean, isFocusedSession: boolean): Presen
   return 'desktop'
 }
 
+/** OS-notification tag for a session's permission/question toast.
+ *  Single owner of the `:perm` tag format — the show sites and the close
+ *  sites must agree, and a hand-copied literal at each is how they
+ *  silently drift. (Turn-complete and CLI tags are different formats and
+ *  are built at their own call sites.) */
+function permTag(sessionId: string): string {
+  return `${sessionId}:perm`
+}
+
 export interface UseSessionNotificationsArgs {
   /** Currently-focused session id (or null). Read at notify time to
    *  decide whether the user is watching the session that produced the
@@ -129,9 +138,11 @@ export function useSessionNotifications({
   // the WS-hub listener effect that lists them as deps.
   const notifyRef = useRef(notifications.notify)
   const notifyWithActionsRef = useRef(notifications.notifyWithActions)
+  const closeByTagRef = useRef(notifications.closeByTag)
   useEffect(() => {
     notifyRef.current = notifications.notify
     notifyWithActionsRef.current = notifications.notifyWithActions
+    closeByTagRef.current = notifications.closeByTag
   })
 
   // Same ref-mirror trick for the toast hub. `useToast()` is already
@@ -147,9 +158,28 @@ export function useSessionNotifications({
    *  true to false (= a turn just completed). */
   const prevWorkingRef = useRef<Map<string, boolean>>(new Map())
 
-  /** Sticky toast IDs keyed by session. Used to auto-dismiss permission/
-   *  question toasts once the pending count drops to 0. */
-  const permToastIdsRef = useRef<Map<string, string>>(new Map())
+  /** Live permission/question surfaces per session. One entry per
+   *  session, whatever mix of surfaces is up: `toastId` when a sticky
+   *  in-app toast is showing (toast presentation), `osShown` when a
+   *  desktop OS notification was actually displayed (desktop
+   *  presentation, gated on notify()'s boolean so a no-op call —
+   *  notifications disabled / permission revoked — does not arm the
+   *  close path). Collapsed into one map so there is a single entry to
+   *  delete and no cross-map invariant to keep in sync. */
+  const permLiveRef = useRef<Map<string, { toastId?: string; osShown?: boolean }>>(new Map())
+
+  /** Tear down whatever permission/question surface this session has up
+   *  (sticky in-app toast and/or OS notification) and clear its live
+   *  record. Single owner of the teardown sequence so the toast branch,
+   *  the desktop branch, and dismissPermissionToast can't drift apart on
+   *  which half they clean. */
+  const tearDownPermSurface = useCallback((sessionId: string) => {
+    const live = permLiveRef.current.get(sessionId)
+    if (!live) return
+    permLiveRef.current.delete(sessionId)
+    if (live.toastId) toastRef.current.dismiss(live.toastId)
+    if (live.osShown) void closeByTagRef.current?.(permTag(sessionId))
+  }, [])
 
   const maybePermissionNotify = useCallback(
     (sessionId: string, toolLabel: string, kind: 'permission' | 'question' = 'permission', permissionId?: string, toolInput?: Record<string, unknown>) => {
@@ -160,7 +190,31 @@ export function useSessionNotifications({
       const windowFocused = typeof document !== 'undefined' && document.hasFocus()
       const isFocused = focusedIdRef.current === sessionId
       const mode = presentation(windowFocused, isFocused)
-      if (mode === 'skip') return
+
+      // Tear down STALE surfaces before deciding what to show. Two rules:
+      //   1. The OTHER surface's leftover is always stale (its Allow/Deny
+      //      buttons target a superseded permissionId) and nothing we show
+      //      next will replace it — cross-surface, so OS tag-coalescing
+      //      does not apply. Always tear it down.
+      //   2. The SAME surface's leftover is replaced by tag-coalescing (OS)
+      //      or by the explicit dismiss below (toast). Do NOT also call
+      //      closeByTag for it: that is an async close racing an immediate
+      //      same-tag re-show, and closeByTag's epoch guard would (correctly)
+      //      refuse to close anything — leaving the stale toast in place on
+      //      platforms where coalescing is not instant.
+      const prior = permLiveRef.current.get(sessionId)
+      if (mode !== 'toast' && prior?.toastId) toastRef.current.dismiss(prior.toastId)
+      if (mode !== 'desktop' && prior?.osShown) void closeByTagRef.current?.(permTag(sessionId))
+      // Clear the record — the branches below write a fresh entry (or none).
+      if (prior) permLiveRef.current.delete(sessionId)
+
+      if (mode === 'skip') {
+        // User is staring right at the session — the in-app permission card
+        // is the surface. Leftovers are stale (rule 1 above already tore
+        // down the other surface; same-surface leftovers can't exist here
+        // because skip means we never showed one this turn).
+        return
+      }
 
       // Look up a friendly title — fall back to id prefix when we haven't
       // seen the session in the list yet (unlikely but possible during
@@ -183,11 +237,6 @@ export function useSessionNotifications({
         // (durationMs:0) stays until they act — both permission requests
         // and questions block the turn until answered. Independent of the
         // desktop-notification master switch / browser permission.
-        // Dismiss any existing sticky toast for this session before creating
-        // a new one. Without this, the old toast ID is silently overwritten
-        // in permToastIdsRef and can never be dismissed.
-        const existingId = permToastIdsRef.current.get(sessionId)
-        if (existingId) toastRef.current.dismiss(existingId)
 
         // Structured toast: the headline is the title, the actionable
         // detail the muted body. (Toast title omits the ⚠/❓ emoji the
@@ -201,7 +250,7 @@ export function useSessionNotifications({
           actionLabel: isQuestion ? 'Answer' : 'Open',
           onClick: () => handleSelectRef.current?.(sessionId),
         })
-        permToastIdsRef.current.set(sessionId, toastId)
+        permLiveRef.current.set(sessionId, { toastId })
         return
       }
 
@@ -209,30 +258,39 @@ export function useSessionNotifications({
       // Permission requests with an id get Allow/Deny action buttons via
       // the Service Worker; questions and legacy requests without an id
       // fall back to a plain notification that opens the page on click.
-      if (!isQuestion && permissionId) {
-        notifyWithActionsRef.current({
-          title: headline,
-          body: `Approve or deny: ${toolLabel}`,
-          tag: `${sessionId}:perm`,
-          requireInteraction: true,
-          actions: [
-            { action: 'allow', title: '✓ Allow' },
-            { action: 'deny', title: '✗ Deny' },
-          ],
-          data: { sessionId, permissionId, kind: 'permission', updatedInput: toolInput },
-          onClick: () => { handleSelectRef.current?.(sessionId) },
-        })
-      } else {
-        notifyRef.current({
-          title: headline,
-          body: isQuestion ? 'Open to answer' : `Approve or deny: ${toolLabel}`,
-          tag: `${sessionId}:perm`,
-          requireInteraction: true,
-          onClick: () => { handleSelectRef.current?.(sessionId) },
-        })
+      // Only record osShown when notify reported a show was requested —
+      // the master switch may be off or the browser permission revoked,
+      // and arming the close path then would be a wasted IPC. (For the SW
+      // path "requested" is the strongest signal available without an ack.)
+      const shown = !isQuestion && permissionId
+        ? notifyWithActionsRef.current({
+            title: headline,
+            body: `Approve or deny: ${toolLabel}`,
+            tag: permTag(sessionId),
+            requireInteraction: true,
+            actions: [
+              { action: 'allow', title: '✓ Allow' },
+              { action: 'deny', title: '✗ Deny' },
+            ],
+            data: { sessionId, permissionId, kind: 'permission', updatedInput: toolInput },
+            onClick: () => { handleSelectRef.current?.(sessionId) },
+          })
+        : notifyRef.current({
+            title: headline,
+            body: isQuestion ? 'Open to answer' : `Approve or deny: ${toolLabel}`,
+            tag: permTag(sessionId),
+            requireInteraction: true,
+            onClick: () => { handleSelectRef.current?.(sessionId) },
+          })
+      if (shown) {
+        // Fresh entry — tearDownPermSurface above already cleared whatever
+        // was live, so only the OS surface is up now.
+        permLiveRef.current.set(sessionId, { osShown: true })
       }
+      // When !shown nothing is live; tearDownPermSurface already deleted
+      // the old entry, so there is deliberately nothing to write.
     },
-    [focusedIdRef, sessionsRef, handleSelectRef],
+    [focusedIdRef, sessionsRef, handleSelectRef, tearDownPermSurface],
   )
 
   const maybeCliNotify = useCallback(
@@ -327,18 +385,28 @@ export function useSessionNotifications({
     prevWorkingRef.current.set(sessionId, working)
   }, [])
 
+  const dismissPermissionToast = useCallback((sessionId: string) => {
+    // Tears down both halves (sticky toast + OS notification) when a
+    // permission/question surface is live. The `if (!live) return` inside
+    // tearDownPermSurface is what keeps the count-0 `session-update` hot
+    // path cheap: sessions with no perm activity pay only a Map lookup,
+    // never a getNotifications IPC.
+    //
+    // Known limitation (deliberate tradeoff): after a tab reload the
+    // in-memory live record is gone, so an SW notification shown before
+    // the reload is not programmatically closed here. It still dismisses
+    // on click (the SW closes it in notificationclick) or on a manual
+    // close; closing it unconditionally would reintroduce the hot-path
+    // IPC on every idle session-update.
+    tearDownPermSurface(sessionId)
+  }, [tearDownPermSurface])
+
   const pruneSession = useCallback((sessionId: string) => {
     prevWorkingRef.current.delete(sessionId)
-    permToastIdsRef.current.delete(sessionId)
-  }, [])
-
-  const dismissPermissionToast = useCallback((sessionId: string) => {
-    const toastId = permToastIdsRef.current.get(sessionId)
-    if (toastId) {
-      permToastIdsRef.current.delete(sessionId)
-      toastRef.current.dismiss(toastId)
-    }
-  }, [])
+    // A deleted session must not leave a lingering sticky toast or
+    // `requireInteraction` OS toast behind.
+    tearDownPermSurface(sessionId)
+  }, [tearDownPermSurface])
 
   return { notifications, maybeNotify, maybePermissionNotify, maybeCliNotify, seedWorkingState, pruneSession, dismissPermissionToast }
 }
