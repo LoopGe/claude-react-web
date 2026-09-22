@@ -24,7 +24,7 @@ import { registerSW } from './sw-register'
 import { useTheme } from './hooks/useTheme'
 import { useBackground } from './hooks/useBackground'
 import { useToast } from './hooks/useToast'
-import { useWsHub, useWsHubStatus } from './hooks/useWsHub'
+import { useWsHub } from './hooks/useWsHub'
 import { usePluginRegistry } from './app-plugins/usePluginRegistry'
 import { usePluginCommands } from './app-plugins/usePluginCommands'
 import { PluginWidgetSlot } from './app-plugins/PluginWidgetSlot'
@@ -47,6 +47,7 @@ import { useUpdateNag, nagDismissValueFor, writeNagDismiss } from './hooks/useUp
 import type { UpdateDialogMode } from './components/UpdateDialog'
 import { getHostCapabilities } from './host-capabilities'
 import { DesktopAppMenu } from './components/DesktopAppMenu'
+import { ReconnectToasts } from './components/ReconnectToasts'
 import { DesktopTitlebarTabs } from './components/DesktopTitlebarTabs'
 import { TITLEBAR_HEIGHT_PX } from '../shared/desktop-bridge'
 import { useUiState } from './hooks/useUiState'
@@ -305,10 +306,9 @@ export function App() {
   const [globalSettingsOpen, setGlobalSettingsOpen] = useState(false)
   const [uploadsDialogOpen, setUploadsDialogOpen] = useState(false)
   // Operational errors and one-shot notifications go through the global
-  // toast hub (mounted in main.tsx). Use `toast.error(...)` for anything
-  // a user can dismiss/scan; persistent connection state (Reconnecting...)
-  // is rendered separately as an inline banner — it's a status, not a
-  // notification.
+  // toast hub (mounted in main.tsx). Connection state (Reconnecting /
+  // Reconnected) rides the same hub via <ReconnectToasts /> — sticky while
+  // offline — so every user-facing notice has one outlet.
   const toast = useToast()
   // Theme + accent (global + per-session). Lives in its own hook so
   // App.tsx isn't on the hook for the OS-theme subscription, accent
@@ -811,15 +811,6 @@ export function App() {
   // exhaustion we used to hit with three concurrent chats.
   const hub = useWsHub()
 
-  // Hub-status banner: shown when the WebSocket is reconnecting. This is
-  // a persistent status (it stays up as long as we're disconnected) so
-  // it's rendered as an inline banner, NOT a toast — toasts auto-dismiss
-  // and "we're still offline" is exactly the message the user needs to
-  // keep seeing. Status comes from its own context (useWsHubStatus) so
-  // hub identity stays stable across status flips.
-  const hubStatus = useWsHubStatus()
-  const reconnectingBanner = hubStatus === 'reconnecting' ? 'Reconnecting to server...' : null
-
   useEffect(() => {
     const off = hub.addListener((frame: WsServerFrame) => {
       switch (frame.kind) {
@@ -1136,9 +1127,6 @@ export function App() {
     })
     return off
   }, [hub, maybeNotify, maybePermissionNotify, maybeCliNotify, seedWorkingState, pruneSession, dismissPermissionToast, setLastSeenTurn, setSidebarOrder, setGroups])
-
-  // Hub status → reconnecting banner is derived inline (single ternary
-  // above) — no effect needed.
 
   // When the window regains focus, bump the currently-focused session's
   // lastSeenTurn to its latest lastTurnAt. Without this, a turn that
@@ -4101,18 +4089,10 @@ export function App() {
           </div>
         </header>
 
-        {/* Reconnecting banner — kept inline (not toast) because it's a
-            persistent status, not a one-shot notification. Auto-dismiss
-            would defeat the purpose. The element stays permanently
-            mounted as a live region so screen readers observe the
-            transition; collapses to an sr-only 1×1 when not active. */}
-        <div
-          className={`error-bar${reconnectingBanner ? '' : ' error-bar-empty'}`}
-          role="status"
-          aria-live="polite"
-        >
-          {reconnectingBanner ?? ''}
-        </div>
+        {/* Connection status (Reconnecting / Reconnected) is a toast on the
+            global hub — see ReconnectToasts / useReconnectToasts. Mounted as
+            a null-rendering bridge so toast-list churn doesn't re-render App. */}
+        <ReconnectToasts />
 
         <div
           ref={bodyRef}

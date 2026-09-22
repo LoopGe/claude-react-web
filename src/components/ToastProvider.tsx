@@ -122,8 +122,17 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       const overflow = Math.max(0, active.length + 1 - MAX_TOASTS)
       // Newest-first stack: the freshest toast is the FRONT of the array.
       // When over the cap, evict from the TAIL (the oldest / backmost),
-      // leaving the newest toasts visible in front.
-      const evictedIds = new Set(active.slice(active.length - overflow).map((t) => t.id))
+      // leaving the newest toasts visible in front. Sticky toasts
+      // (durationMs === 0) are never capacity-evicted: they are the user's
+      // only persistent "still offline / must act" signal, and offline is
+      // exactly when error-toast traffic spikes. Re-pushing a recovered
+      // sticky would in turn evict an actionable error, so the sticky is
+      // simply not an eviction candidate.
+      const evictedIds = new Set<string>()
+      for (let i = active.length - 1; i >= 0 && evictedIds.size < overflow; i--) {
+        if (active[i].durationMs === 0) continue
+        evictedIds.add(active[i].id)
+      }
       for (const droppedId of evictedIds) {
         const entry = timersRef.current.get(droppedId)
         if (entry) {

@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, cleanup, render } from '@testing-library/react'
 import { ToastProvider } from './ToastProvider'
-import { useToast } from '../hooks/useToast'
+import { useToast, useToastList } from '../hooks/useToast'
 import type { PushOptions } from '../hooks/toastContext'
 
 afterEach(() => cleanup())
@@ -71,5 +71,45 @@ describe('ToastProvider — onDismiss callback', () => {
     })
     expect(onDismiss).toHaveBeenCalledTimes(1)
     vi.useRealTimers()
+  })
+})
+
+describe('ToastProvider — sticky toasts survive capacity eviction', () => {
+  // MAX_TOASTS must not eat durationMs:0 toasts. The reconnect indicator
+  // is the only persistent "you are offline" signal; offline is exactly
+  // when error-toast traffic spikes. Re-pushing after eviction would in
+  // turn evict an actionable error — so stickies are simply not evictable.
+  function ListHarness({ onList }: { onList: (messages: string[]) => void }) {
+    const api = useToast()
+    const fired = useRef(false)
+    useEffect(() => {
+      if (fired.current) return
+      fired.current = true
+      api.show('info', 'STICKY', { durationMs: 0 })
+      api.info('t1')
+      api.info('t2')
+      api.info('t3') // would overflow MAX_TOASTS=3 with the sticky present
+    }, [api])
+    const list = useToastList()
+    useEffect(() => {
+      onList(list.filter((t) => !t.exiting).map((t) => t.message))
+    }, [list, onList])
+    return null
+  }
+
+  it('does not evict a durationMs:0 toast when newer toasts overflow the cap', () => {
+    let latest: string[] = []
+    render(
+      <ToastProvider>
+        <ListHarness
+          onList={(messages) => {
+            latest = messages
+          }}
+        />
+      </ToastProvider>,
+    )
+    expect(latest).toContain('STICKY')
+    // The overflow victim is a timed toast, not the sticky.
+    expect(latest.filter((m) => m === 'STICKY')).toHaveLength(1)
   })
 })

@@ -1565,9 +1565,9 @@ body.resizing-col .app {
 }
 
 /* Error / status strip.
-   Default (App-level reconnect banner between header and main-body) stays a
-   full-bleed bar — it is global chrome, not part of a reading column.
-   Inside a chat reading column (panel errors, Side Chat) it becomes a
+   Default stays a full-bleed bar for any host that wants global chrome
+   (the App-level reconnect banner used this; connection status is now a
+   toast). Inside a chat reading column (panel errors, Side Chat) it becomes a
    floating card matching WorkingBubble / composer so the bottom stack shares
    one language. Empty state stays sr-only via .error-bar-empty and is
    excluded from the card treatment so the 1×1 live region never paints. */
