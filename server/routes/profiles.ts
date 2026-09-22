@@ -55,6 +55,9 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
       name?: string; authToken?: string; baseUrl?: string; modelList?: string[];
       modelGroups?: unknown[]; recapModel?: string; commitMessageModel?: string
     }>(c.req)
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new HttpError(400, 'Body must be a JSON object')
+    }
     const name = typeof body.name === 'string' ? body.name.trim() : ''
     if (!name) throw new HttpError(400, 'name is required')
     const active = serverConfig.profiles.find((p) => p.id === serverConfig.activeProfileId) ?? serverConfig.profiles[0]
@@ -91,6 +94,9 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
     if (!configDir) throw new HttpError(500, 'configDir not set')
     const id = c.req.param('id')
     const body = await safeJson<Record<string, unknown>>(c.req)
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new HttpError(400, 'Body must be a JSON object')
+    }
     await queueConfigWrite(configDir, (existing) => {
       const profiles = Array.isArray(existing.profiles) ? existing.profiles : []
       // Resolve through the coercion, exactly as the reader does. Ids are trimmed
@@ -181,6 +187,9 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
   app.post('/profiles/activate', async (c) => {
     if (!configDir) throw new HttpError(500, 'configDir not set')
     const body = await safeJson<{ profileId?: string; restartSessions?: unknown }>(c.req)
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new HttpError(400, 'Body must be a JSON object')
+    }
     const profileId = body.profileId
     if (typeof profileId !== 'string' || !serverConfig.profiles.some((p) => p.id === profileId)) {
       throw new HttpError(400, `profile ${profileId} not found`)
@@ -219,8 +228,25 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
     const profile = serverConfig.profiles.find((p) => p.id === id)
     if (!profile) throw new HttpError(404, `profile ${id} not found`)
     // Accept optional overrides so the client can test a dirty/unsaved token.
+    // An ABSENT or unparseable body has always meant "probe the saved
+    // credentials" here, so the default stays {}. But a body that parses to
+    // something that is not an object is a caller error, not "no overrides":
+    // accepting it would probe the saved credentials and answer 200 ok for
+    // input that was never tested — the same false-success
+    // POST /config/test-connection rejects.
     let body: { authToken?: unknown; baseUrl?: unknown; model?: unknown } = {}
-    try { body = await c.req.json() } catch { /* empty body is fine */ }
+    try {
+      const parsed: unknown = await c.req.json()
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new HttpError(400, 'Body must be a JSON object')
+      }
+      body = parsed as typeof body
+    } catch (err) {
+      // Absent or unparseable body has always been fine here ("probe the saved
+      // credentials"); `body` keeps its {} default. A non-object body was
+      // already reported above.
+      if (err instanceof HttpError) throw err
+    }
     if (body.authToken !== undefined && typeof body.authToken !== 'string') {
       throw new HttpError(400, 'authToken must be a string')
     }

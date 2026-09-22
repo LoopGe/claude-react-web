@@ -294,4 +294,54 @@ describe('profiles router', () => {
     expect(written.profiles[0].id).toBe('default')
     await fs.rm(dir, { recursive: true, force: true })
   })
+
+  it('rejects a non-object body without a 500, and writes nothing', async () => {
+    // safeJson returns `null` for a JSON `null` body, so every handler that
+    // dereferences `body.<field>` used to throw a TypeError → opaque 500. This
+    // covers all four body-taking handlers in this router, plus the arms beyond
+    // `null`: PUT used to accept `[]` as a silent no-op write (200 ok).
+    const { promises: fs } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const dir = await fs.mkdtemp(join(tmpdir(), 'crw-profiles-null-body-'))
+    await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{ id: 'default', name: 'Default', authToken: 'sk-ant-abcdef', baseUrl: 'https://api.anthropic.com', modelList: ['m1'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' }],
+      activeProfileId: 'default',
+    }))
+    const original = await fs.readFile(join(dir, 'config.json'), 'utf8')
+    const app = appWith(dir)
+    await loadConfig(dir)
+
+    try {
+      const send = (path: string, method: string, body?: string) => app.request(path, {
+        method,
+        ...(body === undefined
+          ? {}
+          : { headers: { 'Content-Type': 'application/json' }, body }),
+      })
+
+      for (const bad of ['null', '[]', '"x"', '42']) {
+        for (const [path, method] of [
+          ['/profiles', 'POST'],
+          ['/profiles/default', 'PUT'],
+          ['/profiles/activate', 'POST'],
+          ['/profiles/default/test', 'POST'],
+        ] as const) {
+          const res = await send(path, method, bad)
+          expect(res.status, `${method} ${path} with ${bad}`).toBe(400)
+          expect(((await res.json()) as { error: string }).error)
+            .toMatch(/must be a JSON object/)
+        }
+      }
+
+      // A rejected write must not have touched the file.
+      expect(await fs.readFile(join(dir, 'config.json'), 'utf8')).toBe(original)
+
+      // The test endpoint still accepts a MISSING body — its long-standing
+      // leniency ("no body is fine") means "probe the saved credentials".
+      expect((await send('/profiles/default/test', 'POST')).status).toBe(200)
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
 })
