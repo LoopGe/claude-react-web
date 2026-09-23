@@ -1,7 +1,11 @@
 // Markdown renderer for chat messages.
 //
-// Uses react-markdown + remark-gfm (tables / task lists / strikethrough)
-// + a custom lowlight-based rehype plugin for syntax highlighting.
+// The pipeline (remark-parse + remark-gfm for tables / task lists /
+// strikethrough, remark-rehype, a lowlight-based highlighter, then
+// hast-util-to-jsx-runtime) lives in utils/markdown-cache.ts, NOT here: its
+// output is memoised in a module LRU so a Virtuoso scroll-out/scroll-back
+// remount is a map hit instead of a re-parse. This file is just the
+// component shell around `compileMarkdown`.
 //
 // We deliberately do NOT enable rehype-raw or any HTML-passthrough plugin —
 // assistant output is only semi-trusted and we prefer to render raw HTML
@@ -16,9 +20,9 @@ import { compileMarkdown } from '../utils/markdown-cache'
 export { CodeBlock } from './markdown-components'
 
 export const Markdown = memo(function Markdown({ text, searchQuery, activeMatchIdx, breaks }: { text: string; searchQuery?: string; activeMatchIdx?: number; breaks?: boolean }) {
-  // Fall back to a <pre>-rendered raw text if anything inside react-markdown
-  // (or our rehype plugins) throws — prevents one bad message from blanking
-  // the whole transcript.
+  // Fall back to a <pre>-rendered raw text if anything inside the unified
+  // pipeline (or our rehype plugins) throws — prevents one bad message from
+  // blanking the whole transcript.
   return (
     <ErrorBoundary fallback={<pre className="md md-fallback">{text}</pre>}>
       <MarkdownInner text={text} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} breaks={breaks} />

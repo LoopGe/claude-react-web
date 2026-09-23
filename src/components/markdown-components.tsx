@@ -2,7 +2,7 @@
 //
 // Extracted from Markdown.tsx so both the ReactMarkdown path and the
 // toJsxRuntime (compileMarkdown) path share the same implementation.
-// CodeBlock, mdUrlTransform, and the MD_COMPONENTS map all live here.
+// CodeBlock, sanitizeHref, and the MD_COMPONENTS map all live here.
 
 import { memo, useRef } from 'react'
 import type { ComponentPropsWithoutRef, Ref } from 'react'
@@ -10,26 +10,18 @@ import { defaultUrlTransform, type Components } from 'react-markdown'
 import { useMergedRef } from '../utils/mergedRef'
 import { useCopy } from '../hooks/useCopy'
 
-/** URL transform for markdown links/images.
+/** Sanitize an href for the `a` component.
  *
- * react-markdown's defaultUrlTransform strips `data:` URLs entirely (to keep
- * `javascript:` etc. out of href/src), which blanked embedded base64 images in
- * assistant replies. We let image `src` pass through UNCHANGED so the `img`
- * override below can decide: it only ever puts `data:image/*` or http(s) into a
- * real `src` — anything else renders as inert fallback text. Every other URL
- * attribute (`href`, …) keeps delegating to defaultUrlTransform, so link
- * sanitisation is byte-identical to today. */
-export function mdUrlTransform(url: string, key: string): string {
-  if (key === 'src') return url
-  return defaultUrlTransform(url)
-}
-
-/** Sanitize an href for the `a` component when used outside react-markdown
- *  (i.e. via toJsxRuntime). Strips javascript: and vbscript: schemes. */
+ * `compileMarkdown` renders through `toJsxRuntime`, which has no
+ * `urlTransform` hook of its own — so this function is the ONLY href gate on
+ * the render path, and it has to be as strict as the one react-markdown
+ * applied before the migration. Delegating to react-markdown's
+ * `defaultUrlTransform` is what keeps it byte-identical: it strips
+ * `javascript:`, `vbscript:`, `data:` and `file:` alike. The hand-rolled
+ * scheme test this replaced only covered `javascript:` / `vbscript:`, which
+ * let `data:text/html,<script>…</script>` through. */
 export function sanitizeHref(url: string): string {
-  const s = url.trim()
-  if (/^javascript:/i.test(s) || /^vbscript:/i.test(s)) return ''
-  return url
+  return defaultUrlTransform(url)
 }
 
 /** Module-level react-markdown `components` map.
@@ -52,11 +44,14 @@ export const MD_COMPONENTS: Components = {
       {children}
     </a>
   ),
-  // Renders markdown image references defensively. `src` has already been
-  // through mdUrlTransform (unchanged), so this sees the raw URL. Only
-  // data:image/* and http(s) become a real <img>; anything else (e.g. the
-  // model's `/api/placeholder`) renders as muted fallback text instead of a
-  // broken image. No `{...props}` spread: react-markdown passes a `node` prop
+  // Renders markdown image references defensively. `src` arrives RAW from the
+  // hast tree (toJsxRuntime applies no urlTransform), so this component is the
+  // sole gate: only data:image/* and http(s) become a real <img>. Anything else
+  // (e.g. the model's `/api/placeholder`) renders as muted fallback text
+  // instead of a broken image. Note this is deliberately NOT sanitizeHref —
+  // defaultUrlTransform strips `data:` wholesale, which would blank the
+  // embedded base64 images assistants legitimately emit.
+  // No `{...props}` spread: react-markdown passes a `node` prop
   // (passNode: true) that must not leak onto the DOM element.
   img: ({ src, alt, title }: { src?: string; alt?: string; title?: string }) => {
     const s = typeof src === 'string' ? src : ''
