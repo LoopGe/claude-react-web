@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './useApi'
 import { snapshotFailed, snapshotLoaded, snapshotView, type RequestSnapshot } from '../utils/request-snapshot'
+import { formatError } from '../utils/format-error'
 
 export interface DiagnosticsCliDebug {
   global: boolean
@@ -34,7 +35,7 @@ export function useDiagnostics(sessionId: string, enabled = true) {
       })
       .catch((e: unknown) => {
         if (!ctrl.signal.aborted) {
-          setSnapshot((prev) => snapshotFailed(prev, key, e instanceof Error ? e.message : String(e)))
+          setSnapshot((prev) => snapshotFailed(prev, key, formatError(e)))
         }
       })
     return () => ctrl.abort()

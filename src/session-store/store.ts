@@ -15,6 +15,7 @@ import {
   type MessageRecord,
 } from './idb'
 import type { IDBPDatabase } from 'idb'
+import { clamp } from '../utils/clamp'
 
 type Listener = () => void
 
@@ -800,7 +801,7 @@ export class SessionStore {
     if (this.saveDirtySince == null) this.saveDirtySince = now
     if (this.saveTimer != null) window.clearTimeout(this.saveTimer)
     const elapsed = now - this.saveDirtySince
-    const delay = Math.max(0, Math.min(SAVE_DEBOUNCE_MS, SAVE_MAX_DEFER_MS - elapsed))
+    const delay = clamp(SAVE_MAX_DEFER_MS - elapsed, 0, SAVE_DEBOUNCE_MS)
     this.saveTimer = window.setTimeout(() => {
       this.saveTimer = null
       this.save()

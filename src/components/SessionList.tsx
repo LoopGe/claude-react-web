@@ -31,6 +31,15 @@ import { AnimatePresence } from 'motion/react'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { AnimatedCollapse } from './AnimatedCollapse'
 
+/** Text filter shared by the flat and grouped sidebar views — a session
+ *  matches when the query hits its title, cwd, or 8-char id prefix. */
+function sessionMatchesFilter(s: SessionInfo, q: string): boolean {
+  if (s.title && s.title.toLowerCase().includes(q)) return true
+  if (s.cwd && s.cwd.toLowerCase().includes(q)) return true
+  if (s.id.slice(0, 8).toLowerCase().includes(q)) return true
+  return false
+}
+
 interface Props {
   sessions: SessionInfo[]
   /** False until the first WS sessions-snapshot lands. Drives the sidebar
@@ -298,12 +307,7 @@ export const SessionList = memo(function SessionList({
   const visibleSessions = useMemo<SessionInfo[]>(() => {
     const q = filter.trim().toLowerCase()
     if (!q) return sessions
-    return sessions.filter((s) => {
-      if (s.title && s.title.toLowerCase().includes(q)) return true
-      if (s.cwd && s.cwd.toLowerCase().includes(q)) return true
-      if (s.id.slice(0, 8).toLowerCase().includes(q)) return true
-      return false
-    })
+    return sessions.filter((s) => sessionMatchesFilter(s, q))
   }, [sessions, filter])
 
   /** Filtered version of sidebarSections — applies the same text filter
@@ -318,13 +322,7 @@ export const SessionList = memo(function SessionList({
     if (sidebarSections.length === 0) return []
     const q = filter.trim().toLowerCase()
     const filtering = q.length > 0
-    const match = (s: SessionInfo) => {
-      if (!q) return true
-      if (s.title && s.title.toLowerCase().includes(q)) return true
-      if (s.cwd && s.cwd.toLowerCase().includes(q)) return true
-      if (s.id.slice(0, 8).toLowerCase().includes(q)) return true
-      return false
-    }
+    const match = (s: SessionInfo) => (!q ? true : sessionMatchesFilter(s, q))
     const result: SidebarSection[] = []
     for (const sec of sidebarSections) {
       const filtered = sec.sessions.filter(match)

@@ -1,10 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { prefersReducedMotion } from '../utils/reduced-motion'
 
 const DEFAULT_EXIT_MS = 180
-
-function prefersReducedMotion(): boolean {
-  return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-}
 
 export function useExitPresence(open: boolean, durationMs = DEFAULT_EXIT_MS) {
   const presence = usePresenceValue(open ? true : null, durationMs)

@@ -1,3 +1,8 @@
+/** Default lifetime (ms) for transient app toasts — used by ToastProvider's
+ *  default durations and by the CLI-notification path so both read as the
+ *  same "informational toast" cadence. Callers can override per-toast. */
+export const DEFAULT_TOAST_DURATION_MS = 8000
+
 export function notificationTooltip(
   permission: 'granted' | 'denied' | 'default' | 'unsupported',
   enabled: boolean,

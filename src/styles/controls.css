@@ -40,7 +40,7 @@
   border-color: var(--danger);
   color: var(--on-danger);
 }
-.btn-danger-solid:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 88%, black); }
+.btn-danger-solid:hover:not(:disabled) { background: var(--danger-hover); }
 /* Square icon button for header toggles (bell, etc.). Same height as
    regular .btn but fixed-width and bigger glyph. */
 .btn-icon {

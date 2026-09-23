@@ -125,7 +125,7 @@
 [data-skin="glow"] .chat-panel .os-thumb,
 [data-skin="glow"] .sidebar .os-thumb,
 [data-skin="glow"] [data-portaled] .os-thumb {
-  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: var(--accent-glow);
 }
 
 /* High-contrast skin: opaque, always visible, hard-edged fill that meets the

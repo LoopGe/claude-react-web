@@ -82,7 +82,7 @@ body.resizing-col .app {
 }
 .brand-dot {
   width: var(--size-10px); height: var(--size-10px); border-radius: var(--radius-circle);
-  background: radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--accent) 60%, white), var(--accent));
+  background: radial-gradient(circle at 30% 30%, var(--accent-bright), var(--accent));
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent);
 }
 
@@ -357,7 +357,7 @@ body.resizing-col .app {
   border: 1.5px solid var(--border);
   border-top-color: var(--accent);
   border-radius: var(--radius-circle);
-  animation: msg-sending-spin 0.8s linear infinite;
+  animation: spin 0.8s linear infinite;
   vertical-align: middle;
 }
 
@@ -1402,7 +1402,8 @@ body.resizing-col .app {
   font-size: var(--fs-base);
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .chat-panel-resume-btn:hover {
   background: var(--btn-hover-bg);
@@ -1534,7 +1535,7 @@ body.resizing-col .app {
   border: 2px solid var(--border);
   border-top-color: var(--accent);
   border-radius: var(--radius-circle);
-  animation: msg-sending-spin 0.8s linear infinite;
+  animation: spin 0.8s linear infinite;
 }
 @keyframes app-loading-card-in {
   from { opacity: 0; transform: translateY(var(--motion-distance-md)) scale(var(--motion-scale-enter)); }

@@ -6,14 +6,9 @@
 // only owns playback.
 
 import { useEffect, useRef, useState } from 'react'
+import { prefersReducedMotion } from '../utils/reduced-motion'
 
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
-
-function prefersReducedMotion(): boolean {
-  return typeof window !== 'undefined'
-    && typeof window.matchMedia === 'function'
-    && window.matchMedia(REDUCED_MOTION_QUERY).matches
-}
 
 function isHidden(): boolean {
   return typeof document !== 'undefined' && document.hidden

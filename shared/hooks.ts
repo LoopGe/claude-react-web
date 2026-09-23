@@ -1,3 +1,5 @@
+import { isPlainObject } from './type-guards'
+
 export const SUPPORTED_HOOK_EVENTS = [
   'PreToolUse',
   'PostToolUse',
@@ -114,12 +116,9 @@ export function formatHooksValidationErrors(errors: HooksValidationError[]): str
   return errors.map((error) => `${error.path} ${error.message}`).join('; ')
 }
 
+
 const SUPPORTED_EVENT_SET = new Set<string>(SUPPORTED_HOOK_EVENTS)
 const SHELL_SET = new Set<string>(['bash', 'powershell'])
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value)
-}
 
 function optionalString(value: unknown, path: string, errors: HooksValidationError[]): string | undefined {
   if (value == null) return undefined

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
 import type { MetricsSnapshot } from '../../shared/metrics.js'
+import { formatError } from '../utils/format-error'
 
 const AUTO_REFRESH_MS = 5000
 /** Sparkline window: at most this many samples (auto-refresh appends every
@@ -49,7 +50,7 @@ export function useMetrics() {
       // A superseded (aborted) request must not clobber the newer call's
       // in-flight state — aborting is not an unmount, so mountedRef alone
       // is not enough here.
-      if (!ctrl.signal.aborted && mountedRef.current) setError(e instanceof Error ? e.message : String(e))
+      if (!ctrl.signal.aborted && mountedRef.current) setError(formatError(e))
     } finally {
       if (!ctrl.signal.aborted && mountedRef.current) setLoading(false)
     }

@@ -10,6 +10,8 @@ import { useIsMobile } from '../../hooks/useIsMobile'
 import { usePresenceValue } from '../../hooks/useExitPresence'
 import { shortenPath } from '../../utils/paths'
 import { statusLabel } from '../../utils/session-status'
+import { sessionTitleOrFallback } from '../../utils/session-title'
+import { cx } from '../../utils/cx'
 import type { SessionInfo } from '../../types'
 import { Tooltip } from '../Tooltip'
 import { IconX, IconFolder, IconAlertTriangle, IconMoon } from '../icons/ToolIcons'
@@ -212,7 +214,7 @@ export const SessionCard = memo(function SessionCard({
         e.preventDefault()
         onContextMenu(e, s.id)
       }}
-      className={[
+      className={cx(
         'session-item',
         isFocused ? 'focused' : '',
         isOpen && !isFocused ? 'open' : '',
@@ -230,7 +232,7 @@ export const SessionCard = memo(function SessionCard({
         dropPosition === 'after' ? 'drop-after' : '',
         accentStyle ? 'tinted' : '',
         `mode-${permissionMode}`,
-      ].filter(Boolean).join(' ')}
+      )}
       style={accentStyle}
       role="button"
       tabIndex={0}
@@ -460,7 +462,7 @@ export const SessionCard = memo(function SessionCard({
               onClick={(e) => {
                 e.stopPropagation()
                 if (onAskConfirm) {
-                  const title = s.title ?? s.id.slice(0, 8)
+                  const title = sessionTitleOrFallback(s)
                   onAskConfirm({
                     title: 'Delete session?',
                     message: <p>Delete &ldquo;{title}&rdquo;? This permanently removes the conversation.</p>,

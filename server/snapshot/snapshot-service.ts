@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { join, isAbsolute } from 'node:path'
 import { createLogger } from '../log.js'
+import { DEFAULT_MAX_UNTRACKED_BYTES } from '../constants.js'
 import { odbDir } from './paths.js'
 import {
   type ShadowRepo,
@@ -106,7 +107,7 @@ export class SnapshotService {
     this.stateDir = opts.stateDir
     this.store = opts.store ?? new SnapshotStore(opts.stateDir)
     this.fileSnapshots = opts.fileSnapshots !== false
-    this.maxUntrackedBytes = opts.maxUntrackedBytes ?? 2 * 1024 * 1024
+    this.maxUntrackedBytes = opts.maxUntrackedBytes ?? DEFAULT_MAX_UNTRACKED_BYTES
   }
 
   /** Whether the service was configured with fileSnapshots disabled.

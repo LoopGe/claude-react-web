@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { api } from './useApi'
 import type { SessionInfo } from '../types'
+import { formatError } from '../utils/format-error'
 
 /** How long after the last completed turn we wait before auto-firing
  *  the recap. The user is presumed to have moved on by then. Manual
@@ -87,7 +88,7 @@ export function useSessionRecap(session: SessionInfo, autoRecapEnabled = true): 
         // will flip session.recap.status to 'error'. We only log here
         // for the rare case where the request fails before reaching the
         // manager (network drop, etc.).
-        console.warn('[recap] fetch failed:', err instanceof Error ? err.message : String(err))
+        console.warn('[recap] fetch failed:', formatError(err))
       })
   }, [session.id])
 

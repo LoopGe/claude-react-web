@@ -9,9 +9,11 @@ import { join, resolve as resolvePath } from 'node:path'
 import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { createLogger, type Logger } from './log.js'
+import { DEBOUNCE_MS } from './constants.js'
 
+// Re-exported for the store subclasses that reference it via this module.
+export { DEBOUNCE_MS }
 export const DEFAULT_DIR_NAME = '.claude-react-web'
-export const DEBOUNCE_MS = 500
 
 export interface JsonFileStoreOptions {
   /** Override the state directory (CLI --state-dir). */

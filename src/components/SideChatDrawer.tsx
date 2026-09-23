@@ -23,6 +23,9 @@ import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import { shouldMountWorkingBubble } from '../utils/task-actions'
+import { sessionTitleOrFallback } from '../utils/session-title'
+import { buildOutgoingBody } from '../utils/message-body'
+import { prefersReducedMotion } from '../utils/reduced-motion'
 import { computeWaiting, hasTranscriptBackground } from '../session-store/normalize'
 
 interface SendMessageResponse {
@@ -130,17 +133,10 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     // Optimistic insert — message appears immediately in the transcript.
     const pendingId = insertUserMessage(text || '(image)')
     try {
-      let res: SendMessageResponse
-      if (pastedImages.images.length > 0) {
-        const content: Array<{ type: string; text?: string; source?: { type: string; data: string; media_type: string } }> = []
-        if (text) content.push({ type: 'text', text })
-        for (const img of pastedImages.images) {
-          content.push({ type: 'image', source: { type: 'base64', data: img.data, media_type: img.mediaType } })
-        }
-        res = await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, { content })
-      } else {
-        res = await api.post<SendMessageResponse>(`/sessions/${session.id}/messages`, { text })
-      }
+      const res: SendMessageResponse = await api.post<SendMessageResponse>(
+        `/sessions/${session.id}/messages`,
+        buildOutgoingBody(text, pastedImages.images),
+      )
       ackUserMessage(pendingId, res.message?.uuid ?? '', res.message?.receivedAt)
       setInput('')
       pastedImages.clear()
@@ -182,17 +178,15 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   // When the user prefers reduced motion, CSS animations are disabled
   // (animation: none) so onAnimationEnd never fires. Skip straight to
   // the final callback so the drawer doesn't get stuck.
-  const prefersReducedMotion =
-    typeof window !== 'undefined' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const reduceMotion = prefersReducedMotion()
 
   useEffect(() => {
-    if (isCollapsing && prefersReducedMotion) onCollapse()
-  }, [isCollapsing, prefersReducedMotion, onCollapse])
+    if (isCollapsing && reduceMotion) onCollapse()
+  }, [isCollapsing, reduceMotion, onCollapse])
 
   useEffect(() => {
-    if (isExiting && prefersReducedMotion) onClose()
-  }, [isExiting, prefersReducedMotion, onClose])
+    if (isExiting && reduceMotion) onClose()
+  }, [isExiting, reduceMotion, onClose])
 
   const handleExited = useCallback(() => { onClose() }, [onClose])
   const handleCollapsed = useCallback(() => { onCollapse() }, [onCollapse])
@@ -208,7 +202,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
       }}
     >
       <div className="side-chat-drawer-header">
-        <Tooltip label={`Back to ${parentSession.title ?? parentSession.id.slice(0, 8)}`} placement="bottom">
+        <Tooltip label={`Back to ${sessionTitleOrFallback(parentSession)}`} placement="bottom">
           <button
             type="button"
             className="btn btn-sm side-chat-drawer-back"
@@ -216,7 +210,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           >
             <IconArrowLeft size={14} />
             <span className="side-chat-drawer-parent-title">
-              {parentSession.title ?? parentSession.id.slice(0, 8)}
+              {sessionTitleOrFallback(parentSession)}
             </span>
           </button>
         </Tooltip>

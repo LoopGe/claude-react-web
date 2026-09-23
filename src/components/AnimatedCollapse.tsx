@@ -1,3 +1,4 @@
+import { prefersReducedMotion } from '../utils/reduced-motion'
 import {
   type DetailsHTMLAttributes,
   type MouseEvent,
@@ -184,7 +185,7 @@ export function AnimatedCollapse({
 
     cleanupAnimation()
 
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reducedMotion = prefersReducedMotion()
     if (reducedMotion || Math.abs(from - to) < 2) {
       if (nextOpen) finishOpen(to)
       else finishClosed()

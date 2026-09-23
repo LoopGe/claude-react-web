@@ -27,6 +27,7 @@ import {
 } from '../shared/update-info.js'
 import { config } from './config.js'
 import { createLogger } from './log.js'
+import { LOG_PREVIEW_CAP } from './constants.js'
 
 const log = createLogger('release-notes')
 
@@ -119,7 +120,7 @@ async function fetchReleases(from: string, to: string, includeFrom: boolean): Pr
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       const hint = res.status === 403 || res.status === 429 ? ' (rate limited)' : ''
-      return errorResult(from, to, `GitHub releases fetch failed: ${res.status}${hint} ${text.slice(0, 200)}`)
+      return errorResult(from, to, `GitHub releases fetch failed: ${res.status}${hint} ${text.slice(0, LOG_PREVIEW_CAP)}`)
     }
     const json: unknown = await res.json()
     if (!Array.isArray(json)) {

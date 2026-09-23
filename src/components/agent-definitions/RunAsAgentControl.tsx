@@ -13,6 +13,7 @@ import { useMemo, useState } from 'react'
 import { Overlay } from '../Overlay'
 import { api } from '../../hooks/useApi'
 import { useAgentDefinitions } from '../../hooks/useAgentDefinitions'
+import { formatError } from '../../utils/format-error'
 
 interface Props {
   sessionId: string
@@ -55,7 +56,7 @@ export function RunAsAgentControl({ sessionId, onClose }: Props) {
       })
       onClose()
     } catch (e) {
-      setStaleError(e instanceof Error ? e.message : String(e))
+      setStaleError(formatError(e))
       setBusy(false)
     }
   }

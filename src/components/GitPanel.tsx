@@ -37,6 +37,8 @@ import type {
   GitStatusResponse,
 } from '../../shared/git-types'
 import { gitStatusTitle } from '../utils/git-status'
+import { formatError } from '../utils/format-error'
+import { formatRelativeFromMs } from '../utils/format'
 
 interface Props {
   /** Session id powering the per-session POST routes (writes) and WS
@@ -135,7 +137,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
     try {
       await fn()
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = formatError(err)
       toast.error(`${label}: ${msg}`)
     }
   }
@@ -151,7 +153,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         try {
           await fn()
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
+          const msg = formatError(err)
           toast.error(`${errLabel}: ${msg}`)
         } finally {
           setConfirmBusy(false)
@@ -1387,29 +1389,11 @@ function CommitList({ cwd }: { cwd: string | undefined }) {
           <code className="git-commit-hash" title={c.hash}>{c.shortHash}</code>
           <span className="git-commit-subject">{c.subject}</span>
           <span className="git-commit-meta">
-            {c.author} · {formatRelative(c.date)}
+            {c.author} · {formatRelativeFromMs(c.date)}
           </span>
         </li>
       ))}
     </ul>
   )
-}
-
-function formatRelative(ms: number): string {
-  if (!ms) return ''
-  const diff = Date.now() - ms
-  const sec = Math.round(diff / 1000)
-  if (sec < 60) return `${sec}s ago`
-  const min = Math.round(sec / 60)
-  if (min < 60) return `${min}m ago`
-  const hr = Math.round(min / 60)
-  if (hr < 24) return `${hr}h ago`
-  const day = Math.round(hr / 24)
-  if (day < 7) return `${day}d ago`
-  const d = new Date(ms)
-  const yyyy = d.getFullYear()
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
 }
 

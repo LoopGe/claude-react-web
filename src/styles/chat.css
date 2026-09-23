@@ -1235,12 +1235,12 @@
   filter: drop-shadow(0 1px 0 var(--border));
 }
 /* Spin the loader glyph during the brief optimistic-send window (before the
-   server flips `working` true and the button swaps to Interrupt). Reuses the
-   existing msg-sending-spin keyframes ?a load-bearing progress indicator, so
-   it deliberately keeps animating under prefers-reduced-motion (see the
+   server flips `working` true and the button swaps to Interrupt). Plays the
+   shared spin keyframes ?a load-bearing progress indicator, so it
+   deliberately keeps animating under prefers-reduced-motion (see the
    reduced-motion block's note). */
 .composer-send-spinner {
-  animation: msg-sending-spin 0.8s linear infinite;
+  animation: spin 0.8s linear infinite;
 }
 /* (#5) Send ?Interrupt swap. The two buttons occupy one slot and are
    mutually exclusive, so React remounts the glyph whenever canInterrupt
@@ -1375,7 +1375,7 @@
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+  box-shadow: var(--schedule-picker-shadow);
   padding: var(--space-2-5);
   display: flex;
   flex-direction: column;
@@ -1731,16 +1731,11 @@
   border: 1.5px solid var(--border);
   border-top-color: var(--accent);
   border-radius: var(--radius-circle);
-  animation: msg-sending-spin 0.8s linear infinite;
+  animation: spin 0.8s linear infinite;
 }
 .msg-sending-label {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-}
-@keyframes msg-sending-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 /* Subtly soften the bubble while in-flight so it visibly differs from
    the acknowledged state. Restored when the spinner is removed. */
@@ -3112,7 +3107,7 @@
      stacking — the later sibling wins. Keep that contract in mind before adding
      a new sibling overlay; either pick a different z-index or co-locate with
      the existing block so the order is intentional. */
-  z-index: 6;
+  z-index: var(--z-panel-overlay);
   display: flex;
   justify-content: flex-end;
 }
@@ -3154,30 +3149,10 @@
      composited layer / containing block for the whole time the overlay is
      open, dragging the transcript scroller into it. Same reason the body
      transitions below use `backwards`. */
-  animation: subagent-drawer-in var(--motion-duration-base) var(--motion-ease-enter) backwards;
+  animation: drawer-in var(--motion-duration-base) var(--motion-ease-enter) backwards;
 }
 .subagent-overlay[data-state='closing'] .subagent-overlay-panel {
-  animation: subagent-drawer-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
-}
-@keyframes subagent-drawer-in {
-  from {
-    opacity: 0;
-    transform: translateX(24px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-@keyframes subagent-drawer-out {
-  from {
-    opacity: 1;
-    transform: translateX(0);
-  }
-  to {
-    opacity: 0;
-    transform: translateX(24px);
-  }
+  animation: drawer-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
 }
 @keyframes subagent-sheet-in {
   from {
@@ -3465,7 +3440,7 @@
 .workflow-overlay {
   position: absolute;
   inset: 0;
-  z-index: 6;
+  z-index: var(--z-panel-overlay);
   display: flex;
   justify-content: flex-end;
 }
@@ -3491,30 +3466,10 @@
   display: flex;
   flex-direction: column;
   box-shadow: var(--drawer-shadow);
-  animation: workflow-drawer-in var(--motion-duration-base) var(--motion-ease-enter) backwards;
+  animation: drawer-in var(--motion-duration-base) var(--motion-ease-enter) backwards;
 }
 .workflow-overlay[data-state='closing'] .workflow-overlay-panel {
-  animation: workflow-drawer-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
-}
-@keyframes workflow-drawer-in {
-  from {
-    opacity: 0;
-    transform: translateX(24px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-@keyframes workflow-drawer-out {
-  from {
-    opacity: 1;
-    transform: translateX(0);
-  }
-  to {
-    opacity: 0;
-    transform: translateX(24px);
-  }
+  animation: drawer-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
 }
 .workflow-overlay-header {
   display: flex;
@@ -3796,40 +3751,20 @@
   bottom: 0;
   width: min(50%, 640px);
   min-width: 320px;
-  z-index: 6;
+  z-index: var(--z-panel-overlay);
   background: var(--bg);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   box-shadow: var(--drawer-shadow);
-  animation: side-chat-drawer-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  animation: drawer-in var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 .side-chat-drawer.exiting {
-  animation: side-chat-drawer-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+  animation: drawer-out var(--motion-duration-fast) var(--motion-ease-exit) both;
   pointer-events: none;
 }
-@keyframes side-chat-drawer-in {
-  from {
-    opacity: 0;
-    transform: translateX(24px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-@keyframes side-chat-drawer-out {
-  from {
-    opacity: 1;
-    transform: translateX(0);
-  }
-  to {
-    opacity: 0;
-    transform: translateX(24px);
-  }
-}
 .side-chat-drawer.collapsing {
-  animation: side-chat-drawer-out var(--motion-duration-base) var(--motion-ease-exit) both;
+  animation: drawer-out var(--motion-duration-base) var(--motion-ease-exit) both;
   pointer-events: none;
 }
 .side-chat-drawer-header {

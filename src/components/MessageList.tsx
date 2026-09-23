@@ -17,6 +17,7 @@ import { SessionCwdProvider } from '../hooks/useSessionCwd'
 import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
 import type { SdkMessage } from '../types'
 import { buildTaskStateMap } from '../utils/task-events'
+import { cx } from '../utils/cx'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/normalize'
@@ -890,12 +891,12 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // fallback for rows that unmount before animationend fires, by a timeout
     // scheduled on mount — so a scroll-driven remount later can't replay it.
     const isEntering = isRowEntering(item.id)
-    const className = [
+    const className = cx(
       'virtuoso-item-wrapper',
       item.id === firstItemId ? 'transcript-first-item' : '',
       item.id === lastItemId ? 'transcript-last-item' : '',
       isEntering ? 'msg-enter' : '',
-    ].filter(Boolean).join(' ')
+    )
     // Fold inputs for a real-user row, computed on the CANONICAL search
     // view: countMatches over item.plainText is the exact predicate Chat's
     // match counter uses (types.ts documents plainText as the search SSOT),

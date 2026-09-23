@@ -27,6 +27,7 @@ import {
 import { parseRepoManifest, type ParsedPlugin, type ParsedPluginSource } from '../marketplace-parser.js'
 import { addMarketplaceByUrl } from '../mp-ops.js'
 import { createLogger } from '../log.js'
+import { LOG_PREVIEW_CAP, ERROR_DETAIL_CAP } from '../constants.js'
 
 const log = createLogger('mp-marketplace')
 
@@ -163,8 +164,8 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
           : reason instanceof Error
             ? reason.message
             : String(reason)
-      log.warn(`check-updates failed for ${id}: ${msg.slice(0, 200)}`)
-      return { id, hasUpdate: false, error: msg.slice(0, 300) }
+      log.warn(`check-updates failed for ${id}: ${msg.slice(0, LOG_PREVIEW_CAP)}`)
+      return { id, hasUpdate: false, error: msg.slice(0, ERROR_DETAIL_CAP) }
     })
     return c.json({ ok: true, updates })
   })

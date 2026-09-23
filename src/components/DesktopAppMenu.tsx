@@ -23,6 +23,7 @@ import {
   type DesktopMenuItem,
 } from '../../shared/desktop-menu'
 import type { DesktopEditAction, DesktopViewAction, DesktopWindowAction } from '../../shared/desktop-bridge'
+import { clamp } from '../utils/clamp'
 
 interface Props {
   /** Renderer callbacks for command-tagged items (session.new, settings…). */
@@ -113,8 +114,8 @@ export function DesktopAppMenu({ onCommand }: Props) {
     const vh = window.innerHeight
     const margin = 8
     setPos({
-      x: Math.min(Math.max(margin, anchor.x), vw - rect.width - margin),
-      y: Math.min(Math.max(margin, anchor.y), vh - rect.height - margin),
+      x: clamp(anchor.x, margin, vw - rect.width - margin),
+      y: clamp(anchor.y, margin, vh - rect.height - margin),
     })
   }, [open, anchor.x, anchor.y])
 

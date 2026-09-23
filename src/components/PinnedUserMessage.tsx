@@ -13,6 +13,7 @@
 // .chat-top-stack, so it never overlaps the transcript and the stack's
 // max-height cap applies naturally.
 
+import { prefersReducedMotion } from '../utils/reduced-motion'
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import { useTopBannerMotion } from '../utils/transitions'
@@ -82,10 +83,7 @@ export const PinnedUserMessage = memo(function PinnedUserMessage({ text, clearin
   useLayoutEffect(() => {
     const wrapper = listWrapperRef.current
     if (!wrapper) return
-    const reduceMotion =
-      typeof window !== 'undefined' &&
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reduceMotion = prefersReducedMotion()
     if (reduceMotion) {
       wrapper.style.height = ''
       return

@@ -203,10 +203,6 @@
   white-space: pre;
 }
 
-@keyframes setup-spin {
-  to { transform: rotate(360deg); }
-}
-
 @keyframes setup-card-in {
   from {
     opacity: 0;

@@ -10,6 +10,7 @@ import { config as serverConfig, requireAuthToken } from './config.js'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
+import { LOG_PREVIEW_CAP } from './constants.js'
 
 const log = createLogger('anthropic-api')
 
@@ -103,8 +104,8 @@ export async function callAnthropicMessages(opts: CallOptions): Promise<string> 
     })
     if (!res.ok) {
       const body = await res.text().catch(() => '')
-      log.error(`api error status=${res.status} elapsed=${Date.now() - start}ms model=${opts.model} baseUrl=${baseUrl} body=${body.slice(0, 200)}`)
-      throw new Error(`Anthropic API ${res.status}: ${body.slice(0, 200)}`)
+      log.error(`api error status=${res.status} elapsed=${Date.now() - start}ms model=${opts.model} baseUrl=${baseUrl} body=${body.slice(0, LOG_PREVIEW_CAP)}`)
+      throw new Error(`Anthropic API ${res.status}: ${body.slice(0, LOG_PREVIEW_CAP)}`)
     }
     const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
     const text = data.content?.[0]?.text

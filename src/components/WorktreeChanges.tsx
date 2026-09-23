@@ -13,6 +13,7 @@
 // only mounted while open — no lazy chunk needed. Reuses the git-panel
 // CSS classes so the rows / diffs read identically to the main Git panel.
 
+import { cx } from '../utils/cx'
 import { useState } from 'react'
 import { Overlay } from './Overlay'
 import { FileViewer } from './FileViewer'
@@ -106,7 +107,7 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
                 key={t.id}
                 role="tab"
                 aria-selected={tab === t.id}
-                className={['git-tab', tab === t.id ? 'active' : ''].filter(Boolean).join(' ')}
+                className={cx('git-tab', tab === t.id ? 'active' : '')}
                 onClick={() => setTab(t.id)}
               >
                 {t.label}

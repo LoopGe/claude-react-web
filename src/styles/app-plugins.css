@@ -272,11 +272,8 @@
   border: 2px solid var(--border);
   border-top-color: var(--accent);
   border-radius: var(--radius-circle);
-  animation: plugin-spin 0.7s linear infinite;
+  animation: spin 0.7s linear infinite;
   flex-shrink: 0;
-}
-@keyframes plugin-spin {
-  to { transform: rotate(360deg); }
 }
 
 /* ── Command result dialog ──────────────────────────────────────── */
@@ -285,7 +282,7 @@
   position: fixed;
   inset: 0;
   z-index: var(--z-modal);
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--backdrop-color);
   display: flex;
   align-items: center;
   justify-content: center;

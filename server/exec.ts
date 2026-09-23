@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process'
 import { TextDecoder } from 'node:util'
 import { createLogger } from './log.js'
 import { resolveShellEncoding } from './shell-encoding.js'
+import { COMMAND_PREVIEW_CAP } from './constants.js'
 
 const log = createLogger('exec')
 
@@ -128,7 +129,7 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
         stdio: ['ignore', 'pipe', 'pipe'],
       })
     } catch (err) {
-      log.error(`spawn failed for "${command.slice(0, 80)}":`, err)
+      log.error(`spawn failed for "${command.slice(0, COMMAND_PREVIEW_CAP)}":`, err)
       finish({ exitCode: -1 })
       return
     }
@@ -152,7 +153,7 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
     if (child.stderr) onChunk(child.stderr, 'stderr')
 
     const onAbort = () => {
-      log.info(`command aborted: "${command.slice(0, 80)}"`)
+      log.info(`command aborted: "${command.slice(0, COMMAND_PREVIEW_CAP)}"`)
       try { child.kill('SIGKILL') } catch { /* already gone */ }
       finish({ interrupted: true })
     }
@@ -162,7 +163,7 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
     }
 
     child.on('error', (err) => {
-      log.error(`child error for "${command.slice(0, 80)}":`, err)
+      log.error(`child error for "${command.slice(0, COMMAND_PREVIEW_CAP)}":`, err)
       finish({ exitCode: -1 })
     })
     child.on('close', (code) => {

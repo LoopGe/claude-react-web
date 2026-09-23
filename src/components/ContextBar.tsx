@@ -34,7 +34,7 @@ export function contextUsageStats(usage: ContextUsage | null | undefined) {
   // but fall back to a straight division if absent.
   const bounded =
     hasData && usage && usedTokens != null && max != null
-      ? Math.min(100, Math.max(0, usage.percentage ?? (usedTokens / max) * 100))
+      ? clamp(usage.percentage ?? (usedTokens / max) * 100, 0, 100)
       : null
   const level: 'ok' | 'warn' | 'danger' =
     bounded == null ? 'ok' : bounded >= 90 ? 'danger' : bounded >= 70 ? 'warn' : 'ok'
@@ -47,6 +47,7 @@ export function contextUsageStats(usage: ContextUsage | null | undefined) {
 }
 import { formatTokens } from '../utils/format'
 import { windowForAutoCompactThreshold } from '../../shared/auto-compact'
+import { clamp } from '../utils/clamp'
 
 /** Marker drag range / grid. Min 20 keeps auto-compact far enough from the
  *  prompt edge to be useful; step 1 gives per-point fine control over both
@@ -64,7 +65,7 @@ const DRAG_SLOP_PX = 3
 const REVEAL_DELAY_MS = 3000
 
 function snapPct(p: number): number {
-  return Math.min(MAX_PCT, Math.max(MIN_PCT, Math.round(p / STEP_PCT) * STEP_PCT))
+  return clamp(Math.round(p / STEP_PCT) * STEP_PCT, MIN_PCT, MAX_PCT)
 }
 
 interface Props {

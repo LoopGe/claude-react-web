@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type RefObject } from 'react'
+import { clamp } from '../utils/clamp'
 
 /* ============================================================
    useLiquidGlass — SVG-displacement-map refraction for an element
@@ -75,7 +76,7 @@ function svgBackdropSupported(): boolean {
 /* Smootherstep (Ken Perlin) — C2-continuous ramp, used for the bezel
    falloff so the refraction blends seamlessly into the clear center. */
 function smootherstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)))
+  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1)
   return t * t * t * (t * (t * 6 - 15) + 10)
 }
 

@@ -12,6 +12,7 @@ import { ElapsedTimer } from './ElapsedTimer'
 import { IconX, IconArrowLeft } from './icons/ToolIcons'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
+import { cx } from '../utils/cx'
 
 interface Props {
   /** Stack of toolUseIds: stack[0] is the outermost subagent the user
@@ -250,10 +251,10 @@ export const SubagentOverlay = memo(function SubagentOverlay({
         </div>
         <div
           key={currentId}
-          className={[
+          className={cx(
             'subagent-overlay-body',
             transitionDirection ? `subagent-overlay-body-${transitionDirection}` : '',
-          ].filter(Boolean).join(' ')}
+          )}
         >
           <MessageList
             items={items}

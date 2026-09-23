@@ -22,6 +22,7 @@ import { callAnthropicMessages, type AuxLlmTarget } from './anthropic-api.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
 import { config } from './config.js'
+import { LOG_PREVIEW_CAP, ERROR_DETAIL_CAP } from './constants.js'
 
 const log = createLogger('classifier')
 
@@ -181,7 +182,7 @@ export async function classifyToolAction(params: {
       const label = msg.role === 'user' ? 'User' : 'Assistant'
       const text =
         msg.content.length > 300
-          ? msg.content.slice(0, 300) + '…'
+          ? msg.content.slice(0, ERROR_DETAIL_CAP) + '…'
           : msg.content
       parts.push(`${label}: ${text}`)
     }
@@ -227,7 +228,7 @@ export async function classifyToolAction(params: {
     if (block === null) {
       log.warn(
         `Classifier returned unparseable response (${elapsed}ms): ` +
-          response.slice(0, 200),
+          response.slice(0, LOG_PREVIEW_CAP),
       )
       return { allow: false, reason: 'Classifier response unparseable' }
     }

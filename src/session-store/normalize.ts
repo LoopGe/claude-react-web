@@ -10,6 +10,7 @@ import type {
   WorkflowRecord,
 } from './types'
 import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, SKILL_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME, ENTER_WORKTREE_TOOL_NAME, EXIT_WORKTREE_TOOL_NAME } from '../constants/toolNames'
+import { randomId } from '../utils/uuid'
 import { extractMessagePlainText } from '../search'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 import { isEmptyResultFrame } from '../../shared/results.js'
@@ -137,7 +138,7 @@ export function toTranscriptItem(
   const hiddenByDefault = shouldHideByDefault(msg)
   const id = typeof msg.uuid === 'string'
     ? msg.uuid
-    : `${msg.type}:${msg.subtype ?? 'plain'}:${Math.random().toString(36).slice(2)}`
+    : `${msg.type}:${msg.subtype ?? 'plain'}:${randomId()}`
 
   const item: TranscriptItem = {
     id,

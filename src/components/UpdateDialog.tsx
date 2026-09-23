@@ -23,6 +23,7 @@ import { reportUpdateResult } from '../utils/update-action'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import { isVersionNewer, type UpdateActionResult, type UpdateInfo } from '../../shared/update-info'
 import { IconX, IconCheck, IconAlertTriangle } from './icons/ToolIcons'
+import { formatError } from '../utils/format-error'
 
 /** Which surface opened the dialog.
  *  - `update` / `deprecation`: the sticky nag toast — notes for `(current, latest]`.
@@ -86,7 +87,7 @@ export function UpdateDialog({ open, mode, info, updating, onUpdate, onClose }: 
       // no-op / declined / unconfirmed — stay open so the user still has
       // the notes + copy-command in front of them.
     } catch (e) {
-      setUpdateError(e instanceof Error ? e.message : String(e))
+      setUpdateError(formatError(e))
     }
   }
 

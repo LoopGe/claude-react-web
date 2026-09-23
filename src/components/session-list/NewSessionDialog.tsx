@@ -22,6 +22,7 @@ const McpInstaller = lazy(() =>
 )
 import { ONE_M_CONTEXT_BETA } from '../../constants/contextSteps'
 import { RECENT_MODELS_KEY, RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT, RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../../constants/recentKeys'
+import { clamp } from '../../utils/clamp'
 
 /** useLocalStorage validator for the recent lists. A corrupt entry (other tab,
  *  older build, hand-edit) must collapse to [] — iterating a non-array would
@@ -203,8 +204,8 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const [recentModels, setRecentModels] = useLocalStorage<string[]>(RECENT_MODELS_KEY, [], { validate: isStringArray })
   const [recentModelsCapRaw] = useLocalStorage<number>(RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT)
   const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
-  const recentModelsCap = Math.max(3, Math.min(50, Math.round(recentModelsCapRaw)))
-  const recentCwdsCap = Math.max(3, Math.min(50, Math.round(recentCwdsCapRaw)))
+  const recentModelsCap = clamp(Math.round(recentModelsCapRaw), 3, 50)
+  const recentCwdsCap = clamp(Math.round(recentCwdsCapRaw), 3, 50)
 
   // Shared "remember recent …" helper: MRU-order, de-duped, capped.
   //

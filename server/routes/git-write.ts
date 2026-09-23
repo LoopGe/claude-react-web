@@ -63,6 +63,13 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     return getStatusInRepo(cwd)
   }
 
+  /** Destructive git verbs must be explicitly confirmed by the client
+   *  (`confirm: true` in the body) so a stray request can't destroy work.
+   *  Throws the shared 400 with the `<action> requires confirm:true` shape. */
+  function requireConfirm(confirm: unknown, action: string): void {
+    if (confirm !== true) throw new HttpError(400, `${action} requires confirm:true`)
+  }
+
   // ── File operations ────────────────────────────────────────────────
 
   app.post('/sessions/:id/git/stage', async (c) => {
@@ -93,7 +100,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const id = c.req.param('id')
     const cwd = getSessionCwd(id)
     const body = await safeJson<{ paths?: unknown; untracked?: unknown; confirm?: unknown }>(c.req)
-    if (body.confirm !== true) throw new HttpError(400, 'discard requires confirm:true')
+    requireConfirm(body.confirm, 'discard')
     const paths = parsePathsArray(body.paths)
     const mode = body.untracked === true ? 'untracked' : 'tracked'
     log.warn(`discard session=${id} mode=${mode} paths=${paths.length}`)
@@ -121,9 +128,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     // same sense as discard / abort / stash-drop, so gate on confirm:true
     // to match the rest of the write surface. A normal (non-amend)
     // commit doesn't need confirm — it only adds.
-    if (amend && body.confirm !== true) {
-      throw new HttpError(400, 'amend requires confirm:true')
-    }
+    if (amend) requireConfirm(body.confirm, 'amend')
     log.info(`commit session=${id} amend=${amend} msgLen=${body.message.length}`)
     await commitChanges(cwd, body.message, amend)
     const status = await freshStatus(cwd)
@@ -137,7 +142,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const id = c.req.param('id')
     const cwd = getSessionCwd(id)
     const body = await safeJson<{ confirm?: unknown }>(c.req)
-    if (body.confirm !== true) throw new HttpError(400, 'abort-merge requires confirm:true')
+    requireConfirm(body.confirm, 'abort-merge')
     log.warn(`abort-merge session=${id}`)
     await abortMerge(cwd)
     const status = await freshStatus(cwd)
@@ -149,7 +154,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const id = c.req.param('id')
     const cwd = getSessionCwd(id)
     const body = await safeJson<{ confirm?: unknown }>(c.req)
-    if (body.confirm !== true) throw new HttpError(400, 'abort-rebase requires confirm:true')
+    requireConfirm(body.confirm, 'abort-rebase')
     log.warn(`abort-rebase session=${id}`)
     await abortRebase(cwd)
     const status = await freshStatus(cwd)
@@ -190,7 +195,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const id = c.req.param('id')
     const cwd = getSessionCwd(id)
     const body = await safeJson<{ index?: unknown; confirm?: unknown }>(c.req)
-    if (body.confirm !== true) throw new HttpError(400, 'stash-drop requires confirm:true')
+    requireConfirm(body.confirm, 'stash-drop')
     if (typeof body.index !== 'number' || !Number.isInteger(body.index) || body.index < 0) {
       throw new HttpError(400, 'index must be a non-negative integer')
     }
@@ -268,9 +273,7 @@ export function buildGitWriteRouter(sm: SessionManager): Hono {
     const cwd = getSessionCwd(id)
     const body = await safeJson<{ force?: unknown; confirm?: unknown }>(c.req)
     const force = body.force === true
-    if (force && body.confirm !== true) {
-      throw new HttpError(400, 'force push requires confirm:true')
-    }
+    if (force) requireConfirm(body.confirm, 'force push')
     log.info(`push session=${id} force=${force}`)
     await pushToRemote(cwd, force)
     const [status, branches] = await Promise.all([freshStatus(cwd), listBranches(cwd)])

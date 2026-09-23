@@ -21,6 +21,8 @@ import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useDiagnostics } from '../hooks/useDiagnostics'
 import { shortenModel } from '../utils/session-status'
+import { sessionTitleOrFallback } from '../utils/session-title'
+import { cx } from '../utils/cx'
 import { useModelOptions } from '../hooks/useModelOptions'
 import { AnimatePresence } from 'motion/react'
 import { ModelPicker } from './ModelPicker'
@@ -770,13 +772,13 @@ export const ChatPanel = memo(function ChatPanel({
   return (
     <section
       data-panel-id={session.id}
-      className={[
+      className={cx(
         'chat-panel',
         focused ? 'focused' : '',
         dropActive ? 'drop-target' : '',
         entering ? 'entering' : '',
         `mode-${permMode}`,
-      ].filter(Boolean).join(' ')}
+      )}
       style={accentStyle}
       onAnimationEnd={(e) => {
         if (entering && e.target === e.currentTarget) onAnimEnd?.(session.id)
@@ -872,7 +874,7 @@ export const ChatPanel = memo(function ChatPanel({
             {regenerating && <span className="chat-panel-title-spinner" aria-label="regenerating title" />}
             {/* Keep the title text rendered while regenerating so the header's
                 width doesn't collapse and nudge sibling controls. */}
-            {session.title ?? session.id.slice(0, 8)}
+            {sessionTitleOrFallback(session)}
           </span>
         </Tooltip>
         {/* Permission-mode control. Doubles as the at-a-glance cue (the
@@ -1245,11 +1247,11 @@ export const ChatPanel = memo(function ChatPanel({
               <Tooltip label={gitChipTitle(gitStatus.data)} placement="bottom" align="end">
                 <button
                   type="button"
-                  className={[
+                  className={cx(
                     'chat-panel-git-badge',
                     gitStatus.data.state !== 'clean' && gitStatus.data.state !== 'dirty' ? 'conflict' : '',
                     gitStatus.data.state === 'dirty' ? 'dirty' : '',
-                  ].filter(Boolean).join(' ')}
+                  )}
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation()
@@ -1271,11 +1273,11 @@ export const ChatPanel = memo(function ChatPanel({
               <Tooltip label={worktreeChipTitle(activeWorktreeMatch)} placement="bottom" align="end">
                 <button
                   type="button"
-                  className={[
+                  className={cx(
                     'chat-panel-worktree-badge',
                     'clickable',
                     activeWorktreeMatch ? '' : 'unconfirmed',
-                  ].filter(Boolean).join(' ')}
+                  )}
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation()

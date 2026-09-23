@@ -10,6 +10,8 @@
 // through `Options`, which makes a whole session error out when sandbox
 // dependencies are missing (e.g. bubblewrap on Linux). The settings layer
 // degrades gracefully instead.
+import { isStringArray, isPlainObject } from './type-guards'
+
 
 export type SandboxSetting = {
   enabled: boolean
@@ -42,14 +44,6 @@ const BOOLEAN_KEYS = new Set([
   'allowUnsandboxedCommands',
   'failIfUnavailable',
 ])
-
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every((x) => typeof x === 'string')
-}
 
 /** Strict validator for the app `SandboxSetting` shape. Rejects unknown keys
  *  at every depth so a typo'd body can never be silently forwarded to the

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useDiagnostics } from '../hooks/useDiagnostics'
 import { SettingsRow } from './SettingsRow'
 import { Skeleton } from './Skeleton'
+import { formatError } from '../utils/format-error'
 
 /** Lines shown in the Diagnostics tab — full context for deep inspection. */
 const STDERR_PANEL_LINES = 100
@@ -17,7 +18,7 @@ export function DiagnosticsPanel({ sessionId }: { sessionId: string }) {
     try {
       await setCliDebug(value)
     } catch (e) {
-      setMutationError(e instanceof Error ? e.message : String(e))
+      setMutationError(formatError(e))
     } finally {
       setSaving(false)
     }

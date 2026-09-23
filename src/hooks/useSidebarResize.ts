@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useDragResize } from './useDragResize'
 import { useLocalStorage } from './useLocalStorage'
 import { SIDEBAR_WIDTH_KEY } from '../constants/storageKeys'
+import { clamp } from '../utils/clamp'
 
 export interface SidebarResizeOptions {
   minPx: number
@@ -23,7 +24,7 @@ export function useSidebarResize({ minPx, maxPx }: SidebarResizeOptions) {
   const [draft, setDraft] = useState<number | null>(null)
 
   const resize = useDragResize((delta) => {
-    const w = Math.max(minPx, Math.min(maxPx, sidebarWidth + delta))
+    const w = clamp(sidebarWidth + delta, minPx, maxPx)
     setDraft(w)
   })
 

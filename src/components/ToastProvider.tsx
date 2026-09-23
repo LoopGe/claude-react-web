@@ -15,19 +15,21 @@ import {
   type PushOptions,
 } from '../hooks/toastContext'
 import { randomId } from '../utils/uuid'
+import { DEFAULT_TOAST_DURATION_MS } from '../utils/notifications'
 
 /** Hard cap on simultaneously visible toasts. New ones evict the oldest
  *  so a tight loop of failures can't push the column past the viewport. */
 const MAX_TOASTS = 3
 const TOAST_EXIT_MS = 180
 
-/** Default lifetime for `error` / `success` / `info`. Uniform 8s so the
+/** Default lifetime for `error` / `success` / `info`. Uniform so the
  *  progress bar reads the same across kinds; callers can still override
- *  per-toast via `durationMs` (0 = sticky). */
+ *  per-toast via `durationMs` (0 = sticky). Value lives in
+ *  utils/notifications.ts alongside the CLI-notification default. */
 const DEFAULT_DURATIONS: Record<ToastKind, number> = {
-  error: 8000,
-  success: 8000,
-  info: 8000,
+  error: DEFAULT_TOAST_DURATION_MS,
+  success: DEFAULT_TOAST_DURATION_MS,
+  info: DEFAULT_TOAST_DURATION_MS,
 }
 
 /** Random id with a `crypto.randomUUID` fallback. The fallback path matters

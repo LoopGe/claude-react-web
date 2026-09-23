@@ -13,6 +13,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import { usePopoverMotion } from '../utils/transitions'
+import { clamp } from '../utils/clamp'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { markPortaledSurface } from '../theme'
@@ -55,7 +56,7 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
   const snapRaf = useRef<number | null>(null)
   // Nearest stop to the live position — drives the value label + active tick
   // so the UI previews where a release would land.
-  const previewIndex = Math.min(maxIndex, Math.max(0, Math.round(value)))
+  const previewIndex = clamp(Math.round(value), 0, maxIndex)
   const previewLevel = levels[previewIndex] ?? current
 
   // Measure after layout and nudge inward to stay in the viewport.
@@ -88,7 +89,7 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
   })
 
   const selectIndex = (idx: number) => {
-    const clamped = Math.min(maxIndex, Math.max(0, idx))
+    const clamped = clamp(idx, 0, maxIndex)
     const level = levels[clamped]
     if (level && level !== current) onSelect(level)
   }
@@ -100,7 +101,7 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
     if (snapRaf.current != null) cancelAnimationFrame(snapRaf.current)
     setDragVal((from) => {
       if (from == null) return null
-      const target = Math.min(maxIndex, Math.max(0, Math.round(from)))
+      const target = clamp(Math.round(from), 0, maxIndex)
       if (Math.abs(from - target) < 0.001) {
         selectIndex(target)
         return null

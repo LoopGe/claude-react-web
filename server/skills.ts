@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
 import { claudeConfigDir } from './claude-config-dir.js'
+import { MAX_SKILL_IMPORT_TOTAL_BYTES } from './constants.js'
 
 const log = createLogger('skills-core')
 import type { SkillImportFile, SkillRecord, SkillRootInfo, SkillScope, SkillValidationResponse } from '../shared/skills.js'
@@ -10,7 +11,6 @@ import type { SkillImportFile, SkillRecord, SkillRootInfo, SkillScope, SkillVali
 const SKILL_FILE = 'SKILL.md'
 const MAX_SKILL_BYTES = 1024 * 1024
 const MAX_SKILL_IMPORT_FILES = 200
-const MAX_SKILL_IMPORT_TOTAL_BYTES = 16 * 1024 * 1024
 const VALID_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
 
 interface ParsedSkillFrontmatter {

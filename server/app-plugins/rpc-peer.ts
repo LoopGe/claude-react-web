@@ -27,6 +27,7 @@ import {
   type JsonRpcNotification,
 } from '../../shared/app-plugins/rpc-protocol.js'
 import { LIMITS } from '../../shared/app-plugins/validation.js'
+import { LOG_PREVIEW_CAP } from '../constants.js'
 
 const log = createLogger('app-plugins:rpc')
 
@@ -275,11 +276,11 @@ export class RpcPeer {
     try {
       msg = JSON.parse(trimmed) as JsonRpcMessage
     } catch {
-      log.warn(`non-JSON line on plugin stdout (ignored): ${trimmed.slice(0, 200)}`)
+      log.warn(`non-JSON line on plugin stdout (ignored): ${trimmed.slice(0, LOG_PREVIEW_CAP)}`)
       return
     }
     if (!msg || typeof msg !== 'object' || (msg as { jsonrpc?: string }).jsonrpc !== '2.0') {
-      log.warn(`invalid rpc message on stdout: ${trimmed.slice(0, 200)}`)
+      log.warn(`invalid rpc message on stdout: ${trimmed.slice(0, LOG_PREVIEW_CAP)}`)
       return
     }
     // Response to one of our requests.

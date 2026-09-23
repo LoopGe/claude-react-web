@@ -26,6 +26,7 @@ import {
 } from './log.js'
 import { setWebAuth } from './auth.js'
 import { HttpError } from './errors.js'
+import { DEFAULT_MAX_UNTRACKED_BYTES } from './constants.js'
 import { coerceProfiles, profileDefaultModel, profileFromLegacyFields, resolveActiveProfile, type LegacyProfileFields } from './profiles.js'
 import { GIT_TOOLS_SERVER_NAME, migrateLegacyGitToolsKey } from '../shared/first-party.js'
 
@@ -337,7 +338,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   allowSensitivePathEdits: false,
   maxOutputTokens: 0,
   fileSnapshots: true,
-  fileSnapshotsMaxUntrackedBytes: 2 * 1024 * 1024,
+  fileSnapshotsMaxUntrackedBytes: DEFAULT_MAX_UNTRACKED_BYTES,
   profiles: Object.freeze([]),
   activeProfileId: 'default',
 })

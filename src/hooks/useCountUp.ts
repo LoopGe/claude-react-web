@@ -1,19 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
+import { prefersReducedMotion } from '../utils/reduced-motion'
 
-/** True when the user has opted into reduced motion (or matchMedia is
- *  unavailable in a test/SSR env). Mirrors the matchMedia guard pattern in
- *  `useIsMobile` / `utils/theme.ts`. */
 /** Resolve a MediaQueryList for the reduced-motion query, or null when
- *  matchMedia is unavailable (jsdom test env, SSR, very old browsers). */
+ *  matchMedia is unavailable (jsdom test env, SSR, very old browsers). Used
+ *  for the reactive change-listener below; one-shot checks go through the
+ *  shared prefersReducedMotion() util. */
 function getMotionMql(): MediaQueryList | null {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
     return null
   }
   return window.matchMedia('(prefers-reduced-motion: reduce)')
-}
-
-function prefersReducedMotion(): boolean {
-  return getMotionMql()?.matches ?? false
 }
 
 /**

@@ -7,6 +7,7 @@ import { IconChevronDown, IconChevronUp } from './icons/ToolIcons'
 import { useToast } from '../hooks/useToast'
 import type { SessionInfo } from '../types'
 import type { ProviderProfile } from '../types/config'
+import { formatError } from '../utils/format-error'
 
 /** State for the "restart sessions on switch" dialog: the profile being
  *  activated and the idle follow-global sessions available to restart. */
@@ -49,7 +50,7 @@ export function ProfileSwitcher({ onManageProfiles }: { onManageProfiles?: () =>
         await activate(profile.id)
         setOpen(false)
       } catch (e) {
-        toast.error(`Couldn't switch profile: ${e instanceof Error ? e.message : String(e)}`)
+        toast.error(`Couldn't switch profile: ${formatError(e)}`)
       }
       return
     }
@@ -67,7 +68,7 @@ export function ProfileSwitcher({ onManageProfiles }: { onManageProfiles?: () =>
       setOpen(false)
       setPending(null)
     } catch (e) {
-      toast.error(`Couldn't switch profile: ${e instanceof Error ? e.message : String(e)}`)
+      toast.error(`Couldn't switch profile: ${formatError(e)}`)
     } finally {
       setBusy(false)
     }

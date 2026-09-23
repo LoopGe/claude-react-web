@@ -41,6 +41,9 @@ import { useNotifications, type UseNotifications } from './useNotifications'
 import { useToast } from './useToast'
 import type { SessionInfo } from '../types'
 import type { CliNotification } from '../ws-types.js'
+import { sessionTitleOrFallback } from '../utils/session-title'
+import { clamp } from '../utils/clamp'
+import { DEFAULT_TOAST_DURATION_MS } from '../utils/notifications'
 
 /** How to surface an event, given window focus + which session is on
  *  screen. See the file header for the rationale behind each state. */
@@ -221,7 +224,7 @@ export function useSessionNotifications({
       // startup races).
       const sessionsNow = sessionsRef.current ?? []
       const session = sessionsNow.find((s) => s.id === sessionId)
-      const title = session?.title ?? sessionId.slice(0, 8)
+      const title = sessionTitleOrFallback(session ?? { id: sessionId })
 
       // AskUserQuestion is surfaced through this same blocking-request path,
       // but it isn't a permission grant — it's a question awaiting an answer.
@@ -302,11 +305,11 @@ export function useSessionNotifications({
 
       const sessionsNow = sessionsRef.current ?? []
       const session = sessionsNow.find((s) => s.id === sessionId)
-      const title = session?.title ?? sessionId.slice(0, 8)
+      const title = sessionTitleOrFallback(session ?? { id: sessionId })
 
       // The CLI suggests an on-screen duration; clamp to something sane.
-      // 8s default matches the informational toasts elsewhere in the app.
-      const durationMs = n.timeoutMs != null ? Math.min(Math.max(n.timeoutMs, 2000), 30_000) : 8000
+      // Default matches the informational toasts elsewhere in the app.
+      const durationMs = n.timeoutMs != null ? clamp(n.timeoutMs, 2000, 30_000) : DEFAULT_TOAST_DURATION_MS
       // low/medium nudges are status updates, not action requests — quiet
       // on the desktop path (silent) per the same tradeoff maybeNotify makes
       // for "turn complete".
@@ -345,7 +348,7 @@ export function useSessionNotifications({
       const mode = presentation(windowFocused, isFocused)
       if (mode === 'skip') return // user is watching it — no need
 
-      const title = s.title ?? s.id.slice(0, 8)
+      const title = sessionTitleOrFallback(s)
 
       if (mode === 'toast') {
         // User is in the page, just on another session — an in-app toast is

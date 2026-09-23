@@ -4,8 +4,8 @@
 // Supports three modes: 'dark', 'light', and 'system' (follow OS preference).
 // The `data-theme` attribute is always set to 'dark' or 'light' — never 'system'.
 
-const THEME_KEY = 'claude-react-web:theme'
-const SKIN_KEY = 'claude-react-web:skin'
+export const THEME_KEY = 'claude-react-web:theme'
+export const SKIN_KEY = 'claude-react-web:skin'
 
 export type Theme = 'dark' | 'light' | 'system'
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './useApi'
 import type { StoredAgentDefinition } from '../types'
+import { formatError } from '../utils/format-error'
 
 export interface UseAgentDefinitionsResult {
   agents: StoredAgentDefinition[]
@@ -20,7 +21,7 @@ export function useAgentDefinitions(): UseAgentDefinitionsResult {
       setAgents(r.agents ?? [])
       setError(null)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(formatError(e))
     }
   }, [])
 

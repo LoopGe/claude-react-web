@@ -23,8 +23,8 @@
 
 import type { SessionBroadcaster } from './session-types.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
+import { DEBOUNCE_MS } from './constants.js'
 
-const DEBOUNCE_MS = 500
 interface DebounceEntry {
   timer: NodeJS.Timeout
   /** The session whose schedule most recently (re)set this timer. The

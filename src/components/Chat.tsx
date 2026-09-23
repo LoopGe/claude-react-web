@@ -11,6 +11,7 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { sessionTitleOrFallback } from '../utils/session-title'
 // SettingsPanel and GitPanel are split into their own chunks: both are
 // per-panel overlays that many sessions never open, so keeping them out of
 // the main bundle shrinks first paint. SettingsPanel stays mounted once
@@ -90,17 +91,16 @@ import { AnimatePresence } from 'motion/react'
 import type { AgentInfo, PastedImage, PermissionRequest, RewindFilesResult, SessionInfo, SlashCommand } from '../types'
 import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
-import type { ScheduledSendBody, ScheduledSendContentBlock } from '../../shared/scheduled-send'
+import type { ScheduledSendBody } from '../../shared/scheduled-send'
+import { buildOutgoingBody } from '../utils/message-body'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { SettingsTabName } from '../local-commands'
-
-
-const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
+import { clamp } from '../utils/clamp'
+import { DRAFT_KEY_PREFIX, DRAFT_BODIES_KEY_PREFIX } from '../constants/storageKeys'
 
 /** Bodies the draft's `[Pasted text #N]` references resolve against. Written
  *  only when the map changes, never on a keystroke. */
-const DRAFT_BODIES_KEY_PREFIX = 'claude-react-web:draft-bodies:'
 
 /** Trailing-edge delay for persisting the draft. Long enough that a burst of
  *  typing produces one write, short enough that a crash loses little. */
@@ -201,16 +201,7 @@ function buildScheduledBody(
 ): ScheduledSendBody | null {
   const { full } = composeOutgoing(input, attachments, expand)
   if (!full.trim() && pastedImages.length === 0) return null
-  // KEEP IN SYNC: content block shape mirrors send() lines 1467-1479.
-  if (pastedImages.length > 0) {
-    const content: ScheduledSendContentBlock[] = []
-    if (full.trim()) content.push({ type: 'text', text: full })
-    for (const img of pastedImages) {
-      content.push({ type: 'image', source: { type: 'base64', data: img.data, media_type: img.mediaType } })
-    }
-    return { content }
-  }
-  return { text: full }
+  return buildOutgoingBody(full, pastedImages)
 }
 
 interface Props {
@@ -1291,7 +1282,7 @@ export const Chat = memo(function Chat({
   // `searchMatches` should use this, not the raw value.
   const searchActiveIdx = useMemo(() => {
     if (searchMatches.length === 0) return 0
-    return Math.min(Math.max(0, searchActiveIdxRaw), searchMatches.length - 1)
+    return clamp(searchActiveIdxRaw, 0, searchMatches.length - 1)
   }, [searchActiveIdxRaw, searchMatches.length])
   // When the match set changes (new query or new messages), find the
   // nearest match to the current viewport rather than always starting
@@ -1312,7 +1303,7 @@ export const Chat = memo(function Chat({
     const after = lo < searchMatches.length ? searchMatches[lo].itemIdx : Infinity
     const before = lo > 0 ? searchMatches[lo - 1].itemIdx : -Infinity
     const nearest = (top - before) <= (after - top) ? lo - 1 : lo
-    setSearchActiveIdx(Math.max(0, Math.min(nearest, searchMatches.length - 1)))
+    setSearchActiveIdx(clamp(nearest, 0, searchMatches.length - 1))
   }, [searchMatches])
 
   const handledJumpNonceRef = useRef<number | null>(null)
@@ -1631,18 +1622,7 @@ export const Chat = memo(function Chat({
     }
 
     try {
-      let res: SendMessageResponse
-      if (pastedImages.images.length > 0) {
-        // Build content array with text + image blocks
-        const content: Array<{ type: string; text?: string; source?: { type: string; data: string; media_type: string } }> = []
-        if (full.trim()) content.push({ type: 'text', text: full })
-        for (const img of pastedImages.images) {
-          content.push({ type: 'image', source: { type: 'base64', data: img.data, media_type: img.mediaType } })
-        }
-        res = await postMessage({ content })
-      } else {
-        res = await postMessage({ text: full })
-      }
+      const res: SendMessageResponse = await postMessage(buildOutgoingBody(full, pastedImages.images))
       if (pendingId && typeof res.message?.uuid === 'string') {
         ackUserMessage(pendingId, res.message.uuid, res.message.receivedAt)
       }
@@ -2030,7 +2010,7 @@ export const Chat = memo(function Chat({
               label: 'Export as Markdown',
               icon: <IconFileText size={14} />,
               onClick: () => {
-                exportConversation(stream.messages, session.title ?? session.id.slice(0, 8))
+                exportConversation(stream.messages, sessionTitleOrFallback(session))
                 toast.success('Exported as Markdown')
               },
             },
@@ -2038,7 +2018,7 @@ export const Chat = memo(function Chat({
               label: 'Export as JSON',
               icon: <IconFileCode size={14} />,
               onClick: () => {
-                exportConversationJson(stream.messages, session.title ?? session.id.slice(0, 8))
+                exportConversationJson(stream.messages, sessionTitleOrFallback(session))
                 toast.success('Exported as JSON')
               },
             },
@@ -2094,7 +2074,7 @@ export const Chat = memo(function Chat({
                     icon: <IconTrash size={14} />,
                     danger: true,
                     onClick: () => {
-                      const title = session.title ?? session.id.slice(0, 8)
+                      const title = sessionTitleOrFallback(session)
                       if (onAskConfirm) {
                         onAskConfirm({
                           title: 'Delete session?',

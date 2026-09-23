@@ -126,11 +126,8 @@
   cursor: not-allowed;
 }
 .git-panel-icon-btn .git-panel-spin {
-  animation: git-panel-spin 1s linear infinite;
+  animation: spin 1s linear infinite;
   transform-origin: center;
-}
-@keyframes git-panel-spin {
-  to { transform: rotate(360deg); }
 }
 
 .git-panel-banner {

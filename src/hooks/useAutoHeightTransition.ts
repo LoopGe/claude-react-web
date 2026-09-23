@@ -1,3 +1,4 @@
+import { prefersReducedMotion } from '../utils/reduced-motion'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
 interface AutoHeightTransitionOptions {
@@ -55,7 +56,7 @@ export function useAutoHeightTransition<T extends HTMLElement>(
     cleanupRef.current = null
     lastTargetHeightRef.current = nextHeight
 
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reducedMotion = prefersReducedMotion()
     if (reducedMotion || Math.abs(startHeight - nextHeight) < 2) {
       pendingTargetHeightRef.current = null
       animatingRef.current = false

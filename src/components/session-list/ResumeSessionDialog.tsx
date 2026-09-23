@@ -17,6 +17,7 @@ import { shortenPath } from '../../utils/paths'
 import type { ResumableSession } from '../../types'
 import { PanelOverlay } from '../PanelOverlay'
 import { Overlay } from '../Overlay'
+import { formatRelativeFromMs } from '../../utils/format'
 
 export interface ResumeSessionDialogProps {
   open?: boolean
@@ -36,22 +37,6 @@ export interface ResumeSessionDialogProps {
    *    focused panel, or the `/resume` local command). Content is identical;
    *    only the wrapper chrome differs. */
   variant?: 'modal' | 'panel'
-}
-
-/** Relative-time formatter ("3m ago", "2h ago", "5d ago"). Falls back to a
- *  locale date for anything older than a week. */
-function timeAgo(ms: number): string {
-  const diff = Date.now() - ms
-  if (diff < 0) return 'just now'
-  const sec = Math.floor(diff / 1000)
-  if (sec < 60) return 'just now'
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}m ago`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}h ago`
-  const day = Math.floor(hr / 24)
-  if (day < 7) return `${day}d ago`
-  return new Date(ms).toLocaleDateString()
 }
 
 export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCancel, variant = 'modal' }: ResumeSessionDialogProps) {
@@ -250,7 +235,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
                     style={{ display: 'flex', gap: 8, fontSize: 'var(--fs-xs)' }}
                   >
                     {s.cwd && <span title={s.cwd}>{shortenPath(s.cwd)}</span>}
-                    <span>· {timeAgo(s.lastModified)}</span>
+                    <span>· {formatRelativeFromMs(s.lastModified)}</span>
                     {s.gitBranch && <span>· {s.gitBranch}</span>}
                   </span>
                 </button>

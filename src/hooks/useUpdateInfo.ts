@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
 import type { PublishedVersions, UpdateActionResult, UpdateInfo } from '../../shared/update-info'
+import { formatError } from '../utils/format-error'
 
 /** Server allows up to 120s for `npm i -g`; give the client request room
  *  beyond that so it doesn't time out before npm does. */
@@ -138,7 +139,7 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
           if (controller.signal.aborted) {
             aborted = true
           } else if (mountedRef.current) {
-            setError(err instanceof Error ? err.message : String(err))
+            setError(formatError(err))
           }
         } finally {
           inFlightRef.current = null
@@ -225,7 +226,7 @@ export function useUpdateInfo(enabled: boolean): UseUpdateInfo {
       .catch((err) => {
         if (controller.signal.aborted) return
         if (mountedRef.current) {
-          setVersionsError(err instanceof Error ? err.message : String(err))
+          setVersionsError(formatError(err))
         }
       })
       .finally(() => {

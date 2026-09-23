@@ -35,6 +35,7 @@ import type {
   OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js'
 import type { OAuthClientProvider, OAuthDiscoveryState } from '@modelcontextprotocol/sdk/client/auth.js'
+import { withTimeout } from './with-timeout.js'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
 import { createLogger } from './log.js'
@@ -639,16 +640,6 @@ function createTransport(server: StoredMcpServer, authProvider?: OAuthClientProv
     })
   }
   throw new Error(`unknown transport type: ${type}`)
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Connection timed out after ${ms}ms`)), ms)
-    promise.then(
-      (v) => { clearTimeout(timer); resolve(v) },
-      (e) => { clearTimeout(timer); reject(e) },
-    )
-  })
 }
 
 class StoredMcpOAuthProvider implements OAuthClientProvider {

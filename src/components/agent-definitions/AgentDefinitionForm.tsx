@@ -6,6 +6,7 @@ import {
 } from '../../../shared/agent-definitions'
 import { api } from '../../hooks/useApi'
 import type { StoredAgentDefinition } from '../../types'
+import { formatError } from '../../utils/format-error'
 
 const EFFORT_OPTIONS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const MEMORY_OPTIONS = ['user', 'project', 'local'] as const
@@ -237,7 +238,7 @@ export function AgentDefinitionForm({ initial, onSaved, onCancel }: AgentDefinit
       }
       onSaved()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(formatError(e))
       setSaving(false)
     }
   }

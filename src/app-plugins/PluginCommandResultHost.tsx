@@ -18,6 +18,7 @@ import { usePluginCommands } from './usePluginCommands'
 import { Markdown } from '../components/Markdown'
 import { ENTER_TRANSITION, EXIT_TRANSITION, useMotionTransition, usePopoverMotion } from '../utils/transitions'
 import type { PluginCommandResult, PluginResultContent } from '../../shared/app-plugins/command-result.js'
+import { clamp } from '../utils/clamp'
 
 export function PluginCommandResultHost() {
   const results = useSyncExternalStore(commandResults.subscribe, commandResults.snapshot, commandResults.snapshot)
@@ -62,8 +63,8 @@ function PluginPopover({ entry, execute }: { entry: ActiveResult; execute: (opts
       const el = ref.current
       const w = el?.offsetWidth ?? 320
       const h = el?.offsetHeight ?? 160
-      const x = Math.max(8, Math.min(anchor.rect.left, window.innerWidth - w - 8))
-      const y = Math.max(8, Math.min(anchor.rect.bottom + 6, window.innerHeight - h - 8))
+      const x = clamp(anchor.rect.left, 8, window.innerWidth - w - 8)
+      const y = clamp(anchor.rect.bottom + 6, 8, window.innerHeight - h - 8)
       // measured-layout: follow anchor on scroll/resize
       setPos({ x, y })
     }

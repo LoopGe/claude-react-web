@@ -69,18 +69,14 @@ export function formatBytes(n: number): string {
   return `${v.toFixed(i > 0 ? 1 : 0)} ${units[i]}`
 }
 
-/** Format an ISO timestamp as a compact relative-time string:
- *  "just now", "5m ago", "3h ago", "yesterday", "5d ago", "3w ago",
- *  or a localized date for anything older than a month. Falsy /
- *  un-parseable inputs return an empty string so callers can render
- *  conditionally without an extra null check. Future timestamps are
- *  treated as "just now" rather than emitting a misleading negative
- *  duration. */
-export function formatRelativeTime(iso: string | undefined | null, now: number = Date.now()): string {
-  if (!iso) return ''
-  const t = Date.parse(iso)
-  if (!Number.isFinite(t)) return ''
-  const deltaMs = now - t
+/** Format an epoch-ms timestamp as a compact relative-time string — same
+ *  ladder (and contract) as {@link formatRelativeTime}, for callers that
+ *  hold a numeric timestamp instead of an ISO string. Single home for the
+ *  formatters that were previously hand-rolled in GitPanel,
+ *  GlobalSettingsModal and ResumeSessionDialog. */
+export function formatRelativeFromMs(ms: number | undefined | null, now: number = Date.now()): string {
+  if (ms == null || !Number.isFinite(ms)) return ''
+  const deltaMs = now - ms
   if (deltaMs < 0) return 'just now'
   const sec = Math.floor(deltaMs / 1000)
   // Threshold has to land on a minute boundary, otherwise the
@@ -100,8 +96,22 @@ export function formatRelativeTime(iso: string | undefined | null, now: number =
   // Older than ~5 weeks — fall back to an absolute date. Local date
   // string is OK here; relative-time becomes vague past a month.
   try {
-    return new Date(t).toLocaleDateString()
+    return new Date(ms).toLocaleDateString()
   } catch {
     return ''
   }
+}
+
+/** Format an ISO timestamp as a compact relative-time string:
+ *  "just now", "5m ago", "3h ago", "yesterday", "5d ago", "3w ago",
+ *  or a localized date for anything older than a month. Falsy /
+ *  un-parseable inputs return an empty string so callers can render
+ *  conditionally without an extra null check. Future timestamps are
+ *  treated as "just now" rather than emitting a misleading negative
+ *  duration. */
+export function formatRelativeTime(iso: string | undefined | null, now: number = Date.now()): string {
+  if (!iso) return ''
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return ''
+  return formatRelativeFromMs(t, now)
 }

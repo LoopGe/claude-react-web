@@ -32,6 +32,8 @@ import type { FirstPartyToolServerInfo } from '../../shared/first-party'
 import type { PublishedVersions, UpdateActionResult, UpdateInfo } from '../../shared/update-info'
 import { isStableVersion, isUpdateNagNeeded, isVersionNewer } from '../../shared/update-info'
 import { reportUpdateResult } from '../utils/update-action'
+import { formatError } from '../utils/format-error'
+import { formatRelativeFromMs } from '../utils/format'
 
 // MarketplaceTab pulls in catalog-rendering UI; McpInstaller is a heavy
 // modal-within-modal. Both are only opened on demand from inside the
@@ -857,14 +859,16 @@ function Stepper({
   const [draft, setDraft] = useState<string | null>(null)
   const displayed = draft ?? String(value)
 
-  const clamp = (n: number) => {
+  /** Not the shared utils/clamp: rounds, maps NaN → min, and max is optional
+   *  — stepper-specific input sanitizing for typed drafts. */
+  const clampStepperDraft = (n: number) => {
     let v = Number.isFinite(n) ? Math.round(n) : min
     if (v < min) v = min
     if (max !== undefined && v > max) v = max
     return v
   }
   const commit = (raw: number) => {
-    const next = clamp(raw)
+    const next = clampStepperDraft(raw)
     setDraft(null)
     onChange(next)
   }
@@ -872,7 +876,7 @@ function Stepper({
     if (draft == null || draft === '') return NaN
     return Number(draft)
   }
-  const curValue = Number.isNaN(numericDraft()) ? value : clamp(numericDraft())
+  const curValue = Number.isNaN(numericDraft()) ? value : clampStepperDraft(numericDraft())
 
   return (
     <div className="stepper">
@@ -1870,7 +1874,7 @@ function AboutTab({
 
   // Formatted "last checked" — relative time tends to read as fresher
   // than an absolute date for a quick "did this just check?" glance.
-  const checkedAtLabel = info?.checkedAt ? formatRelative(info.checkedAt) : 'never'
+  const checkedAtLabel = info?.checkedAt ? formatRelativeFromMs(info.checkedAt) : 'never'
 
   // The probe error from the server (info.error) is the more useful
   // value for the user — it describes WHY the registry couldn't be
@@ -1908,7 +1912,7 @@ function AboutTab({
       // About-tab behaviour of re-probing after any performed install.
       if (res.performed) onRefresh?.()
     } catch (e) {
-      setUpdateError(e instanceof Error ? e.message : String(e))
+      setUpdateError(formatError(e))
     }
   }
 
@@ -1981,7 +1985,7 @@ function AboutTab({
         toast.info('In-app install is not available for this install - copy the command below.')
       }
     } catch (e) {
-      setInstallVersionError(e instanceof Error ? e.message : String(e))
+      setInstallVersionError(formatError(e))
     }
   }
 
@@ -2261,7 +2265,7 @@ function AboutTab({
                   label="Published versions"
                   hint={
                     versions?.checkedAt
-                      ? `Last checked: ${formatRelative(versions.checkedAt)}`
+                      ? `Last checked: ${formatRelativeFromMs(versions.checkedAt)}`
                       : 'Stable releases, newest first.'
                   }
                 >
@@ -2342,22 +2346,6 @@ function AboutTab({
       </>)}
     </div>
   )
-}
-
-/** Compact relative-time formatter for the "last checked" label.
- *  Avoids pulling in a full i18n lib for one line of UI text. */
-function formatRelative(ms: number): string {
-  const delta = Date.now() - ms
-  if (delta < 0) return 'just now'
-  const sec = Math.round(delta / 1000)
-  if (sec < 5) return 'just now'
-  if (sec < 60) return `${sec}s ago`
-  const min = Math.round(sec / 60)
-  if (min < 60) return `${min}m ago`
-  const hr = Math.round(min / 60)
-  if (hr < 24) return `${hr}h ago`
-  const day = Math.round(hr / 24)
-  return `${day}d ago`
 }
 
 // ── Shared primitives ────────────────────────────────────────────

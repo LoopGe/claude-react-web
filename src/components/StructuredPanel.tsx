@@ -10,6 +10,7 @@ import { useCopy } from '../hooks/useCopy'
 import { useStructuredRun } from '../hooks/useStructuredRun'
 import { IconX } from './icons/ToolIcons'
 import type { StructuredPermissionMode, StructuredRunRequest, StructuredRunResult } from '../../shared/structured'
+import { formatError } from '../utils/format-error'
 
 const DEFAULT_SCHEMA = JSON.stringify(
   { type: 'object', properties: { result: { type: 'string' } } },
@@ -68,7 +69,7 @@ export function StructuredPanel({ open, onClose }: { open: boolean; onClose: () 
         throw new Error('schema must be a JSON object')
       }
     } catch (err) {
-      setSchemaError(err instanceof Error ? err.message : String(err))
+      setSchemaError(formatError(err))
       return
     }
     setSchemaError(null)

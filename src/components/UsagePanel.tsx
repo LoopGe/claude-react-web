@@ -18,6 +18,7 @@ import {
   type UsageRateLimitWindow,
 } from '../../shared/usage'
 import { ACCOUNT_PROVIDER_LABELS, type AccountInfoData } from '../../shared/account-info'
+import { clamp } from '../utils/clamp'
 
 interface Props {
   sessionId: string
@@ -61,7 +62,7 @@ function WindowMeter({ label, window }: { label: string; window: UsageRateLimitW
   // muted "unknown" row rather than hiding it, so users know the window exists.
   const util =
     typeof window?.utilization === 'number' && Number.isFinite(window.utilization)
-      ? Math.min(100, Math.max(0, Math.round(window.utilization)))
+      ? clamp(Math.round(window.utilization), 0, 100)
       : null
   const resets =
     typeof window?.resets_at === 'string' && window.resets_at

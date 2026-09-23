@@ -15,6 +15,7 @@
 
 import { useCallback, useContext } from 'react'
 import { api } from '../hooks/useApi'
+import { randomId } from '../utils/uuid'
 import { ToastShowContext } from '../hooks/toastContext'
 import { commandResults, type ActiveResult } from './result-store'
 import { invocationAnchors } from './invocation-anchor-store'
@@ -57,7 +58,7 @@ export function usePluginCommands() {
       // Show a loading popover immediately at the anchor position so the
       // user sees feedback (LLM calls take 1-10s). Replaced by the real
       // result when it arrives.
-      const loadingId = `loading-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const loadingId = `loading-${randomId()}`
       if (opts.anchor) {
         invocationAnchors.set(loadingId, {
           messageId: opts.anchor.messageId,
@@ -101,7 +102,7 @@ export function usePluginCommands() {
         }
         if (result.type === 'popover' || result.type === 'dialog') {
           const entry: ActiveResult = {
-            id: invocationId ?? Math.random().toString(36).slice(2),
+            id: invocationId ?? randomId(),
             result,
             pluginId: opts.pluginId,
             commandId: opts.commandId,

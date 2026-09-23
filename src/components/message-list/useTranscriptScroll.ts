@@ -41,6 +41,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObje
 import type { VirtuosoHandle } from 'react-virtuoso'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { scrollDebug as dbg } from './scroll-debug'
+import { clamp } from '../../utils/clamp'
 
 /** Pixel tolerance for direct bottom checks. Keep this tiny to cover
  *  fractional scroll values without treating a visibly offset viewport as
@@ -262,7 +263,7 @@ export function useTranscriptScroll({
     'claude-react-web:follow-debounce-ms',
     150,
   )
-  const FOLLOW_DEBOUNCE_MS = Math.max(50, Math.min(500, Math.round(followDebounceRaw)))
+  const FOLLOW_DEBOUNCE_MS = clamp(Math.round(followDebounceRaw), 50, 500)
   /** How many new messages have arrived since the user last saw the bottom. */
   const [unseenCount, setUnseenCount] = useState(0)
   const unseenCountRef = useRef(0)

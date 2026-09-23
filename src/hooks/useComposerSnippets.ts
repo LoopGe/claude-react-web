@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './useApi'
+import { randomId } from '../utils/uuid'
 
 export interface ComposerSnippet {
   id: string
@@ -30,9 +31,9 @@ export interface ComposerSnippet {
 /** Legacy localStorage key — read once for the one-time migration to disk. */
 const LEGACY_STORAGE_KEY = 'composer-snippets'
 
-/** Crockford-shorter id; the value is opaque to consumers. */
+/** Opaque id for a snippet; the shared randomId is the single generator. */
 function newId(): string {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
+  return randomId()
 }
 
 /** Shape check on a single snippet (used by the migration guard). */

@@ -3,6 +3,7 @@ import { ContextMenu, type ContextMenuItem } from '../ContextMenu'
 import { writeClipboard, COPY_FAILED_MESSAGE } from '../../hooks/useCopy'
 import { ToastShowContext } from '../../hooks/toastContext'
 import type { SessionGroup, SessionInfo } from '../../types'
+import { sessionTitleOrFallback } from '../../utils/session-title'
 import {
   IconPencil,
   IconTrash,
@@ -162,7 +163,7 @@ export function SessionContextMenu({
       icon: <IconRefresh size={14} />,
       onClick: () => {
         if (session.messageCount > 0) {
-          const title = session.title ?? session.id.slice(0, 8)
+          const title = sessionTitleOrFallback(session)
           if (onAskConfirm) {
             onAskConfirm({
               title: 'Restart session?',
@@ -299,7 +300,7 @@ export function SessionContextMenu({
       onClick: () => {
         // Always confirm before an irreversible delete, even for empty
         // scratch sessions. The delete fires only after the user confirms.
-        const title = session.title ?? session.id.slice(0, 8)
+        const title = sessionTitleOrFallback(session)
         if (onAskConfirm) {
           onAskConfirm({
             title: 'Delete session?',

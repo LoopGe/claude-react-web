@@ -38,6 +38,7 @@ import {
   getRangeDiffFiles,
   getRangeDiffFile,
   trimGitErrorOutput,
+  parseNumstatZ,
   runGit,
 } from './git.js'
 import { Hono } from 'hono'
@@ -1108,5 +1109,52 @@ describe('runGit maxBuffer overflow', () => {
       status: 500,
       message: expect.stringMatching(/maxBuffer: Checking/),
     })
+  })
+})
+
+// ── parseNumstatZ (pure parser — no git binary needed) ──────────────
+
+describe('parseNumstatZ', () => {
+  it('parses the inline (non-rename) encoding', () => {
+    const map = parseNumstatZ('3\t1\ta.txt\x00')
+    expect(map.get('a.txt')).toEqual({ a: '3', d: '1' })
+  })
+
+  it('parses multiple records and keeps raw fields (binary stays "-")', () => {
+    const map = parseNumstatZ('3\t1\ta.txt\x00-\t-\timg.png\x00' + '12\t0\tb.txt\x00')
+    expect(map.get('a.txt')).toEqual({ a: '3', d: '1' })
+    expect(map.get('img.png')).toEqual({ a: '-', d: '-' })
+    expect(map.get('b.txt')).toEqual({ a: '12', d: '0' })
+    expect(map.size).toBe(3)
+  })
+
+  it('keeps paths that themselves contain tabs (inline encoding)', () => {
+    const map = parseNumstatZ('1\t2\tdir\tpart.txt\x00')
+    expect(map.get('dir\tpart.txt')).toEqual({ a: '1', d: '2' })
+    expect(map.size).toBe(1)
+  })
+
+  it('parses the rename encoding: empty inline slot, then old/dest tokens', () => {
+    const map = parseNumstatZ('2\t1\t\x00old.txt\x00new.txt\x00')
+    expect(map.size).toBe(1)
+    expect(map.get('new.txt')).toEqual({ a: '2', d: '1' })
+    expect(map.has('old.txt')).toBe(false)
+  })
+
+  it('parses a rename record followed by a normal record', () => {
+    const map = parseNumstatZ('2\t1\t\x00old.txt\x00new.txt\x00' + '5\t5\tc.txt\x00')
+    expect(map.get('new.txt')).toEqual({ a: '2', d: '1' })
+    expect(map.get('c.txt')).toEqual({ a: '5', d: '5' })
+    expect(map.size).toBe(2)
+  })
+
+  it('handles tabs inside rename path tokens', () => {
+    const map = parseNumstatZ('2\t1\t\x00old\tpart\x00new\tpart\x00')
+    expect(map.get('new\tpart')).toEqual({ a: '2', d: '1' })
+  })
+
+  it('returns an empty map for empty input', () => {
+    expect(parseNumstatZ('').size).toBe(0)
+    expect(parseNumstatZ('\x00').size).toBe(0)
   })
 })

@@ -41,10 +41,7 @@ const log = createLogger('git')
 const execFileAsync = promisify(execFile)
 
 const DEFAULT_TIMEOUT_MS = 10_000
-import { MAX_BUFFER_BYTES } from './constants.js'
-/** Per-file diff line cap. Beyond this we drop the tail and set
- *  `truncated: true` so the UI can show a clipped marker. */
-const MAX_DIFF_LINES = 500
+import { MAX_BUFFER_BYTES, MAX_DIFF_LINES, ERROR_DETAIL_CAP } from './constants.js'
 /** Server-side log limit ceiling, regardless of what the client asks for. */
 const MAX_LOG_LIMIT = 100
 
@@ -609,36 +606,41 @@ export async function getDiff(cwd: string, path: string, staged: boolean): Promi
 // inside the worktree's repo (the confining `.claude/worktrees/<name>`
 // worktree or `main`), passed as positional execFile args — never a shell.
 
-/** Parse `git diff --numstat -z` into a path→{ins,del} map keyed by the
- *  destination path. The -z encoding differs for a single file vs a
- *  rename/copy (verified against real git output):
+/** Parse `git diff --numstat -z` into a path→{a,d} map of the RAW add/delete
+ *  fields (binary files keep their literal `-`). Keyed by the destination
+ *  path. The -z encoding differs for a single file vs a rename/copy
+ *  (verified against real git output):
  *
  *    modified  a.txt →  `<adds>\t<dels>\ta.txt\0`          (one NUL token)
  *    renamed   a→b   →  `<adds>\t<dels>\t\0a\0b\0`        (empty path slot,
  *                          then each path as its own NUL token)
  *
- *  So the record spans the counts token plus any following tokens that
- *  hold no tab (the path components). The destination is always the last
- *  path component. Binary files show `-\t-` → 0/0. */
-function parseNumstatZ(stdout: string): Map<string, { ins: number; del: number }> {
+ *  For the inline encoding the path is everything after the SECOND tab, so
+ *  paths that themselves contain tabs survive intact. An empty inline slot
+ *  signals the rename/copy encoding: the old path and the destination then
+ *  follow as whole NUL tokens, and the destination (last) is the key.
+ *  Callers that cannot surface renames pass `--no-renames` and only ever
+ *  hit the inline encoding. Shared with the snapshot shadow-git module. */
+export function parseNumstatZ(stdout: string): Map<string, { a: string; d: string }> {
   const toks = stdout.split('\0')
-  const out = new Map<string, { ins: number; del: number }>()
+  const out = new Map<string, { a: string; d: string }>()
   let i = 0
   while (i < toks.length && toks[i] !== '') {
-    const parts = toks[i].split('\t')
-    i++
-    const ins = Number(parts[0]) || 0
-    const del = Number(parts[1]) || 0
-    // Path component(s) of this record: the tail of the counts token
-    // (empty for a rename's old-path slot) plus any following NUL tokens
-    // that contain no tab (the rename's paths).
-    const pathParts = parts.slice(2)
-    while (i < toks.length && toks[i] !== '' && !toks[i].includes('\t')) {
-      pathParts.push(toks[i])
-      i++
+    const header = toks[i++]
+    const t1 = header.indexOf('\t')
+    if (t1 < 0) continue
+    const t2 = header.indexOf('\t', t1 + 1)
+    if (t2 < 0) continue
+    const a = header.slice(0, t1)
+    const d = header.slice(t1 + 1, t2)
+    let path = header.slice(t2 + 1)
+    if (path === '') {
+      // Rename/copy encoding: consume the old path, key by the destination.
+      const oldPath = toks[i++]
+      if (!oldPath) continue
+      path = toks[i++] ?? ''
     }
-    const dest = pathParts[pathParts.length - 1]
-    if (dest) out.set(dest, { ins, del })
+    if (path) out.set(path, { a, d })
   }
   return out
 }
@@ -689,8 +691,14 @@ export async function getRangeDiffFiles(cwd: string, from: string, to: string, m
     i++
     const renamedFrom = isRename ? p1 : undefined
     const path = isRename ? toks[i++] : p1
-    const c = counts.get(path) ?? { ins: 0, del: 0 }
-    out.push({ path, status, insertions: c.ins, deletions: c.del, ...(renamedFrom ? { renamedFrom } : {}) })
+    const c = counts.get(path)
+    out.push({
+      path,
+      status,
+      insertions: Number(c?.a) || 0,
+      deletions: Number(c?.d) || 0,
+      ...(renamedFrom ? { renamedFrom } : {}),
+    })
   }
   return out
 }
@@ -992,7 +1000,7 @@ export async function createBranch(
   if (first.exitCode === 0) return { stashed: false }
   const msg = (first.stderr || first.stdout || '').trim()
   if (!/would be overwritten|local changes/i.test(msg)) {
-    throw new HttpError(500, `git checkout -b failed: ${msg.slice(0, 500)}`)
+    throw new HttpError(500, `git checkout -b failed: ${msg.slice(0, GIT_ERROR_CAP)}`)
   }
   if (!autoStash) {
     throw new HttpError(409, 'uncommitted changes block checkout — commit, stash, or pass autoStash')
@@ -1005,7 +1013,7 @@ export async function createBranch(
     throw new HttpError(
       500,
       `branch creation still failed after auto-stash — your changes are saved as stash@{0}, ` +
-      `pop manually with stash-pop. Underlying error: ${(second.stderr || second.stdout).trim().slice(0, 300)}`,
+      `pop manually with stash-pop. Underlying error: ${(second.stderr || second.stdout).trim().slice(0, ERROR_DETAIL_CAP)}`,
     )
   }
   return { stashed: true }
@@ -1027,7 +1035,7 @@ export async function checkoutBranch(
   // failure (unknown branch, etc.) and shouldn't trigger auto-stash.
   const conflict = /would be overwritten|local changes/i.test(first.stderr || first.stdout)
   if (!conflict) {
-    throw new HttpError(409, `git checkout failed: ${(first.stderr || first.stdout).trim().slice(0, 500)}`)
+    throw new HttpError(409, `git checkout failed: ${(first.stderr || first.stdout).trim().slice(0, GIT_ERROR_CAP)}`)
   }
   if (!autoStash) {
     throw new HttpError(409, 'uncommitted changes block checkout — commit, stash, or pass autoStash:true')
@@ -1044,7 +1052,7 @@ export async function checkoutBranch(
     throw new HttpError(
       500,
       `checkout still failed after auto-stash — your changes are saved as stash@{0}, ` +
-      `pop manually with stash-pop. Underlying error: ${(second.stderr || second.stdout).trim().slice(0, 300)}`,
+      `pop manually with stash-pop. Underlying error: ${(second.stderr || second.stdout).trim().slice(0, ERROR_DETAIL_CAP)}`,
     )
   }
   return { stashed: true }

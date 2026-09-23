@@ -160,8 +160,7 @@
 .tasks-icon-ok { color: var(--ok); }
 .tasks-icon-err { color: var(--danger); }
 .tasks-icon-muted { color: var(--fg-muted); }
-.tasks-row-spin { animation: tasks-row-spin 1s linear infinite; }
-@keyframes tasks-row-spin { to { transform: rotate(360deg); } }
+.tasks-row-spin { animation: spin 1s linear infinite; }
 
 .tasks-row-icon {
   display: inline-flex;
@@ -375,7 +374,7 @@
   font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
-.subagent-transcript-spin { animation: tasks-row-spin 1s linear infinite; }
+.subagent-transcript-spin { animation: spin 1s linear infinite; }
 .subagent-transcript-error {
   font-size: var(--fs-sm);
   color: var(--danger-text);

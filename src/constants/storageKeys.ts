@@ -1,3 +1,5 @@
+import { clamp } from '../utils/clamp'
+
 export const SIDEBAR_WIDTH_KEY = 'claude-react-web:sidebar-width'
 /** Desktop sidebar hide/show state (true = collapsed/hidden). */
 export const SIDEBAR_COLLAPSED_KEY = 'claude-react-web:sidebar-collapsed'
@@ -18,10 +20,17 @@ export const PANEL_MIN_RATIO_DEFAULT = 0.15
  *  as unread. Pruned when sessions disappear from the server. */
 export const LAST_SEEN_TURN_KEY = 'claude-react-web:last-seen-turn'
 
+/** sessionStorage key prefix for per-session composer drafts, keyed by
+ *  session id (`DRAFT_KEY_PREFIX + sessionId`). Shared by the composer
+ *  (Chat) and the reset-config cleaner, which scans for the prefix. */
+export const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
+/** sessionStorage key prefix for per-session composer attachment state. */
+export const DRAFT_BODIES_KEY_PREFIX = 'claude-react-web:draft-bodies:'
+
 /** Allowed range for the max-group-panels / max-sessions-per-group setting. */
 export const MAX_OPEN_MIN = 2
 export const MAX_OPEN_MAX = 5
 /** Clamp a user-supplied max-open value to the allowed range. */
 export function clampMaxOpen(v: number): number {
-  return Math.max(MAX_OPEN_MIN, Math.min(MAX_OPEN_MAX, Math.round(v)))
+  return clamp(Math.round(v), MAX_OPEN_MIN, MAX_OPEN_MAX)
 }

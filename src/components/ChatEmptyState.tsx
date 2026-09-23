@@ -1,3 +1,4 @@
+import { prefersReducedMotion } from '../utils/reduced-motion'
 import { useRef } from 'react'
 
 // Default empty state for a chat panel: shown when there are zero messages
@@ -48,7 +49,7 @@ export function ChatEmptyState({ onUnlockEasterEgg }: ChatEmptyStateProps) {
     const el = iconRef.current
     if (el) {
       if (typeof el.animate === 'function') {
-        const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+        const reduce = prefersReducedMotion()
         // Cancel any in-flight bounce so a rapid re-click restarts cleanly.
         //
         // WAAPI's `cancel()` rejects BOTH of the animation's pending promises with an

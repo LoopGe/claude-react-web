@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
 import type { AccountInfoData, SessionUsageData } from '../types'
+import { formatError } from '../utils/format-error'
 
 export interface UseSessionUsageApi {
   data: SessionUsageData | null
@@ -83,7 +84,7 @@ export function useSessionUsage(sessionId: string | undefined): UseSessionUsageA
       })
       .catch((err: unknown) => {
         if (!mountedRef.current || controller.signal.aborted) return
-        setError(err instanceof Error ? err.message : String(err))
+        setError(formatError(err))
       })
       .finally(() => {
         if (!mountedRef.current || controller.signal.aborted) {

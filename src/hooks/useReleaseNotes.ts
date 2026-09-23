@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react'
 import { api } from './useApi'
 import type { ReleaseNote } from '../../shared/update-info'
 import { snapshotFailed, snapshotLoaded, snapshotView, type RequestSnapshot } from '../utils/request-snapshot'
+import { formatError } from '../utils/format-error'
 
 // The key covers the INCLUSIVITY too: `(0.7.3, 0.7.3]` and `[0.7.3, 0.7.3]`
 // are different ranges, and the snapshot slot is tagged by request key — leave
@@ -49,7 +50,7 @@ export function useReleaseNotes(
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return
-        setSnapshot((prev) => snapshotFailed(prev, key, err instanceof Error ? err.message : String(err)))
+        setSnapshot((prev) => snapshotFailed(prev, key, formatError(err)))
       })
     return () => controller.abort()
   }, [key, enabled, from, to, includeFrom])

@@ -11,6 +11,7 @@ import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { applyPortaledThemeVars } from '../theme'
 import { pluginTagOf } from '../utils/text'
+import { clamp } from '../utils/clamp'
 
 interface Props {
   commands: SlashCommand[]
@@ -129,7 +130,7 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   })
 
   // Clamp selectedIndex to valid range.
-  const idx = Math.max(0, Math.min(selectedIndex, filtered.length - 1))
+  const idx = clamp(selectedIndex, 0, filtered.length - 1)
 
   // Ref for the active item so we can scroll it into view on keyboard nav.
   const activeRef = useRef<HTMLButtonElement>(null)

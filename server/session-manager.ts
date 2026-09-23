@@ -139,6 +139,8 @@ import {
 } from '../shared/skills.js'
 import { SUPPORTED_DIALOG_KINDS } from '../shared/user-dialog.js'
 import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
+import { raceWithFallback } from './with-timeout.js'
+import { COMMAND_PREVIEW_CAP } from './constants.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -318,7 +320,7 @@ function previewAssistantMessage(msg: unknown): string {
       const b = block as { type?: string; text?: unknown; name?: unknown }
       if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
         const t = b.text.replace(/\s+/g, ' ').trim()
-        return t.length > 80 ? t.slice(0, 80) + '…' : t
+        return t.length > COMMAND_PREVIEW_CAP ? t.slice(0, COMMAND_PREVIEW_CAP) + '…' : t
       }
       if (b.type === 'tool_use' && typeof b.name === 'string') {
         return `tool: ${b.name}`
@@ -2868,10 +2870,11 @@ export class SessionManager {
         // captures for the same session. Resolve null on timeout; the
         // capture Promise continues in the background and eventually
         // releases the lock.
-        const tree = await Promise.race([
+        const tree = await raceWithFallback(
           this.snapshots.capture({ sessionId: id, cwd }),
-          new Promise<null>((r) => setTimeout(() => r(null), 15_000)),
-        ])
+          15_000,
+          null,
+        )
         if (tree) await this.snapshots.recordAnchor(id, cwd, userUuid, tree)
       } catch (err) {
         log.warn(`[session ${id}] snapshot capture failed: ${(err as Error).message ?? err}`)
@@ -5454,10 +5457,7 @@ export class SessionManager {
     // pump so the SDK subprocess has time to exit cleanly.
     if (opts.terminated) {
       try {
-        await Promise.race([
-          s.pumpTask,
-          new Promise<void>((r) => setTimeout(r, 1000)),
-        ])
+        await raceWithFallback(s.pumpTask ?? Promise.resolve(), 1000, undefined)
       } catch { /* pump swallows errors internally */ }
     }
     this.permBroker.denyAll(s)
@@ -5829,10 +5829,7 @@ export class SessionManager {
     // unload() without terminate doesn't await the pump (GC speed), but
     // on shutdown we want a clean exit — give each pump up to 5 s.
     if (pumpTasks.length > 0) {
-      await Promise.race([
-        Promise.allSettled(pumpTasks),
-        new Promise((r) => setTimeout(r, 5000)),
-      ])
+      await raceWithFallback(Promise.allSettled(pumpTasks), 5000, undefined)
     }
     await this.store?.flush()
   }

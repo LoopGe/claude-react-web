@@ -19,6 +19,8 @@ import { randomId } from '../utils/uuid'
 import { IconArrowUp, IconArrowDown, IconChevronDown, IconChevronRight, IconCheck, IconX } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { StatusBadge } from './StatusBadge'
+import { formatError } from '../utils/format-error'
+import { cx } from '../utils/cx'
 
 /** Inline result of POST /profiles/:id/test. `ok` true means the token and
  *  baseUrl are valid; otherwise `error` describes the failure. */
@@ -168,7 +170,7 @@ function ProfileCard({
       setAuthToken('')
       setDirty(false)
     } catch (e) {
-      setSaveError(e instanceof Error ? e.message : String(e))
+      setSaveError(formatError(e))
     } finally {
       setSaving(false)
     }
@@ -447,12 +449,12 @@ function ProfileCard({
                   <div
                     key={m}
                     data-profile-model-id={m}
-                    className={[
+                    className={cx(
                       'settings-model-row',
                       i === 0 ? 'default' : '',
                       draggingModel === m ? 'dragging' : '',
                       modelDropHint?.id === m ? `drop-${modelDropHint.position}` : '',
-                    ].filter(Boolean).join(' ')}
+                    )}
                     onDragOver={(e) => {
                       // Branch on our own drag state, not the payload kind —
                       // browsers only populate getData on drop (see useDragPayload).
@@ -635,11 +637,11 @@ function ProfileCard({
                     <div
                       key={g.id}
                       data-profile-group-id={g.id}
-                      className={[
+                      className={cx(
                         'settings-model-group',
                         draggingGroupId === g.id ? 'dragging' : '',
                         groupDropHint?.id === g.id ? `drop-${groupDropHint.position}` : '',
-                      ].filter(Boolean).join(' ')}
+                      )}
                       onDragOver={(e) => {
                         if (draggingGroupId == null) return
                         if (!isInAppDrag(e)) return

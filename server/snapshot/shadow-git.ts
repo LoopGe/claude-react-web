@@ -3,7 +3,8 @@ import { promisify } from 'node:util'
 import { promises as fs } from 'node:fs'
 import { join, relative, sep, isAbsolute } from 'node:path'
 import { createLogger } from '../log.js'
-import { trimGitErrorOutput } from '../git.js'
+import { trimGitErrorOutput, parseNumstatZ } from '../git.js'
+import { MAX_BUFFER_BYTES, MAX_DIFF_LINES, DEFAULT_MAX_UNTRACKED_BYTES } from '../constants.js'
 
 const log = createLogger('snapshot-git')
 const execFileAsync = promisify(execFile)
@@ -49,7 +50,7 @@ async function run(cwd: string, argv: string[], opts?: { stdin?: string; allowEx
       encoding: 'utf8',
       windowsHide: true,
       timeout: 30_000,
-      maxBuffer: 16 * 1024 * 1024,
+      maxBuffer: MAX_BUFFER_BYTES,
     })
     return { stdout, stderr, code: 0 }
   } catch (err) {
@@ -73,7 +74,7 @@ async function runStdin(cwd: string, argv: string[], stdin: string) {
     const child = execFile(
       'git',
       argv,
-      { cwd, encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 },
+      { cwd, encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: MAX_BUFFER_BYTES },
       (err, stdout, stderr) => {
         if (!err) return resolve({ stdout, stderr, code: 0 })
         const e = err as NodeJS.ErrnoException & { code?: string | number }
@@ -205,7 +206,7 @@ export async function captureTree(
         ignored = new Set(check.stdout.split('\0').filter(Boolean))
       }
     }
-    const max = opts?.maxUntrackedBytes ?? 2 * 1024 * 1024
+    const max = opts?.maxUntrackedBytes ?? DEFAULT_MAX_UNTRACKED_BYTES
     const oversized: string[] = []
     for (const c of candidates) {
       // Source-tracked files bypass size checks — they are real tracked
@@ -292,29 +293,10 @@ export async function deletePaths(_repo: ShadowRepo, absPaths: string[]): Promis
   }
 }
 
-/** Max lines per unified-diff patch body. Matches git.ts MAX_DIFF_LINES. */
-const MAX_PATCH_LINES = 500
-
 /** Max number of files to process in structuredDiff. Prevents unbounded
- *  per-file patch spawns when the diff is very large. */
+ *  per-file patch spawns when the diff is very large. (The per-file patch
+ *  line cap is the shared MAX_DIFF_LINES from constants.ts.) */
 const MAX_DIFF_FILES = 200
-
-/** Parse NUL-terminated numstat output (`-z`): each entry is `adds\tdels\tpath\0`
- *  (tabs as field separator, NUL as line terminator — NOT NUL-delimited fields).
- *  Binary files use `-\t-\tpath\0`.  Path may itself contain tabs, so we
- *  parse by finding the first two tab positions rather than splitting. */
-function parseNumstatZ(raw: string): Map<string, { a: string; d: string }> {
-  const map = new Map<string, { a: string; d: string }>()
-  for (const entry of raw.split('\0')) {
-    if (!entry) continue
-    const i1 = entry.indexOf('\t')
-    if (i1 < 0) continue
-    const i2 = entry.indexOf('\t', i1 + 1)
-    if (i2 < 0) continue
-    map.set(entry.slice(i2 + 1), { a: entry.slice(0, i1), d: entry.slice(i1 + 1, i2) })
-  }
-  return map
-}
 
 /** Parse NUL-delimited name-status output (`-z`): STATUS\0FILE\0 pairs. */
 function parseNameStatusZ(raw: string): Map<string, string> {
@@ -398,8 +380,8 @@ export async function structuredDiff(
         args(repo, ['diff', '--unified=3', '--no-renames', from, to, '--', `:(top,literal)${file}`]),
       )
       const lines = p.stdout.split('\n')
-      if (lines.length > MAX_PATCH_LINES) {
-        patch = lines.slice(0, MAX_PATCH_LINES).join('\n') + '\n... (truncated)'
+      if (lines.length > MAX_DIFF_LINES) {
+        patch = lines.slice(0, MAX_DIFF_LINES).join('\n') + '\n... (truncated)'
       } else {
         patch = p.stdout
       }

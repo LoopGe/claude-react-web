@@ -13,6 +13,7 @@ import {
 import { AnimatedDetails } from './AnimatedCollapse'
 import { EmptyState } from './EmptyState'
 import { IconZap, IconClock } from './icons/ToolIcons'
+import { formatError } from '../utils/format-error'
 
 // ── Event categories ──────────────────────────────────────────────────
 interface EventCategory {
@@ -38,10 +39,6 @@ const STATUS_META: Record<string, { color: string; cls: string }> = {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
-function formatError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
 function formatHooks(config: SessionHooksConfig): string {
   return JSON.stringify(config, null, 2)
 }

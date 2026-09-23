@@ -8,6 +8,8 @@ import { SessionList } from './components/SessionList'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
 import { api } from './hooks/useApi'
+import { sessionTitleOrFallback } from './utils/session-title'
+import { prefersReducedMotion } from './utils/reduced-motion'
 import { isInAppDrag, readDragPayload } from './hooks/useDragPayload'
 import { useIsMobile } from './hooks/useIsMobile'
 import { useSwipeToClose } from './hooks/useSwipeToClose'
@@ -111,6 +113,7 @@ import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
 import { escapeAction } from './utils/escape-action'
 import { prepareGroupFlip } from './utils/flip'
+import { clamp } from './utils/clamp'
 
 /** Shallow-compare two SessionInfo objects across every own property.
  *
@@ -411,10 +414,10 @@ export function App() {
   // power users can tune sidebar limits and panel minimum ratio.
   const [sidebarMinPxRaw] = useLocalStorage<number>(SIDEBAR_MIN_KEY, SIDEBAR_MIN_DEFAULT)
   const [sidebarMaxPxRaw] = useLocalStorage<number>(SIDEBAR_MAX_KEY, SIDEBAR_MAX_DEFAULT)
-  const sidebarMinPx = Math.max(100, Math.min(400, Math.round(sidebarMinPxRaw)))
-  const sidebarMaxPx = Math.max(sidebarMinPx + 100, Math.min(1200, Math.round(sidebarMaxPxRaw)))
+  const sidebarMinPx = clamp(Math.round(sidebarMinPxRaw), 100, 400)
+  const sidebarMaxPx = clamp(Math.round(sidebarMaxPxRaw), sidebarMinPx + 100, 1200)
   const [panelMinRatioRaw] = useLocalStorage<number>(PANEL_MIN_RATIO_KEY, PANEL_MIN_RATIO_DEFAULT)
-  const panelMinRatio = Math.max(0.05, Math.min(0.4, panelMinRatioRaw))
+  const panelMinRatio = clamp(panelMinRatioRaw, 0.05, 0.4)
 
   /** Desktop sidebar hide/show. Persisted so a reload restores the state;
    *  expanding keeps the drag-resized width (see --sidebar-width below). */
@@ -449,7 +452,7 @@ export function App() {
       else if (e.key === 'ArrowRight') delta = KEYBOARD_RESIZE_STEP
       else return
       e.preventDefault()
-      const next = Math.max(sidebarMinPx, Math.min(sidebarMaxPx, effectiveSidebarWidth + delta))
+      const next = clamp(effectiveSidebarWidth + delta, sidebarMinPx, sidebarMaxPx)
       setSidebarWidth(next)
     },
     [effectiveSidebarWidth, setSidebarWidth, sidebarMinPx, sidebarMaxPx],
@@ -1308,7 +1311,7 @@ export function App() {
       // Opacity only: no translateY (Y inherits X's slot, so there's no motion
       // for a slide to add — a positional nudge would read as jitter).
       const xEl = document.querySelector<HTMLElement>(`[data-session-card-id="${oldId}"]`)
-      if (xEl && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      if (xEl && !prefersReducedMotion()) {
         try {
           const anim = xEl.animate(
             [
@@ -1370,7 +1373,7 @@ export function App() {
       // `fill: 'backwards'` applies the transparent start keyframe in the same
       // frame the card mounts (before the browser paints), so there's no
       // opacity-1 flash.
-      if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      if (!prefersReducedMotion()) {
         const yEl = document.querySelector<HTMLElement>(`[data-session-card-id="${newId}"]`)
         if (yEl) {
           try {
@@ -2474,7 +2477,7 @@ export function App() {
   // instant width jump. Height is captured too for symmetry but in
   // practice all panels are full-height so scaleY stays at 1.
   const animatePanels = useCallback((...ids: string[]) => {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    if (prefersReducedMotion()) return
     const bodyEl = bodyRef.current
     if (!bodyEl) return
     const bodyR = bodyEl.getBoundingClientRect()
@@ -2567,8 +2570,7 @@ export function App() {
   // Detect the preference and immediately clear any closing panels.
   useEffect(() => {
     if (closingPanels.length === 0) return
-    const mql = window.matchMedia('(prefers-reduced-motion: reduce)')
-    if (mql.matches) {
+    if (prefersReducedMotion()) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- when the user prefers reduced motion, onAnimationEnd never fires (CSS sets animation:none), so closing-panel ghosts would leak forever; clearing them here is the documented escape hatch for that media-query case, not a cascading-render anti-pattern.
       setClosingPanels([])
     }
@@ -4314,7 +4316,7 @@ export function App() {
                   >
                     <div className="chat-panel-header">
                       <span className="chat-panel-title">
-                        {cp.session.title ?? cp.session.id.slice(0, 8)}
+                        {sessionTitleOrFallback(cp.session)}
                       </span>
                     </div>
                   </section>

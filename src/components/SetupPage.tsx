@@ -4,6 +4,7 @@ import { useNotifications } from '../hooks/useNotifications'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useUpdateInfo } from '../hooks/useUpdateInfo'
 import { notificationTooltip } from '../utils/notifications'
+import { cx } from '../utils/cx'
 import { IconBell, IconBellOff, IconX, IconCheck } from './icons/ToolIcons'
 import type { McpServerConfigMeta } from '../types'
 
@@ -631,12 +632,12 @@ export function SetupPage({ onConfigured }: Props) {
                   disabled={!isVisited && !isCurrent}
                   aria-current={isCurrent ? 'step' : undefined}
                   aria-label={`Step ${displayOrdinal} of ${TOTAL_STEPS}: ${short} (${stateLabel})`}
-                  className={[
+                  className={cx(
                     'setup-progress-dot',
                     isCurrent ? 'current' : '',
                     isVisited ? 'visited' : '',
                     isVisited ? 'clickable' : '',
-                  ].filter(Boolean).join(' ')}
+                  )}
                 />
               </li>
             )
@@ -1469,7 +1470,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 'var(--radius-circle)',
     border: '2px solid color-mix(in srgb, var(--on-accent) 35%, transparent)',
     borderTopColor: 'var(--on-accent)',
-    animation: 'setup-spin 0.8s linear infinite',
+    animation: 'spin 0.8s linear infinite',
     flexShrink: 0,
   },
 }

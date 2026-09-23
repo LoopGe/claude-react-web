@@ -10,6 +10,8 @@
 // can live in shared/ and be reused by both the server and (for validation)
 // the client.
 
+import { isStringArray, isPlainObject } from './type-guards'
+
 export interface SessionToolProfile {
   /** The exact built-in tool set allowed — `[]` disables all built-in tools. */
   tools?: string[]
@@ -28,13 +30,7 @@ const ARRAY_KEYS = ['tools', 'allowedTools', 'disallowedTools'] as const
 
 type UnknownRec = Record<string, unknown>
 
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every((x) => typeof x === 'string')
-}
 
-function isPlainRecord(v: unknown): v is UnknownRec {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
 
 /** Pull a per-session tool profile out of an SDK Options-shaped object when any
  *  tool-surface field is present. Used to capture create-body passthrough into
@@ -46,8 +42,8 @@ export function extractToolProfile(opts: UnknownRec | undefined): SessionToolPro
     const v = opts[k]
     if (isStringArray(v)) out[k] = v
   }
-  if (isPlainRecord(opts.toolAliases)) out.toolAliases = opts.toolAliases as Record<string, string>
-  if (isPlainRecord(opts.toolConfig)) out.toolConfig = opts.toolConfig as UnknownRec
+  if (isPlainObject(opts.toolAliases)) out.toolAliases = opts.toolAliases as Record<string, string>
+  if (isPlainObject(opts.toolConfig)) out.toolConfig = opts.toolConfig as UnknownRec
   return Object.keys(out).length > 0 ? out : undefined
 }
 
@@ -74,7 +70,7 @@ export function applyToolProfile<T extends UnknownRec>(opts: T, profile: Session
  *  Unknown top-level keys are ignored for forward compatibility with newer
  *  SDK Options. */
 export function coerceToolProfile(value: unknown): SessionToolProfile | null | undefined {
-  if (!isPlainRecord(value)) return undefined
+  if (!isPlainObject(value)) return undefined
   const src = value
   const out: SessionToolProfile = {}
   let malformed = false
@@ -89,14 +85,14 @@ export function coerceToolProfile(value: unknown): SessionToolProfile | null | u
   }
   if (src.toolAliases !== undefined) {
     const a = src.toolAliases
-    if (!isPlainRecord(a) || Object.values(a).some((v) => typeof v !== 'string')) {
+    if (!isPlainObject(a) || Object.values(a).some((v) => typeof v !== 'string')) {
       malformed = true
     } else {
       out.toolAliases = a as Record<string, string>
     }
   }
   if (src.toolConfig !== undefined) {
-    if (!isPlainRecord(src.toolConfig)) {
+    if (!isPlainObject(src.toolConfig)) {
       malformed = true
     } else {
       out.toolConfig = src.toolConfig

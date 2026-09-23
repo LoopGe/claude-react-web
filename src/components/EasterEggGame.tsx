@@ -1,3 +1,4 @@
+import { prefersReducedMotion } from '../utils/reduced-motion'
 import { useEffect, useRef, useState } from 'react'
 import {
   W, H, JUMP_V_MIN,
@@ -28,9 +29,7 @@ export function EasterEggGame({ onExit }: { onExit: () => void }) {
   const mutedRef = useRef(readMuted())
   const hiRef = useRef(readHi())
   const newBestRef = useRef(false)
-  const reducedMotionRef = useRef(
-    typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  )
+  const reducedMotionRef = useRef(prefersReducedMotion())
   const setMutedAll = (v: boolean) => { mutedRef.current = v; setMuted(v); writeMuted(v) }
 
   function resetGame(startRunning: boolean) {

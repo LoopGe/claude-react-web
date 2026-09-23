@@ -3,24 +3,33 @@ import { api } from './useApi'
 import { inputHistoryStore } from '../state/inputHistoryStore'
 import { clearAllSessionStorage } from '../session-store/store'
 import { sessionStoreRegistry } from '../session-store/registry'
+import { DRAFT_KEY_PREFIX, SIDEBAR_WIDTH_KEY, SIDEBAR_MIN_KEY, SIDEBAR_MAX_KEY, PANEL_RATIOS_KEY, PANEL_MIN_RATIO_KEY, LAST_SEEN_TURN_KEY } from '../constants/storageKeys'
+import { RECENT_MODELS_KEY, RECENT_CWDS_KEY } from '../constants/recentKeys'
+import { THEME_KEY, SKIN_KEY } from '../utils/theme'
+import { ACCENT_COLOR_KEY, SESSION_COLORS_KEY, RECENT_COLORS_KEY } from '../theme'
+import { NAG_DISMISS_STORAGE_KEY } from './useUpdateNag'
 import type { ServerResetItem, BrowserDataItem, ResetResponse } from '../../shared/reset'
 
-const DRAFT_PREFIX = 'claude-react-web:draft:'
+/** Every appearance-related localStorage key, built from the SAME exported
+ *  key constants their owners read/write — a new key must be added at its
+ *  owner module, which keeps this list from silently drifting. */
 const APPEARANCE_KEYS = [
-  'claude-react-web:theme', 'claude-react-web:skin', 'claude-react-web:accent-color',
-  'claude-react-web:session-colors', 'claude-react-web:recent-colors',
-  'claude-react-web:sidebar-width', 'claude-react-web:sidebar-min-px', 'claude-react-web:sidebar-max-px',
-  'claude-react-web:panel-col-ratios', 'claude-react-web:panel-min-ratio',
-  'claude-react-web:recent-models', 'claude-react-web:recent-cwds',
-  'claude-react-web:update-nag-dismissed-version', 'claude-react-web:last-seen-turn',
+  THEME_KEY, SKIN_KEY, ACCENT_COLOR_KEY, SESSION_COLORS_KEY, RECENT_COLORS_KEY,
+  SIDEBAR_WIDTH_KEY, SIDEBAR_MIN_KEY, SIDEBAR_MAX_KEY,
+  PANEL_RATIOS_KEY, PANEL_MIN_RATIO_KEY,
+  RECENT_MODELS_KEY, RECENT_CWDS_KEY,
+  NAG_DISMISS_STORAGE_KEY, LAST_SEEN_TURN_KEY,
 ]
 
 function clearBrowserItem(item: BrowserDataItem): void {
   if (item === 'input-history') inputHistoryStore.clear()
   else if (item === 'drafts') {
-    for (let i = localStorage.length - 1; i >= 0; i--) {
-      const k = localStorage.key(i)
-      if (k && k.startsWith(DRAFT_PREFIX)) localStorage.removeItem(k)
+    // Drafts live in SESSION storage (Chat.tsx writes DRAFT_KEY_PREFIX /
+    // DRAFT_BODIES_KEY_PREFIX there), so the scan must too — scanning
+    // localStorage (the pre-fix behaviour) silently cleared nothing.
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const k = sessionStorage.key(i)
+      if (k && k.startsWith(DRAFT_KEY_PREFIX)) sessionStorage.removeItem(k)
     }
   } else if (item === 'appearance') {
     for (const k of APPEARANCE_KEYS) localStorage.removeItem(k)

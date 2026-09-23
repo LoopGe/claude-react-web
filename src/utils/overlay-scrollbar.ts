@@ -22,6 +22,8 @@
  * content child if the scroller swaps it, auto-hide, and thumb drag.
  */
 
+import { clamp } from './clamp'
+
 export type OverlayScrollbarOrientation = 'vertical' | 'horizontal' | 'both'
 export type OverlayScrollbarAutoHide = 'never' | 'leave' | 'scroll'
 
@@ -177,7 +179,7 @@ export function attachOverlayScrollbar(
     // Clamp the thumb to the track so a sub-minThumbSize viewport can't make
     // thumbSize exceed trackSize (which would give negative travel and break
     // both the transform position and drag).
-    const thumbSize = Math.min(trackSize, Math.max(minThumbSize, (clientSize / scrollSize) * trackSize))
+    const thumbSize = clamp((clientSize / scrollSize) * trackSize, minThumbSize, trackSize)
     const travel = trackSize - thumbSize
     const maxScroll = scrollSize - clientSize
     const pos = maxScroll > 0 ? (scrollPos / maxScroll) * travel : 0
@@ -316,7 +318,7 @@ export function attachOverlayScrollbar(
         const pointerPos = variant === 'vertical' ? ev.clientY : ev.clientX
         // Center the thumb under the pointer for a natural grab feel.
         const rel = (pointerPos - trackRect.top - thumbSize / 2) / travel
-        const clamped = Math.min(1, Math.max(0, rel))
+        const clamped = clamp(rel, 0, 1)
         if (variant === 'vertical') el.scrollTop = clamped * freshMaxScroll
         else el.scrollLeft = clamped * freshMaxScroll
       }

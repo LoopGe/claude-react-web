@@ -19,6 +19,7 @@ import { IconCheck, IconChevronDown, IconChevronUp, IconSearch, IconX } from './
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { markPortaledSurface } from '../theme'
+import { clamp } from '../utils/clamp'
 
 export interface FieldPickerOption {
   key: string
@@ -159,13 +160,13 @@ export function FieldPicker({
       const chromeH = Math.max(0, menu.offsetHeight - (listEl?.offsetHeight ?? 0))
       const naturalList = Math.min(listEl?.scrollHeight ?? 0, MAX_LIST_H)
       const menuH = chromeH + naturalList
-      const width = Math.min(Math.max(rect.width, 264), vw - margin * 2)
-      const left = Math.max(margin, Math.min(rect.left, vw - width - margin))
+      const width = clamp(rect.width, 264, vw - margin * 2)
+      const left = clamp(rect.left, margin, vw - width - margin)
       const spaceBelow = vh - rect.bottom - margin
       const spaceAbove = rect.top - margin
       const openUp = spaceBelow < menuH && spaceAbove > spaceBelow
       const available = openUp ? spaceAbove : spaceBelow
-      const listMax = Math.max(96, Math.min(MAX_LIST_H, available - chromeH - 8))
+      const listMax = clamp(available - chromeH - 8, 96, MAX_LIST_H)
       // Position against the height we will actually render (`listMax` may be
       // smaller than `naturalList`). Using the uncapped `menuH` here left the
       // up-flipped menu floating well above its trigger.

@@ -14,7 +14,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
-import { MAX_BUFFER_BYTES } from './constants.js'
+import { MAX_BUFFER_BYTES, LOG_PREVIEW_CAP, COMMAND_PREVIEW_CAP } from './constants.js'
 import { trimGitErrorOutput } from './git.js'
 
 const log = createLogger('git-clone')
@@ -109,7 +109,7 @@ async function runGitOutside(args: readonly string[], cwd?: string, timeoutMs = 
       // to host …") at the tail, so head-only truncation discarded the one
       // part that explained anything. Cap moves 800 → 500 to match runGit.
       const detail = trimGitErrorOutput((e.stderr || e.message || '').trim())
-      log.error(`git ${args[0]} exit=${e.code} elapsed=${elapsed}ms: ${detail.slice(0, 200)}`)
+      log.error(`git ${args[0]} exit=${e.code} elapsed=${elapsed}ms: ${detail.slice(0, LOG_PREVIEW_CAP)}`)
       throw new HttpError(500, `git failed (exit ${e.code}): ${detail}`)
     }
     log.error(`git ${args[0]} failed elapsed=${elapsed}ms: ${(e as Error).message}`)
@@ -219,7 +219,7 @@ export async function gitGetHeadSha(cwd: string): Promise<string> {
   const stdout = await runGitOutside(['rev-parse', 'HEAD'], cwd)
   const sha = stdout.trim()
   if (!/^[0-9a-f]{40}$/i.test(sha)) {
-    throw new HttpError(500, `unexpected HEAD output: ${sha.slice(0, 80)}`)
+    throw new HttpError(500, `unexpected HEAD output: ${sha.slice(0, COMMAND_PREVIEW_CAP)}`)
   }
   return sha
 }

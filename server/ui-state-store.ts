@@ -9,14 +9,13 @@
 import { readFile } from 'node:fs/promises'
 import { join as joinPath } from 'node:path'
 import { homedir } from 'node:os'
-import { writeAtomic } from './json-file-store.js'
+import { writeAtomic, DEFAULT_DIR_NAME } from './json-file-store.js'
 import { createLogger } from './log.js'
+import { DEBOUNCE_MS } from './constants.js'
 
 const log = createLogger('ui-state')
 
-const DEFAULT_DIR_NAME = '.claude-react-web'
 const FILE_NAME = 'ui-state.json'
-const DEBOUNCE_MS = 500
 
 /** Shape of a session group — mirrors the frontend SessionGroup interface. */
 export interface StoredSessionGroup {

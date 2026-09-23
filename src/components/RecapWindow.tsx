@@ -8,6 +8,7 @@
 // Three states share the same shell (ready / pending / error), mirroring the
 // old RecapFooter that lived in the Virtuoso footer slot.
 
+import { prefersReducedMotion } from '../utils/reduced-motion'
 import { memo, useLayoutEffect, useRef } from 'react'
 import { motion } from 'motion/react'
 import type { SessionRecap } from '../../shared/session-info'
@@ -50,10 +51,7 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
   useLayoutEffect(() => {
     const el = windowRef.current
     if (!el) return
-    const reduceMotion =
-      typeof window !== 'undefined' &&
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reduceMotion = prefersReducedMotion()
     if (reduceMotion) {
       el.style.height = ''
       prevHeightRef.current = null

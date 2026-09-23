@@ -11,6 +11,7 @@ import { useEffect, useState } from 'react'
 import { Overlay } from './Overlay'
 import { useSubagentTranscripts, subagentMessageText, type SubagentSessionMessage } from '../hooks/useSubagentTranscripts'
 import { IconX, IconLoader } from './icons/ToolIcons'
+import { formatError } from '../utils/format-error'
 
 function TranscriptRow({ msg }: { msg: SubagentSessionMessage }) {
   const text = subagentMessageText(msg)
@@ -51,7 +52,7 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
         if (!cancelled) setMessages(msgs)
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+        if (!cancelled) setError(formatError(err))
       })
     return () => {
       cancelled = true

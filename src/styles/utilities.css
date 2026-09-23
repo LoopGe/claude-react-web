@@ -382,7 +382,7 @@
    sit in the badge, so reusing the running colors for another state silently
    rotated a non-symmetric icon — which visibly wobbles. Only the loader spins. */
 .tool-status-running .icon-loader {
-  animation: tool-status-spin 0.9s linear infinite;
+  animation: spin 0.9s linear infinite;
   /* Rotate about the box center. Both declarations below are belt-and-braces:
      on an OUTERMOST <svg> (which has a CSS layout box) `fill-box` resolves to
      content-box per spec, so the computed origin is the box center — 6px 6px
@@ -419,11 +419,6 @@
   height: var(--size-18px);
   justify-content: center;
 }
-@keyframes tool-status-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
 /* Copy button — minimal icon button that only reveals its background on
  * hover so it doesn't compete with the status badge for attention. */
 .tool-copy-btn {
@@ -1646,7 +1641,7 @@ button.tool-group-failed-jump:focus-visible {
   color: var(--accent-text);
 }
 .settings-card-spin {
-  animation: tool-status-spin 0.9s linear infinite;
+  animation: spin 0.9s linear infinite;
   transform-box: fill-box;
   transform-origin: center;
 }
@@ -2236,7 +2231,7 @@ button.tool-group-failed-jump:focus-visible {
   height: 2px;
   border-radius: var(--radius-2xs);
   background: var(--accent);
-  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: var(--accent-glow);
   pointer-events: none;
   z-index: 1;
   transform: scaleX(0);
@@ -3313,7 +3308,7 @@ select.input {
   padding: 0 4px 0 0;
   font-size: 10px;
   display: inline-block;
-  transition: transform 0.12s ease;
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .perf-caret-open {
   transform: rotate(90deg);

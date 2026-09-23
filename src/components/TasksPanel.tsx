@@ -28,6 +28,7 @@ import type { TaskRecordUi } from '../types'
 import { isTerminalTaskStatus } from '../../shared/tasks.js'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
 import { IconX, IconCheck, IconCircle, IconAlertCircle, IconClock, IconLoader, IconTerminal, IconBot, IconListTodo, IconWorkflow, IconFileText } from './icons/ToolIcons'
+import { formatError } from '../utils/format-error'
 
 function StatusIcon({ status }: { status: TaskRecordUi['status'] }) {
   if (status === 'running' || status === 'pending') {
@@ -104,7 +105,7 @@ export const TasksPanel = memo(function TasksPanel({
       try {
         await api.post(`/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}/stop`, {})
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
+        const msg = formatError(err)
         toast.error(`Stop task: ${msg}`)
         setStopping((prev) => {
           const next = new Set(prev)

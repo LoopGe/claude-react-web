@@ -132,6 +132,7 @@
   --motion-distance-sm: 4px;
   --motion-distance-md: 8px;
   --motion-distance-lg: 14px;
+  --motion-distance-xl: 24px;
   --motion-scale-enter: 0.98;
   --motion-scale-press: 0.97;
   /* Radius tokens — canonical corner-rounding steps. The main scale is
@@ -264,6 +265,12 @@
      to before this refactor. The light theme overrides the alphas. */
   --card-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);      /* small floating popovers/menus */
   --modal-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);    /* large centred modals */
+  --schedule-picker-shadow: 0 8px 24px rgb(0 0 0 / 0.25); /* send-scheduler popover */
+  /* Accent glow shared by drop-indicator lines and glowing thumbs. The
+     color-mix resolves against whichever --accent is in effect, so one
+     definition follows every theme and skin (same lazy-var rationale as
+     the --msg-user-* family — no per-theme copy needed). */
+  --accent-glow: 0 0 6px color-mix(in srgb, var(--accent) 50%, transparent);
   /* Stacking scale (low → high): in-panel overlays < drawer < popover <
      overlay < modal < toast < top.
        --z-panel-overlay (6): in-panel overlays — Settings/Subagent/Workflow
@@ -305,6 +312,16 @@
   --handle-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   /* Scrim behind modals / drawers. */
   --backdrop-color: rgba(0, 0, 0, 0.55);
+  /* ── Hover / lighten derivates of the semantic colors ─────────────
+     color-mix against the LIVE --accent / --warn / --danger, so one
+     definition automatically follows every theme and skin (the same
+     lazy-var rationale as --msg-user-*: the mix re-resolves per element,
+     so no [data-theme="light"] copy is needed — light's own --accent,
+     --warn and --danger feed the mix there). */
+  --accent-hover: color-mix(in srgb, var(--accent) 85%, black);
+  --warn-hover: color-mix(in srgb, var(--warn) 85%, black);
+  --danger-hover: color-mix(in srgb, var(--danger) 88%, black);
+  --accent-bright: color-mix(in srgb, var(--accent) 60%, white);
   /* Blur applied to overlay scrims (backdrop-filter). */
   --glass-blur: blur(2px);
   /* ── Liquid-glass surface tokens ──────────────────────────────────
@@ -399,6 +416,7 @@
      scrim so floating surfaces don't read as heavy smudges on white. */
   --card-shadow: 0 8px 28px rgba(0, 0, 0, 0.15);
   --modal-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  --schedule-picker-shadow: 0 8px 24px rgb(0 0 0 / 0.15);
   --drawer-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
   --toast-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
   --tooltip-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
@@ -521,6 +539,7 @@
   --overlay-shadow: none;
   --card-shadow: none;
   --modal-shadow: none;
+  --schedule-picker-shadow: none;
   --drawer-shadow: none;
   --toast-shadow: none;
   --tooltip-shadow: none;
@@ -634,6 +653,7 @@
   --overlay-shadow: none;
   --card-shadow: none;
   --modal-shadow: none;
+  --schedule-picker-shadow: none;
   --drawer-shadow: none;
   --toast-shadow: none;
   --tooltip-shadow: none;
@@ -1324,4 +1344,38 @@ button { cursor: pointer; }
   --btn-hover-bg-solid: var(--btn-hover-bg);
   --btn-hover-border-solid: var(--btn-hover-border);
   --drag-over-bg-solid: var(--drag-over-bg);
+}
+
+/* ── Shared keyframes ─────────────────────────────────────────────
+   One global 360° spin (six byte-identical per-module copies used to
+   live in git-panel/app-plugins/setup-page/utilities/chat/tasks-panel
+   css; each call site keeps its own duration on the animation
+   property). Naming note: .git-panel-spin / .tasks-row-spin are CLASS
+   names — the keyframes below is what their animation properties play. */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Shared drawer slide-in/out used by the subagent, workflow and side-chat
+   in-panel drawers (three byte-identical pairs used to live in chat.css).
+   Distance is --motion-distance-xl (24px), matching the previous literals. */
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--motion-distance-xl));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes drawer-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(var(--motion-distance-xl));
+  }
 }

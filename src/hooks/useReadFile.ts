@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './useApi'
 import type { FileReadResult } from '../../shared/read-file'
+import { formatError } from '../utils/format-error'
 
 export function useReadFile(sessionId: string, path: string | null) {
   const [data, setData] = useState<FileReadResult | null>(null)
@@ -37,7 +38,7 @@ export function useReadFile(sessionId: string, path: string | null) {
       })
       .catch((e) => {
         if (cancelled) return
-        setError(e instanceof Error ? e.message : String(e))
+        setError(formatError(e))
         setData(null)
         setLoading(false)
       })

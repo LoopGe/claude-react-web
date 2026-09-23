@@ -5,6 +5,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { api } from './useApi'
 import type { StructuredRunRequest, StructuredRunResult } from '../../shared/structured'
+import { formatError } from '../utils/format-error'
 
 export function useStructuredRun() {
   const [running, setRunning] = useState(false)
@@ -31,7 +32,7 @@ export function useStructuredRun() {
       setResult(res)
     } catch (err) {
       if (controller.signal.aborted) return // user cancelled — no error flash
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = formatError(err)
       setError(msg)
     } finally {
       if (abortRef.current === controller) setRunning(false)
