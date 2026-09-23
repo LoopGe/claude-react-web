@@ -90,19 +90,18 @@ export function createJsonlPageCache(deps: JsonlDeps, maxSessions = 4): JsonlPag
   const fullParse = async (sessionId: string, path: string, stat: JsonlStat): Promise<CacheEntry> => {
     const t0 = performance.now()
     const raw = await deps.readFile(path)
-    // Parse the entire content — parseRenderable already skips non-renderable
-    // and malformed lines. Using parseCompleteLines here would drop the last
-    // line when the file lacks a trailing '\n', which is valid for the full
-    // initial parse (the torn-line protection is only needed for incremental
-    // append-parse where a partial line must not be cached).
-    const rawLines = parseRenderable(raw, {})
+    // Only parse COMPLETE lines (up to the last '\n'). A torn final line
+    // (the CLI is still appending) waits for the next incremental refresh —
+    // it arrives live over WS anyway. Caching a line the writer is still
+    // appending would poison the cache with a stale prefix permanently.
+    const { lines: rawLines, consumedChars } = parseCompleteLines(raw)
     const lines = rawLines.map((l) => normalize(l, sessionId, true))
     metrics.observe('history_full_parse_ms', performance.now() - t0)
     log.debug(
       `[${sessionId}] jsonl-cache full parse: ${lines.length} lines, ${raw.length} chars in ` +
       `${(performance.now() - t0).toFixed(1)}ms`,
     )
-    return { lines, uuids: rawLines.map((l) => l.uuid), parsedChars: raw.length, statSize: stat.size, statMtimeMs: stat.mtimeMs }
+    return { lines, uuids: rawLines.map((l) => l.uuid), parsedChars: consumedChars, statSize: stat.size, statMtimeMs: stat.mtimeMs }
   }
 
   const resolveEntry = (sessionId: string): Promise<CacheEntry | null> => {

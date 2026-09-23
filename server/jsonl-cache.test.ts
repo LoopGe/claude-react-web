@@ -3,7 +3,7 @@ import { createJsonlPageCache, type JsonlDeps } from './jsonl-cache.js'
 import { paginateJsonl } from './history-reader.js'
 
 function jsonl(lines: Array<Record<string, unknown>>): string {
-  return lines.map((l) => JSON.stringify(l)).join('\n')
+  return lines.map((l) => JSON.stringify(l)).join('\n') + '\n'
 }
 
 const SID = 'cache-sess-1'
