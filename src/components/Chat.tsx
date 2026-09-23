@@ -2381,21 +2381,31 @@ export const Chat = memo(function Chat({
       {workingSlot &&
         createPortal(
           workingBubblePresence.shouldRender ? (
-            <WorkingBubble
-              active={turnActive}
-              startedAt={turnStartedAt}
-              activeSubagents={stream.activeSubagents}
-              tokenRate={stream.tokenRate}
-              thinkingTokens={stream.thinkingTokens}
-              activePhase={displayPhase}
-              recapping={session.compacting ?? false}
-              waiting={waiting}
-              runningTaskCount={indicatorTaskCount}
-              totalTaskCount={taskCount}
-              onOpenTasks={openTasksPanel}
-              onOpenSubagent={openSubagent}
-              exiting={workingBubblePresence.isExiting}
-            />
+            // Collapse wrapper: the card fades/sinks (its own transition) while
+            // this grid row collapses 1fr→0fr, so the space it held closes in
+            // step instead of lingering as an invisible placeholder until the
+            // node unmounts (which made the reserved footer spacer snap).
+            <div
+              className={`working-bubble-collapse${workingBubblePresence.isExiting ? ' working-bubble-collapse-exiting' : ''}`}
+            >
+              <div className="working-bubble-collapse-inner">
+                <WorkingBubble
+                  active={turnActive}
+                  startedAt={turnStartedAt}
+                  activeSubagents={stream.activeSubagents}
+                  tokenRate={stream.tokenRate}
+                  thinkingTokens={stream.thinkingTokens}
+                  activePhase={displayPhase}
+                  recapping={session.compacting ?? false}
+                  waiting={waiting}
+                  runningTaskCount={indicatorTaskCount}
+                  totalTaskCount={taskCount}
+                  onOpenTasks={openTasksPanel}
+                  onOpenSubagent={openSubagent}
+                  exiting={workingBubblePresence.isExiting}
+                />
+              </div>
+            </div>
           ) : null,
           workingSlot,
         )}

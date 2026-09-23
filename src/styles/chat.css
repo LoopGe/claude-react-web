@@ -2261,9 +2261,36 @@
    still samples the messages underneath. */
 .working-bubble-slot {
   /* Empty slot contributes no height; when the portal mounts a child the
-     child's own margins participate in the stack. `contents` so .working-bar
-     is the flex item (matches the sibling cards' layout role). */
+     child's own margins participate in the stack. `contents` so the collapse
+     wrapper (below) is the flex item (matches the sibling cards' role). */
   display: contents;
+}
+/* Collapsing wrapper for the WorkingBubble. The card fades/sinks via its own
+   transition while this grid row collapses 1fr→0fr, so the space it held
+   closes in step. Without it the card's box (opacity/transform don't affect
+   layout) stayed as an invisible placeholder for the whole exit window and
+   then snapped away when React unmounted it — and since MessageList reserves
+   the overlay height as a Virtuoso footer spacer, that one-frame collapse
+   nudged the transcript. */
+.working-bubble-collapse {
+  display: grid;
+  grid-template-rows: 1fr;
+  min-height: 0;
+  /* Same flex role the card had as the direct flex item. */
+  flex: 0 0 auto;
+  transition: grid-template-rows var(--motion-duration-fast) var(--motion-ease-exit);
+}
+.working-bubble-collapse-exiting {
+  grid-template-rows: 0fr;
+}
+.working-bubble-collapse-inner {
+  min-height: 0;
+}
+/* Clip ONLY while collapsing so the row can shrink the card's padding/margin
+   away. A scroll container is a backdrop root (see .chat-bottom-overlay), so
+   keeping `overflow: visible` at rest preserves the card's frosted ::before. */
+.working-bubble-collapse-exiting .working-bubble-collapse-inner {
+  overflow: hidden;
 }
 .working-bar {
   position: relative;

@@ -266,15 +266,23 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           )}
         />
         {bubblePresence.shouldRender && (
-          <WorkingBubble
-            active={session.working}
-            startedAt={session.workingSince}
-            activeSubagents={stream.activeSubagents}
-            tokenRate={stream.tokenRate}
-            activePhase={stream.activePhase}
-            waiting={waiting}
-            exiting={bubblePresence.isExiting}
-          />
+          // Collapse wrapper — see the WorkingBubble portal in Chat: the row
+          // closes as the card fades so no invisible placeholder is left.
+          <div
+            className={`working-bubble-collapse${bubblePresence.isExiting ? ' working-bubble-collapse-exiting' : ''}`}
+          >
+            <div className="working-bubble-collapse-inner">
+              <WorkingBubble
+                active={session.working}
+                startedAt={session.workingSince}
+                activeSubagents={stream.activeSubagents}
+                tokenRate={stream.tokenRate}
+                activePhase={stream.activePhase}
+                waiting={waiting}
+                exiting={bubblePresence.isExiting}
+              />
+            </div>
+          </div>
         )}
       </div>
 
