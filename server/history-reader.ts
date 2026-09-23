@@ -63,7 +63,7 @@ export interface HistoryEntry {
   message: unknown
 }
 
-interface RawLine {
+export interface RawLine {
   type?: string
   subtype?: string
   uuid?: string
@@ -506,36 +506,68 @@ export function turnAnchorsFromJsonl(
   return anchors
 }
 
-/** Pure core of readHistoryPage: parse JSONL text, filter to the renderable
- *  subset, and paginate. Exported for unit testing without touching the
- *  filesystem. */
-export function paginateJsonl(
-  raw: string,
-  sessionId: string,
-  opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string },
-): HistoryPage {
-  const renderable = parseRenderable(raw, opts)
-  const total = renderable.length
+/** Pure window computation shared by the raw-string and cached pagination
+ *  paths. `beforeUuid` needs the caller's uuid accessor because the two
+ *  callers store uuids differently (renderable lines vs a parallel array).
+ *  The window is [start, end): the `limit` messages ending just before the
+ *  resolved end index. Resolution order: beforeUuid → before → newest. */
+export function sliceWindow(
+  total: number,
+  opts: {
+    before?: number
+    beforeUuid?: string
+    limit: number
+    uuidAt: (index: number) => string | undefined
+  },
+): { start: number; end: number } {
   const limit = Math.max(1, Math.min(opts.limit, 1000))
-
   let end = total
   if (opts.beforeUuid) {
-    const idx = renderable.findIndex((o) => o.uuid === opts.beforeUuid)
-    // Found ?page strictly before it. Not found ?newest page (default).
-    if (idx >= 0) end = idx
+    for (let i = 0; i < total; i++) {
+      if (opts.uuidAt(i) === opts.beforeUuid) {
+        end = i
+        break
+      }
+    }
   } else if (opts.before != null) {
     end = Math.max(0, Math.min(opts.before, total))
   }
+  return { start: Math.max(0, end - limit), end }
+}
 
-  const start = Math.max(0, end - limit)
+/** Slice pre-parsed renderable lines into a page. Used by `paginateJsonl`
+ *  (parse-then-serve) and by the JSONL page cache, which holds the same
+ *  renderable lines already normalized. */
+export function paginateRenderable(
+  renderable: RawLine[],
+  sessionId: string,
+  opts: { before?: number; beforeUuid?: string; limit: number },
+): HistoryPage {
+  const total = renderable.length
+  const { start, end } = sliceWindow(total, {
+    before: opts.before,
+    beforeUuid: opts.beforeUuid,
+    limit: opts.limit,
+    uuidAt: (i) => renderable[i]?.uuid,
+  })
   const slice = renderable.slice(start, end)
-
   return {
     messages: slice.map((o) => normalize(o, sessionId, true)),
     totalCount: total,
     startIndex: start,
     hasMore: start > 0,
   }
+}
+
+/** Read a page from a raw JSONL transcript string. Kept as the pure
+ *  (filesystem-free) reference implementation; the cached path lives in
+ *  jsonl-cache.ts and must produce identical pages. */
+export function paginateJsonl(
+  raw: string,
+  sessionId: string,
+  opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string },
+): HistoryPage {
+  return paginateRenderable(parseRenderable(raw, opts), sessionId, opts)
 }
 
 export function historyEntriesFromJsonl(
@@ -553,7 +585,7 @@ export function historyEntriesFromJsonl(
   }))
 }
 
-function parseRenderable(raw: string, opts: { afterUuid?: string }): RawLine[] {
+export function parseRenderable(raw: string, opts: { afterUuid?: string }): RawLine[] {
   const renderable: RawLine[] = []
   let pastBoundary = !opts.afterUuid
   for (const line of raw.split('\n')) {

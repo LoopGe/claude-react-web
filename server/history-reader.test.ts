@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { paginateJsonl, turnAnchorsFromJsonl, readHistoryPage } from './history-reader.js'
+import { paginateJsonl, turnAnchorsFromJsonl, readHistoryPage, sliceWindow, paginateRenderable } from './history-reader.js'
 
 // Creating a symlink needs no privileges on POSIX but does on Windows unless a
 // junction is used. Probe once so the symlink test is skipped only where the
@@ -600,5 +600,45 @@ describe('readHistoryPage — CLI config dir', () => {
       else process.env.CLAUDE_CONFIG_DIR = prev
       await rm(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe('sliceWindow', () => {
+  const uuidAt = (i: number) => (i === 0 ? 'u0' : i === 5 ? 'u5' : `x${i}`)
+
+  it('newest page: end defaults to total, start clamps at 0', () => {
+    expect(sliceWindow(3, { limit: 100, uuidAt })).toEqual({ start: 0, end: 3 })
+    expect(sliceWindow(10, { limit: 4, uuidAt })).toEqual({ start: 6, end: 10 })
+  })
+
+  it('before index pages strictly before it and clamps to [0, total]', () => {
+    expect(sliceWindow(10, { before: 6, limit: 4, uuidAt })).toEqual({ start: 2, end: 6 })
+    expect(sliceWindow(10, { before: 0, limit: 4, uuidAt })).toEqual({ start: 0, end: 0 })
+    expect(sliceWindow(10, { before: 99, limit: 4, uuidAt })).toEqual({ start: 6, end: 10 })
+  })
+
+  it('beforeUuid pages strictly before the matching index; not-found falls to the newest page', () => {
+    expect(sliceWindow(10, { beforeUuid: 'u5', limit: 4, uuidAt })).toEqual({ start: 1, end: 5 })
+    expect(sliceWindow(10, { beforeUuid: 'missing', limit: 4, uuidAt })).toEqual({ start: 6, end: 10 })
+  })
+})
+
+describe('paginateRenderable', () => {
+  const lines = [
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'one' } },
+    { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] } },
+  ] as never[]
+
+  it('matches paginateJsonl output for the same lines', () => {
+    const raw = lines.map((l) => JSON.stringify(l)).join('\n')
+    expect(paginateRenderable(lines, SID, { limit: 100 })).toEqual(paginateJsonl(raw, SID, { limit: 100 }))
+  })
+
+  it('normalizes with trim (consumedAt stamped on top-level user prompts with a timestamp)', () => {
+    const withTs = [
+      { type: 'user', uuid: 'u1', timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'hi' } },
+    ] as never[]
+    const page = paginateRenderable(withTs, SID, { limit: 10 })
+    expect((page.messages[0] as { consumedAt?: number }).consumedAt).toBe(Date.parse('2026-01-01T00:00:00.000Z'))
   })
 })
