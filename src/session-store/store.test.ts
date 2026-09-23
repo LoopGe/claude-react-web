@@ -713,6 +713,27 @@ describe('SessionStore dismissed-subagent persistence', () => {
     expect(snap.activeSubagents.some((a) => a.toolUseId === 'tu_x')).toBe(false)
   })
 
+  it('derives the reconnect cursor when a cache has rows but no cursor', async () => {
+    // "Has a transcript" and "has a cursor" are different facts, and a cache
+    // can carry the first without the second (a v2 shape, a truncated write).
+    // A store in that state looks like a NO-CACHE client on every reconnect —
+    // it re-sends the full ring instead of an incremental slice, and it would
+    // advertise the no-cache precondition tail-first replay is gated on. The
+    // cursor is derived from the newest DISK-STABLE row, the only kind whose
+    // uuid exists in both the ring and the transcript.
+    const key = STORAGE_PREFIX + 'sess-nocursor'
+    const msgs: SdkMessage[] = [
+      { type: 'user', uuid: 'p-1', parent_tool_use_id: null, message: { role: 'user', content: 'hi' } },
+      { type: 'assistant', uuid: 'a-1', message: { role: 'assistant', content: [{ type: 'text', text: 'x' }] } },
+      { type: 'assistant', uuid: 'a-2', message: { role: 'assistant', content: [{ type: 'text', text: 'y' }] } },
+    ] as unknown as SdkMessage[]
+    localStorage.setItem(key, JSON.stringify({ v: 2, savedAt: Date.now(), messages: msgs, lastMessageUuid: null }))
+
+    const store = new SessionStore('sess-nocursor')
+    await store.hydrateDone
+    expect(store.getState().mirror.lastMessageUuid).toBe('a-2')
+  })
+
   it('loads a v2 cache without dismissedSubagents as an empty set', async () => {
     const key = STORAGE_PREFIX + 'sess-old'
     const msg: SdkMessage = {

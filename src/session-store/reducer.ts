@@ -29,6 +29,7 @@ import {
   getToolUseStarts,
   getWorkflowChildStarts,
   getWorkflowStarts,
+  isDiskStableMsg,
   isTrimBoundary,
   parseTaskNotification,
   toTranscriptItem,
@@ -52,6 +53,14 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       return prependMessages(state, action.messages, { trustUuidDedup: action.trustUuidDedup === true })
     case 'MESSAGE':
       return applyMessage(state, action.message)
+    case 'ADOPT_CURSOR':
+      return adoptCursor(state)
+    case 'SETTLE_RESULT_INDEXES':
+      return settleResultIndexes(state)
+    case 'MARK_TAIL_FIRST_APPLIED':
+      return state.mirror.tailFirstUnsettled
+        ? state
+        : withMirror(state, { ...state.mirror, tailFirstUnsettled: true })
     case 'OPTIMISTIC_USER_MESSAGE':
       return applyOptimisticUserMessage(state, action.message)
     case 'ACK_USER_MESSAGE':
@@ -664,6 +673,35 @@ function promptSequencesEqual(
     i++
     m++
   }
+}
+
+/** See the SETTLE_RESULT_INDEXES action doc. Gated on the marker rather than
+ *  run unconditionally: the scan + re-apply is O(result-bearing messages) and
+ *  every ordinary reconnect would otherwise pay it for nothing. The marker is
+ *  durable, so a burst that was interrupted (and finished later by an ordinary
+ *  replay) still settles. */
+function settleResultIndexes(state: SessionState): SessionState {
+  if (!state.mirror.tailFirstUnsettled) return state
+  const cleared = withMirror(state, { ...state.mirror, tailFirstUnsettled: false })
+  const results = cleared.mirror.messages.filter((m) => getToolResultIds(m).length > 0)
+  if (results.length === 0) return cleared
+  return rebuildIndexesFromMessages(cleared, results)
+}
+
+/** See the ADOPT_CURSOR action doc. Walks back to the newest disk-stable
+ *  message — the only kind whose uuid matches between the in-memory ring and
+ *  the on-disk transcript, so the only kind that can anchor an incremental
+ *  replay. */
+function adoptCursor(state: SessionState): SessionState {
+  const mirror = state.mirror
+  if (mirror.lastMessageUuid != null || mirror.items.length === 0) return state
+  for (let i = mirror.items.length - 1; i >= 0; i--) {
+    const uuid = mirror.items[i].msg.uuid
+    if (typeof uuid === 'string' && isDiskStableMsg(mirror.items[i].msg)) {
+      return withMirror(state, { ...mirror, lastMessageUuid: uuid })
+    }
+  }
+  return state
 }
 
 /** Prepend a chronological batch of older messages (loaded from disk on

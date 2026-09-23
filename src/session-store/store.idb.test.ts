@@ -83,6 +83,35 @@ describe('SessionStore IDB cache (Phase 1)', () => {
     expect(items.map((i) => i.id)).toContain('a-0')
   })
 
+  it('publishes idbReady once the async IDB state has settled', async () => {
+    // The subscribe path waits for this: a cold-load can still prepend rows
+    // into an empty store after hydration, which both flips the client's
+    // cache declaration and can race a tail-first burst's backfill chunks.
+    const store = new SessionStore('s-idbready')
+    expect(store.getSnapshot().idbReady).toBe(false)
+    await store.idbReady
+    expect(store.getSnapshot().idbReady).toBe(true)
+  })
+
+  it('adopts a reconnect cursor when a cold-load prepends rows into an empty store', async () => {
+    // LS cache lost, IDB survived (private mode, quota eviction, cleared LS):
+    // the cold-load prepends rows, so the client HAS a transcript while the
+    // cursor stays null. Deriving it keeps the client honest about what it
+    // holds — incremental replay on reconnect, and no tail-first opt-in.
+    const s1 = new SessionStore('s-cursor')
+    await s1.idbReady
+    for (let i = 0; i < 3; i++) s1.dispatch({ type: 'MESSAGE', message: asstMsg(`a-${i}`, `msg ${i}`) })
+    s1.persistNow()
+    await s1.flushIdb()
+    await s1.destroy()
+    localStorage.removeItem(STORAGE_PREFIX + 's-cursor')
+
+    const s2 = new SessionStore('s-cursor')
+    await s2.idbReady
+    expect(s2.getSnapshot().items.length).toBeGreaterThanOrEqual(3)
+    expect(s2.getState().mirror.lastMessageUuid).toBe('a-2')
+  })
+
   it('api_retry is transient: never enters IDB (no supersession tracking needed)', async () => {
     // api_retry is routed to the mirror.apiRetry slot, NOT items/messages/IDB,
     // so the transcript stays append-only. Consecutive api_retry overwrite the

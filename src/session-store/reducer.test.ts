@@ -2660,6 +2660,127 @@ describe('PREPEND_MESSAGES', () => {
   })
 })
 
+describe('SETTLE_RESULT_INDEXES', () => {
+  const toolUse = (uuid: string, id: string, name = 'Read'): SdkMessage => ({
+    type: 'assistant',
+    uuid,
+    message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: {} }] },
+    parent_tool_use_id: null,
+  } as unknown as SdkMessage)
+  const toolResult = (uuid: string, toolUseId: string, isError = false): SdkMessage => ({
+    type: 'user',
+    uuid,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'ok', is_error: isError }] },
+    parent_tool_use_id: toolUseId,
+  } as unknown as SdkMessage)
+
+  it('settles a tool_result whose tool_use arrived later (tail-first order)', () => {
+    // Tail-first replay applies the NEWEST chunk first, so a result can land
+    // before its tool_use: the status branch skips a result with no seeded
+    // entry, and the later (prepended) tool_use then seeds 'running' with no
+    // future result to flip it — a card that spins forever.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r-1', 'tu-1') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse('a-1', 'tu-1') })
+    expect(state.mirror.toolStatus.get('tu-1')).toBe('running') // the bug
+
+    state = reduceSessionState(state, { type: 'MARK_TAIL_FIRST_APPLIED' })
+    state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
+    expect(state.mirror.toolStatus.get('tu-1')).toBe('success')
+    expect(state.mirror.toolResults.get('tu-1')).toBeDefined()
+  })
+
+  it('settles a subagent record whose result arrived first', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r-2', 'tu-2') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse('a-2', 'tu-2', 'Agent') })
+    expect(state.mirror.activeSubagents.get('tu-2')?.status).toBe('running')
+
+    state = reduceSessionState(state, { type: 'MARK_TAIL_FIRST_APPLIED' })
+    state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
+    expect(state.mirror.activeSubagents.get('tu-2')?.status).toBe('done')
+  })
+
+  it('is a no-op without the marker (a chronological transcript never pays for it)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse('a-3', 'tu-3') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r-3', 'tu-3') })
+    const before = state
+    // No MARK: the settle must be a pure identity return, so an ordinary
+    // reconnect (which always ends in a replay-done) pays no scan.
+    state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
+    expect(state).toBe(before)
+    expect(state.mirror.toolStatus.get('tu-3')).toBe('success')
+  })
+
+  it('clears the marker after settling, so a later replay pays nothing', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r-4', 'tu-4') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse('a-4', 'tu-4') })
+    state = reduceSessionState(state, { type: 'MARK_TAIL_FIRST_APPLIED' })
+    state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
+    expect(state.mirror.tailFirstUnsettled).toBe(false)
+
+    const settled = state
+    state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
+    expect(state).toBe(settled)
+  })
+})
+
+describe('ADOPT_CURSOR', () => {
+  function userMsg(uuid: string, content: string): SdkMessage {
+    return { type: 'user', uuid, message: { role: 'user', content }, parent_tool_use_id: null } as unknown as SdkMessage
+  }
+  function assistantMsg(uuid: string, text: string): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid,
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+      parent_tool_use_id: null,
+    } as unknown as SdkMessage
+  }
+
+  it('adopts the newest disk-stable message as the cursor when none is set', () => {
+    // A store that cold-loads rows without a cursor (an IDB prepend into an
+    // empty store, a v2 cache that lost the field) otherwise looks like a
+    // NO-CACHE client: every reconnect re-sends the full ring, and — with
+    // tail-first replay — the client would advertise a precondition it does
+    // not meet.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, {
+      type: 'PREPEND_MESSAGES',
+      messages: [assistantMsg('a-1', 'x'), assistantMsg('a-2', 'y')],
+    })
+    expect(state.mirror.lastMessageUuid).toBeNull()
+
+    state = reduceSessionState(state, { type: 'ADOPT_CURSOR' })
+    expect(state.mirror.lastMessageUuid).toBe('a-2')
+  })
+
+  it('leaves an existing cursor alone', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('a-1', 'x') })
+    expect(state.mirror.lastMessageUuid).toBe('a-1')
+    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [assistantMsg('a-0', 'older')] })
+    const before = state
+    state = reduceSessionState(state, { type: 'ADOPT_CURSOR' })
+    expect(state).toBe(before)
+  })
+
+  it('never adopts a server-minted prompt uuid', () => {
+    // A top-level prompt's uuid is minted server-side at send() time and does
+    // not exist on disk or in the ring, so it cannot anchor an incremental
+    // replay — adopting it would trade a full replay for a full replay.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, {
+      type: 'PREPEND_MESSAGES',
+      messages: [userMsg('prompt-1', 'hello')],
+    })
+    state = reduceSessionState(state, { type: 'ADOPT_CURSOR' })
+    expect(state.mirror.lastMessageUuid).toBeNull()
+  })
+})
+
 describe('reducer: front-trim memory bound', () => {
   // Mirror the reducer's constants (kept module-private there).
   const CAP = 1000

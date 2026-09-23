@@ -354,6 +354,15 @@ export class SessionStore {
    *  (or been skipped for a cache-less session). Mirrored into SessionSnapshot
    *  as `hydrateReady` so React consumers can gate subscriptions on it. */
   private hydrateReady = false
+  /** Set once the async IDB open + scan + cold-load has settled (or was
+   *  skipped). Mirrored into the snapshot as `idbReady` so React consumers can
+   *  gate on it: a cold-load can PREPEND rows into an empty store, which flips
+   *  the client's cache declaration (and with it whether tail-first replay is
+   *  legal) and can race a tail-first burst's backfill chunks — a page that
+   *  lands mid-drain is older than the chunks still arriving, and prepends
+   *  land at the front, inverting the transcript. Waiting for the IDB state to
+   *  settle before subscribing removes the race by construction. */
+  private idbSettled = false
   /** Resolves when the deferred localStorage hydrate has finished (or was
    *  skipped). Mirrors `hydrateReady` as a Promise for tests and async callers
    *  that construct a store and then read its hydrated state. */
@@ -448,7 +457,14 @@ export class SessionStore {
     // Kick off async IDB hydration (open + scan + cold-load). Does not block
     // construction — the LS tail is painted via the microtask above. IDB
     // supersedes it with a fuller recent window when ready.
-    this.idbReady = this.initIdb()
+    this.idbReady = this.initIdb().finally(() => {
+      // Publish the settled state: useChatStream's subscribe gate waits for
+      // it (see idbSettled), so the snapshot MUST change or that gate never
+      // opens. Same reasoning as the hydrateReady flip below.
+      this.idbSettled = true
+      this.snapshot = this.buildSnapshot(this.state)
+      this.emit()
+    })
   }
 
   /** Restore the localStorage cache (v2/v3) into the store, off the render
@@ -498,6 +514,12 @@ export class SessionStore {
           ...rebuilt,
           mirror: settleStaleLiveSubagents(rebuilt.mirror),
         })
+        // The cache can hold rows without a cursor (a v2 shape, a truncated
+        // write). Derive it here rather than trusting the persisted field:
+        // without a cursor the client looks cache-less to the server — full
+        // replays on every reconnect, and a tail-first opt-in it must not
+        // make (see ADOPT_CURSOR).
+        this.state = reduceSessionState(this.state, { type: 'ADOPT_CURSOR' })
       }
       // No cache (or empty): leave the empty state as-is — replayReady stays
       // false so the skeleton shows until the WS replay lands.
@@ -596,8 +618,22 @@ export class SessionStore {
           }
           if (msgs && msgs.length > 0) {
             // PREPEND_MESSAGES dedups by uuid against the in-memory LS tail,
-            // so any residual overlap doesn't duplicate.
-            this.dispatch({ type: 'PREPEND_MESSAGES', messages: msgs })
+            // so any residual overlap doesn't duplicate. It deliberately does
+            // NOT touch the cursor (prepends are OLDER than what's on screen)
+            // — but when the store was EMPTY there is nothing newer, so the
+            // rows just loaded are the whole transcript and must anchor the
+            // next resume (see ADOPT_CURSOR).
+            // One publish for both: the prepend, then the cursor adoption the
+            // prepend itself cannot do (prepends are OLDER than what is on
+            // screen, so they must not move the cursor — but an EMPTY store
+            // has nothing newer, so these rows are the whole transcript and
+            // must anchor the next resume; see ADOPT_CURSOR). dispatchMany
+            // folds them into a single snapshot+emit, keeping the cold-load's
+            // one-render promise.
+            this.dispatchMany([
+              { type: 'PREPEND_MESSAGES', messages: msgs },
+              { type: 'ADOPT_CURSOR' },
+            ])
             // Cold-load is hydrate, not loadOlder: after the additive index
             // rebuild, drop stranded background/pending subagents the same way
             // LS hydrate does. `running` is left alone (see the helper — a
@@ -1074,6 +1110,7 @@ export class SessionStore {
     return {
       replayReady: mirror.replayReady,
       hydrateReady: this.hydrateReady,
+      idbReady: this.idbSettled,
       items,
       messages,
       streamingContent: mirror.liveTurn ? joinLiveTurnSegments(mirror.liveTurn.flushedText) : null,

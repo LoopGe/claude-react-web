@@ -417,6 +417,16 @@ export interface LiveTurnState {
  *  double-mount. */
 export interface ServerMirror {
   replayReady: boolean
+  /** Set when a tail-first replay burst applies frames OUT OF ORDER (the
+   *  newest chunk first), and cleared once the results have been re-applied.
+   *  A tail-first burst can land a tool_result before the tool_use it belongs
+   *  to, so the result is skipped and the later tool_use seeds `running` with
+   *  nothing left to flip it. The marker lives HERE — in the store, which
+   *  outlives the effect closure that applied the burst — because the burst
+   *  can be interrupted (socket drop) and finished by a later, ordinary
+   *  replay whose buffer is non-empty: a closure-local check would miss
+   *  exactly that case. See SETTLE_RESULT_INDEXES. */
+  tailFirstUnsettled: boolean
   items: TranscriptItem[]
   messages: SdkMessage[]
   eventCount: number
@@ -564,6 +574,33 @@ export type SessionAction =
    *  a chunk boundary. */
   | { type: 'PREPEND_MESSAGES'; messages: SdkMessage[]; trustUuidDedup?: boolean }
   | { type: 'MESSAGE'; message: SdkMessage }
+  /** Adopt the newest DISK-STABLE message as the reconnect cursor when the
+   *  transcript has rows but no cursor. Rows can land without one — an IDB
+   *  cold-load prepends into an empty store, and a v2 cache may carry a null
+   *  `lastMessageUuid` — and the cursor is what tells the server "everything
+   *  up to here is on screen" (incremental replay instead of a full one, and
+   *  the precondition tail-first replay is gated on). No-op when a cursor is
+   *  already set or no disk-stable message is present: a server-minted
+   *  top-level prompt uuid is deliberately NOT adopted, since it exists in
+   *  neither the ring nor the transcript and would miss every anchor lookup. */
+  | { type: 'ADOPT_CURSOR' }
+  /** Re-apply every RESULT-bearing message through the index updater, once a
+   *  tail-first replay burst is complete. The burst applies the newest chunk
+   *  first, so a tool_result can land before the tool_use it belongs to: the
+   *  status branch skips a result with no seeded entry, and the subagent /
+   *  workflow / skill merges skip a record that does not exist yet. The later
+   *  (prepended) tool_use then seeds `running` with no future result to flip
+   *  it — a card that spins forever. By the terminator the chronological
+   *  transcript is whole, so re-running the results settles every such pair.
+   *  Idempotent, and deliberately narrow: only result-bearing messages are
+   *  re-applied, never the tool_use ones, so a status set out-of-band (a plan
+   *  approved via PERMISSION_RESOLVED with no tool_result) is never reset. */
+  | { type: 'SETTLE_RESULT_INDEXES' }
+  /** Record that a tail-first replay burst just applied its newest chunk
+   *  first, so the transcript may hold results whose tool_use has not been
+   *  applied yet (see ServerMirror.tailFirstUnsettled). Dispatched by the
+   *  client right after the tail frame's REPLAY_REPLACE. */
+  | { type: 'MARK_TAIL_FIRST_APPLIED' }
   | { type: 'OPTIMISTIC_USER_MESSAGE'; message: SdkMessage }
   /** The REST send endpoint accepted an optimistic user message and returned
    *  the server-side uuid. Clears the local sending spinner immediately while
@@ -636,6 +673,12 @@ export type SessionAction =
 
 export interface SessionSnapshot {
   replayReady: boolean
+  /** True once the store's async IDB open + scan + cold-load has settled (or
+   *  was skipped). The subscribe path waits for it: a cold-load can prepend
+   *  rows into an empty store — flipping this client's cache declaration and
+   *  racing a tail-first burst's backfill chunks — so the WS subscribe must
+   *  not be issued while the store's cache state is still unknown. */
+  idbReady: boolean
   /** True once the store's synchronous-constructor localStorage hydrate has
    *  completed (or was skipped because there was no cache). The constructor
    *  now returns immediately with an empty state and hydrates in a microtask,
@@ -705,6 +748,7 @@ export interface SessionSnapshot {
 export function createInitialServerMirror(): ServerMirror {
   return {
     replayReady: false,
+    tailFirstUnsettled: false,
     items: [],
     messages: [],
     eventCount: 0,
