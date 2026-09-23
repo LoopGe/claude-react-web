@@ -1860,21 +1860,59 @@
    compares against — so threshold and max-height cannot drift apart; this
    block owns only the presentation: the clipped box, the bottom fade, and
    the toggle chrome. */
+.fold-content {
+  /* The alpha-only gradient (never a colour gradient: one rule reads
+     correctly over text, code blocks and images on EVERY theme — no
+     per-theme override, no hex to keep in sync; `black` is the opaque end
+     of the ramp, never painted) is defined ONCE here and consumed by the
+     two states below.
+     --fold-fade-height is the ramp height as a custom property so the
+     gradient AND FoldableBody's inline below-edge mask-size endpoint
+     ('calc(100% + var(--fold-fade-height))' — one ramp height past the box
+     edge) share a single editable source.
+     The OPEN state deliberately carries NEITHER mask nor overflow: an
+     unmasked box lets the :focus-visible ring of its last descendant paint
+     2px past the bubble edge (a mask's painting area is the border box —
+     paint outside it is cut, which is the same mechanism that makes
+     box-shadow vanish under a mask), and the non-folding majority of user
+     bubbles skips the mask compositing pass entirely. The fold cut and the
+     fade exist only where content is actually being cut. */
+  --fold-fade-height: 44px;
+  --fold-mask-image: linear-gradient(to bottom, black calc(100% - var(--fold-fade-height)), transparent);
+}
 .fold-content.fold-clamped {
   /* clip (not hidden): an overflow:hidden box stays PROGRAMMATICALLY
      scrollable — Tab-focusing a descendant below the 240px cut scrolls the
      inner box while the fixed mask stays put, desyncing the visible slice
      with no way to scroll back. clip gives the same paint cut without
      allowing scroll anchoring. hidden first as the pre-clip-engine
-     fallback (identical to the old behaviour). */
+     fallback (identical to the old behaviour).
+     mask-size 100% is box-RELATIVE: the ramp sits on the last 44px of
+     whatever the box's current height is, so during FoldableBody's collapse
+     tween (which pins an explicit, shrinking height) the fade tracks the
+     moving edge with no animation of its own. */
   overflow: hidden;
   overflow: clip;
-  /* Mask (not a colour gradient): alpha-only, so one rule reads correctly
-     over text, code blocks and images on EVERY theme/skin — no per-theme
-     override, no hex to keep in sync. `black` is the opaque end of the
-     alpha ramp, never painted. */
-  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 44px), transparent);
-  mask-image: linear-gradient(to bottom, black calc(100% - 44px), transparent);
+  -webkit-mask-image: var(--fold-mask-image);
+  mask-image: var(--fold-mask-image);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+}
+.fold-content.fold-tweening {
+  /* The fade during the height tween. Applied ONLY while a tween is in
+     flight (FoldableBody's armTween adds this class, landRest removes it):
+     the mask-image comes from the variable above, the box-relative
+     mask-size ENDPOINTS come inline from the tween — committed under the
+     tween's armed transition, because the class flip alone would commit
+     the size change under `transition: none` and snap the band instead of
+     sliding it along the edge.
+     will-change matches the sibling tween cores
+     (.animated-collapse.animating, useAutoHeightTransition): promote the
+     box for the 240ms so a several-thousand-pixel body doesn't pay full
+     layout+paint per frame unpromoted. */
+  -webkit-mask-image: var(--fold-mask-image);
+  mask-image: var(--fold-mask-image);
+  will-change: height;
 }
 .fold-toggle-row {
   display: flex;
@@ -1906,6 +1944,8 @@
   transform: rotate(180deg);
 }
 @media (prefers-reduced-motion: reduce) {
+  /* Reduced motion for the fold itself is handled in JS (the tween bails
+     and lands the rest state directly); this only covers the chevron. */
   .fold-toggle-chev { transition: none; }
 }
 
