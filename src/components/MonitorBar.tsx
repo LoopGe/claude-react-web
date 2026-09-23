@@ -78,11 +78,12 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing }: Props
   // very first render, before any non-clearing render populated it). If both
   // are empty the bar was hidden when the clear started — nothing to fade.
   const effectiveList = clearing ? (frozenRef.current ?? monitors) : monitors
-  // Keep the bar mounted through its exit keyframe (bottom-card-out) instead
-  // of snapping off when the last monitor stops: usePresenceValue freezes the
-  // last visible list for the window (and snaps under reduced motion). The
-  // default 180ms outlasts the 120ms CSS exit so React can't unmount mid-tween.
-  const presence = usePresenceValue(effectiveList.length > 0 ? effectiveList : null)
+  // Keep the bar mounted through its exit (fast fade/sink on the card plus a
+  // delayed collapse on the shared wrapper) instead of snapping off when the
+  // last monitor stops: usePresenceValue freezes the last visible list for the
+  // window (and snaps under reduced motion). 280ms covers the stagger (90ms
+  // fade lead + 160ms collapse) so React can't unmount mid-tween.
+  const presence = usePresenceValue(effectiveList.length > 0 ? effectiveList : null, 280)
   const renderList = presence.value
 
   // Latch the /clear blur until the bar is gone (see TodoChecklist): keeps the
@@ -97,27 +98,33 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing }: Props
 
   return (
     <div
-      className={`monitor-bar${clearBlur ? ' monitor-bar-clearing' : ''}${presence.isExiting ? ' monitor-bar-exiting' : ''}`}
-      role="status"
-      aria-label="Running monitors"
+      className={`bottom-card-collapse${presence.isExiting ? ' bottom-card-collapse-exiting' : ''}`}
     >
-      <div className="monitor-bar-header">
-        <span className="monitor-bar-title">Monitors</span>
-        <span className="monitor-bar-count">{renderList.length}</span>
+      <div className="bottom-card-collapse-inner">
+        <div
+          className={`monitor-bar${clearBlur ? ' monitor-bar-clearing' : ''}${presence.isExiting ? ' monitor-bar-exiting' : ''}`}
+          role="status"
+          aria-label="Running monitors"
+        >
+          <div className="monitor-bar-header">
+            <span className="monitor-bar-title">Monitors</span>
+            <span className="monitor-bar-count">{renderList.length}</span>
+          </div>
+          <ul className="monitor-bar-list">
+            {renderList.map((m) => (
+              <li key={m.key} className="monitor-item">
+                <span className="monitor-icon" aria-hidden>
+                  <IconCircleDot size={12} />
+                </span>
+                <span className="monitor-text">
+                  <span className="monitor-text-shimmer">{m.description}</span>
+                </span>
+                {m.persistent && <span className="tool-chip tool-chip-accent">persistent</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
-      <ul className="monitor-bar-list">
-        {renderList.map((m) => (
-          <li key={m.key} className="monitor-item">
-            <span className="monitor-icon" aria-hidden>
-              <IconCircleDot size={12} />
-            </span>
-            <span className="monitor-text">
-              <span className="monitor-text-shimmer">{m.description}</span>
-            </span>
-            {m.persistent && <span className="tool-chip tool-chip-accent">persistent</span>}
-          </li>
-        ))}
-      </ul>
     </div>
   )
 })

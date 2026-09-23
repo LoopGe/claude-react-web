@@ -228,9 +228,9 @@ describe('TodoChecklist — /clear blur-fade', () => {
 })
 
 // Exit animation: when the last task clears (or the all-done + idle rule hides
-// the panel) it must sink out (bottom-card-out) instead of snapping off.
-// usePresenceValue holds it mounted for the exit window and freezes the last
-// visible list.
+// the panel) it must sink out instead of snapping off. usePresenceValue holds
+// it mounted for the exit window (fast fade/sink + a delayed collapse on the
+// shared wrapper) and freezes the last visible list.
 describe('TodoChecklist — exit animation', () => {
   it('keeps the panel mounted through its exit, then unmounts it', () => {
     vi.useFakeTimers()

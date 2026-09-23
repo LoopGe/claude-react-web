@@ -93,9 +93,9 @@ export const WorkingBubble = memo(function WorkingBubble({
    *  collapses to a quiet pill with no "Working" label or animated dots. */
   active?: boolean
   /** True while the host (Chat) holds the bubble mounted through its exit
-   *  keyframe (`bottom-card-out`) after the turn ends. Swaps the pulse +
-   *  entrance for the sink-down exit so the bubble leaves the same way the
-   *  checklist / monitor cards do. */
+   *  transition after the turn ends. Swaps the pulse + entrance for the
+   *  sink-down exit so the bubble leaves the same way the checklist / monitor
+   *  cards do. */
   exiting?: boolean
 }) {
   // Snapshot the visual inputs so the sink-out exit keeps rendering the

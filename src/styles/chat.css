@@ -2261,40 +2261,10 @@
    still samples the messages underneath. */
 .working-bubble-slot {
   /* Empty slot contributes no height; when the portal mounts a child the
-     child's own margins participate in the stack. `contents` so the collapse
-     wrapper (below) is the flex item (matches the sibling cards' role). */
+     child's own margins participate in the stack. `contents` so the shared
+     `.bottom-card-collapse` wrapper (messages.css) is the flex item (matches
+     the sibling cards' role). */
   display: contents;
-}
-/* Collapsing wrapper for the WorkingBubble. The card fades/sinks via its own
-   transition while this grid row collapses 1fr→0fr, so the space it held
-   closes in step. Without it the card's box (opacity/transform don't affect
-   layout) stayed as an invisible placeholder for the whole exit window and
-   then snapped away when React unmounted it — and since MessageList reserves
-   the overlay height as a Virtuoso footer spacer, that one-frame collapse
-   nudged the transcript. */
-.working-bubble-collapse {
-  display: grid;
-  grid-template-rows: 1fr;
-  min-height: 0;
-  /* Same flex role the card had as the direct flex item. */
-  flex: 0 0 auto;
-  /* 90ms delay = the card's 110ms fade is all but done before the row starts
-     moving, so the squash it applies is never visible; then a decelerating
-     ease closes the gap. Total exit = 90 + 160 = 250ms (the presence window
-     in Chat is 280ms, so the node isn't unmounted mid-tween). */
-  transition: grid-template-rows 160ms var(--motion-ease-enter) 90ms;
-}
-.working-bubble-collapse-exiting {
-  grid-template-rows: 0fr;
-}
-.working-bubble-collapse-inner {
-  min-height: 0;
-}
-/* Clip ONLY while collapsing so the row can shrink the card's padding/margin
-   away. A scroll container is a backdrop root (see .chat-bottom-overlay), so
-   keeping `overflow: visible` at rest preserves the card's frosted ::before. */
-.working-bubble-collapse-exiting .working-bubble-collapse-inner {
-  overflow: hidden;
 }
 .working-bar {
   position: relative;
@@ -2317,17 +2287,13 @@
   font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
-  /* The pulse is the ONLY animation here. The rise-in is deliberately a
-     TRANSITION (below), not a keyframe in this list: a one-shot keyframe gets
-     RESTARTED whenever a state class re-declares the shorthand — `-idle` sets
-     `animation: none`, `-exiting` swaps in another keyframe — so the entrance
-     replayed on every turn boundary / mount blip and read as the bubble
-     flickering. A transition can't be "restarted" that way, and if a state
-     flips back mid-flight (a brief blip) it eases back instead of snapping.
-     Enter timing lives here; the @starting-style block supplies the from-state. */
-  transition:
-    opacity var(--motion-duration-moderate) var(--motion-ease-enter),
-    transform var(--motion-duration-moderate) var(--motion-ease-enter);
+  /* The pulse is the ONLY animation on the bubble. The rise-in / sink-out are
+     mount-only / state transitions shared with the other bottom-overlay cards
+     (`.todo-panel, .monitor-bar, .working-bar` in messages.css) — NOT keyframes
+     in this list, because a one-shot keyframe here gets RESTARTED whenever a
+     state class re-declares the shorthand (`-idle` sets `animation: none`,
+     `-exiting` swaps in another), which replayed the entrance and read as a
+     flicker. */
   animation: working-bubble-pulse 1.8s ease-in-out infinite;
   /* No max-height. There used to be one (120px) paired with the overflow
      clip, but the bar's own content is what has to stay short — a hard clip
@@ -2335,16 +2301,6 @@
      rendered LAST it was the first thing to disappear. Height is now bounded
      at the source: the subagent group is ALWAYS a single constant-height pill
      (SubagentSwarmPill), so no fan-out width can grow the bar. */
-}
-/* Mount-only from-state for the transition above: the bubble is inserted at
-   opacity 0 / nudged down and eases into place. Applies once per insertion —
-   never on a class toggle — so the entrance can't replay. Degrades gracefully
-   (element simply appears) where @starting-style is unsupported. */
-@starting-style {
-  .working-bar {
-    opacity: 0;
-    transform: translateY(var(--motion-distance-sm));
-  }
 }
 /* Static glass plate. Owns fill + blur; never animates. */
 .working-bar::before {
@@ -2535,24 +2491,6 @@
   .working-bar.working-bar-idle {
     animation: none;
   }
-}
-
-/* Exit: sink + fade via the transition. The card fades FAST and slightly
-   longer than the row collapse below starts, so it is already invisible when
-   the shrinking row would clip/squash it (the standard "stagger opacity ahead
-   of height" trick — a concurrent collapse is what read as janky). Out-
-   specifies the base rule so its timing wins. pointer-events off so the
-   sinking bubble's pills can't be clicked. Added only while Chat's
-   useExitPresence holds the bubble mounted; if it's removed mid-flight (a
-   mount blip) the base transition eases the bubble back instead of replaying
-   an entrance. */
-.working-bar.working-bar-exiting {
-  opacity: 0;
-  transform: translateY(6px);
-  pointer-events: none;
-  transition:
-    opacity 110ms var(--motion-ease-exit),
-    transform 110ms var(--motion-ease-exit);
 }
 
 /* ?? Subagent swarm pill ????????????????????????????????????????????????

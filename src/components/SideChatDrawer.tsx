@@ -119,7 +119,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   })
   // Hold the bubble through its exit so it leaves the same way as the main
   // panel's, instead of snapping off when the side turn ends. 280ms covers the
-  // staggered exit (see the .working-bar / .working-bubble-collapse rules).
+  // staggered exit (see the shared bottom-overlay rules in messages.css).
   // Snaps under reduced motion.
   const bubblePresence = useExitPresence(mountBubble, 280)
 
@@ -267,12 +267,11 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           )}
         />
         {bubblePresence.shouldRender && (
-          // Collapse wrapper — see the WorkingBubble portal in Chat: the row
-          // closes as the card fades so no invisible placeholder is left.
+          // Shared collapse wrapper — see the WorkingBubble portal in Chat.
           <div
-            className={`working-bubble-collapse${bubblePresence.isExiting ? ' working-bubble-collapse-exiting' : ''}`}
+            className={`bottom-card-collapse bottom-card-collapse-fixed${bubblePresence.isExiting ? ' bottom-card-collapse-exiting' : ''}`}
           >
-            <div className="working-bubble-collapse-inner">
+            <div className="bottom-card-collapse-inner">
               <WorkingBubble
                 active={session.working}
                 startedAt={session.workingSince}

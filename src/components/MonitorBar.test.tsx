@@ -101,9 +101,10 @@ describe('MonitorBar — /clear blur-fade', () => {
   })
 })
 
-// Exit animation: the last monitor stopping must sink the bar out (bottom-card-out)
-// rather than snap it off. usePresenceValue holds it mounted for the exit
-// window and freezes the last visible list.
+// Exit animation: the last monitor stopping must sink the bar out rather than
+// snap it off. usePresenceValue holds it mounted for the exit window (fast
+// fade/sink + a delayed collapse on the shared wrapper) and freezes the last
+// visible list.
 describe('MonitorBar — exit animation', () => {
   it('keeps the bar mounted through its exit, then unmounts it', () => {
     vi.useFakeTimers()

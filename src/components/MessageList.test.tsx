@@ -349,9 +349,9 @@ describe('WorkingBubble', () => {
   })
 
   it('carries the exiting class only while the host holds it through the exit', () => {
-    // Chat's useExitPresence keeps the bubble mounted for the sink-out
-    // (bottom-card-out) after the mount predicate flips false and flags it
-    // with `exiting`; the class swaps the pulse + entrance for the exit.
+    // Chat's useExitPresence keeps the bubble mounted for the sink-out after
+    // the mount predicate flips false and flags it with `exiting`; the class
+    // swaps the pulse + entrance for the exit transition.
     const { container } = render(<WorkingBubble active />)
     expect(container.querySelector('.working-bar')?.classList.contains('working-bar-exiting')).toBe(false)
 

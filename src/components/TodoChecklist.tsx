@@ -195,11 +195,12 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   // before any non-clearing render populated the ref. If both are null the
   // panel was hidden when the clear started, so there's nothing to fade.
   const effectiveResult = clearing ? (frozenRef.current ?? visibleResult) : visibleResult
-  // Keep the card mounted through its exit keyframe (bottom-card-out) instead
-  // of snapping off when the last task clears: usePresenceValue freezes the
-  // last visible result for the window (and snaps under reduced motion). The
-  // default 180ms outlasts the 120ms CSS exit so React can't unmount mid-tween.
-  const presence = usePresenceValue(effectiveResult)
+  // Keep the card mounted through its exit (fast fade/sink on the card plus a
+  // delayed collapse on the shared wrapper) instead of snapping off when the
+  // last task clears: usePresenceValue freezes the last visible result for the
+  // window (and snaps under reduced motion). 280ms covers the stagger (90ms
+  // fade lead + 160ms collapse) so React can't unmount mid-tween.
+  const presence = usePresenceValue(effectiveResult, 280)
   const renderResult = presence.value
 
   // Latch the /clear blur until the card is gone. `clear-blur-fade` holds
@@ -289,75 +290,81 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
 
   return (
     <div
-      className={`todo-panel${working ? ' todo-panel-working' : ''}${clearBlur ? ' todo-panel-clearing' : ''}${collapsed ? ' todo-panel-collapsed' : ''}${presence.isExiting ? ' todo-panel-exiting' : ''}`}
-      role="status"
-      aria-label="Task checklist"
+      className={`bottom-card-collapse${presence.isExiting ? ' bottom-card-collapse-exiting' : ''}`}
     >
-      <div className="todo-panel-header">
-        <span className="todo-panel-title">{renderResult.source === 'todowrite' ? 'TodoList' : 'TaskList'}</span>
-        <div className="todo-panel-header-right">
-          <button
-            type="button"
-            className={`todo-panel-collapse${collapsed ? '' : ' open'}`}
-            onClick={() => setCollapsed((c) => !c)}
-            title={collapsed ? 'Expand task list' : 'Collapse task list'}
-            aria-expanded={!collapsed}
-            aria-controls="todo-panel-list"
-            aria-label={collapsed ? 'Expand task list' : 'Collapse task list'}
-          >
-            <IconChevronDown size={16} />
-          </button>
-          <span className="todo-panel-count">
-            {doneCount}/{visibleTodos.length}
-          </span>
+      <div className="bottom-card-collapse-inner">
+        <div
+          className={`todo-panel${working ? ' todo-panel-working' : ''}${clearBlur ? ' todo-panel-clearing' : ''}${collapsed ? ' todo-panel-collapsed' : ''}${presence.isExiting ? ' todo-panel-exiting' : ''}`}
+          role="status"
+          aria-label="Task checklist"
+        >
+          <div className="todo-panel-header">
+            <span className="todo-panel-title">{renderResult.source === 'todowrite' ? 'TodoList' : 'TaskList'}</span>
+            <div className="todo-panel-header-right">
+              <button
+                type="button"
+                className={`todo-panel-collapse${collapsed ? '' : ' open'}`}
+                onClick={() => setCollapsed((c) => !c)}
+                title={collapsed ? 'Expand task list' : 'Collapse task list'}
+                aria-expanded={!collapsed}
+                aria-controls="todo-panel-list"
+                aria-label={collapsed ? 'Expand task list' : 'Collapse task list'}
+              >
+                <IconChevronDown size={16} />
+              </button>
+              <span className="todo-panel-count">
+                {doneCount}/{visibleTodos.length}
+              </span>
+            </div>
+          </div>
+          {hiddenVisibleCount > 0 && !undoDismissed && (
+            <div className="todo-panel-undo">
+              <span>Hidden {hiddenVisibleCount} item{hiddenVisibleCount === 1 ? '' : 's'}</span>
+              <button type="button" className="todo-panel-undo-btn" onClick={undoHidden}>
+                <IconRotateCcw size={12} /> Undo
+              </button>
+            </div>
+          )}
+          {/* remeasureWhileClamped: this card lives in .chat-bottom-stack, whose
+              45% height cap lands on the collapse body. The card's own content is
+              left at its intrinsic height (see `.todo-panel .animated-collapse-content`),
+              so the body can be re-pinned to it while the cap holds and come back at
+              full height when the cap lifts. */}
+          <AnimatedCollapse open={!collapsed} animateResize remeasureWhileClamped>
+            <ul ref={setListScroller} id="todo-panel-list" className="todo-panel-list">
+              {visibleTodos.map((t, i) => (
+                <li
+                  key={i}
+                  // --press-ms feeds the long-press progress fill (`.todo-item::after`),
+                  // keeping the CSS animation duration in sync with LONG_PRESS_MS.
+                  style={{ '--press-ms': `${LONG_PRESS_MS}ms` } as React.CSSProperties}
+                  className={`todo-item todo-${t.status}${pressingKey === t.key ? ' todo-item-pressing' : ''}${t.status === 'completed' && (struckKeys.has(t.key) || freshCompletedKeys.has(t.key)) ? ' todo-strike-anim' : ''}`}
+                  onPointerDown={(e) => onItemPointerDown(e, t.key)}
+                  onPointerMove={onItemPointerMove}
+                  onPointerUp={onItemPointerEnd}
+                  onPointerCancel={onItemPointerEnd}
+                  onPointerLeave={onItemPointerEnd}
+                >
+                  <span className="todo-icon" aria-hidden>
+                    {t.status === 'completed' ? (
+                      <IconCheck size={12} />
+                    ) : t.status === 'in_progress' ? (
+                      hc ? <IconCheckboxDot size={12} /> : <IconCircleDot size={12} />
+                    ) : (
+                      hc ? <IconCheckbox size={12} /> : <IconCircle size={12} />
+                    )}
+                  </span>
+                  <span className="todo-text">
+                    <span className="todo-text-shimmer">
+                      {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </AnimatedCollapse>
         </div>
       </div>
-      {hiddenVisibleCount > 0 && !undoDismissed && (
-        <div className="todo-panel-undo">
-          <span>Hidden {hiddenVisibleCount} item{hiddenVisibleCount === 1 ? '' : 's'}</span>
-          <button type="button" className="todo-panel-undo-btn" onClick={undoHidden}>
-            <IconRotateCcw size={12} /> Undo
-          </button>
-        </div>
-      )}
-      {/* remeasureWhileClamped: this card lives in .chat-bottom-stack, whose
-          45% height cap lands on the collapse body. The card's own content is
-          left at its intrinsic height (see `.todo-panel .animated-collapse-content`),
-          so the body can be re-pinned to it while the cap holds and come back at
-          full height when the cap lifts. */}
-      <AnimatedCollapse open={!collapsed} animateResize remeasureWhileClamped>
-        <ul ref={setListScroller} id="todo-panel-list" className="todo-panel-list">
-          {visibleTodos.map((t, i) => (
-            <li
-              key={i}
-              // --press-ms feeds the long-press progress fill (`.todo-item::after`),
-              // keeping the CSS animation duration in sync with LONG_PRESS_MS.
-              style={{ '--press-ms': `${LONG_PRESS_MS}ms` } as React.CSSProperties}
-              className={`todo-item todo-${t.status}${pressingKey === t.key ? ' todo-item-pressing' : ''}${t.status === 'completed' && (struckKeys.has(t.key) || freshCompletedKeys.has(t.key)) ? ' todo-strike-anim' : ''}`}
-              onPointerDown={(e) => onItemPointerDown(e, t.key)}
-              onPointerMove={onItemPointerMove}
-              onPointerUp={onItemPointerEnd}
-              onPointerCancel={onItemPointerEnd}
-              onPointerLeave={onItemPointerEnd}
-            >
-              <span className="todo-icon" aria-hidden>
-                {t.status === 'completed' ? (
-                  <IconCheck size={12} />
-                ) : t.status === 'in_progress' ? (
-                  hc ? <IconCheckboxDot size={12} /> : <IconCircleDot size={12} />
-                ) : (
-                  hc ? <IconCheckbox size={12} /> : <IconCircle size={12} />
-                )}
-              </span>
-              <span className="todo-text">
-                <span className="todo-text-shimmer">
-                  {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}
-                </span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      </AnimatedCollapse>
     </div>
   )
 })

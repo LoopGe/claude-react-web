@@ -2381,14 +2381,15 @@ export const Chat = memo(function Chat({
       {workingSlot &&
         createPortal(
           workingBubblePresence.shouldRender ? (
-            // Collapse wrapper: the card fades/sinks (its own transition) while
-            // this grid row collapses 1fr→0fr, so the space it held closes in
-            // step instead of lingering as an invisible placeholder until the
-            // node unmounts (which made the reserved footer spacer snap).
+            // Shared collapse wrapper (see `.bottom-card-collapse` in
+            // messages.css): the card fades/sinks while the row collapses, so
+            // the space it held closes in step instead of lingering as an
+            // invisible placeholder until the node unmounts (which made the
+            // reserved footer spacer snap). `-fixed` = never shrink.
             <div
-              className={`working-bubble-collapse${workingBubblePresence.isExiting ? ' working-bubble-collapse-exiting' : ''}`}
+              className={`bottom-card-collapse bottom-card-collapse-fixed${workingBubblePresence.isExiting ? ' bottom-card-collapse-exiting' : ''}`}
             >
-              <div className="working-bubble-collapse-inner">
+              <div className="bottom-card-collapse-inner">
                 <WorkingBubble
                   active={turnActive}
                   startedAt={turnStartedAt}
