@@ -1,25 +1,5 @@
-import {
-  type AnimationEvent as ReactAnimationEvent,
-  type ReactNode,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from 'react'
-
-/** How long past the CSS reveal before the `-entering` class is force-cleared
- *  as a fallback. Slight buffer so the precise `animationend` path normally
- *  wins; the fallback only fires when the animation is suppressed (e.g.
- *  prefers-reduced-motion) or never delivers its end event. */
-const FALLBACK_MS = 160
-
-/** Read `--motion-duration-moderate` (the reveal's duration) from the theme
- *  so the fallback cleanup tracks CSS edits instead of hardcoding 240ms. */
-const revealDurationMs = () => {
-  const v = getComputedStyle(document.documentElement).getPropertyValue('--motion-duration-moderate')
-  const n = parseFloat(v)
-  return Number.isFinite(n) ? n : 240
-}
+import type { ReactNode } from 'react'
+import { useRevealClass } from '../hooks/useRevealClass'
 
 /**
  * One-shot grid-clip entrance wrapper (see `.grid-clip-enter` in
@@ -34,43 +14,11 @@ const revealDurationMs = () => {
  * scroll-back remount, where the row is already present at mount and would
  * otherwise replay the 0fr→1fr fade every time the transcript scrolls
  * through the card (mirrors ToolResultSection's `entering` prop pattern).
- *
- * The `-entering` class is stripped on `animationend` (precise, no timer to
- * desynchronize from `--motion-duration-moderate`), with a timeout fallback
- * that clears it even when the animation never runs — e.g. `prefers-reduced-
- * motion` sets `animation: none`, so `animationend` never fires and the
- * class (and its reveal-only `overflow:hidden`) would otherwise persist,
- * permanently clipping the contained button's focus ring.
+ * The class lifecycle (latch, animationend strip, fallback) lives in
+ * useRevealClass.
  */
 export function GridClipEnter({ entering, children }: { entering: boolean; children: ReactNode }) {
-  // Seed from `entering` (like ToolResultSection) so a row that mounts AFTER
-  // the parent's arrival gate already armed — entering true at first render —
-  // shows the reveal from its very first frame instead of missing it. The
-  // transition below then still catches the enter-after-mount ordering.
-  const [revealing, setRevealing] = useState(entering)
-  const prevEnteringRef = useRef(entering)
-
-  useLayoutEffect(() => {
-    if (entering && !prevEnteringRef.current) setRevealing(true)
-    prevEnteringRef.current = entering
-  }, [entering])
-
-  // Fallback cleanup: once revealing, schedule clearing the class after the
-  // reveal duration + buffer. On the normal path `animationend` clears it
-  // first and this effect's cleanup cancels the timer, so there is no extra
-  // setState; the timer only fires when the animation is suppressed and never
-  // delivers an end event.
-  useEffect(() => {
-    if (!revealing) return
-    const timer = window.setTimeout(() => setRevealing(false), revealDurationMs() + FALLBACK_MS)
-    return () => window.clearTimeout(timer)
-  }, [revealing])
-
-  const handleAnimationEnd = (event: ReactAnimationEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget && event.animationName === 'grid-clip-reveal') {
-      setRevealing(false)
-    }
-  }
+  const { revealing, handleAnimationEnd } = useRevealClass(entering, 'grid-clip-reveal')
 
   return (
     <div

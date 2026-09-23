@@ -11,7 +11,7 @@
 //   ToolStatusBadge — running/success/error pill, also used standalone
 //                     by some tool views
 
-import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState, type AnimationEvent, type ReactNode } from 'react'
+import { Fragment, memo, useEffect, useRef, type ReactNode } from 'react'
 import {
   IconAlertCircle,
   IconArrowDown,
@@ -22,6 +22,7 @@ import {
 import { AnimatedDetails } from './AnimatedCollapse'
 import { useToolResult, useResolvedToolStatus, useToolStatus } from '../hooks/usePlanStatus'
 import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
+import { useRevealClass } from '../hooks/useRevealClass'
 import { useReopenQuestion } from '../hooks/useReopenQuestion'
 import { useCopy } from '../hooks/useCopy'
 import type { ToolResultEntry, ToolStatus } from '../session-store/types'
@@ -479,26 +480,11 @@ export const ToolCard = memo(function ToolCard({
  *  error tint can't drift apart across the three surfaces.
  *
  *  `entering` (from useEnterOnArrival) arms a one-shot fade/rise/expand. The
- *  class is latched in local state so it persists for the full CSS animation
- *  even when the parent re-renders mid-fade (the status badge flips to "done"
- *  in the same frame the result lands), then cleared on `animationend` — the
- *  exact
- *  end of the CSS animation, so there's no JS duration to keep in sync with
- *  `--motion-duration-moderate`. */
+ *  class lifecycle — latch across the re-render that lands in the same frame
+ *  the status badge flips, `animationend` strip, reduced-motion fallback —
+ *  is the shared useRevealClass latch. */
 export const ToolResultSection = memo(function ToolResultSection({ result, entering = false, searchQuery, activeMatchIdx }: { result: ToolResultEntry; entering?: boolean; searchQuery?: string; activeMatchIdx?: number }) {
-  const [revealing, setRevealing] = useState(entering)
-  const prevEnteringRef = useRef(entering)
-
-  useLayoutEffect(() => {
-    if (entering && !prevEnteringRef.current) setRevealing(true)
-    prevEnteringRef.current = entering
-  }, [entering])
-
-  const handleAnimationEnd = (event: AnimationEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget && event.animationName === 'tool-result-enter') {
-      setRevealing(false)
-    }
-  }
+  const { revealing, handleAnimationEnd } = useRevealClass(entering, 'tool-result-enter')
 
   return (
     <div

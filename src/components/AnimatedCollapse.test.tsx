@@ -1,47 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, render } from '@testing-library/react'
 import { AnimatedCollapse } from './AnimatedCollapse'
-
-// ResizeObserver isn't available in jsdom. Controllable stub — captures each
-// callback by observed element so a test can fire it on demand via
-// fireResize(el). Never auto-fires, so the open/close fold tests behave
-// exactly as they would under a no-op stub.
-const roObserved = new Map<Element, Array<() => void>>()
-function fireResize(el: Element) {
-  for (const cb of roObserved.get(el) ?? []) cb()
-}
+import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../test/resize-observer-stub'
 
 beforeEach(() => {
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
-  vi.stubGlobal(
-    'ResizeObserver',
-    class {
-      constructor(private cb: () => void) {}
-      observe(el: Element) {
-        const list = roObserved.get(el) ?? []
-        list.push(this.cb)
-        roObserved.set(el, list)
-      }
-      unobserve(el: Element) {
-        const list = roObserved.get(el)
-        if (!list) return
-        const i = list.indexOf(this.cb)
-        if (i >= 0) list.splice(i, 1)
-        if (list.length === 0) roObserved.delete(el)
-      }
-      disconnect() {
-        for (const [el, list] of Array.from(roObserved)) {
-          const i = list.indexOf(this.cb)
-          if (i >= 0) list.splice(i, 1)
-          if (list.length === 0) roObserved.delete(el)
-        }
-      }
-    },
-  )
+  stubResizeObserver()
 })
 
 afterEach(() => {
-  roObserved.clear()
+  clearResizeObserverStub()
   vi.restoreAllMocks()
   vi.useRealTimers()
 })
@@ -164,5 +132,85 @@ describe('AnimatedCollapse — intrinsic content growth while open', () => {
     expect(body.style.height).toBe('100px')
     expect(body.classList.contains('animating')).toBe(false)
     expect(body.style.transition).toBe('')
+  })
+
+  it('follows continuous growth exactly instead of tweening to a stale target', () => {
+    // Regression: an inner animation (a nested collapse, a grid-rows reveal)
+    // feeds the ResizeObserver EVERY FRAME. The second observation used to be
+    // swallowed by the in-flight guard, so the body kept tweening toward the
+    // first frame's (stale) height and only snapped to the truth when
+    // finishOpen re-measured at the end — "frozen while the inner card
+    // shrinks, then jumps". Continuous observations must follow exactly.
+    vi.useFakeTimers()
+    const { container } = render(
+      <AnimatedCollapse open animateResize>
+        <ul>
+          <li>A</li>
+        </ul>
+      </AnimatedCollapse>,
+    )
+    const body = container.querySelector('.animated-collapse') as HTMLElement
+    const content = container.querySelector('.animated-collapse-content') as HTMLElement
+    mockRectHeight(body, 60)
+    mockRectHeight(content, 100)
+    // jsdom reports offsetHeight 0, which reads as "ancestor clamped the body"
+    // once a nonzero height is pinned — give the body its mocked rendered
+    // height for the clamp probe (real browsers report the laid-out box).
+    vi.spyOn(body, 'offsetHeight', 'get').mockReturnValue(60)
+
+    // Fire 1 — isolated → the discrete-jump tween starts.
+    act(() => fireResize(content))
+    expect(body.classList.contains('animating')).toBe(true)
+
+    // Fire 2 one frame later (same tick = well inside the coalesce window) —
+    // the continuous sequence takes over: cancel the tween, follow exactly.
+    mockRectHeight(content, 140)
+    act(() => fireResize(content))
+    expect(body.style.height).toBe('140px')
+    expect(body.classList.contains('animating')).toBe(false)
+    expect(body.style.transition).toBe('none')
+
+    // Nothing pending — no delayed re-measure snap on top.
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+    expect(body.style.height).toBe('140px')
+  })
+
+  it('never tears down an in-flight open/close fold for a resize observation', () => {
+    // The fold must keep playing even with animateResize on — the guard now
+    // distinguishes fold (protected) from resize tween (replaceable).
+    vi.useFakeTimers()
+    const { container, rerender } = render(
+      <AnimatedCollapse open={false} animateResize unmountOnExit={false}>
+        <ul>
+          <li>A</li>
+        </ul>
+      </AnimatedCollapse>,
+    )
+    const body = container.querySelector('.animated-collapse') as HTMLElement
+    const content = container.querySelector('.animated-collapse-content') as HTMLElement
+    mockRectHeight(content, 100)
+
+    rerender(
+      <AnimatedCollapse open animateResize unmountOnExit={false}>
+        <ul>
+          <li>A</li>
+        </ul>
+      </AnimatedCollapse>,
+    )
+    expect(body.classList.contains('animating')).toBe(true)
+    expect(body.style.height).toBe('0px')
+
+    act(() => fireResize(content))
+    // Still folding — the observation must not snap or retarget it.
+    expect(body.classList.contains('animating')).toBe(true)
+    expect(body.style.height).toBe('0px')
+
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+    expect(body.style.height).toBe('100px')
+    expect(body.classList.contains('animating')).toBe(false)
   })
 })

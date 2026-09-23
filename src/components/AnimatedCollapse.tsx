@@ -16,6 +16,14 @@ const TRANSITION = [
   'opacity var(--motion-duration-fast) var(--motion-ease-standard)',
 ].join(', ')
 
+/** Two resize observations closer together than this are ONE continuous
+ *  layout run — an inner animation (a nested collapse, a grid-rows reveal)
+ *  feeding the observer every frame — and are followed exactly (snap per
+ *  observation, so the body is never more than a frame behind the content).
+ *  An observation isolated past the window is a discrete jump (a card
+ *  mounting) and gets the animateResize tween instead. */
+const RESIZE_COALESCE_MS = 80
+
 /** What the collapse should settle the body's height on, or null when the
  *  measurement must not be adopted.
  *
@@ -108,6 +116,18 @@ export function AnimatedCollapse({
   const lastHeightRef = useRef(0)
   const cleanupRef = useRef<(() => void) | null>(null)
   const animatingRef = useRef(false)
+  /** Which kind of animation `animatingRef` is currently running — an
+   *  open/close fold (protected from resize observations, which would tear
+   *  it down and make every fold instant) or a resize tween (replaceable:
+   *  cancel-and-replace is the animateResize contract). Only read while
+   *  `animatingRef` is true. */
+  const animKindRef = useRef<'fold' | 'resize'>('fold')
+  /** Timestamp of the last non-clamped resize observation, for the
+   *  continuous-vs-discrete coalesce (see RESIZE_COALESCE_MS). Seeded at
+   *  -Infinity so the FIRST observation is always discrete — a clock near
+   *  zero (fresh page, faked timers at their epoch) must not read as
+   *  "continuous with a fire that never happened". */
+  const lastResizeAtRef = useRef(-Infinity)
   const initiallyOpenRef = useRef(open)
 
   const cleanupAnimation = useCallback(() => {
@@ -179,7 +199,7 @@ export function AnimatedCollapse({
     onExitComplete?.()
   }, [hideClosedBody, onExitComplete, unmountOnExit])
 
-  const animateHeight = useCallback((from: number, to: number, nextOpen: boolean, fade: boolean) => {
+  const animateHeight = useCallback((from: number, to: number, nextOpen: boolean, fade: boolean, kind: 'fold' | 'resize' = 'fold') => {
     const body = bodyRef.current
     if (!body) return
 
@@ -200,6 +220,7 @@ export function AnimatedCollapse({
 
     void body.offsetHeight
 
+    animKindRef.current = kind
     animatingRef.current = true
     const raf = window.requestAnimationFrame(() => {
       body.style.transition = TRANSITION
@@ -324,13 +345,15 @@ export function AnimatedCollapse({
 
     // Default (animateResize=false) is snap-only: the open/close moment is the
     // only useful animated beat; intrinsic content growth after open is plain
-    // layout and snaps in place. With animateResize=true we tween those changes
-    // so a list that grows while open (e.g. a TaskList row appending) eases
-    // open instead of jumping. Either way, never fight an in-flight open/close
-    // animation — let it play out (finishOpen re-measures the true height at
-    // the end, so growth during the animation is still reconciled) — and a
-    // rapid run of resize events cancels-and-replaces, so a streaming list
-    // follows smoothly instead of stacking a new 240ms tween per row.
+    // layout and snaps in place. With animateResize=true, DISCRETE growth
+    // (isolated observations — a card mounting) tweens, while CONTINUOUS
+    // growth (an inner animation feeding this observer every frame) is
+    // followed exactly (see RESIZE_COALESCE_MS). Either way, never fight an
+    // in-flight open/close FOLD — let it play out; finishOpen re-measures the
+    // true height at the end, so growth during the fold is still reconciled.
+    // Two discrete jumps close enough to each other that a tween from the
+    // first is still in flight cancel-and-replace (animateHeight does the
+    // canceling).
     const observer = new ResizeObserver(() => {
       if (!previousOpenRef.current) return
       // Measure the content's RENDERED height, not scrollHeight. Under
@@ -364,26 +387,47 @@ export function AnimatedCollapse({
       if (Math.abs(measured.height - currentHeight) < 1) return
       lastHeightRef.current = measured.height
       if (animatingRef.current) {
-        // An open/close animation is in flight — let it play to its target
-        // rather than tearing it down (which made every open instant /
-        // animation-less). finishOpen re-measures at animation end so any
-        // growth during the animation is still reconciled.
-        return
+        if (animKindRef.current === 'fold') {
+          // An open/close fold is in flight — let it play to its target
+          // rather than tearing it down (which made every open instant /
+          // animation-less). finishOpen re-measures at animation end so any
+          // growth during the fold is still reconciled.
+          return
+        }
+        // A resize tween is in flight — tear it down and let the branch
+        // below replace it. Cancel-and-replace is the animateResize
+        // contract; a blanket guard here used to swallow every observation
+        // after the first, freezing the body at the first frame's (stale)
+        // target until finishOpen snapped to the truth at the end.
+        cleanupAnimation()
       }
-      if (animateResize) {
+      // Continuous vs discrete (see RESIZE_COALESCE_MS): an inner animation
+      // is followed EXACTLY — its own motion IS the height animation, and
+      // tweening on top of it lags the content behind the clip edge — while
+      // an isolated jump gets the tween beat.
+      const now = performance.now()
+      const continuous = now - lastResizeAtRef.current < RESIZE_COALESCE_MS
+      lastResizeAtRef.current = now
+      if (animateResize && !continuous) {
         // Resize tween: from the current rendered height to the content's new
         // natural height. fade=false — opacity belongs to the open/close beat,
-        // not layout motion. Rapid successive events call animateHeight again,
-        // which cancels the in-flight tween and restarts from the live height.
-        animateHeight(currentHeight, measured.height, true, false)
+        // not layout motion.
+        animateHeight(currentHeight, measured.height, true, false, 'resize')
       } else {
+        // Snap-follow. Clear any transition the torn-down tween left on the
+        // element so the jump is truly instant.
+        body.style.transition = 'none'
         body.style.height = `${measured.height}px`
       }
     })
 
     observer.observe(content)
+    // Fresh attachment, fresh coalesce clock: a quick fold+reopen (which
+    // re-runs this effect) must not inherit a timestamp that makes the first
+    // post-reopen observation read as "continuous".
+    lastResizeAtRef.current = -Infinity
     return () => observer.disconnect()
-  }, [animateHeight, animateResize, open, remeasureWhileClamped, rendered, unmountOnExit])
+  }, [animateHeight, animateResize, cleanupAnimation, open, remeasureWhileClamped, rendered, unmountOnExit])
 
   useEffect(() => () => cleanupAnimation(), [cleanupAnimation])
 

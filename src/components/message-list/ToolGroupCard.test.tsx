@@ -4,6 +4,7 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react'
 import { ToolGroupCard } from './ToolGroupCard'
 import { ToolStatusProvider, ToolResultProvider, PlanStatusProvider } from '../../hooks/usePlanStatus'
 import { BackgroundToolProvider } from '../../hooks/useBackgroundTool'
+import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../../test/resize-observer-stub'
 import type { ActiveSubagent, ToolStatus } from '../../session-store/types'
 import type { SdkMessage } from '../../types'
 
@@ -17,9 +18,11 @@ beforeEach(() => {
     addEventListener() {},
     removeEventListener() {},
   }))
+  stubResizeObserver()
 })
 afterEach(() => {
   cleanup()
+  clearResizeObserverStub()
   vi.useRealTimers()
   // Some tests stub window.getSelection; matchMedia is re-stubbed above.
   vi.unstubAllGlobals()
@@ -892,6 +895,204 @@ describe('ToolGroupCard', () => {
         vi.advanceTimersByTime(2300)
       })
       expect(isOpen(container)).toBe(false)
+    })
+  })
+
+  describe('inline-card arrival animations', () => {
+    const t1 = toolMsg('t1')
+    const bash = toolMsg('t2', 'Bash', { command: 'npm test' })
+    const agentDone = toolMsg('t2', 'Agent', { description: 'audit' })
+
+    /** Group with one tool that appends a second member on demand. t1 has no
+     *  status entry → reads as running → the group mounts open (and stays
+     *  open once t2 arrives, also status-less). Message identities are stable
+     *  across the append so propsEqual sees exactly the membership change. */
+    function AppendHarness() {
+      const [members, setMembers] = useState(() => [t1])
+      return (
+        <ToolStatusProvider value={new Map()}>
+          <ToolResultProvider value={new Map()}>
+            <PlanStatusProvider value={new Map()}>
+              <BackgroundToolProvider value={undefined}>
+                <ToolGroupCard
+                  members={members}
+                  memberItemIndices={members.map((_, i) => i)}
+                  working
+                />
+                <button
+                  type="button"
+                  data-testid="append"
+                  onClick={() => setMembers([t1, bash])}
+                />
+              </BackgroundToolProvider>
+            </PlanStatusProvider>
+          </ToolResultProvider>
+        </ToolStatusProvider>
+      )
+    }
+
+    function memberOf(container: HTMLElement, id: string): HTMLElement {
+      return container.querySelector(`[data-member-tool-use-id="${id}"]`) as HTMLElement
+    }
+
+    it('tweens the body height when content grows while the group is open', () => {
+      // Regression: growth inside an OPEN group (a member appending, a result
+      // section landing) used to snap the pinned body height straight to the
+      // new value — the AnimatedCollapse ResizeObserver default. The group
+      // must opt into the resize tween instead.
+      vi.useFakeTimers()
+      const { container } = renderGroup({
+        members: [t1],
+        toolStatus: new Map(), // absent → running → group opens
+        working: true,
+      })
+      expect(isOpen(container)).toBe(true)
+      const body = container.querySelector('.tool-group-collapse') as HTMLElement
+      const content = container.querySelector('.tool-group-body') as HTMLElement
+      // jsdom has no layout — mock the rendered heights (same technique as
+      // AnimatedCollapse.test.tsx).
+      vi.spyOn(body, 'getBoundingClientRect').mockReturnValue({ height: 60 } as DOMRect)
+      vi.spyOn(content, 'getBoundingClientRect').mockReturnValue({ height: 100 } as DOMRect)
+
+      act(() => fireResize(content))
+
+      // Tween, not snap: pinned at the current rendered height with the
+      // animation machinery engaged…
+      expect(body.style.height).toBe('60px')
+      expect(body.classList.contains('animating')).toBe(true)
+
+      act(() => {
+        vi.advanceTimersByTime(400)
+      })
+      // …then settled on the content's natural height.
+      expect(body.style.height).toBe('100px')
+      expect(body.classList.contains('animating')).toBe(false)
+    })
+
+    it('plays a one-shot entrance on a member appended into an open group', () => {
+      const { container, getByTestId } = render(<AppendHarness />)
+      expect(memberOf(container, 't1-tu').className).not.toContain('tool-group-member-enter')
+
+      fireEvent.click(getByTestId('append'))
+
+      // The newcomer fades in; the existing member must not re-animate.
+      expect(memberOf(container, 't2-tu').className).toContain('tool-group-member-enter')
+      expect(memberOf(container, 't1-tu').className).not.toContain('tool-group-member-enter')
+    })
+
+    it('does not replay the entrance when the group mounts with members already present', () => {
+      // The Virtuoso scroll-back remount case: the whole card remounts with
+      // every member already in the members array — none of them "arrived".
+      const { container, getByRole } = renderGroup({
+        members: [toolMsg('a', 'Read', { file_path: '/a.ts' }), toolMsg('b', 'Read', { file_path: '/b.ts' })],
+        toolStatus: new Map([
+          ['a-tu', 'success'],
+          ['b-tu', 'success'],
+        ]),
+      })
+      fireEvent.click(getByRole('button', { name: /2 tool calls/i }))
+      for (const el of container.querySelectorAll('[data-member-tool-use-id]')) {
+        expect(el.className).not.toContain('tool-group-member-enter')
+      }
+    })
+
+    it('no entrance for a member that arrives while the group is closed — the fold-open covers it', () => {
+      // t2 is a finished subagent, so the append does not force the group
+      // open; when the user later opens it, the fold animation is the reveal
+      // and the member must not double-animate.
+      function ClosedAppendHarness() {
+        const [members, setMembers] = useState(() => [t1])
+        return (
+          <ToolStatusProvider value={new Map([['t1-tu', 'success' as const]])}>
+            <ToolResultProvider value={new Map()}>
+              <PlanStatusProvider value={new Map()}>
+                <BackgroundToolProvider value={undefined}>
+                  <ToolGroupCard
+                    members={members}
+                    memberItemIndices={members.map((_, i) => i)}
+                    subagentStatuses={new Map([['t2-tu', { status: 'done' } as unknown as ActiveSubagent]])}
+                  />
+                  <button
+                    type="button"
+                    data-testid="append"
+                    onClick={() => setMembers([t1, agentDone])}
+                  />
+                </BackgroundToolProvider>
+              </PlanStatusProvider>
+            </ToolResultProvider>
+          </ToolStatusProvider>
+        )
+      }
+      const { container, getByTestId } = render(<ClosedAppendHarness />)
+      expect(isOpen(container)).toBe(false)
+      fireEvent.click(getByTestId('append'))
+      expect(isOpen(container)).toBe(false) // settled arrival keeps it folded
+
+      fireEvent.click(container.querySelector('.tool-group-toggle')!)
+      expect(isOpen(container)).toBe(true)
+      expect(memberOf(container, 't2-tu').className).not.toContain('tool-group-member-enter')
+    })
+
+    it('no entrance for a member appended into a folded group the user opened before', () => {
+      // Body-mounted variant of the case above: the group was opened (body
+      // latch set) and folded again; the body keeps rendering its members
+      // while hidden. An arrival there must not animate invisibly and then
+      // double-animate over the fold-open when the user reopens.
+      function FoldedAppendHarness() {
+        const [members, setMembers] = useState(() => [t1])
+        return (
+          <ToolStatusProvider value={new Map([['t1-tu', 'success' as const]])}>
+            <ToolResultProvider value={new Map()}>
+              <PlanStatusProvider value={new Map()}>
+                <BackgroundToolProvider value={undefined}>
+                  <ToolGroupCard
+                    members={members}
+                    memberItemIndices={members.map((_, i) => i)}
+                    closed
+                    subagentStatuses={new Map([['t2-tu', { status: 'done' } as unknown as ActiveSubagent]])}
+                  />
+                  <button
+                    type="button"
+                    data-testid="append"
+                    onClick={() => setMembers([t1, agentDone])}
+                  />
+                </BackgroundToolProvider>
+              </PlanStatusProvider>
+            </ToolResultProvider>
+          </ToolStatusProvider>
+        )
+      }
+      const { container, getByTestId } = render(<FoldedAppendHarness />)
+      expect(isOpen(container)).toBe(false)
+
+      // Open once (mounts the body), fold again — a settled closed group
+      // honors the manual fold.
+      fireEvent.click(container.querySelector('.tool-group-toggle')!)
+      expect(isOpen(container)).toBe(true)
+      fireEvent.click(container.querySelector('.tool-group-toggle')!)
+      expect(isOpen(container)).toBe(false)
+
+      fireEvent.click(getByTestId('append'))
+      expect(isOpen(container)).toBe(false)
+
+      fireEvent.click(container.querySelector('.tool-group-toggle')!)
+      expect(isOpen(container)).toBe(true)
+      expect(memberOf(container, 't2-tu').className).not.toContain('tool-group-member-enter')
+    })
+
+    it('fallback: clears the entrance class when no animationend ever fires', () => {
+      // jsdom never delivers animationend, so only the fallback timer can
+      // strip the class — the prefers-reduced-motion safety net (same shape
+      // as GridClipEnter's fallback test).
+      vi.useFakeTimers()
+      const { container, getByTestId } = render(<AppendHarness />)
+      fireEvent.click(getByTestId('append'))
+      expect(memberOf(container, 't2-tu').className).toContain('tool-group-member-enter')
+
+      act(() => {
+        vi.advanceTimersByTime(500)
+      })
+      expect(memberOf(container, 't2-tu').className).not.toContain('tool-group-member-enter')
     })
   })
 })

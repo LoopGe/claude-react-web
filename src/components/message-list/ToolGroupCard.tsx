@@ -20,8 +20,18 @@
 // carries an empty Read header or a 40-line Edit diff plus its result body.
 // Rendering a lone tool bare would put that payload back in the transcript.
 
-import { memo, useEffect, useMemo, useReducer, useRef, useState, useId } from 'react'
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  useId,
+} from 'react'
 import { AnimatedCollapse } from '../AnimatedCollapse'
+import { useRevealClass } from '../../hooks/useRevealClass'
 import { BlockView } from './blocks'
 import { usePlanStatusMap, useToolStatuses } from '../../hooks/usePlanStatus'
 import { groupMayMatchSearch, summarizeToolGroup } from './tool-grouping'
@@ -163,6 +173,59 @@ function initFoldState({ live, working }: { live: boolean; working: boolean }): 
   return { wasLive: live, held: false, userOpen: null, prevWorking: working }
 }
 
+/** One wrapper per tool card inside the group body: the anchor the header's
+ *  failed badge scrolls to (`data-member-tool-use-id`) and the thing it tints
+ *  (`tool-group-member-flash`).
+ *
+ *  Also owns the one-shot entrance for a member that APPENDED into the group
+ *  while it is open (a sequential tool call landing in a live run). `entering`
+ *  comes from the parent's mount-seen member gate — never from this wrapper's
+ *  own mount: a Virtuoso scroll-back remount renders the whole group with
+ *  every member already present, and those must not replay the reveal (same
+ *  contract as GridClipEnter's "gate in the persistent parent"). The class
+ *  lifecycle (latch across streaming re-renders, animationend strip, fallback)
+ *  lives in useRevealClass. Fade + rise only — the body's own height tween
+ *  (AnimatedCollapse `animateResize`) carries the height change;
+ *  opacity/translateY are layout-agnostic and can't fight it. */
+function ToolGroupMember({
+  toolUseId,
+  block,
+  entering,
+  flash,
+  isActive,
+  searchQuery,
+  activeMatchInItem,
+}: {
+  toolUseId: string | undefined
+  block: Block
+  entering: boolean
+  flash: boolean
+  isActive: boolean
+  searchQuery?: string
+  activeMatchInItem?: number
+}) {
+  const { revealing, handleAnimationEnd } = useRevealClass(entering, 'tool-group-member-enter')
+
+  return (
+    <div
+      className={
+        'tool-group-member' +
+        (revealing ? ' tool-group-member-enter' : '') +
+        (flash ? ' tool-group-member-flash' : '')
+      }
+      data-member-tool-use-id={toolUseId}
+      onAnimationEnd={handleAnimationEnd}
+    >
+      <BlockView
+        block={block}
+        searchQuery={searchQuery}
+        activeMatchIdx={isActive ? activeMatchInItem : undefined}
+        toolResultActiveMatchIdx={isActive ? activeMatchInItem : undefined}
+      />
+    </div>
+  )
+}
+
 function ToolGroupCardInner({
   members,
   memberItemIndices,
@@ -189,7 +252,35 @@ function ToolGroupCardInner({
     () => members.map((m) => getBlocks(m).filter((b) => b.type === 'tool_use')),
     [members],
   )
-  const toolBlocks = useMemo(() => perMember.flat(), [perMember])
+  // One entry per rendered tool card, carrying the member message's index for
+  // the search-active join. The entrance gate and the body render both work
+  // on this flat list so a message with several tool_use blocks is gated
+  // per-card, not per-message.
+  const flatMembers = useMemo(
+    () => perMember.flatMap((blocks, mi) => blocks.map((b) => ({ block: b, mi }))),
+    [perMember],
+  )
+  // Block projection of flatMembers — the header summary / search probe read
+  // this. Deriving it (rather than flattening perMember a second time) keeps
+  // the two views row-order-aligned by construction.
+  const toolBlocks = useMemo(() => flatMembers.map((e) => e.block), [flatMembers])
+
+  // Live-arrival gate for member entrances (see ToolGroupMember): seeded with
+  // the card count at mount, so a group that mounts with its members already
+  // present — initial replay, Virtuoso scroll-back remount, manual open of a
+  // group whose members arrived while folded — arms nobody; only cards that
+  // APPEND while this instance is alive play the one-shot entrance. The
+  // baseline is bumped in a layout effect, NOT at render time like
+  // everOpenedRef below: render-time writes survive a discarded pass, and an
+  // entrance lost to a discarded render never comes back. Reading the ref
+  // during render is the deliberate half-ref-lag that makes the flags below
+  // true for exactly the commits that grew the list (ToolGroupMember latches
+  // its flag in state, so the follow-up render settling the baseline doesn't
+  // cut the animation short).
+  const seenMembersRef = useRef(flatMembers.length)
+  useLayoutEffect(() => {
+    seenMembersRef.current = flatMembers.length
+  }, [flatMembers.length])
 
   const summary = useMemo(
     () => summarizeToolGroup(toolBlocks, toolStatuses, planStatuses, subagentStatuses, workflowStatuses),
@@ -283,6 +374,22 @@ function ToolGroupCardInner({
   const [flashToolUseId, setFlashToolUseId] = useState<string | null>(null)
   const revealTimersRef = useRef<number[]>([])
   useEffect(() => () => revealTimersRef.current.forEach(window.clearTimeout), [])
+
+  // Per-card entrance flags for THIS render, computed at statement level —
+  // the refs rule forbids consuming ref-derived values inside a nested
+  // closure, so the .map below receives plain booleans. Gated on `open`: a
+  // member that appended while the group was FOLDED (including the
+  // body-mounted case — opened once, then folded) must not animate invisibly
+  // inside the hidden body and then double-animate over the fold-open on
+  // reopen; the fold-open is the reveal for those.
+  /* eslint-disable react-hooks/refs -- render-time read IS the mechanism: the
+     baseline (seenMembersRef above) deliberately lags one commit behind so
+     the arrival render sees the pre-growth count. */
+  const enteringFlags: boolean[] = []
+  for (let i = 0; i < flatMembers.length; i++) {
+    enteringFlags[i] = open && i >= seenMembersRef.current
+  }
+  /* eslint-enable react-hooks/refs */
 
   // Expand (if needed) and point at the member that failed. The flash is
   // transient on purpose: it answers "which one?" at the moment it is asked,
@@ -403,40 +510,37 @@ function ToolGroupCardInner({
         {badge}
       </div>
       {/* Animated height fold. unmountOnExit=false keeps children mounted so
-          nested ToolCard / PlanCard / permission state survives a fold. */}
+          nested ToolCard / PlanCard / permission state survives a fold.
+          animateResize tweens intrinsic growth while open — a member card
+          appending to a live group glides the body taller instead of snapping
+          (the composer's attachment stack and the TaskList card opt in the
+          same way). The open/close fold still takes precedence, and rapid
+          successive growth cancels-and-replaces rather than stacking tweens. */}
       <AnimatedCollapse
         open={open}
         unmountOnExit={false}
         className="tool-group-collapse"
         contentClassName="tool-group-body"
         id={bodyId}
+        animateResize
       >
         {bodyMounted
-          ? perMember.map((blocks, mi) => {
+          ? flatMembers.map(({ block, mi }, i) => {
+              const toolUseId = extractToolUseId(block)
               const isActive =
                 activeMemberItemIndex != null && memberItemIndices[mi] === activeMemberItemIndex
-              return blocks.map((b, bi) => {
-                const toolUseId = extractToolUseId(b)
-                // The wrapper exists so the header's failed badge has something to
-                // scroll to and tint — the tool views themselves are untouched.
-                return (
-                  <div
-                    key={toolUseId ?? `${mi}-${bi}`}
-                    className={
-                      'tool-group-member' +
-                      (toolUseId && toolUseId === flashToolUseId ? ' tool-group-member-flash' : '')
-                    }
-                    data-member-tool-use-id={toolUseId ?? undefined}
-                  >
-                    <BlockView
-                      block={b}
-                      searchQuery={searchQuery}
-                      activeMatchIdx={isActive ? activeMatchInItem : undefined}
-                      toolResultActiveMatchIdx={isActive ? activeMatchInItem : undefined}
-                    />
-                  </div>
-                )
-              })
+              return (
+                <ToolGroupMember
+                  key={toolUseId ?? `m${i}`}
+                  toolUseId={toolUseId ?? undefined}
+                  block={block}
+                  entering={enteringFlags[i]}
+                  flash={toolUseId != null && toolUseId === flashToolUseId}
+                  isActive={isActive}
+                  searchQuery={searchQuery}
+                  activeMatchInItem={isActive ? activeMatchInItem : undefined}
+                />
+              )
             })
           : null}
       </AnimatedCollapse>

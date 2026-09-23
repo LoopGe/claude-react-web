@@ -1148,11 +1148,9 @@ button.tool-group-failed-jump:focus-visible {
 /* Wrapper around each folded tool call: the anchor the failed badge scrolls to
    and the thing it tints. Layout-neutral (a block box around a block card), so
    the member-child reset above plus the sibling `> * + *` gap supply the whole
-   rhythm. */
-.tool-group-member-flash {
-  border-radius: var(--radius-sm);
-  animation: tool-group-member-flash 1400ms var(--motion-ease-standard) both;
-}
+   rhythm. The flash rule itself lives BELOW the `-enter` rule (same compound
+   specificity, later position) so a user-triggered flash on a still-entering
+   member wins the `animation` property. */
 @keyframes tool-group-member-flash {
   0%,
   45% {
@@ -1161,6 +1159,43 @@ button.tool-group-failed-jump:focus-visible {
   100% {
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 0%, transparent);
   }
+}
+
+/* One-shot entrance for a member card appended into an OPEN group body (a
+   sequential tool call landing in a live run). The `-enter` class is gated by
+   ToolGroupCard's mount-seen member count (see ToolGroupMember), so a Virtuoso
+   scroll-back remount — every member present at mount — never replays it.
+   Fade + rise only: the body's own height tween (AnimatedCollapse
+   `animateResize`) carries the height change, and opacity/translateY are
+   layout-agnostic so the two can't fight. Same duration/easing family as the
+   `.tool-card-result` reveal it sits next to. */
+.tool-group-member.tool-group-member-enter {
+  animation: tool-group-member-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
+}
+@keyframes tool-group-member-enter {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-sm));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-group-member.tool-group-member-enter {
+    animation: none;
+  }
+}
+/* Same specificity as the `-enter` rule above but LATER, so when the failed
+   badge tints a member that is still playing its entrance (error result
+   landing within the 240ms window), the user-triggered flash wins the
+   `animation` property instead of being silently suppressed. The class is
+   only ever applied to a `.tool-group-member` (ToolGroupCard is the sole
+   writer), so the compound selector loses nothing. */
+.tool-group-member.tool-group-member-flash {
+  border-radius: var(--radius-sm);
+  animation: tool-group-member-flash 1400ms var(--motion-ease-standard) both;
 }
 
 /* ── A11y: prefers-reduced-motion ──────────────────────────────────
