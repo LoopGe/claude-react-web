@@ -16,7 +16,7 @@ import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { SessionCwdProvider } from '../hooks/useSessionCwd'
 import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
 import type { SdkMessage } from '../types'
-import { buildTaskStateMap } from '../utils/task-events'
+import { buildTaskStateMapFromItems } from '../utils/task-events'
 import { cx } from '../utils/cx'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
@@ -1059,8 +1059,15 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // appends both arrays in tandem), so folding from items mirrors what
   // TodoChecklist does with stream.messages. Stable empty sentinel keeps
   // the provider value referential when there are no task events.
+  //
+  // `...FromItems` rather than `buildTaskStateMap(items.map(it => it.msg))`:
+  // `items` gets a new identity on every streaming flush, so the `.map()` was
+  // allocating a fresh N-element array many times per second to feed a
+  // function that only iterates. The fold also short-circuits on a cheap probe
+  // now, so a session with no Task* events no longer indexes every
+  // tool_result in the transcript per flush.
   const taskInfoMap = useMemo(
-    () => buildTaskStateMap(items.map((it) => it.msg)) ?? EMPTY_TASK_MAP,
+    () => buildTaskStateMapFromItems(items) ?? EMPTY_TASK_MAP,
     [items],
   )
 

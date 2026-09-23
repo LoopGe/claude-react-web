@@ -45,6 +45,33 @@ export interface TaskState {
 export const TASK_CREATE = 'TaskCreate'
 export const TASK_UPDATE = 'TaskUpdate'
 
+/** Does this transcript contain ANY Task* event at all?
+ *
+ *  A deliberate extra pass, run before the fold below. The fold's first
+ *  stage indexes every tool_result in the session and calls `resultText` on
+ *  each (which joins content-block arrays), and the whole thing is thrown
+ *  away when the session turns out to have no Task* events — which is the
+ *  common case. MessageList re-derives this on every `items` identity change,
+ *  i.e. on every streaming flush, so "walk the transcript twice for nothing"
+ *  was being paid many times per second for the whole length of a turn.
+ *
+ *  This probe reads only assistant tool_use block names, so it is far cheaper
+ *  than the stage it guards; the sessions that DO use tasks pay one extra
+ *  cheap pass. Kept exactly in step with the verbs the fold acts on. */
+function hasTaskEvents(count: number, msgOf: (i: number) => SdkMessage): boolean {
+  for (let i = 0; i < count; i++) {
+    const msg = msgOf(i)
+    if (msg.type !== 'assistant') continue
+    const content = msg.message?.content
+    if (!Array.isArray(content)) continue
+    for (const block of content as Record<string, unknown>[]) {
+      if (!block || block.type !== 'tool_use') continue
+      if (block.name === TASK_CREATE || block.name === TASK_UPDATE) return true
+    }
+  }
+  return false
+}
+
 /** Fold the whole TaskCreate/TaskUpdate stream into a Map keyed by numeric
  *  task id (`#N`).
  *
@@ -62,11 +89,34 @@ export const TASK_UPDATE = 'TaskUpdate'
 export function buildTaskStateMap(
   messages: readonly SdkMessage[],
 ): Map<string, TaskState> | null {
+  return foldTaskEvents(messages.length, (i) => messages[i])
+}
+
+/** Same fold, reading `.msg` out of transcript items directly.
+ *
+ *  Exists so MessageList does not have to `items.map((it) => it.msg)` on every
+ *  render: that allocated a fresh N-element array per streaming flush purely
+ *  to hand this function something it only ever iterates. */
+export function buildTaskStateMapFromItems(
+  items: readonly { msg: SdkMessage }[],
+): Map<string, TaskState> | null {
+  return foldTaskEvents(items.length, (i) => items[i].msg)
+}
+
+function foldTaskEvents(
+  count: number,
+  msgOf: (i: number) => SdkMessage,
+): Map<string, TaskState> | null {
+  // 0) Cheap probe first — see hasTaskEvents. Without this, a session with no
+  //    Task* events still paid for the full tool_result index below.
+  if (!hasTaskEvents(count, msgOf)) return null
+
   // 1) Index every tool_result's text by the tool_use_id it answers. The
   //    SDK wraps tool_results in `user` messages; content may be a string
   //    or an array of text blocks.
   const resultByToolUseId = new Map<string, string>()
-  for (const msg of messages) {
+  for (let i = 0; i < count; i++) {
+    const msg = msgOf(i)
     const content = msg.message?.content
     if (!Array.isArray(content)) continue
     for (const block of content as Record<string, unknown>[]) {
@@ -83,8 +133,8 @@ export function buildTaskStateMap(
   const tasks = new Map<string, TaskState>()
   let sawAny = false
 
-  for (let idx = 0; idx < messages.length; idx++) {
-    const msg = messages[idx]
+  for (let idx = 0; idx < count; idx++) {
+    const msg = msgOf(idx)
     if (msg.type !== 'assistant') continue
     const content = msg.message?.content
     if (!Array.isArray(content)) continue
@@ -148,6 +198,10 @@ export function buildTaskStateMap(
     }
   }
 
+  // `sawAny` is now implied by the stage-0 probe, but it stays as the
+  // authority: it is derived from the branches that actually fold, so if the
+  // probe ever drifts to be MORE permissive than the fold, this still answers
+  // "no tasks" instead of handing callers an empty map.
   if (!sawAny) return null
   return tasks
 }
