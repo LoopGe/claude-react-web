@@ -254,7 +254,7 @@ function pickTopLevel(o: RawLine, fields: string[]): Record<string, unknown> {
  *  (historyEntriesFromJsonl) reads content only to extract plain text and
  *  build small snippets — it never ships the full message over WS — so it
  *  passes `trim: false` to keep full recall on the on-disk text. */
-function normalize(o: RawLine, sessionId: string, trim: boolean): unknown {
+export function normalize(o: RawLine, sessionId: string, trim: boolean): unknown {
   const parent = o.type === 'user' ? toolResultParentId(o.message?.content) : null
   // The SDK writes an ISO `timestamp` on every persisted line. Carry it as
   // receivedAt (epoch ms) so disk-restored history (resume historySeed +
