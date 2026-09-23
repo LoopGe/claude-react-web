@@ -7,7 +7,7 @@
 // Filters out `stream_event` partials (the final assistant message
 // carries the complete content, so showing both just flickers).
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
@@ -42,7 +42,7 @@ import {
   type TranscriptRow,
 } from './message-list/transcript-rows'
 import { useSubagentSyntheticRows } from './message-list/useSubagentSyntheticRows'
-import { useTranscriptAnimations } from './message-list/useTranscriptAnimations'
+import { REVEAL_STAGGER_STEP_MS, REVEAL_STAGGER_TAIL, useTranscriptAnimations } from './message-list/useTranscriptAnimations'
 import { useTranscriptScroll } from './message-list/useTranscriptScroll'
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
@@ -544,7 +544,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   const {
     messagesElRef,
     isTranscriptRevealPending,
-    handleTranscriptRevealEnd,
+    isTranscriptRevealApplied,
     isRowEntering,
     enterNodeRef,
     handleEnterAnimationEnd,
@@ -565,8 +565,20 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
 
   // Reverse map: full items[] index —Virtuoso (renderableItems) index.
   // Needed because search indices reference the full, unfiltered list.
+  //
+  // Built ONLY while a search is live. Its sole consumer is the seek-to-active-
+  // match effect below, but `renderableItems` gets a new identity on every
+  // streaming flush, so an ungated memo walked the whole transcript (plus every
+  // folded group's member list) many times per second for a map nobody read.
+  //
+  // The gate is deliberately `query || activeIdx >= 0`, not just the query:
+  // `searchQuery` is debounced upstream while `searchActiveMsgIdx` is not, so
+  // on close there is a frame where the query has already emptied but an active
+  // match remains. Keying on both means the seek can never find an empty map.
+  const searchLive = !!searchQuery?.trim() || (searchActiveMsgIdx != null && searchActiveMsgIdx >= 0)
   const itemToVirtIdx = useMemo(() => {
     const map = new Map<number, number>()
+    if (!searchLive) return map
     for (let vi = 0; vi < renderableItems.length; vi++) {
       const row = renderableItems[vi]
       if (row.toolGroup) {
@@ -578,7 +590,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       }
     }
     return map
-  }, [renderableItems])
+  }, [renderableItems, searchLive])
 
   // Track how many new messages arrived so the unseen badge stays accurate.
   // Virtuoso's followOutput handles the actual scrolling.
@@ -865,6 +877,14 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     onRegisterNavigate?.({ prev: () => navigate('prev'), next: () => navigate('next'), to: navigateToIndex })
   }, [onRegisterNavigate, navigate, navigateToIndex])
 
+  // Tail window for the declarative transcript reveal's per-row stagger: the
+  // last REVEAL_STAGGER_TAIL rows step in at REVEAL_STAGGER_STEP_MS intervals.
+  // Clamped at 0 so a short transcript's rows all get delay 0 (the original
+  // DOM-order formula clamped the same way). The per-row value is baked into
+  // an inert `--reveal-stagger` custom property in itemContent — it only has
+  // an effect while the container carries `.chat-messages-reveal` (chat.css).
+  const revealStaggerFloor = Math.max(0, renderableItems.length - REVEAL_STAGGER_TAIL)
+
   const itemContent = useCallback((_index: number, item: TranscriptRow) => {
     // Only pipe `activeMatchInItem` into the message that actually
     // contains the active navigation target. Every other message gets
@@ -891,6 +911,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // fallback for rows that unmount before animationend fires, by a timeout
     // scheduled on mount — so a scroll-driven remount later can't replay it.
     const isEntering = isRowEntering(item.id)
+    // Position within the rendered list (Virtuoso hands us the offset-space
+    // index; firstItemIndex is the prepend anchor). Drives the reveal stagger.
+    const rowPos = Math.max(0, _index - firstItemIndex)
+    const revealStagger = Math.max(0, rowPos - revealStaggerFloor) * REVEAL_STAGGER_STEP_MS
     const className = cx(
       'virtuoso-item-wrapper',
       item.id === firstItemId ? 'transcript-first-item' : '',
@@ -971,6 +995,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     return (
       <div
         className={className}
+        style={{ '--reveal-stagger': `${revealStagger}ms` } as CSSProperties}
         data-message-id={item.id}
         data-enter-id={isEntering ? item.id : undefined}
         ref={isEntering ? enterNodeRef : undefined}
@@ -983,7 +1008,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // settles, a stale closure would leave its group card reading the old map
     // (and so still showing `running`). Both change only on subagent/workflow
     // events, unlike the context values that carry `messages`.
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index])
+    // firstItemIndex + revealStaggerFloor: the reveal stagger needs the row's
+    // position within the list; both move on prepends/data growth.
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, firstItemIndex, revealStaggerFloor])
 
   // Key rows by their stable message id instead of Virtuoso's default
   // (offset-space index).
@@ -1019,6 +1046,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   const messagesClassName = [
     'chat-messages',
     isTranscriptRevealPending && 'chat-messages-reveal-pending',
+    // Declarative reveal phase: rows animate via the descendant rule in
+    // chat.css, so this class must come from THIS commit — a DOM-written one
+    // gets stripped by the next className re-render before the animation
+    // starts (the intermittent group-switch reveal skip).
+    isTranscriptRevealApplied && 'chat-messages-reveal',
     clearing && 'chat-messages-clearing',
   ]
     .filter(Boolean)
@@ -1083,7 +1115,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     <ResultConsumedCtx.Provider value={isResultConsumed}>
     <div className="chat-messages-wrap">
       <div className="chat-messages-stage">
-      <div ref={messagesElRef} key={transcriptRevealKey} className={messagesClassName} onAnimationEnd={handleTranscriptRevealEnd}>
+      <div ref={messagesElRef} key={transcriptRevealKey} className={messagesClassName}>
         {/* Virtuoso is ALWAYS mounted (even with zero items) so its scroller
             is already measured by the time the first message arrives. If it
             were mounted fresh on the empty→first-message transition, the first

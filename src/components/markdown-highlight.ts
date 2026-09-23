@@ -13,7 +13,7 @@
 // pass would replace the text-with-marks subtree wholesale and erase the
 // highlights.
 
-import { lowlight } from '../utils/lowlight-instance'
+import { lowlight, isRegisteredLanguage } from '../utils/lowlight-instance'
 
 /** Minimal hast-like node shape. Uses a loose type rather than importing
  *  hast's full union to keep the plugin self-contained. */
@@ -58,15 +58,20 @@ export function rehypeHighlightLite() {
       const text = extractText(node)
       if (!text) return
 
+      // Guard with the registered-language set rather than catching the throw
+      // lowlight raises for an unknown grammar: a fence tagged with something
+      // we don't ship (```elixir) is ordinary model output, not an exceptional
+      // condition, and this is the same guard diff-highlight.tsx already uses.
+      // The try/catch stays as a backstop for anything else the grammar can
+      // raise on pathological input.
+      if (!isRegisteredLanguage(lang)) return
       try {
-        const result = lang
-          ? lowlight.highlight(lang, text)
-          : lowlight.highlightAuto(text)
+        const result = lowlight.highlight(lang, text)
         if (result.children.length > 0) {
           node.children = result.children as HastNode[]
         }
       } catch {
-        // Language not registered — leave the raw text as-is
+        // Grammar failed on this input — leave the raw text as-is.
       }
     })
   }

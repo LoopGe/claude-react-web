@@ -59,10 +59,12 @@ describe('compileMarkdown cache', () => {
     it('keeps plain entries alive through a long search burst', () => {
       const plain = 'a settled assistant message'
       compileMarkdown(plain, {})
-      // Far more search compilations than any single bucket holds, across many
-      // distinct queries — the shape of someone typing then refining a query.
-      for (let k = 0; k < 40; k++) {
-        for (let row = 0; row < 20; row++) {
+      // More distinct queries than SEARCH_BUCKET_CAP (8), each touching several
+      // rows — the shape of someone typing then refining a query. Kept small on
+      // purpose: the point is to overflow the search caps, and every extra
+      // compile here is real unified-pipeline work that slows the whole suite.
+      for (let k = 0; k < 12; k++) {
+        for (let row = 0; row < 4; row++) {
           compileMarkdown(`row ${row}`, { searchQuery: `q${k}` })
         }
       }
@@ -73,7 +75,7 @@ describe('compileMarkdown cache', () => {
     })
 
     it('retires stale search variants instead of growing without bound', () => {
-      for (let k = 0; k < 40; k++) compileMarkdown('x', { searchQuery: `q${k}` })
+      for (let k = 0; k < 12; k++) compileMarkdown('x', { searchQuery: `q${k}` })
       expect(markdownSearchBucketCount()).toBeLessThanOrEqual(8)
     })
 
