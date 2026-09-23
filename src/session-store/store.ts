@@ -20,6 +20,9 @@ import { clamp } from '../utils/clamp'
 type Listener = () => void
 
 const STORAGE_PREFIX = 'claude-web-session:'
+/** Upper bound on how long the subscribe gate waits for the async IDB state.
+ *  See the idbReady assignment in the constructor. */
+const IDB_GATE_TIMEOUT_MS = 2000
 // Per-session cap. Kept well below the browser's ~5MB total localStorage
 // quota so a single large transcript can't monopolise storage and starve
 // unrelated keys (session-groups, sidebar-order, …). A session over this
@@ -457,13 +460,33 @@ export class SessionStore {
     // Kick off async IDB hydration (open + scan + cold-load). Does not block
     // construction — the LS tail is painted via the microtask above. IDB
     // supersedes it with a fuller recent window when ready.
-    this.idbReady = this.initIdb().finally(() => {
+    // The gate must never outlive a HUNG IDB open: `openDb` can stay pending
+    // indefinitely when another tab holds an older DB version (its `blocked`
+    // callback is informational, and the promise is not cancellable), and a
+    // gate that never opens means the panel never subscribes — a blank
+    // transcript, far worse than losing the IDB cache. So the settle is
+    // bounded: whichever comes first, initIdb settling or the timeout.
+    const settleIdb = () => {
+      if (this.idbSettled) return
       // Publish the settled state: useChatStream's subscribe gate waits for
       // it (see idbSettled), so the snapshot MUST change or that gate never
       // opens. Same reasoning as the hydrateReady flip below.
       this.idbSettled = true
       this.snapshot = this.buildSnapshot(this.state)
       this.emit()
+    }
+    // Both the flag AND the promise are bounded — a promise that never
+    // resolves is a footgun for the next caller that awaits it.
+    this.idbReady = new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        settleIdb()
+        resolve()
+      }, IDB_GATE_TIMEOUT_MS)
+      void this.initIdb().finally(() => {
+        clearTimeout(timer)
+        settleIdb()
+        resolve()
+      })
     })
   }
 
