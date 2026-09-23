@@ -43,7 +43,9 @@ import { unified } from 'unified'
 import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
+import remarkMath from 'remark-math'
 import remarkRehype from 'remark-rehype'
+import rehypeKatex from 'rehype-katex'
 import { toJsxRuntime, type Options as ToJsxOptions } from 'hast-util-to-jsx-runtime'
 import { rehypeStripStructuralWhitespace } from '../../shared/search/rehype-strip-structural-whitespace'
 import { rehypeHighlightLite } from '../components/markdown-highlight'
@@ -138,23 +140,47 @@ export function markdownSearchBucketCount(): number {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const processors = new Map<string, any>()
+
+/**
+ * KaTeX options shared by both pipelines. `strict: false` silences katex's
+ * console warnings for non-standard-but-renderable LaTeX (models freely mix
+ * Unicode/CJK into math). `errorColor` is a CSS var because katex colors
+ * parse errors via an INLINE style on the error spans — the stylesheet can't
+ * reach them (a class rule would be dead CSS), but a var() resolves fine
+ * inline and follows the theme. `trust` stays false (default): `\href` etc.
+ * are inert, matching the no-raw-HTML stance in Markdown.tsx.
+ */
+const KATEX_OPTIONS = { strict: false, errorColor: 'var(--danger-text)' } as const
+
 /**
  * A unified processor is frozen at first `parse()` — `.use()` after that
  * throws. So the cacheable (non-search) pipeline is a stable singleton, and
  * the search path (query + active idx vary) builds a throwaway processor per
  * cache miss. Processor build is cheap next to parse+lowlight; the LRU of
  * OUTPUT trees is where the win is.
+ *
+ * Math plugin placement: remark-math sits right after remark-gfm at the
+ * remark layer (its math nodes carry content in `node.value`, so
+ * remark-breaks' unconditional text-node newline→<br> walk can never corrupt
+ * a formula). rehype-katex runs after the whitespace strip and BEFORE
+ * rehypeHighlightLite so lowlight never sees the `language-math` code
+ * handoff. In the SEARCH path katex runs LAST — after the query marker — so
+ * search marks land on raw LaTeX and are then replaced wholesale; injecting
+ * marks into katex's span tree would break its kerning/positioning. The
+ * cost: a match inside a formula counts (ingest keeps raw LaTeX) but is not
+ * visually marked.
  */
 function getBaseProcessor(breaks: boolean) {
   const key = breaks ? 'breaks' : 'plain'
   let proc = processors.get(key)
   if (!proc) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let p: any = unified().use(remarkParse).use(remarkGfm)
+    let p: any = unified().use(remarkParse).use(remarkGfm).use(remarkMath)
     if (breaks) p = p.use(remarkBreaks)
     proc = p
       .use(remarkRehype)
       .use(rehypeStripStructuralWhitespace)
+      .use(rehypeKatex, KATEX_OPTIONS)
       .use(rehypeHighlightLite)
     processors.set(key, proc)
   }
@@ -164,7 +190,7 @@ function getBaseProcessor(breaks: boolean) {
 function buildSearchProcessor(opts: CompileMarkdownOptions) {
   const q = opts.searchQuery!.trim()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let p: any = unified().use(remarkParse).use(remarkGfm)
+  let p: any = unified().use(remarkParse).use(remarkGfm).use(remarkMath)
   if (opts.breaks) p = p.use(remarkBreaks)
   return p
     .use(remarkRehype)
@@ -173,6 +199,8 @@ function buildSearchProcessor(opts: CompileMarkdownOptions) {
     // Attacher wrap mirrors Markdown.tsx (rehypeHighlightQuery returns a
     // transformer, unified wants an attacher).
     .use(() => rehypeHighlightQuery(q, opts.activeMatchIdx))
+    // Katex last: see the math-placement note on getBaseProcessor.
+    .use(rehypeKatex, KATEX_OPTIONS)
 }
 
 /** Compile markdown to a shareable React tree. Cached per (variant, source). */

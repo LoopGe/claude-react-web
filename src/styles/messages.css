@@ -3677,3 +3677,17 @@ details.plan-card-minimized {
   user-select: none;
 }
 .msg-report-raw > summary:hover { color: var(--accent-text); }
+
+/* ── KaTeX math (remark-math + rehype-katex pipeline) ──────────────────
+   KaTeX body glyphs use currentColor, so dark/light themes adapt without
+   extra rules. Loaded from main.tsx BEFORE styles.css so these overrides
+   win the equal-specificity cascade against katex.min.css defaults.
+   Parse-error coloring is NOT done here: katex emits it as an inline
+   style, which this stylesheet can't outrank — the pipeline passes
+   errorColor: 'var(--danger-text)' instead (see markdown-cache.ts). */
+/* katex's own default is 1.21em — noticeably larger than chat prose. Tone
+   BOTH modes down to keep the .md line rhythm (lh 1.55): the selector
+   deliberately hits inline formulas and the .katex inside .katex-display
+   alike, so display blocks stay proportional to surrounding text. */
+.md .katex { font-size: 1.1em; }
+.md .katex-display { margin: 0.8em 0; }

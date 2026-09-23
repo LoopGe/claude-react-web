@@ -9,6 +9,10 @@ import { PluginRegistryProvider } from './app-plugins/PluginRegistryProvider'
 import { PluginCommandResultHost } from './app-plugins/PluginCommandResultHost'
 import { installGlobalErrorCapture, rootCallbacks } from './error-capture'
 import { RootErrorBoundary } from './error-capture-boundary'
+// KaTeX math styles must load BEFORE styles.css so the theme sizing
+// overrides in messages.css (`.md .katex`, `.md .katex-display`) win the
+// equal-specificity cascade.
+import 'katex/dist/katex.min.css'
 import './styles.css'
 
 // Passive error capture: catches render crashes (root boundary + fallback

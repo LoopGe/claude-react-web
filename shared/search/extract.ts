@@ -12,6 +12,23 @@
 // Markdown.tsx — both sides strip structural-whitespace text nodes,
 // otherwise the two trees would diverge and the search counter would
 // desync from the visible highlights.
+//
+// KNOWN, DELIBERATE EXCEPTION — math. The render pipeline
+// (src/utils/markdown-cache.ts) also runs remark-math + rehype-katex; this
+// ingest processor does NOT, on purpose. Math is the first construct where
+// the rendered text is not the source text: katex replaces `$5 and $10`
+// with glyph spans, so flattening a katex tree would index mangled text
+// like "5and10" and make the raw LaTeX unsearchable. Keeping the
+// delimiters here means:
+//   * queries against LaTeX source (`\int`, `frac`) match the index, but
+//     the find bar cannot visually mark them (the render-path query
+//     marker runs BEFORE rehype-katex, and katex then replaces the math
+//     element's children wholesale, erasing any mark inside it);
+//   * inside a math-bearing message, ingest offsets and render-tree text
+//     drift by the delimiter count after the first formula.
+// Both effects are confined to messages that actually contain `$…$` /
+// `$$…$$` and are accepted as the cost of searchable LaTeX. If that ever
+// changes, the alignment test is where the divergence gets pinned.
 
 import { unified, type Processor } from 'unified'
 import remarkParse from 'remark-parse'
