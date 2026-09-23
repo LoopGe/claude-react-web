@@ -105,6 +105,12 @@ function isInterruptPlaceholder(content: unknown): boolean {
   return sawText
 }
 
+export interface TranscriptFile {
+  path: string
+  mtimeMs: number
+  size: number
+}
+
 /** Locate the transcript file for a session id. Session ids are globally
  *  unique UUIDs, so we scan every project dir rather than recreating the SDK's
  *  cwd→dirname encoding ourselves. Returns null if no file exists.
@@ -112,7 +118,7 @@ function isInterruptPlaceholder(content: unknown): boolean {
  *  A flat readdir rather than a glob: the config dir is an arbitrary
  *  user-chosen path (CLAUDE_CONFIG_DIR), so metacharacters in it — "cfg[1]",
  *  "a*b" — would change a pattern's meaning and silently match nothing. */
-async function findTranscriptFile(sessionId: string): Promise<string | null> {
+export async function findTranscriptFile(sessionId: string): Promise<TranscriptFile | null> {
   const projectsDir = path.join(claudeConfigDir(), 'projects')
   // basename() so a caller-supplied id can never traverse out of the projects
   // tree — the id lands in a join() that is both read and unlinked. Session ids
@@ -130,8 +136,8 @@ async function findTranscriptFile(sessionId: string): Promise<string | null> {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
       const candidate = path.join(projectsDir, entry.name, fileName)
       try {
-        await stat(candidate)
-        return candidate // first hit ?ids are unique
+        const s = await stat(candidate)
+        return { path: candidate, mtimeMs: s.mtimeMs, size: s.size } // first hit — ids are unique
       } catch (err) {
         const e = err as NodeJS.ErrnoException
         // Not in this project dir is the normal case (ENOENT), as is a
@@ -179,12 +185,12 @@ export async function deleteTranscriptFile(sessionId: string): Promise<boolean> 
   const file = await findTranscriptFile(sessionId)
   if (!file) return false
   try {
-    await unlink(file)
-    log.info(`deleteTranscriptFile: removed ${file}`)
+    await unlink(file.path)
+    log.info(`deleteTranscriptFile: removed ${file.path}`)
     return true
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
-    log.warn(`deleteTranscriptFile: unlink failed for ${file} (code=${code ?? 'unknown'}): ${(err as Error).message ?? err}`)
+    log.warn(`deleteTranscriptFile: unlink failed for ${file.path} (code=${code ?? 'unknown'}): ${(err as Error).message ?? err}`)
     return false
   }
 }
@@ -345,48 +351,6 @@ export function normalize(o: RawLine, sessionId: string, trim: boolean): unknown
   return out
 }
 
-/**
- * Read a page of historical messages from disk.
- *
- * Offset semantics: the renderable messages form a chronological array of
- * length `totalCount` (index 0 = oldest). We return the `limit` messages
- * ending just before the resolved end index:  slice[max(0, end-limit), end).
- *
- * The end index is resolved in priority order:
- *   1. `beforeUuid` ?find that uuid's disk index and page strictly before
- *      it. Used for the FIRST page: the frontend passes the oldest message
- *      currently on screen that has a disk-stable uuid (assistant /
- *      system / tool_result-bearing user). User PROMPT uuids are minted
- *      server-side at send() time and never match disk, which is why we
- *      anchor on a disk-stable type. If the uuid isn't found, fall through
- *      to the newest page.
- *   2. `before` — an explicit disk index (used for subsequent pages: pass
- *      the previous response's `startIndex`).
- *   3. neither ?`totalCount` (newest page).
- *
- * Returns an empty page (totalCount 0) when the transcript file doesn't
- * exist yet ?e.g. a session that never completed a turn.
- */
-export async function readHistoryPage(
-  sessionId: string,
-  opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string },
-): Promise<HistoryPage> {
-  const file = await findTranscriptFile(sessionId)
-  if (!file) {
-    return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
-  }
-
-  let raw: string
-  try {
-    raw = await readFile(file, 'utf8')
-  } catch (err) {
-    log.warn(`readHistoryPage readFile error session=${sessionId}: ${(err as Error).message ?? err}`)
-    return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
-  }
-
-  return paginateJsonl(raw, sessionId, opts)
-}
-
 /** Read every renderable historical message from disk. Used by server-side
  *  search so it can scan a transcript without resuming the SDK Query. */
 export async function readHistoryEntries(
@@ -398,7 +362,7 @@ export async function readHistoryEntries(
 
   let raw: string
   try {
-    raw = await readFile(file, 'utf8')
+    raw = await readFile(file.path, 'utf8')
   } catch (err) {
     log.warn(`readHistoryEntries readFile error session=${sessionId}: ${(err as Error).message ?? err}`)
     return []
@@ -433,7 +397,7 @@ export async function readTurnAnchorsFromDisk(
   if (!file) return []
   let raw: string
   try {
-    raw = await readFile(file, 'utf8')
+    raw = await readFile(file.path, 'utf8')
   } catch (err) {
     log.warn(`readTurnAnchorsFromDisk readFile error session=${sessionId}: ${(err as Error).message ?? err}`)
     return []

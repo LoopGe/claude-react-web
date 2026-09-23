@@ -24,7 +24,8 @@ import {
   resolveConfiguredModelId,
   resolveGroup,
 } from '../../model-groups.js'
-import { readHistoryEntries, readHistoryPage } from '../../history-reader.js'
+import { readHistoryEntries } from '../../history-reader.js'
+import { jsonlPageCache } from '../../jsonl-cache.js'
 import { claudeConfigDir } from '../../claude-config-dir.js'
 import { filterClientEnv } from '../../session-env.js'
 import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
@@ -668,7 +669,9 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   readHistoryPage(id: string, opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string }): Promise<HistoryPage> {
-    return readHistoryPage(id, opts)
+    // afterUuid is search-path only and never arrives here (routes/sessions.ts
+    // only forwards before/beforeUuid/limit); the cache does not need it.
+    return jsonlPageCache.readPage(id, opts)
   }
 
   readHistoryEntries(id: string, opts: { afterUuid?: string }): Promise<HistoryEntry[]> {

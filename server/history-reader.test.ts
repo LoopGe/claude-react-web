@@ -3,7 +3,8 @@ import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { paginateJsonl, turnAnchorsFromJsonl, readHistoryPage, sliceWindow, paginateRenderable } from './history-reader.js'
+import { paginateJsonl, turnAnchorsFromJsonl, sliceWindow, paginateRenderable } from './history-reader.js'
+import { jsonlPageCache } from './jsonl-cache.js'
 
 // Creating a symlink needs no privileges on POSIX but does on Windows unless a
 // junction is used. Probe once so the symlink test is skipped only where the
@@ -23,9 +24,11 @@ const canSymlink = (() => {
   }
 })()
 
-// Build a JSONL transcript string from line objects.
+// Build a JSONL transcript string from line objects. Trailing newline is
+// required: the JSONL page cache parses only COMPLETE lines (up to the last
+// '\n') — without it the final line is treated as a torn partial write.
 function jsonl(lines: Array<Record<string, unknown>>): string {
-  return lines.map((l) => JSON.stringify(l)).join('\n')
+  return lines.map((l) => JSON.stringify(l)).join('\n') + '\n'
 }
 
 const SID = 'sess-1'
@@ -506,7 +509,7 @@ describe('turnAnchorsFromJsonl — backfill from disk', () => {
   })
 })
 
-describe('readHistoryPage — CLI config dir', () => {
+describe('readPage via jsonlPageCache — CLI config dir', () => {
   // The `claude` CLI stores transcripts under $CLAUDE_CONFIG_DIR/projects when
   // that variable is set, so the reader has to resolve the same root.
   // Hardcoding ~/.claude makes resume, replay and file-rewind come back
@@ -527,7 +530,7 @@ describe('readHistoryPage — CLI config dir', () => {
     const prev = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = root
     try {
-      const page = await readHistoryPage(sid, { limit: 100 })
+      const page = await jsonlPageCache.readPage(sid, { limit: 100 })
       expect(page.totalCount).toBe(2)
       expect((page.messages[0] as { uuid: string }).uuid).toBe('u1')
     } finally {
@@ -565,7 +568,7 @@ describe('readHistoryPage — CLI config dir', () => {
     const prev = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = cfgRoot
     try {
-      const page = await readHistoryPage(sid, { limit: 100 })
+      const page = await jsonlPageCache.readPage(sid, { limit: 100 })
       expect(page.totalCount).toBe(2)
     } finally {
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
@@ -593,7 +596,7 @@ describe('readHistoryPage — CLI config dir', () => {
     const prev = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = bracketed
     try {
-      const page = await readHistoryPage(sid, { limit: 100 })
+      const page = await jsonlPageCache.readPage(sid, { limit: 100 })
       expect(page.totalCount).toBe(2)
     } finally {
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR

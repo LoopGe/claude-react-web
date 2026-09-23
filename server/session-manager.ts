@@ -115,6 +115,7 @@ import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
 import { deleteTranscriptFile } from './history-reader.js'
+import { jsonlPageCache } from './jsonl-cache.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createDefaultProviders } from './providers/default-providers.js'
 import type { ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle } from './providers/types.js'
@@ -2075,6 +2076,7 @@ export class SessionManager {
     if (opts?.deleteOriginal) {
       await this.unload(id, { terminated: true, reason: 'discarded', removeFromStore: true })
       await deleteTranscriptFile(id)
+      jsonlPageCache.invalidate(id)
       // Await the sidecar removals (not fire-and-forget): callers — the REST
       // route and tests — read them immediately after discard returns, so a
       // pending remove races the read (observed as a flaky "sidecar gone"

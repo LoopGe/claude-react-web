@@ -31,7 +31,8 @@
 // roughly 2-4x the file size on the V8 heap. maxSessions (default 4) bounds
 // total cost; the LRU order is Map insertion order (get re-inserts).
 
-import { normalize, parseRenderable, sliceWindow, type HistoryPage } from './history-reader.js'
+import { readFile as fsReadFile } from 'node:fs/promises'
+import { normalize, parseRenderable, sliceWindow, findTranscriptFile, type HistoryPage } from './history-reader.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
 
@@ -214,3 +215,15 @@ export function createJsonlPageCache(deps: JsonlDeps, maxSessions = 4): JsonlPag
     },
   }
 }
+
+/** Production singleton. `locate` reuses findTranscriptFile, which already
+ *  stats the candidate for its existence check — the stat rides along for
+ *  free as the cache freshness key. */
+export const jsonlPageCache: JsonlPageCache = createJsonlPageCache({
+  locate: async (sessionId) => {
+    const found = await findTranscriptFile(sessionId)
+    if (!found) return null
+    return { path: found.path, stat: { mtimeMs: found.mtimeMs, size: found.size } }
+  },
+  readFile: (path) => fsReadFile(path, 'utf8'),
+})
