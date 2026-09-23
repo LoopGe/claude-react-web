@@ -23,9 +23,19 @@
 //     compiles a fresh entry per visible row per debounced keystroke. Sharing
 //     one LRU with the plain entries meant a ~20-keystroke query flushed the
 //     entire cache and every row had to be re-parsed after the search closed.
-//     Search variants now live in their own small, separately-capped buckets,
-//     and a stale query's bucket is dropped whole (which is what you want —
-//     nothing in it is reachable again once the query moves on).
+//     Search variants now live in their own separately-capped buckets, retired
+//     least-recently-USED (see searchBucketFor for why insertion order is the
+//     wrong policy here).
+//
+// Capping is per bucket, so there is no single global bound; the worst case is
+// 2 × PLAIN_CAP + SEARCH_BUCKET_CAP × SEARCH_CAP entries. Both plain buckets
+// really are live at once (MessageView passes `breaks` for user messages and
+// not for assistant ones), and nothing drops the search buckets when the find
+// bar closes — they age out as later queries arrive. That is a deliberately
+// looser envelope than the single flat cap it replaces: one shared number for
+// two workloads with different lifetimes is what produced the eviction problem
+// above. The entries are immutable React trees that the mounted rows are
+// holding anyway in the common case.
 
 import { Fragment, type ReactNode } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
@@ -58,20 +68,41 @@ const plainBuckets: readonly [SourceBucket, SourceBucket] = [new Map(), new Map(
  *  resident. Small on purpose: only the current query is reachable, the rest
  *  are history. */
 const SEARCH_BUCKET_CAP = 8
-/** Entries per search bucket — roughly "rows visible during one query". */
-const SEARCH_CAP = 60
+/** Entries per search bucket. Sized for "the rows you can scroll through while
+ *  one query is active" — note entries are compiled BLOCKS, and one row can
+ *  hold several, so this is nearer 40 rows than 120. */
+const SEARCH_CAP = 120
 const searchBuckets = new Map<string, SourceBucket>()
 
-/** Get (or open) the bucket for one search variant, retiring the oldest
- *  variant wholesale once the cap is hit. */
+/**
+ * Get (or open) the bucket for one search variant, retiring the LEAST RECENTLY
+ * USED variant once the cap is hit.
+ *
+ * Recency, not insertion order, and that distinction is the whole point here.
+ * `activeMatchIdx` is part of the variant, and only the row holding the active
+ * match carries one — every OTHER visible row compiles under the same
+ * `…|''|query` variant. So a single query's working set splits into one big
+ * bucket (all the non-active rows, created first) plus one small bucket per
+ * match the user steps onto. Under FIFO the big bucket is the oldest and would
+ * be the first evicted, i.e. the eviction order was the exact inverse of value:
+ * navigating through 8 matches in one match-dense message would drop the bucket
+ * every other row on screen is reading from. Re-inserting on access keeps it
+ * hot, because every render touches it.
+ */
 function searchBucketFor(variant: string): SourceBucket {
-  let bucket = searchBuckets.get(variant)
-  if (bucket) return bucket
-  if (searchBuckets.size >= SEARCH_BUCKET_CAP) {
-    const oldest = searchBuckets.keys().next().value
-    if (oldest !== undefined) searchBuckets.delete(oldest)
+  const existing = searchBuckets.get(variant)
+  if (existing) {
+    // Move to the young end: Map iteration is insertion-ordered, so delete +
+    // re-set is how you express "touched" with a plain Map.
+    searchBuckets.delete(variant)
+    searchBuckets.set(variant, existing)
+    return existing
   }
-  bucket = new Map()
+  if (searchBuckets.size >= SEARCH_BUCKET_CAP) {
+    const lru = searchBuckets.keys().next().value
+    if (lru !== undefined) searchBuckets.delete(lru)
+  }
+  const bucket: SourceBucket = new Map()
   searchBuckets.set(variant, bucket)
   return bucket
 }

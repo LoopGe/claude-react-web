@@ -51,6 +51,49 @@ describe('compileMarkdown cache', () => {
     expect(container.querySelector('.hljs-keyword, .hljs-title, span[class*="hljs"]')).toBeTruthy()
   })
 
+  // Fence tags are model output, so the language gate has to be as permissive
+  // as lowlight itself. A hand-maintained Set of explicit aliases was not: it
+  // silently dropped highlighting for every grammar-declared alias and for any
+  // tag that wasn't already lowercase. `js` (the case above) is in that Set, so
+  // it could not catch either regression — hence these.
+  describe('language gate breadth', () => {
+    const highlighted = (md: string) => {
+      const { container } = render(<>{compileMarkdown(md, {})}</>)
+      return container.querySelector('span[class*="hljs"]') != null
+    }
+
+    it.each([
+      ['mjs', '```mjs\nconst x = 1\n```'],
+      ['cjs', '```cjs\nconst x = 1\n```'],
+      ['kt', '```kt\nval x = 1\n```'],
+      ['patch', '```patch\n--- a\n+++ b\n```'],
+      ['jsonc', '```jsonc\n{"a": 1}\n```'],
+    ])('highlights a grammar-declared alias (%s)', (_name, md) => {
+      expect(highlighted(md)).toBe(true)
+    })
+
+    it.each([
+      ['Python', '```Python\nx = 1\n```'],
+      ['JSON', '```JSON\n{"a": 1}\n```'],
+    ])('highlights a non-lowercase tag (%s)', (_name, md) => {
+      expect(highlighted(md)).toBe(true)
+    })
+
+    it('leaves an unknown language as plain text instead of throwing', () => {
+      const { container } = render(
+        <>{compileMarkdown('```not-a-real-language\nsome text\n```', {})}</>,
+      )
+      expect(container.querySelector('span[class*="hljs"]')).toBeNull()
+      expect(container.querySelector('code')?.textContent).toContain('some text')
+    })
+
+    it('leaves an untagged fence as plain text', () => {
+      const { container } = render(<>{compileMarkdown('```\nsome text\n```', {})}</>)
+      expect(container.querySelector('span[class*="hljs"]')).toBeNull()
+      expect(container.querySelector('code')?.textContent).toContain('some text')
+    })
+  })
+
   // The reason search variants get their own buckets: typing in the find bar
   // compiles a fresh entry per visible row per debounced keystroke, and a
   // shared LRU let that flush every plain entry — so closing the search box

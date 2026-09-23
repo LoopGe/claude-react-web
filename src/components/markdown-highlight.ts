@@ -13,7 +13,7 @@
 // pass would replace the text-with-marks subtree wholesale and erase the
 // highlights.
 
-import { lowlight, isRegisteredLanguage } from '../utils/lowlight-instance'
+import { lowlight } from '../utils/lowlight-instance'
 
 /** Minimal hast-like node shape. Uses a loose type rather than importing
  *  hast's full union to keep the plugin self-contained. */
@@ -58,13 +58,23 @@ export function rehypeHighlightLite() {
       const text = extractText(node)
       if (!text) return
 
-      // Guard with the registered-language set rather than catching the throw
-      // lowlight raises for an unknown grammar: a fence tagged with something
+      // Ask lowlight itself whether it knows this tag, rather than catching the
+      // throw it raises for an unknown grammar: a fence tagged with something
       // we don't ship (```elixir) is ordinary model output, not an exceptional
-      // condition, and this is the same guard diff-highlight.tsx already uses.
-      // The try/catch stays as a backstop for anything else the grammar can
-      // raise on pathological input.
-      if (!isRegisteredLanguage(lang)) return
+      // condition.
+      //
+      // `lowlight.registered` and NOT `isRegisteredLanguage`: that helper is a
+      // hand-maintained Set written for diff-highlight.tsx, whose language
+      // comes from `detectLanguage(path)` — a fixed extension table that only
+      // ever yields names in the Set. Fence tags are model output, and
+      // lowlight's own resolver accepts much more: `register()` also picks up
+      // each grammar's built-in `aliases` (so `mjs`, `kt`, `docker`, `patch`,
+      // `golang`, `jsonc`, `cc`, … all resolve even though the Set lists none
+      // of them), and it lowercases before lookup (so ```Python resolves).
+      // Gating on the narrower Set silently dropped highlighting for all of
+      // those. `registered` tracks registration and aliasing with no second
+      // list to keep in sync.
+      if (!lowlight.registered(lang)) return
       try {
         const result = lowlight.highlight(lang, text)
         if (result.children.length > 0) {
