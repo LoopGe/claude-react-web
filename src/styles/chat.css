@@ -121,8 +121,18 @@
   opacity: 0;
   transform: translateY(var(--motion-distance-md));
 }
-.virtuoso-item-wrapper.transcript-item-reveal {
+/* Reveal rows animate via a class applied from React state (MessageList's
+   itemContent, from the hook's flip-time snapshot) — NOT per-row DOM writes
+   (the next className re-render strips those before the animation starts)
+   and NOT a `.chat-messages-reveal .virtuoso-item-wrapper` descendant rule
+   (that would also catch rows mounting after the flip — live arrivals whose
+   msg-enter semantics the time-boxed reveal window can't cover). The stagger
+   delay is frozen per row at the flip via the inert `--reveal-stagger`
+   custom property. Class constant: TRANSCRIPT_REVEAL_ROW_CLASS in
+   useTranscriptAnimations.ts. */
+.virtuoso-item-wrapper.transcript-reveal-row {
   animation: transcript-item-reveal var(--motion-duration-moderate) var(--motion-ease-enter) both;
+  animation-delay: var(--reveal-stagger, 0ms);
 }
 @keyframes transcript-reveal {
   from {
@@ -148,7 +158,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-messages.chat-messages-reveal,
-  .virtuoso-item-wrapper.transcript-item-reveal {
+  .virtuoso-item-wrapper.transcript-reveal-row {
     animation: none;
   }
   .chat-messages.chat-messages-reveal-pending {

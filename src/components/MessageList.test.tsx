@@ -72,6 +72,12 @@ const virtuosoMockState = vi.hoisted(() => ({
   // Captures the `rangeChanged` prop so a test can drive it the way real
   // Virtuoso does when its RENDERED window shifts.
   rangeChanged: undefined as ((range: { startIndex: number; endIndex: number }) => void) | undefined,
+  // When false the mock renders the item-list element WITHOUT any rows — the
+  // "mounted but not yet measured" phase real Virtuoso goes through while its
+  // listState is still empty (and, before the hide-flip lands, while the list
+  // is still visibility-visible). Lets the reveal-release tests reproduce the
+  // empty-release race deterministically.
+  renderItems: true,
 }))
 
 // Mock Virtuoso to render all items directly — Virtuoso needs real
@@ -149,7 +155,7 @@ vi.mock('react-virtuoso', async () => {
       return (
         <div ref={mockScrollerRef} data-testid="virtuoso-mock">
           <div data-testid="virtuoso-item-list">
-            {data.map((item, i) => (
+            {virtuosoMockState.renderItems && data.map((item, i) => (
               // Honour computeItemKey exactly like real Virtuoso does
               // (`computeItemKey(originalIndex + firstItemIndex, data)`), and
               // fall back to the index when it isn't supplied — which is also
@@ -344,6 +350,7 @@ describe('MessageList', () => {
     virtuosoMockState.scrollTop = 0
     virtuosoMockState.streamingSpacerHeight = 0
     virtuosoMockState.lastFollowOutput = undefined
+    virtuosoMockState.renderItems = true
     roObserved.clear()
   })
 
@@ -454,13 +461,151 @@ describe('MessageList', () => {
     rerender(<MessageList items={items}  transcriptRevealKey="session-a" />)
     await waitFor(() => {
       expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(true)
-      expect(container.querySelector('.virtuoso-item-wrapper')?.classList.contains('transcript-item-reveal')).toBe(true)
+      // Row stagger is declarative now: the container class + a per-row
+      // `--reveal-stagger` custom property (inert until the class lands).
+      expect(container.querySelector<HTMLElement>('.virtuoso-item-wrapper')?.style.getPropertyValue('--reveal-stagger')).toBeTruthy()
     })
 
     rerender(<MessageList items={[]}  transcriptRevealKey="session-b" />)
     rerender(<MessageList items={items}  transcriptRevealKey="session-b" />)
+    // New key: the one-shot is consumed by the empty render, so the reveal
+    // class must NOT come back — the transcript renders plain.
     expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(false)
-    expect(container.querySelector('.virtuoso-item-wrapper')?.classList.contains('transcript-item-reveal')).toBe(false)
+  })
+
+  it('does not release the reveal while Virtuoso has rendered zero rows', async () => {
+    // The production race: react-virtuoso's item-list mounts VISIBLE (its
+    // "hidden until the initial scroll completes" flip is applied
+    // asynchronously), so a release poll that only checks visibility can fire
+    // while the list still has ZERO rendered rows — consuming the one-shot
+    // reveal into an empty container, after which every row mounts with no
+    // entrance animation at all. The release must wait for actual rows.
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Ready now' }] },
+      }),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+
+    // List mounted, still empty (Virtuoso hasn't rendered its window yet).
+    virtuosoMockState.renderItems = false
+    const { container, rerender } = render(
+      <MessageList items={items} transcriptRevealKey="session-a" />,
+    )
+
+    // Several frames pass — the poll must keep waiting, not release into the
+    // empty container.
+    await act(async () => { await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 0)))) })
+    await act(async () => { await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0))) })
+    expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(false)
+    expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal-pending')).toBe(true)
+
+    // Rows render — only NOW may the reveal apply. (New array instance: the
+    // identical-props rerender above would be swallowed by memo(MessageList)
+    // and the mock would never re-render its rows.)
+    virtuosoMockState.renderItems = true
+    rerender(<MessageList items={[...items]} transcriptRevealKey="session-a" />)
+    await waitFor(() => {
+      expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(true)
+    })
+  })
+
+  it('scopes the reveal animation to rows present at the flip — late arrivals stay plain', async () => {
+    // A row that mounts AFTER the reveal flip is a live arrival, not part of
+    // the one-shot transcript transition: it must not inherit the staggered
+    // reveal (whose time-boxed window can't cover it — it would pop from
+    // backwards-fill invisibility mid-rise), and the snapshot rows keep
+    // playing theirs.
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'First' }] },
+      }),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+
+    const { container, rerender } = render(
+      <MessageList items={items} transcriptRevealKey="session-a" />,
+    )
+    await waitFor(() => {
+      expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(true)
+    })
+    const before = container.querySelector('.virtuoso-item-wrapper')
+    expect(before?.classList.contains('transcript-reveal-row')).toBe(true)
+
+    // A live arrival lands during the reveal window.
+    const later = toItems([
+      ...msgs,
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Second — arrived after the flip' }] },
+      }),
+    ] as SdkMessage[])
+    rerender(<MessageList items={later} transcriptRevealKey="session-a" />)
+
+    const wrappers = container.querySelectorAll('.virtuoso-item-wrapper')
+    expect(wrappers.length).toBe(2)
+    expect(wrappers[0].classList.contains('transcript-reveal-row')).toBe(true)
+    expect(wrappers[1].classList.contains('transcript-reveal-row')).toBe(false)
+    expect(wrappers[1].classList.contains('msg-enter')).toBe(false)
+  })
+
+  it('drops a reveal row at its animationend and closes the reveal at the last one', async () => {
+    // The snapshot row class must not outlive the animation (a scroll-driven
+    // remount inside the window would replay it): each row's animationend
+    // shrinks the snapshot, and the last one clears the container class too.
+    const msgs = [
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'One' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'Two' }] } }),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+
+    const { container } = render(
+      <MessageList items={items} transcriptRevealKey="session-a" />,
+    )
+    await waitFor(() => {
+      expect(container.querySelectorAll('.transcript-reveal-row').length).toBe(2)
+    })
+
+    const fireRevealEnd = (row: Element) => {
+      const ev = new Event('animationend', { bubbles: true }) as Event & { animationName: string }
+      ev.animationName = 'transcript-item-reveal'
+      act(() => { row.dispatchEvent(ev) })
+    }
+    const rows = () => container.querySelectorAll('.transcript-reveal-row')
+
+    fireRevealEnd(container.querySelectorAll('.virtuoso-item-wrapper')[0])
+    await waitFor(() => {
+      expect(rows().length).toBe(1)
+    })
+    // Container still revealing — one row is still animating.
+    expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(true)
+
+    fireRevealEnd(container.querySelectorAll('.virtuoso-item-wrapper')[1])
+    await waitFor(() => {
+      expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(false)
+    })
+    expect(rows().length).toBe(0)
+  })
+
+  it('drops the reveal hold when the transcript empties before release', async () => {
+    // Armed (rows ready) but the transcript emptied before the release poll
+    // ran (EVICT_MESSAGES / mid-replay /clear): the pending hold must drop,
+    // or the empty state sticks at opacity 0 forever.
+    const msgs = [
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'Doomed' }] } }),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+
+    const { container, rerender } = render(
+      <MessageList items={items} transcriptRevealKey="session-a" />,
+    )
+    expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal-pending')).toBe(true)
+
+    rerender(<MessageList items={[]} transcriptRevealKey="session-a" />)
+    await waitFor(() => {
+      expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal-pending')).toBe(false)
+    })
+    // The empty state must actually be visible (not held at opacity 0).
+    expect(container.querySelector('.chat-messages-empty')).toBeTruthy()
   })
 
   it('does not hide keyless filtered subagent transcripts behind reveal pending state', () => {
@@ -708,7 +853,7 @@ describe('MessageList', () => {
 
     await waitFor(() => {
       expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal')).toBe(true)
-      expect(container.querySelector('.virtuoso-item-wrapper')?.classList.contains('transcript-item-reveal')).toBe(true)
+      expect(container.querySelector<HTMLElement>('.virtuoso-item-wrapper')?.style.getPropertyValue('--reveal-stagger')).toBeTruthy()
     })
   })
 
