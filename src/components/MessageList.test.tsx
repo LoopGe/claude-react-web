@@ -187,7 +187,7 @@ vi.mock('react-virtuoso', async () => {
   }
 })
 // Import AFTER mock.
-import { MessageList, WorkingBubble } from './MessageList'
+import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
 import { FOLD_MAX_PX } from './message-list/fold-key'
 import { extractMessagePlainText } from '../search'
 import { shouldArmEnterAnimation } from '../utils/enter-animation'
@@ -224,13 +224,13 @@ function toItems(msgs: SdkMessage[]): TranscriptItem[] {
 }
 
 // Simulate a genuine user scroll-up away from the bottom — the ONLY legitimate
-// trigger for the jump-to-bottom button under the follow-gate (a transient
-// not-at-bottom geometry read while following is treated as a pin-lag, so it
-// can no longer surface the button). We drive the scroll handler's isScrollingUp
-// deterministically: first nudge scrollTop to a known-high "down" position (so
-// the listener latches a high lastScrollTopRef), then jump it to 0 and fire
-// again — 0 < prev ⇒ 'disable-now' (user-intent), which surfaces the button
-// immediately (no debounce). Wrapped in act so the state update flushes.
+// trigger for a follow drop under the follow-gate (a transient not-at-bottom
+// geometry read while following is treated as a pin-lag and corrected). We
+// drive the scroll handler's isScrollingUp deterministically: first nudge
+// scrollTop to a known-high "down" position (so the listener latches a high
+// lastScrollTopRef), then jump it to 0 and fire again — 0 < prev ⇒
+// 'disable-now' (user-intent), which drops follow immediately (no debounce).
+// Wrapped in act so the state update flushes.
 //
 // The `wheel` event comes first because a leave now has to be USER-CAUSED: the
 // handler only latches AWAY when a real gesture preceded the upward move
@@ -256,6 +256,16 @@ function scrollUpFromBottom(container: HTMLElement) {
     virtuosoMockState.scrollTop = 0
     fireEvent.scroll(scroller)
   })
+}
+
+/** The follow gate's observable. MessageList stamps the hook's `following`
+ *  state onto `.chat-messages-wrap` declaratively — the attribute that
+ *  replaced the removed jump-to-bottom button as the FOLLOWING/AWAY assertion
+ *  surface. The wrap persists across transcript switches, so assertions need
+ *  no element re-query after a session switch. */
+function followingOf(container: HTMLElement) {
+  return (container.querySelector('.chat-messages-wrap') as HTMLElement | null)
+    ?.getAttribute('data-following')
 }
 
 describe('WorkingBubble', () => {
@@ -1140,9 +1150,8 @@ describe('MessageList', () => {
     // does not change, and the only thing that ever sees it is a scroll event
     // whose geometry read says dist-from-true-bottom > 0. The handler treated
     // that as pin-lag
-    // ('preserve') and did nothing — so the transcript stayed short with the
-    // jump button hidden, because follow was still on and `canJump` is
-    // `!following`.
+    // ('preserve') and did nothing — so the transcript stayed short with
+    // follow still on.
     virtuosoMockState.atBottomReport = true
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.scrollHeight = 200
@@ -1175,9 +1184,9 @@ describe('MessageList', () => {
     // the pin wrote (scrollHeight) rather than clamping the way a real browser
     // does, which is the same convention the other pin tests use.
     expect(scroller.scrollTop).toBe(320)
-    // Still following, so the affordance stays hidden: following MEANS "at the
-    // bottom", it does not mean "show the user a button and leave them short".
-    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    // Still following: following MEANS "at the bottom" — a displacement is
+    // corrected, not converted into a leave.
+    expect(followingOf(container)).toBe('true')
   })
 
   it('lets a user gesture in mid-flight leave while the follow animation is running', () => {
@@ -1187,7 +1196,7 @@ describe('MessageList', () => {
     // the leave latched by BOTH the gesture handlers and the scroll handler's
     // user-driven exception — and because nothing recorded it, the follow
     // invariant and the backstops then snapped the viewport back: the gesture
-    // was erased and no jump button appeared.
+    // was erased, follow never dropped.
     vi.useFakeTimers()
     try {
       virtuosoMockState.atBottomReport = true
@@ -1217,8 +1226,8 @@ describe('MessageList', () => {
       // The user wheels up inside that window.
       act(() => { userWheel(scroller) })
 
-      // The leave latched: follow is off, so the affordance is offered.
-      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+      // The leave latched: follow is off despite the in-flight animation.
+      expect(followingOf(container)).toBe('false')
     } finally {
       vi.useRealTimers()
     }
@@ -1261,10 +1270,10 @@ describe('MessageList', () => {
       fireEvent.scroll(scroller)
     })
 
-    // Still following ⇒ back at the bottom, and no jump button (the affordance
-    // is for a user who LEFT).
+    // Still following ⇒ back at the bottom: the leave is for a user who
+    // actually LEFT, not for a displacement.
     expect(scroller.scrollTop).toBe(300)
-    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    expect(followingOf(container)).toBe('true')
   })
 
   it('re-pins to the bottom when settled content grows AFTER the bottom overlay exits', () => {
@@ -1375,7 +1384,7 @@ describe('MessageList', () => {
     vi.useRealTimers()
   })
 
-  it('hides jump-to-bottom when the scroller cannot scroll down', async () => {
+  it('stays following when the scroller cannot scroll down', async () => {
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.scrollHeight = 100
@@ -1393,53 +1402,7 @@ describe('MessageList', () => {
     )
 
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
-    })
-  })
-
-  it('lifts the jump-to-bottom button above the bottom overlay cards', async () => {
-    // The button sits bottom-right (chat.css: `right:16px; bottom:16px`) — the
-    // exact corner the cards are parked in once they are a bottom overlay — so
-    // it has to ride above the stack by the stack's own height.
-    virtuosoMockState.atBottomReport = false
-    virtuosoMockState.reportBeforeRef = true
-    virtuosoMockState.scrollHeight = 200
-    virtuosoMockState.clientHeight = 100
-    virtuosoMockState.scrollTop = 100 // start at the bottom (following)
-
-    const msgs = [
-      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'Settled' }] } }),
-    ]
-    const { container } = render(
-      <MessageList
-        items={toItems(msgs as SdkMessage[])}
-        streamingContent=""
-        bottomOverlay={<div className="probe-card">card</div>}
-      />,
-    )
-
-    // The offset tracks the CARDS' wrapper, not the whole stack — the stack
-    // also holds the live bubble, whose height churns on every token.
-    const overlay = container.querySelector('.chat-bottom-overlay') as HTMLElement
-    expect(overlay).not.toBeNull()
-    let overlayHeight = 0
-    Object.defineProperty(overlay, 'getBoundingClientRect', {
-      configurable: true,
-      value: () => ({ height: overlayHeight, width: 400, top: 0, left: 0, right: 400, bottom: overlayHeight, x: 0, y: 0 }),
-    })
-    overlayHeight = 64
-    act(() => { fireResize(overlay) })
-
-    // A genuine scroll-up is what surfaces the button — geometry alone does not
-    // (the follow logic keeps it hidden). Mirrors the existing jump-to-bottom
-    // tests so this asserts the OFFSET, not the gating.
-    scrollUpFromBottom(container)
-
-    await waitFor(() => {
-      const button = container.querySelector('.chat-jump-to-bottom') as HTMLElement
-      expect(button).not.toBeNull()
-      // 16px base offset (chat.css) + the 64px stack.
-      expect(button.style.bottom).toBe('80px')
+      expect(followingOf(container)).toBe('true')
     })
   })
 
@@ -1466,11 +1429,11 @@ describe('MessageList', () => {
     )
 
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+      expect(followingOf(container)).toBe('true')
     })
   })
 
-  it('ignores the transparent streaming spacer when deciding whether to show jump-to-bottom', async () => {
+  it('ignores the transparent streaming spacer when deciding whether the viewport is at bottom', async () => {
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.scrollHeight = 180
@@ -1489,11 +1452,11 @@ describe('MessageList', () => {
     )
 
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+      expect(followingOf(container)).toBe('true')
     })
   })
 
-  it('shows jump-to-bottom after the user scrolls up from the bottom when there is content below', async () => {
+  it('drops follow after the user scrolls up from the bottom when there is content below', async () => {
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.scrollHeight = 200
@@ -1510,19 +1473,19 @@ describe('MessageList', () => {
       <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
 
-    // At the bottom → no button while following.
+    // At the bottom → following.
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+      expect(followingOf(container)).toBe('true')
     })
 
-    // Genuine user scroll-up → disable-now → button surfaces.
+    // Genuine user scroll-up → disable-now → follow drops.
     scrollUpFromBottom(container)
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+      expect(followingOf(container)).toBe('false')
     })
   })
 
-  it('treats an up-scroll inside the task-list dead zone as a leave (jump button appears, no re-pin yank)', async () => {
+  it('treats an up-scroll inside the task-list dead zone as a leave (follow drops, no re-pin yank)', async () => {
     // Regression guard for the "TASKLIST present → wheel-up snaps back to the
     // bottom" bug. `getDistanceFromBottom` subtracts the bottom spacer (the
     // task list + live bubble reserve) and clamps to 0, so an up-scroll that
@@ -1563,16 +1526,16 @@ describe('MessageList', () => {
 
     // Start at the true bottom, following.
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+      expect(followingOf(container)).toBe('true')
     })
 
     // User wheels up 50px — still inside the 254px dead zone the task list
     // reserves. With the bug this reads as "at bottom" (follow stays on) and
-    // the button stays hidden; with the fix the leave is detected immediately.
+    // the re-pins keep yanking; with the fix the leave is detected immediately.
     virtuosoMockState.scrollTop = contentHeight + virtuosoMockState.streamingSpacerHeight - virtuosoMockState.clientHeight - 50 // 304
     act(() => { userWheel(scroller); fireEvent.scroll(scroller) })
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+      expect(followingOf(container)).toBe('false')
     })
 
     // A new message appends → the append re-pin fires. With the bug follow is
@@ -1623,14 +1586,14 @@ describe('MessageList', () => {
 
     // Start at the true bottom, following.
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+      expect(followingOf(container)).toBe('true')
     })
 
-    // User wheels up 50px into the dead zone → leave (follow off, button up).
+    // User wheels up 50px into the dead zone → leave (follow off).
     virtuosoMockState.scrollTop = contentHeight + virtuosoMockState.streamingSpacerHeight - virtuosoMockState.clientHeight - 50
     act(() => { userWheel(scroller); fireEvent.scroll(scroller) })
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+      expect(followingOf(container)).toBe('false')
     })
 
     // The task list collapses: spacer 254 → 0, re-render drops the spacer, and
@@ -1641,10 +1604,10 @@ describe('MessageList', () => {
     virtuosoMockState.scrollTop = contentHeight - virtuosoMockState.clientHeight // 100 = new true max
     act(() => { fireEvent.scroll(scroller) })
 
-    // Still away — the button stays up and follow stays off, so an appended
-    // message must NOT yank the viewport back to the bottom.
+    // Still away — follow stays off, so an appended message must NOT yank the
+    // viewport back to the bottom.
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+      expect(followingOf(container)).toBe('false')
     })
     rerender(
       <MessageList
@@ -1654,15 +1617,15 @@ describe('MessageList', () => {
     expect(scroller.scrollTop).toBe(contentHeight - virtuosoMockState.clientHeight)
   })
 
-  it('keeps jump-to-bottom hidden while following, even across the follow-disable window (session-switch flicker guard)', async () => {
+  it('stays following across the follow-disable window (session-switch flicker guard)', async () => {
     // Regression guard for the switch flicker. During a session's bulk replay
     // the scroller is still following (`shouldFollowRef` true) but content
     // growth makes geometry transiently read "not at bottom" (scrollTop lags
     // the grown scrollHeight until the pin catches up). The 150ms follow-disable
-    // debounce must NOT treat that as a user scroll-away and surface the button
-    // — only `disable-now` (a genuine upward scroll) does. Geometry here report
+    // debounce must NOT treat that as a user scroll-away and drop follow —
+    // only `disable-now` (a genuine upward scroll) does. Geometry here reports
     // not-at-bottom for longer than FOLLOW_DEBOUNCE_MS; before the fix the
-    // debounce fired, flipped shouldFollowRef false, and flashed the button.
+    // debounce fired and flipped shouldFollowRef false mid-replay.
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.scrollHeight = 400
@@ -1680,16 +1643,17 @@ describe('MessageList', () => {
     )
 
     // Wait well past FOLLOW_DEBOUNCE_MS (a real bulk load would fire it several
-    // times). The button must stay hidden the whole window.
+    // times). The gate must stay ON the whole window.
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+      expect(followingOf(container)).toBe('true')
     })
   })
 
-  it('suppresses jump-to-bottom during the transcript reveal (replay) window', async () => {
-    // The render gate keys suppression on `isTranscriptRevealPending`, so the
-    // button must stay hidden while the transcript is (about to be) revealed,
-    // even if the user scrolls up in that window.
+  it('honors a user leave during the transcript reveal (replay) window', async () => {
+    // The follow gate has no special-casing for the reveal window (the old
+    // jump-button suppression keyed on `isTranscriptRevealPending` is gone
+    // with the button): a genuine user scroll-up during replay drops follow,
+    // and the gate must be live again once the reveal completes.
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.scrollHeight = 200
@@ -1709,22 +1673,25 @@ describe('MessageList', () => {
     // Synchronously (before the reveal rAFs complete) the transcript is in the
     // reveal-pending window.
     expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal-pending')).toBe(true)
-    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+
+    // A genuine user scroll-up during the window drops follow — the gate
+    // itself is not suppressed while the reveal is pending.
+    scrollUpFromBottom(container)
+    expect(followingOf(container)).toBe('false')
 
     // Reveal completes; pending clears.
     await waitFor(() => {
       expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal-pending')).toBe(false)
     })
 
-    // A genuine user scroll-up now surfaces the button — proving the pending
-    // suppression was window-scoped and the button isn't permanently broken.
-    scrollUpFromBottom(container)
+    // The leave survives the reveal's geometry churn (no re-latch from the
+    // replay batches): follow stays off.
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+      expect(followingOf(container)).toBe('false')
     })
   })
 
-  it('resets jump-to-bottom state on a session switch (no stale flash)', async () => {
+  it('resets follow state on a session switch (no stale gate)', async () => {
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.scrollHeight = 200
@@ -1741,25 +1708,24 @@ describe('MessageList', () => {
     const { container, rerender } = render(
       <MessageList items={items} transcriptRevealKey="session-a" />,
     )
-    // Wait for the transcript reveal to finish — the jump button is gated on
-    // `!isTranscriptRevealPending`, so it can't show before then.
+    // Wait for the transcript reveal to finish.
     await waitFor(() => {
       expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal-pending')).toBe(false)
     })
-    // User scrolls up → button visible.
+    // User scrolls up → follow drops.
     scrollUpFromBottom(container)
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).not.toBeNull()
+      expect(followingOf(container)).toBe('false')
     })
 
-    // Switch to a new session (new key). The component instance persists, so
-    // without resetting `canJumpToBottom`/`atBottom` STATE the previous
-    // session's values would render the button on the new session's first
-    // frame — the stale flash. Reset must kill it.
+    // Switch to a new session (new key). The component instance persists, and
+    // the inner scroller REMOUNTS — so without the reset effect the new
+    // session would inherit following=false and never pin to its bottom. The
+    // reset must re-arm follow (the wrap's data-following follows the state).
     rerender(<MessageList items={items} transcriptRevealKey="session-b" />)
 
     await waitFor(() => {
-      expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+      expect(followingOf(container)).toBe('true')
     })
   })
 
@@ -1785,28 +1751,24 @@ describe('MessageList', () => {
       }),
     ]
 
+    const nav: { current: ScrollNavigator | null } = { current: null }
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} />,
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        onRegisterNavigate={(n) => { nav.current = n }}
+      />,
     )
-
-    // Surface the button via a genuine user scroll-up (disable-now), the only
-    // legitimate trigger under the follow-gate.
-    act(() => {
-      const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
-      userWheel(scroller)
-      virtuosoMockState.scrollTop = 0
-      fireEvent.scroll(scroller)
-    })
-    const button = container.querySelector('.chat-jump-to-bottom') as HTMLButtonElement | null
-    expect(button).not.toBeNull()
+    if (!nav.current) throw new Error('navigator not registered')
+    const navApi = nav.current
 
     // Isolate scrollTo calls issued by the animation itself.
     vi.mocked(Element.prototype.scrollTo).mockClear()
 
-    // Click starts the rAF animation. At click time scrollHeight is 200
-    // (a stale-target scroll would lock onto bottom=100). The first rAF
-    // frame is queued, not yet run.
-    fireEvent.click(button as HTMLButtonElement)
+    // The right-click menu's "Scroll to bottom" (nav.toBottom → jumpToBottom)
+    // starts the rAF animation. At call time scrollHeight is 200 (a
+    // stale-target scroll would lock onto bottom=100). The first rAF frame is
+    // queued, not yet run.
+    act(() => { navApi.toBottom() })
 
     // Content grows mid-flight: real bottom moves from 100 to 300.
     virtuosoMockState.scrollHeight = 400
@@ -1816,24 +1778,24 @@ describe('MessageList', () => {
     act(() => { vi.runAllTimers() })
 
     // The animation's final scrollTo snaps to the FRESH real bottom (300),
-    // not the click-time target (100) — proving the target can't go stale.
+    // not the call-time target (100) — proving the target can't go stale.
     expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
       expect.objectContaining({ top: 300, behavior: 'auto' }),
     )
-    // Button stays hidden: atBottom restored on landing.
-    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    // Follow is armed again on landing (the optimistic re-arm holds).
+    expect(followingOf(container)).toBe('true')
   })
 
-  it('keeps the jump button hidden while the animated scroll is in flight', () => {
+  it('stays following while the animated scroll is in flight', () => {
     // Regression guard for the follow-disable race that the original
     // instant-scroll fix addressed. During the ~300ms rAF animation the
     // viewport is intentionally not yet at the bottom; without the
     // `scrollAnimatingRef` duration guard, scroll events / geometry syncs
     // fired mid-animation would see dist>0, arm the 150ms follow-disable
-    // debounce, and re-show the jump button — disarming the re-pin path
-    // the animation depends on. The guard short-circuits syncBottomGeometry
-    // and the scroll handler for the whole animation, so the button stays
-    // hidden and atBottom stays armed until the loop lands.
+    // debounce, and drop follow — disarming the re-pin path the animation
+    // depends on. The guard short-circuits syncBottomGeometry and the scroll
+    // handler for the whole animation, so follow stays armed until the loop
+    // lands.
     vi.useFakeTimers()
     virtuosoMockState.atBottomReport = false
     virtuosoMockState.reportBeforeRef = true
@@ -1847,41 +1809,47 @@ describe('MessageList', () => {
       }),
     ]
 
+    const nav: { current: ScrollNavigator | null } = { current: null }
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} />,
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        onRegisterNavigate={(n) => { nav.current = n }}
+      />,
     )
-    // Surface the button via a genuine user scroll-up (disable-now). The rest
-    // of this test asserts the `scrollAnimatingRef` guard keeps it hidden while
-    // the returned-to-bottom animation plays.
+    if (!nav.current) throw new Error('navigator not registered')
+    const navApi = nav.current
+    // Leave via a genuine user scroll-up (disable-now), then jump back via the
+    // right-click menu's "Scroll to bottom". The rest of this test asserts the
+    // `scrollAnimatingRef` guard keeps follow armed while the animation plays.
     act(() => {
       const sc = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
       userWheel(sc)
       virtuosoMockState.scrollTop = 0
       fireEvent.scroll(sc)
     })
-    const button = container.querySelector('.chat-jump-to-bottom') as HTMLButtonElement | null
-    expect(button).not.toBeNull()
-    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement | null
-    expect(scroller).not.toBeNull()
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    expect(followingOf(container)).toBe('false')
 
-    fireEvent.click(button as HTMLButtonElement)
+    act(() => { navApi.toBottom() })
+    // Optimistic re-arm: follow is ON before the animation even lands.
+    expect(followingOf(container)).toBe('true')
 
     // Step one animation frame, then fire a native 'scroll' event mid-flight
     // (mirroring the async scroll events our scrollTo triggers) while content
     // has grown. Without the duration guard the handler's 'preserve' sync
-    // would downgrade atBottomRef and re-show the button here.
+    // would downgrade atBottomRef and drop follow here.
     act(() => { vi.advanceTimersByTime(20) })
     virtuosoMockState.scrollHeight = 400
-    fireEvent.scroll(scroller as HTMLElement)
+    fireEvent.scroll(scroller)
 
-    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    expect(followingOf(container)).toBe('true')
 
-    // Let the animation finish; button stays hidden, lands at real bottom.
+    // Let the animation finish; follow stays armed, lands at real bottom.
     act(() => { vi.runAllTimers() })
     expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
       expect.objectContaining({ top: 300, behavior: 'auto' }),
     )
-    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    expect(followingOf(container)).toBe('true')
   })
 
   it('follows a new tail message with an animated scroll that lands at the real bottom', () => {
@@ -1913,8 +1881,8 @@ describe('MessageList', () => {
       <MessageList items={toItems([first] as SdkMessage[])} />,
     )
 
-    // No jump button while we're following at the bottom.
-    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    // Following while parked at the bottom.
+    expect(followingOf(container)).toBe('true')
 
     // Append a new settled message at the tail; the new content grows the
     // real bottom from 0 to 100. followOutput fires and kicks off the rAF
@@ -1941,9 +1909,9 @@ describe('MessageList', () => {
     expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
       expect.objectContaining({ top: 200, behavior: 'auto' }),
     )
-    // Follow stayed armed for the whole animation — the button never
-    // re-showed (no debounce downgrade mid-flight).
-    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    // Follow stayed armed for the whole animation (no debounce downgrade
+    // mid-flight).
+    expect(followingOf(container)).toBe('true')
   })
 
   it('re-pins to the bottom when settled content grows after the follow animation finalized', () => {
@@ -1988,8 +1956,8 @@ describe('MessageList', () => {
     const content = scroller.firstElementChild as HTMLElement
     expect(content).not.toBeNull()
 
-    // Sanity: following at the bottom, no jump button.
-    expect(container.querySelector('.chat-jump-to-bottom')).toBeNull()
+    // Sanity: following at the bottom.
+    expect(followingOf(container)).toBe('true')
 
     // Virtuoso measures the just-mounted row's REAL height — scrollHeight
     // grows far past the estimate the follow animation locked onto.
@@ -2424,8 +2392,8 @@ describe('MessageList', () => {
     expect(stack).not.toBeNull()
     // Streaming region first, cards after — the chosen stacking order. Each
     // sits in its own wrapper: the region's clips its own exit slide (the stack
-    // no longer clips), the cards' is measured on its own so the
-    // jump-to-bottom button can clear them without tracking the live bubble.
+    // no longer clips), the cards' is measured on its own, separate from the
+    // live bubble's churn above them.
     const kids = Array.from(stack.children)
     expect(kids[0].className).toContain('chat-streaming-clip')
     expect(kids[1].className).toContain('chat-bottom-overlay')
@@ -2473,6 +2441,53 @@ describe('MessageList', () => {
     const spacer = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
     expect(spacer).not.toBeNull()
     expect(Number.parseFloat(spacer!.style.height)).toBe(64)
+  })
+
+  it('re-reads the stack height when only the overlay resizes (the clamped-stack trigger)', () => {
+    // Under the 45% height clamp a dock/overlay-only grow changes the stack's
+    // scrollHeight but NOT its border box, so a stack-only ResizeObserver
+    // stays silent and the Footer spacer goes stale (cards covering the last
+    // message). The overlay/dock are therefore observed as TRIGGERS for the
+    // stack re-read. (This used to be covered via the jump button's offset
+    // assertion; the trigger behavior itself still needs a guard now that the
+    // button is gone.)
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+
+    const msgs = [
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'Settled' }] } }),
+    ]
+    const { container } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        bottomOverlay={<div className="probe-card">card</div>}
+      />,
+    )
+
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+    const overlay = container.querySelector('.chat-bottom-overlay') as HTMLElement
+    expect(stack).not.toBeNull()
+    expect(overlay).not.toBeNull()
+
+    // Clamp shape: the stack's border box is stuck at 100px while its content
+    // paints 164px — a border-box observer cannot see the growth.
+    Object.defineProperty(stack, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: 100, width: 400, top: 0, left: 0, right: 400, bottom: 100, x: 0, y: 0 }),
+    })
+    Object.defineProperty(stack, 'scrollHeight', {
+      configurable: true,
+      get: () => 164,
+    })
+
+    // Only the OVERLAY fires (the stack's border box did not change) — the
+    // stack re-read must still run and commit the full 164px to the spacer.
+    act(() => { fireResize(overlay) })
+
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    const spacer = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
+    expect(spacer).not.toBeNull()
+    expect(Number.parseFloat(spacer!.style.height)).toBe(164)
   })
 
   it('does not re-register the transcript listeners as the bottom stack tweens', () => {

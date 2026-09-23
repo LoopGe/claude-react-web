@@ -1230,8 +1230,8 @@ button.tool-group-failed-jump:focus-visible {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-  /* Neutralise the state-change ENTRANCE animations added for overlays,
-     menus, the swap glyph and the jump button — these are decorative
+  /* Neutralise the state-change ENTRANCE animations added for overlays
+     and menus — these are decorative
      motion-on-state-change (WCAG 2.3.3), unlike the load-bearing spinners
      the global block above deliberately leaves running. Named explicitly so
      spinners/shimmers keep animating. */
@@ -1274,7 +1274,6 @@ button.tool-group-failed-jump:focus-visible {
   .perm-overlay[data-state="open"] > .perm-card,
   .perm-overlay[data-state="closing"] > .perm-card,
   .appearance-panel,
-  .chat-jump-to-bottom,
   .chat-panel-mode-badge.mode-slide-in,
   .chat-panel-mode-badge.mode-slide-out,
   .copied-pop {

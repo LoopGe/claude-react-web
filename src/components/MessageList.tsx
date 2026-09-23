@@ -23,7 +23,6 @@ import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { IconArrowDown } from './icons/ToolIcons'
 import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
 import { ChatEmptyState } from './ChatEmptyState'
 import { EasterEggGame } from './EasterEggGame'
@@ -66,11 +65,13 @@ const EMPTY_VIRT_IDX = new Map<number, number>()
 /** Scroll-navigation surface registered by MessageList and held by the parent
  *  (Chat) for the pinned-header dropdown + right-click menu. `to(index)`
  *  jumps to a specific renderable item (used by the dropdown); `prev`/`next`
- *  step to the adjacent user message. */
+ *  step to the adjacent user message; `toBottom` re-pins the viewport to the
+ *  live bottom and re-arms follow. */
 export interface ScrollNavigator {
   prev: () => void
   next: () => void
   to: (index: number) => void
+  toBottom: () => void
 }
 
 interface Props {
@@ -312,26 +313,24 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // below) while `clearing` is true — the view-only blur that signals a
   // clear in progress during the POST. There is no panel-level veil anymore;
   // the fresh session Y plays `.entering` on mount.
-  // Both heights live in ONE state object on purpose. They are produced by the
-  // SAME ResizeObserver burst (a fold resizes the stack and the overlay it
-  // contains in lockstep), so a separate `useState` for each meant two state
-  // writes per frame for the length of every tween. One atomic update keeps the
-  // pair consistent and halves the RO-driven writes. (`stack` also covers the
-  // live streaming bubble above the overlay; `overlay` is the cards alone,
-  // which is what the jump-to-bottom button clears — the bubble's height churns
-  // every token and would make the pill bob.)
+  // A single committed number on purpose: the stack and the overlay it
+  // contains are resized by the SAME ResizeObserver burst (a fold moves both
+  // in lockstep), so separate `useState`s meant two state writes per frame for
+  // the length of every tween. One atomic write halves the RO-driven commits.
+  // (`stack` covers the live streaming bubble above the overlay too. The
+  // overlay itself is still observed, but only as a TRIGGER for the stack
+  // re-read — its height value has no consumer since the jump-to-bottom
+  // button was removed.)
   //
   // Measured: a 14-frame composer fold produces 28 commits — one for this
   // update, one for `useTranscriptScroll`'s spacer-keyed geometry sync. The RO
   // firing per frame is not itself a defect: a CSS height transition IS a new
   // size each frame, and the spacer must track it or the reserved room desyncs
-  // (the sync's own setStates are value-guarded, so a fold that changes nothing
+  // (the sync's own writes are value-guarded, so a fold that changes nothing
   // observable commits nothing). The win here is removing the duplicate write,
   // not eliminating the per-frame one. The hook's listener registration is
   // deliberately kept OFF this state so the fold can't churn its listeners.
-  const [bottomMetrics, setBottomMetrics] = useState({ stack: 0, overlay: 0 })
-  const bottomStackHeight = bottomMetrics.stack
-  const bottomOverlayHeight = bottomMetrics.overlay
+  const [bottomStackHeight, setBottomStackHeight] = useState(0)
   // Easter-egg: triple-clicking the empty-state sparkle swaps in a hidden
   // dino-style game. Local UI state only — no session/persistence concerns.
   const [gameOpen, setGameOpen] = useState(false)
@@ -603,34 +602,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     return map
   }, [renderableItems, searchLive])
 
-  // Track how many new messages arrived so the unseen badge stays accurate.
-  // Virtuoso's followOutput handles the actual scrolling.
-  //
-  // We count items that match the current `parentToolUseIdFilter` but
-  // *not* `hiddenByDefault` —system messages are filtered by default,
-  // and only non-hidden items should trigger badge increments.
-  // Counting by parent dodges the same trap for the main transcript:
-  // subagent-internal frames stream in continuously while an Agent runs,
-  // but they're hidden in the main list, so they shouldn't tick the
-  // badge there. (The overlay has its own MessageList instance with the
-  // matching filter, so its badge counts correctly too.)
-  const trackedCount = useMemo(() => {
-    let count = 0
-    for (const item of items) {
-      // Exclude hiddenByDefault (system frames, etc.) — they don't render in
-      // the transcript so they can't be "unseen." Matches the renderableItems
-      // filter and the comment's original intent.
-      if (item.hiddenByDefault) continue
-      const parent = item.msg.parent_tool_use_id
-      if (parentToolUseIdFilter == null) {
-        if (parent != null) continue
-      } else {
-        if (parent !== parentToolUseIdFilter) continue
-      }
-      count++
-    }
-    return count
-  }, [items, parentToolUseIdFilter])
   // The scroll hook needs to report the visible-top row, and the thing that
   // consumes that report (`emitVisibleTop`, further down) needs `seekToIndex`
   // — which the hook produces. Break the cycle with a stable forwarder whose
@@ -641,13 +612,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   }, [])
 
   // Scroll behaviour (L3) lives in `message-list/useTranscriptScroll.ts`:
-  // bottom-follow gate, jump-to-bottom state, unseen badge, the rAF follow
-  // animation and the three re-pin backstops. `bottomStackHeight` stays
-  // here because it also drives the Footer spacer below.
+  // bottom-follow gate, the rAF follow animation and the three re-pin
+  // backstops. `bottomStackHeight` stays here because it also drives the
+  // Footer spacer below.
   const {
-    atBottom,
-    canJumpToBottom,
-    unseenCount,
+    following,
     scrollerRefCb,
     followOutput,
     atBottomStateChange,
@@ -659,7 +628,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     setOsScroller,
     rowCount: renderableItems.length,
     itemCount: items.length,
-    trackedCount,
     transcriptRevealKey,
     bottomStackHeight,
     onVisibleTopChange: forwardVisibleTop,
@@ -685,9 +653,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // that frame. Both observed elements are rendered unconditionally, so a ref
   // is always assigned by the time this runs.
   //
-  // One observer and one `setState` for BOTH heights (see bottomMetrics): the
-  // stack and the overlay inside it resize together, so a second observer only
-  // doubled the per-frame commits. `max(rect, scrollHeight)` is used for each:
+  // One observer and one `setState` for the whole stack (see bottomStackHeight
+  // above): the stack and the overlay inside it resize together, so observing
+  // the overlay is only a trigger for the stack re-read. The read is
+  // `max(rect, scrollHeight)`:
   // under the 45% cap the border box is the ancestor's, while the dock/task list
   // inside can still paint taller — reserving just the clamped box would let the
   // overflow cover the last messages.
@@ -706,12 +675,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
 
     const updateHeight = () => {
       const stack = readHeight(el)
-      const nextOverlay = overlay ? readHeight(overlay) : 0
-      setBottomMetrics((prev) => (
-        prev.stack === stack && prev.overlay === nextOverlay
-          ? prev
-          : { stack, overlay: nextOverlay }
-      ))
+      setBottomStackHeight((prev) => (prev === stack ? prev : stack))
     }
 
     updateHeight()
@@ -882,11 +846,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   }, [navigateToIndex])
 
   // Expose the navigator to the parent (Chat —App — session context menu +
-  // pinned-header dropdown). Object form so callers get prev/next/to in one
-  // stable registration.
+  // pinned-header dropdown). Object form so callers get prev/next/to/toBottom
+  // in one stable registration.
   useEffect(() => {
-    onRegisterNavigate?.({ prev: () => navigate('prev'), next: () => navigate('next'), to: navigateToIndex })
-  }, [onRegisterNavigate, navigate, navigateToIndex])
+    onRegisterNavigate?.({ prev: () => navigate('prev'), next: () => navigate('next'), to: navigateToIndex, toBottom: jumpToBottom })
+  }, [onRegisterNavigate, navigate, navigateToIndex, jumpToBottom])
 
   const itemContent = useCallback((_index: number, item: TranscriptRow) => {
     // Only pipe `activeMatchInItem` into the message that actually
@@ -1135,7 +1099,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     <ToolResultProvider value={toolResults}>
     <TaskInfoProvider value={taskInfoMap}>
     <ResultConsumedCtx.Provider value={isResultConsumed}>
-    <div className="chat-messages-wrap">
+    {/* data-following mirrors the follow gate for the test suite's
+        FOLLOWING/AWAY assertions (see useTranscriptScroll's setFollowing) —
+        no runtime CSS or JS reads it; drop it with the tests if the
+        assertion surface ever moves. */}
+    <div className="chat-messages-wrap" data-following={following ? 'true' : 'false'}>
       <div className="chat-messages-stage">
       <div ref={messagesElRef} key={transcriptRevealKey} className={messagesClassName}>
         {/* Virtuoso is ALWAYS mounted (even with zero items) so its scroller
@@ -1193,31 +1161,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           </div>
         )}
       </div>
-      {/* Suppress the jump button until the transcript reveal completes.
-          During a session switch the new transcript renders under
-          `chat-messages-reveal-pending` (replay in progress, list hidden at
-          opacity 0) while renderableItems grows in batches. The inner
-          scroller's scroll/ResizeObserver effects re-sync geometry on every
-          renderableItems.length change, so geometry flaps (not-at-bottom →
-          re-pin → not-at-bottom …) and would otherwise flash this button
-          repeatedly over the still-invisible transcript. */}
-      {!isTranscriptRevealPending && canJumpToBottom && !atBottom && (
-        <button
-          type="button"
-          className="chat-jump-to-bottom"
-          // chat.css anchors this at `bottom: 16px`; ride above the CARDS. The
-          // offset uses the overlay's own height, NOT the stack's — the stack
-          // also holds the live bubble, whose height churns every token, which
-          // would make the pill bob and could push it off the stage. With no
-          // cards the offset is 0 and the anchor is unchanged.
-          style={{ bottom: 16 + bottomOverlayHeight }}
-          onClick={jumpToBottom}
-          aria-label={unseenCount > 0 ? `Scroll to latest: ${unseenCount} new message${unseenCount === 1 ? '' : 's'}` : 'Scroll to latest messages'}
-        >
-          <IconArrowDown size={16} aria-hidden />
-          {unseenCount > 0 && <span className="chat-jump-to-bottom-count" aria-hidden>{unseenCount}</span>}
-        </button>
-      )}
       <div className="chat-bottom-stack" ref={bottomStackRef}>
         {visibleStreamingContent != null && (
           <div className="chat-streaming-clip">

@@ -79,7 +79,7 @@ import { exportConversation, exportConversationJson } from '../utils/exportConve
 import { useAllContributions } from '../app-plugins/usePluginRegistry'
 import { usePluginCommands } from '../app-plugins/usePluginCommands'
 import { buildWhenContext, filterContributions } from '../app-plugins/when'
-import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe, IconScissors, IconRotateCcw } from './icons/ToolIcons'
+import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconArrowDownToLine, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe, IconScissors, IconRotateCcw } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useToast } from '../hooks/useToast'
@@ -1965,6 +1965,15 @@ export const Chat = memo(function Chat({
               label: 'Scroll to next user message',
               icon: <IconArrowDown size={14} />,
               onClick: () => scrollNavRef.current?.next(),
+            },
+            {
+              // Replaces the removed floating jump-to-bottom button as the
+              // away-state's way back. Always enabled: jumpToBottom no-ops
+              // when the viewport is already at the bottom (the rAF loop
+              // finds remaining ≈ 0 and finalizes).
+              label: 'Scroll to bottom',
+              icon: <IconArrowDownToLine size={14} />,
+              onClick: () => scrollNavRef.current?.toBottom(),
             },
             ...(onDiscard ? [{
               label: 'Discard this message and after',

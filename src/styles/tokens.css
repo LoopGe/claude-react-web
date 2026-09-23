@@ -306,7 +306,6 @@
   --drawer-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);  /* side drawers */
   --toast-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
   --tooltip-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
-  --fab-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
   /* Small tight lift for slider thumbs / small draggable handles — just
      enough elevation to read as raised without a big diffuse blur. */
   --handle-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -420,7 +419,6 @@
   --drawer-shadow: -8px 0 24px rgba(0, 0, 0, 0.12);
   --toast-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
   --tooltip-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-  --fab-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
   --handle-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
   --backdrop-color: rgba(0, 0, 0, 0.35);
   /* Liquid-glass overrides for light theme: surface stays brighter and the
@@ -543,7 +541,6 @@
   --drawer-shadow: none;
   --toast-shadow: none;
   --tooltip-shadow: none;
-  --fab-shadow: none;
   /* A transparent shadow instead of `none`: handles share a comma-separated
      box-shadow list with an accent rim (`rim, var(--handle-shadow)`), and a
      `none` var invalidates the whole list at computed-value time. A 0 0 0 0
@@ -657,7 +654,6 @@
   --drawer-shadow: none;
   --toast-shadow: none;
   --tooltip-shadow: none;
-  --fab-shadow: none;
   /* A transparent shadow instead of `none`: handles share a comma-separated
      box-shadow list with an accent rim (`rim, var(--handle-shadow)`), and a
      `none` var invalidates the whole list at computed-value time. A 0 0 0 0
@@ -797,7 +793,6 @@
   --drawer-shadow: -10px 0 36px rgba(0, 0, 0, 0.45);
   --toast-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
   --tooltip-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
-  --fab-shadow: 0 6px 20px color-mix(in srgb, var(--accent) 35%, transparent);
   --handle-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 32%, transparent);
   --backdrop-color: rgba(6, 8, 12, 0.62);
   --glass-blur: blur(8px);
@@ -832,7 +827,6 @@
   --drawer-shadow: -10px 0 32px rgba(40, 50, 80, 0.14);
   --toast-shadow: 0 8px 24px rgba(40, 50, 80, 0.14);
   --tooltip-shadow: 0 6px 16px rgba(40, 50, 80, 0.14);
-  --fab-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 30%, transparent);
   --handle-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 26%, transparent);
   --backdrop-color: rgba(30, 40, 70, 0.32);
   /* Glow · light: surfaces stay even brighter so they don't read as a
@@ -902,15 +896,6 @@
   background-image: linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent), transparent);
   box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
               0 2px 10px color-mix(in srgb, var(--danger) 35%, transparent);
-}
-/* Scroll-to-bottom FAB: the floating accent pill is its own class (not a
-   .btn), so it misses the raised sheen above. Give it the same glassy
-   treatment (sheen + inset rim) on top of its accent --fab-shadow so it
-   reads as part of the glow skin, not a flat default-skin button. */
-[data-skin="glow"] .chat-jump-to-bottom {
-  background-image: linear-gradient(180deg, color-mix(in srgb, #fff 14%, transparent), transparent);
-  box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
-              var(--fab-shadow);
 }
 
 /* Focused session card / panel: glow halo instead of a flat ring. */

@@ -367,6 +367,17 @@ export function IconArrowDown(props: IconProps) {
   )
 }
 
+/** Down arrow onto a baseline — "jump to the end/bottom". */
+export function IconArrowDownToLine(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3v13" />
+      <path d="m6 10 6 6 6-6" />
+      <path d="M5 21h14" />
+    </Icon>
+  )
+}
+
 export function IconArrowLeft(props: IconProps) {
   return (
     <Icon {...props}>

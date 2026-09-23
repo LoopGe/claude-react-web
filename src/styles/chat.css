@@ -70,9 +70,9 @@
   display: flex;
   flex-direction: column;
 }
-/* Wraps the scroll container so a jump-to-bottom button can sit on top
-   of it (absolutely positioned). The wrap takes the same flex space the
-   inner scroll used to. */
+/* Wraps the scroll container in a positioned ancestor so the bottom overlay
+   stack can sit on top of it (absolutely positioned). The wrap takes the same
+   flex space the inner scroll used to. */
 .chat-messages-wrap {
   flex: 1;
   min-height: 0;
@@ -291,7 +291,7 @@
   overflow: hidden;
 }
 /* The cards. Wrapped (and measured separately from the stack) so the
-   jump-to-bottom button can clear just the cards, not the transient live
+   measured reserve can distinguish the cards from the transient live
    bubble stacked above them. A flex column of its own so the cards' bottom
    margins count toward the measured height instead of collapsing out.
 
@@ -551,60 +551,6 @@
 
 .chat-older-history-hint {
   opacity: 0.6;
-}
-
-.chat-jump-to-bottom {
-  position: absolute;
-  right: 16px;
-  bottom: 16px;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  padding: var(--space-1-5) var(--space-3);
-  border-radius: var(--radius-pill);
-  background: var(--accent);
-  color: var(--on-accent);
-  border: none;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: var(--fab-shadow);
-  z-index: 3;
-  /* (#6) Float up + scale in when it mounts (user scrolled away from the
-     bottom) so it appears rather than snapping into place. */
-  animation: jump-to-bottom-in var(--motion-duration-base) var(--motion-ease-enter) both;
-  transition:
-    transform var(--motion-duration-instant) var(--motion-ease-standard),
-    filter var(--motion-duration-fast) var(--motion-ease-standard);
-}
-.chat-jump-to-bottom:hover {
-  filter: brightness(1.08);
-}
-.chat-jump-to-bottom:active {
-  transform: scale(var(--motion-scale-press));
-}
-@keyframes jump-to-bottom-in {
-  from {
-    opacity: 0;
-    transform: translateY(var(--motion-distance-md)) scale(0.92);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-.chat-jump-to-bottom-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--size-18px);
-  height: var(--size-18px);
-  padding: 0 5px;
-  background: var(--bg);
-  color: var(--accent-text);
-  border-radius: var(--radius-pill);
-  font-size: var(--fs-xs);
-  font-weight: 700;
 }
 /* Context-usage bar.
    Default (SettingsPanel Context tab): full-width strip with elevated

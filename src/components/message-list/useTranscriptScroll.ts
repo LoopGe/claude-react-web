@@ -2,8 +2,8 @@
  * L3 of the transcript list: SCROLL BEHAVIOUR.
  *
  * Everything that reads or writes the scroller's geometry lives here — the
- * bottom-follow gate, the jump-to-bottom button state, the unseen badge, the
- * rAF follow animation, the re-pin backstops and the settle verification pass.
+ * bottom-follow gate (mirrored out as `following` state), the rAF follow
+ * animation, the re-pin backstops and the settle verification pass.
  * It used to be spread across ~600 lines of `MessageList`, interleaved with row
  * derivation and message rendering, which is why each observer's comment had to
  * explain why it doesn't fight the other two.
@@ -15,8 +15,7 @@
  *               against the geometry for the next few frames, and a viewport
  *               that ends up away from the true bottom while still following is
  *               snapped back. This is the resting state.
- *   AWAY        The user scrolled up. Follow is off, the jump button is
- *               visible, and new content increments the unseen badge. Entered
+ *   AWAY        The user scrolled up. Follow is off. Entered
  *               only by a USER-CAUSED upward scroll ('disable-now' — the scroll
  *               handler requires a fresh wheel / touch / scrollbar-drag gesture,
  *               because the transcript's scrollTop is also moved by our own
@@ -24,7 +23,8 @@
  *               latching on one of those drops follow for good) or by the
  *               follow-disable debounce confirming a settled non-bottom
  *               geometry. Left by scrolling back to the real bottom or by
- *               pressing jump-to-bottom.
+ *               invoking jump-to-bottom (the chat right-click menu's
+ *               "Scroll to bottom").
  *   ANIMATING   `scrollAnimatingRef` true for the duration of a programmatic
  *               scroll (follow or jump). Mid-animation the viewport is
  *               intentionally not at the bottom, so every geometry consumer
@@ -112,7 +112,7 @@ const getDistanceFromBottom = (el: HTMLElement) => (
  * spacer subtraction.
  *
  * Why a second metric? The spacer-aware `getDistanceFromBottom` above is right
- * for the BUTTON and the "at bottom" state (a viewport resting above the task
+ * for the "at bottom" STATE (a viewport resting above the task
  * list / live bubble should read as at-bottom), but it is WRONG for the
  * user-leave gate: because the spacer height is subtracted, an up-scroll that
  * stays inside the spacer reads as `0`, so `shouldFollowRef` never turns off
@@ -129,15 +129,15 @@ const getDistanceFromTrueBottom = (el: HTMLElement) => (
   Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight)
 )
 
-const getBottomGeometry = (el: HTMLElement) => {
-  const distanceFromBottom = getDistanceFromBottom(el)
-  const atBottom = distanceFromBottom <= BOTTOM_EPSILON_PX
-  return { atBottom, canJumpToBottom: !atBottom }
-}
+/** The spacer-aware at-bottom check: right for the at-bottom STATE (a viewport
+ *  resting above the task list / live bubble should read as at-bottom), wrong
+ *  for the user-leave gate (see getDistanceFromTrueBottom). */
+const isAtSpacerAwareBottom = (el: HTMLElement) =>
+  getDistanceFromBottom(el) <= BOTTOM_EPSILON_PX
 
 /** True when the viewport is parked at the very bottom (scrollHeight) — the
  *  only geometry that may re-arm follow. Distinct from
- *  `getBottomGeometry().atBottom`, which also covers the spacer-reserved dead
+ *  `isAtSpacerAwareBottom`, which also covers the spacer-reserved dead
  *  zone (see `getDistanceFromTrueBottom`). */
 const isAtTrueBottom = (el: HTMLElement) => getDistanceFromTrueBottom(el) <= BOTTOM_EPSILON_PX
 
@@ -158,8 +158,6 @@ export interface UseTranscriptScrollOptions {
    *  to the underlying items, not the filtered rows, because a flush can grow
    *  `items` without changing the row count. */
   itemCount: number
-  /** Rows that should tick the unseen badge (parent-filtered, non-hidden). */
-  trackedCount: number
   /** Transcript identity. The inner scroller remounts when it changes, so
    *  element-bound observers must re-attach and all state must reset. */
   transcriptRevealKey: string | undefined
@@ -184,11 +182,9 @@ export interface UseTranscriptScrollOptions {
 }
 
 export interface TranscriptScrollApi {
-  /** True when the viewport is at the real bottom. Drives the jump button. */
-  atBottom: boolean
-  canJumpToBottom: boolean
-  /** New messages that arrived while AWAY. Badge on the jump button. */
-  unseenCount: number
+  /** Mirror of the follow gate, for declarative rendering. The owner stamps
+   *  it as the wrap element's `data-following` attribute. */
+  following: boolean
   /** Virtuoso `scrollerRef`. */
   scrollerRefCb: (ref: HTMLElement | Window | null) => void
   /** Virtuoso `followOutput`. Always returns false — we drive the follow
@@ -196,7 +192,7 @@ export interface TranscriptScrollApi {
   followOutput: (atBottom: boolean) => false
   /** Virtuoso `atBottomStateChange`. */
   atBottomStateChange: (reportedAtBottom: boolean) => void
-  /** Jump-to-bottom button handler. */
+  /** Jump-to-bottom handler (chat right-click menu "Scroll to bottom"). */
   jumpToBottom: () => void
   /**
    * Programmatic seek to a row — search hits, user-message navigation.
@@ -219,19 +215,15 @@ export function useTranscriptScroll({
   setOsScroller,
   rowCount,
   itemCount,
-  trackedCount,
   transcriptRevealKey,
   bottomStackHeight,
   onVisibleTopChange,
 }: UseTranscriptScrollOptions): TranscriptScrollApi {
   // Virtuoso's underlying scroll element. Captured through scrollerRefCb.
   const scrollerRef = useRef<HTMLElement | null>(null)
-  // `atBottom` is state (not just a ref) because the jump-to-bottom button's
-  // visibility needs to re-render when it changes. The ref-mirror keeps
-  // callbacks readable without a stale-closure dance.
-  const [atBottom, setAtBottom] = useState(true)
+  // At-bottom mirror, read by callbacks (notably the viewport-shrink backstop)
+  // without a stale-closure dance. Written by setBottomState.
   const atBottomRef = useRef(true)
-  const [canJumpToBottom, setCanJumpToBottom] = useState(false)
   // Debounced "should follow" — filters out transient isAtBottom=false spikes
   // Virtuoso emits during rapid/batch item additions (the scroll-to-bottom
   // animation hasn't settled yet, so its internal isAtBottom momentarily flips
@@ -264,9 +256,23 @@ export function useTranscriptScroll({
     150,
   )
   const FOLLOW_DEBOUNCE_MS = clamp(Math.round(followDebounceRaw), 50, 500)
-  /** How many new messages have arrived since the user last saw the bottom. */
-  const [unseenCount, setUnseenCount] = useState(0)
-  const unseenCountRef = useRef(0)
+
+  /**
+   * The single mutation point for the follow gate. `shouldFollowRef` is the
+   * synchronous gate every pin/handler decision reads; the `following` mirror
+   * is React state the OWNER renders declaratively as the wrap element's
+   * `data-following` attribute — the observable that replaced the removed
+   * jump-to-bottom button as the tests' FOLLOWING/AWAY assertion surface.
+   * (The attribute must live on an element the owner renders, not on
+   * Virtuoso's scroller: react-hooks/immutability forbids mutating the
+   * element obtained from `scrollerRef.current` inside hook callbacks, and a
+   * declarative write needs no DOM access at all.)
+   */
+  const [following, setFollowingState] = useState(true)
+  const setFollowing = useCallback((next: boolean) => {
+    shouldFollowRef.current = next
+    setFollowingState(next)
+  }, [])
 
   /**
    * The instant-snap scrollTop writer. One of only two places that move the
@@ -328,8 +334,8 @@ export function useTranscriptScroll({
   // are not part of any element's border box. The result is a viewport that is
   // left short of a grown content bottom with: no resize fired (the item-list /
   // spacer / viewport observers all stay silent), no scrollTop write, and no
-  // scroll event. Nothing re-pins, follow is still on, so the jump button stays
-  // hidden — the "关掉动画效果后 Session 有时候滚动不到最底部" report (a
+  // scroll event. Nothing re-pins even though follow is still on — the
+  // "关掉动画效果后 Session 有时候滚动不到最底部" report (a
   // reduced-motion page has no entrance animations spreading that work over
   // frames, so the corrections land as one late jump instead of being absorbed).
   //
@@ -422,16 +428,8 @@ export function useTranscriptScroll({
     followTimerRef.current = null
   }, [])
 
-  const clearUnseen = useCallback(() => {
-    if (unseenCountRef.current === 0) return
-    unseenCountRef.current = 0
-    setUnseenCount(0)
-  }, [])
-
   const setBottomState = useCallback((nextAtBottom: boolean) => {
-    if (atBottomRef.current === nextAtBottom) return
     atBottomRef.current = nextAtBottom
-    setAtBottom(nextAtBottom)
   }, [])
 
   const scrollScrollerToBottom = useCallback((behavior: 'auto' | 'smooth' = 'auto') => {
@@ -452,29 +450,19 @@ export function useTranscriptScroll({
       setBottomState(nextAtBottom)
     }
 
-    if (nextAtBottom && shouldFollowRef.current) {
-      clearUnseen()
-    }
-
     if (followMode === 'restore') {
       clearFollowTimer()
-      shouldFollowRef.current = true
-      setCanJumpToBottom(false)
-      // The generic clear above is gated on shouldFollowRef, so an arrive
-      // from AWAY (follow was off) has to clear here, after re-arming.
-      clearUnseen()
+      setFollowing(true)
       return
     }
 
     if (followMode === 'disable-now') {
       // Genuine user scroll-away: the user drilled up out of the bottom, so
-      // the jump-to-bottom button SHOULD surface immediately. (In contrast,
-      // 'disable-debounced' below must never do this while we're still
-      // following — a transient geometry flutter during a bulk replay isn't a
-      // user leave.)
+      // follow drops immediately. (In contrast, 'disable-debounced' below must
+      // never do this while we're still following — a transient geometry
+      // flutter during a bulk replay isn't a user leave.)
       clearFollowTimer()
-      shouldFollowRef.current = false
-      setCanJumpToBottom(true)
+      setFollowing(false)
       setBottomState(false)
       return
     }
@@ -484,64 +472,45 @@ export function useTranscriptScroll({
         followTimerRef.current = null
         const el = scrollerRef.current
         if (!el) {
-          setCanJumpToBottom(false)
           setBottomState(false)
           return
         }
 
-        const geometry = getBottomGeometry(el)
-
         // While still following/pinned, a not-at-bottom geometry read is a
         // pin-lag (content grew before the follow/pin caught up), never a
-        // genuine leave. Doing anything here — showing the button OR flipping
-        // shouldFollowRef false — is exactly what flashed the jump button
-        // across every bulk-load batch on session switches: the 150ms timer
-        // fired during the transient, armed a "leave", and disarmed the
-        // following gate so subsequent geo reads surfaced the button too. Until
-        // the user has actually scrolled up (which trips 'disable-now'), keep
-        // following and keep the button hidden; the content-growth pin will
-        // snap back.
+        // genuine leave. Flipping shouldFollowRef false here is exactly what
+        // dropped follow across every bulk-load batch on session switches:
+        // the 150ms timer fired during the transient and armed a "leave".
+        // Until the user has actually scrolled up (which trips 'disable-now'),
+        // keep following; the content-growth pin will snap back.
         if (shouldFollowRef.current) {
           return
         }
 
-        // Already away: reflect the real settled geometry — show the button
-        // when below is unavailable-looking / away, restore follow when back
-        // at the TRUE bottom. Restoring while still inside the dead zone
-        // (spacer-aware at-bottom) would re-latch follow and re-arm the re-pin
-        // backstops that snap the viewport back down.
+        // Already away: restore follow only when back at the TRUE bottom.
+        // Restoring while still inside the dead zone (spacer-aware at-bottom)
+        // would re-latch follow and re-arm the re-pin backstops that snap the
+        // viewport back down.
         if (isAtTrueBottom(el)) {
-          setCanJumpToBottom(false)
+          setFollowing(true)
           setBottomState(true)
-          shouldFollowRef.current = true
-          clearUnseen()
-        } else if (geometry.atBottom) {
-          // Settled inside the dead zone while away: keep the leave — button
-          // stays up so the user has the affordance (and the badge keeps
-          // counting new arrivals).
-          setCanJumpToBottom(true)
-          setBottomState(false)
         } else {
-          setCanJumpToBottom(geometry.canJumpToBottom)
-          setBottomState(geometry.atBottom)
+          setBottomState(false)
         }
       }, FOLLOW_DEBOUNCE_MS)
     }
-  }, [FOLLOW_DEBOUNCE_MS, clearFollowTimer, clearUnseen, setBottomState])
+  }, [FOLLOW_DEBOUNCE_MS, clearFollowTimer, setBottomState, setFollowing])
 
   const syncBottomGeometry = useCallback((
     el: HTMLElement | null = scrollerRef.current,
     modeWhenAway: BottomSyncMode = 'preserve',
   ) => {
-    if (!el) {
-      setCanJumpToBottom(false)
-      return null
-    }
+    if (!el) return
     // ANIMATING: the viewport is intentionally not yet at the bottom. Don't let
     // that mid-animation gap arm the follow-disable debounce or flip
-    // atBottomRef false (which would re-show the jump button and disarm the
-    // re-pin paths the animation depends on). Treat the viewport as
-    // still-at-bottom until the rAF loop completes and clears the guard.
+    // atBottomRef false (which would disarm the re-pin paths the animation
+    // depends on). Treat the viewport as still-at-bottom until the rAF loop
+    // completes and clears the guard.
     //
     // Exception: an explicit 'disable-now' is the user's own leave, latched by
     // a gesture they just made (the wheel/key handlers call it directly, and
@@ -551,7 +520,7 @@ export function useTranscriptScroll({
     // aborts on the same move without syncing (its comment assumes the handler
     // latched the leave), so nothing else would record it.
     if (scrollAnimatingRef.current && modeWhenAway !== 'disable-now') {
-      return getBottomGeometry(el)
+      return
     }
 
     const following = shouldFollowRef.current
@@ -566,44 +535,28 @@ export function useTranscriptScroll({
     // a correction that moves the content bottom under a pinned viewport without
     // resizing the item-list, the spacer or the viewport and without a scrollTop
     // write — those slipped past all three backstops and left the transcript
-    // short with the jump button hidden (the "关掉动画效果后 Session 有时候
+    // short with follow still on (the "关掉动画效果后 Session 有时候
     // 滚动不到最底部" bug).
     //
     // Safe by construction: a genuine user scroll-up arrives as
     // `modeWhenAway === 'disable-now'` (the scroll handler latched it as
     // user-intent BEFORE calling us), so `userLeft` excludes it — follow is
-    // dropped instead, and the button surfaces. Same for an away user:
-    // `following` is false, so nothing here ever yanks them.
+    // dropped instead. Same for an away user: `following` is false, so nothing
+    // here ever yanks them.
     if (following && !userLeft && !isAtTrueBottom(el)) {
       dbg('follow-invariant', () => ({ modeWhenAway }))
       pinToBottom(el, { reason: 'follow-invariant' })
     }
 
-    // Read the geometry AFTER the invariant pin, so the state below (and the
-    // returned geometry) describes where the viewport IS, not the displacement
-    // we just corrected.
-    const geometry = getBottomGeometry(el)
+    // Read the geometry AFTER the invariant pin, so the state below describes
+    // where the viewport IS, not the displacement we just corrected.
+    const atBottom = isAtSpacerAwareBottom(el)
     // The top of the real bottom: the viewport parked at scrollHeight (what
     // pinToBottom targets). Follow re-arms ONLY here. The spacer-aware
-    // `geometry.atBottom` also covers the dead zone (the region reserved by the
-    // task list / live bubble) — re-latching follow there is exactly the state
+    // `atBottom` also covers the dead zone (the region reserved by the task
+    // list / live bubble) — re-latching follow there is exactly the state
     // that lets the re-pin backstops snap an upward scroll back down.
     const atTrueBottom = isAtTrueBottom(el)
-    const delayAway = modeWhenAway === 'confirm-away' && !geometry.atBottom && atBottomRef.current
-    // Never surface the jump button while we're still auto-following / pinned
-    // to the bottom. During a bulk replay/load the content (scrollHeight) grows
-    // faster than the follow/pin can move scrollTop, so a raw geometry read
-    // transiently reports "not at bottom" mid-pin and then "at bottom" again
-    // once the pin catches up — flashing the button on/off every growth batch
-    // even though the user never left the bottom. The button only becomes
-    // meaningful once follow has been disabled — either the user scrolled up
-    // ('disable-now' flips shouldFollowRef false immediately) or the 150ms
-    // follow-disable debounce confirmed a genuine stay-away. Once AWAY, the
-    // button is always offered — including inside the dead zone, where the
-    // spacer-aware `geometry.canJumpToBottom` (false) would otherwise hide it
-    // and park an away user with no affordance.
-    const canJump = !following
-    setCanJumpToBottom(delayAway ? false : canJump)
     // Follow re-arms ONLY when the user is at the true bottom AND either (a)
     // they were already following (a passive re-read / content fold keeps it
     // on), or (b) this call is the scroll handler reporting an active
@@ -616,13 +569,12 @@ export function useTranscriptScroll({
       ? 'disable-now'
       : (atTrueBottom && (following || modeWhenAway === 'restore'))
         ? 'restore'
-        : geometry.atBottom
+        : atBottom
           ? (following ? 'preserve' : 'disable-now')
           : modeWhenAway === 'confirm-away'
             ? 'disable-debounced'
             : modeWhenAway === 'restore' ? 'preserve' : modeWhenAway
-    syncBottomState(geometry.atBottom, followMode)
-    return geometry
+    syncBottomState(atBottom, followMode)
   }, [pinToBottom, syncBottomState])
 
   // Animated scroll-to-bottom driven by a requestAnimationFrame easing loop.
@@ -687,68 +639,29 @@ export function useTranscriptScroll({
     scrollAnimRafRef.current = requestAnimationFrame(step)
   }, [syncBottomGeometry, virtuosoRef])
 
-  // --- Unseen badge -------------------------------------------------------
-  const lastCountRef = useRef(0)
+  // --- Follow-gate reset --------------------------------------------------
   // Session switch: the inner scroller remounts (Virtuoso is keyed on the
-  // transcript), but this hook's owner persists. Reset all bottom/scroll/unseen
-  // state so stale values from the old transcript don't leak into the new one —
-  // a phantom badge, or a stale atBottomRef=false that makes the new
-  // transcript's first message increment unseenCount instead of clearing it.
-  // MUST run before the tracked-count effect below so lastCountRef is 0 when
-  // that effect computes its delta (otherwise the delta is the full new count).
-  //
-  // Both `atBottom` and `canJumpToBottom` STATE are reset here, not just the
-  // refs: the owner isn't keyed on the transcript, so a stale
-  // `canJumpToBottom=true / atBottom=false` would render the jump button on the
-  // new transcript's very first frame (the button is a SIBLING of the
-  // reveal-hidden list and stays visible) — a one-frame stale flash.
-  // reduced-motion users can't rely on `.chat-messages-reveal-pending
-  // { opacity: 0 }` hiding it either, so the state reset is the only reliable
-  // one. Geometry re-syncs on the new scroller after Virtuoso remounts.
+  // transcript), but this hook's owner persists. Reset the bottom/scroll state
+  // so stale values from the old transcript don't leak into the new one — a
+  // stale atBottomRef=false would disarm the viewport-shrink backstop, and a
+  // stale following=false would leave the new transcript unpinned.
   useEffect(() => {
-    clearUnseen()
     clearFollowTimer()
     atBottomRef.current = true
-    shouldFollowRef.current = true
-    lastCountRef.current = 0
     userScrollIntentRef.current = 0
-    // Intentional one-shot reset on a rare event (transcript switch). The
-    // cascading-render cost the rule guards against is irrelevant here — it's a
-    // single commit after a persisted-owner remount.
+    // Intentional one-shot re-init on a rare event (transcript switch): the
+    // cascading-render cost the set-state rule guards against is irrelevant
+    // for a single commit after a session switch.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setAtBottom(true)
-    setCanJumpToBottom(false)
+    setFollowing(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcriptRevealKey])
-
-  useEffect(() => {
-    const delta = trackedCount - lastCountRef.current
-    lastCountRef.current = trackedCount
-    if (delta <= 0) {
-      // Rows shrank (compact_boundary, /clear, upstream trimming) — a
-      // structural reduction isn't "new messages the user missed," so reset the
-      // badge rather than leaving a stale count that overstates how many
-      // messages are below the viewport.
-      if (delta < 0) clearUnseen()
-      return
-    }
-    if (atBottomRef.current) {
-      clearUnseen()
-    } else {
-      // Keep the ref in lockstep with state: the bottom-state sync reads
-      // `unseenCountRef.current` to decide whether to clear. Updating only
-      // state would leave the ref at 0 and the handler would silently no-op,
-      // leaving the badge stuck.
-      unseenCountRef.current += delta
-      setUnseenCount(unseenCountRef.current)
-    }
-  }, [clearUnseen, trackedCount])
 
   // --- Re-pin backstops ---------------------------------------------------
 
   // Viewport geometry trigger: panels above/below the scroller can change the
-  // available height without firing a scroll event. Keep the jump button and
-  // bottom-follow state in sync with the real DOM geometry on every resize.
+  // available height without firing a scroll event. Keep the bottom-follow
+  // state in sync with the real DOM geometry on every resize.
   useEffect(() => {
     const el = scrollerRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
@@ -924,7 +837,7 @@ export function useTranscriptScroll({
   // scroll intent, so direct DOM geometry decides whether the viewport is
   // actually at the bottom. Any upward scroll away from that direct bottom
   // state disables follow immediately (→ AWAY), while scrolling back to the
-  // real bottom restores follow and clears the unseen badge.
+  // real bottom restores follow.
   useEffect(() => {
     const el = scrollerRef.current
     if (!el) return
@@ -1123,10 +1036,9 @@ export function useTranscriptScroll({
   //
   // `syncBottomGeometry` reads the spacer from the DOM (getBottomSpacerHeight),
   // not from this number, so the value here is only a trigger: a taller task
-  // list / dock widens the dead zone and can flip `atBottom` / `canJumpToBottom`.
-  // Split out of the listener effect above so the height churn of a fold does
-  // not re-bind listeners. Both setStates inside are value-guarded, so a fold
-  // that changes nothing observable commits nothing.
+  // list / dock widens the dead zone and can flip the spacer-aware at-bottom
+  // state. Split out of the listener effect above so the height churn of a
+  // fold does not re-bind listeners.
   useEffect(() => {
     syncBottomGeometry(scrollerRef.current, 'confirm-away')
   }, [bottomStackHeight, syncBottomGeometry])
@@ -1160,7 +1072,6 @@ export function useTranscriptScroll({
     }
     scrollerRef.current = null
     setOsScroller(null)
-    syncBottomGeometry(null)
   }, [syncBottomGeometry, setOsScroller])
 
   // New settled message arrives → Virtuoso calls followOutput. We drive the
@@ -1189,15 +1100,14 @@ export function useTranscriptScroll({
   }, [animateScrollToBottom])
 
   const atBottomStateChange = useCallback((reportedAtBottom: boolean) => {
-    // Prefer direct DOM geometry so the button and follow-mode use the same
-    // bottom definition. Fall back to Virtuoso's report if the scroller is not
+    // Prefer direct DOM geometry so follow-mode uses the same bottom
+    // definition. Fall back to Virtuoso's report if the scroller is not
     // attached yet.
     const el = scrollerRef.current
     if (el) {
       syncBottomGeometry(el, 'confirm-away')
       return
     }
-    setCanJumpToBottom(!reportedAtBottom)
     syncBottomState(
       reportedAtBottom,
       reportedAtBottom ? 'restore' : 'disable-debounced',
@@ -1211,33 +1121,28 @@ export function useTranscriptScroll({
     //
     // Optimistically return to FOLLOWING before the animation lands, so the
     // backstops stay armed for the duration and beyond:
-    //   - shouldFollowRef = true    -> followOutput tracks new appends
-    //   - setBottomState(true)      -> atBottomRef=true arms the re-pin paths;
-    //                                  also kept true by the ANIMATING guard
-    //   - setCanJumpToBottom(false) -> hide the button without a flicker
-    //   - clearFollowTimer()        -> cancel any pending disable-debounced
-    //                                  timer from the prior scroll-up so it
-    //                                  cannot flip follow back off mid-jump
-    shouldFollowRef.current = true
+    //   - setFollowing(true)   -> followOutput tracks new appends
+    //   - setBottomState(true) -> atBottomRef=true arms the re-pin paths;
+    //                             also kept true by the ANIMATING guard
+    //   - clearFollowTimer()   -> cancel any pending disable-debounced timer
+    //                             from the prior scroll-up so it cannot flip
+    //                             follow back off mid-jump
+    setFollowing(true)
     setBottomState(true)
-    setCanJumpToBottom(false)
     clearFollowTimer()
     animateScrollToBottom()
-    clearUnseen()
-  }, [animateScrollToBottom, clearFollowTimer, clearUnseen, setBottomState])
+  }, [animateScrollToBottom, clearFollowTimer, setBottomState, setFollowing])
 
   const seekToIndex = useCallback((index: number, align: 'start' | 'center') => {
     // Leave FOLLOWING so the programmatic scroll isn't yanked back by the
     // bottom pin. Returning to FOLLOWING is the user's call — scrolling back to
-    // the bottom, or pressing jump-to-bottom.
-    shouldFollowRef.current = false
+    // the bottom, or invoking jump-to-bottom.
+    setFollowing(false)
     virtuosoRef.current?.scrollToIndex({ index, behavior: 'smooth', align })
-  }, [virtuosoRef])
+  }, [setFollowing, virtuosoRef])
 
   return {
-    atBottom,
-    canJumpToBottom,
-    unseenCount,
+    following,
     scrollerRefCb,
     followOutput,
     atBottomStateChange,
