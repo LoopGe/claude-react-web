@@ -260,13 +260,25 @@ function ToolGroupCardInner({
 
   // Body-mount latch. The header is always rendered, but members (BlockView →
   // tool diffs, lineDiff, useEditDiffInfo) mount only once the group has been
-  // opened at least once. A historical folded group is therefore header-only.
-  // After the first open the latch stays true so a fold does NOT tear members
-  // down (AnimatedCollapse's unmountOnExit={false} state-survival contract).
-  const [bodyMounted, setBodyMounted] = useState(open)
-  useEffect(() => {
-    if (open) setBodyMounted(true)
-  }, [open])
+  // opened at least once. A historical folded group is therefore header-only —
+  // which is the point: a folded `toolGroup:5` row used to pay for five tool
+  // cards to show one 36px header line (149ms avg / 443ms max per row in the
+  // whiteout probe). After the first open the latch stays true so a fold does
+  // NOT tear members down (AnimatedCollapse's unmountOnExit={false}
+  // state-survival contract).
+  //
+  // A monotonic ref rather than state-in-an-effect: the latch only ever needs
+  // to be read in the SAME render that flips `open` to true, so there is
+  // nothing to schedule and no cascading render to pay for. (The effect form
+  // also trips react-hooks/set-state-in-effect.) The write is idempotent and
+  // monotonic, so a discarded concurrent render can at worst leave the latch
+  // set for a group that ends up committed closed — the body mounts one fold
+  // early, which is a cost, never a correctness change.
+  /* eslint-disable react-hooks/refs -- render-time ref write; documented above */
+  const everOpenedRef = useRef(open)
+  if (open) everOpenedRef.current = true
+  const bodyMounted = everOpenedRef.current
+  /* eslint-enable react-hooks/refs */
 
   const [flashToolUseId, setFlashToolUseId] = useState<string | null>(null)
   const revealTimersRef = useRef<number[]>([])
