@@ -1930,13 +1930,17 @@
   flex-direction: column;
   flex: 0 0 auto;
 }
-/* Shared entrance for the three bottom-overlay cards (TodoChecklist,
-   MonitorBar, WorkingBubble): a small rise from BELOW + fade, so a card
-   appearing at the bottom of the transcript grows up into place instead of
-   snapping in. Deliberately NO animation-fill-mode — these cards carry
-   backdrop-filter (glass.css), and a lingering `transform: translateY(0)`
-   would force-layerize them and blank the backdrop sample (same compositing
-   contract as .working-bar). */
+/* Shared entrance for the two CLEAN-mount bottom-overlay cards (TodoChecklist,
+   MonitorBar): a small rise from BELOW + fade, so a card appearing at the
+   bottom of the transcript grows up into place instead of snapping in.
+   Deliberately NO animation-fill-mode — these cards carry backdrop-filter
+   (glass.css), and a lingering `transform: translateY(0)` would force-layerize
+   them and blank the backdrop sample.
+   The WorkingBubble is deliberately NOT in this family: it carries an infinite
+   pulse animation, and its `-idle` state sets `animation: none`, so a one-shot
+   keyframe in the same `animation` list got RESTARTED on every class change
+   (the rise-in replayed → flicker). It uses mount-only transitions instead —
+   see `.working-bar` / `@starting-style` in chat.css. */
 @keyframes bottom-card-in {
   from {
     opacity: 0;

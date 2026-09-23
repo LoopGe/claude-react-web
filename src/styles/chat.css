@@ -2286,22 +2286,34 @@
   font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
-  /* Two animations on the outer box: the load-bearing pulse halo (reduced-
-     motion keeps it) plus the shared bottom-card rise-in, so the bubble enters
-     in the same language as the checklist / monitor cards. The entrance
-     carries NO fill mode — a lingering `transform: translateY(0)` would
-     force-layerize the box and blank ::before's backdrop sample (see the
-     compositing note above). The glass lives on ::before, so neither animation
-     sits on the backdrop-filter box. */
-  animation:
-    working-bubble-pulse 1.8s ease-in-out infinite,
-    bottom-card-in var(--motion-duration-moderate) var(--motion-ease-enter);
+  /* The pulse is the ONLY animation here. The rise-in is deliberately a
+     TRANSITION (below), not a keyframe in this list: a one-shot keyframe gets
+     RESTARTED whenever a state class re-declares the shorthand — `-idle` sets
+     `animation: none`, `-exiting` swaps in another keyframe — so the entrance
+     replayed on every turn boundary / mount blip and read as the bubble
+     flickering. A transition can't be "restarted" that way, and if a state
+     flips back mid-flight (a brief blip) it eases back instead of snapping.
+     Enter timing lives here; the @starting-style block supplies the from-state. */
+  transition:
+    opacity var(--motion-duration-moderate) var(--motion-ease-enter),
+    transform var(--motion-duration-moderate) var(--motion-ease-enter);
+  animation: working-bubble-pulse 1.8s ease-in-out infinite;
   /* No max-height. There used to be one (120px) paired with the overflow
      clip, but the bar's own content is what has to stay short — a hard clip
      silently ate whatever landed past it, and because the "+N more" badge
      rendered LAST it was the first thing to disappear. Height is now bounded
      at the source: the subagent group is ALWAYS a single constant-height pill
      (SubagentSwarmPill), so no fan-out width can grow the bar. */
+}
+/* Mount-only from-state for the transition above: the bubble is inserted at
+   opacity 0 / nudged down and eases into place. Applies once per insertion —
+   never on a class toggle — so the entrance can't replay. Degrades gracefully
+   (element simply appears) where @starting-style is unsupported. */
+@starting-style {
+  .working-bar {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-sm));
+  }
 }
 /* Static glass plate. Owns fill + blur; never animates. */
 .working-bar::before {
@@ -2494,13 +2506,19 @@
   }
 }
 
-/* Exit: replaces BOTH the pulse and the entrance with the shared sink-down
-   (bottom-card-out). Out-specifies the base / idle / reduced-motion rules;
-   pointer-events off so the sinking bubble's pills can't be clicked. Added
-   only while Chat's useExitPresence holds the bubble mounted. */
+/* Exit: sink + fade via the transition (faster, exit easing). Out-specifies
+   the base rule so its transition timing wins. pointer-events off so the
+   sinking bubble's pills can't be clicked. Added only while Chat's
+   useExitPresence holds the bubble mounted; if it's removed mid-flight (a
+   mount blip) the base transition eases the bubble back instead of replaying
+   an entrance. */
 .working-bar.working-bar-exiting {
-  animation: bottom-card-out var(--motion-duration-fast) var(--motion-ease-exit);
+  opacity: 0;
+  transform: translateY(var(--motion-distance-sm));
   pointer-events: none;
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-exit),
+    transform var(--motion-duration-fast) var(--motion-ease-exit);
 }
 
 /* ?? Subagent swarm pill ????????????????????????????????????????????????
