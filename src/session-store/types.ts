@@ -491,6 +491,25 @@ export interface ServerMirror {
    *  Plan/Question/Subagent are excluded because they own their result
    *  rendering). Drives the inline result section on each ToolCard. */
   toolResults: Map<string, ToolResultEntry>
+  /** Out-of-order completion-signal queue. The index branches in
+   *  `updateIndexesMirror` are a fold over ARRIVAL order: a tool_result (or a
+   *  task-notification) can only settle a tool_use that was applied before it.
+   *  Out-of-order ingress (tail-first replay applies the newest chunk first,
+   *  disk paging prepends a page strictly older than the screen, and a replay
+   *  merge drops the cache overlap) can land a signal first — it is skipped
+   *  and the later tool_use seeds 'running' with nothing left to flip it, so
+   *  the card spins forever and its output never merges. We park every
+   *  completion-signal message (a tool_result carrier OR a task-notification,
+   *  SDK `system` frame or harness XML injection) whose owning tool_use is not
+   *  yet known, keyed by message uuid, and `drainPendingResults` re-applies it
+   *  through the SAME branches once the tool_use lands. This makes the fold
+   *  order-insensitive.
+   *
+   *  Transient (never persisted): a hydrate / replay rebuild re-derives it by
+   *  re-parking the cached orphan signals, so it survives a refresh without a
+   *  persisted field. Bounded by `PENDING_RESULTS_CAP`; entries whose signal
+   *  message is evicted/trimmed are pruned. */
+  pendingResults: Map<string, SdkMessage>
   activeSubagents: Map<string, ActiveSubagent>
   /** Workflow tool_use index, keyed by the Workflow's tool_use_id. The
    *  Workflow analogue of `activeSubagents`: records are kept after
@@ -594,7 +613,12 @@ export type SessionAction =
    *  transcript is whole, so re-running the results settles every such pair.
    *  Idempotent, and deliberately narrow: only result-bearing messages are
    *  re-applied, never the tool_use ones, so a status set out-of-band (a plan
-   *  approved via PERMISSION_RESOLVED with no tool_result) is never reset. */
+   *  approved via PERMISSION_RESOLVED with no tool_result) is never reset.
+   *
+   *  SUPERSEDED by ServerMirror.pendingResults, which parks an orphan result
+   *  the moment it arrives (any path) and re-applies it when the tool_use
+   *  lands — so this action is now a redundant safety net, kept for one
+   *  release. It remains idempotent and correct; nothing depends on it. */
   | { type: 'SETTLE_RESULT_INDEXES' }
   /** Record that a tail-first replay burst just applied its newest chunk
    *  first, so the transcript may hold results whose tool_use has not been
@@ -769,6 +793,7 @@ export function createInitialServerMirror(): ServerMirror {
     questionAnswers: new Map(),
     toolStatus: new Map(),
     toolResults: new Map(),
+    pendingResults: new Map(),
     activeSubagents: new Map(),
     activeWorkflows: new Map(),
     activeSkills: new Map(),

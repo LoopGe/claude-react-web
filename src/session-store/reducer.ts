@@ -1123,12 +1123,14 @@ function trimFront(state: SessionState): SessionState {
   const messages = mirror.messages.slice(cut)
   console.warn(`[trimFront] Trimmed ${cut} items (${beforeLen} → ${items.length})`)
   const live = collectLiveToolUseIds(items)
+  const retained = new Set(items.map((it) => it.id))
   return withMirror(state, {
     ...mirror,
     items,
     messages,
     toolStatus: pruneMapToLive(mirror.toolStatus, live),
     toolResults: pruneMapToLive(mirror.toolResults, live),
+    pendingResults: prunePendingResults(mirror.pendingResults, retained),
     planStatus: pruneMapToLive(mirror.planStatus, live),
     planContent: pruneMapToLive(mirror.planContent, live),
     questionAnswers: pruneMapToLive(mirror.questionAnswers, live),
@@ -1162,6 +1164,7 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
     if (uuidSet.has(uuid)) pendingConsumedMessages.delete(uuid)
   }
   const live = collectLiveToolUseIds(items)
+  const retained = new Set(items.map((it) => it.id))
   return withMirror(state, {
     ...mirror,
     items,
@@ -1173,6 +1176,7 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
         : mirror.lastMessageUuid,
     toolStatus: pruneMapToLive(mirror.toolStatus, live),
     toolResults: pruneMapToLive(mirror.toolResults, live),
+    pendingResults: prunePendingResults(mirror.pendingResults, retained),
     planStatus: pruneMapToLive(mirror.planStatus, live),
     planContent: pruneMapToLive(mirror.planContent, live),
     questionAnswers: pruneMapToLive(mirror.questionAnswers, live),
@@ -1530,6 +1534,9 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   working = withMirror(working, updateLiveTurnMirror(working.mirror, incomingMessage))
   working = withMirror(working, updateTranscriptMirror(working.mirror, incomingMessage))
   working = withMirror(working, updateIndexesMirror(working.mirror, incomingMessage))
+  // Live path: a tool_use that just seeded may have an orphan result parked
+  // from an earlier out-of-order ingress — settle it now (see pendingResults).
+  working = withMirror(working, drainPendingResults(working.mirror))
   // A finalized main-thread assistant message means its text now lives in the
   // transcript above — drop the duplicate from the live accumulator (see
   // pruneFinalizedLiveTurnText for the serial-response invariant this leans on).
@@ -1620,6 +1627,11 @@ export function rebuildIndexesFromMessages(
   for (const message of messages) {
     mirror = updateIndexesMirror(mirror, message)
   }
+  // After the whole batch: settle any result whose tool_use arrived in it
+  // (out-of-order parking — see ServerMirror.pendingResults). Deferring to the
+  // batch boundary lets a sidechain's child frames merge into the record
+  // BEFORE its result settles it, so the drill-in detail isn't lost.
+  mirror = drainPendingResults(mirror)
   return withMirror(state, mirror)
 }
 
@@ -1662,6 +1674,117 @@ export function reapplyDismissed(state: SessionState): SessionState {
   const mirror = mirrorChanged ? { ...state.mirror, activeSubagents } : state.mirror
   if (mirror === state.mirror && intent === state.intent) return state
   return withIntent(withMirror(state, mirror), intent)
+}
+
+/** Hard cap on `pendingResults`. A genuinely orphaned id (the tool_use was
+ *  evicted, or never existed — e.g. an EnterPlanMode result whose id owns no
+ *  lifecycle map) can never be paired, so without a bound it would linger for
+ *  the life of the session. Real orphan bursts are tiny (one per ring-boundary
+ *  tool call); this is pure insurance. Maps keep insertion order, so eviction
+ *  drops the oldest. */
+const PENDING_RESULTS_CAP = 256
+
+/** Stable key for a parked completion-signal message. The uuid is the natural
+ *  key (and what a replay re-delivers); a uuid-less frame is rare, so fall back
+ *  to a content-derived key that still dedups repeated re-applications. */
+function pendingResultKey(message: SdkMessage, ownerIds: readonly string[]): string {
+  if (typeof message.uuid === 'string' && message.uuid.length > 0) return message.uuid
+  const at = typeof message.receivedAt === 'number' ? message.receivedAt : ''
+  return `ids:${ownerIds.join(',')}:${at}`
+}
+
+/** The tool_use_ids a message can SETTLE. Two carriers:
+ *   - a tool_result's owner ids (`getToolResultIds`);
+ *   - the Agent tool_use_id a task-notification targets (SDK `system` frame or
+ *     harness `<task-notification>` user injection).
+ *  Empty for anything that settles no indexed record (a plain prompt, an
+ *  unrelated system frame) — those are never parked. This is the "who does
+ *  this message belong to" set the park logic keys on. */
+function completionOwnerIds(message: SdkMessage): string[] {
+  const resultIds = getToolResultIds(message)
+  if (resultIds.length > 0) return resultIds
+  if (message.type !== 'system' && message.type !== 'user') return []
+  const target = parseTaskNotification(message)?.toolUseId
+  return target ? [target] : []
+}
+
+/** Does some lifecycle map already own this tool_use id? If so, a tool_result
+ *  for it is paired (or its completion branch will handle it) and must NOT be
+ *  parked. Covers every map a tool_result can settle: generic tools
+ *  (`toolStatus`), plans (`planStatus`), questions (`questionAnswers`), and the
+ *  three sidechain owners (`activeSubagents` / `activeWorkflows` /
+ *  `activeSkills`). */
+function resultOwnerKnown(mirror: ServerMirror, id: string): boolean {
+  return (
+    mirror.toolStatus.has(id) ||
+    mirror.planStatus.has(id) ||
+    mirror.questionAnswers.has(id) ||
+    mirror.activeSubagents.has(id) ||
+    mirror.activeWorkflows.has(id) ||
+    mirror.activeSkills.has(id)
+  )
+}
+
+/** Re-apply every parked completion-signal message through the index branches.
+ *  Called at the end of a batch fold (and after each live message) — by then
+ *  any tool_use the batch carried has been seeded, so a parked signal whose
+ *  owner just arrived settles here. `updateIndexesMirror` also drops a parked
+ *  entry once every id it carries is known, so this loop both settles and
+ *  unparks. Identity-stable when nothing is parked (the common case) or nothing
+ *  changed. */
+function drainPendingResults(mirror: ServerMirror): ServerMirror {
+  if (mirror.pendingResults.size === 0) return mirror
+  let next = mirror
+  // Snapshot the keys: a re-application may add or remove parked entries.
+  for (const key of Array.from(mirror.pendingResults.keys())) {
+    const parked = next.pendingResults.get(key)
+    if (!parked) continue
+    next = updateIndexesMirror(next, parked)
+  }
+  return next
+}
+
+/** Drop parked results whose result message is no longer in the transcript
+ *  (front-trim / refusal-fallback eviction). Without this an evicted result
+ *  could still be re-applied by a later drain and wrongly settle a tool_use
+ *  that was NOT evicted. Keeps uuid-less entries (nothing to correlate). */
+function prunePendingResults(
+  pending: Map<string, SdkMessage>,
+  retainedUuids: ReadonlySet<string>,
+): Map<string, SdkMessage> {
+  if (pending.size === 0) return pending
+  let next: Map<string, SdkMessage> | null = null
+  for (const [key, msg] of pending) {
+    const uuid = typeof msg.uuid === 'string' ? msg.uuid : null
+    if (uuid == null || retainedUuids.has(uuid)) continue
+    if (!next) next = new Map(pending)
+    next.delete(key)
+  }
+  return next ?? pending
+}
+
+/** Is this completion signal aimed at a sidechain CHILD row — a nested row of
+ *  an Agent/Workflow/Skill record rather than one of the six top-level
+ *  lifecycle maps? Main-thread results carry `parent_tool_use_id: null`
+ *  (verified in server/session-pump.ts); only subagent-internal hops carry a
+ *  non-null parent. Child ids never enter those maps, so parking one would
+ *  leak forever (and evict real orphans via the cap). Its own branch already
+ *  settles it in-order, and `sweepRunningChildCalls` covers a stranded one.
+ *  Returns false when the parent record (or the child row) isn't seeded yet —
+ *  then it IS parked, and a later drain re-checks once the row exists. */
+function resultIsSidechainChild(
+  mirror: ServerMirror,
+  message: SdkMessage,
+  ownerIds: readonly string[],
+): boolean {
+  const parentId = typeof message.parent_tool_use_id === 'string' ? message.parent_tool_use_id : ''
+  if (!parentId) return false
+  const hasChild = (children: ReadonlyArray<{ toolUseId: string }> | undefined): boolean =>
+    children != null && children.some((c) => ownerIds.includes(c.toolUseId))
+  if (hasChild(mirror.activeSubagents.get(parentId)?.childToolCalls)) return true
+  if (hasChild(mirror.activeWorkflows.get(parentId)?.childAgents)) return true
+  if (hasChild(mirror.activeSkills.get(parentId)?.childCalls)) return true
+  return false
 }
 
 function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
@@ -2447,9 +2570,44 @@ function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerM
     }
   }
 
-  return changed
+  const nextMirror = changed
     ? { ...mirror, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, activeWorkflows, activeSkills }
     : mirror
+
+  // ── Order-insensitivity: park orphan completion signals ────────────────
+  // The branches above are a fold over ARRIVAL order: a tool_result (or a
+  // task-notification) can only settle a tool_use that was applied before it.
+  // Out-of-order ingress (tail-first replay, disk paging, a replay merge that
+  // drops the overlap) can land the signal first, so the later tool_use would
+  // seed 'running' with nothing left to flip it. Park every completion signal
+  // whose owning tool_use is not yet known; drainPendingResults re-applies it
+  // through these same branches once the tool_use lands.
+  const ownerIds = completionOwnerIds(message)
+  if (ownerIds.length === 0) return nextMirror
+  const parked = nextMirror.pendingResults
+  const key = pendingResultKey(message, ownerIds)
+  // A signal must NOT be parked once it is "settled": either a sidechain
+  // child's result (owned by its parent record's child list) or every id it
+  // carries is owned by a top-level lifecycle map (the common in-order case).
+  const settled =
+    resultIsSidechainChild(nextMirror, message, ownerIds) ||
+    ownerIds.every((id) => resultOwnerKnown(nextMirror, id))
+  if (settled) {
+    // If an earlier out-of-order pass parked this same message, unpark it now.
+    if (!parked.has(key)) return nextMirror
+    const pendingResults = new Map(parked)
+    pendingResults.delete(key)
+    return { ...nextMirror, pendingResults }
+  }
+  if (parked.has(key)) return nextMirror
+  const pendingResults = new Map(parked)
+  pendingResults.set(key, message)
+  while (pendingResults.size > PENDING_RESULTS_CAP) {
+    const oldest = pendingResults.keys().next().value
+    if (oldest === undefined) break
+    pendingResults.delete(oldest)
+  }
+  return { ...nextMirror, pendingResults }
 }
 
 // ── Token-rate sliding window ──────────────────────────────────────

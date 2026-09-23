@@ -2676,14 +2676,21 @@ describe('SETTLE_RESULT_INDEXES', () => {
 
   it('settles a tool_result whose tool_use arrived later (tail-first order)', () => {
     // Tail-first replay applies the NEWEST chunk first, so a result can land
-    // before its tool_use: the status branch skips a result with no seeded
-    // entry, and the later (prepended) tool_use then seeds 'running' with no
-    // future result to flip it — a card that spins forever.
+    // before its tool_use. The index fold is order-insensitive now: the
+    // orphan result is parked in mirror.pendingResults and re-applied when the
+    // tool_use lands, so the card never strands on 'running'. No marker or
+    // SETTLE_RESULT_INDEXES dispatch is needed.
     let state = createInitialSessionState('s')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r-1', 'tu-1') })
+    // Parked — no owner yet.
+    expect(state.mirror.pendingResults.size).toBe(1)
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse('a-1', 'tu-1') })
-    expect(state.mirror.toolStatus.get('tu-1')).toBe('running') // the bug
+    expect(state.mirror.toolStatus.get('tu-1')).toBe('success')
+    expect(state.mirror.toolResults.get('tu-1')).toBeDefined()
+    // The park is consumed once paired.
+    expect(state.mirror.pendingResults.size).toBe(0)
 
+    // The legacy settle path stays a harmless no-op.
     state = reduceSessionState(state, { type: 'MARK_TAIL_FIRST_APPLIED' })
     state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
     expect(state.mirror.toolStatus.get('tu-1')).toBe('success')
@@ -2693,8 +2700,10 @@ describe('SETTLE_RESULT_INDEXES', () => {
   it('settles a subagent record whose result arrived first', () => {
     let state = createInitialSessionState('s')
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r-2', 'tu-2') })
+    expect(state.mirror.pendingResults.size).toBe(1)
     state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse('a-2', 'tu-2', 'Agent') })
-    expect(state.mirror.activeSubagents.get('tu-2')?.status).toBe('running')
+    expect(state.mirror.activeSubagents.get('tu-2')?.status).toBe('done')
+    expect(state.mirror.pendingResults.size).toBe(0)
 
     state = reduceSessionState(state, { type: 'MARK_TAIL_FIRST_APPLIED' })
     state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
@@ -2724,6 +2733,279 @@ describe('SETTLE_RESULT_INDEXES', () => {
     const settled = state
     state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
     expect(state).toBe(settled)
+  })
+})
+
+describe('order-insensitive tool_result pairing (pendingResults)', () => {
+  const toolUse = (uuid: string, id: string, name = 'Read'): SdkMessage => ({
+    type: 'assistant',
+    uuid,
+    message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: {} }] },
+    parent_tool_use_id: null,
+  } as unknown as SdkMessage)
+  const toolResult = (uuid: string, toolUseId: string, isError = false): SdkMessage => ({
+    type: 'user',
+    uuid,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'ok', is_error: isError }] },
+    parent_tool_use_id: toolUseId,
+  } as unknown as SdkMessage)
+
+  it('disk paging: a ring result is paired when its tool_use is prepended', () => {
+    // Path 2 — the tool_use is older than the ring, so the first-screen replay
+    // only carried the result; loadOlder then prepends the tool_use.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r', 'tu') })
+    expect(state.mirror.pendingResults.size).toBe(1)
+    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [toolUse('a', 'tu')] })
+    expect(state.mirror.toolStatus.get('tu')).toBe('success')
+    expect(state.mirror.toolResults.get('tu')).toBeDefined()
+    expect(state.mirror.pendingResults.size).toBe(0)
+  })
+
+  it('replay merge: an overlap-dropped result still pairs with a prepended tool_use', () => {
+    // Path 3 — the cache holds the orphan result; a full replay whose overlap
+    // (the result) is dropped still brings the tool_use in its older slice.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r', 'tu') })
+    state = reduceSessionState(state, {
+      type: 'REPLAY_REPLACE',
+      messages: [toolUse('a', 'tu'), toolResult('r', 'tu')],
+      permissions: [],
+    })
+    expect(state.mirror.toolStatus.get('tu')).toBe('success')
+    expect(state.mirror.toolResults.get('tu')).toBeDefined()
+    expect(state.mirror.pendingResults.size).toBe(0)
+  })
+
+  it('hydrate rebuild re-parks a cached orphan result, then pairs it on prepend', () => {
+    // A refresh mid-burst: the cache holds only the result (its tool_use was
+    // in an unsent backfill chunk). The index rebuild must park it, and the
+    // later page-in must settle it — this is what makes the fix survive a
+    // refresh without a persisted marker.
+    const seeded = createInitialSessionState('s')
+    let state = rebuildIndexesFromMessages(seeded, [toolResult('r', 'tu')])
+    expect(state.mirror.pendingResults.size).toBe(1)
+    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [toolUse('a', 'tu')] })
+    expect(state.mirror.toolStatus.get('tu')).toBe('success')
+    expect(state.mirror.pendingResults.size).toBe(0)
+  })
+
+  it('preserves a sidechain record\'s child detail across a parked result', () => {
+    // The result is parked, then a batch prepends the Agent tool_use AND one
+    // of its child frames. Settling must wait for the batch boundary so the
+    // child frame lands before the record flips terminal — otherwise the
+    // drill-in detail is silently dropped.
+    const agentUse = toolUse('a', 'tu', 'Agent')
+    const childFrame: SdkMessage = {
+      type: 'assistant',
+      uuid: 'c1',
+      parent_tool_use_id: 'tu',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'child-1', name: 'Bash', input: {} }] },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r', 'tu') })
+    expect(state.mirror.pendingResults.size).toBe(1)
+    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [agentUse, childFrame] })
+    const sub = state.mirror.activeSubagents.get('tu')
+    expect(sub?.status).toBe('done')
+    expect(sub?.childToolCalls?.length).toBe(1)
+    expect(state.mirror.pendingResults.size).toBe(0)
+  })
+
+  it('does not park an in-order result (common path stays allocation-free)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse('a', 'tu') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r', 'tu') })
+    expect(state.mirror.pendingResults.size).toBe(0)
+    expect(state.mirror.toolStatus.get('tu')).toBe('success')
+  })
+
+  it('does not park a sidechain child result (nested row, not a top-level map)', () => {
+    // Child ids never enter the six top-level maps, so parking them would leak
+    // forever and evict real orphans via the cap. Their own branch settles them.
+    const agentUse = toolUse('a', 'tu', 'Agent')
+    const childUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'c1',
+      parent_tool_use_id: 'tu',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'child-1', name: 'Bash', input: {} }] },
+    } as unknown as SdkMessage
+    const childResult: SdkMessage = {
+      type: 'user',
+      uuid: 'cr1',
+      parent_tool_use_id: 'tu',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'child-1', content: 'done' }] },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childResult })
+    expect(state.mirror.pendingResults.size).toBe(0)
+    expect(state.mirror.activeSubagents.get('tu')?.childToolCalls?.[0]?.status).toBe('success')
+  })
+
+  it('parks a child result that arrives before its child tool_use, then unpairs it', () => {
+    // Out-of-order within a sidechain: the child row doesn't exist yet, so the
+    // result is parked; once the child tool_use seeds the row, the drain
+    // re-applies it and unparks (the settled check now sees the child).
+    const agentUse = toolUse('a', 'tu', 'Agent')
+    const childUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'c1',
+      parent_tool_use_id: 'tu',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'child-1', name: 'Bash', input: {} }] },
+    } as unknown as SdkMessage
+    const childResult: SdkMessage = {
+      type: 'user',
+      uuid: 'cr1',
+      parent_tool_use_id: 'tu',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'child-1', content: 'done' }] },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentUse })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: childResult })
+    expect(state.mirror.pendingResults.size).toBe(1)
+    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [childUse] })
+    expect(state.mirror.activeSubagents.get('tu')?.childToolCalls?.[0]?.status).toBe('success')
+    expect(state.mirror.pendingResults.size).toBe(0)
+  })
+
+  it('prunes a parked result when its message is evicted', () => {
+    // Refusal-fallback retraction: the evicted result must not survive in the
+    // park and later settle a tool_use that was not itself evicted.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r', 'tu') })
+    expect(state.mirror.pendingResults.size).toBe(1)
+    state = reduceSessionState(state, { type: 'EVICT_MESSAGES', uuids: ['r'] })
+    expect(state.mirror.pendingResults.size).toBe(0)
+  })
+
+  it('pairs an out-of-order system task_notification with the later Agent tool_use', () => {
+    // Same class as an orphan tool_result: the SDK system frame lands before
+    // the Agent tool_use seeds the record, so it would otherwise be dropped.
+    const agentUse = toolUse('a', 'tu', 'Agent')
+    const notif: SdkMessage = {
+      type: 'system',
+      subtype: 'task_notification',
+      uuid: 'n1',
+      task_id: 't1',
+      tool_use_id: 'tu',
+      status: 'completed',
+      summary: 'done',
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: notif })
+    expect(state.mirror.pendingResults.size).toBe(1)
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentUse })
+    expect(state.mirror.activeSubagents.get('tu')?.status).toBe('done')
+    expect(state.mirror.pendingResults.size).toBe(0)
+  })
+
+  it('pairs an out-of-order harness XML task_notification too', () => {
+    const agentUse = toolUse('a', 'tu', 'Agent')
+    const xmlNotif: SdkMessage = {
+      type: 'user',
+      uuid: 'n2',
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content:
+          '<task-notification><tool-use-id>tu</tool-use-id><status>completed</status>' +
+          '<summary>done</summary><result>the real output</result></task-notification>',
+      },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: xmlNotif })
+    expect(state.mirror.pendingResults.size).toBe(1)
+    state = reduceSessionState(state, { type: 'MESSAGE', message: agentUse })
+    expect(state.mirror.activeSubagents.get('tu')?.status).toBe('done')
+    expect(state.mirror.activeSubagents.get('tu')?.result?.content).toBe('the real output')
+    expect(state.mirror.pendingResults.size).toBe(0)
+  })
+
+  it('bounds the park (evicts the oldest entry past the cap)', () => {
+    // Module-private PENDING_RESULTS_CAP, mirrored here like the other
+    // constant tests. 257 distinct orphans → the first is evicted.
+    let state = createInitialSessionState('s')
+    for (let i = 0; i < 257; i++) {
+      state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult(`r-${i}`, `tu-${i}`) })
+    }
+    expect(state.mirror.pendingResults.size).toBe(256)
+    expect(state.mirror.pendingResults.has('r-0')).toBe(false)
+    expect(state.mirror.pendingResults.has('r-256')).toBe(true)
+  })
+
+  it('pairs an out-of-order Workflow result', () => {
+    const wfUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-wf',
+      parent_tool_use_id: null,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'wf-1', name: 'Workflow', input: {} }] },
+    } as unknown as SdkMessage
+    const wfResult: SdkMessage = {
+      type: 'user',
+      uuid: 'r-wf',
+      parent_tool_use_id: 'wf-1',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'wf-1', content: 'summary' }] },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: wfResult })
+    expect(state.mirror.pendingResults.size).toBe(1)
+    state = reduceSessionState(state, { type: 'MESSAGE', message: wfUse })
+    expect(state.mirror.activeWorkflows.get('wf-1')?.status).toBe('done')
+    expect(state.mirror.pendingResults.size).toBe(0)
+  })
+
+  it('pairs an out-of-order Skill result', () => {
+    const skUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-sk',
+      parent_tool_use_id: null,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'sk-1', name: 'Skill', input: { skill: 'code-review' } }] },
+    } as unknown as SdkMessage
+    const skResult: SdkMessage = {
+      type: 'user',
+      uuid: 'r-sk',
+      parent_tool_use_id: 'sk-1',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'sk-1', content: 'report' }] },
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: skResult })
+    expect(state.mirror.pendingResults.size).toBe(1)
+    state = reduceSessionState(state, { type: 'MESSAGE', message: skUse })
+    expect(state.mirror.activeSkills.get('sk-1')?.status).toBe('done')
+    expect(state.mirror.pendingResults.size).toBe(0)
+  })
+
+  it('pairs an out-of-order ExitPlanMode decision too (plan lifecycle map)', () => {
+    // The same parking covers the plan/question lifecycle maps, not just the
+    // generic toolStatus — resultOwnerKnown consults all six.
+    const planUse: SdkMessage = {
+      type: 'assistant',
+      uuid: 'a-plan',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'plan-1', name: 'ExitPlanMode', input: {} }] },
+      parent_tool_use_id: null,
+    } as unknown as SdkMessage
+    const planResult: SdkMessage = {
+      type: 'user',
+      uuid: 'r-plan',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'plan-1', content: 'approved' }] },
+      parent_tool_use_id: 'plan-1',
+    } as unknown as SdkMessage
+
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: planResult })
+    expect(state.mirror.pendingResults.size).toBe(1)
+    state = reduceSessionState(state, { type: 'MESSAGE', message: planUse })
+    expect(state.mirror.planStatus.get('plan-1')).toBe('approved')
+    expect(state.mirror.pendingResults.size).toBe(0)
   })
 })
 
