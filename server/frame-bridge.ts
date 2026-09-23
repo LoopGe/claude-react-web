@@ -94,6 +94,13 @@ function messageFrameJson(sessionId: string, message: object): string {
 interface SessionSub {
   sessionId: string
   cleanup: () => void
+  /** The replay shape this channel was ESTABLISHED with. A later subscribe on
+   *  the same connection is re-served the replay (see startSession), and the
+   *  re-serve must keep the channel's shape rather than adopt the newcomer's:
+   *  a second consumer subscribing without opts (useGitStatus mounts beside
+   *  useChatStream) would otherwise re-send the whole ring in the ordinary
+   *  oldest-first form — exactly the cost tail-first replay exists to avoid. */
+  replayMode?: 'tail-backfill'
 }
 
 /**
@@ -222,6 +229,7 @@ export class SessionConnection {
             frame.sessionId,
             frame.sinceUuid,
             frame.replayMode === 'tail-backfill' ? 'tail-backfill' : undefined,
+            frame.hasCachedTranscript === true,
           )
         }
         break
@@ -275,16 +283,20 @@ export class SessionConnection {
    *  first burst (a panel remount, StrictMode's double mount, or a resume
    *  whose replay landed before <Chat> existed), and only the server can
    *  know — so "I asked for this channel" always produces a replay.
-   *  `pending` carries the permission/elicitation/dialog snapshots on the
-   *  establish path; a re-serve omits them (the client re-reads that state
-   *  over REST on mount, and a stale snapshot could resurrect an already
-   *  resolved permission request). */
+   *  `pending` carries the permission/elicitation/dialog snapshots, on BOTH
+   *  paths: in tail mode the tail frame is their only carrier (the terminator
+   *  is payload-free by contract), so a re-serve that omitted them would
+   *  leave a listener attaching to an already-live channel with no permission
+   *  / elicitation / dialog card on its first paint. The re-serve path reads
+   *  them FRESH from the brokers rather than reusing a cached snapshot — a
+   *  stale one could resurrect an already resolved request. */
   private sendReplay(
     sessionId: string,
     history: SDKMessage[],
     sinceUuid: string | undefined,
     pending: Pick<WsReplay, 'permissions' | 'elicitations' | 'dialogs'> | null,
     replayMode?: 'tail-backfill',
+    hasCachedTranscript = false,
   ): void {
     let replayHistory = history
     // If the client supplied `sinceUuid`, try to send only messages after
@@ -334,7 +346,7 @@ export class SessionConnection {
     // which is also the safe behavior should the planner's null contract
     // ever drift from the chunk-size check.
     const tailPlan =
-      replayMode === 'tail-backfill' && !sinceUuid
+      replayMode === 'tail-backfill' && !sinceUuid && !hasCachedTranscript
         ? planTailBackfillReplay(replayHistory, REPLAY_CHUNK_SIZE)
         : null
     if (tailPlan) {
@@ -403,6 +415,7 @@ export class SessionConnection {
     sessionId: string,
     sinceUuid?: string,
     replayMode?: 'tail-backfill',
+    hasCachedTranscript = false,
   ): Promise<void> {
     // A second subscribe on a connection that already holds this channel:
     // re-serve the replay rather than swallowing the frame. The replay is
@@ -419,7 +432,30 @@ export class SessionConnection {
       try {
         const history = this.sm.getHistory(sessionId)
         if (history) {
-          this.sendReplay(sessionId, history, sinceUuid, null, replayMode)
+          // The channel's own shape wins over the newcomer's (see SessionSub):
+          // re-serving the ring oldest-first would defeat tail-first for the
+          // listener that asked for it. A caller that declares a cached
+          // transcript still gets the ordinary form — sendReplay's gate blocks
+          // tail-first for it, because backfill chunks prepend above its rows.
+          const channel = this.subs.get(sessionId)
+          const channelMode = channel?.replayMode ?? replayMode
+          // Pending-request snapshots, read fresh rather than passed as null:
+          // in tail mode the TAIL frame is the only carrier of them (the
+          // terminator is payload-free), so a re-serve that omits them leaves
+          // a listener attaching to a live channel with no permission /
+          // elicitation / dialog card on its first paint.
+          this.sendReplay(
+            sessionId,
+            history,
+            sinceUuid,
+            {
+              permissions: this.sm.listPending(sessionId),
+              elicitations: this.sm.listPendingElicitation(sessionId),
+              dialogs: this.sm.listPendingDialogs(sessionId),
+            },
+            channelMode,
+            hasCachedTranscript,
+          )
           this.ackSubscribe(sessionId, true, 'already-live')
         } else {
           // The connection still lists this session but the manager no
@@ -570,6 +606,7 @@ export class SessionConnection {
           dialogs: dialogs.snapshot,
         },
         replayMode,
+        hasCachedTranscript,
       )
 
       // 2.5) Send the current recap snapshot if there is one. The
@@ -822,7 +859,7 @@ export class SessionConnection {
         }
       })()
 
-      this.subs.set(sessionId, { sessionId, cleanup: stop })
+      this.subs.set(sessionId, { sessionId, cleanup: stop, replayMode })
       this.ackSubscribe(sessionId, true, 'served')
     } catch (err) {
       // SessionManager.require() throws HttpError for unknown sessions.

@@ -366,6 +366,97 @@ describe('WebSocket multiplexer', () => {
     await client.close()
   })
 
+  it('ignores replayMode when the client declares a cached transcript', async () => {
+    // The protocol precondition for tail-first is "the client has NO
+    // transcript on screen", which an absent sinceUuid only APPROXIMATES:
+    // a client can hold cached rows with no cursor (an IDB cold-load
+    // prepends rows without setting one). Backfill chunks are NEWER than
+    // such a cache and are prepended to the FRONT, so the server must not
+    // infer the precondition — it requires the client to state it.
+    const info = sm.create({})
+    await seedHistory(120)
+
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    client.send({
+      kind: 'subscribe',
+      sessionId: info.id,
+      replayMode: 'tail-backfill',
+      hasCachedTranscript: true,
+    })
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+
+    const replays = client.frames.filter(
+      (f): f is Extract<WsServerFrame, { kind: 'replay' }> =>
+        f.kind === 'replay' && f.sessionId === info.id,
+    )
+    // Ordinary oldest-first chunks — no tail/backfill markers anywhere.
+    expect(replays.every((f) => f.tail === undefined && f.backfill === undefined)).toBe(true)
+    const uuids = replays.flatMap((f) => f.messages).map((m) => (m as { uuid?: string }).uuid)
+    expect(uuids).toEqual(Array.from({ length: 120 }, (_, i) => `m${i}`))
+    await client.close()
+  })
+
+  it('re-serves an already-live channel in the shape it was established with', async () => {
+    // A second consumer (useGitStatus mounts beside useChatStream) subscribes
+    // without opts. Re-serving it the ORDINARY full ring would send every
+    // chunk the tail-first burst exists to avoid, and the client would buffer
+    // and merge all of it for nothing.
+    const info = sm.create({})
+    await seedHistory(120)
+
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    client.send({ kind: 'subscribe', sessionId: info.id, replayMode: 'tail-backfill' })
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+
+    // The bare second subscribe hits the already-live path.
+    const before = client.frames.length
+    client.send({ kind: 'subscribe', sessionId: info.id })
+    await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.reason === 'already-live',
+    )
+
+    const reServed = client.frames
+      .slice(before)
+      .filter((f): f is Extract<WsServerFrame, { kind: 'replay' }> => f.kind === 'replay')
+    expect(reServed[0].tail).toBe(true)
+    expect(reServed.slice(1).every((f) => f.backfill === true)).toBe(true)
+    await client.close()
+  })
+
+  it('carries pending snapshots on a re-served tail frame', async () => {
+    // In tail mode the TAIL frame is the only carrier of the pending-request
+    // snapshots (the terminator is payload-free by contract), so a re-serve
+    // that omits them leaves a listener attaching to an already-live channel
+    // with no permission card on its first paint.
+    const info = sm.create({})
+    await seedHistory(120)
+
+    const client = await connect()
+    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
+    client.send({ kind: 'subscribe', sessionId: info.id, replayMode: 'tail-backfill' })
+    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+
+    const before = client.frames.length
+    client.send({ kind: 'subscribe', sessionId: info.id, replayMode: 'tail-backfill' })
+    await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.reason === 'already-live',
+    )
+
+    const tail = client.frames
+      .slice(before)
+      .find((f): f is Extract<WsServerFrame, { kind: 'replay' }> => f.kind === 'replay' && f.tail === true)
+    // The snapshot is present as a field (empty here — no pending requests in
+    // this fixture) rather than omitted/null.
+    expect(Array.isArray(tail?.permissions)).toBe(true)
+    expect(Array.isArray(tail?.elicitations)).toBe(true)
+    expect(Array.isArray(tail?.dialogs)).toBe(true)
+    await client.close()
+  })
+
   it('falls back to one ordinary replay frame when the history matches the tail chunk size', async () => {
     // The planner returns null (no backfill) and the caller must use the
     // ordinary path unchanged — the pre-tail behavior for short histories.

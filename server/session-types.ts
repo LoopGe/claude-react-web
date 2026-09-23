@@ -867,6 +867,13 @@ export interface SessionBroadcaster {
     snapshot: UserDialogRequestUi[]
     unsubscribe: () => void
   }
+  /** Snapshot-only reads of the pending-request state (no subscription, no
+   *  driver). Used by the already-live re-serve path, which must put the
+   *  pending permissions / elicitations / dialogs on the re-served TAIL frame
+   *  without wiring a second channel. */
+  listPending(sessionId: string): PermissionRequestSnapshot[]
+  listPendingElicitation(sessionId: string): ElicitationRequestUi[]
+  listPendingDialogs(sessionId: string): UserDialogRequestUi[]
   subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: import('./session-pump.js').LiteContextUsage | undefined; unsubscribe: () => void } | null
   subscribePromptSuggestion(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null
   subscribeTasks(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null

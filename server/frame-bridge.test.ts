@@ -185,6 +185,10 @@ class FakeBroadcaster implements SessionBroadcaster {
     return { iterable: s.dialogs.iterable, snapshot: [] as UserDialogRequestUi[], unsubscribe: () => s.dialogs.end() }
   }
 
+  listPending() { return [] }
+  listPendingElicitation() { return [] }
+  listPendingDialogs() { return [] }
+
   subscribeContextUsage() { return null }
   subscribePromptSuggestion() { return null }
   subscribeTasks() { return null }

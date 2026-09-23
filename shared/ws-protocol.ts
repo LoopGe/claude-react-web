@@ -25,19 +25,34 @@ import type { GitStatusResponse, GitBranch, GitStashEntry } from './git-types.js
  *  they cannot guarantee cache continuity.
  *
  *  `replayMode: 'tail-backfill'` opts into tail-first replay for the
- *  NO-cache cold start (it is only honored together with an absent
- *  `sinceUuid`): the server sends one `tail`-marked replay frame with
- *  the newest chunk, then `backfill`-marked frames newest→oldest, then
- *  `replay-done`. An opt-in capability field rather than a server-side
- *  default because a stale client bundle (open tab across an upgrade)
- *  would otherwise buffer the out-of-order frames and concatenate them
- *  in ARRIVAL order into one replay-done — a garbled transcript. Older
- *  servers ignore the unknown field, so it is safe to always send. */
+ *  NO-cache cold start: the server sends one `tail`-marked replay frame
+ *  with the newest chunk, then `backfill`-marked frames newest→oldest,
+ *  then `replay-done`. An opt-in capability field rather than a
+ *  server-side default because a stale client bundle (open tab across an
+ *  upgrade) would otherwise buffer the out-of-order frames and
+ *  concatenate them in ARRIVAL order into one replay-done — a garbled
+ *  transcript. Older servers ignore the unknown field, so it is safe to
+ *  always send.
+ *
+ *  `hasCachedTranscript` STATES the precondition tail-first requires —
+ *  "the client has no transcript on screen" — rather than leaving the
+ *  server to infer it from an absent `sinceUuid`. The two come apart:
+ *  a client can hold cached rows with no cursor (an IDB cold-load
+ *  prepends rows without setting one), and a `sinceUuid` is also absent
+ *  on a genuine cold start. Since backfill chunks are NEWER than a
+ *  stale cache and the client prepends them to the FRONT, serving them
+ *  to a client with rows on screen corrupts the ordering — so the
+ *  server requires this field to be absent/false, not merely a missing
+ *  cursor. Omitting it is the safe default (no tail-first). */
 export interface WsSubscribe {
   kind: 'subscribe'
   sessionId: string
   sinceUuid?: string
   replayMode?: 'tail-backfill'
+  /** True when this client already holds transcript rows for the
+   *  session (a hydrated cache, paged history, or anything on screen).
+   *  Disables tail-first replay. */
+  hasCachedTranscript?: boolean
 }
 
 /** Stop streaming events for `sessionId`. Safe to call even if not
