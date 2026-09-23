@@ -202,3 +202,76 @@ describe('jsonl-cache — incremental append', () => {
     expect(page.messages.map((m) => (m as { uuid?: string }).uuid)).toEqual(['u1', 'a1', 'u2'])
   })
 })
+
+describe('jsonl-cache — LRU, inflight, disappearance', () => {
+  it('evicts the least-recently-used session beyond maxSessions', async () => {
+    const t = makeDeps()
+    t.put('s1', TRANSCRIPT)
+    t.put('s2', TRANSCRIPT)
+    t.put('s3', TRANSCRIPT)
+    const cache = createJsonlPageCache(t.deps, 2)
+    await cache.readPage('s1', { limit: 100 })
+    await cache.readPage('s2', { limit: 100 })
+    await cache.readPage('s3', { limit: 100 })
+    expect(cache.size()).toBe(2)
+    // s1 was evicted; reading it again re-parses (readFile count grows).
+    const before = t.readFileCalls()
+    await cache.readPage('s1', { limit: 100 })
+    expect(t.readFileCalls()).toBe(before + 1)
+    // Touching s1 made IT the newest; s2 is now the eviction victim.
+    await cache.readPage('s2', { limit: 100 })
+    expect(t.readFileCalls()).toBe(before + 2)
+  })
+
+  it('get refreshes LRU recency (re-read s1 keeps it alive over s2)', async () => {
+    const t = makeDeps()
+    t.put('s1', TRANSCRIPT)
+    t.put('s2', TRANSCRIPT)
+    const cache = createJsonlPageCache(t.deps, 2)
+    await cache.readPage('s1', { limit: 100 })
+    await cache.readPage('s2', { limit: 100 })
+    await cache.readPage('s1', { limit: 100 }) // touch s1 → s2 becomes oldest
+    t.put('s3', TRANSCRIPT)
+    await cache.readPage('s3', { limit: 100 })
+    expect(cache.size()).toBe(2)
+    const before = t.readFileCalls()
+    await cache.readPage('s1', { limit: 100 }) // still cached
+    expect(t.readFileCalls()).toBe(before)
+  })
+
+  it('concurrent reads of one session share a single parse', async () => {
+    const t = makeDeps()
+    t.put(SID, TRANSCRIPT)
+    // Gate locate until both callers have entered.
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const gated: JsonlDeps = {
+      locate: async (id) => {
+        await gate
+        return t.deps.locate(id)
+      },
+      readFile: t.deps.readFile,
+    }
+    const cache = createJsonlPageCache(gated)
+    const p1 = cache.readPage(SID, { limit: 100 })
+    const p2 = cache.readPage(SID, { limit: 100 })
+    release()
+    const [r1, r2] = await Promise.all([p1, p2])
+    expect(r1).toEqual(r2)
+    expect(t.readFileCalls()).toBe(1)
+  })
+
+  it('vanished file → empty page, entry dropped; reappearing file re-parses', async () => {
+    const t = makeDeps()
+    t.put(SID, TRANSCRIPT)
+    const cache = createJsonlPageCache(t.deps)
+    await cache.readPage(SID, { limit: 100 })
+    t.files.delete(SID)
+    const empty = await cache.readPage(SID, { limit: 100 })
+    expect(empty).toEqual({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })
+    expect(cache.size()).toBe(0)
+    t.put(SID, TRANSCRIPT, 9000)
+    const back = await cache.readPage(SID, { limit: 100 })
+    expect(back.totalCount).toBe(3)
+  })
+})
