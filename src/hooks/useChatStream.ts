@@ -229,21 +229,17 @@ export function useChatStream(
   // subscribe effect gates on it so the WS subscribe carries the cached
   // lastMessageUuid (incremental replay) instead of null (full replay).
   const hydrateReady = useSessionField(sessionId, 'hydrateReady')
+  // Gated together with hydrateReady: the IDB cold-load can still land rows
+  // (and prepend them) after hydration, so the cache declaration this hook
+  // sends — and the tail-first opt-in that depends on it — must wait for the
+  // store's cache state to settle (see SessionSnapshot.idbReady).
+  const idbReady = useSessionField(sessionId, 'idbReady')
   const permsRef = useRef(permissions)
   // Set true when a `session-cleared` frame lands for this session. Blocks
   // loadOlder() from paging the pre-/clear transcript back in from disk
   // (the on-disk log still holds it; the server only truncated its
   // in-memory ring). Reset on session switch.
   const clearedRef = useRef(false)
-  // True while a tail-first replay burst is open (between its `tail: true`
-  // frame and its replay-done). Deliberately a REF, not just the effect-local
-  // `tailMode`: an effect re-run (a `running` flip, a remount) creates a new
-  // closure whose `tailMode` starts false while the burst is still in flight,
-  // and the reconnect anchor must stay suppressed until the burst actually
-  // completes — otherwise a re-subscribe would send the tail's uuid as
-  // `sinceUuid` and the server would skip the unsent backfill chunks for
-  // good. Reset on session switch and on every burst terminator.
-  const tailBurstRef = useRef(false)
   // --- Lazy history paging (scroll-up) ---------------------------------
   // hasOlder/loadingOlder are React state (drive UI). The cursor index and
   // in-flight guard are refs (don't need to trigger renders). Declared here
@@ -324,18 +320,14 @@ export function useChatStream(
     // sequence to the discarded-buffer race.
     let errored = false
     // Cursor for this listener's forced replay (see the `subscribe` call at the
-    // bottom of the effect). Undefined while a tail-first burst is open — the
-    // burst is incomplete, and an anchor set mid-burst would make the forced
-    // (re)subscribe resume strictly after the tail, so the server would never
-    // re-send the unsent backfill chunks. The gate reads the cross-closure
-    // `tailBurstRef` rather than the effect-local `tailMode` so it also holds
-    // when this effect re-ran mid-burst (a `running` flip): the new closure's
-    // `tailMode` starts false, but the burst is still in flight and the store
-    // already carries the tail's uuid. An absent cursor is also what opts this
-    // subscribe into tail-first replay (the server gates the mode on an absent
-    // sinceUuid), i.e. the no-cache cold start.
+    // bottom of the effect). While a tail-first burst is open the store's
+    // newest uuid is the TAIL's — not a valid resume anchor — and the hub
+    // (which outlives a panel remount, unlike a per-hook ref) silently
+    // substitutes the last complete position. `burstOpen` is read here for the
+    // opt-in decision below: a partial burst's rows are all NEWER than the
+    // pending backfill chunks, so it is safe to ask for tail-first again.
     const replayCursor = (): string | undefined =>
-      tailBurstRef.current ? undefined : (getSessionLastMessageUuid(sessionId) ?? undefined)
+      getSessionLastMessageUuid(sessionId) ?? undefined
     // Phase 2 of the layered-state refactor removed the `pendingLive` buffer.
     // Previously, live frames arriving between `replay` and `replay-done` had
     // to be parked because REPLAY_REPLACE's fresh-state branch rebuilt the
@@ -390,7 +382,6 @@ export function useChatStream(
             // fresh-state path; the merge path would still be correct if a
             // cache somehow existed.
             tailMode = true
-            tailBurstRef.current = true
             replaying = false
             replayMessages = []
             replayPermissions = []
@@ -411,6 +402,12 @@ export function useChatStream(
               // buffered path's optional-chain reads.
               permissions: (frame.permissions ?? []) as PermissionRequest[],
             })
+            // The newest chunk went in first, so any tool_result whose
+            // tool_use is still in an unsent backfill chunk was skipped.
+            // Mark it in the STORE (not in this closure): the burst can be
+            // interrupted and finished later by an ordinary replay, and the
+            // marker has to outlive both this closure and this effect.
+            store.dispatch({ type: 'MARK_TAIL_FIRST_APPLIED' })
             // NOTE: no hub.setLastMessageUuid here. The burst is
             // incomplete until replay-done; advancing the reconnect
             // anchor now would make a mid-backfill disconnect resume
@@ -431,7 +428,6 @@ export function useChatStream(
             // would make the pending replay-done take the tailMode
             // branch and silently drop this burst's buffered messages.
             tailMode = false
-            tailBurstRef.current = false
           }
           replayMessages.push(...(frame.messages as SdkMessage[]))
           if (frame.permissions?.length) {
@@ -467,9 +463,12 @@ export function useChatStream(
           // still worth a line — it says an effect re-ran mid-burst, which
           // costs a replay rebuild. A tail-first burst is the OTHER legitimate
           // exception: it applies its frames on arrival, so an empty buffer at
-          // replay-done is the expected steady state there (tailBurstRef holds
-          // across the effect re-run, so the replacement sees it too).
-          if (!replaying && !tailBurstRef.current && replayMessages.length === 0 && !errored) {
+          // replay-done is the expected steady state there. (When the
+          // terminator lands on a closure that never saw the tail frame, this
+          // fires once — the burst's own frames were applied by the previous
+          // instance, and the hub's burst latch, not this closure, is what
+          // kept the resume anchor honest.)
+          if (!replaying && !tailMode && replayMessages.length === 0 && !errored) {
             console.warn(
               `[useChatStream] replay-done for ${sessionId} arrived with NO preceding ` +
               `replay frame on this listener — an effect re-run (running=${running}) ` +
@@ -486,22 +485,24 @@ export function useChatStream(
           if (frame.dialogs?.length) {
             for (const req of frame.dialogs) permsRef.current.onDialogRequest?.(req)
           }
-          if (tailMode || tailBurstRef.current) {
+          if (tailMode) {
             // Tail-first burst terminator: messages and pending-request
             // snapshots all rode the tail frame (applied on arrival) and
             // the backfill frames (prepended). Nothing to fold — the
             // server's tail-mode replay-done carries no payload. This is
             // also the point where the burst is complete, so the reconnect
             // anchor may finally advance (see the tail-frame NOTE above).
-            // tailBurstRef is read too (not just the effect-local tailMode):
-            // when the terminator lands on a closure that never saw the tail
-            // frame (an effect re-run mid-burst), the burst is still over and
-            // the ref must clear, or the cursor would stay suppressed forever.
             tailMode = false
-            tailBurstRef.current = false
           } else {
             store.dispatch({ type: 'REPLAY_REPLACE', messages: replayMessages, permissions: replayPermissions })
           }
+          // One settle point for every terminator. It is dispatched
+          // unconditionally and gated INSIDE the reducer on the store's
+          // marker, which is what makes it correct in the paths a
+          // closure-local check misses: a burst applied by a previous
+          // closure, and a burst interrupted by a socket drop whose results
+          // are only re-paired by the NEXT (ordinary, buffered) replay.
+          store.dispatch({ type: 'SETTLE_RESULT_INDEXES' })
           const lastUuid = getSessionLastMessageUuid(sessionId)
           if (lastUuid) hub.setLastMessageUuid(sessionId, lastUuid)
           replayMessages = []
@@ -523,11 +524,10 @@ export function useChatStream(
             break
           }
           store.dispatch({ type: 'MESSAGE', message })
-          // !tailBurstRef too: a live message landing mid-backfill must not
-          // advance the reconnect anchor either — same rationale as the
-          // tail-frame NOTE above (an anchor set mid-burst makes a
-          // disconnect resume strictly-after and skip the unsent backfill).
-          if (!replaying && !tailBurstRef.current) {
+          // The hub ignores this while a tail-first burst is open — a live
+          // message landing mid-backfill must not advance the resume anchor
+          // either (same rationale as the tail-frame NOTE above).
+          if (!replaying) {
             const lastUuid = getSessionLastMessageUuid(sessionId)
             if (lastUuid) hub.setLastMessageUuid(sessionId, lastUuid)
           }
@@ -649,7 +649,6 @@ export function useChatStream(
             replayPermissions = []
             replaying = false
             tailMode = false
-            tailBurstRef.current = false
             store.dispatch({ type: 'REPLAY_REPLACE', messages: [], permissions: [] })
           }
           store.dispatch({ type: 'ERROR', message: frame.message })
@@ -689,7 +688,6 @@ export function useChatStream(
           replayPermissions = []
           replaying = false
           tailMode = false
-          tailBurstRef.current = false
           // Reset in-memory state AND erase the cache with no pending write
           // left behind (clearPersisted cancels the debounced save that a
           // plain reset() would schedule — otherwise that timer rewrites the
@@ -709,18 +707,24 @@ export function useChatStream(
     })
 
     const cursor = replayCursor()
+    // "Nothing on screen" is stated, not inferred: the store can hold rows
+    // with no cursor at all (an IDB cold-load prepends rows without setting
+    // one), and backfill chunks are NEWER than those rows while the client
+    // prepends them to the FRONT — the server must not serve them to a
+    // client with a transcript. A PARTIAL burst is the exception: its rows
+    // are the tail (newest in the ring), so everything the backfill carries
+    // is older and prepending stays correct.
+    const burstOpen = hub.isReplayBurstOpen(sessionId)
+    const hasCachedTranscript = !burstOpen && (cursor != null || store.getSnapshot().items.length > 0)
     const release = hub.subscribe(
       sessionId,
       cursor,
       // This listener needs the history itself, not just a live channel: the
       // server re-serves the replay sliced at the cursor above, so a warm
-      // store gets a near-empty burst and a cold one gets everything. An
-      // absent cursor (no cached transcript) additionally opts into tail-first
-      // replay, so the cold start paints the newest chunk immediately instead
-      // of waiting for the full ring to drain (see WsSubscribe.replayMode).
-      cursor == null
-        ? { force: true, replayMode: 'tail-backfill' }
-        : { force: true },
+      // store gets a near-empty burst and a cold one gets everything.
+      hasCachedTranscript
+        ? { force: true, hasCachedTranscript: true }
+        : { force: true, replayMode: 'tail-backfill' },
     )
     return () => {
       // Key diagnostic: tearing down mid-replay discards the buffered
@@ -738,7 +742,7 @@ export function useChatStream(
       off()
       release()
     }
-  }, [hub, sessionId, store, hydrateReady, running])
+  }, [hub, sessionId, store, hydrateReady, idbReady, running])
 
   const displayedError = useMemo(() => {
     if (hubStatus === 'reconnecting') {
@@ -796,7 +800,6 @@ export function useChatStream(
     cursorRef.current = null
     inFlightRef.current = false
     clearedRef.current = false
-    tailBurstRef.current = false
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setHasOlder(true)
     setLoadingOlder(false)
@@ -836,6 +839,14 @@ export function useChatStream(
     // After a /clear, the pre-clear transcript still exists on disk but
     // must stay hidden — refuse to page it back in for this session.
     if (clearedRef.current) return 0
+    // While a tail-first burst is draining, a disk page would be PREPENDED to
+    // the front — above the backfill chunks still to arrive, which are NEWER
+    // than that page (they are ring content; a paged page is strictly older).
+    // The transcript would render mid-history above older history, and the
+    // chunk's trustUuidDedup skips the signature check that would otherwise
+    // catch a duplicated prompt. The drain is bounded (the ring, one frame per
+    // chunk), so refuse and let the user's next scroll-up retry.
+    if (hub.isReplayBurstOpen(sessionId)) return 0
     inFlightRef.current = true
     setLoadingOlder(true)
     try {
@@ -879,7 +890,7 @@ export function useChatStream(
       inFlightRef.current = false
       setLoadingOlder(false)
     }
-  }, [store, fetchServerPage])
+  }, [store, fetchServerPage, hub, sessionId])
 
   return useMemo(
     () => ({

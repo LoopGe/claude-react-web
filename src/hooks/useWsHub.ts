@@ -35,9 +35,16 @@ export interface SubscribeOpts {
   /** Opt into tail-first replay: on a no-cache cold start (no sinceUuid)
    *  the server sends the newest chunk first (`tail: true` — rendered
    *  immediately) and the rest newest→oldest as `backfill: true` frames
-   *  the client prepends. The server only honors this together with an
-   *  absent sinceUuid and ignores the field entirely on older builds. */
+   *  the client prepends. Ignored on older builds. Requires that the
+   *  client declare `hasCachedTranscript` truthfully — the server will
+   *  not infer the precondition from an absent sinceUuid (see
+   *  WsSubscribe). */
   replayMode?: 'tail-backfill'
+  /** State the fact tail-first replay depends on: this client already
+   *  holds transcript rows for the session. Backfill chunks are NEWER
+   *  than a stale cache and the client prepends them to the FRONT, so
+   *  the server must not serve them to a client with rows on screen. */
+  hasCachedTranscript?: boolean
 }
 
 /** Handler for any server frame. Receives the full envelope so
@@ -87,8 +94,17 @@ interface WsHubApi {
   subscribe: (sessionId: string, sinceUuid?: string, opts?: SubscribeOpts) => () => void
   /** Update the last known message UUID for a session. Used for
    *  incremental replay on reconnect — the hub stores this and sends
-   *  it with re-subscribe frames after a connection drop. */
+   *  it with re-subscribe frames after a connection drop. Ignored while
+   *  a tail-first replay burst is open on that channel: the transcript
+   *  on screen is incomplete then, so its newest uuid is not a resume
+   *  anchor (see replayBurstsRef). */
   setLastMessageUuid: (sessionId: string, uuid: string) => void
+  /** True while a tail-first replay burst is open on this session's
+   *  channel (the `tail: true` frame landed, its terminator has not).
+   *  Consumers use it to decide whether their store's cursor is a valid
+   *  resume anchor — and whether their subscribe should ask for
+   *  tail-first again. */
+  isReplayBurstOpen: (sessionId: string) => boolean
 }
 
 const WsHubContext = createContext<WsHubApi | null>(null)
@@ -129,6 +145,34 @@ interface ChannelState {
   lastUuid: string | null
 }
 
+/** Frame kinds that can OPEN or CLOSE a tail-first replay burst. Everything
+ *  else is skipped by the fan-out's burst bookkeeping without touching the
+ *  frame's fields. */
+const BURST_FRAME_KINDS = new Set<string>([
+  'replay',
+  'replay-done',
+  'error',
+  'session-cleared',
+  'subscribe-result',
+  'session-update',
+  'session-removed',
+])
+
+/** Where a frame's session id lives. Most frames carry a top-level
+ *  `sessionId`; `session-removed` carries `id`; `session-update` nests it in
+ *  `session`. Shape-checked (the handler's only other validation is
+ *  `typeof frame.kind`, and a throw would drop the frame for every listener). */
+function burstSessionIdOf(frame: WsServerFrame): string | undefined {
+  const top = (frame as { sessionId?: unknown }).sessionId
+  if (typeof top === 'string') return top
+  if (frame.kind === 'session-removed' && typeof frame.id === 'string') return frame.id
+  if (frame.kind === 'session-update') {
+    const id = (frame.session as { id?: unknown } | undefined)?.id
+    if (typeof id === 'string') return id
+  }
+  return undefined
+}
+
 function newChannelState(): ChannelState {
   return { count: 0, live: false, lastUuid: null }
 }
@@ -148,6 +192,23 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   /** Channel bookkeeping per session — holders, server-confirmed liveness, and
    *  the replay cursor. See ChannelState. */
   const channelsRef = useRef<Map<string, ChannelState>>(new Map())
+  /** Open tail-first replay bursts on THIS connection, keyed by sessionId,
+   *  valued with the cursor that was in force when the burst opened (null when
+   *  there was none). The transcript on screen is INCOMPLETE for the whole
+   *  window between the `tail: true` frame and its terminator, so the store's
+   *  newest uuid (the tail's) is not a valid resume anchor then: sending it
+   *  would make the server slice strictly after the tail and never re-send the
+   *  unsent backfill chunks.
+   *
+   *  Deliberately connection-scoped rather than a ChannelState field or a
+   *  per-hook ref. A per-hook ref is recreated by the very remount it was
+   *  meant to survive; a ChannelState field dies with the entry when the last
+   *  holder releases — which is exactly the panel-unmount-then-reopen case
+   *  (the replacement instance then re-subscribed with the tail's uuid). Every
+   *  terminator deletes the entry here, as do the teardowns that end a burst
+   *  without one (a refused/closed subscribe-result, the session going away or
+   *  dormant) and the connection closing. */
+  const replayBurstsRef = useRef<Map<string, string | null>>(new Map())
   const connRef = useRef<TransportConnection | null>(null)
   /** Monotonic id for the current connection: a later connect() bumps it, so
    *  a stale connection's late open/close events are ignored (the equivalent
@@ -271,6 +332,47 @@ export function WsHubProvider({ children, url }: ProviderProps) {
           const state = channelsRef.current.get(frame.sessionId)
           if (state) state.live = frame.ok === true
         }
+        // Tail-first burst bookkeeping, folded here for the same reason: a
+        // listener reacting to the frame must see the state already applied
+        // (useChatStream reads it to decide the replayMode of its own
+        // subscribe). Only the `tail` frame OPENS a burst — a backfill chunk
+        // is part of one — and every terminator (the replay-done, a refusal,
+        // a clear) closes it, as does the session going away or dormant: no
+        // further frame of that burst can arrive.
+        //
+        // Guarded by kind first: this runs on the global fan-out, so the
+        // high-volume frames (`message`, `tasks-snapshot`, `context-usage`,
+        // permission events) must not pay the id extraction and the
+        // terminator chain — none of them can open or close a burst.
+        if (BURST_FRAME_KINDS.has(frame.kind)) {
+          // The session id lives at different depths per frame kind: most
+          // frames carry a top-level `sessionId`, `session-removed` carries
+          // `id`, and `session-update` nests it in `session`.
+          const burstSid = burstSessionIdOf(frame)
+          if (burstSid) {
+            const bursts = replayBurstsRef.current
+            if (frame.kind === 'replay' && frame.tail === true) {
+              // The anchor in force NOW is the last COMPLETE position — the
+              // only cursor a mid-burst re-subscribe may resume from.
+              bursts.set(burstSid, channelsRef.current.get(burstSid)?.lastUuid ?? null)
+            } else if (
+              frame.kind === 'replay-done' ||
+              frame.kind === 'error' ||
+              frame.kind === 'session-cleared' ||
+              (frame.kind === 'subscribe-result' && frame.ok !== true) ||
+              (frame.kind === 'session-update' &&
+                (frame.session as { running?: boolean } | undefined)?.running === false)
+            ) {
+              // Every terminator (the replay-done, a refusal, a clear) and
+              // every teardown that ends a burst without one (a refused/closed
+              // subscribe-result, the session going away or dormant): no
+              // further frame of that burst can arrive, so a stuck latch must
+              // not outlive it — that would suppress the cursor forever,
+              // turning every later reconnect into a full re-request.
+              bursts.delete(burstSid)
+            }
+          }
+        }
         // Fan out to global listeners (O(N) where N is total listeners).
         for (const fn of listenersRef.current) {
           try {
@@ -303,6 +405,10 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         // not only on the next open) keeps "live" == "live on the current
         // connection" true for the whole reconnect gap.
         for (const state of channelsRef.current.values()) state.live = false
+        // The bursts died with the connection; their terminators can never
+        // arrive. Every entry's `lastUuid` still holds its last COMPLETE
+        // position, which is what the reopen's re-subscribe resumes from.
+        replayBurstsRef.current.clear()
         if (pingTimerRef.current != null) {
           window.clearInterval(pingTimerRef.current)
           pingTimerRef.current = null
@@ -393,7 +499,16 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         channelsRef.current.set(sessionId, state)
       }
       state.count += 1
-      if (sinceUuid) state.lastUuid = sinceUuid
+      // While a burst is open the caller's cursor is the tail's uuid (the
+      // store's newest) and is NOT a valid anchor — see replayBurstsRef. Fall
+      // back to the cursor that was in force when the burst opened: a
+      // mid-burst re-subscribe (panel remount, forced re-request) then resumes
+      // from the last COMPLETE position and the server re-sends the whole
+      // burst range, which the store dedups. With no such anchor the frame
+      // carries none, i.e. a full replay — also correct.
+      const burstAnchor = replayBurstsRef.current.get(sessionId)
+      const cursor = burstAnchor !== undefined ? (burstAnchor ?? undefined) : sinceUuid
+      if (burstAnchor === undefined && sinceUuid) state.lastUuid = sinceUuid
       // Send unless the server has already CONFIRMED a channel here. The
       // holder count is not that confirmation (a refused subscribe still
       // counted one, which is what stranded resumed sessions), and there is
@@ -405,8 +520,9 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         safeSend({
           kind: 'subscribe',
           sessionId,
-          ...(sinceUuid ? { sinceUuid } : {}),
+          ...(cursor ? { sinceUuid: cursor } : {}),
           ...(opts?.replayMode ? { replayMode: opts.replayMode } : {}),
+          ...(opts?.hasCachedTranscript ? { hasCachedTranscript: true } : {}),
         })
       }
       // Captured, not re-read: a release that runs twice (or after the entry
@@ -432,8 +548,19 @@ export function WsHubProvider({ children, url }: ProviderProps) {
     // Only writers that hold the channel report a cursor, so a missing entry
     // means nobody is holding it and there is no reconnect slice to anchor.
     const state = channelsRef.current.get(sessionId)
-    if (state) state.lastUuid = uuid
+    // A burst in flight means the transcript on screen is incomplete (see
+    // replayBurstsRef) — the store's newest uuid is the tail's, which would
+    // slice away the unsent backfill chunks on the next resume.
+    if (state && !replayBurstsRef.current.has(sessionId)) state.lastUuid = uuid
   }, [])
+
+  /** True while a tail-first replay burst is open on this session's channel
+   *  (the `tail: true` frame landed, its terminator has not). Consumers use
+   *  it to decide whether their store's cursor is a valid resume anchor. */
+  const isReplayBurstOpen = useCallback(
+    (sessionId: string) => replayBurstsRef.current.has(sessionId),
+    [],
+  )
 
   // Memoize so the controls part (addListener/subscribe) has stable
   // identity across re-renders. Status is deliberately excluded — it
@@ -442,8 +569,8 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   // This prevents effect teardown/rebuild in consumers like
   // useChatStream that have `[hub]` in their dependency arrays.
   const api = useMemo<WsHubApi>(
-    () => ({ addListener, addSessionListener, subscribe, setLastMessageUuid }),
-    [addListener, addSessionListener, subscribe, setLastMessageUuid],
+    () => ({ addListener, addSessionListener, subscribe, setLastMessageUuid, isReplayBurstOpen }),
+    [addListener, addSessionListener, subscribe, setLastMessageUuid, isReplayBurstOpen],
   )
   return createElement(
     WsHubContext.Provider,

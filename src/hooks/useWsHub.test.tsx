@@ -357,6 +357,163 @@ describe('useWsHub: subscribe ref-counting and channel state', () => {
     expect('sinceUuid' in sock().framesOfKind('subscribe')[0]).toBe(false)
   })
 
+  // ── Tail-first burst cursor suppression ────────────────────────
+  //
+  // While a tail-first burst is open the on-screen transcript is
+  // INCOMPLETE (the tail landed, the older backfill chunks are still
+  // arriving), so the store's newest uuid is not a valid resume anchor:
+  // sending it would make the server slice strictly after the tail and
+  // never re-send the unsent chunks. The hub owns this latch because it
+  // is the only object that outlives a panel remount — a per-hook ref
+  // (the earlier fix) was recreated by the remount it was meant to
+  // survive.
+
+  it('suppresses the cursor while a tail-first burst is open, and releases it at the terminator', () => {
+    const { result } = mountHub()
+    openSocket()
+    const live = sock()
+
+    act(() => { result.current.hub.subscribe('s1', 'cache-anchor') })
+    act(() => { live.fireMessage(ack('s1', true, 'served')) })
+
+    // The tail frame opens the burst. The tail's own uuid reaches the hub as
+    // the store's newest message — it must be ignored.
+    act(() => { live.fireMessage({ kind: 'replay', sessionId: 's1', tail: true, messages: [] }) })
+    act(() => { result.current.hub.setLastMessageUuid('s1', 'tail-uuid') })
+    expect(result.current.hub.isReplayBurstOpen('s1')).toBe(true)
+
+    // A forced re-subscribe mid-burst (panel remount) must fall back to the
+    // pre-burst anchor, not the tail's uuid.
+    act(() => { result.current.hub.subscribe('s1', 'tail-uuid', { force: true }) })
+    expect(sock().framesOfKind('subscribe').at(-1)).toMatchObject({ sessionId: 's1', sinceUuid: 'cache-anchor' })
+
+    // Terminator: the burst is complete, so the cursor is valid again — the
+    // next reconnect resumes from the fresh uuid rather than the pre-burst
+    // anchor (which is what a mid-burst drop would have used).
+    act(() => { live.fireMessage({ kind: 'replay-done', sessionId: 's1' }) })
+    expect(result.current.hub.isReplayBurstOpen('s1')).toBe(false)
+    act(() => { result.current.hub.setLastMessageUuid('s1', 'fresh-uuid') })
+
+    act(() => { live.serverDrop() })
+    vi.advanceTimersByTime(1000)
+    const next = FakeWebSocket.instances.at(-1)!
+    act(() => { next.fireOpen() })
+    expect(next.framesOfKind('subscribe').at(-1)).toMatchObject({ sessionId: 's1', sinceUuid: 'fresh-uuid' })
+  })
+
+  it('closes the burst on error, session-cleared and a session going not-running', () => {
+    const { result } = mountHub()
+    openSocket()
+    const live = sock()
+    const open = (sid: string) => {
+      act(() => { result.current.hub.subscribe(sid, undefined) })
+      act(() => { live.fireMessage({ kind: 'replay', sessionId: sid, tail: true, messages: [] }) })
+      expect(result.current.hub.isReplayBurstOpen(sid)).toBe(true)
+    }
+
+    open('s-err')
+    act(() => { live.fireMessage({ kind: 'error', sessionId: 's-err', message: 'boom' }) })
+    expect(result.current.hub.isReplayBurstOpen('s-err')).toBe(false)
+
+    open('s-clear')
+    act(() => { live.fireMessage({ kind: 'session-cleared', sessionId: 's-clear' }) })
+    expect(result.current.hub.isReplayBurstOpen('s-clear')).toBe(false)
+
+    open('s-down')
+    act(() => {
+      live.fireMessage({
+        kind: 'session-update',
+        session: { id: 's-down', running: false },
+      })
+    })
+    expect(result.current.hub.isReplayBurstOpen('s-down')).toBe(false)
+  })
+
+  it('closes the burst when the server reports the channel refused or closed', () => {
+    // A channel that ends mid-burst (unload / sleep / terminate) sends no
+    // terminator frame, so without this the latch would stay set and suppress
+    // the cursor for the rest of the channel's life.
+    const { result } = mountHub()
+    openSocket()
+    const live = sock()
+    act(() => { result.current.hub.subscribe('s1', undefined) })
+    act(() => { live.fireMessage({ kind: 'replay', sessionId: 's1', tail: true, messages: [] }) })
+    expect(result.current.hub.isReplayBurstOpen('s1')).toBe(true)
+
+    act(() => { live.fireMessage(ack('s1', false, 'closed')) })
+    expect(result.current.hub.isReplayBurstOpen('s1')).toBe(false)
+  })
+
+  it('puts hasCachedTranscript on the wire only when the caller declares it', () => {
+    const { result } = mountHub()
+    openSocket()
+    act(() => {
+      result.current.hub.subscribe('s1', 'anchor', { force: true, hasCachedTranscript: true })
+    })
+    expect(sock().framesOfKind('subscribe').at(-1)).toMatchObject({
+      sessionId: 's1',
+      sinceUuid: 'anchor',
+      hasCachedTranscript: true,
+    })
+
+    act(() => { result.current.hub.subscribe('s2', undefined, { force: true, replayMode: 'tail-backfill' }) })
+    const cold = sock().framesOfKind('subscribe').at(-1)!
+    expect('hasCachedTranscript' in cold).toBe(false)
+  })
+
+  it('survives a full release: a re-subscribe after the last holder lets go still resumes from the burst anchor', () => {
+    // The latch belongs to the CONNECTION, not to the ref-counted entry: the
+    // last release deletes the entry, and a panel that unmounts and reopens
+    // mid-burst then re-subscribes with the store's newest uuid — the tail's.
+    // An entry-scoped latch died with the entry (and a per-hook ref died with
+    // the unmount), so the server was asked to resume strictly after the tail
+    // and never re-sent the unsent backfill chunks.
+    const { result } = mountHub()
+    openSocket()
+    const live = sock()
+
+    let release: () => void = () => {}
+    act(() => { release = result.current.hub.subscribe('s1', 'cache-anchor') })
+    act(() => {
+      live.fireMessage(ack('s1', true, 'served'))
+      live.fireMessage({ kind: 'replay', sessionId: 's1', tail: true, messages: [] })
+    })
+    act(() => { result.current.hub.setLastMessageUuid('s1', 'tail-uuid') })
+
+    act(() => { release() })
+    // The burst is still open on the wire — the server has not finished it.
+    expect(result.current.hub.isReplayBurstOpen('s1')).toBe(true)
+
+    // The replacement instance knows only the store's newest uuid.
+    act(() => {
+      result.current.hub.subscribe('s1', 'tail-uuid', { force: true, hasCachedTranscript: true })
+    })
+    expect(sock().framesOfKind('subscribe').at(-1)).toMatchObject({
+      sessionId: 's1',
+      sinceUuid: 'cache-anchor',
+    })
+  })
+
+  it('keeps the pre-burst anchor across a socket drop mid-burst', () => {
+    // A reconnect during the burst must not resume from the tail's uuid —
+    // the server would slice strictly after it and the unsent backfill
+    // chunks would be gone for good.
+    const { result } = mountHub()
+    openSocket()
+    const first = sock()
+    act(() => { result.current.hub.subscribe('s1', 'cache-anchor') })
+    act(() => { first.fireMessage(ack('s1', true, 'served')) })
+    act(() => { first.fireMessage({ kind: 'replay', sessionId: 's1', tail: true, messages: [] }) })
+    act(() => { result.current.hub.setLastMessageUuid('s1', 'tail-uuid') })
+
+    act(() => { first.serverDrop() })
+    vi.advanceTimersByTime(1000)
+    const second = FakeWebSocket.instances.at(-1)!
+    act(() => { second.fireOpen() })
+
+    expect(second.framesOfKind('subscribe').at(-1)).toMatchObject({ sessionId: 's1', sinceUuid: 'cache-anchor' })
+  })
+
   it('force sends for a channel the server already confirmed', () => {
     // `force` is how a listener that has not seen the history says so — the
     // server re-serves the replay for the cursor it carries. The channel is
