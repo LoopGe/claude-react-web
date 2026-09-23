@@ -4,6 +4,7 @@ import {
   compileMarkdown,
   clearMarkdownCache,
   markdownCacheSize,
+  markdownSearchBucketCount,
 } from './markdown-cache'
 
 afterEach(() => {
@@ -48,6 +49,40 @@ describe('compileMarkdown cache', () => {
       <>{compileMarkdown('```js\nconst x = 1\n```', {})}</>,
     )
     expect(container.querySelector('.hljs-keyword, .hljs-title, span[class*="hljs"]')).toBeTruthy()
+  })
+
+  // The reason search variants get their own buckets: typing in the find bar
+  // compiles a fresh entry per visible row per debounced keystroke, and a
+  // shared LRU let that flush every plain entry — so closing the search box
+  // meant re-parsing the whole viewport.
+  describe('search bucketing', () => {
+    it('keeps plain entries alive through a long search burst', () => {
+      const plain = 'a settled assistant message'
+      compileMarkdown(plain, {})
+      // Far more search compilations than any single bucket holds, across many
+      // distinct queries — the shape of someone typing then refining a query.
+      for (let k = 0; k < 40; k++) {
+        for (let row = 0; row < 20; row++) {
+          compileMarkdown(`row ${row}`, { searchQuery: `q${k}` })
+        }
+      }
+      // The plain entry is still a hit: no new entry is added by this call.
+      const before = markdownCacheSize()
+      compileMarkdown(plain, {})
+      expect(markdownCacheSize()).toBe(before)
+    })
+
+    it('retires stale search variants instead of growing without bound', () => {
+      for (let k = 0; k < 40; k++) compileMarkdown('x', { searchQuery: `q${k}` })
+      expect(markdownSearchBucketCount()).toBeLessThanOrEqual(8)
+    })
+
+    it('still returns a hit for a repeated source within the active query', () => {
+      compileMarkdown('hello world', { searchQuery: 'hello' })
+      const before = markdownCacheSize()
+      compileMarkdown('hello world', { searchQuery: 'hello' })
+      expect(markdownCacheSize()).toBe(before)
+    })
   })
 
   // toJsxRuntime has no urlTransform hook, so MD_COMPONENTS' `a` renderer is
