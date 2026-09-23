@@ -8,7 +8,7 @@ const groupOf = (id: string, sessionIds: string[]): SessionGroup =>
   ({ id, name: id, sessionIds })
 
 describe('buildNewLikeThisForm', () => {
-  it('copies cwd / model / permission mode / betas and appends "(copy)" to the title', () => {
+  it('copies cwd / model / permission mode / betas but never the title', () => {
     const form = buildNewLikeThisForm(
       mkSource({
         id: 's1',
@@ -25,10 +25,12 @@ describe('buildNewLikeThisForm', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-6',
       permissionMode: 'acceptEdits',
-      title: 'Fix bug (copy)',
       betas: ['context-1m-2025-08-07'],
       groupId: 'g1',
     })
+    // No `title` in the form at all — the copy is named by the server's
+    // default (auto-derived) title, not "<source> (copy)".
+    expect(form).not.toHaveProperty('title')
   })
 
   it('copies the main-thread persona', () => {

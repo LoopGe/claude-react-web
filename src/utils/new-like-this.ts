@@ -2,7 +2,7 @@ import type { NewSessionForm, SessionGroup, SessionInfo } from '../types'
 import { firstPartyOverridesForCreate } from '../../shared/session-info'
 
 /** Build the "New like this" create form for a source session. Copies the
- *  working context (cwd / model / persona / permission mode / betas / title)
+ *  working context (cwd / model / persona / permission mode / betas)
  *  AND the per-session tool-surface selections — the per-first-party-server
  *  overrides (`firstPartyOverridesForCreate`: a copy with git-tools silently
  *  re-enabled would surprise the user) and the plugin subset (`enabledPlugins`,
@@ -33,7 +33,9 @@ export function buildNewLikeThisForm(
     // failure: better a visible 400 than a quietly plain session.
     agent: source.agent,
     permissionMode: source.permissionMode,
-    title: source.title ? `${source.title} (copy)` : undefined,
+    // Deliberately NOT copying `source.title`: the copy gets the server's
+    // default (auto-derived) title like any fresh session, so the sidebar
+    // doesn't fill up with "(copy)" twins.
     betas: source.betas,
     firstPartyTools: firstPartyOverridesForCreate(source),
     enabledPlugins: source.enabledPlugins,
