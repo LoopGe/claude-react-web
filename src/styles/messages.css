@@ -618,6 +618,12 @@
 
 /* Settings panel */
 .settings-panel {
+  /* Single source of truth for this surface's width. Consumed by the
+     overlay card rule (layout.css `.settings-overlay > .settings-panel`)
+     and by the Performance tab's .perf-bars, so a width retune is one
+     edit. Layout token, not a theme colour — no light/dark duplicate
+     (same pattern as .app's --sidebar-width). */
+  --settings-panel-width: 480px;
   background: var(--bg-elev);
   border-left: 1px solid var(--border);
   display: flex;
@@ -802,7 +808,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-pill);
   /* Long tool/MCP/skill names wrap inside the chip instead of overflowing
-     the 420px panel (a chip is a single flex item; wrap can't split it). */
+     the 480px panel (a chip is a single flex item; wrap can't split it). */
   overflow-wrap: anywhere;
   min-width: 0;
 }
@@ -1117,7 +1123,7 @@
 
 /* Stacked variant of .settings-row — control sits under the text column
    instead of pinned right. Used by the session Settings panel for wide
-   controls (text inputs, selects) in the narrower 420px surface. */
+   controls (text inputs, selects) in the narrower 480px surface. */
 .settings-row.stack {
   flex-direction: column;
   align-items: stretch;

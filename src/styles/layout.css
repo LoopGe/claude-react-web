@@ -1324,7 +1324,7 @@ body.resizing-col .app {
 }
 .settings-overlay[data-state="closing"] > .settings-panel { animation: overlay-panel-out var(--motion-duration-fast) var(--motion-ease-exit) both; }
 .settings-overlay > .settings-panel {
-  width: min(420px, 100%);
+  width: min(var(--settings-panel-width), 100%);
   max-height: 100%;
   position: static;
   border: 1px solid var(--border);

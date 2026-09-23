@@ -3393,7 +3393,10 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-width: 420px;
+  /* Track the settings panel's width token; the 100% cap keeps the bars
+     inside the settings-section's horizontal padding (they render at the
+     section content box, narrower than the token itself). */
+  max-width: min(var(--settings-panel-width), 100%);
 }
 .perf-bar-slot {
   display: flex;
