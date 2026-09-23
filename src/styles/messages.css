@@ -1882,9 +1882,8 @@
   margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
   padding: var(--space-2-5) var(--space-3-5);
   font-size: var(--fs-base);
-  /* Entrance / exit / collapse come from the shared bottom-overlay rules below
-     (`.todo-panel, .monitor-bar, .working-bar`). They are transitions, not
-     keyframes, and the space is closed by a `.bottom-card-collapse` wrapper. */
+  /* Entrance / exit come from the shared `.bottom-card-motion` wrapper (below),
+     which AnimatePresence renders around this card. */
 }
 /* Shrink chain (see .todo-panel). Scoped to the overlay cards so
    AnimatedCollapse's many other consumers — session list, settings panels —
@@ -1919,85 +1918,31 @@
   flex-direction: column;
   flex: 0 0 auto;
 }
-/* ══ Bottom-overlay card entrance / exit / collapse ══════════════════════
-   Shared by TodoChecklist, MonitorBar and the WorkingBubble so the whole stack
-   moves as one language.
+/* ══ Bottom-overlay card motion ══════════════════════════════════════════
+   TodoChecklist / MonitorBar / WorkingBubble share one wrapper: a `motion.div`
+   (rendered by AnimatePresence) that owns the mount rise-in AND the staggered
+   exit — opacity + `y` first, then `height: 0` a beat later, so the shrinking
+   box never squashes a still-visible card. See useBottomCardMotion. It replaces
+   the old delayed-unmount + CSS grid-collapse pair: AnimatePresence keeps the
+   node mounted and re-renders its LAST element, so the exiting card keeps its
+   content and any `-clearing` class without a manual freeze/latch.
 
-   ENTRANCE is a mount-only transition (`@starting-style` supplies the from-
-   state) — deliberately NOT a keyframe. The exit/collapse classes re-declare
-   `animation`, and a one-shot keyframe in that shorthand is RESTARTED on every
-   class change (the WorkingBubble's `-idle` toggles made the rise-in replay →
-   flicker). A transition cannot be restarted that way.
-
-   EXIT is a fast fade/sink on the card, and a DELAYED row collapse on the
-   wrapper below. The stagger is the point: the card is invisible before the
-   shrinking row would squash it (a concurrent collapse read as janky).
-
-   The wrapper also closes the space the card held — opacity/transform don't
-   affect layout, so without it the box lingered as an invisible placeholder
-   until React unmounted it, and MessageList's reserved footer spacer snapped
-   in one frame. */
-.todo-panel,
-.monitor-bar,
-.working-bar {
-  transition:
-    opacity var(--motion-duration-moderate) var(--motion-ease-enter),
-    transform var(--motion-duration-moderate) var(--motion-ease-enter);
-}
-@starting-style {
-  .todo-panel,
-  .monitor-bar,
-  .working-bar {
-    opacity: 0;
-    transform: translateY(var(--motion-distance-sm));
-  }
-}
-.todo-panel.todo-panel-exiting,
-.monitor-bar.monitor-bar-exiting,
-.working-bar.working-bar-exiting {
-  opacity: 0;
-  transform: translateY(6px);
-  pointer-events: none;
-  transition:
-    opacity 110ms var(--motion-ease-exit),
-    transform 110ms var(--motion-ease-exit);
-}
-/* Collapsing wrapper. `minmax(0, 1fr)` (not plain `1fr`) so the track can
-   shrink below the card's content — with `1fr` the implicit `auto` minimum
-   stops the shrink and the card overflows the 45% cap instead of scrolling.
-   `.bottom-card-collapse-inner` is a flex COLUMN so it passes the height
-   constraint down to the card (a plain block would not, and the card's
-   scroll chain would break under the cap). */
-.bottom-card-collapse {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
-  min-height: 0;
-  /* Shrinkable role — the checklist / monitor cards shrink under the stack
-     cap. The working bubble overrides to fixed (see -fixed). */
-  flex: 0 1 auto;
-  /* 90ms delay = the card's 110ms fade is all but done before the row starts
-     moving; then a decelerating ease closes the gap. Total exit = 90 + 160 =
-     250ms (the presence windows are 280ms, so no node unmounts mid-tween). */
-  transition: grid-template-rows 160ms var(--motion-ease-enter) 90ms;
-}
-/* The working bubble is a status card, not a scroll region: it must never
-   shrink under the cap (see .working-bar). */
-.bottom-card-collapse-fixed {
-  flex: 0 0 auto;
-}
-.bottom-card-collapse-exiting {
-  grid-template-rows: minmax(0, 0fr);
-}
-.bottom-card-collapse-inner {
-  min-height: 0;
+   It is a flex COLUMN so the height constraint reaches the card — the
+   checklist / monitor must still shrink under the stack's 45% cap and scroll
+   (a plain block wrapper would break that chain). `overflow: clip` hides the
+   content while the height animates to 0. */
+.bottom-card-motion {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: clip;
+  /* Shrinkable role — the checklist / monitor shrink under the cap. */
+  flex: 0 1 auto;
 }
-/* Clip ONLY while collapsing so the row can shrink the card's padding/margin
-   away. A scroll container is a backdrop root (see .chat-bottom-overlay), so
-   keeping `overflow: visible` at rest preserves the card's frosted ::before. */
-.bottom-card-collapse-exiting .bottom-card-collapse-inner {
-  overflow: hidden;
+/* The working bubble is a status card, not a scroll region: never shrink it
+   under the cap (see .working-bar). */
+.bottom-card-motion-fixed {
+  flex: 0 0 auto;
 }
 .todo-panel-header {
   display: flex;
@@ -2303,19 +2248,10 @@
   margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
   padding: var(--space-2-5) var(--space-3-5);
   font-size: var(--fs-base);
-  /* Entrance / exit / collapse come from the shared bottom-overlay rules below
-     (`.todo-panel, .monitor-bar, .working-bar`). The /clear `-clearing` rule
-     below still swaps in the blur-fade when a clear is in flight. */
-}
-/* A /clear hands the card off to the sink-out: keep the clear's blur under the
-   exit fade (the exit transition only touches opacity/transform, so the
-   `-clearing` blur-fade animation still holds) so the card dissolves from its
-   blurred state instead of snapping sharp for a frame. The 10px matches
-   clear-blur-fade; the component keeps `-clearing` applied through the exit
-   precisely so this holds. */
-.todo-panel.todo-panel-clearing.todo-panel-exiting,
-.monitor-bar.monitor-bar-clearing.monitor-bar-exiting {
-  filter: blur(10px);
+  /* Entrance / exit come from the shared `.bottom-card-motion` wrapper below.
+     The /clear `-clearing` rule below still swaps in the blur-fade when a clear
+     is in flight; AnimatePresence re-renders the exiting card with its last
+     props, so that class (and the blur) survives the handoff. */
 }
 .monitor-bar-header {
   display: flex;

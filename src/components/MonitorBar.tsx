@@ -27,7 +27,8 @@
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { SdkMessage } from '../types'
-import { usePresenceValue } from '../hooks/useExitPresence'
+import { AnimatePresence, motion } from 'motion/react'
+import { useBottomCardMotion } from '../utils/transitions'
 import { IconCircleDot } from './icons/ToolIcons'
 
 interface MonitorInfo {
@@ -77,55 +78,49 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing }: Props
   // back to the live list when the ref is empty (a clear that lands on the
   // very first render, before any non-clearing render populated it). If both
   // are empty the bar was hidden when the clear started — nothing to fade.
-  const effectiveList = clearing ? (frozenRef.current ?? monitors) : monitors
-  // Keep the bar mounted through its exit (fast fade/sink on the card plus a
-  // delayed collapse on the shared wrapper) instead of snapping off when the
-  // last monitor stops: usePresenceValue freezes the last visible list for the
-  // window (and snaps under reduced motion). 280ms covers the stagger (90ms
-  // fade lead + 160ms collapse) so React can't unmount mid-tween.
-  const presence = usePresenceValue(effectiveList.length > 0 ? effectiveList : null, 280)
-  const renderList = presence.value
-
-  // Latch the /clear blur until the bar is gone (see TodoChecklist): keeps the
-  // clear-blur-fade's blur(10px) under the sink-out exit so the handoff never
-  // flashes sharp content for a frame.
-  const clearBlurRef = useRef(false)
-  if (clearing) clearBlurRef.current = true
-  else if (effectiveList.length > 0) clearBlurRef.current = false
-  const clearBlur = clearing || clearBlurRef.current
-
-  if (!renderList) return null
+  const renderList = clearing ? (frozenRef.current ?? monitors) : monitors
+  // Mount rise-in + staggered exit; AnimatePresence keeps the bar mounted
+  // through the exit and re-renders its LAST element (props frozen), so the
+  // exiting bar keeps its content and its `-clearing` class. Snaps under
+  // reduced motion.
+  const bottomCard = useBottomCardMotion()
 
   return (
-    <div
-      className={`bottom-card-collapse${presence.isExiting ? ' bottom-card-collapse-exiting' : ''}`}
-    >
-      <div className="bottom-card-collapse-inner">
-        <div
-          className={`monitor-bar${clearBlur ? ' monitor-bar-clearing' : ''}${presence.isExiting ? ' monitor-bar-exiting' : ''}`}
-          role="status"
-          aria-label="Running monitors"
+    <AnimatePresence initial={false}>
+      {renderList.length > 0 && (
+        <motion.div
+          key="monitor-bar"
+          className="bottom-card-motion"
+          initial={bottomCard.card.initial}
+          animate={bottomCard.card.animate}
+          exit={bottomCard.card.exit}
         >
-          <div className="monitor-bar-header">
-            <span className="monitor-bar-title">Monitors</span>
-            <span className="monitor-bar-count">{renderList.length}</span>
+          <div
+            className={`monitor-bar${clearing ? ' monitor-bar-clearing' : ''}`}
+            role="status"
+            aria-label="Running monitors"
+          >
+            <div className="monitor-bar-header">
+              <span className="monitor-bar-title">Monitors</span>
+              <span className="monitor-bar-count">{renderList.length}</span>
+            </div>
+            <ul className="monitor-bar-list">
+              {renderList.map((m) => (
+                <li key={m.key} className="monitor-item">
+                  <span className="monitor-icon" aria-hidden>
+                    <IconCircleDot size={12} />
+                  </span>
+                  <span className="monitor-text">
+                    <span className="monitor-text-shimmer">{m.description}</span>
+                  </span>
+                  {m.persistent && <span className="tool-chip tool-chip-accent">persistent</span>}
+                </li>
+              ))}
+            </ul>
           </div>
-          <ul className="monitor-bar-list">
-            {renderList.map((m) => (
-              <li key={m.key} className="monitor-item">
-                <span className="monitor-icon" aria-hidden>
-                  <IconCircleDot size={12} />
-                </span>
-                <span className="monitor-text">
-                  <span className="monitor-text-shimmer">{m.description}</span>
-                </span>
-                {m.persistent && <span className="tool-chip tool-chip-accent">persistent</span>}
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
-    </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   )
 })
 

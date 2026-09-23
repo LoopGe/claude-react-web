@@ -6,7 +6,7 @@
 //
 // Split out of MessageList so the container is readable; no logic changed.
 
-import { memo, useRef } from 'react'
+import { memo } from 'react'
 import type { ActiveSubagent } from '../../session-store/types'
 import { formatTokens } from '../../utils/format'
 import { ElapsedTimer } from '../ElapsedTimer'
@@ -17,21 +17,6 @@ import { SubagentSwarmPill } from './SubagentSwarm'
 /** Stable empty fallback so the `activeSubagents ?? …` default doesn't hand a
  *  fresh array identity to the memoized pill on every render. */
 const EMPTY_SUBAGENTS: ActiveSubagent[] = []
-
-/** Every input that decides what the bubble LOOKS like. Snapshotted while the
- *  bubble is live so the exit can replay the last real frame (see below). */
-interface VisualState {
-  active: boolean
-  waiting: boolean
-  recapping: boolean
-  activePhase?: import('../../hooks/useChatStream').ActivePhase
-  startedAt?: number
-  tokenRate?: number | null
-  thinkingTokens?: number | null
-  runningTaskCount?: number
-  totalTaskCount?: number
-  activeSubagents?: ActiveSubagent[]
-}
 
 export const WorkingBubble = memo(function WorkingBubble({
   startedAt,
@@ -46,7 +31,6 @@ export const WorkingBubble = memo(function WorkingBubble({
   onOpenTasks,
   onOpenSubagent,
   active: _active,
-  exiting,
 }: {
   startedAt?: number
   activeSubagents?: ActiveSubagent[]
@@ -92,99 +76,55 @@ export const WorkingBubble = memo(function WorkingBubble({
    *  "idle": the turn ended and only a task-count remnant remains, so it
    *  collapses to a quiet pill with no "Working" label or animated dots. */
   active?: boolean
-  /** True while the host (Chat) holds the bubble mounted through its exit
-   *  transition after the turn ends. Swaps the pulse + entrance for the
-   *  sink-down exit so the bubble leaves the same way the checklist / monitor
-   *  cards do. */
-  exiting?: boolean
 }) {
-  // Snapshot the visual inputs so the sink-out exit keeps rendering the
-  // bubble's LAST appearance. Chat flips the props to their post-turn values
-  // (idle, no tasks) in the SAME render it sets `exiting`, so without this the
-  // exit would animate an empty shell. While `exiting` we render the captured
-  // frame; otherwise we refresh the capture every render.
-  const liveVisual: VisualState = {
-    active: _active ?? true,
-    waiting: !!waiting,
-    recapping: !!recapping,
-    activePhase,
-    startedAt,
-    tokenRate,
-    thinkingTokens,
-    runningTaskCount,
-    totalTaskCount,
-    activeSubagents,
-  }
-  // Only capture frames that actually show something. The host flips to
-  // post-turn props one render BEFORE `exiting` lands (usePresenceValue sets
-  // isExiting in an effect), and that intermediate frame is the degenerate
-  // empty state — capturing it would defeat the whole snapshot. A frame with
-  // no label, no timer, no pill and no subagents is that frame; keep the last
-  // real one instead.
-  const liveHasContent =
-    liveVisual.active ||
-    liveVisual.waiting ||
-    (liveVisual.runningTaskCount ?? 0) > 0 ||
-    (liveVisual.totalTaskCount ?? 0) > 0 ||
-    (liveVisual.activeSubagents?.length ?? 0) > 0
-  const frozenVisualRef = useRef<VisualState | null>(null)
-  if (!exiting && liveHasContent) frozenVisualRef.current = liveVisual
-  // Render the live frame whenever it has content; otherwise fall back to the
-  // last real frame. Keying this off CONTENT (not `exiting`) is what keeps the
-  // bubble's last appearance continuous: the host flips to post-turn props one
-  // render BEFORE `exiting` lands (usePresenceValue sets isExiting in an
-  // effect), so an `exiting`-keyed fallback would flash an empty frame for that
-  // render. Whenever the bubble is mounted it has content, so the only
-  // content-less frames are that intermediate one and the exit itself.
-  const v = liveHasContent ? liveVisual : (frozenVisualRef.current ?? liveVisual)
-
-  const subagents = v.activeSubagents ?? EMPTY_SUBAGENTS
+  const subagents = activeSubagents ?? EMPTY_SUBAGENTS
   const hasSubagents = subagents.length > 0
-  const taskCount = v.runningTaskCount ?? 0
+  const taskCount = runningTaskCount ?? 0
   // Ambient-only work: nothing to report as activity, but the panel entry must
   // stay reachable. Falls back to taskCount when the host doesn't pass a total
   // (SideChatDrawer), so the pill keeps its old all-or-nothing behaviour there.
-  const totalTasks = Math.max(v.totalTaskCount ?? taskCount, taskCount)
+  const totalTasks = Math.max(totalTaskCount ?? taskCount, taskCount)
   const ambientOnly = taskCount === 0 && totalTasks > 0
-  const idle = !v.active && !v.waiting
+  const active = _active ?? true
+  const idle = !active && !waiting
 
   // Per-phase key so the working-bar-label span remounts (and its entrance
   // animation replays) when the SDK crosses a thinking/writing/tool_use
   // boundary — a soft crossfade instead of a hard label swap. Distinct from
   // the label text so e.g. "Calling <tool>" tool swaps also retrigger.
-  const labelKey = v.waiting
+  const labelKey = waiting
     ? 'waiting'
-    : v.recapping
+    : recapping
       ? 'recap'
-      : v.activePhase === 'thinking'
+      : activePhase === 'thinking'
         ? 'thinking'
-        : v.activePhase === 'writing'
+        : activePhase === 'writing'
           ? 'writing'
-          : v.activePhase
-            ? `tool:${v.activePhase.name}`
+          : activePhase
+            ? `tool:${activePhase.name}`
             : 'working'
-  const labelText = v.waiting
+  const labelText = waiting
     ? 'Waiting...'
-    : v.recapping
+    : recapping
       ? 'Recap (auto)...'
-      : v.activePhase === 'thinking'
+      : activePhase === 'thinking'
         ? 'Thinking...'
-        : v.activePhase === 'writing'
+        : activePhase === 'writing'
           ? 'Writing...'
-          : v.activePhase
-            ? `Calling ${v.activePhase.name}...`
+          : activePhase
+            ? `Calling ${activePhase.name}...`
             : 'Working'
 
   // Live counters ease toward their targets (see useCountUp) so the
   // token-rate and task-count readouts glide instead of jumping.
-  const countRate = Math.round(useCountUp(v.tokenRate ?? 0, 250))
+  const countRate = Math.round(useCountUp(tokenRate ?? 0, 250))
   const countTasks = Math.round(useCountUp(taskCount, 300))
 
   return (
     <div
-      className={`working-bar${hasSubagents ? ' working-bar-with-agents' : ''}${v.waiting ? ' working-bar-waiting' : ''}${idle ? ' working-bar-idle' : ''}${exiting ? ' working-bar-exiting' : ''}`}
+      className={`working-bar${hasSubagents ? ' working-bar-with-agents' : ''}${waiting ? ' working-bar-waiting' : ''}${idle ? ' working-bar-idle' : ''}`}
       aria-live="polite"
-      aria-label={v.waiting ? 'Waiting for background tasks' : idle ? 'Background tasks running' : 'Assistant is working'}
+      aria-label={waiting ? 'Waiting for background tasks' : idle ? 'Background tasks running' : 'Assistant is working'}
     >
       {!idle && (
         <div className="working-dots" aria-hidden>
@@ -201,13 +141,13 @@ export const WorkingBubble = memo(function WorkingBubble({
       {/* The turn timer is only meaningful while the turn is active; hide it
           in the Waiting state (the parent turn has ended). The swarm pill's
           timer below still shows how long the background work has run. */}
-      {!v.waiting && !idle && (
+      {!waiting && !idle && (
         // The turn is active whenever this renders, so it always ticks; the
         // mount-time fallback covers the first frame, before the server has
         // stamped a start.
-        <ElapsedTimer startedAt={v.startedAt} live fallbackToMount className="working-timer" />
+        <ElapsedTimer startedAt={startedAt} live fallbackToMount className="working-timer" />
       )}
-      {!v.waiting && !idle && v.tokenRate != null && v.tokenRate > 0 && (
+      {!waiting && !idle && tokenRate != null && tokenRate > 0 && (
         <span className="working-rate">
           <IconZap size={12} aria-hidden /> {countRate} tok/s
         </span>
@@ -215,9 +155,9 @@ export const WorkingBubble = memo(function WorkingBubble({
       {/* Redacted-thinking progress: no text deltas stream (tokenRate stays
           silent), so the SDK's own token estimate is the only signal. "~"
           marks it as an approximation of the current thinking block. */}
-      {!v.waiting && !idle && v.thinkingTokens != null && v.thinkingTokens > 0 && v.tokenRate == null && (
+      {!waiting && !idle && thinkingTokens != null && thinkingTokens > 0 && tokenRate == null && (
         <span className="working-rate">
-          <IconZap size={12} aria-hidden /> ~{formatTokens(v.thinkingTokens)} tok
+          <IconZap size={12} aria-hidden /> ~{formatTokens(thinkingTokens)} tok
         </span>
       )}
       {/* Background-task count pill — the clickable entry to the Tasks

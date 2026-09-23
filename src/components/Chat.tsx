@@ -87,7 +87,8 @@ import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
 import { Overlay } from './Overlay'
 import { useWsHub } from '../hooks/useWsHub'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
-import { AnimatePresence } from 'motion/react'
+import { AnimatePresence, motion } from 'motion/react'
+import { useBottomCardMotion } from '../utils/transitions'
 import type { AgentInfo, PastedImage, PermissionRequest, RewindFilesResult, SessionInfo, SlashCommand } from '../types'
 import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
@@ -1856,11 +1857,9 @@ export const Chat = memo(function Chat({
     hasTranscriptBackground: transcriptBackground,
     hasLiveSyncSubagent,
   })
-  // Keeps the WorkingBubble mounted through its exit after the mount predicate
-  // flips false, so the turn-end dismissal sinks out instead of snapping.
-  // 280ms covers the staggered exit (90ms fade lead + 160ms row collapse) —
-  // the node must not unmount mid-tween. Snaps under reduced motion.
-  const workingBubblePresence = useExitPresence(mountWorkingBubble, 280)
+  // Mount rise-in + staggered exit (fade leads, height collapse follows) for
+  // the WorkingBubble; AnimatePresence keeps it mounted through the exit.
+  const bottomCard = useBottomCardMotion()
   const backgroundToolAction = shouldOfferBackgroundAction({
     turnActive,
     terminated: session.terminated,
@@ -2380,16 +2379,15 @@ export const Chat = memo(function Chat({
           lives in shouldMountWorkingBubble. */}
       {workingSlot &&
         createPortal(
-          workingBubblePresence.shouldRender ? (
-            // Shared collapse wrapper (see `.bottom-card-collapse` in
-            // messages.css): the card fades/sinks while the row collapses, so
-            // the space it held closes in step instead of lingering as an
-            // invisible placeholder until the node unmounts (which made the
-            // reserved footer spacer snap). `-fixed` = never shrink.
-            <div
-              className={`bottom-card-collapse bottom-card-collapse-fixed${workingBubblePresence.isExiting ? ' bottom-card-collapse-exiting' : ''}`}
-            >
-              <div className="bottom-card-collapse-inner">
+          <AnimatePresence initial={false}>
+            {mountWorkingBubble && (
+              <motion.div
+                key="working-bubble"
+                className="bottom-card-motion bottom-card-motion-fixed"
+                initial={bottomCard.card.initial}
+                animate={bottomCard.card.animate}
+                exit={bottomCard.card.exit}
+              >
                 <WorkingBubble
                   active={turnActive}
                   startedAt={turnStartedAt}
@@ -2403,11 +2401,10 @@ export const Chat = memo(function Chat({
                   totalTaskCount={taskCount}
                   onOpenTasks={openTasksPanel}
                   onOpenSubagent={openSubagent}
-                  exiting={workingBubblePresence.isExiting}
                 />
-              </div>
-            </div>
-          ) : null,
+              </motion.div>
+            )}
+          </AnimatePresence>,
           workingSlot,
         )}
 

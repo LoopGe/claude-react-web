@@ -105,3 +105,40 @@ export function useTopBannerMotion() {
     },
   }
 }
+
+/**
+ * Bottom-overlay card motion (TodoChecklist / MonitorBar / WorkingBubble).
+ * Mount is a rise-in; exit is a STAGGERED fade + height collapse — the card
+ * fades/sinks in ~110ms while the wrapper's height collapses over 160ms after a
+ * 90ms delay, so the shrinking box never squashes a still-visible card.
+ * AnimatePresence keeps the node mounted through the exit (no manual delayed
+ * unmount) and owns the height `auto → 0` animation.
+ */
+export function useBottomCardMotion() {
+  const reduce = useReducedMotion()
+  if (reduce) {
+    return {
+      card: {
+        initial: { opacity: 0 },
+        animate: { opacity: 1, transition: { duration: 0 } },
+        exit: { opacity: 0, height: 0, transition: { duration: 0 } },
+      },
+    }
+  }
+  return {
+    card: {
+      initial: { opacity: 0, y: 4 },
+      animate: { opacity: 1, y: 0, transition: { duration: 0.24, ease: [0.22, 1, 0.36, 1] as const } },
+      exit: {
+        opacity: 0,
+        y: 6,
+        height: 0,
+        transition: {
+          opacity: { duration: 0.11, ease: [0.4, 0, 1, 1] as const },
+          y: { duration: 0.11, ease: [0.4, 0, 1, 1] as const },
+          height: { duration: 0.16, ease: [0.22, 1, 0.36, 1] as const, delay: 0.09 },
+        },
+      },
+    },
+  }
+}

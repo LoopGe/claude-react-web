@@ -2262,8 +2262,8 @@
 .working-bubble-slot {
   /* Empty slot contributes no height; when the portal mounts a child the
      child's own margins participate in the stack. `contents` so the shared
-     `.bottom-card-collapse` wrapper (messages.css) is the flex item (matches
-     the sibling cards' role). */
+     `.bottom-card-motion` wrapper (messages.css) is the flex item (matches the
+     sibling cards' role). */
   display: contents;
 }
 .working-bar {
