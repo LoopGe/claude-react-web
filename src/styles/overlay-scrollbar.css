@@ -172,14 +172,19 @@
    bar there would appear and vanish on every height tween (AnimatedCollapse
    pins the body shorter than its content for the length of each one), shifting
    the row text by the bar's width each time. The list inside keeps its own
-   overlay thumb. */
+   overlay thumb. `.tool-card-diff .tool-card-body` is the Edit/Write/
+   NotebookEdit card's diff body — the horizontal scroll viewport for
+   `.diff-line` rows (`white-space: pre` + `min-width: max-content`), so wide
+   lines routinely overflow; the scroller moved onto `.tool-card-body`
+   (utilities.css) when the diff moved into the ToolCard chrome and this
+   list didn't follow. */
 .os-hidden,
 .md pre,
 .md table,
 .tool-input,
 .thinking-body,
 .bash-tool-full,
-.diff-block,
+.tool-card-diff .tool-card-body,
 .bash-msg-pre,
 .perm-raw,
 .question-option-preview,
@@ -192,7 +197,7 @@
 .tool-input::-webkit-scrollbar,
 .thinking-body::-webkit-scrollbar,
 .bash-tool-full::-webkit-scrollbar,
-.diff-block::-webkit-scrollbar,
+.tool-card-diff .tool-card-body::-webkit-scrollbar,
 .bash-msg-pre::-webkit-scrollbar,
 .perm-raw::-webkit-scrollbar,
 .question-option-preview::-webkit-scrollbar,

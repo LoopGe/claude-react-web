@@ -502,8 +502,22 @@
   font-size: var(--fs-sm);
   overflow-x: auto;
 }
+/* The one content wrapper under the horizontally-scrolling
+   `.tool-card-diff .tool-card-body` in every shape (direct child for
+   Write/NotebookEdit; inside .edit-diff-details for Edit). `min-width:
+   max-content` stretches it to the full scroll width so the chunk label's
+   dashed rule and the truncation block's dashed border follow wide
+   `.diff-line` rows past the original viewport edge (the same hard-edge
+   artifact .diff-line's own min-width: max-content fixes for the rows).
+   The .edit-diff-details summary strip above it is deliberately NOT
+   stretched: its box stays at the viewport width rather than the scroll
+   width, so its border/hover don't extend with the content (it still
+   scrolls horizontally with the card — it is not sticky) and, decisive,
+   stretching it would push the margin-left:auto .diff-stat-hint to the
+   far edge of the scroll area on wide diffs. */
 .diff-block-inner {
   padding: var(--space-1) 0;
+  min-width: max-content;
 }
 .diff-chunk-label {
   padding: var(--space-1) var(--space-2-5);

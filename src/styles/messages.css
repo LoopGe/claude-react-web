@@ -556,29 +556,6 @@
 }
 
 /* Diff view for Edit / Write tool_use blocks */
-.diff-block {
-  font-family: var(--mono);
-  font-size: var(--fs-sm);
-  margin-top: var(--space-1);
-  background: var(--bg);
-  border-radius: var(--radius-xs);
-  overflow-x: auto;
-  border: 1px solid var(--border);
-}
-.diff-file-path {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  padding: var(--space-1-5) var(--space-2-5);
-  background: var(--bg-elev-2);
-  border-bottom: 1px solid var(--border);
-  color: var(--fg);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  /* See .diff-line note below — same horizontal-scroll concern applies
-     here so the header bg covers the full content width. */
-  min-width: max-content;
-}
 .diff-lines { padding: var(--space-1) 0; }
 .diff-line {
   display: flex;
@@ -587,8 +564,8 @@
   min-height: var(--size-18px);
   /* `min-width: max-content` makes each row grow to its widest text so
      the row's background colour (red for del, green for add) follows the
-     full horizontal scroll. Without it, the row is clipped to .diff-block's
-     viewport width and the colour cuts off mid-scroll while the text
+     full horizontal scroll. Without it, the row is clipped to the diff
+     viewport's width and the colour cuts off mid-scroll while the text
      keeps going — visible as a hard edge between coloured row and
      uncoloured continuation. */
   min-width: max-content;
@@ -638,14 +615,6 @@
   padding-right: var(--space-2);
 }
 .diff-line-text { flex: 1; }
-.diff-truncation {
-  padding: var(--space-1) var(--space-2-5);
-  color: var(--fg-muted);
-  font-style: italic;
-  border-top: 1px dashed var(--border);
-  /* Match .diff-line so the dashed top-border spans the full scroll width. */
-  min-width: max-content;
-}
 
 /* Settings panel */
 .settings-panel {
@@ -2601,23 +2570,6 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
      (inheritance does not apply). Keep the command text on the app's mono
      stack to match every other code surface. */
   font-family: var(--mono);
-}
-
-/* --- Read inline view ----------------------------------------------- */
-.read-tool {
-  margin-top: var(--space-1);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  overflow: hidden;
-}
-/* The Read view reuses .diff-file-path for the header — the existing
-   styling already covers what we need. The range subline lives below. */
-.read-tool-range {
-  padding: var(--space-1) var(--space-2-5);
-  font-size: var(--fs-xs);
-  font-family: var(--mono);
-  color: var(--fg-muted);
-  background: var(--bg);
 }
 
 /* --- Grep inline view ----------------------------------------------- */
