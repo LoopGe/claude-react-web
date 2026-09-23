@@ -1436,7 +1436,7 @@ function FirstPartyCard({ info, enabled, onToggle }: {
         <span className="settings-card-name">
           {info.name}
         </span>
-        <span className="settings-card-badge">built-in</span>
+        <span className="settings-card-badge built-in">built-in</span>
         {info.tools.length > 0 && (
           <span className="settings-card-meta">{info.tools.length} tool{info.tools.length !== 1 ? 's' : ''}</span>
         )}

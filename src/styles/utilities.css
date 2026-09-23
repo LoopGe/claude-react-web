@@ -1738,11 +1738,37 @@ button.tool-group-failed-jump:focus-visible {
 .status-badge-warn { color: var(--warn-text); border-color: var(--warn); }
 .status-badge-danger { color: var(--danger-text); border-color: var(--danger); }
 .status-badge-accent { color: var(--accent-text); border-color: var(--accent); }
+/* Provenance tones for the MCP card badges. The boxed groups on the MCP tab
+   are the primary source distinction; these tint each card's own badge to
+   match its box (or mark a dual-provenance card). Host-provided servers
+   (first-party cards + source 'sdk') go green, session-inline injections
+   amber, CLI config scopes stay neutral muted — the .scope class carries
+   only spacing/weight, deliberately. Tokens only, so dark/light parity is
+   free. */
+.settings-card-badge.global,
+.settings-card-badge.built-in,
+.settings-card-badge.session,
+.settings-card-badge.scope {
+  margin-left: var(--space-1-5);
+  font-weight: 400;
+}
 .settings-card-badge.global {
   color: var(--accent-text);
   border-color: var(--accent);
-  margin-left: var(--space-1-5);
-  font-weight: 400;
+}
+.settings-card-badge.built-in {
+  color: var(--ok-text);
+  border-color: var(--ok);
+}
+.settings-card-badge.session {
+  color: var(--warn-text);
+  border-color: var(--warn);
+}
+/* The first-party cards' built-in badge is a direct .settings-card-head
+   child (the flex gap already spaces it), unlike the MCP badges that sit
+   inside the name span — drop the extra margin there. */
+.settings-card-head > .settings-card-badge.built-in {
+  margin-left: 0;
 }
 .settings-card-meta {
   font-size: var(--fs-xs);
@@ -1796,9 +1822,6 @@ button.tool-group-failed-jump:focus-visible {
 .settings-mcp-empty {
   padding: var(--space-6) 0;
   text-align: center;
-}
-.settings-mcp-available {
-  margin-top: var(--space-3);
 }
 .settings-mcp-available-row {
   display: flex;

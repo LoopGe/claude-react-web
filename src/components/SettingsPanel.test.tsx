@@ -470,3 +470,268 @@ describe('SettingsPanel Appearance tab', () => {
     })
   })
 })
+
+describe('SettingsPanel MCP source grouping', () => {
+  const globalPrefs = {
+    showPinnedUserMessage: true,
+    autoRecap: true,
+    toolGroupCards: true,
+    autoExpandRunningGroups: true,
+  } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
+
+  const mkServer = (over: Record<string, unknown>) =>
+    ({ status: 'connected', tools: [{ name: 'a_tool', description: 'A tool.' }], ...over })
+
+  /** The three canonical provenances plus the dual one: global-server is in
+   *  the global library, scoped-server reports a CLI config scope, and
+   *  session-server has neither marker (inline / agent-definition injection). */
+  const servers = [
+    mkServer({ name: 'global-server' }),
+    mkServer({ name: 'scoped-server', source: 'project' }),
+    mkServer({ name: 'session-server' }),
+    mkServer({ name: 'dual-server', source: 'user' }),
+  ]
+
+  /** Render the session panel on its MCP tab. `mcpServers` feeds the default
+   *  /mcp-status stub; `urlOverrides` swaps any endpoint's payload — an Error
+   *  value rejects, a Promise value is returned as-is (for held-pending
+   *  assertions), anything else resolves — so each test pins only what
+   *  differs from the default table. `session` overrides the default. */
+  function renderGroupedPanel(
+    mcpServers: Record<string, unknown>[],
+    urlOverrides: Record<string, unknown> = {},
+    session: SessionInfo = mkSession(),
+  ) {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      for (const [match, payload] of Object.entries(urlOverrides)) {
+        if (url === match || url.endsWith(match)) {
+          if (payload instanceof Error) return Promise.reject(payload)
+          if (payload instanceof Promise) return payload
+          return Promise.resolve(payload)
+        }
+      }
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: mcpServers })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url === '/mcp-config')
+        return Promise.resolve({ servers: [{ name: 'global-server' }, { name: 'dual-server' }] })
+      if (url === '/profiles') return Promise.resolve({ profiles: [] })
+      if (url === '/config') return Promise.resolve({ models: [] })
+      return Promise.resolve({})
+    })
+    return render(
+      <ToastProvider>
+        <SettingsPanel
+          session={session}
+          globalPrefs={globalPrefs}
+          onClose={() => {}}
+          onSessionUpdate={() => {}}
+          tabRequest={{ tab: 'mcp', nonce: 1 }}
+        />
+      </ToastProvider>,
+    )
+  }
+
+  /** The `.settings-group` box whose head title matches exactly, or null when
+   *  the box is (correctly) not rendered. */
+  const findGroup = (container: HTMLElement, title: string) =>
+    [...container.querySelectorAll('.settings-group')].find(
+      (g) => g.querySelector('.settings-group-head h4')?.textContent === title,
+    )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('boxes each provenance into its own group', async () => {
+    const { container } = renderGroupedPanel(servers)
+
+    await waitFor(() => expect(container.textContent).toContain('session-server'))
+
+    const globalGroup = findGroup(container, 'Global config')
+    const cliGroup = findGroup(container, 'CLI-discovered')
+    const sessionGroup = findGroup(container, 'Session only')
+    expect(globalGroup, 'Global config box').toBeDefined()
+    expect(cliGroup, 'CLI-discovered box').toBeDefined()
+    expect(sessionGroup, 'Session only box').toBeDefined()
+
+    // Each card lands in exactly one box.
+    expect(globalGroup!.textContent).toContain('global-server')
+    expect(cliGroup!.textContent).toContain('scoped-server')
+    expect(sessionGroup!.textContent).toContain('session-server')
+    expect(globalGroup!.textContent).not.toContain('scoped-server')
+    expect(globalGroup!.textContent).not.toContain('session-server')
+    expect(cliGroup!.textContent).not.toContain('global-server')
+  })
+
+  it('keeps a dual-provenance server in the Global box with both badges', async () => {
+    const { container } = renderGroupedPanel(servers)
+    await waitFor(() => expect(container.textContent).toContain('dual-server'))
+
+    const globalGroup = findGroup(container, 'Global config')!
+    expect(globalGroup.textContent).toContain('dual-server')
+    const card = [...globalGroup.querySelectorAll('.settings-card')].find((c) =>
+      c.textContent?.includes('dual-server'),
+    )!
+    expect(card.querySelector('.settings-card-badge.global'), 'global badge').toBeDefined()
+    expect(card.querySelector('.settings-card-badge.scope'), 'scope badge').toBeDefined()
+    // dual-server must NOT have been partitioned into the CLI-discovered box.
+    expect(findGroup(container, 'CLI-discovered')!.textContent).not.toContain('dual-server')
+  })
+
+  it('stamps source-tone badges per provenance', async () => {
+    const { container } = renderGroupedPanel(servers)
+    await waitFor(() => expect(container.textContent).toContain('session-server'))
+
+    const sessionCard = [...container.querySelectorAll('.settings-card')].find((c) =>
+      c.textContent?.includes('session-server'),
+    )!
+    expect(sessionCard.querySelector('.settings-card-badge.session'), 'session badge').toBeDefined()
+
+    const scopedCard = [...container.querySelectorAll('.settings-card')].find((c) =>
+      c.textContent?.includes('scoped-server'),
+    )!
+    expect(scopedCard.querySelector('.settings-card-badge.scope'), 'scope badge').toBeDefined()
+    expect(scopedCard.querySelector('.settings-card-badge.global')).toBeNull()
+  })
+
+  it('renders no provenance boxes when nothing has a source marker', async () => {
+    const { container } = renderGroupedPanel([mkServer({ name: 'session-server' })])
+    await waitFor(() => expect(container.textContent).toContain('session-server'))
+
+    expect(findGroup(container, 'Global config')).toBeUndefined()
+    expect(findGroup(container, 'CLI-discovered')).toBeUndefined()
+    // The one non-empty box still renders, and no "No MCP servers" empty state
+    // (the effective list is not empty).
+    expect(findGroup(container, 'Session only')).toBeDefined()
+    expect(container.textContent).not.toContain('No MCP servers')
+  })
+
+  it('shows the empty state only when the whole external list is empty', async () => {
+    const { container } = renderGroupedPanel([])
+    await waitFor(() => expect(container.textContent).toContain('No MCP servers'))
+
+    expect(findGroup(container, 'Global config')).toBeUndefined()
+    expect(findGroup(container, 'CLI-discovered')).toBeUndefined()
+    expect(findGroup(container, 'Session only')).toBeUndefined()
+  })
+
+  it('does not flash mislabeled boxes while the global-names fetch is in flight', async () => {
+    // Hold /mcp-config pending forever: until global membership is known, a
+    // source-less server must NOT be by-elimination labeled "Session only —
+    // not persisted" (it may well be a global-library server). The tab shows
+    // the skeleton instead, then the boxes appear once the names settle.
+    let releaseGlobalNames!: (value: unknown) => void
+    const pendingGlobalNames = new Promise((res) => {
+      releaseGlobalNames = res
+    })
+    const { container } = renderGroupedPanel(
+      [mkServer({ name: 'global-server' })],
+      { '/mcp-config': pendingGlobalNames },
+      { id: 's1', running: true, terminated: false, mcpServerNames: ['global-server'] } as unknown as SessionInfo,
+    )
+
+    // No boxes (and no cards) before the names settle — the skeleton holds.
+    await waitFor(() => expect(container.querySelector('.skeleton-group')).not.toBeNull())
+    expect(findGroup(container, 'Session only')).toBeUndefined()
+    expect(findGroup(container, 'Global config')).toBeUndefined()
+    expect(container.textContent).not.toContain('global-server')
+
+    await act(async () => {
+      releaseGlobalNames({ servers: [{ name: 'global-server' }] })
+    })
+    await waitFor(() => expect(container.textContent).toContain('global-server'))
+    expect(findGroup(container, 'Global config')!.textContent).toContain('global-server')
+    expect(findGroup(container, 'Session only')).toBeUndefined()
+  })
+
+  it('reaches the empty state on a dormant session instead of sticking on the skeleton', async () => {
+    // Non-running sessions never fetch mcp-status (the server 410s it), so
+    // loadingMeta must settle through the not-running branch — previously it
+    // held the skeleton forever and "No MCP servers" was unreachable. The
+    // store mock is deliberately NON-empty: the "Available from global
+    // config" section must stay hidden by the session.running gate (without
+    // it, the Add buttons would render on a dormant session and every click
+    // would POST into a 410) — an empty store would pass for the wrong
+    // reason.
+    const { container } = renderGroupedPanel(
+      [],
+      { '/mcp-config': { servers: [{ name: 'global-server' }] } },
+      { id: 's1', running: false, terminated: false } as unknown as SessionInfo,
+    )
+    await waitFor(() => expect(container.textContent).toContain('No MCP servers'))
+    expect(container.querySelector('.skeleton-group')).toBeNull()
+    // The Add list stays dormant-session territory: no buttons that would
+    // only ever POST into a 410.
+    expect(container.textContent).not.toContain('Available from global config')
+  })
+
+  it('keeps a globally-defined-but-disabled server in the Global box', async () => {
+    // The session stays connected to a server that was later disabled in the
+    // global library: the partition must consult the full defined-name set,
+    // not the enabled-only one, or the card would be mislabeled "Session
+    // only — not persisted". The enabled-only filter still governs the
+    // Available list (no Add button for a disabled server).
+    const { container } = renderGroupedPanel(
+      [mkServer({ name: 'disabled-global' })],
+      { '/mcp-config': { servers: [{ name: 'disabled-global', enabled: false }] } },
+    )
+    await waitFor(() => expect(container.textContent).toContain('disabled-global'))
+
+    const globalGroup = findGroup(container, 'Global config')!
+    expect(globalGroup, 'Global config box').toBeDefined()
+    expect(globalGroup.textContent).toContain('disabled-global')
+    expect(findGroup(container, 'Session only')).toBeUndefined()
+    expect(container.textContent).not.toContain('Available from global config')
+  })
+
+  it('falls back to one neutral ungrouped box when the global store read fails', async () => {
+    // Provenance must not be partitioned on empty name sets — that would
+    // affirmatively mislabel every global-library server as "Session only —
+    // not persisted". The fallback box groups everything and suppresses the
+    // by-elimination session badge.
+    const { container } = renderGroupedPanel(
+      [mkServer({ name: 'mystery-server' }), mkServer({ name: 'scoped-server', source: 'project' })],
+      { '/mcp-config': new Error('store unreadable') },
+    )
+    await waitFor(() => expect(container.textContent).toContain('mystery-server'))
+
+    expect(findGroup(container, 'Global config')).toBeUndefined()
+    expect(findGroup(container, 'CLI-discovered')).toBeUndefined()
+    expect(findGroup(container, 'Session only')).toBeUndefined()
+    const fallback = findGroup(container, 'All servers')!
+    expect(fallback, 'fallback box').toBeDefined()
+    expect(fallback.textContent).toContain('mystery-server')
+    expect(fallback.textContent).toContain('scoped-server')
+    const mysteryCard = [...fallback.querySelectorAll('.settings-card')].find((c) =>
+      c.textContent?.includes('mystery-server'),
+    )!
+    expect(mysteryCard.querySelector('.settings-card-badge.session')).toBeNull()
+  })
+
+  it('keeps an sdk-source server out of the CLI-discovered box', async () => {
+    // source==='sdk' marks a host-registered in-process server, not a CLI
+    // config scope — the CLI-discovered head would contradict the card's
+    // own in-process badge.
+    const { container } = renderGroupedPanel([mkServer({ name: 'host-srv', source: 'sdk' })])
+    await waitFor(() => expect(container.textContent).toContain('host-srv'))
+
+    expect(findGroup(container, 'CLI-discovered')).toBeUndefined()
+    const sessionGroup = findGroup(container, 'Session only')!
+    expect(sessionGroup, 'Session only box').toBeDefined()
+    const card = [...sessionGroup.querySelectorAll('.settings-card')].find((c) =>
+      c.textContent?.includes('host-srv'),
+    )!
+    expect(card.querySelector('.settings-card-badge.built-in'), 'in-process badge').toBeDefined()
+  })
+
+  it('boxes the built-in tools under their own group header', async () => {
+    const { container } = renderGroupedPanel([], { '/tools': { tools: [gitToolsStatus] } })
+    await waitFor(() => expect(container.textContent).toContain('git-tools'))
+
+    const builtIn = findGroup(container, 'Built-in tools')
+    expect(builtIn, 'Built-in tools box').toBeDefined()
+    expect(builtIn!.querySelector('.settings-first-party-card')).toBeDefined()
+    // The old bare note header is gone — the box head is the only label.
+    expect(container.querySelector('.settings-section > .settings-note')).toBeNull()
+  })
+})

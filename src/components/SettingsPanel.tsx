@@ -127,7 +127,36 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   const agentDefs = useAgentDefinitions()
   const [mcp, setMcp] = useState<McpServerStatus[]>([])
   const [firstPartyTools, setFirstPartyTools] = useState<FirstPartyToolStatus[]>([])
-  const [globalMcpNames, setGlobalMcpNames] = useState<Set<string>>(new Set())
+  // Raw global-library payload; the two name-views below derive from it so
+  // they can never desynchronize. Fetched for NON-running sessions too —
+  // see the mount effect.
+  const [globalServers, setGlobalServers] = useState<McpServerConfigMeta[]>([])
+  // Every name defined in the global library, DISABLED ONES INCLUDED. The
+  // partition must use this: a session can stay connected to a server that
+  // was later disabled globally, and dropping it from the known set would
+  // by-elimination mislabel it "Session only — not persisted".
+  const allGlobalNames = useMemo(
+    () => new Set(globalServers.map((s) => s.name)),
+    [globalServers],
+  )
+  // Enabled-only view — governs the "Available from global config" list:
+  // a disabled server can never be connected (toSdkConfig filters it), so
+  // offering Add for it is misleading.
+  const globalMcpNames = useMemo(
+    () => new Set(globalServers.filter((s) => s.enabled !== false).map((s) => s.name)),
+    [globalServers],
+  )
+  // Settles (true) once the /mcp-config read lands or fails — the gate for
+  // the MCP tab's provenance boxes. Before it settles, by-elimination
+  // partitioning could mislabel a global server as "Session only".
+  const [globalNamesSettled, setGlobalNamesSettled] = useState(false)
+  // The read itself failed (store unreadable / timeout): provenance is
+  // unknown, so the tab falls back to one neutral ungrouped box instead of
+  // partitioning on empty sets (which would affirmatively mislabel every
+  // global-library server as "Session only — not persisted"). Latched for
+  // the panel mount — the component remounts per session, so the next open
+  // re-reads.
+  const [globalNamesError, setGlobalNamesError] = useState(false)
   const [showMcpInstaller, setShowMcpInstaller] = useState(false)
   const [mcpInstallerEdit, setMcpInstallerEdit] = useState<McpServerConfigMeta | undefined>(undefined)
   const mcpInstallerPresence = useExitPresence(showMcpInstaller)
@@ -266,9 +295,55 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // (/api/sessions/:id/models) are deliberately NOT queried: the
   // gateway advertises extra models (e.g. *-omni) the user didn't
   // configure, so the picker would show entries beyond the list.
+  // The single /mcp-config read, shared by the mount effect and the MCP
+  // installer's post-save refresh — one copy of the timeout, payload
+  // validation, and settle/error bookkeeping so the two callers can't drift.
+  // A success always clears the error latch; a failure latches it (the tab
+  // renders the neutral fallback box) until the next successful read.
+  const refetchGlobalServers = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const gcResult = await api.get<{ servers: McpServerConfigMeta[] }>(
+        '/mcp-config',
+        // Local-disk store read — 3s is generous. A short explicit timeout
+        // keeps a wedged backend from holding every MCP card behind the
+        // settle gate for the full transport timeout; on timeout the error
+        // fallback renders instead (bounded: worst case a few seconds of
+        // skeleton, not the 30s transport default).
+        { signal, timeoutMs: 3_000 },
+      )
+      if (signal?.aborted) return
+      // Validate the payload shape before it reaches render: a malformed
+      // response must degrade to an empty store, not crash the memos.
+      setGlobalServers(Array.isArray(gcResult?.servers) ? gcResult.servers : [])
+      setGlobalNamesError(false)
+    } catch {
+      // Non-fatal: keep the payload as-is and mark provenance unknown —
+      // the tab renders the neutral fallback box rather than partitioning
+      // on empty sets (every global server would be mislabeled).
+      if (signal?.aborted) return
+      setGlobalNamesError(true)
+    } finally {
+      if (!signal?.aborted) setGlobalNamesSettled(true)
+    }
+  }, [])
+
   useEffect(() => {
-    if (!session.running) return
+    // Global MCP config is a local-disk store read — cheap, session-
+    // independent, and fetched for NON-running sessions too: the MCP tab's
+    // provenance boxes partition snapshot-derived cards by global
+    // membership, which must not depend on a live subprocess. Keyed to the
+    // session ONLY: the running↔dormant flip must not abort and re-issue
+    // this read.
     const ac = new AbortController()
+    // Async IIFE so every setState inside the helper happens after an await
+    // (react-hooks/set-state-in-effect — same shape as the effect below).
+    void (async () => {
+      await refetchGlobalServers(ac.signal)
+    })()
+    return () => { ac.abort() }
+  }, [session.id, refetchGlobalServers])
+
+  useEffect(() => {
     // NOTE: /context-usage is intentionally NOT fetched here. It's a
     // blocking SDK control request that hangs the whole panel open while
     // the subprocess is mid-turn or the proxy init handshake stalls.
@@ -276,32 +351,16 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     // instead (zero round-trip); the full breakdown is lazy-loaded only
     // when a detail section is expanded — see loadDetailedUsage().
 
-    // models comes from useModelOptions (profile-aware). Only MCP global
-    // config is fetched here.
-    ;(async () => {
-      try {
-        const gcResult = await api.get<{ servers: McpServerConfigMeta[] }>(
-          '/mcp-config',
-          { signal: ac.signal },
-        )
-        if (ac.signal.aborted) return
-        // Only include enabled servers — disabled ones can never be
-        // connected (toSdkConfig filters them), so showing them as
-        // "Available" with an Add button is always misleading.
-        setGlobalMcpNames(new Set(
-          gcResult.servers.filter((s) => s.enabled !== false).map((s) => s.name),
-        ))
-      } catch {
-        // Non-fatal: the global MCP names list stays empty.
-      }
-    })()
-
     // mcp-status forwards an SDK control request to the subprocess and
-    // depends on its init handshake. While the handshake is still in
-    // flight (common on proxy backends, or right after spawn) the call
-    // times out or fails — and a single failure would otherwise leave the
-    // panel stuck on an empty list forever. Retry with a short timeout and
-    // exponential backoff so the list fills in once the subprocess is ready.
+    // depends on its init handshake — for a non-running session the server
+    // returns 410, so skip it rather than surface noise. While the
+    // handshake is still in flight (common on proxy backends, or right
+    // after spawn) the call times out or fails — and a single failure
+    // would otherwise leave the panel stuck on an empty list forever.
+    // Retry with a short timeout and exponential backoff so the list
+    // fills in once the subprocess is ready.
+    if (!session.running) return
+    const ac = new AbortController()
     ;(async () => {
       const delays = [0, 1_000, 2_000, 4_000, 8_000, 8_000]
       for (let attempt = 0; attempt < delays.length; attempt++) {
@@ -733,6 +792,50 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     )
   }, [effectiveMcp, mcpOverride])
 
+  // Partition the effective list into the provenance boxes rendered on the
+  // MCP tab. Precedence is client-side truth first: a name defined in the
+  // global library (disabled included — see allGlobalNames) always lands in
+  // the Global box (any SDK-reported scope badge still shows on its card);
+  // otherwise an SDK-reported `source` means the CLI reports a config scope
+  // for it — EXCEPT 'sdk', which marks a host-registered in-process server,
+  // not a CLI config scope, and must not sit under the CLI-discovered head
+  // contradicting its own badge (such servers fall through to the session
+  // bucket; today every host-registered server is first-party and already
+  // filtered out, so this is a coherence guard, not a live path). The
+  // remainder have neither marker — session-inline injections (or
+  // agent-definition servers), a deterministic by-elimination bucket:
+  // mcpServerNames only ever lists host-injected servers (spawn map +
+  // dynamic set), so CLI-discovered ones can never land here as pending.
+  // Known accepted edge: an inline server deliberately named after a global
+  // library entry (inline wins at merge time) still buckets as Global —
+  // disambiguating needs server-side provenance stamping on McpServerStatus.
+  const { globalMcpServers, scopedMcpServers, sessionMcpServers } = useMemo(() => {
+    const globalMcpServers: McpServerStatus[] = []
+    const scopedMcpServers: McpServerStatus[] = []
+    const sessionMcpServers: McpServerStatus[] = []
+    for (const srv of effectiveMcpWithOverride) {
+      if (allGlobalNames.has(srv.name)) globalMcpServers.push(srv)
+      else if (srv.source && srv.source !== 'sdk') scopedMcpServers.push(srv)
+      else sessionMcpServers.push(srv)
+    }
+    return { globalMcpServers, scopedMcpServers, sessionMcpServers }
+  }, [effectiveMcpWithOverride, allGlobalNames])
+
+  // The three provenance boxes, data-driven so the card wiring is written
+  // once (a per-box prop divergence would otherwise be a silent bug).
+
+  // mcp-status is only ever fetched for running sessions (the server 410s
+  // it otherwise), so the loading phase only exists for them — deriving
+  // here (instead of settling the raw flag in the effect) lets a dormant
+  // session reach the "No MCP servers" empty state immediately while
+  // leaving the raw loadingMeta untouched for its other consumers.
+  const mcpStatusLoading = loadingMeta && session.running
+  const mcpBoxes: Array<{ title: string; desc: string; servers: McpServerStatus[]; isGlobal: boolean }> = [
+    { title: 'Global config', desc: 'From your global MCP library.', servers: globalMcpServers, isGlobal: true },
+    { title: 'CLI-discovered', desc: 'The Claude CLI reports a config scope (user / project / local / …) for these servers.', servers: scopedMcpServers, isGlobal: false },
+    { title: 'Session only', desc: 'Added inline to this session (or via agent definitions) — not persisted.', servers: sessionMcpServers, isGlobal: false },
+  ]
+
   const addMcpServer = async (name: string) => {
     try {
       setBusy(true)
@@ -793,8 +896,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     setShowMcpInstaller(false)
     setMcpInstallerEdit(undefined)
     // Refresh both global names and MCP status
-    api.get<{ servers: McpServerConfigMeta[] }>('/mcp-config')
-      .then((r) => setGlobalMcpNames(new Set(r.servers.filter((s) => s.enabled !== false).map((s) => s.name))))
+    void refetchGlobalServers()
       .catch(() => { /* ignore */ })
     void refreshMcp()
   }
@@ -1604,65 +1706,122 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             </button>
           </div>
         </div>
+        {/* One boxed group per provenance (empty boxes stay unrendered), so a
+            card's source is readable from its container alone; the per-card
+            badges remain as the per-entry confirmation. The boxes wait for
+            the global-names read to settle: partitioning before that would
+            flash global servers as "Session only" (no source marker yet,
+            membership unknown). The read is a local store fetch bounded at
+            3s — normally milliseconds; a wedged backend degrades to the
+            error fallback box, never an unbounded skeleton. */}
         {firstPartyTools.length > 0 && (
-          <>
-            <div className="settings-section-head compact">
-              <span className="settings-note">First-party tools</span>
+          <section className="settings-group">
+            <div className="settings-group-head">
+              <h4>Built-in tools</h4>
+              <span className="settings-group-desc">
+                Ships with claude-react-web — runs in-process; toggles apply to this session.
+              </span>
             </div>
-            {firstPartyTools.map((tool) => {
-              const override = session.firstPartyTools?.[tool.name]
-              // Display chain mirrors the server's firstPartyEnabled:
-              // session override → global structured default → the live
-              // tool status (last known injection state). The global map is
-              // read straight off globalPrefs, so a global-settings save
-              // updates open panels in place — no /tools refetch needed.
-              const enabled = override ?? globalPrefs.firstPartyTools?.[tool.name]?.enabled ?? tool.enabled
-              return (
-                <FirstPartyStatusCard
-                  key={tool.name}
-                  tool={tool}
-                  enabled={enabled}
-                  hasOverride={override !== undefined}
-                  disabled={busy || session.terminated}
-                  pending={pendingFirstParty.has(tool.name)}
-                  onToggle={(next) => void toggleFirstParty(tool.name, next)}
-                  onReset={() => void toggleFirstParty(tool.name, null)}
-                />
-              )
-            })}
-          </>
+            <div className="settings-group-body settings-mcp-group-body">
+              {firstPartyTools.map((tool) => {
+                const override = session.firstPartyTools?.[tool.name]
+                // Display chain mirrors the server's firstPartyEnabled:
+                // session override → global structured default → the live
+                // tool status (last known injection state). The global map is
+                // read straight off globalPrefs, so a global-settings save
+                // updates open panels in place — no /tools refetch needed.
+                const enabled = override ?? globalPrefs.firstPartyTools?.[tool.name]?.enabled ?? tool.enabled
+                return (
+                  <FirstPartyStatusCard
+                    key={tool.name}
+                    tool={tool}
+                    enabled={enabled}
+                    hasOverride={override !== undefined}
+                    disabled={busy || session.terminated}
+                    pending={pendingFirstParty.has(tool.name)}
+                    onToggle={(next) => void toggleFirstParty(tool.name, next)}
+                    onReset={() => void toggleFirstParty(tool.name, null)}
+                  />
+                )
+              })}
+            </div>
+          </section>
         )}
-        {loadingMeta && effectiveMcpWithOverride.length === 0 && <Skeleton rows={2} />}
-        {!loadingMeta && effectiveMcpWithOverride.length === 0 && <EmptyState icon={<IconTerminal size={16} />} title="No MCP servers" />}
-        {effectiveMcpWithOverride.map((srv) => (
-          <McpServerCard
-            key={srv.name}
-            server={srv}
-            isGlobal={globalMcpNames.has(srv.name)}
-            onReconnect={reconnectMcp}
-            onToggle={toggleMcp}
-            pending={pendingMcp.has(srv.name)}
-            disabled={busy || session.terminated}
-          />
-        ))}
-        {availableMcpNames.length > 0 && (
-          <div className="settings-mcp-available">
-            <div className="settings-section-head compact">
-              <span className="settings-note">Available from global config</span>
+        {(!globalNamesSettled || (mcpStatusLoading && effectiveMcpWithOverride.length === 0)) && <Skeleton rows={2} />}
+        {globalNamesSettled && !mcpStatusLoading && effectiveMcpWithOverride.length === 0 && <EmptyState icon={<IconTerminal size={16} />} title="No MCP servers" />}
+        {globalNamesSettled && !globalNamesError && mcpBoxes.filter((box) => box.servers.length > 0).map((box) => (
+          <section className="settings-group" key={box.title}>
+            <div className="settings-group-head">
+              <h4>{box.title}</h4>
+              <span className="settings-group-desc">{box.desc}</span>
             </div>
-            {availableMcpNames.map((name) => (
-              <div key={name} className="settings-mcp-available-row">
-                <span className="settings-mcp-available-name">{name}</span>
-                <button
-                  className="btn btn-sm"
-                  onClick={() => void addMcpServer(name)}
+            <div className="settings-group-body settings-mcp-group-body">
+              {box.servers.map((srv) => (
+                <McpServerCard
+                  key={srv.name}
+                  server={srv}
+                  isGlobal={box.isGlobal}
+                  onReconnect={reconnectMcp}
+                  onToggle={toggleMcp}
+                  pending={pendingMcp.has(srv.name)}
                   disabled={busy || session.terminated}
-                >
-                  Add
-                </button>
-              </div>
-            ))}
-          </div>
+                />
+              ))}
+            </div>
+          </section>
+        ))}
+        {/* Store-read failure fallback: provenance is unknown, so render one
+            neutral ungrouped box (no session badges — they would be guesses)
+            instead of partitioning on empty global-name sets. */}
+        {globalNamesSettled && globalNamesError && effectiveMcpWithOverride.length > 0 && (
+          <section className="settings-group">
+            <div className="settings-group-head">
+              <h4>All servers</h4>
+              <span className="settings-group-desc">
+                Global config store unavailable — provenance unknown.
+              </span>
+            </div>
+            <div className="settings-group-body settings-mcp-group-body">
+              {effectiveMcpWithOverride.map((srv) => (
+                <McpServerCard
+                  key={srv.name}
+                  server={srv}
+                  isGlobal={false}
+                  provenanceKnown={false}
+                  onReconnect={reconnectMcp}
+                  onToggle={toggleMcp}
+                  pending={pendingMcp.has(srv.name)}
+                  disabled={busy || session.terminated}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+        {/* Live sessions only: Add POSTs setMcpServers, which the server
+            rejects for non-live sessions — the global-names fetch is now
+            unconditional, so without this gate the buttons would render on
+            dormant sessions and every click would toast an error. */}
+        {session.running && availableMcpNames.length > 0 && (
+          <section className="settings-group">
+            <div className="settings-group-head">
+              <h4>Available from global config</h4>
+              <span className="settings-group-desc">Enabled global servers not connected to this session.</span>
+            </div>
+            <div className="settings-group-body settings-mcp-group-body">
+              {availableMcpNames.map((name) => (
+                <div key={name} className="settings-mcp-available-row">
+                  <span className="settings-mcp-available-name">{name}</span>
+                  <button
+                    className="btn btn-sm"
+                    onClick={() => void addMcpServer(name)}
+                    disabled={busy || session.terminated}
+                  >
+                    Add
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
         )}
       </div>
       )}
@@ -2049,6 +2208,29 @@ const STATUS_COLORS: Record<string, string> = {
   pending: 'var(--accent)',
 }
 
+/** Provenance badge for one MCP server card: tone class + tooltip. The boxed
+ *  groups on the tab are the primary source distinction; this badge is the
+ *  per-card confirmation (and the only marker on dual-provenance cards).
+ *  `sdk` means a host-registered in-process server — same family as the
+ *  first-party cards, so it shares their green tone. Any other value is a
+ *  CLI config scope from an open set (user/project/local/…): shown verbatim,
+ *  neutrally toned. Null when the server has no SDK-reported source. */
+function sourceBadgeOf(server: McpServerStatus): { className: string; text: string; title: string } | null {
+  if (!server.source) return null
+  if (server.source === 'sdk') {
+    return {
+      className: 'settings-card-badge built-in',
+      text: 'in-process',
+      title: 'Host-registered in-process server (definition source: sdk)',
+    }
+  }
+  return {
+    className: 'settings-card-badge scope',
+    text: server.source,
+    title: `Definition source: ${server.source}`,
+  }
+}
+
 /** Per-session first-party server card. Mirrors the MCP server card's
  *  controls: Enable/Disable at .btn-xs with an in-flight spinner, and an
  *  inline chevron expansion of the tool listing (no overlay). The toggle
@@ -2079,7 +2261,7 @@ function FirstPartyStatusCard({
       <div className="settings-card-head">
         <span className="settings-card-dot" style={{ '--dot': enabled ? 'var(--plugin-active)' : 'var(--plugin-inactive)' } as CSSProperties} />
         <span className="settings-card-name">{tool.name}</span>
-        <span className="settings-card-badge">built-in</span>
+        <span className="settings-card-badge built-in">built-in</span>
         {tool.tools.length > 0 && (
           <span className="settings-card-meta">{tool.tools.length} tool{tool.tools.length !== 1 ? 's' : ''}</span>
         )}
@@ -2132,6 +2314,7 @@ function FirstPartyStatusCard({
 function McpServerCard({
   server,
   isGlobal,
+  provenanceKnown = true,
   onReconnect,
   onToggle,
   disabled,
@@ -2139,6 +2322,9 @@ function McpServerCard({
 }: {
   server: McpServerStatus
   isGlobal: boolean
+  /** False only in the store-error fallback box, where global membership is
+   *  unknown — the by-elimination "session" badge would then be a guess. */
+  provenanceKnown?: boolean
   onReconnect: (name: string) => void
   onToggle: (name: string, enabled: boolean) => void
   disabled: boolean
@@ -2146,6 +2332,7 @@ function McpServerCard({
 }) {
   const [expanded, setExpanded] = useState(false)
   const color = STATUS_COLORS[server.status] ?? 'var(--fg-muted)'
+  const sourceBadge = sourceBadgeOf(server)
   // Allow reconnecting any server that isn't disabled — even a healthy
   // `connected` one, since users sometimes need to force a refresh (e.g. the
   // upstream server changed its tool set). Disabled servers use Enable instead.
@@ -2161,17 +2348,17 @@ function McpServerCard({
         <span className="settings-card-name">
           {server.name}
           {isGlobal && (
-            <span className="settings-card-badge global">global</span>
+            <span className="settings-card-badge global" title="From the global MCP config library">global</span>
           )}
-          {server.source && (
-            // Provenance from the SDK. `sdk` is a host-registered in-process
-            // server; other values are the config scope (user/project/…).
-            <span
-              className="settings-card-badge"
-              title={`Definition source: ${server.source}`}
-            >
-              {server.source === 'sdk' ? 'in-process' : server.source}
-            </span>
+          {sourceBadge && (
+            <span className={sourceBadge.className} title={sourceBadge.title}>{sourceBadge.text}</span>
+          )}
+          {provenanceKnown && !isGlobal && !server.source && (
+            // No global-membership and no SDK-reported scope: the card can
+            // only come from a session-inline injection (dynamic set or an
+            // agent definition's inline servers). By-elimination, but a
+            // deterministic bucket — see the partition memo above.
+            <span className="settings-card-badge session" title="Injected for this session only — not persisted">session</span>
           )}
         </span>
         {server.tools && (
