@@ -2286,7 +2286,16 @@
   font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
-  animation: working-bubble-pulse 1.8s ease-in-out infinite;
+  /* Two animations on the outer box: the load-bearing pulse halo (reduced-
+     motion keeps it) plus the shared bottom-card rise-in, so the bubble enters
+     in the same language as the checklist / monitor cards. The entrance
+     carries NO fill mode — a lingering `transform: translateY(0)` would
+     force-layerize the box and blank ::before's backdrop sample (see the
+     compositing note above). The glass lives on ::before, so neither animation
+     sits on the backdrop-filter box. */
+  animation:
+    working-bubble-pulse 1.8s ease-in-out infinite,
+    bottom-card-in var(--motion-duration-moderate) var(--motion-ease-enter);
   /* No max-height. There used to be one (120px) paired with the overflow
      clip, but the bar's own content is what has to stay short — a hard clip
      silently ate whatever landed past it, and because the "+N more" badge
@@ -2470,6 +2479,28 @@
   animation: none;
   border-color: var(--border);
   box-shadow: var(--drawer-shadow);
+}
+
+/* Reduced-motion: drop the decorative rise-in but KEEP the load-bearing pulse
+   (the global policy in utilities.css deliberately leaves it running). The
+   compound idle selector must out-specify the pulse rule above it so an idle
+   remnant stays still. */
+@media (prefers-reduced-motion: reduce) {
+  .working-bar {
+    animation: working-bubble-pulse 1.8s ease-in-out infinite;
+  }
+  .working-bar.working-bar-idle {
+    animation: none;
+  }
+}
+
+/* Exit: replaces BOTH the pulse and the entrance with the shared sink-down
+   (bottom-card-out). Out-specifies the base / idle / reduced-motion rules;
+   pointer-events off so the sinking bubble's pills can't be clicked. Added
+   only while Chat's useExitPresence holds the bubble mounted. */
+.working-bar.working-bar-exiting {
+  animation: bottom-card-out var(--motion-duration-fast) var(--motion-ease-exit);
+  pointer-events: none;
 }
 
 /* ?? Subagent swarm pill ????????????????????????????????????????????????

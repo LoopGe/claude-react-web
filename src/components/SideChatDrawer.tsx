@@ -22,6 +22,7 @@ import { usePastedTexts } from '../hooks/usePastedTexts'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
+import { useExitPresence } from '../hooks/useExitPresence'
 import { shouldMountWorkingBubble } from '../utils/task-actions'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { buildOutgoingBody } from '../utils/message-body'
@@ -116,6 +117,10 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     hasTranscriptBackground: hasBackgroundSubagent,
     hasLiveSyncSubagent: false,
   })
+  // Hold the bubble through its exit keyframe (bottom-card-out) so it leaves
+  // the same way as the main panel's, instead of snapping off when the side
+  // turn ends. Snaps under reduced motion.
+  const bubblePresence = useExitPresence(mountBubble)
 
   // Destructure the stable callbacks off `stream` so `handleSend`'s dep
   // list can name them directly. Depending on bare `stream` would rebuild
@@ -260,7 +265,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
             </div>
           )}
         />
-        {mountBubble && (
+        {bubblePresence.shouldRender && (
           <WorkingBubble
             active={session.working}
             startedAt={session.workingSince}
@@ -268,6 +273,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
             tokenRate={stream.tokenRate}
             activePhase={stream.activePhase}
             waiting={waiting}
+            exiting={bubblePresence.isExiting}
           />
         )}
       </div>

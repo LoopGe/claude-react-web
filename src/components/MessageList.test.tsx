@@ -347,6 +347,40 @@ describe('WorkingBubble', () => {
     expect(pill).not.toBeNull()
     expect(pill?.textContent).toContain('3')
   })
+
+  it('carries the exiting class only while the host holds it through the exit', () => {
+    // Chat's useExitPresence keeps the bubble mounted for the sink-out
+    // (bottom-card-out) after the mount predicate flips false and flags it
+    // with `exiting`; the class swaps the pulse + entrance for the exit.
+    const { container } = render(<WorkingBubble active />)
+    expect(container.querySelector('.working-bar')?.classList.contains('working-bar-exiting')).toBe(false)
+
+    const { container: exiting } = render(<WorkingBubble active exiting />)
+    expect(exiting.querySelector('.working-bar')?.classList.contains('working-bar-exiting')).toBe(true)
+  })
+
+  it('renders its last frame while exiting instead of collapsing to an empty shell', () => {
+    // Chat flips the props to their post-turn values (idle, no tasks) in the
+    // SAME render it sets `exiting`, so without the frozen snapshot the exit
+    // would animate an empty glass pill. The bubble must keep the label + dots
+    // it last showed.
+    const { container, rerender } = render(<WorkingBubble active />)
+    expect(container.querySelector('.working-bar-label')?.textContent).toBe('Working')
+    expect(container.querySelector('.working-dots')).not.toBeNull()
+
+    // The post-turn frame lands one render before `exiting` (usePresenceValue
+    // sets isExiting in an effect). It must keep the last real content — not
+    // flash empty for a frame, and not overwrite the snapshot.
+    rerender(<WorkingBubble active={false} waiting={false} />)
+    expect(container.querySelector('.working-bar-label')?.textContent).toBe('Working')
+    expect(container.querySelector('.working-dots')).not.toBeNull()
+
+    rerender(<WorkingBubble active={false} waiting={false} exiting />)
+    const bar = container.querySelector('.working-bar')
+    expect(bar?.classList.contains('working-bar-exiting')).toBe(true)
+    expect(container.querySelector('.working-bar-label')?.textContent).toBe('Working')
+    expect(container.querySelector('.working-dots')).not.toBeNull()
+  })
 })
 
 describe('MessageList', () => {

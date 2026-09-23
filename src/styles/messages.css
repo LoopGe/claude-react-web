@@ -1885,8 +1885,17 @@
   /* One-shot entrance when the card mounts (a visible task list appears at
      turn start). Plays per insertion only — the card is a single non-
      virtualized element, so there is no scroll-back remount to worry about.
-     Transform/opacity only, so no layout-height reflow is triggered. */
-  animation: todo-panel-in var(--motion-duration-moderate) var(--motion-ease-enter);
+     Transform/opacity only, so no layout-height reflow is triggered. Shares
+     the keyframe with the other two bottom-overlay cards (MonitorBar,
+     WorkingBubble) so the whole stack rises in as one language. */
+  animation: bottom-card-in var(--motion-duration-moderate) var(--motion-ease-enter);
+}
+/* Exit (see bottom-card-out). Out-specifies the base rule; pointer-events off
+   so the sinking ghost can't be clicked. Added only while usePresenceValue
+   holds the card mounted. */
+.todo-panel.todo-panel-exiting {
+  animation: bottom-card-out var(--motion-duration-fast) var(--motion-ease-exit);
+  pointer-events: none;
 }
 /* Shrink chain (see .todo-panel). Scoped to the overlay cards so
    AnimatedCollapse's many other consumers — session list, settings panels —
@@ -1921,17 +1930,40 @@
   flex-direction: column;
   flex: 0 0 auto;
 }
-@keyframes todo-panel-in {
+/* Shared entrance for the three bottom-overlay cards (TodoChecklist,
+   MonitorBar, WorkingBubble): a small rise from BELOW + fade, so a card
+   appearing at the bottom of the transcript grows up into place instead of
+   snapping in. Deliberately NO animation-fill-mode — these cards carry
+   backdrop-filter (glass.css), and a lingering `transform: translateY(0)`
+   would force-layerize them and blank the backdrop sample (same compositing
+   contract as .working-bar). */
+@keyframes bottom-card-in {
   from {
     opacity: 0;
-    /* Rises into place from BELOW: the card is the bottom member of
-       .chat-bottom-stack, so a downward shift (its original form, authored for
-       a top-sticky bar) would read as dropping in from the transcript. */
+    /* A downward shift (its original form, authored for a top-sticky bar)
+       would read as dropping in from the transcript, so the cards rise from
+       below their final position instead. */
     transform: translateY(var(--motion-distance-sm));
   }
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+/* Exit mirror of bottom-card-in: the card sinks back DOWN + fades. Applied by
+   an `-exiting` class that the component only adds while usePresenceValue
+   keeps it mounted through the delayed unmount (React would otherwise drop the
+   node the instant the derived content goes null, leaving nothing to
+   animate). Same no-fill-mode rule as the entrance — the retained final
+   transform would blank the backdrop sample. */
+@keyframes bottom-card-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(var(--motion-distance-sm));
   }
 }
 .todo-panel-header {
@@ -2104,8 +2136,9 @@
     animation: none;
     opacity: 0;
   }
-  /* Entrance is decorative — reduced-motion users get the panel instantly. */
-  .todo-panel {
+  /* Entrance is decorative — reduced-motion users get the cards instantly. */
+  .todo-panel,
+  .monitor-bar {
     animation: none;
   }
 }
@@ -2240,6 +2273,28 @@
   margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
   padding: var(--space-2-5) var(--space-3-5);
   font-size: var(--fs-base);
+  /* Same shared rise-in as the checklist + working bar, so a monitor
+     appearing (a Monitor call started) enters in the stack's one language.
+     The more specific .monitor-bar-clearing rule below swaps in the /clear
+     dissolve when a clear is in flight. */
+  animation: bottom-card-in var(--motion-duration-moderate) var(--motion-ease-enter);
+}
+/* Exit (see bottom-card-out). Out-specifies the base rule. It never fights
+   the /clear `.monitor-bar-clearing` blur-fade: during a clear the presence
+   value stays non-null (frozen), so isExiting is false and this class is
+   never applied. */
+.monitor-bar.monitor-bar-exiting {
+  animation: bottom-card-out var(--motion-duration-fast) var(--motion-ease-exit);
+  pointer-events: none;
+}
+/* A /clear hands the card off to the sink-out: keep the clear's blur under the
+   exit fade (bottom-card-out only touches opacity/transform) so the card
+   dissolves from its blurred state instead of snapping sharp for a frame. The
+   10px matches clear-blur-fade; the component keeps `-clearing` applied through
+   the exit precisely so this rule can fire. */
+.todo-panel.todo-panel-clearing.todo-panel-exiting,
+.monitor-bar.monitor-bar-clearing.monitor-bar-exiting {
+  filter: blur(10px);
 }
 .monitor-bar-header {
   display: flex;

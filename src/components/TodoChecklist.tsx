@@ -29,6 +29,7 @@ import type { Skin } from '../utils/theme'
 import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox, IconChevronDown, IconRotateCcw } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { usePresenceValue } from '../hooks/useExitPresence'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import {
   buildTaskStateMap,
@@ -193,7 +194,25 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   // the capture is empty — e.g. a clear that lands on the very first render,
   // before any non-clearing render populated the ref. If both are null the
   // panel was hidden when the clear started, so there's nothing to fade.
-  const renderResult = clearing ? (frozenRef.current ?? visibleResult) : visibleResult
+  const effectiveResult = clearing ? (frozenRef.current ?? visibleResult) : visibleResult
+  // Keep the card mounted through its exit keyframe (bottom-card-out) instead
+  // of snapping off when the last task clears: usePresenceValue freezes the
+  // last visible result for the window (and snaps under reduced motion). The
+  // default 180ms outlasts the 120ms CSS exit so React can't unmount mid-tween.
+  const presence = usePresenceValue(effectiveResult)
+  const renderResult = presence.value
+
+  // Latch the /clear blur until the card is gone. `clear-blur-fade` holds
+  // blur(10px) while `clearing` is true; when the clear ends the sink-out exit
+  // takes over. Without the latch the `-clearing` class would drop for the one
+  // frame between `clearing` flipping false and the presence effect setting
+  // `isExiting` — flashing sharp content — and the exit keyframe would then
+  // fade from unblurred. Resets as soon as fresh content renders, so a later
+  // normal exit is unaffected.
+  const clearBlurRef = useRef(false)
+  if (clearing) clearBlurRef.current = true
+  else if (effectiveResult != null) clearBlurRef.current = false
+  const clearBlur = clearing || clearBlurRef.current
 
   // Visible list is the render result minus locally-hidden tasks. The count
   // chip reflects only what's shown; the undo row explains the difference.
@@ -270,7 +289,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
 
   return (
     <div
-      className={`todo-panel${working ? ' todo-panel-working' : ''}${clearing ? ' todo-panel-clearing' : ''}${collapsed ? ' todo-panel-collapsed' : ''}`}
+      className={`todo-panel${working ? ' todo-panel-working' : ''}${clearBlur ? ' todo-panel-clearing' : ''}${collapsed ? ' todo-panel-collapsed' : ''}${presence.isExiting ? ' todo-panel-exiting' : ''}`}
       role="status"
       aria-label="Task checklist"
     >

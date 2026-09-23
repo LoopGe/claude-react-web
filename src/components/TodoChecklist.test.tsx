@@ -201,6 +201,9 @@ describe('TodoChecklist — /clear blur-fade', () => {
     const panel = container.querySelector('.todo-panel')
     expect(panel).not.toBeNull()
     expect(panel?.classList.contains('todo-panel-clearing')).toBe(true)
+    // The presence value stays non-null (frozen) during the clear, so the
+    // sink-out exit must NOT also fire — the blur-fade owns the teardown.
+    expect(panel?.classList.contains('todo-panel-exiting')).toBe(false)
     expect(container.querySelectorAll('.todo-item').length).toBe(2)
     // The frozen content is the last visible list, not a fresh empty one.
     expect(container.querySelector('.todo-panel-count')?.textContent).toBe('1/2')
@@ -221,6 +224,60 @@ describe('TodoChecklist — /clear blur-fade', () => {
 
     rerender(<TodoChecklist messages={[]} working={false} clearing />)
     expect(container.firstChild).toBeNull()
+  })
+})
+
+// Exit animation: when the last task clears (or the all-done + idle rule hides
+// the panel) it must sink out (bottom-card-out) instead of snapping off.
+// usePresenceValue holds it mounted for the exit window and freezes the last
+// visible list.
+describe('TodoChecklist — exit animation', () => {
+  it('keeps the panel mounted through its exit, then unmounts it', () => {
+    vi.useFakeTimers()
+    try {
+      const msgs = [multiTodoMsg([{ content: 'In flight', status: 'in_progress' }])]
+      const { container, rerender } = render(<TodoChecklist messages={msgs} working />)
+      expect(container.querySelector('.todo-panel')).not.toBeNull()
+      expect(container.querySelector('.todo-panel-exiting')).toBeNull()
+
+      // Turn ends and the transcript clears → sink out, not snap.
+      rerender(<TodoChecklist messages={[]} working={false} />)
+      const exiting = container.querySelector('.todo-panel')
+      expect(exiting).not.toBeNull()
+      expect(exiting?.classList.contains('todo-panel-exiting')).toBe(true)
+      // The last visible list is frozen through the exit.
+      expect(container.querySelector('.todo-text')?.textContent).toBe('In flight')
+
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(container.querySelector('.todo-panel')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the clearing blur through the sink-out when a /clear ends', () => {
+    // The latch must keep `-clearing` applied once the clear ends, so the CSS
+    // rule that holds blur(10px) under the exit fade can fire — otherwise the
+    // card would snap sharp for a frame before fading.
+    vi.useFakeTimers()
+    try {
+      const msgs = [multiTodoMsg([{ content: 'Task A', status: 'in_progress' }])]
+      const { container, rerender } = render(<TodoChecklist messages={msgs} working clearing />)
+      expect(container.querySelector('.todo-panel')?.classList.contains('todo-panel-clearing')).toBe(true)
+
+      // Clear ends, store wiped → the sink-out exit takes over.
+      rerender(<TodoChecklist messages={[]} working={false} />)
+      const panel = container.querySelector('.todo-panel')
+      expect(panel).not.toBeNull()
+      expect(panel?.classList.contains('todo-panel-exiting')).toBe(true)
+      // Latched: both classes coexist so the blur-under-exit rule applies.
+      expect(panel?.classList.contains('todo-panel-clearing')).toBe(true)
+
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(container.querySelector('.todo-panel')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

@@ -27,6 +27,7 @@
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { SdkMessage } from '../types'
+import { usePresenceValue } from '../hooks/useExitPresence'
 import { IconCircleDot } from './icons/ToolIcons'
 
 interface MonitorInfo {
@@ -76,12 +77,27 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing }: Props
   // back to the live list when the ref is empty (a clear that lands on the
   // very first render, before any non-clearing render populated it). If both
   // are empty the bar was hidden when the clear started — nothing to fade.
-  const renderList = clearing ? (frozenRef.current ?? monitors) : monitors
-  if (renderList.length === 0) return null
+  const effectiveList = clearing ? (frozenRef.current ?? monitors) : monitors
+  // Keep the bar mounted through its exit keyframe (bottom-card-out) instead
+  // of snapping off when the last monitor stops: usePresenceValue freezes the
+  // last visible list for the window (and snaps under reduced motion). The
+  // default 180ms outlasts the 120ms CSS exit so React can't unmount mid-tween.
+  const presence = usePresenceValue(effectiveList.length > 0 ? effectiveList : null)
+  const renderList = presence.value
+
+  // Latch the /clear blur until the bar is gone (see TodoChecklist): keeps the
+  // clear-blur-fade's blur(10px) under the sink-out exit so the handoff never
+  // flashes sharp content for a frame.
+  const clearBlurRef = useRef(false)
+  if (clearing) clearBlurRef.current = true
+  else if (effectiveList.length > 0) clearBlurRef.current = false
+  const clearBlur = clearing || clearBlurRef.current
+
+  if (!renderList) return null
 
   return (
     <div
-      className={`monitor-bar${clearing ? ' monitor-bar-clearing' : ''}`}
+      className={`monitor-bar${clearBlur ? ' monitor-bar-clearing' : ''}${presence.isExiting ? ' monitor-bar-exiting' : ''}`}
       role="status"
       aria-label="Running monitors"
     >

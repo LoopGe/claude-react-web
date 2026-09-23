@@ -1856,6 +1856,11 @@ export const Chat = memo(function Chat({
     hasTranscriptBackground: transcriptBackground,
     hasLiveSyncSubagent,
   })
+  // Keeps the WorkingBubble mounted through its exit keyframe
+  // (bottom-card-out) after the mount predicate flips false, so the turn-end
+  // dismissal sinks out in the same language as the checklist / monitor
+  // cards instead of snapping. Snaps under reduced motion.
+  const workingBubblePresence = useExitPresence(mountWorkingBubble)
   const backgroundToolAction = shouldOfferBackgroundAction({
     turnActive,
     terminated: session.terminated,
@@ -2375,7 +2380,7 @@ export const Chat = memo(function Chat({
           lives in shouldMountWorkingBubble. */}
       {workingSlot &&
         createPortal(
-          mountWorkingBubble ? (
+          workingBubblePresence.shouldRender ? (
             <WorkingBubble
               active={turnActive}
               startedAt={turnStartedAt}
@@ -2389,6 +2394,7 @@ export const Chat = memo(function Chat({
               totalTaskCount={taskCount}
               onOpenTasks={openTasksPanel}
               onOpenSubagent={openSubagent}
+              exiting={workingBubblePresence.isExiting}
             />
           ) : null,
           workingSlot,

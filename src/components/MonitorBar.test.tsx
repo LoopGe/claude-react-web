@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { render } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { act, render } from '@testing-library/react'
 import { MonitorBar } from './MonitorBar'
 import type { SdkMessage } from '../types'
 
@@ -98,5 +98,65 @@ describe('MonitorBar — /clear blur-fade', () => {
 
     rerender(<MonitorBar messages={[]} clearing />)
     expect(container.firstChild).toBeNull()
+  })
+})
+
+// Exit animation: the last monitor stopping must sink the bar out (bottom-card-out)
+// rather than snap it off. usePresenceValue holds it mounted for the exit
+// window and freezes the last visible list.
+describe('MonitorBar — exit animation', () => {
+  it('keeps the bar mounted through its exit, then unmounts it', () => {
+    vi.useFakeTimers()
+    try {
+      const msgs = [...runningMonitor('m1', 'Watch build')]
+      const { container, rerender } = render(<MonitorBar messages={msgs} />)
+      expect(container.querySelector('.monitor-bar')).not.toBeNull()
+      expect(container.querySelector('.monitor-bar-exiting')).toBeNull()
+
+      rerender(<MonitorBar messages={[]} />)
+      const exiting = container.querySelector('.monitor-bar')
+      expect(exiting).not.toBeNull()
+      expect(exiting?.classList.contains('monitor-bar-exiting')).toBe(true)
+      // The last visible list is frozen through the exit.
+      expect(container.querySelector('.monitor-text')?.textContent).toBe('Watch build')
+
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(container.querySelector('.monitor-bar')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the clearing blur through the sink-out when a /clear ends', () => {
+    // Latch keeps `-clearing` applied once the clear ends so the CSS blur-under-
+    // exit rule fires instead of snapping sharp for a frame.
+    vi.useFakeTimers()
+    try {
+      const msgs = [...runningMonitor('m1', 'Watch build')]
+      const { container, rerender } = render(<MonitorBar messages={msgs} clearing />)
+      expect(container.querySelector('.monitor-bar')?.classList.contains('monitor-bar-clearing')).toBe(true)
+
+      rerender(<MonitorBar messages={[]} />)
+      const bar = container.querySelector('.monitor-bar')
+      expect(bar).not.toBeNull()
+      expect(bar?.classList.contains('monitor-bar-exiting')).toBe(true)
+      expect(bar?.classList.contains('monitor-bar-clearing')).toBe(true)
+
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(container.querySelector('.monitor-bar')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not run the exit while a /clear owns the teardown', () => {
+    // During a clear the frozen list keeps the presence value non-null, so the
+    // exit class never lands — the blur-fade (monitor-bar-clearing) owns it.
+    const msgs = [...runningMonitor('m1', 'Watch build')]
+    const { container, rerender } = render(<MonitorBar messages={msgs} />)
+    rerender(<MonitorBar messages={[]} clearing />)
+    const bar = container.querySelector('.monitor-bar')
+    expect(bar?.classList.contains('monitor-bar-clearing')).toBe(true)
+    expect(bar?.classList.contains('monitor-bar-exiting')).toBe(false)
   })
 })
