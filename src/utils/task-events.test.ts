@@ -101,6 +101,27 @@ describe('buildTaskStateMap', () => {
     expect(tasks!.get('9')).toMatchObject({ id: '9', subject: 'Task #9', status: 'in_progress' })
   })
 
+  // Probe/fold verb parity. The dangerous drift is a probe that misses a verb
+  // the fold acts on: the fold never runs, buildTaskStateMap returns null, and
+  // TodoChecklist + TaskMutationView go blank with no error anywhere. `sawAny`
+  // cannot catch it. So every verb the fold dispatches on must, on its own, get
+  // a transcript past the probe — ADD A CASE HERE when adding a verb.
+  it.each([
+    ['TaskCreate', assistant([create('t1', 'Deploy')])],
+    ['TaskUpdate', assistant([update('7', { status: 'in_progress' })])],
+  ])('lets a transcript containing only %s past the probe', (_verb, msg) => {
+    expect(buildTaskStateMap([msg])).not.toBeNull()
+  })
+
+  it('returns an empty but non-null map for an update the fold cannot apply', () => {
+    // A TaskUpdate with no taskId sets sawAny and then bails, so the fold's
+    // contract is "empty map", not "null". The probe must not turn this into
+    // null — callers distinguish "no task feature in play" from "no tasks left".
+    const tasks = buildTaskStateMap([assistant([{ type: 'tool_use', id: 'u1', name: 'TaskUpdate', input: {} }])])
+    expect(tasks).not.toBeNull()
+    expect(tasks!.size).toBe(0)
+  })
+
   it('records lastTouched as the index of the message that last touched the task', () => {
     const messages = [
       assistant([{ type: 'text', text: 'x' }]),

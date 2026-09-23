@@ -57,6 +57,12 @@ export { WorkingBubble } from './message-list/WorkingBubble'
  *  referential across renders (consumers' useContext equality check). */
 const EMPTY_TASK_MAP = new Map<string, never>()
 
+/** Stable empty sentinel for `itemToVirtIdx` while no search is live. Same
+ *  reason as EMPTY_TASK_MAP: a fresh `new Map()` per streaming flush would
+ *  change identity and re-fire the seek effect (which then early-returns) many
+ *  times per second for nothing. */
+const EMPTY_VIRT_IDX = new Map<number, number>()
+
 /** Scroll-navigation surface registered by MessageList and held by the parent
  *  (Chat) for the pinned-header dropdown + right-click menu. `to(index)`
  *  jumps to a specific renderable item (used by the dropdown); `prev`/`next`
@@ -572,14 +578,18 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // streaming flush, so an ungated memo walked the whole transcript (plus every
   // folded group's member list) many times per second for a map nobody read.
   //
-  // The gate is deliberately `query || activeIdx >= 0`, not just the query:
-  // `searchQuery` is debounced upstream while `searchActiveMsgIdx` is not, so
-  // on close there is a frame where the query has already emptied but an active
-  // match remains. Keying on both means the seek can never find an empty map.
+  // The gate is deliberately `query || activeIdx >= 0`, not just the query.
+  // Both props are debounced the same way (`searchActiveMsgIdx` is read out of
+  // `searchMatches`, which is memoized on the same debounced query), so that is
+  // NOT the asymmetry. The asymmetry is in how Chat wires them: the query prop
+  // is `searchOpen ? debouncedQuery : ''`, which zeroes in the commit that
+  // closes the bar, while the active-index prop has no `searchOpen` gate and
+  // stays >= 0 until the emptied query finishes propagating. Keying on both
+  // means the seek can never read an empty map in that window.
   const searchLive = !!searchQuery?.trim() || (searchActiveMsgIdx != null && searchActiveMsgIdx >= 0)
   const itemToVirtIdx = useMemo(() => {
+    if (!searchLive) return EMPTY_VIRT_IDX
     const map = new Map<number, number>()
-    if (!searchLive) return map
     for (let vi = 0; vi < renderableItems.length; vi++) {
       const row = renderableItems[vi]
       if (row.toolGroup) {

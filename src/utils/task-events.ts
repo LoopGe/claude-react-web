@@ -52,12 +52,18 @@ export const TASK_UPDATE = 'TaskUpdate'
  *  each (which joins content-block arrays), and the whole thing is thrown
  *  away when the session turns out to have no Task* events — which is the
  *  common case. MessageList re-derives this on every `items` identity change,
- *  i.e. on every streaming flush, so "walk the transcript twice for nothing"
- *  was being paid many times per second for the whole length of a turn.
+ *  i.e. on every streaming flush, so that wasted work was being paid many times
+ *  per second for the whole length of a turn.
  *
- *  This probe reads only assistant tool_use block names, so it is far cheaper
- *  than the stage it guards; the sessions that DO use tasks pay one extra
- *  cheap pass. Kept exactly in step with the verbs the fold acts on. */
+ *  This does NOT remove the per-flush walk — the memo still keys on `items`
+ *  identity, so the transcript is still traversed once per flush. What it
+ *  removes is the constant factor: no `resultText` joins over every
+ *  tool_result's content blocks, no Map inserts, no second pass. This probe
+ *  reads only assistant tool_use block names.
+ *
+ *  Must stay exactly in step with the verbs the fold acts on — see the note on
+ *  `sawAny` at the end of foldTaskEvents for which drift direction is dangerous
+ *  and why nothing else catches it. */
 function hasTaskEvents(count: number, msgOf: (i: number) => SdkMessage): boolean {
   for (let i = 0; i < count; i++) {
     const msg = msgOf(i)
@@ -198,10 +204,17 @@ function foldTaskEvents(
     }
   }
 
-  // `sawAny` is now implied by the stage-0 probe, but it stays as the
-  // authority: it is derived from the branches that actually fold, so if the
-  // probe ever drifts to be MORE permissive than the fold, this still answers
-  // "no tasks" instead of handing callers an empty map.
+  // `sawAny` is now implied by the stage-0 probe, but it stays as the authority
+  // because it is derived from the branches that actually fold.
+  //
+  // Note which drift direction it can and cannot cover. A probe that is MORE
+  // permissive than the fold is harmless — one wasted fold, and `sawAny` still
+  // answers "no tasks" here. The dangerous direction is the opposite: a probe
+  // that MISSES a verb the fold acts on returns null for a session that really
+  // has tasks, and TodoChecklist plus TaskMutationView go blank with no error
+  // anywhere. `sawAny` cannot catch that, because the fold never runs. So if a
+  // third verb is ever added below, it MUST be added to hasTaskEvents in the
+  // same change; the parity test in task-events.test.ts is the reminder.
   if (!sawAny) return null
   return tasks
 }
