@@ -117,10 +117,11 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     hasTranscriptBackground: hasBackgroundSubagent,
     hasLiveSyncSubagent: false,
   })
-  // Hold the bubble through its exit keyframe (bottom-card-out) so it leaves
-  // the same way as the main panel's, instead of snapping off when the side
-  // turn ends. Snaps under reduced motion.
-  const bubblePresence = useExitPresence(mountBubble)
+  // Hold the bubble through its exit so it leaves the same way as the main
+  // panel's, instead of snapping off when the side turn ends. 280ms covers the
+  // staggered exit (see the .working-bar / .working-bubble-collapse rules).
+  // Snaps under reduced motion.
+  const bubblePresence = useExitPresence(mountBubble, 280)
 
   // Destructure the stable callbacks off `stream` so `handleSend`'s dep
   // list can name them directly. Depending on bare `stream` would rebuild

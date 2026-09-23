@@ -1856,11 +1856,11 @@ export const Chat = memo(function Chat({
     hasTranscriptBackground: transcriptBackground,
     hasLiveSyncSubagent,
   })
-  // Keeps the WorkingBubble mounted through its exit keyframe
-  // (bottom-card-out) after the mount predicate flips false, so the turn-end
-  // dismissal sinks out in the same language as the checklist / monitor
-  // cards instead of snapping. Snaps under reduced motion.
-  const workingBubblePresence = useExitPresence(mountWorkingBubble)
+  // Keeps the WorkingBubble mounted through its exit after the mount predicate
+  // flips false, so the turn-end dismissal sinks out instead of snapping.
+  // 280ms covers the staggered exit (90ms fade lead + 160ms row collapse) —
+  // the node must not unmount mid-tween. Snaps under reduced motion.
+  const workingBubblePresence = useExitPresence(mountWorkingBubble, 280)
   const backgroundToolAction = shouldOfferBackgroundAction({
     turnActive,
     terminated: session.terminated,

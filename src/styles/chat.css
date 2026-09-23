@@ -2278,7 +2278,11 @@
   min-height: 0;
   /* Same flex role the card had as the direct flex item. */
   flex: 0 0 auto;
-  transition: grid-template-rows var(--motion-duration-fast) var(--motion-ease-exit);
+  /* 90ms delay = the card's 110ms fade is all but done before the row starts
+     moving, so the squash it applies is never visible; then a decelerating
+     ease closes the gap. Total exit = 90 + 160 = 250ms (the presence window
+     in Chat is 280ms, so the node isn't unmounted mid-tween). */
+  transition: grid-template-rows 160ms var(--motion-ease-enter) 90ms;
 }
 .working-bubble-collapse-exiting {
   grid-template-rows: 0fr;
@@ -2533,19 +2537,22 @@
   }
 }
 
-/* Exit: sink + fade via the transition (faster, exit easing). Out-specifies
-   the base rule so its transition timing wins. pointer-events off so the
+/* Exit: sink + fade via the transition. The card fades FAST and slightly
+   longer than the row collapse below starts, so it is already invisible when
+   the shrinking row would clip/squash it (the standard "stagger opacity ahead
+   of height" trick — a concurrent collapse is what read as janky). Out-
+   specifies the base rule so its timing wins. pointer-events off so the
    sinking bubble's pills can't be clicked. Added only while Chat's
    useExitPresence holds the bubble mounted; if it's removed mid-flight (a
    mount blip) the base transition eases the bubble back instead of replaying
    an entrance. */
 .working-bar.working-bar-exiting {
   opacity: 0;
-  transform: translateY(var(--motion-distance-sm));
+  transform: translateY(6px);
   pointer-events: none;
   transition:
-    opacity var(--motion-duration-fast) var(--motion-ease-exit),
-    transform var(--motion-duration-fast) var(--motion-ease-exit);
+    opacity 110ms var(--motion-ease-exit),
+    transform 110ms var(--motion-ease-exit);
 }
 
 /* ?? Subagent swarm pill ????????????????????????????????????????????????
