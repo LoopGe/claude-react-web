@@ -669,8 +669,8 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   readHistoryPage(id: string, opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string }): Promise<HistoryPage> {
-    // afterUuid is search-path only and never arrives here (routes/sessions.ts
-    // only forwards before/beforeUuid/limit); the cache does not need it.
+    // afterUuid (Side Chat fork boundary) IS honored by the cache — it
+    // restricts to the suffix after the boundary uuid before slicing.
     return jsonlPageCache.readPage(id, opts)
   }
 

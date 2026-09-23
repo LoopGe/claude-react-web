@@ -274,4 +274,85 @@ describe('jsonl-cache — LRU, inflight, disappearance', () => {
     const back = await cache.readPage(SID, { limit: 100 })
     expect(back.totalCount).toBe(3)
   })
+
+  it('readFile throws → empty page shape (error handling regression)', async () => {
+    const t = makeDeps()
+    t.put(SID, TRANSCRIPT)
+    const cache = createJsonlPageCache(t.deps)
+    await cache.readPage(SID, { limit: 100 })
+    // Force a cache miss (new mtime) AND make readFile throw — simulates a
+    // transient IO error (file deleted between stat and read, EACCES, etc.).
+    t.put(SID, TRANSCRIPT, 2000)
+    const origReadFile = t.deps.readFile
+    t.deps.readFile = async () => { throw new Error('EACCES') }
+    const page = await cache.readPage(SID, { limit: 100 })
+    expect(page).toEqual({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })
+    // Restore — the cache entry was NOT cleared, so a normal read works again.
+    t.deps.readFile = origReadFile
+    const recovered = await cache.readPage(SID, { limit: 100 })
+    expect(recovered.totalCount).toBe(3)
+  })
+})
+
+describe('jsonl-cache — afterUuid (Side Chat fork boundary)', () => {
+  // Transcript with 5 messages; boundary uuid 'b1' sits at index 1 (the second
+  // message). Messages after the boundary: indices 2-4 (u2, a2, u3).
+  const FORK_TRANSCRIPT = jsonl([
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'parent first' } },
+    { type: 'assistant', uuid: 'b1', message: { role: 'assistant', content: [] } },
+    { type: 'user', uuid: 'u2', message: { role: 'user', content: 'side first' } },
+    { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [] } },
+    { type: 'user', uuid: 'u3', message: { role: 'user', content: 'side second' } },
+  ])
+
+  it('afterUuid found → only messages after the boundary, totalCount = restricted count', async () => {
+    const t = makeDeps()
+    t.put(SID, FORK_TRANSCRIPT)
+    const cache = createJsonlPageCache(t.deps)
+    const page = await cache.readPage(SID, { limit: 100, afterUuid: 'b1' })
+    expect(page.totalCount).toBe(3)
+    expect(page.messages.map((m) => (m as { uuid?: string }).uuid)).toEqual(['u2', 'a2', 'u3'])
+    expect(page.startIndex).toBe(0)
+    expect(page.hasMore).toBe(false)
+  })
+
+  it('afterUuid not found → empty page shape', async () => {
+    const t = makeDeps()
+    t.put(SID, FORK_TRANSCRIPT)
+    const cache = createJsonlPageCache(t.deps)
+    const page = await cache.readPage(SID, { limit: 100, afterUuid: 'nonexistent-uuid' })
+    expect(page).toEqual({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })
+  })
+
+  it('paging chain over a restricted view chains correctly', async () => {
+    const t = makeDeps()
+    t.put(SID, FORK_TRANSCRIPT)
+    const cache = createJsonlPageCache(t.deps)
+    // First page: limit 2, afterUuid = 'b1' → restricted view has 3 messages
+    // (u2, a2, u3). With limit=2, page shows the last 2: [a2, u3], startIndex=1.
+    const page1 = await cache.readPage(SID, { limit: 2, afterUuid: 'b1' })
+    expect(page1.totalCount).toBe(3)
+    expect(page1.messages.map((m) => (m as { uuid?: string }).uuid)).toEqual(['a2', 'u3'])
+    expect(page1.startIndex).toBe(1)
+    expect(page1.hasMore).toBe(true)
+
+    // Second page: use startIndex from page1 as before → shows [u2], startIndex=0.
+    const page2 = await cache.readPage(SID, { limit: 2, before: page1.startIndex, afterUuid: 'b1' })
+    expect(page2.totalCount).toBe(3)
+    expect(page2.messages.map((m) => (m as { uuid?: string }).uuid)).toEqual(['u2'])
+    expect(page2.startIndex).toBe(0)
+    expect(page2.hasMore).toBe(false)
+  })
+
+  it('afterUuid matches parseRenderable semantics exactly', async () => {
+    const t = makeDeps()
+    t.put(SID, FORK_TRANSCRIPT)
+    const cache = createJsonlPageCache(t.deps)
+    // Compare against paginateJsonl (the reference implementation).
+    for (const afterUuid of ['b1', 'u1', 'nonexistent']) {
+      const viaCache = await cache.readPage(SID, { limit: 100, afterUuid })
+      const direct = paginateJsonl(FORK_TRANSCRIPT, SID, { limit: 100, afterUuid })
+      expect(viaCache).toEqual(direct)
+    }
+  })
 })

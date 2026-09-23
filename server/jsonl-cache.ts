@@ -25,7 +25,10 @@
 //     live over WS regardless.
 //   - Freshness uses the BYTE domain (stat.size vs entry.statSize); slicing
 //     uses the CHARACTER domain (string offsets after utf8 decode). The two
-//     are never compared to each other.
+//     are never compared to each other except in the incremental gate
+//     (stat.size >= cached.parsedChars), which is safe: for the same content
+//     UTF-8 bytes >= chars, so the gate can only produce false negatives
+//     (triggering a full re-parse), never a wrong slice.
 //
 // Memory: an entry holds the full renderable transcript as JS objects —
 // roughly 2-4x the file size on the V8 heap. maxSessions (default 4) bounds
@@ -61,7 +64,12 @@ type CacheEntry = {
 }
 
 export type JsonlPageCache = {
-  readPage(sessionId: string, opts: { before?: number; beforeUuid?: string; limit: number }): Promise<HistoryPage>
+  readPage(sessionId: string, opts: { before?: number; beforeUuid?: string; afterUuid?: string; limit: number }): Promise<HistoryPage>
+  /** Drop the cache entry and any inflight parse for `sessionId`.
+   *  Limitation: an inflight parse may re-insert its entry after invalidate
+   *  completes. The /clear flow orders deleteTranscriptFile before invalidate,
+   *  so the window is benign — a re-inserted entry reflects the pre-delete
+   *  file and the next locate returns null, dropping it. */
   invalidate(sessionId: string): void
   size(): number
 }
@@ -137,7 +145,11 @@ export function createJsonlPageCache(deps: JsonlDeps, maxSessions = 4): JsonlPag
           }
           // else: grew in the byte domain but the growth sits INSIDE the
           // already-parsed char range (multi-byte-heavy growth or a stat/read
-          // race) — full re-parse is the only safe move.
+          // race) — full re-parse is the only safe move. DEFENSIVE guard:
+          // unreachable under the append-only assumption (stat.size grew but
+          // old bytes >= old chars, so stat.size >= cached.parsedChars always
+          // holds). Kept because a size-grew-but-content-rewritten file must
+          // not take the incremental path.
           const entry = await fullParse(sessionId, located.path, located.stat)
           touch(sessionId, entry)
           metrics.count('history_cache_miss_full')
@@ -189,19 +201,58 @@ export function createJsonlPageCache(deps: JsonlDeps, maxSessions = 4): JsonlPag
     return entry
   }
 
+  const EMPTY_PAGE: HistoryPage = Object.freeze({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })
+
   return {
     async readPage(sessionId, opts) {
-      const entry = await resolveEntry(sessionId)
-      if (!entry) return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
-      const { start, end } = sliceWindow(entry.lines.length, {
+      // Wrap resolveEntry in try/catch: any error from locate/readFile/parse
+      // (transient IO such as file-deleted-between-stat-and-read or EACCES,
+      // and even unexpected parse failures) returns the empty page shape
+      // instead of surfacing as a REST 500. Intentionally broad — in a web
+      // server, returning empty data is preferable to crashing the request.
+      // We do NOT clear the cache entry on error — the next successful locate
+      // (null → drop, or stat change → refresh) handles real changes.
+      let entry: CacheEntry | null
+      try {
+        entry = await resolveEntry(sessionId)
+      } catch (err) {
+        log.warn(`[${sessionId}] jsonl-cache readPage failed: ${(err as Error).message}`)
+        return EMPTY_PAGE
+      }
+      if (!entry) return EMPTY_PAGE
+
+      // afterUuid: Side Chat fork boundary. Restrict to the suffix STRICTLY
+      // AFTER the boundary uuid (matching parseRenderable's semantics). If
+      // the boundary uuid is not found, return the empty page — parseRenderable
+      // with an unmatched afterUuid yields zero rows (its pastBoundary flag
+      // never flips). NOTE: indexOf searches only renderable lines (the cache
+      // stores renderable-only messages). If the boundary uuid belongs to a
+      // non-renderable system message, this returns empty while parseRenderable
+      // would find it. In practice Side Chat boundaries are always renderable
+      // (the fork point is an assistant or user message).
+      let lines = entry.lines
+      let uuids = entry.uuids
+      if (opts.afterUuid) {
+        const idx = uuids.indexOf(opts.afterUuid)
+        if (idx < 0) return EMPTY_PAGE
+        lines = lines.slice(idx + 1)
+        uuids = uuids.slice(idx + 1)
+      }
+
+      // Invariant: getHistoryPage passes the SAME afterUuid on every call for
+      // a Side Chat session, so restriction is applied identically on each
+      // page request. startIndex is therefore an index within the restricted
+      // view on every response, and `before` values chain correctly across
+      // successive pages within the same session.
+      const { start, end } = sliceWindow(lines.length, {
         before: opts.before,
         beforeUuid: opts.beforeUuid,
         limit: opts.limit,
-        uuidAt: (i) => entry.uuids[i],
+        uuidAt: (i) => uuids[i],
       })
       return {
-        messages: entry.lines.slice(start, end),
-        totalCount: entry.lines.length,
+        messages: lines.slice(start, end),
+        totalCount: lines.length,
         startIndex: start,
         hasMore: start > 0,
       }
