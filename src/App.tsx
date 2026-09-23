@@ -601,10 +601,12 @@ export function App() {
    *  this set, the `session-removed` handler skips everything except
    *  dropping X from the sidebar list; `handleClear`'s swap owns the slot. */
   const clearingIdsRef = useRef<Set<string>>(new Set())
-  // State mirror of clearingIdsRef so the cleared panel can re-render to show
-  // the clearing blur (view-only — does NOT gate the data swap). The WS guard
-  // reads the ref; the UI reads the state. Same state+ref-mirror pattern as
-  // openIds/openIdsRef.
+  // State mirror of clearingIdsRef so the panel can re-render to show the
+  // clearing blur (view-only — does NOT gate the data swap). The WS guard
+  // reads the ref; the UI reads the state. NOT an exact mirror of the ref's
+  // key set: /clear and /discard populate it; /compact and /restart arm only
+  // the ref (they swap X→Y without the blur). Same state+ref-mirror pattern
+  // as openIds/openIdsRef.
   const [clearingIds, setClearingIds] = useState<Set<string>>(new Set())
   // Set by the guarded `session-removed` handler when the server has confirmed
   // X's removal during a /clear. Read by handleClear's catch to distinguish
@@ -3667,7 +3669,9 @@ export function App() {
    *  confirmations (the clearingIdsRef guard keeps X fully alive until the
    *  swap). X's transcript survives on disk, recoverable via the resume
    *  picker. The cleared panel blurs (view-only, via `clearingIds`) during the
-   *  POST; Y mounts fresh and plays `.entering`. */
+   *  POST — /clear only; compact shares this function but skips the state
+   *  mirror, so it swaps X→Y without the blur. Y mounts fresh and plays
+   *  `.entering`. */
 
   const resetSession = useCallback(
     async (id: string, kind: 'clear' | 'compact') => {
@@ -3677,7 +3681,13 @@ export function App() {
       // fully alive until swapSession replaces it — no sidebar churn, no
       // panel compaction across the WS-vs-POST race.
       clearingIdsRef.current.add(id)
-      setClearingIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+      // The blur is a /clear affordance: the reset path mirrors into state
+      // only for /clear — compact keeps the WS guard (ref) but no state
+      // mirror, so it swaps X→Y silently (handleRestart takes the same
+      // ref-only route). /discard is a separate flow and does mirror.
+      if (kind === 'clear') {
+        setClearingIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+      }
       clearingInFlightRef.current.set(id, (clearingInFlightRef.current.get(id) ?? 0) + 1)
       try {
         // POST only — no 180 ms veil gate. Data swaps the instant Y is known.
