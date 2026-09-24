@@ -930,7 +930,7 @@
   background: color-mix(in srgb, var(--bg-elev) 72%, transparent);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--border);
+  border: 2px solid var(--border);
   border-radius: var(--radius-2xl);
   box-shadow: var(--card-shadow);
   /* visible (not clip) so the context-orb popover can escape the card.
@@ -2277,7 +2277,7 @@
   margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
   padding: 6px 12px;
   background: transparent;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border: 2px solid color-mix(in srgb, var(--accent) 45%, var(--border));
   border-radius: var(--radius-xl);
   box-shadow: var(--drawer-shadow);
   display: flex;
@@ -2287,13 +2287,13 @@
   font-size: var(--fs-sm);
   font-family: var(--mono);
   color: var(--fg-muted);
-  /* The pulse is the ONLY animation on the bubble. The rise-in / sink-out are
-     mount-only / state transitions shared with the other bottom-overlay cards
-     (`.todo-panel, .monitor-bar, .working-bar` in messages.css) — NOT keyframes
-     in this list, because a one-shot keyframe here gets RESTARTED whenever a
-     state class re-declares the shorthand (`-idle` sets `animation: none`,
-     `-exiting` swaps in another), which replayed the entrance and read as a
-     flicker. */
+  /* The pulse is the ONLY animation on the bubble. The rise-in / sink-out live
+     on the shared `.bottom-card-motion` wrapper (messages.css, rendered by
+     BottomCardMotion) — NOT keyframes in this list, because a one-shot keyframe
+     here gets RESTARTED whenever a state class re-declares the shorthand
+     (`-idle` sets `animation: none`; the exit runs on the WRAPPER, so a
+     bar-level exit class must never be reintroduced here), which replayed the
+     entrance and read as a flicker. */
   animation: working-bubble-pulse 1.8s ease-in-out infinite;
   /* No max-height. There used to be one (120px) paired with the overflow
      clip, but the bar's own content is what has to stay short — a hard clip

@@ -67,7 +67,7 @@
 .todo-panel,
 .monitor-bar {
   border-radius: var(--radius-xl);
-  border: 1px solid var(--border);
+  border: 2px solid var(--border);
   background-color: var(--glass-surface-bg);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
