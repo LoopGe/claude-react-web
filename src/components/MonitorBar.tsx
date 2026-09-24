@@ -27,8 +27,8 @@
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { SdkMessage } from '../types'
-import { AnimatePresence, motion } from 'motion/react'
-import { useBottomCardMotion } from '../utils/transitions'
+import { AnimatePresence } from 'motion/react'
+import { BottomCardMotion } from './BottomCardMotion'
 import { IconCircleDot } from './icons/ToolIcons'
 
 interface MonitorInfo {
@@ -79,22 +79,16 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing }: Props
   // very first render, before any non-clearing render populated it). If both
   // are empty the bar was hidden when the clear started — nothing to fade.
   const renderList = clearing ? (frozenRef.current ?? monitors) : monitors
-  // Mount rise-in + staggered exit; AnimatePresence keeps the bar mounted
-  // through the exit and re-renders its LAST element (props frozen), so the
-  // exiting bar keeps its content and its `-clearing` class. Snaps under
-  // reduced motion.
-  const bottomCard = useBottomCardMotion()
+  // Mount rise-in + staggered exit come from the shared BottomCardMotion
+  // wrapper (also the exit-only overflow clip); AnimatePresence keeps the bar
+  // mounted through the exit and re-renders its LAST element (props frozen),
+  // so the exiting bar keeps its content and its `-clearing` class. Snaps
+  // under reduced motion.
 
   return (
     <AnimatePresence initial={false}>
       {renderList.length > 0 && (
-        <motion.div
-          key="monitor-bar"
-          className="bottom-card-motion"
-          initial={bottomCard.card.initial}
-          animate={bottomCard.card.animate}
-          exit={bottomCard.card.exit}
-        >
+        <BottomCardMotion key="monitor-bar">
           <div
             className={`monitor-bar${clearing ? ' monitor-bar-clearing' : ''}`}
             role="status"
@@ -118,7 +112,7 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing }: Props
               ))}
             </ul>
           </div>
-        </motion.div>
+        </BottomCardMotion>
       )}
     </AnimatePresence>
   )

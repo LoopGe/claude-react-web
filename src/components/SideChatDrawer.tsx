@@ -22,8 +22,8 @@ import { usePastedTexts } from '../hooks/usePastedTexts'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
-import { AnimatePresence, motion } from 'motion/react'
-import { useBottomCardMotion } from '../utils/transitions'
+import { AnimatePresence } from 'motion/react'
+import { BottomCardMotion } from './BottomCardMotion'
 import { shouldMountWorkingBubble } from '../utils/task-actions'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { buildOutgoingBody } from '../utils/message-body'
@@ -118,9 +118,10 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     hasTranscriptBackground: hasBackgroundSubagent,
     hasLiveSyncSubagent: false,
   })
-  // Mount rise-in + staggered exit for the bubble, same as the main panel;
-  // AnimatePresence keeps it mounted through the exit. Snaps under reduced motion.
-  const bottomCard = useBottomCardMotion()
+  // Mount rise-in + staggered exit for the bubble, same as the main panel,
+  // via the shared BottomCardMotion wrapper (also the exit-only overflow
+  // clip); AnimatePresence keeps it mounted through the exit. Snaps under
+  // reduced motion.
 
   // Destructure the stable callbacks off `stream` so `handleSend`'s dep
   // list can name them directly. Depending on bare `stream` would rebuild
@@ -267,13 +268,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         />
         <AnimatePresence initial={false}>
           {mountBubble && (
-            <motion.div
-              key="working-bubble"
-              className="bottom-card-motion bottom-card-motion-fixed"
-              initial={bottomCard.card.initial}
-              animate={bottomCard.card.animate}
-              exit={bottomCard.card.exit}
-            >
+            <BottomCardMotion key="working-bubble" fixed>
               <WorkingBubble
                 active={session.working}
                 startedAt={session.workingSince}
@@ -282,7 +277,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
                 activePhase={stream.activePhase}
                 waiting={waiting}
               />
-            </motion.div>
+            </BottomCardMotion>
           )}
         </AnimatePresence>
       </div>

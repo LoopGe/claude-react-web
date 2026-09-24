@@ -1920,24 +1920,33 @@
 }
 /* ══ Bottom-overlay card motion ══════════════════════════════════════════
    TodoChecklist / MonitorBar / WorkingBubble share one wrapper: a `motion.div`
-   (rendered by AnimatePresence) that owns the mount rise-in AND the staggered
-   exit — opacity + `y` first, then `height: 0` a beat later, so the shrinking
-   box never squashes a still-visible card. See useBottomCardMotion. It replaces
-   the old delayed-unmount + CSS grid-collapse pair: AnimatePresence keeps the
-   node mounted and re-renders its LAST element, so the exiting card keeps its
+   (rendered by AnimatePresence via the BottomCardMotion component) that owns
+   the mount rise-in AND the staggered exit — opacity + `y` first, then
+   `height: 0` a beat later, so the shrinking box never squashes a
+   still-visible card. See useBottomCardMotion. It replaces the old
+   delayed-unmount + CSS grid-collapse pair: AnimatePresence keeps the node
+   mounted and re-renders its LAST element, so the exiting card keeps its
    content and any `-clearing` class without a manual freeze/latch.
 
    It is a flex COLUMN so the height constraint reaches the card — the
    checklist / monitor must still shrink under the stack's 45% cap and scroll
-   (a plain block wrapper would break that chain). `overflow: clip` hides the
-   content while the height animates to 0. */
+   (a plain block wrapper would break that chain).
+
+   overflow stays VISIBLE at rest and clips ONLY while exiting (`-exiting`).
+   Why the clip must be exit-only: see the rationale on BottomCardMotion.tsx
+   (the wrapper hugs its card exactly, so a rest-state clip would sever the
+   card's --drawer-shadow halo — the "shadow on the left of the working
+   bubble" regression). The CSS pairing is pinned by
+   bottom-card-clip.test.ts. */
 .bottom-card-motion {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: clip;
   /* Shrinkable role — the checklist / monitor shrink under the cap. */
   flex: 0 1 auto;
+}
+.bottom-card-motion-exiting {
+  overflow: clip;
 }
 /* The working bubble is a status card, not a scroll region: never shrink it
    under the cap (see .working-bar). */

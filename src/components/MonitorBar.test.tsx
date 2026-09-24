@@ -119,6 +119,22 @@ describe('MonitorBar — exit animation', () => {
     await waitFor(() => expect(container.querySelector('.monitor-bar')).toBeNull())
   })
 
+  it('clips overflow only while exiting — never at rest', async () => {
+    // Why the clip must be exit-only: see the rationale on BottomCardMotion.tsx.
+    // This test pins the DOM side (class toggle); the CSS side is pinned by
+    // bottom-card-clip.test.ts.
+    const msgs = [...runningMonitor('m1', 'Watch build')]
+    const { container, rerender } = render(<MonitorBar messages={msgs} />)
+    const wrapper = () => container.querySelector('.bottom-card-motion')
+    expect(wrapper()).not.toBeNull()
+    expect(wrapper()?.classList.contains('bottom-card-motion-exiting')).toBe(false)
+
+    rerender(<MonitorBar messages={[]} />)
+    expect(wrapper()?.classList.contains('bottom-card-motion-exiting')).toBe(true)
+
+    await waitFor(() => expect(wrapper()).toBeNull())
+  })
+
   it('keeps the clearing blur through the exit when a /clear ends', async () => {
     const msgs = [...runningMonitor('m1', 'Watch build')]
     const { container, rerender } = render(<MonitorBar messages={msgs} clearing />)

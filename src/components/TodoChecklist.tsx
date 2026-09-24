@@ -29,8 +29,8 @@ import type { Skin } from '../utils/theme'
 import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox, IconChevronDown, IconRotateCcw } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
-import { AnimatePresence, motion } from 'motion/react'
-import { useBottomCardMotion } from '../utils/transitions'
+import { AnimatePresence } from 'motion/react'
+import { BottomCardMotion } from './BottomCardMotion'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import {
   buildTaskStateMap,
@@ -196,12 +196,12 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   // before any non-clearing render populated the ref. If both are null the
   // panel was hidden when the clear started, so there's nothing to fade.
   const renderResult = clearing ? (frozenRef.current ?? visibleResult) : visibleResult
-  // Mount rise-in + staggered exit (fade leads, height collapse follows).
-  // AnimatePresence keeps the node mounted through the exit and re-renders its
-  // LAST element — props frozen — so the exiting card keeps its content AND its
-  // `-clearing` class (a /clear's blur survives the handoff with no manual
-  // latch). Snaps under reduced motion.
-  const bottomCard = useBottomCardMotion()
+  // Mount rise-in + staggered exit (fade leads, height collapse follows) come
+  // from the shared BottomCardMotion wrapper (also the exit-only overflow
+  // clip). AnimatePresence keeps the node mounted through the exit and
+  // re-renders its LAST element — props frozen — so the exiting card keeps its
+  // content AND its `-clearing` class (a /clear's blur survives the handoff
+  // with no manual latch). Snaps under reduced motion.
 
   // Visible list is the render result minus locally-hidden tasks. The count
   // chip reflects only what's shown; the undo row explains the difference.
@@ -277,13 +277,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   return (
     <AnimatePresence initial={false}>
       {renderResult && (
-        <motion.div
-          key="todo-panel"
-          className="bottom-card-motion"
-          initial={bottomCard.card.initial}
-          animate={bottomCard.card.animate}
-          exit={bottomCard.card.exit}
-        >
+        <BottomCardMotion key="todo-panel">
           <div
             className={`todo-panel${working ? ' todo-panel-working' : ''}${clearing ? ' todo-panel-clearing' : ''}${collapsed ? ' todo-panel-collapsed' : ''}`}
             role="status"
@@ -355,7 +349,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
               </ul>
             </AnimatedCollapse>
           </div>
-        </motion.div>
+        </BottomCardMotion>
       )}
     </AnimatePresence>
   )

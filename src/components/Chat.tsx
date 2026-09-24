@@ -87,8 +87,8 @@ import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
 import { Overlay } from './Overlay'
 import { useWsHub } from '../hooks/useWsHub'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
-import { AnimatePresence, motion } from 'motion/react'
-import { useBottomCardMotion } from '../utils/transitions'
+import { AnimatePresence } from 'motion/react'
+import { BottomCardMotion } from './BottomCardMotion'
 import type { AgentInfo, PastedImage, PermissionRequest, RewindFilesResult, SessionInfo, SlashCommand } from '../types'
 import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
@@ -1857,9 +1857,6 @@ export const Chat = memo(function Chat({
     hasTranscriptBackground: transcriptBackground,
     hasLiveSyncSubagent,
   })
-  // Mount rise-in + staggered exit (fade leads, height collapse follows) for
-  // the WorkingBubble; AnimatePresence keeps it mounted through the exit.
-  const bottomCard = useBottomCardMotion()
   const backgroundToolAction = shouldOfferBackgroundAction({
     turnActive,
     terminated: session.terminated,
@@ -2381,13 +2378,7 @@ export const Chat = memo(function Chat({
         createPortal(
           <AnimatePresence initial={false}>
             {mountWorkingBubble && (
-              <motion.div
-                key="working-bubble"
-                className="bottom-card-motion bottom-card-motion-fixed"
-                initial={bottomCard.card.initial}
-                animate={bottomCard.card.animate}
-                exit={bottomCard.card.exit}
-              >
+              <BottomCardMotion key="working-bubble" fixed>
                 <WorkingBubble
                   active={turnActive}
                   startedAt={turnStartedAt}
@@ -2402,7 +2393,7 @@ export const Chat = memo(function Chat({
                   onOpenTasks={openTasksPanel}
                   onOpenSubagent={openSubagent}
                 />
-              </motion.div>
+              </BottomCardMotion>
             )}
           </AnimatePresence>,
           workingSlot,
