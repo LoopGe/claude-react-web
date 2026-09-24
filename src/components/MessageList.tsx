@@ -117,6 +117,16 @@ interface Props {
    *  history-less session; showing a skeleton there until replay-done
    *  arrived was a visible glitch under the clearing veil). */
   replayReady?: boolean
+  /** True while the transcript is still settling for this session: the
+   *  initial replay hasn't completed, the IDB cold-load may still prepend
+   *  rows, or a tail-first backfill burst is draining. During that window the
+   *  measured visible-top index churns with every prepended chunk, so the
+   *  pinned "current question" header's parent notification is FROZEN (the
+   *  internal visible-top tracking keeps running — navigation and search are
+   *  unaffected) and exactly one notification fires when the gate lifts.
+   *  User-driven loadOlder paging is deliberately NOT covered: the pin must
+   *  follow the viewport the user is actively scrolling. */
+  transcriptSettling?: boolean
   /** Stable key for the owning transcript (session id in the main chat).
    *  When provided, a ready transcript gets one subtle reveal on mount/load. */
   transcriptRevealKey?: string
@@ -297,7 +307,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -536,9 +546,32 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // viewport would jump for one frame). The mutation is idempotent w.r.t. the
   // current render and self-corrects on the next one (see the block comment
   // above), so it's safe despite the rule. Disabled narrowly for this block.
+  //
+  // `topVisibleIdxRef` / `lastEmittedTopRef` live in the same DATA space the
+  // anchor shifts, so a FRONT insert/removal must rebase them IN THIS BLOCK —
+  // the `items-changed re-emit` effect below reads the ref after this render
+  // commits, and a prepend without a rebase would resolve the pin (and
+  // prev/next navigation) N rows too old until the next rangeChanged.
+  // Known limit: MID-LIST row-count changes above the viewport (tool-group
+  // fold/unfold, EVICT_MESSAGES) shift indices without moving the front, so
+  // they don't rebase here — same staleness as before this rebase existed;
+  // the next genuine rangeChanged re-measures and self-corrects. Declared
+  // here because the rebase runs during render, before their old declaration
+  // sites further down.
+  const topVisibleIdxRef = useRef(0)
+  const lastEmittedTopRef = useRef<number | null>(null)
   /* eslint-disable react-hooks/refs */
   const nextRowAnchor = advanceRowAnchor(rowAnchorRef.current, renderableItems)
   rowAnchorRef.current = nextRowAnchor
+  if (nextRowAnchor.frontShift != null) {
+    topVisibleIdxRef.current += nextRowAnchor.frontShift
+    if (lastEmittedTopRef.current != null) lastEmittedTopRef.current += nextRowAnchor.frontShift
+  } else {
+    // Whole-list rebuild (replay replace / clear swap / emptied): the index
+    // space is invalid. Reset and wait for the next real measurement.
+    topVisibleIdxRef.current = 0
+    lastEmittedTopRef.current = null
+  }
   /* eslint-enable react-hooks/refs */
   const firstItemIndex = nextRowAnchor.index
 
@@ -739,8 +772,8 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // Top-most visible data index, tracked from Virtuoso's `rangeChanged`.
   // rangeChanged reports indices in OFFSET space (dataIndex + firstItemIndex),
   // so we subtract firstItemIndex to get back to the `scrollToIndex` space.
-  // Kept in a ref (read by the navigate callback, never rendered).
-  const topVisibleIdxRef = useRef(0)
+  // Kept in a ref (read by the navigate callback, never rendered). Declared
+  // next to the anchor block above, which rebases it on front shifts.
   const firstItemIndexValRef = useRef(firstItemIndex)
   useEffect(() => {
     firstItemIndexValRef.current = firstItemIndex
@@ -758,8 +791,26 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     renderableItemsRef.current = renderableItems
   }, [renderableItems])
   const lastPinnedIdRef = useRef<string | null>(null)
+  // Frozen-notification gate: while the transcript is settling (initial
+  // replay / tail-first backfill burst / IDB cold-load), every prepended
+  // chunk churns the measured visible top, so the pin would flip with each
+  // one. emitPinned keeps its internal bookkeeping off during the gate — it
+  // early-returns BEFORE touching lastPinnedIdRef, so the ref keeps holding
+  // the last value the PARENT actually saw and the settle-lift emit can
+  // reconcile against it. Internal tracking is NOT frozen: topVisibleIdxRef
+  // stays fresh for prev/next navigation and onVisibleRangeChange stays live
+  // for search. The gate mirrors the prop into the ref DURING RENDER (the
+  // React-documented adjust-state-on-prop-change pattern; render precedes
+  // children's commit callbacks, so a Virtuoso rangeChanged firing for the
+  // very commit that engages the freeze already sees it) — a passive-effect
+  // sync would let one commit's worth of churned emissions leak through.
+  const settlingRef = useRef(transcriptSettling)
+  /* eslint-disable react-hooks/refs */
+  if (settlingRef.current !== transcriptSettling) settlingRef.current = transcriptSettling
+  /* eslint-enable react-hooks/refs */
   const emitPinned = useCallback(
     (topIdx: number) => {
+      if (settlingRef.current) return
       const indices = userMsgIndicesRef.current
       let pinnedIdx = -1
       for (let i = indices.length - 1; i >= 0; i--) {
@@ -778,11 +829,25 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     },
     [onPinnedUserMessageChange],
   )
+  // Settle-lift: when the gate opens, emit once with the (rebased) visible
+  // top so the header appears with the settled value instead of replaying
+  // every intermediate flip. Dedup makes this a no-op when the parent already
+  // holds the same pin. Invariant this relies on: lastPinnedIdRef and the
+  // parent's state move together everywhere except the transcriptRevealKey
+  // reset below — which only re-runs within one mount for overlay retargets
+  // (no pin consumer); the main panel remounts <Chat key={session.id}> per
+  // session, so a "stale parent pin behind a nulled ref" strand cannot be
+  // reached and the lift doesn't need to bypass the dedup.
+  useEffect(() => {
+    if (transcriptSettling) return
+    emitPinned(topVisibleIdxRef.current)
+  }, [transcriptSettling, emitPinned])
   // Publish "what is the user looking at" to the three consumers that care:
   // the pinned question header, search's nearest-match, and prev/next
   // user-message navigation. Input is Virtuoso's OFFSET space; the conversion
-  // to data space lives here so it happens exactly once.
-  const lastEmittedTopRef = useRef<number | null>(null)
+  // to data space lives here so it happens exactly once. (lastEmittedTopRef /
+  // topVisibleIdxRef are declared at the anchor block above, which rebases
+  // them on front shifts.)
   const emitVisibleTop = useCallback(
     (offsetIndex: number) => {
       const idx = offsetIndex - firstItemIndexValRef.current

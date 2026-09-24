@@ -255,12 +255,14 @@ describe('advanceRowAnchor', () => {
     const next = advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b']))
     expect(next.index).toBe(INITIAL_FIRST_ITEM_INDEX)
     expect(next.rowIds).toEqual(['a', 'b'])
+    expect(next.frontShift).toBe(0)
   })
 
   it('leaves the offset alone on a tail append', () => {
     const first = advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b']))
     const next = advanceRowAnchor(first, rowsFor(['a', 'b', 'c']))
     expect(next.index).toBe(first.index)
+    expect(next.frontShift).toBe(0)
   })
 
   it('leaves the offset alone on a MID-LIST removal', () => {
@@ -270,12 +272,16 @@ describe('advanceRowAnchor', () => {
     const next = advanceRowAnchor(first, rowsFor(['a', 'c']))
     expect(next.index).toBe(first.index)
     expect(next.rowIds).toEqual(['a', 'c'])
+    expect(next.frontShift).toBe(0)
   })
 
   it('DECREASES the offset by the number of rows prepended (loadOlder)', () => {
     const first = advanceRowAnchor(initialRowAnchor(), rowsFor(['c', 'd']))
     const next = advanceRowAnchor(first, rowsFor(['a', 'b', 'c', 'd']))
     expect(next.index).toBe(first.index - 2)
+    // Data-space mirror of the same fact: two rows inserted ahead shift every
+    // surviving row's data index by +2 (consumed by the pinned-header rebase).
+    expect(next.frontShift).toBe(2)
   })
 
   it('INCREASES the offset by the number of rows dropped off the front', () => {
@@ -287,24 +293,31 @@ describe('advanceRowAnchor', () => {
     const next = advanceRowAnchor(first, rowsFor(['a', 'b']))
     expect(next.index).toBe(first.index + 1)
     expect(next.rowIds).toEqual(['a', 'b'])
+    expect(next.frontShift).toBe(-1)
   })
 
   it('re-anchors on an unrelated rebuild (replay replace / fork / clear swap)', () => {
     const first = advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b']))
     const shifted = advanceRowAnchor(first, rowsFor(['x', 'a', 'b']))
     expect(shifted.index).toBeLessThan(INITIAL_FIRST_ITEM_INDEX)
+    expect(shifted.frontShift).toBe(1)
     const rebuilt = advanceRowAnchor(shifted, rowsFor(['q', 'r']))
     expect(rebuilt.index).toBe(INITIAL_FIRST_ITEM_INDEX)
+    // Index space invalidated — the caller must reset derived indices, not
+    // shift them.
+    expect(rebuilt.frontShift).toBeNull()
   })
 
   it('re-anchors when the list empties, and is a no-op while it stays empty', () => {
     const first = advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b', 'c']))
     const prepended = advanceRowAnchor(first, rowsFor(['z', 'a', 'b', 'c']))
     expect(prepended.index).toBe(first.index - 1)
+    expect(prepended.frontShift).toBe(1)
 
     const cleared = advanceRowAnchor(prepended, [])
     expect(cleared.index).toBe(INITIAL_FIRST_ITEM_INDEX)
     expect(cleared.rowIds).toEqual([])
+    expect(cleared.frontShift).toBeNull()
     // Reference-stable while nothing changes, so render-time folding can't
     // churn.
     expect(advanceRowAnchor(cleared, [])).toBe(cleared)

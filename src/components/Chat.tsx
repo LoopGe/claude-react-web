@@ -2166,6 +2166,7 @@ export const Chat = memo(function Chat({
           onVisibleRangeChange={handleVisibleRangeChange}
           onPinnedUserMessageChange={handlePinnedUserMessageChange}
           onUserMessagesChange={handleUserMessagesChange}
+          transcriptSettling={stream.transcriptSettling}
           cwd={session.cwd}
           onBackgroundTool={backgroundToolAction}
           toolGroupCards={effectiveToolGroupCards}

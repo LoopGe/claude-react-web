@@ -478,11 +478,28 @@ export interface RowAnchor {
   index: number
   /** Row ids from the build this anchor was computed for, in order. */
   rowIds: readonly string[]
+  /** Data-space shift of THIS build relative to the previous one: +N when N
+   *  rows were inserted ahead of the previous first row, -N when N rows were
+   *  dropped off the front, 0 when the front is unchanged. null when the list
+   *  was rebuilt (replay replace / clear swap / emptied) and the whole index
+   *  space is invalid — callers holding data-space indices into the previous
+   *  build (the pinned header's visible-top ref) must reset, not shift. */
+  frontShift: number | null
 }
 
 export const initialRowAnchor = (): RowAnchor => ({
   index: INITIAL_FIRST_ITEM_INDEX,
   rowIds: [],
+  frontShift: 0,
+})
+
+/** A re-anchor: the previous index space is invalid (replay replace, clear
+ *  swap, emptied list). frontShift null tells index holders to RESET, not
+ *  shift. `rowIds` empty = fully empty list; otherwise the rebuild's ids. */
+const reanchoredAnchor = (rowIds: readonly string[]): RowAnchor => ({
+  index: INITIAL_FIRST_ITEM_INDEX,
+  rowIds,
+  frontShift: null,
 })
 
 /**
@@ -501,25 +518,25 @@ export function advanceRowAnchor(prev: RowAnchor, rows: readonly TranscriptRow[]
   if (rows.length === 0) {
     // Empty list (session switch / cleared / replay rebuild) — re-anchor.
     if (prev.rowIds.length === 0 && prev.index === INITIAL_FIRST_ITEM_INDEX) return prev
-    return initialRowAnchor()
+    return reanchoredAnchor([])
   }
 
   const rowIds = rows.map((r) => r.id)
 
   // First build for this list — adopt the ids, leave the offset alone.
-  if (prev.rowIds.length === 0) return { index: prev.index, rowIds }
+  if (prev.rowIds.length === 0) return { index: prev.index, rowIds, frontShift: 0 }
 
   const prevFirst = prev.rowIds[0]
   if (rowIds[0] === prevFirst) {
     // Front unchanged. This is the hot path (ordinary appends, streaming
     // flushes, mid-list removals) — no offset adjustment.
-    return { index: prev.index, rowIds }
+    return { index: prev.index, rowIds, frontShift: 0 }
   }
 
   const movedTo = rows.findIndex((r) => r.id === prevFirst)
   if (movedTo > 0) {
     // `movedTo` rows were inserted ahead of the previous first row.
-    return { index: prev.index - movedTo, rowIds }
+    return { index: prev.index - movedTo, rowIds, frontShift: movedTo }
   }
 
   // The previous first row is gone. If the new first row used to sit at some
@@ -528,10 +545,10 @@ export function advanceRowAnchor(prev: RowAnchor, rows: readonly TranscriptRow[]
   // the top" case.
   const removed = prev.rowIds.indexOf(rowIds[0])
   if (removed > 0) {
-    return { index: prev.index + removed, rowIds }
+    return { index: prev.index + removed, rowIds, frontShift: -removed }
   }
 
   // Neither a front insert nor a front removal — an unrelated rebuild (replay
   // replace, fork, /clear swap). Re-anchor; Virtuoso resets its size tree.
-  return { index: INITIAL_FIRST_ITEM_INDEX, rowIds }
+  return reanchoredAnchor(rowIds)
 }

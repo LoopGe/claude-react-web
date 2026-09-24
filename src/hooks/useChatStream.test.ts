@@ -1550,3 +1550,77 @@ describe('useChatStream', () => {
     expect(result.current.error).toBeNull()
   })
 })
+
+// ── transcriptSettling (pinned-header freeze signal) ─────────────────
+
+describe('transcriptSettling', () => {
+  // The signal freezes MessageList's pinned "current question" notification
+  // while the transcript is still settling. Its lifecycle is listener-owned:
+  // OPEN on the tail frame (the backfill chunks then prepend until
+  // replay-done), CLOSE on every path that ends the buffer — replay-done,
+  // error, session-cleared — so a burst terminated without its replay-done
+  // can't stick the freeze on forever. A connection drop mid-burst keeping
+  // it open is correct (nothing changes while disconnected) and self-heals
+  // on the reconnect's own burst cycle.
+  const sid = 'settling-sid'
+  const userMsg = { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } }
+
+  // Outside the sibling describe's beforeEach scope — initialize the shared
+  // mock-hub state here too.
+  beforeEach(() => {
+    currentSessionListeners = new Map()
+    currentGlobalListeners = new Set()
+    burstOpenSessions = new Set()
+    mockSubscribe.mockClear()
+    mockSetLastMessageUuid.mockClear()
+    mockIsReplayBurstOpen.mockClear()
+    cacheClear()
+    vi.clearAllMocks()
+  })
+
+  const waitListening = () =>
+    waitFor(() => expect(currentSessionListeners.has(sid)).toBe(true))
+  const openDrain = () =>
+    act(() => {
+      dispatchToSession(sid, { kind: 'replay', sessionId: sid, tail: true, messages: [userMsg] })
+    })
+
+  it('opens on the tail frame and closes on replay-done', async () => {
+    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
+    await waitListening()
+    openDrain()
+    expect(result.current.transcriptSettling).toBe(true)
+    act(() => {
+      dispatchToSession(sid, { kind: 'replay-done', sessionId: sid })
+    })
+    await waitFor(() => expect(result.current.transcriptSettling).toBe(false))
+  })
+
+  it('closes on an error frame mid-drain (no trailing replay-done needed)', async () => {
+    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
+    await waitListening()
+    openDrain()
+    expect(result.current.transcriptSettling).toBe(true)
+    act(() => {
+      dispatchToSession(sid, { kind: 'error', sessionId: sid, message: 'boom' })
+    })
+    await waitFor(() => expect(result.current.transcriptSettling).toBe(false))
+  })
+
+  it('closes on session-cleared mid-drain', async () => {
+    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
+    await waitListening()
+    openDrain()
+    expect(result.current.transcriptSettling).toBe(true)
+    act(() => {
+      dispatchToSession(sid, { kind: 'session-cleared', sessionId: sid })
+    })
+    await waitFor(() => expect(result.current.transcriptSettling).toBe(false))
+  })
+
+  it('is true before the replay lands even without a burst (replayReady gate)', async () => {
+    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
+    await waitListening()
+    expect(result.current.transcriptSettling).toBe(true)
+  })
+})

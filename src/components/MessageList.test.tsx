@@ -223,6 +223,53 @@ function toItems(msgs: SdkMessage[]): TranscriptItem[] {
     }))
 }
 
+// Shared fixtures for the pinned-header tests. Rows must be keyed by the
+// message UUID (like the real store), NOT by array position: positional ids
+// would shift WITH a prepend and the pin's id-based dedup couldn't tell the
+// old target from the new one.
+function toStableItems(msgs: SdkMessage[]): TranscriptItem[] {
+  return msgs.map((msg) => ({
+    id: String(msg.uuid),
+    msg,
+    plainText: null,
+    isCompactSummary: false,
+    hiddenByDefault: shouldHideByDefault(msg),
+  }))
+}
+
+// Two questions, two answers, a tail: with the pinned-test geometry (rows
+// 0-2 above the viewport, row 3 first visible) the pin is 'q-1' — the second
+// question. `older` is the backfill chunk that prepends ahead of them.
+const PINNED_MSGS = [
+  makeMsg('user', { uuid: 'q-0', message: { content: [{ type: 'text', text: 'first question' }] } }),
+  makeMsg('assistant', { uuid: 'a-0', message: { content: [{ type: 'text', text: 'first answer' }] } }),
+  makeMsg('user', { uuid: 'q-1', message: { content: [{ type: 'text', text: 'second question' }] } }),
+  makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'second answer' }] } }),
+  makeMsg('assistant', { uuid: 'a-2', message: { content: [{ type: 'text', text: 'tail' }] } }),
+] as SdkMessage[]
+const PINNED_OLDER = [
+  makeMsg('user', { uuid: 'old-q', message: { content: [{ type: 'text', text: 'old question' }] } }),
+  makeMsg('assistant', { uuid: 'old-a', message: { content: [{ type: 'text', text: 'old answer' }] } }),
+] as SdkMessage[]
+
+// Same geometry as the 'reports the GEOMETRIC visible top' test: scroller
+// viewport at y=1000, rows 100px tall starting at y=700, so rows 0-2 sit
+// entirely above the fold and row 3 is the first visible one.
+function stubPinnedGeometry(container: HTMLElement): void {
+  const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+  Object.defineProperty(scroller, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({ top: 1000, bottom: 1600, left: 0, right: 800, height: 600, width: 800 }),
+  })
+  Array.from(container.querySelectorAll<HTMLElement>('[data-item-index]')).forEach((row, i) => {
+    const top = 700 + i * 100
+    Object.defineProperty(row, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top, bottom: top + 100, left: 0, right: 800, height: 100, width: 800 }),
+    })
+  })
+}
+
 // Simulate a genuine user scroll-up away from the bottom — the ONLY legitimate
 // trigger for a follow drop under the follow-gate (a transient not-at-bottom
 // geometry read while following is treated as a pin-lag and corrected). We
@@ -836,6 +883,111 @@ describe('MessageList', () => {
     // …so the pinned question is the SECOND one (index 2 < 3), not the first.
     expect(onPinned).toHaveBeenCalledWith(
       expect.objectContaining({ text: 'second question' }),
+    )
+  })
+
+  it('keeps the pinned question stable across a front prepend (index rebase)', () => {
+    // Regression guard for the session-switch flicker: a tail-first backfill
+    // PREPENDS older history in several chunks. The `items-changed re-emit`
+    // effect recomputes the pin from `topVisibleIdxRef` — a DATA-space index
+    // that the prepend shifts — so without a rebase it pinned an OLDER
+    // question on every chunk until the next rangeChanged corrected it. The
+    // anchor's frontShift must shift the stored index in the same render.
+    const onPinned = vi.fn()
+    const { container, rerender } = render(
+      <MessageList
+        items={toStableItems(PINNED_MSGS)}
+        onPinnedUserMessageChange={onPinned}
+      />,
+    )
+
+    stubPinnedGeometry(container)
+
+    act(() => {
+      virtuosoMockState.rangeChanged?.({ startIndex: 0, endIndex: 4 })
+    })
+    expect(onPinned).toHaveBeenCalledTimes(1)
+    expect(onPinned).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'q-1', text: 'second question' }),
+    )
+
+    // Two older rows land at the front (a backfill chunk) with NO new
+    // rangeChanged. The rebase must shift the stored visible-top by +2 so the
+    // re-emit resolves to the SAME question — no emission at all.
+    rerender(
+      <MessageList
+        items={toStableItems([...PINNED_OLDER, ...PINNED_MSGS])}
+        onPinnedUserMessageChange={onPinned}
+      />,
+    )
+    // Without the rebase this fires with the stale index and pins 'first
+    // question' (the prepended rows push everything down).
+    expect(onPinned).toHaveBeenCalledTimes(1)
+
+    // A genuine rangeChanged after the prepend measures the same visual row
+    // (its offset stamp moved with firstItemIndex) → same data-space top →
+    // still no duplicate emission.
+    act(() => {
+      virtuosoMockState.rangeChanged?.({ startIndex: 0, endIndex: 6 })
+    })
+    expect(onPinned).toHaveBeenCalledTimes(1)
+    expect(onPinned).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'q-1', text: 'second question' }),
+    )
+  })
+
+  it('freezes pinned notifications while transcriptSettling and emits once on settle', () => {
+    // Second half of the session-switch flicker: while a tail-first burst is
+    // draining, the MEASURED visible top itself oscillates (Virtuoso scroll
+    // anchoring + height re-measurement on every prepended chunk), so even a
+    // correctly-rebased pin flips with each chunk. While the transcript is
+    // settling, the parent notification must be frozen — internal tracking
+    // keeps running — and exactly one notification fires when the gate lifts.
+    const onPinned = vi.fn()
+    const { container, rerender } = render(
+      <MessageList
+        items={toStableItems(PINNED_MSGS)}
+        transcriptSettling
+        onPinnedUserMessageChange={onPinned}
+      />,
+    )
+
+    stubPinnedGeometry(container)
+
+    // Viewport moves across user-message boundaries while settling — frozen.
+    act(() => {
+      virtuosoMockState.rangeChanged?.({ startIndex: 0, endIndex: 4 })
+    })
+    expect(onPinned).not.toHaveBeenCalled()
+
+    // A backfill chunk prepends mid-burst; the measured top churns — frozen.
+    // (No re-stub: the existing rows keep their rects, the prepended rows
+    // have none and measure at 0, so the geometric top stays on the same
+    // visual row — matching what real Virtuoso's scroll anchoring does.)
+    rerender(
+      <MessageList
+        items={toStableItems([...PINNED_OLDER, ...PINNED_MSGS])}
+        transcriptSettling
+        onPinnedUserMessageChange={onPinned}
+      />,
+    )
+    act(() => {
+      virtuosoMockState.rangeChanged?.({ startIndex: 0, endIndex: 6 })
+    })
+    expect(onPinned).not.toHaveBeenCalled()
+
+    // The burst closes (settling lifts): exactly ONE notification with the
+    // settled pin — the second question above the current viewport top.
+    rerender(
+      <MessageList
+        items={toStableItems([...PINNED_OLDER, ...PINNED_MSGS])}
+        transcriptSettling={false}
+        onPinnedUserMessageChange={onPinned}
+      />,
+    )
+    expect(onPinned).toHaveBeenCalledTimes(1)
+    expect(onPinned).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'q-1', text: 'second question' }),
     )
   })
 

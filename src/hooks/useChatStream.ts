@@ -118,6 +118,13 @@ export interface ChatStream {
    *  forked skill into the record SubagentOverlay renders. */
   skillIndex: ReadonlyMap<string, import('../session-store/types').SkillRecord>
   replayReady: boolean
+  /** True while the transcript is still settling for this session: the
+   *  initial replay hasn't completed, the IDB cold-load may still prepend
+   *  rows, or a tail-first backfill burst is draining. MessageList freezes
+   *  the pinned "current question" header's notification while this is set
+   *  (the measured visible-top churns with every prepended chunk) and emits
+   *  exactly once when it lifts. */
+  transcriptSettling: boolean
   /** Optimistically insert the user's message into the transcript so it
    *  appears immediately, before the server echoes it back. Returns the
    *  pendingId so the caller can roll it back if the POST fails. The
@@ -198,6 +205,27 @@ export function useChatStream(
 ): ChatStream {
   const hub = useWsHub()
   const hubStatus = useWsHubStatus()
+  // True while THIS listener's tail-first burst is mid-drain (between the
+  // `tail` frame and its `replay-done`). Deliberately listener-owned, NOT a
+  // mirror of the hub's burst latch: the latch exists for cursor-anchor
+  // semantics and terminates on five paths (error / session-cleared /
+  // refused subscribe / idle session-update / connection close) that don't
+  // all reach this listener — mirroring it would stick the pin freeze on
+  // exactly those paths. The drain flag tracks the one thing the freeze
+  // needs — "backfill chunks are still prepending" — and every path that
+  // ends the buffer resets it below (replay-done, session-cleared, error).
+  // A connection drop mid-burst keeps it true, which is correct: nothing is
+  // changing while disconnected, and the reconnect's own tail→replay-done
+  // cycle re-closes it. Re-read when the session id changes (the side-chat
+  // hook instance survives a target switch) — render-phase adjustment, the
+  // React-documented pattern, so the flag is correct before anything
+  // renders with it.
+  const [burstDraining, setBurstDraining] = useState(false)
+  const [burstDrainingFor, setBurstDrainingFor] = useState(sessionId)
+  if (burstDrainingFor !== sessionId) {
+    setBurstDrainingFor(sessionId)
+    setBurstDraining(false)
+  }
   const store = useMemo(() => getSessionStore(sessionId), [sessionId])
   // Individual field subscriptions — only re-render when the specific
   // field's reference changes (Object.is check). During streaming content
@@ -382,32 +410,43 @@ export function useChatStream(
             // fresh-state path; the merge path would still be correct if a
             // cache somehow existed.
             tailMode = true
+            // Open the transcriptSettling drain window: backfill chunks will
+            // prepend until replay-done closes it.
+            setBurstDraining(true)
             replaying = false
             replayMessages = []
             replayPermissions = []
-            if (frame.permissions?.length) {
-              for (const req of frame.permissions) permsRef.current.onRequest(req)
+            // Same /clear race guard as the backfill branch above: a tail
+            // frame that was in flight when an SDK in-band /clear landed
+            // carries PRE-clear messages — applying it would resurrect the
+            // cleared transcript (usually healed by the trailing
+            // replay-done's empty REPLAY_REPLACE, but a connection drop
+            // before that replay-done would leave the resurrection up).
+            if (!clearedRef.current) {
+              if (frame.permissions?.length) {
+                for (const req of frame.permissions) permsRef.current.onRequest(req)
+              }
+              if (frame.elicitations?.length) {
+                for (const req of frame.elicitations) permsRef.current.onElicitationRequest?.(req)
+              }
+              if (frame.dialogs?.length) {
+                for (const req of frame.dialogs) permsRef.current.onDialogRequest?.(req)
+              }
+              store.dispatch({
+                type: 'REPLAY_REPLACE',
+                messages: frame.messages as SdkMessage[],
+                // Tolerant of a frame that omits the field (older server
+                // builds / hand-rolled frames) — same leniency as the
+                // buffered path's optional-chain reads.
+                permissions: (frame.permissions ?? []) as PermissionRequest[],
+              })
+              // The newest chunk went in first, so any tool_result whose
+              // tool_use is still in an unsent backfill chunk was skipped.
+              // Mark it in the STORE (not in this closure): the burst can be
+              // interrupted and finished later by an ordinary replay, and the
+              // marker has to outlive both this closure and this effect.
+              store.dispatch({ type: 'MARK_TAIL_FIRST_APPLIED' })
             }
-            if (frame.elicitations?.length) {
-              for (const req of frame.elicitations) permsRef.current.onElicitationRequest?.(req)
-            }
-            if (frame.dialogs?.length) {
-              for (const req of frame.dialogs) permsRef.current.onDialogRequest?.(req)
-            }
-            store.dispatch({
-              type: 'REPLAY_REPLACE',
-              messages: frame.messages as SdkMessage[],
-              // Tolerant of a frame that omits the field (older server
-              // builds / hand-rolled frames) — same leniency as the
-              // buffered path's optional-chain reads.
-              permissions: (frame.permissions ?? []) as PermissionRequest[],
-            })
-            // The newest chunk went in first, so any tool_result whose
-            // tool_use is still in an unsent backfill chunk was skipped.
-            // Mark it in the STORE (not in this closure): the burst can be
-            // interrupted and finished later by an ordinary replay, and the
-            // marker has to outlive both this closure and this effect.
-            store.dispatch({ type: 'MARK_TAIL_FIRST_APPLIED' })
             // NOTE: no hub.setLastMessageUuid here. The burst is
             // incomplete until replay-done; advancing the reconnect
             // anchor now would make a mid-backfill disconnect resume
@@ -446,6 +485,10 @@ export function useChatStream(
           break
         }
         case 'replay-done': {
+          // Burst terminator: close the transcriptSettling drain window
+          // regardless of which replay mode served the burst (a no-op after
+          // an ordinary buffered replay, which never opened it).
+          setBurstDraining(false)
           // Key diagnostic: on the success path the server ALWAYS sends ≥1
           // replay frame before replay-done (even an empty one — ws.ts
           // enqueues `replay` with messages:[] before `replay-done`). The
@@ -644,6 +687,11 @@ export function useChatStream(
           // visible. Clear all replay buffers so a stale replay-done that
           // arrives later can't overwrite the error with error:null.
           errored = true
+          // An error frame ends any in-flight burst for this listener (the
+          // hub drops its latch here too) — release the pin freeze, or a
+          // mid-backfill error with no trailing replay-done would stick
+          // transcriptSettling on forever.
+          setBurstDraining(false)
           if (!store.getSnapshot().replayReady) {
             replayMessages = []
             replayPermissions = []
@@ -688,6 +736,9 @@ export function useChatStream(
           replayPermissions = []
           replaying = false
           tailMode = false
+          // The burst is dead along with its buffer — release the pin freeze
+          // so the post-clear (empty) transcript re-evaluates the header.
+          setBurstDraining(false)
           // Reset in-memory state AND erase the cache with no pending write
           // left behind (clearPersisted cancels the debounced save that a
           // plain reset() would schedule — otherwise that timer rewrites the
@@ -892,6 +943,12 @@ export function useChatStream(
     }
   }, [store, fetchServerPage, hub, sessionId])
 
+  // True while the transcript is still settling: the replay hasn't completed,
+  // the IDB cold-load may still prepend rows, or this listener's tail-first
+  // burst is mid-drain (burstDraining). MessageList freezes the pinned-header
+  // notification during this window — see its `transcriptSettling` prop.
+  const transcriptSettling = !replayReady || !idbReady || burstDraining
+
   return useMemo(
     () => ({
       items,
@@ -916,6 +973,7 @@ export function useChatStream(
       workflowIndex,
       skillIndex,
       replayReady,
+      transcriptSettling,
       insertUserMessage,
       ackUserMessage,
       rollbackUserMessage,
@@ -926,6 +984,6 @@ export function useChatStream(
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
   )
 }
