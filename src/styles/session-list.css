@@ -159,32 +159,13 @@
   width: 80px;
 }
 
-/* Group pill drag & drop — horizontal insertion line (left/right). */
+/* Group pill drag — the source dims; displacement of the live-reordered
+   siblings is the drop signal (dnd-kit). */
 .group-pill.dragging {
   opacity: 0.3;
   cursor: grabbing;
 }
 .group-pill.dragging:hover { background: var(--bg-elev-2); }
-.group-pill.drop-before,
-.group-pill.drop-after { position: relative; }
-.group-pill.drop-before::before,
-.group-pill.drop-after::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  bottom: 2px;
-  width: 2px;
-  border-radius: var(--radius-2xs);
-  background: var(--accent);
-  box-shadow: var(--accent-glow);
-  transform: scaleY(0);
-  animation: drop-line-in-y var(--motion-duration-fast) var(--motion-ease-standard) forwards;
-}
-.group-pill.drop-before::before { left: -1px; transform-origin: center top; }
-.group-pill.drop-after::after { right: -1px; transform-origin: center bottom; }
-@keyframes drop-line-in-y {
-  to { transform: scaleY(1); }
-}
 
 /* ── Session section (grouped sidebar view) ── */
 .session-section {
@@ -277,29 +258,13 @@
     inset 0 -1px 0 0 var(--border);
 }
 
-/* Group header drag & drop — vertical insertion line (before/after). */
+/* Group header drag — the source dims; displacement of the live-reordered
+   sections is the drop signal (dnd-kit). */
 .session-group-header.dragging {
   opacity: 0.3;
   cursor: grabbing;
 }
 .session-group-header.dragging:hover { background: transparent; }
-.session-group-header.drop-before,
-.session-group-header.drop-after { position: relative; }
-.session-group-header.drop-before::before,
-.session-group-header.drop-after::after {
-  content: '';
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  height: 2px;
-  border-radius: var(--radius-2xs);
-  background: var(--accent);
-  box-shadow: var(--accent-glow);
-  transform: scaleX(0);
-  animation: drop-line-in var(--motion-duration-fast) var(--motion-ease-standard) forwards;
-}
-.session-group-header.drop-before::before { top: -1px; transform-origin: left center; }
-.session-group-header.drop-after::after { bottom: -1px; transform-origin: right center; }
 
 .group-collapse-arrow {
   background: none;
@@ -502,14 +467,8 @@
   .session-item.dragging,
   .session-item-shell { transition: none; }
   .session-item-shell.deleting { transform: none; }
-  .session-item.drop-before::before,
-  .session-item.drop-after::after { animation: none; transform: scaleX(1); }
   .session-group-header.dragging,
   .group-pill.dragging { transition: none; }
-  .session-group-header.drop-before::before,
-  .session-group-header.drop-after::after { animation: none; transform: scaleX(1); }
-  .group-pill.drop-before::before,
-  .group-pill.drop-after::after { animation: none; transform: scaleY(1); }
 }
 
 /* Idle tint for cards that have a per-session accent chosen. The left
@@ -1050,34 +1009,6 @@
    opacity and shouldn't flash a background on cursor jitter. */
 .session-item.dragging:hover { background: transparent; }
 
-/* Drop insertion indicator — animated accent line that slides into view
-   instead of snapping. Uses a ::before pseudo so the indicator is painted
-   independently of the card's own box-shadow layers (focused/open/tinted). */
-.session-item.drop-before,
-.session-item.drop-after { position: relative; }
-.session-item.drop-before::before,
-.session-item.drop-after::after {
-  content: '';
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  height: 2px;
-  border-radius: var(--radius-2xs);
-  background: var(--accent);
-  box-shadow: var(--accent-glow);
-  transform: scaleX(0);
-  animation: drop-line-in var(--motion-duration-fast) var(--motion-ease-standard) forwards;
-}
-.session-item.drop-before::before { top: -1px; transform-origin: left center; }
-.session-item.drop-after::after { bottom: -1px; transform-origin: right center; }
-
-@keyframes drop-line-in {
-  to { transform: scaleX(1); }
-}
-
-/* During drag-over, the focused/open card keeps its own shadows — the
-   ::before/::after insertion line is the only extra signal, so no
-   separate drop overrides. */
 .session-item.open {
   background: var(--bg-elev-2);
   --row-hairline:

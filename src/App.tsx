@@ -7,10 +7,16 @@ import { flushSync } from 'react-dom'
 import { SessionList } from './components/SessionList'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
+import { SessionCard } from './components/session-list/SessionCard'
 import { api } from './hooks/useApi'
 import { sessionTitleOrFallback } from './utils/session-title'
 import { prefersReducedMotion } from './utils/reduced-motion'
-import { isInAppDrag, readDragPayload } from './hooks/useDragPayload'
+import { DndContext, pointerWithin, rectIntersection, useDroppable, type Collision, type CollisionDetection, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent, type UniqueIdentifier } from '@dnd-kit/core'
+import { useAppDndSensors } from './dnd/sensors'
+import type { DragPayload } from './dnd/payload'
+import { dndData, dndExtraOf, dndPayloadOf } from './dnd/payload'
+import { DragGhost } from './dnd/DragGhost'
+import { DragOverlayPortal } from './dnd/DragOverlayPortal'
 import { useIsMobile } from './hooks/useIsMobile'
 import { useSwipeToClose } from './hooks/useSwipeToClose'
 import { useVisualViewportHeight } from './hooks/useVisualViewportHeight'
@@ -146,6 +152,37 @@ function sessionMetaEqual(a: SessionInfo, b: SessionInfo): boolean {
     if (a[k as keyof SessionInfo] !== b[k as keyof SessionInfo]) return false
   }
   return true
+}
+
+/** Shared no-op for the drag ghost's inert SessionCard — the handlers are
+ *  required props, but the ghost never receives pointer events. Module-level
+ *  so the card's React.memo keeps holding across ghost re-renders. */
+function dndNoop(): void {}
+
+/** The main panel grid as a dnd-kit drop zone (dropping a sidebar card on
+ *  empty grid space opens the session). Must render INSIDE the App-level
+ *  <DndContext> — useDroppable called outside a DndContext is a no-op
+ *  dispatch and never registers the droppable. Merges App's bodyRef (panel
+ *  column resize / scroll snapshotting read the element directly). */
+function MainGridDropZone({ bodyRef, className, style, panelCount, children }: {
+  bodyRef: React.MutableRefObject<HTMLDivElement | null>
+  className: string
+  style?: React.CSSProperties
+  panelCount: number
+  children: React.ReactNode
+}) {
+  const { setNodeRef } = useDroppable({ id: 'main-grid', data: dndData({ kind: 'main-grid' }) })
+  // Stable merged ref — an inline arrow would detach/re-register the
+  // droppable on every App render (and App re-renders on every WS frame).
+  const mergedRef = useCallback((el: HTMLDivElement | null) => {
+    bodyRef.current = el
+    setNodeRef(el)
+  }, [setNodeRef, bodyRef])
+  return (
+    <div ref={mergedRef} className={className} data-panel-count={panelCount} style={style}>
+      {children}
+    </div>
+  )
 }
 
 export function App() {
@@ -1601,6 +1638,17 @@ export function App() {
    *  full target. Treat that as a no-op + warning rather than silently
    *  evicting somebody — silent eviction lost work in the previous
    *  implementation when a stale view triggered the path. */
+  /** Shared maxGroupSize rule — the only copy of the capacity check and its
+   *  message (handleAddToGroup and the dnd-kit cross-container card→card
+   *  drop both enforce it). */
+  const groupCapacityError = useCallback(
+    (group: SessionGroup, sessionId: string): string | null =>
+      !group.sessionIds.includes(sessionId) && group.sessionIds.length >= maxGroupSize
+        ? `Group "${group.name}" is full (${maxGroupSize} sessions). Remove one first.`
+        : null,
+    [maxGroupSize],
+  )
+
   const handleAddToGroup = useCallback(
     (sessionId: string, groupId: string) => {
       // Compute the next groups synchronously from the ref so the openIds
@@ -1619,10 +1667,9 @@ export function App() {
         const target = prevGroups.find((g) => g.id === groupId)
         if (!target) return
         if (target.sessionIds.includes(sessionId)) return
-        if (target.sessionIds.length >= maxGroupSize) {
-          toast.error(
-            `Group "${target.name}" is full (${maxGroupSize} sessions). Remove one first.`,
-          )
+        const capError = groupCapacityError(target, sessionId)
+        if (capError) {
+          toast.error(capError)
           return
         }
         nextGroups = prevGroups.map((g) => {
@@ -1679,7 +1726,7 @@ export function App() {
       if (survivors.length > 0) animatePanelsRef.current?.(...survivors)
       setOpenIds(final)
     },
-    [setGroups, maxGroupSize, toast, setOpenIds, activateGroupViewIfOpenUngrouped],
+    [setGroups, toast, setOpenIds, activateGroupViewIfOpenUngrouped, groupCapacityError],
   )
 
   /** The group whose sessions are currently open in the main grid.
@@ -3193,7 +3240,7 @@ export function App() {
    *  slide to their new slots — every path (pill/header drop, context menu,
    *  keyboard) funnels through here, so wrapping once covers all of them. */
   const handleReorderGroups = useCallback(
-    (draggedId: string, targetId: string, position: 'before' | 'after') => {
+    (draggedId: string, targetId: string, position: 'before' | 'after', opts?: { animate?: boolean }) => {
       if (draggedId === targetId) return
       const prev = groupsRef.current
       const dragged = prev.find((g) => g.id === draggedId)
@@ -3203,9 +3250,12 @@ export function App() {
       if (targetIdx < 0) return
       const insertAt = position === 'before' ? targetIdx : targetIdx + 1
       const next = [...without.slice(0, insertAt), dragged, ...without.slice(insertAt)]
-      const animateMove = prepareGroupFlip()
+      // dnd-kit live drags skip the FLIP: the sortable transition already
+      // animates the displacement, and a simultaneous old→new FLIP would
+      // double-animate (the keyboard / context-menu paths still want it).
+      const animateMove = opts?.animate === false ? null : prepareGroupFlip()
       setGroups(() => next)
-      animateMove()
+      animateMove?.()
     },
     [setGroups],
   )
@@ -3327,7 +3377,7 @@ export function App() {
    *  one group, so this only reorders within that group. Panel order
    *  (`openIds`) is synced to match when overlapping sessions exist. */
   const handleReorderInGroup = useCallback(
-    (draggedId: string, targetId: string, position: 'before' | 'after', groupId: string) => {
+    (draggedId: string, targetId: string, position: 'before' | 'after', groupId: string, opts?: { animate?: boolean }) => {
       if (draggedId === targetId) return
       // Compute next groups synchronously from the ref (setGroups's updater
       // runs on React's schedule — a `let newIds` assigned inside it would
@@ -3434,9 +3484,11 @@ export function App() {
           }
         }
       }
-      // Animate all open group panels to their new grid positions.
+      // Animate all open group panels to their new grid positions. dnd-kit
+      // live drags skip this: it's a forced-reflow FLIP per crossing, and the
+      // panel order itself still updates (just without the tween).
       const openGroup = openIdsRef.current.filter((id) => newIds.includes(id))
-      if (openGroup.length >= 2) animatePanels(...openGroup)
+      if (openGroup.length >= 2 && opts?.animate !== false) animatePanels(...openGroup)
     },
     [setGroups, setOpenIds, animatePanels, snapshotPanelScrolls, activateGroupViewIfOpenUngrouped],
   )
@@ -3593,6 +3645,279 @@ export function App() {
     }
     openAtSlot(sidebarId, targetSlotId, live?.lastTurnAt)
   }, [updateSession, openAtSlot, toast])
+
+  // ── In-app drag orchestration (dnd-kit) ─────────────────────────────
+  // One DndContext spans the sidebar and the main grid so a session card can
+  // travel from either surface to the other. Kinds in play here:
+  //   sidebar-card  — live-reorders within its container on drag-over;
+  //                   cross-container / group-target drops resolve on end
+  //   group-card    — live-reorders pills (x axis) and section headers (y)
+  //   main-panel    — swap on drop (resolved by the panel droppable ids)
+  //   main-grid     — drop a sidebar card on the empty grid to open it
+  const dndSensors = useAppDndSensors()
+  const [dndActive, setDndActive] = useState<DragPayload | null>(null)
+  /** Last live move applied this drag — dragOver refires constantly while
+   *  hovering, so this is the spam guard (apply only on change). */
+  const dndLastMoveRef = useRef<{ id: string; position: 'before' | 'after' } | null>(null)
+  /** Pre-drag world (sidebar order / groups / open panels) for Esc-restore. */
+  const dndSnapshotRef = useRef<{ ids: string[]; groups: SessionGroup[]; openIds: string[] } | null>(null)
+
+  /** pointerWithin prefers the most specific droppable under the pointer —
+   *  essential because `.main-body` (main-grid) CONTAINS the panel droppables
+   *  and would otherwise win closestCenter on the grid's far edge. Falls back
+   *  to closestCenter for gaps between sidebar cards. Ranking: same-kind
+   *  collisions first (a group-card drag must keep hitting group sections
+   *  even when the pointer crosses a session card nested inside them), then
+   *  the smallest containing rect (a card beats its group body beats the
+   *  main grid). */
+  const appCollisionDetection: CollisionDetection = useCallback((args) => {
+    const activeKind = dndPayloadOf(args.active.data.current)?.kind
+    const kindOf = (c: Collision) =>
+      dndPayloadOf(c.data as Record<string, unknown> | undefined)?.kind
+    /** Group-card drags only collide with axis-bearing group droppables
+     *  (pills / section nodes) — the group-body droppables share the kind
+     *  and would otherwise shadow the section with a rect that has no
+     *  before/after meaning. */
+    const eligible = (c: Collision) => {
+      const kind = kindOf(c)
+      if (activeKind === 'group-card' && kind === 'group-card') {
+        return dndExtraOf<'x' | 'y'>(c.data as Record<string, unknown> | undefined, 'axis') != null
+      }
+      return true
+    }
+    // pointerWithin first (exact containment), then rectIntersection as the
+    // fallback: the ghost overlapping a droppable is a far tighter contract
+    // than closestCenter, which would resolve ANY release point (dead space,
+    // app chrome) to the geometrically nearest target and fire real moves the
+    // user never aimed at. Empty pool → over = null → the drop is a no-op,
+    // matching the old HTML5 behaviour for releases off any target.
+    const within = pointerWithin(args).filter(eligible)
+    const pool = within.length > 0 ? within : rectIntersection(args).filter(eligible)
+    if (pool.length === 0) return []
+    if (pool.length === 1) return pool
+    const sameKind = pool.filter((c) => kindOf(c) === activeKind)
+    const areaOf = (id: UniqueIdentifier) => {
+      const r = args.droppableRects.get(id)
+      return r ? r.width * r.height : Number.POSITIVE_INFINITY
+    }
+    return (sameKind.length > 0 ? sameKind : pool).slice().sort((a, b) => areaOf(a.id) - areaOf(b.id))
+  }, [])
+
+  /** Ghost midpoint vs target rect midpoint — the shared before/after split
+   *  for live moves and end-drops (dropPositionOf's successor). For group
+   *  sections the split anchors to the section's header strip: the section
+   *  node's rect spans header + body, so its own midpoint would sit deep in
+   *  the body and make 'after' unreachable for expanded groups. */
+  const positionFromOver = (
+    e: DragOverEvent | DragEndEvent,
+  ): 'before' | 'after' => {
+    const ghost = e.active.rect.current.translated
+    let overRect = e.over?.rect
+    const horizontal = dndExtraOf<'x' | 'y'>(e.over?.data.current, 'axis') === 'x'
+    if (!horizontal && e.over && dndPayloadOf(e.over.data.current)?.kind === 'group-card') {
+      const header = document.querySelector<HTMLElement>(
+        `[data-group-section-id="${String(e.over.id)}"] > .session-group-header`,
+      )
+      if (header) overRect = header.getBoundingClientRect()
+    }
+    if (!overRect || !ghost) return 'after'
+    return horizontal
+      ? (ghost.left + ghost.width / 2 < overRect.left + overRect.width / 2 ? 'before' : 'after')
+      : (ghost.top + ghost.height / 2 < overRect.top + overRect.height / 2 ? 'before' : 'after')
+  }
+
+  const handleDndStart = useCallback((e: DragStartEvent) => {
+    const payload = dndPayloadOf(e.active.data.current)
+    if (!payload) return
+    dndLastMoveRef.current = null
+    // Live drags commit state on drag-over, so Esc must be able to undo:
+    // snapshot the pre-drag world (sidebar order + group membership + open
+    // panels) at pickup; handleDndCancel restores it.
+    if (payload.kind === 'sidebar-card' || payload.kind === 'group-card') {
+      dndSnapshotRef.current = {
+        ids: orderedSessions.map((s) => s.id),
+        groups: groupsRef.current.map((g) => ({ ...g, sessionIds: [...g.sessionIds] })),
+        openIds: openIdsRef.current,
+      }
+    }
+    setDndActive(payload)
+  }, [orderedSessions])
+
+  /** dragOver AND dragMove both land here: dnd-kit dispatches dragOver only
+   *  when the over target id changes, so crossing a card's midline without
+   *  leaving its rect would otherwise freeze the before/after split at
+   *  pointer entry. dragMove fires every pointer move; the dndLastMoveRef
+   *  guard keeps the shared body cheap. */
+  const handleDndOver = useCallback((e: DragOverEvent | DragMoveEvent) => {
+    const a = dndPayloadOf(e.active.data.current)
+    const o = dndPayloadOf(e.over?.data.current)
+    if (!a || !o || a.kind !== o.kind) return
+    // main-grid is a zone, not an item — it has no id to compare.
+    const activeId = 'id' in a ? a.id : undefined
+    if (activeId === undefined || !('id' in o) || activeId === o.id) return
+    if (a.kind === 'sidebar-card') {
+      // Live displacement only within the same container (flat/ungrouped vs a
+      // specific group). Cross-container moves wait for the drop so brushing
+      // past a neighbouring group can't yank the card out.
+      const activeGroup = dndExtraOf<string | undefined>(e.active.data.current, 'containerGroupId')
+      const overGroup = dndExtraOf<string | undefined>(e.over?.data.current, 'containerGroupId')
+      if (activeGroup !== overGroup) return
+      const position = positionFromOver(e)
+      const last = dndLastMoveRef.current
+      if (last && last.id === o.id && last.position === position) return
+      dndLastMoveRef.current = { id: o.id, position }
+      if (activeGroup) handleReorderInGroup(a.id, o.id, position, activeGroup, { animate: false })
+      else handleReorderSidebar(a.id, o.id, position)
+    } else if (a.kind === 'group-card') {
+      const position = positionFromOver(e)
+      const last = dndLastMoveRef.current
+      if (last && last.id === o.id && last.position === position) return
+      dndLastMoveRef.current = { id: o.id, position }
+      handleReorderGroups(a.id, o.id, position, { animate: false })
+    }
+  }, [handleReorderInGroup, handleReorderSidebar, handleReorderGroups])
+
+  const handleDndEnd = useCallback((e: DragEndEvent) => {
+    setDndActive(null)
+    dndLastMoveRef.current = null
+    const a = dndPayloadOf(e.active.data.current)
+    const o = dndPayloadOf(e.over?.data.current)
+    if (!a || !o) return
+    if (a.kind === 'sidebar-card' && o.kind === 'group-card') {
+      // Card dropped on a group header (sortable node) or group body
+      // droppable → move into that group.
+      handleAddToGroup(a.id, o.id)
+      return
+    }
+    if (a.kind === 'sidebar-card' && o.kind === 'sidebar-card') {
+      // Cross-container card→card drop: same-container moves were already
+      // applied live on drag-over.
+      const activeGroup = dndExtraOf<string | undefined>(e.active.data.current, 'containerGroupId')
+      const overGroup = dndExtraOf<string | undefined>(e.over?.data.current, 'containerGroupId')
+      if (activeGroup === overGroup) return
+      if (overGroup) {
+        // Capacity guard — handleReorderInGroup splices without checking, so
+        // dropping onto a card of a FULL group would exceed maxGroupSize and
+        // bypass handleAddToGroup's rule. Same shared check, same toast.
+        const target = groupsRef.current.find((g) => g.id === overGroup)
+        const capError = target ? groupCapacityError(target, a.id) : null
+        if (capError) {
+          toast.error(capError)
+          return
+        }
+        handleReorderInGroup(a.id, o.id, positionFromOver(e), overGroup)
+      } else {
+        handleReorderSidebar(a.id, o.id, positionFromOver(e))
+      }
+      return
+    }
+    if (a.kind === 'sidebar-card' && o.kind === 'main-grid') {
+      void handleSelect(a.id)
+      return
+    }
+    if (a.kind === 'sidebar-card' && o.kind === 'main-panel') {
+      void handleAcceptSidebarDrop(a.id, o.id)
+      return
+    }
+    if (a.kind === 'main-panel' && o.kind === 'main-panel') {
+      swapPanels(a.id, o.id)
+    }
+    // group-card end: the live path already reordered.
+  }, [handleAddToGroup, handleReorderInGroup, handleReorderSidebar, handleSelect, handleAcceptSidebarDrop, swapPanels, groupsRef, groupCapacityError, toast])
+
+  const handleDndCancel = useCallback(() => {
+    // Live drags commit state on drag-over, so a cancel (Esc) restores the
+    // pre-drag snapshot — mirroring useProfileListDnd's cancel semantics so
+    // both surfaces agree on what Esc means.
+    const snap = dndSnapshotRef.current
+    if (snap) {
+      setSidebarOrder(() => snap.ids)
+      setGroups(() => snap.groups)
+      setOpenIds(snap.openIds)
+      dndSnapshotRef.current = null
+    }
+    setDndActive(null)
+    dndLastMoveRef.current = null
+  }, [setSidebarOrder, setGroups, setOpenIds])
+
+  /** Floating ghost for the active drag, rendered inside the portaled
+   *  DragOverlay. Each branch re-renders the REAL widget (SessionCard, the
+   *  group pill) so the ghost is pixel-identical to the source at rest — a
+   *  hand-rolled approximation drifts out of sync with the real markup and
+   *  reads as a different element mid-drag. */
+  const renderDndGhost = () => {
+    if (!dndActive) return null
+    if (dndActive.kind === 'sidebar-card') {
+      const s = orderedSessions.find((x) => x.id === dndActive.id)
+      if (!s) return null
+      const slotIdx = openIds.indexOf(s.id)
+      return (
+        // Ghost width tracks the live sidebar (resizable) minus the
+        // session-list's horizontal padding (--space-2-5 each side), so the
+        // floating card is as wide as the card it stands in for.
+        <DragGhost
+          className="dnd-ghost-session"
+          style={{ width: `calc(${effectiveSidebarWidth}px - 2 * var(--space-2-5))` }}
+        >
+          {/* The list wraps every card in `.session-item-shell`, which owns
+              the run's corner rounding (list-first/list-last) and the focus
+              ring — replicate both so the ghost matches the card it lifted.
+              isDragging stays false: the dimmed hole is the in-list source's
+              job, the ghost shows the at-rest card. Handlers are required
+              props but inert here (.dnd-ghost is pointer-events: none). */}
+          <div className={`session-item-shell list-first list-last${focusedId === s.id ? ' focused' : ''}`}>
+            <SessionCard
+              session={s}
+              slotIdx={slotIdx}
+              isOpen={slotIdx >= 0}
+              isFocused={focusedId === s.id}
+              isResuming={resuming.has(s.id)}
+              hasUnread={!!unread[s.id]}
+              isDragging={false}
+              isDeleting={false}
+              isRenaming={false}
+              accentStyle={sessionAccentMap.get(s.id)}
+              onSelect={dndNoop}
+              onDelete={dndNoop}
+              onSleep={dndNoop}
+              onContextMenu={dndNoop}
+              renameDraft=""
+              onRenameDraftChange={dndNoop}
+              onCommitRename={dndNoop}
+              onCancelRename={dndNoop}
+              onStartRename={dndNoop}
+            />
+          </div>
+        </DragGhost>
+      )
+    }
+    if (dndActive.kind === 'group-card') {
+      const g = groups.find((x) => x.id === dndActive.id)
+      if (!g) return null
+      const pillIdx = groups.indexOf(g)
+      return (
+        <DragGhost>
+          <span className={`group-pill group-pill-ghost${g.id === activeGroupId ? ' active' : ''}`}>
+            {heldModifiers.alt && pillIdx < 9 && (
+              <span className="group-pill-hint" aria-hidden="true">{pillIdx + 1}</span>
+            )}
+            {g.name}
+            <span className="group-pill-count">{g.sessionIds.length}</span>
+          </span>
+        </DragGhost>
+      )
+    }
+    if (dndActive.kind === 'main-panel') {
+      const s = orderedSessions.find((x) => x.id === dndActive.id)
+      if (!s) return null
+      return (
+        <DragGhost>
+          <span className="chat-panel-header chat-panel-header-ghost">{sessionTitleOrFallback(s)}</span>
+        </DragGhost>
+      )
+    }
+    return null
+  }
 
   // Resume a picked session INTO a specific panel slot (the `/resume` local
   // command flow). Mirrors handleAcceptSidebarDrop's dormant handling, but
@@ -3935,6 +4260,15 @@ export function App() {
 
   return (
     <ErrorBoundary>
+    <DndContext
+      sensors={dndSensors}
+      collisionDetection={appCollisionDetection}
+      onDragStart={handleDndStart}
+      onDragMove={handleDndOver}
+      onDragOver={handleDndOver}
+      onDragEnd={handleDndEnd}
+      onDragCancel={handleDndCancel}
+    >
     <div
       className={[
         'app',
@@ -4159,21 +4493,11 @@ export function App() {
             a null-rendering bridge so toast-list churn doesn't re-render App. */}
         <ReconnectToasts />
 
-        <div
-          ref={bodyRef}
+        <MainGridDropZone
+          bodyRef={bodyRef}
           className="main-body"
-          data-panel-count={openSessions.length || 1}
+          panelCount={openSessions.length || 1}
           style={{ gridTemplateColumns: gridTemplate }}
-          onDragOver={(e) => {
-            if (!isInAppDrag(e)) return
-            e.preventDefault()
-          }}
-          onDrop={(e) => {
-            const payload = readDragPayload(e)
-            if (!payload || payload.kind !== 'sidebar-card') return
-            e.preventDefault()
-            void handleSelect(payload.id)
-          }}
         >
           {openSessions.length === 0 ? (
             <div className="empty-state app-empty-state">
@@ -4250,13 +4574,11 @@ export function App() {
                       worktreeOpen={worktreeOpenFor === s.id}
                       onOpenWorktree={handleOpenWorktree}
                       onCloseWorktree={handleCloseWorktree}
-                      onSwap={swapPanels}
                       onRegisterInterrupt={registerInterrupt}
                       onRegisterRecap={registerRecap}
                       onRegisterBackground={registerBackground}
                       onRegisterTurnActive={registerTurnActive}
                       onInterruptFired={handleInterruptFired}
-                      onAcceptSidebarDrop={handleAcceptSidebarDrop}
                       onRequestResumeForPanel={requestResumeForPanel}
                       resumeOpen={resumeDialogOpen && resumeTargetPanelId === s.id}
                       onResumeIntoPanel={handlePanelResume}
@@ -4334,7 +4656,7 @@ export function App() {
               ))
             )
           )}
-        </div>
+        </MainGridDropZone>
       </main>
 
       <Suspense fallback={null}>
@@ -4526,6 +4848,8 @@ export function App() {
         </Suspense>
       )}
     </div>
+    <DragOverlayPortal>{renderDndGhost()}</DragOverlayPortal>
+    </DndContext>
     </ErrorBoundary>
   )
 }

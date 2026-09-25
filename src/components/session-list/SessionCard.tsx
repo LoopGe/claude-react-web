@@ -5,8 +5,6 @@
 
 import { memo, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { isInAppDrag, readDragPayload, setDragPayload } from '../../hooks/useDragPayload'
-import { useIsMobile } from '../../hooks/useIsMobile'
 import { usePresenceValue } from '../../hooks/useExitPresence'
 import { shortenPath } from '../../utils/paths'
 import { statusLabel } from '../../utils/session-status'
@@ -24,19 +22,20 @@ export interface SessionCardProps {
   isFocused: boolean
   isResuming: boolean
   hasUnread: boolean
-  /** True when this card is the one being dragged. Fades the card out. */
+  /** True while this card's dnd-kit ghost is in the air (App-level
+   *  DndContext) — fades the card into a placeholder. */
   isDragging: boolean
   /** True while the delete-exit animation is playing. */
   isDeleting: boolean
-  /** Insertion-line hint when another card is dragged over this one. */
-  dropPosition: 'before' | 'after' | null
   /** True when this card's inline rename input is active. */
   isRenaming: boolean
   /** Pre-computed accent-colour CSS overrides, or undefined for global accent. */
   accentStyle?: CSSProperties
-  /** When rendered inside a group body, the group's id so intra-group
-   *  reordering uses the correct handler. */
-  containerGroupId?: string
+  /** dnd-kit pointer listeners from the shell's useSortable — the whole card
+   *  surface is the drag activator. Spread BEFORE the card's own handlers so
+   *  Enter/Space selection keeps precedence over the (unused) keyboard-drag
+   *  activator. */
+  dragListeners?: Record<string, unknown>
 
   onSelect: (id: string) => void
   onDelete: (id: string) => void
@@ -44,17 +43,6 @@ export interface SessionCardProps {
    *  subprocess) without deleting it. Reversible via resume. */
   onSleep: (id: string) => void
   onContextMenu: (e: React.MouseEvent, id: string) => void
-  onDragStart: (e: React.DragEvent, id: string) => void
-  onDragEnd: () => void
-  onSetDropHint: (id: string, position: 'before' | 'after') => void
-  onClearDropHint: () => void
-  onReorder?: (draggedId: string, targetId: string, position: 'before' | 'after') => void
-  onReorderInGroup?: (
-    draggedId: string,
-    targetId: string,
-    position: 'before' | 'after',
-    groupId: string,
-  ) => void
 
   /** Rename callbacks. The draft state and input ref live in SessionList
    *  so that only the currently-renaming card pays the cost. */
@@ -82,20 +70,13 @@ export const SessionCard = memo(function SessionCard({
   hasUnread,
   isDragging,
   isDeleting,
-  dropPosition,
   isRenaming,
   accentStyle,
-  containerGroupId,
+  dragListeners,
   onSelect,
   onDelete,
   onSleep,
   onContextMenu,
-  onDragStart,
-  onDragEnd,
-  onSetDropHint,
-  onClearDropHint,
-  onReorder,
-  onReorderInGroup,
   renameDraft,
   onRenameDraftChange,
   onCommitRename,
@@ -104,9 +85,6 @@ export const SessionCard = memo(function SessionCard({
   onAskConfirm,
 }: SessionCardProps) {
   const renameInputRef = useRef<HTMLInputElement>(null)
-  // HTML5 drag-and-drop is effectively unsupported on touch (iOS Safari in
-  // particular), so disable card reordering on mobile.
-  const isMobile = useIsMobile()
 
   // Auto-focus + select the inline rename input when it appears.
   useEffect(() => {
@@ -228,8 +206,6 @@ export const SessionCard = memo(function SessionCard({
         hasUnread ? 'unread' : '',
         isDragging ? 'dragging' : '',
         isDeleting ? 'deleting' : '',
-        dropPosition === 'before' ? 'drop-before' : '',
-        dropPosition === 'after' ? 'drop-after' : '',
         accentStyle ? 'tinted' : '',
         `mode-${permissionMode}`,
       )}
@@ -237,39 +213,7 @@ export const SessionCard = memo(function SessionCard({
       role="button"
       tabIndex={0}
       aria-disabled={isResuming || isDeleting}
-      draggable={!isMobile && !isResuming && !isDeleting && !!onReorder}
-      onDragStart={(e) => {
-        if (!onReorder) return
-        onDragStart(e, s.id)
-        setDragPayload(e, { kind: 'sidebar-card', id: s.id })
-      }}
-      onDragEnd={onDragEnd}
-      onDragOver={(e) => {
-        if (!onReorder || !isInAppDrag(e)) return
-        e.preventDefault()
-        const rect = e.currentTarget.getBoundingClientRect()
-        const position: 'before' | 'after' = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-        onSetDropHint(s.id, position)
-      }}
-      onDragLeave={(e) => {
-        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-        onClearDropHint()
-      }}
-      onDrop={(e) => {
-        if (!onReorder) return
-        const payload = readDragPayload(e)
-        onClearDropHint()
-        onDragEnd()
-        if (!payload || payload.kind !== 'sidebar-card') return
-        e.preventDefault()
-        const rect = e.currentTarget.getBoundingClientRect()
-        const position: 'before' | 'after' = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-        if (containerGroupId && onReorderInGroup) {
-          onReorderInGroup(payload.id, s.id, position, containerGroupId)
-        } else {
-          onReorder(payload.id, s.id, position)
-        }
-      }}
+      {...dragListeners}
       onClick={() => !isResuming && !isDeleting && onSelect(s.id)}
       onKeyDown={(e) => !isResuming && !isDeleting && (e.key === 'Enter' || e.key === ' ') && onSelect(s.id)}
     >

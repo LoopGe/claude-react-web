@@ -2252,10 +2252,10 @@ button.tool-group-failed-jump:focus-visible {
 }
 
 /* ── Model / model-group drag-reorder ───────────────────────────────
-   Mirrors the session-list drag language: lift + fade on the source,
-   accent insertion line on the target, FLIP settle after drop (see
-   utils/flip.ts). The rank badge is the sole drag surface so Move/Remove
-   buttons stay clickable. */
+   dnd-kit pipeline: live displacement under the DragOverlay ghost (the
+   dimmed source is .dnd-source-dim, see styles/dnd.css), FLIP settle kept
+   for the arrow-button / A→Z paths. The rank badge is the sole drag
+   surface so Move/Remove buttons stay clickable. */
 .settings-model-grip {
   cursor: grab;
   user-select: none;
@@ -2271,63 +2271,9 @@ button.tool-group-failed-jump:focus-visible {
     transform var(--motion-duration-fast) var(--motion-ease-standard),
     box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.settings-model-row.dragging,
-.settings-model-group.dragging {
-  opacity: 0.35;
-  transform: scale(0.98);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--fg) 12%, transparent);
-  cursor: grabbing;
-  z-index: 1;
-}
-/* Suppress hover flash on the source row while it's lifted. */
-.settings-model-row.dragging:hover,
-.settings-model-group.dragging:hover {
-  border-color: color-mix(in srgb, var(--border) 86%, transparent);
-  background: color-mix(in srgb, var(--bg) 82%, var(--bg-elev-2));
-}
-.settings-model-row.drop-before,
-.settings-model-row.drop-after,
-.settings-model-group.drop-before,
-.settings-model-group.drop-after {
-  position: relative;
-}
-.settings-model-row.drop-before::before,
-.settings-model-row.drop-after::after,
-.settings-model-group.drop-before::before,
-.settings-model-group.drop-after::after {
-  content: '';
-  position: absolute;
-  left: 6px;
-  right: 6px;
-  height: 2px;
-  border-radius: var(--radius-2xs);
-  background: var(--accent);
-  box-shadow: var(--accent-glow);
-  pointer-events: none;
-  z-index: 1;
-  transform: scaleX(0);
-  animation: settings-drop-line-in var(--motion-duration-fast) var(--motion-ease-standard) forwards;
-}
-.settings-model-row.drop-before::before,
-.settings-model-group.drop-before::before { top: -1px; transform-origin: left center; }
-.settings-model-row.drop-after::after,
-.settings-model-group.drop-after::after { bottom: -1px; transform-origin: right center; }
-/* Prefixed so it doesn't collide with session-list.css's drop-line-in. */
-@keyframes settings-drop-line-in {
-  to { transform: scaleX(1); }
-}
 @media (prefers-reduced-motion: reduce) {
   .settings-model-row,
   .settings-model-group { transition: none; }
-  .settings-model-row.dragging,
-  .settings-model-group.dragging { transform: none; }
-  .settings-model-row.drop-before::before,
-  .settings-model-row.drop-after::after,
-  .settings-model-group.drop-before::before,
-  .settings-model-group.drop-after::after {
-    animation: none;
-    transform: scaleX(1);
-  }
 }
 
 /* ── Provider-profiles editor ───────────────────────────────────────

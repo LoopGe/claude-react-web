@@ -1,0 +1,49 @@
+/* dnd-kit drag visuals — shared by every migrated drag surface.
+ *
+ * The floating ghost (DragGhost) gets its "lifted card" look here: scale
+ * via the standalone `scale` property so it composes with the motion-
+ * driven rotate transform, and a silhouette-hugging drop-shadow filter
+ * (works with any border-radius the cloned content carries). The dimmed
+ * source card and the sortable displacement transition round out the
+ * desktop-icon motion language. All colour comes from theme tokens. */
+
+.dnd-ghost {
+  scale: 1.05;
+  filter: drop-shadow(var(--card-shadow));
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* The portaled DragOverlay wrapper (DragOverlayPortal). Above the modal
+   layer so a drag started inside a modal paints over it; below the toast
+   host. Same precedent as messages.css's in-modal popover layer. */
+.dnd-overlay-ghost {
+  z-index: calc(var(--z-modal) + 1);
+}
+
+/* The in-place source card while its ghost is in the air — a quiet hole in
+   the list the card springs back into on drop. */
+.dnd-source-dim {
+  opacity: 0.35;
+}
+
+/* The session-card ghost's width is set inline by App (live sidebar width
+   minus the list padding) so it tracks the resizable sidebar; only the
+   cursor hint lives here. */
+.dnd-ghost-session .session-item {
+  cursor: grabbing;
+}
+
+/* Group pill / panel-header ghosts: the cloned element keeps its real
+   classes; these only add the grabbing cursor. */
+.group-pill-ghost,
+.chat-panel-header-ghost {
+  cursor: grabbing;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dnd-ghost {
+    scale: 1;
+    filter: drop-shadow(var(--toast-shadow));
+  }
+}

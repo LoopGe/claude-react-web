@@ -8,12 +8,21 @@
 // HTTPS on save and never logged or stored in component state beyond the
 // transient form field.
 
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
+import { DndContext, closestCenter, type DraggableAttributes } from '@dnd-kit/core'
+import type { SyntheticListenerMap } from '@dnd-kit/core/dist/hooks/utilities'
+import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS as DndCSS } from '@dnd-kit/utilities'
 import { api } from '../hooks/useApi'
-import { dropPositionOf, isInAppDrag, readDragPayload, reorderById, sameOrder, setDragPayload } from '../hooks/useDragPayload'
 import { prepareFlip } from '../utils/flip'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useProfiles } from '../hooks/useProfiles'
+import { useProfileListDnd } from '../hooks/useProfileListDnd'
+import { useAppDndSensors } from '../dnd/sensors'
+import { dndData } from '../dnd/payload'
+import { DragGhost } from '../dnd/DragGhost'
+import { DragOverlayPortal } from '../dnd/DragOverlayPortal'
+import { SORTABLE_TRANSITION } from '../dnd/motion'
 import type { ModelGroupConfig, ProviderProfile } from '../types/config'
 import { randomId } from '../utils/uuid'
 import { IconArrowUp, IconArrowDown, IconChevronDown, IconChevronRight, IconCheck, IconX } from './icons/ToolIcons'
@@ -29,6 +38,44 @@ interface ProfileTestResult {
   status?: number
   error?: string
   baseUrl?: string
+}
+
+/** Generic dnd-kit sortable wrapper for the two ordered lists. Renders
+ *  `children` (a render prop so the row markup can wire the grip) inside the
+ *  sortable node: live displacement transform + settle transition, and the
+ *  dimmed-source treatment while this item's ghost is in the air. */
+function SortableItem({ id, kind, disabled, className, dataAttr, children }: {
+  id: string
+  kind: 'profile-model' | 'profile-model-group'
+  disabled: boolean
+  className: string
+  /** Optional `data-*` FLIP marker for the arrow-button settle (prepareFlip
+   *  matches rows by these attributes — that path still exists for the
+   *  non-drag reorder buttons). */
+  dataAttr?: string
+  children: (activator: {
+    setActivatorNodeRef: (el: HTMLElement | null) => void
+    attributes: DraggableAttributes
+    listeners: SyntheticListenerMap | undefined
+  }) => ReactNode
+}) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
+    useSortable({ id, disabled, data: dndData({ kind, id }) })
+  return (
+    <div
+      ref={setNodeRef}
+      {...(dataAttr ? { [dataAttr]: id } : {})}
+      className={cx(className, isDragging ? 'dnd-source-dim' : '')}
+      style={{
+        transform: DndCSS.Transform.toString(transform),
+        // Inline transition only while displaced — at rest the stylesheet
+        // transitions (hover states) must keep working.
+        transition: transform ? (transition ?? SORTABLE_TRANSITION) : undefined,
+      }}
+    >
+      {children({ setActivatorNodeRef, attributes, listeners })}
+    </div>
+  )
 }
 
 export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObject<(() => Promise<void>) | null> } = {}) {
@@ -272,45 +319,49 @@ function ProfileCard({
   }
 
   // — Drag-reorder for the two ordered lists above.
-  // Mirrors the sidebar's HTML5 DnD language (useDragPayload + before/after
-  // insertion line). Visual feedback is drop-hint state; the arrays only
-  // reshuffle on drop, same as SessionList.
+  // dnd-kit pipeline: siblings displace live under the ghost (desktop-icon
+  // feel), the hook snapshots at pickup and diffs at drop so Save stays
+  // clean for no-op drops. The grip/rank badge is the only activator — the
+  // rest of the row (buttons, inputs) keeps its own click/focus behaviour.
   const isMobile = useIsMobile()
-  const [draggingModel, setDraggingModel] = useState<string | null>(null)
-  const [modelDropHint, setModelDropHint] = useState<{ id: string; position: 'before' | 'after' } | null>(null)
-  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null)
-  const [groupDropHint, setGroupDropHint] = useState<{ id: string; position: 'before' | 'after' } | null>(null)
-
-  /** applyReorder — shared by both lists. Skips the state write when the
-   *  drop is a no-op so Save doesn't appear for an unchanged order. FLIP-
-   *  animates the settle so the drop matches the sidebar's motion language. */
-  const applyReorder = <T,>(
-    list: T[],
-    setList: (next: T[]) => void,
-    getId: (item: T) => string,
-    draggedId: string,
-    targetId: string,
-    position: 'before' | 'after',
-    flip: () => () => void,
-  ) => {
-    const next = reorderById(list, getId, draggedId, targetId, position)
-    if (next === list || sameOrder(next, list)) return
-    const animateMove = flip()
-    setList(next)
-    setDirty(true)
-    animateMove()
-  }
-
-  /** Block the browser's native text drop of our payload ids (setDragPayload
-   *  also writes a text/plain fallback) into ANY field on this card —
-   *  Connection inputs sit outside the two list boxes. */
-  const blockInAppNativeDrop = {
-    onDragOver: (e: React.DragEvent) => { if (isInAppDrag(e)) e.preventDefault() },
-    onDrop: (e: React.DragEvent) => { if (isInAppDrag(e)) e.preventDefault() },
-  }
+  const dndSensors = useAppDndSensors()
+  const { active: activeDrag, handleDragStart, handleDragOver, handleDragEnd, handleDragCancel } =
+    useProfileListDnd({ modelList, setModelList, modelGroups, setModelGroups, setDirty, dirty })
 
   const canDragModels = !isMobile && modelList.length > 1
   const canDragGroups = !isMobile && modelGroups.length > 1
+
+  /** Ghost clone of the dragged item, rendered inside <DragOverlay>. A
+   *  lightweight re-render of the row's identity (rank + id / rank + name)
+   *  is enough — the live list already shows the real rows displaced. */
+  const renderDragGhost = (): ReactNode => {
+    if (!activeDrag || !('id' in activeDrag)) return null
+    if (activeDrag.kind === 'profile-model') {
+      const idx = modelList.indexOf(activeDrag.id)
+      if (idx < 0) return null
+      return (
+        <DragGhost>
+          <div className={`settings-model-row${idx === 0 ? ' default' : ''}`}>
+            <span className="settings-model-rank">{idx === 0 ? 'Default' : idx + 1}</span>
+            <code className="settings-model-id">{activeDrag.id}</code>
+          </div>
+        </DragGhost>
+      )
+    }
+    const g = modelGroups.find((grp) => grp.id === activeDrag.id)
+    if (!g) return null
+    const idx = modelGroups.indexOf(g)
+    return (
+      <DragGhost>
+        <div className="settings-model-group">
+          <div className="settings-model-row">
+            <span className="settings-model-rank">{idx + 1}</span>
+            <code className="settings-model-id">{g.name}</code>
+          </div>
+        </div>
+      </DragGhost>
+    )
+  }
 
   const canTest = (authTokenDirty && !!authToken.trim()) || !!profile.authTokenMasked
   const deleteDisabled = profile.isActive || !canDelete
@@ -383,7 +434,15 @@ function ProfileCard({
       )}
 
       <AnimatedCollapse open={expanded}>
-        <div className="settings-card-body settings-profile-body" {...blockInAppNativeDrop}>
+        <DndContext
+          sensors={dndSensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={handleDragEnd}
+          onDragCancel={handleDragCancel}
+        >
+          <div className="settings-card-body settings-profile-body">
           <section className="settings-profile-section">
             <h4 className="settings-profile-section-label">Connection</h4>
             <div className="settings-field">
@@ -445,103 +504,67 @@ function ProfileCard({
                     </button>
                   </div>
                 )}
+                <SortableContext items={modelList} strategy={verticalListSortingStrategy}>
                 {modelList.map((m, i) => (
-                  <div
+                  <SortableItem
                     key={m}
-                    data-profile-model-id={m}
-                    className={cx(
-                      'settings-model-row',
-                      i === 0 ? 'default' : '',
-                      draggingModel === m ? 'dragging' : '',
-                      modelDropHint?.id === m ? `drop-${modelDropHint.position}` : '',
-                    )}
-                    onDragOver={(e) => {
-                      // Branch on our own drag state, not the payload kind —
-                      // browsers only populate getData on drop (see useDragPayload).
-                      if (draggingModel == null) return
-                      if (!isInAppDrag(e)) return
-                      // Always preventDefault, even on the source row: the
-                      // text/plain fallback would otherwise natively paste
-                      // into any input the pointer crosses.
-                      e.preventDefault()
-                      if (draggingModel === m) return
-                      const position = dropPositionOf(e, e.currentTarget)
-                      setModelDropHint((prev) =>
-                        prev && prev.id === m && prev.position === position ? prev : { id: m, position },
-                      )
-                    }}
-                    onDragLeave={(e) => {
-                      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-                      setModelDropHint((prev) => (prev?.id === m ? null : prev))
-                    }}
-                    onDrop={(e) => {
-                      const payload = readDragPayload(e)
-                      setModelDropHint(null)
-                      setDraggingModel(null)
-                      if (!payload || payload.kind !== 'profile-model') return
-                      // Only accept a drop that started from THIS card's list —
-                      // payload.kind alone would let another profile's drag
-                      // reorder this list during a collapse/expand overlap.
-                      if (draggingModel == null) return
-                      e.preventDefault()
-                      e.stopPropagation()
-                      const position = dropPositionOf(e, e.currentTarget)
-                      applyReorder(modelList, setModelList, (id) => id, payload.id, m, position, modelFlip)
-                    }}
+                    id={m}
+                    kind="profile-model"
+                    disabled={!canDragModels}
+                    className={cx('settings-model-row', i === 0 ? 'default' : '')}
+                    dataAttr="data-profile-model-id"
                   >
-                    {/* Rank doubles as the drag grip — buttons inside the row
-                        must stay clickable without a 1px drift starting a drag. */}
-                    <span
-                      className={`settings-model-rank${canDragModels ? ' settings-model-grip' : ''}`}
-                      title={
-                        canDragModels
-                          ? (i === 0 ? 'Default model · Drag to reorder' : 'Drag to reorder')
-                          : (i === 0 ? 'Default model' : undefined)
-                      }
-                      draggable={canDragModels}
-                      onDragStart={(e) => {
-                        if (!canDragModels) return
-                        setDraggingModel(m)
-                        setDragPayload(e, { kind: 'profile-model', id: m })
-                      }}
-                      onDragEnd={() => {
-                        setDraggingModel(null)
-                        setModelDropHint(null)
-                      }}
-                    >
-                      {i === 0 ? 'Default' : i + 1}
-                    </span>
-                    <code className="settings-model-id" title={m}>{m}</code>
-                    <div className="settings-model-move" role="group" aria-label="Move model priority">
-                      <button
-                        className="btn-icon-sm settings-model-action"
-                        onClick={() => moveModel(i, -1)}
-                        disabled={i === 0}
-                        title="Move up"
-                        aria-label="Move up"
-                      >
-                        <IconArrowUp size={12} />
-                      </button>
-                      <button
-                        className="btn-icon-sm settings-model-action"
-                        onClick={() => moveModel(i, 1)}
-                        disabled={i === modelList.length - 1}
-                        title="Move down"
-                        aria-label="Move down"
-                      >
-                        <IconArrowDown size={12} />
-                      </button>
-                    </div>
-                    <button
-                      className="btn-icon-sm settings-model-action danger"
-                      onClick={() => removeModel(m)}
-                      title="Remove"
-                      aria-label="Remove"
-                    >
-                      <IconX size={12} />
-                    </button>
-                  </div>
+                    {({ setActivatorNodeRef, attributes, listeners }) => (
+                      <>
+                        {/* Rank doubles as the drag grip — buttons inside the row
+                            must stay clickable without a 1px drift starting a drag. */}
+                        <span
+                          ref={setActivatorNodeRef}
+                          className={`settings-model-rank${canDragModels ? ' settings-model-grip' : ''}`}
+                          title={
+                            canDragModels
+                              ? (i === 0 ? 'Default model · Drag to reorder' : 'Drag to reorder')
+                              : (i === 0 ? 'Default model' : undefined)
+                          }
+                          {...attributes}
+                          {...listeners}
+                        >
+                          {i === 0 ? 'Default' : i + 1}
+                        </span>
+                        <code className="settings-model-id" title={m}>{m}</code>
+                        <div className="settings-model-move" role="group" aria-label="Move model priority">
+                          <button
+                            className="btn-icon-sm settings-model-action"
+                            onClick={() => moveModel(i, -1)}
+                            disabled={i === 0}
+                            title="Move up"
+                            aria-label="Move up"
+                          >
+                            <IconArrowUp size={12} />
+                          </button>
+                          <button
+                            className="btn-icon-sm settings-model-action"
+                            onClick={() => moveModel(i, 1)}
+                            disabled={i === modelList.length - 1}
+                            title="Move down"
+                            aria-label="Move down"
+                          >
+                            <IconArrowDown size={12} />
+                          </button>
+                        </div>
+                        <button
+                          className="btn-icon-sm settings-model-action danger"
+                          onClick={() => removeModel(m)}
+                          title="Remove"
+                          aria-label="Remove"
+                        >
+                          <IconX size={12} />
+                        </button>
+                      </>
+                    )}
+                  </SortableItem>
                 ))}
+                </SortableContext>
                 <div className="settings-model-add-row">
                   <input
                     className="input settings-model-input"
@@ -627,6 +650,7 @@ function ProfileCard({
                 {modelGroups.length === 0 && (
                   <div className="settings-model-empty">No groups yet. Add one to bundle tier models.</div>
                 )}
+                <SortableContext items={modelGroups.map((g) => g.id)} strategy={verticalListSortingStrategy}>
                 {modelGroups.map((g, i) => {
                   const slots: { key: 'opus' | 'sonnet' | 'haiku'; label: string }[] = [
                     { key: 'opus', label: 'Opus' },
@@ -634,62 +658,26 @@ function ProfileCard({
                     { key: 'haiku', label: 'Haiku' },
                   ]
                   return (
-                    <div
+                    <SortableItem
                       key={g.id}
-                      data-profile-group-id={g.id}
-                      className={cx(
-                        'settings-model-group',
-                        draggingGroupId === g.id ? 'dragging' : '',
-                        groupDropHint?.id === g.id ? `drop-${groupDropHint.position}` : '',
-                      )}
-                      onDragOver={(e) => {
-                        if (draggingGroupId == null) return
-                        if (!isInAppDrag(e)) return
-                        e.preventDefault()
-                        if (draggingGroupId === g.id) return
-                        // Anchor the midpoint to the header row, not the whole
-                        // card — the slots grid roughly doubles card height and
-                        // would push the split into the middle of the fields.
-                        const anchor = e.currentTarget.querySelector<HTMLElement>('.settings-model-row') ?? e.currentTarget
-                        const position = dropPositionOf(e, anchor)
-                        setGroupDropHint((prev) =>
-                          prev && prev.id === g.id && prev.position === position ? prev : { id: g.id, position },
-                        )
-                      }}
-                      onDragLeave={(e) => {
-                        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-                        setGroupDropHint((prev) => (prev?.id === g.id ? null : prev))
-                      }}
-                      onDrop={(e) => {
-                        const payload = readDragPayload(e)
-                        setGroupDropHint(null)
-                        setDraggingGroupId(null)
-                        if (!payload || payload.kind !== 'profile-model-group') return
-                        if (draggingGroupId == null) return
-                        e.preventDefault()
-                        e.stopPropagation()
-                        const anchor = e.currentTarget.querySelector<HTMLElement>('.settings-model-row') ?? e.currentTarget
-                        const position = dropPositionOf(e, anchor)
-                        applyReorder(modelGroups, setModelGroups, (item) => item.id, payload.id, g.id, position, groupFlip)
-                      }}
+                      id={g.id}
+                      kind="profile-model-group"
+                      disabled={!canDragGroups}
+                      className="settings-model-group"
+                      dataAttr="data-profile-group-id"
                     >
+                      {({ setActivatorNodeRef, attributes, listeners }) => (
+                        <>
                       <div className="settings-model-row">
                         {/* Rank doubles as the drag grip — the rest of the card
                             is form fields, so making the whole card draggable
                             would swallow text-selection inside the inputs. */}
                         <span
+                          ref={setActivatorNodeRef}
                           className={`settings-model-rank${canDragGroups ? ' settings-model-grip' : ''}`}
                           title={canDragGroups ? 'Drag to reorder' : 'Group'}
-                          draggable={canDragGroups}
-                          onDragStart={(e) => {
-                            if (!canDragGroups) return
-                            setDraggingGroupId(g.id)
-                            setDragPayload(e, { kind: 'profile-model-group', id: g.id })
-                          }}
-                          onDragEnd={() => {
-                            setDraggingGroupId(null)
-                            setGroupDropHint(null)
-                          }}
+                          {...attributes}
+                          {...listeners}
                         >
                           {i + 1}
                         </span>
@@ -758,9 +746,12 @@ function ProfileCard({
                           </select>
                         </div>
                       </div>
-                    </div>
+                        </>
+                      )}
+                    </SortableItem>
                   )
                 })}
+                </SortableContext>
                 <datalist id={`${uid}-model-list`}>
                   {modelList.map((m) => <option key={m} value={m} />)}
                 </datalist>
@@ -770,7 +761,9 @@ function ProfileCard({
               </div>
             </div>
           </section>
-        </div>
+          </div>
+          <DragOverlayPortal>{renderDragGhost()}</DragOverlayPortal>
+        </DndContext>
       </AnimatedCollapse>
     </div>
   )

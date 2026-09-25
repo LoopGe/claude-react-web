@@ -14,7 +14,8 @@ import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { useSessionActiveWorktree, getSessionState } from '../session-store/selectors'
 import { recentMessagesDescription } from '../session-store/normalize'
-import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
+import { useDraggable, useDroppable } from '@dnd-kit/core'
+import { dndData, pointerOnlyListeners } from '../dnd/payload'
 import { useGitStatus } from '../hooks/useGitStatus'
 import { useChatStream } from '../hooks/useChatStream'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
@@ -179,10 +180,9 @@ export interface ChatPanelProps {
    *  sidebar's Delete. */
   onDelete?: (sessionId: string) => void
   onSessionUpdate: (s: SessionInfo) => void
-  /** Swap this panel with another open panel (called with the dragged id). */
-  onSwap: (draggedId: string, targetId: string) => void
-  /** A sidebar card was dropped onto this panel — replace it. */
-  onAcceptSidebarDrop: (sidebarId: string, sessionId: string) => void
+  /** Panel-swap and sidebar-card-accept drops are resolved by the App-level
+   *  DndContext's onDragEnd (the panel here only provides the draggable
+   *  header handle and the droppable surface). */
   /** Open the resume picker scope to this panel — the chosen session
    *  replaces this panel's slot. Triggered by the `/resume` local command. */
   onRequestResumeForPanel: (panelSessionId: string) => void
@@ -312,8 +312,6 @@ export const ChatPanel = memo(function ChatPanel({
   onCloseGroupPanels,
   onDelete,
   onSessionUpdate,
-  onSwap,
-  onAcceptSidebarDrop,
   onRequestResumeForPanel,
   resumeOpen,
   onResumeIntoPanel,
@@ -358,10 +356,23 @@ export const ChatPanel = memo(function ChatPanel({
   skin,
 }: ChatPanelProps) {
   // Panel swap via drag is a multi-panel desktop affordance; mobile is
-  // single-panel and touch can't HTML5-drag, so disable it there.
+  // single-panel and touch can't drag, so disable the drag handle there
+  // (the panel stays a drop target — harmless on touch).
   const isMobile = useIsMobile()
   const diagnostics = useDiagnostics(session.id, !!session.error)
-  const [dropActive, setDropActive] = useState(false)
+  // dnd-kit wiring: the header is the drag handle for panel swaps; the whole
+  // panel section is the drop target (accepts another panel → swap, or a
+  // sidebar card → replace this slot). Resolution lives in App's DndContext.
+  const panelDrag = useDraggable({
+    id: `panel-drag-${session.id}`,
+    disabled: isMobile,
+    data: dndData({ kind: 'main-panel', id: session.id }),
+  })
+  const panelDrop = useDroppable({
+    id: `panel-drop-${session.id}`,
+    data: dndData({ kind: 'main-panel', id: session.id }),
+  })
+  const dropActive = panelDrop.isOver
   /** Tracks the `generatedAt` of the recap the user has dismissed. When it
    *  matches the current session.recap.generatedAt, the floating window
    *  stays hidden; a NEW recap (different generatedAt) auto-reopens it.
@@ -771,6 +782,7 @@ export const ChatPanel = memo(function ChatPanel({
 
   return (
     <section
+      ref={panelDrop.setNodeRef}
       data-panel-id={session.id}
       className={cx(
         'chat-panel',
@@ -790,39 +802,21 @@ export const ChatPanel = memo(function ChatPanel({
         if (!focused) onFocus(session.id)
         void e
       }}
-      onDragOver={(e) => {
-        if (!isInAppDrag(e)) return
-        e.preventDefault()
-        setDropActive(true)
-      }}
-      onDragLeave={(e) => {
-        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-        setDropActive(false)
-      }}
-      onDrop={(e) => {
-        setDropActive(false)
-        const payload = readDragPayload(e)
-        if (!payload) return
-        e.preventDefault()
-        // Stop bubbling so the outer `.main-body` doesn't ALSO act on this
-        // drop (which would open the sidebar card a second time).
-        e.stopPropagation()
-        if (payload.kind === 'main-panel') {
-          onSwap(payload.id, session.id)
-        } else if (payload.kind === 'sidebar-card') {
-          onAcceptSidebarDrop(payload.id, session.id)
-        }
-      }}
     >
       <div
+        ref={(el) => {
+          panelDrag.setNodeRef(el)
+          panelDrag.setActivatorNodeRef(el)
+        }}
         className="chat-panel-header"
         // The header is the drag handle for panel swaps — the body stays
         // non-draggable so textarea text selection and scrolling work.
-        draggable={!isMobile}
-        onDragStart={(e) => {
-          if (isMobile) return
-          setDragPayload(e, { kind: 'main-panel', id: session.id })
-        }}
+        // Listeners only (no dnd-kit a11y attributes): the header already
+        // contains focusable controls and the panel reorder has keyboard
+        // alternatives in the panel context menu. The KeyboardSensor
+        // activator is stripped — Enter/Space on the header's buttons must
+        // activate them, not start a panel drag.
+        {...(isMobile ? {} : pointerOnlyListeners(panelDrag.listeners))}
       >
         <div className="chat-panel-header-row1">
         <Tooltip label={`Slot ${slot} · Ctrl/Cmd+${slot} to focus`} placement="bottom" align="start">

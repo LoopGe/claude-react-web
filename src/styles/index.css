@@ -2,6 +2,7 @@
 @import './controls.css';
 @import './layout.css';
 @import './session-list.css';
+@import './dnd.css';
 @import './chat.css';
 @import './messages.css';
 @import './overlays.css';

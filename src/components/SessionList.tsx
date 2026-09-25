@@ -2,8 +2,13 @@
 // The new-session form lives inside a modal (<NewSessionDialog />) so the
 // sidebar can dedicate its vertical space to listing sessions.
 
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { isInAppDrag, readDragPayload, setDragPayload } from '../hooks/useDragPayload'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useDndContext, useDroppable } from '@dnd-kit/core'
+import { SortableContext, useSortable, horizontalListSortingStrategy, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS as DndCSS } from '@dnd-kit/utilities'
+import { dndData, dndPayloadOf, pointerOnlyListeners } from '../dnd/payload'
+import type { SyntheticListenerMap } from '@dnd-kit/core/dist/hooks/utilities'
+import { SORTABLE_TRANSITION } from '../dnd/motion'
 import { prepareFlip } from '../utils/flip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
@@ -38,6 +43,108 @@ function sessionMatchesFilter(s: SessionInfo, q: string): boolean {
   if (s.cwd && s.cwd.toLowerCase().includes(q)) return true
   if (s.id.slice(0, 8).toLowerCase().includes(q)) return true
   return false
+}
+
+// ── dnd-kit building blocks ──────────────────────────────────────────────
+// One DndContext lives at App level (a session card can travel between the
+// sidebar and the main grid). The sidebar only mounts the sortable/droppable
+// nodes and delegates all event resolution upward.
+
+/** Generic sortable wrapper with a render-prop activator: the node carries
+ *  the displacement transform, `listeners`/`setActivatorNodeRef` go wherever
+ *  the drag handle is (a card's whole surface, a group header strip, a pill).
+ *  Listeners only — dnd-kit's a11y attributes would add a second tab stop
+ *  around controls that are already focusable, and keyboard reorder has
+ *  context-menu / shortcut alternatives. */
+function SortableNode({ id, data, disabled, className, style, nodeAttrs, extraDrop, children }: {
+  id: string
+  data: Record<string, unknown>
+  disabled: boolean
+  className?: string
+  style?: CSSProperties
+  /** Static DOM attributes (e.g. the FLIP markers prepareGroupFlip matches). */
+  nodeAttrs?: Record<string, string>
+  /** An additional always-independent droppable registered on the same node —
+   *  the group section uses it so the header stays a "drop session into
+   *  group" target even when the sortable itself is disabled (single group)
+   *  and so the header can light its own drop ring. */
+  extraDrop?: { id: string; data: Record<string, unknown>; disabled: boolean }
+  children: (state: {
+    isDragging: boolean
+    /** True while the extraDrop droppable is the current collision winner. */
+    isOverDrop: boolean
+    setActivatorNodeRef: (el: HTMLElement | null) => void
+    listeners: SyntheticListenerMap | undefined
+  }) => ReactNode
+}) {
+  const { listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
+    useSortable({ id, data, disabled })
+  const extra = useDroppable({
+    id: extraDrop?.id ?? `idle-extra-${id}`,
+    disabled: !extraDrop || extraDrop.disabled,
+    data: extraDrop?.data,
+  })
+  // Strip the KeyboardSensor activator: none of these surfaces spread dnd-kit's
+  // a11y attributes (they're already focusable controls with their own
+  // Enter/Space semantics), so keyboard drag would only hijack activation.
+  // Keyboard reorder lives in the context menu / Alt shortcuts.
+  const activatorListeners = pointerOnlyListeners(listeners)
+  return (
+    <div
+      ref={setNodeRef}
+      {...nodeAttrs}
+      className={className}
+      style={{
+        ...style,
+        transform: DndCSS.Transform.toString(transform),
+        // Inline transition ONLY while the item is being displaced — a
+        // permanent inline transition would override the stylesheet
+        // transitions (.deleting exit, hover states) at rest.
+        transition: transform ? (transition ?? SORTABLE_TRANSITION) : undefined,
+      }}
+    >
+      {children({ isDragging, isOverDrop: extraDrop ? extra.isOver : false, setActivatorNodeRef, listeners: activatorListeners })}
+    </div>
+  )
+}
+
+/** A group's session body — also the "drop session here" target when the
+ *  pointer is over the body rather than a specific card (the dashed ring).
+ *  Disabled while the group is full, unless the dragged card is a member. */
+function GroupSessionBody({ group, maxGroupSize, sessions, renderCard, className, domId }: {
+  group: SessionGroup
+  maxGroupSize: number
+  sessions: SessionInfo[]
+  renderCard: (s: SessionInfo, containerGroupId?: string, isFirst?: boolean, isLast?: boolean, idx?: number) => ReactNode
+  className?: string
+  /** DOM id for the header's aria-controls (separate namespace from the
+   *  dnd-kit droppable id). */
+  domId?: string
+}) {
+  const dnd = useDndContext()
+  const activePayload = dndPayloadOf(dnd.active?.data.current)
+  const draggingCard = activePayload?.kind === 'sidebar-card' ? activePayload.id : null
+  // The "drop session here" ring is for session cards only — a group-card or
+  // panel-header drag crossing the body must never light it (nothing accepts
+  // those here).
+  const full = group.sessionIds.length >= maxGroupSize
+  const acceptCard = !!draggingCard && (!full || group.sessionIds.includes(draggingCard))
+  const { setNodeRef, isOver } = useDroppable({
+    id: `group-body-${group.id}`,
+    disabled: !acceptCard,
+    data: dndData({ kind: 'group-card', id: group.id }),
+  })
+  return (
+    <div
+      id={domId}
+      ref={setNodeRef}
+      className={`${className ?? 'group-sessions'}${isOver ? ' drop-target' : ''}`}
+    >
+      <SortableContext items={sessions.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+        {sessions.map((s, i) => renderCard(s, group.id, false, i === sessions.length - 1, i))}
+      </SortableContext>
+    </div>
+  )
 }
 
 interface Props {
@@ -209,22 +316,6 @@ export const SessionList = memo(function SessionList({
     if (onNewSessionDialogChange) onNewSessionDialogChange(v)
     else setUncontrolledShow(v)
   }
-  /** Id of the card currently being dragged, so we can fade it out. */
-  const [draggingId, setDraggingId] = useState<string | null>(null)
-  /** Id of the card currently being hovered over + which half. Used to
-   *  paint a single insertion line without reshuffling the DOM mid-drag. */
-  const [dropHint, setDropHint] = useState<{ id: string; position: 'before' | 'after' } | null>(null)
-  /** Id of the group header/body currently being hovered during a drag.
-   *  Paints the section as a drop target — distinct from `dropHint`
-   *  which targets a specific card. */
-  const [groupDropHint, setGroupDropHint] = useState<string | null>(null)
-  /** Id of the group currently being dragged (from its section header or a
-   *  pill), so we can fade the source. Mutually exclusive with `draggingId`. */
-  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null)
-  /** Group insertion-line hint (before/after a header or pill) during a
-   *  group-card drag. Separate from `groupDropHint` so dragging a group over
-   *  a header doesn't light the "drop session here" dashed ring. */
-  const [groupReorderHint, setGroupReorderHint] = useState<{ id: string; position: 'before' | 'after' } | null>(null)
   /** Which card is currently in inline-rename mode, and the draft text. */
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
@@ -362,50 +453,10 @@ export const SessionList = memo(function SessionList({
     setMenu({ x: e.clientX, y: e.clientY, id })
   }, [])
 
-  const handleCardDragStart = useCallback((_e: React.DragEvent, id: string) => {
-    setDraggingId(id)
-    setDraggingGroupId(null)
-    setGroupReorderHint(null)
-  }, [])
-
-  const handleCardDragEnd = useCallback(() => {
-    setDraggingId(null)
-    setDropHint(null)
-  }, [])
-
-  const handleSetDropHint = useCallback((id: string, position: 'before' | 'after') => {
-    setDropHint((prev) => {
-      if (prev && prev.id === id && prev.position === position) return prev
-      return { id, position }
-    })
-  }, [])
-
-  const handleClearDropHint = useCallback(() => {
-    setDropHint(null)
-  }, [])
-
-  // ── Group drag/reorder callbacks ──────────────────────────────
-  const handleGroupDragStart = useCallback((_e: React.DragEvent, id: string) => {
-    setDraggingGroupId(id)
-    setDraggingId(null)
-    setDropHint(null)
-    setGroupReorderHint(null)
-    // A cancelled session-card drag can leave the "drop session here" dashed
-    // ring (`groupDropHint`) on a group; a group drag must not inherit it.
-    setGroupDropHint(null)
-  }, [])
-
-  const handleGroupDragEnd = useCallback(() => {
-    setDraggingGroupId(null)
-    setGroupReorderHint(null)
-  }, [])
-
-  const handleSetGroupReorderHint = useCallback((id: string, position: 'before' | 'after') => {
-    setGroupReorderHint((prev) => {
-      if (prev && prev.id === id && prev.position === position) return prev
-      return { id, position }
-    })
-  }, [])
+  // Drag/reorder now flows through the App-level DndContext (dnd-kit):
+  // sortable nodes here only report geometry, and the live/cross-container
+  // moves are resolved there. The FLIP wrappers below still serve the
+  // keyboard/context-menu reorder paths.
 
   const handleRenameDraftChange = useCallback((draft: string) => {
     setRenameDraft(draft)
@@ -511,30 +562,9 @@ export const SessionList = memo(function SessionList({
     })
   }, [])
 
-  /** Wrapped reorder callbacks that apply FLIP animation so dropped cards
-   *  slide smoothly into their new positions (same technique as keyboard
-   *  Move up/down). */
-  const animatedReorder = useCallback(
-    (draggedId: string, targetId: string, position: 'before' | 'after') => {
-      const animateMove = prepareMoveAnimation()
-      onReorder?.(draggedId, targetId, position)
-      animateMove()
-    },
-    [onReorder, prepareMoveAnimation],
-  )
-
-  const animatedReorderInGroup = useCallback(
-    (draggedId: string, targetId: string, position: 'before' | 'after', groupId: string) => {
-      const animateMove = prepareMoveAnimation()
-      onReorderInGroup?.(draggedId, targetId, position, groupId)
-      animateMove()
-    },
-    [onReorderInGroup, prepareMoveAnimation],
-  )
-
-  /** Wrapped cross-section move (drag-drop into a group header/body, or
-   *  context-menu "Move to group" / "Remove from group"). Without FLIP
-   *  the row teleports to its new section the instant `groups` state
+  /** Wrapped cross-section move (context-menu "Move to group" / "Remove from
+   *  group"; the drag-drop path is resolved by App's DndContext). Without
+   *  FLIP the row teleports to its new section the instant `groups` state
    *  flips — using the same animation as keyboard reorder keeps the
    *  motion language consistent. */
   const animatedAddToGroup = useCallback(
@@ -548,51 +578,53 @@ export const SessionList = memo(function SessionList({
 
   /** Render a SessionCard with all shared props pre-bound. Extracted from
    *  the 3 render sites (grouped, ungrouped-section, flat) to avoid
-   *  duplicating 17+ props. */
+   *  duplicating 17+ props. The shell div is the dnd-kit sortable node; the
+   *  drag activator is the card surface itself (dragListeners spread on the
+   *  card root, before its own handlers so selection keys win). */
   const renderCard = useCallback(
     (s: SessionInfo, containerGroupId?: string, isFirst = false, isLast = false, idx = 0) => {
       const isDeleting = deletingIds?.has(s.id) ?? false
+      const isResuming = resumingIds?.has(s.id) ?? false
+      const sortableDisabled = isMobile || isResuming || isDeleting || (!onReorder && !onReorderInGroup)
       return (
-        <div
+        <SortableNode
           key={s.id}
+          id={s.id}
+          data={dndData({ kind: 'sidebar-card', id: s.id }, { containerGroupId })}
+          disabled={sortableDisabled}
           className={`session-item-shell${isDeleting ? ' deleting' : ''}${isFirst ? ' list-first' : ''}${isLast ? ' list-last' : ''}${s.id === focusedId ? ' focused' : ''}`}
-          data-session-card-id={s.id}
           style={{ '--stagger': `${Math.min(idx, 12) * 30}ms` } as CSSProperties}
+          nodeAttrs={{ 'data-session-card-id': s.id }}
         >
-          <SessionCard
-            session={s}
-            slotIdx={openIdSlotMap.get(s.id) ?? -1}
-            isOpen={openIdSet.has(s.id)}
-            isFocused={s.id === focusedId}
-            isResuming={resumingIds?.has(s.id) ?? false}
-            hasUnread={!!unread?.[s.id]}
-            isDragging={draggingId === s.id}
-            isDeleting={isDeleting}
-            dropPosition={dropHint && dropHint.id === s.id ? dropHint.position : null}
-            isRenaming={renamingId === s.id}
-            accentStyle={accentStyleMap.get(s.id)}
-            containerGroupId={containerGroupId}
-            onSelect={onSelect}
-            onDelete={onDelete}
-            onSleep={onSleep}
-            onContextMenu={handleCardContextMenu}
-            onDragStart={handleCardDragStart}
-            onDragEnd={handleCardDragEnd}
-            onSetDropHint={handleSetDropHint}
-            onClearDropHint={handleClearDropHint}
-            onReorder={animatedReorder}
-            onReorderInGroup={animatedReorderInGroup}
-            renameDraft={renameDraft}
-            onRenameDraftChange={handleRenameDraftChange}
-            onCommitRename={commitRename}
-            onCancelRename={cancelRename}
-            onStartRename={startRename}
-            onAskConfirm={handleAskConfirm}
-          />
-        </div>
+          {({ isDragging, listeners }) => (
+            <SessionCard
+              session={s}
+              slotIdx={openIdSlotMap.get(s.id) ?? -1}
+              isOpen={openIdSet.has(s.id)}
+              isFocused={s.id === focusedId}
+              isResuming={isResuming}
+              hasUnread={!!unread?.[s.id]}
+              isDragging={isDragging}
+              isDeleting={isDeleting}
+              isRenaming={renamingId === s.id}
+              accentStyle={accentStyleMap.get(s.id)}
+              dragListeners={listeners}
+              onSelect={onSelect}
+              onDelete={onDelete}
+              onSleep={onSleep}
+              onContextMenu={handleCardContextMenu}
+              renameDraft={renameDraft}
+              onRenameDraftChange={handleRenameDraftChange}
+              onCommitRename={commitRename}
+              onCancelRename={cancelRename}
+              onStartRename={startRename}
+              onAskConfirm={handleAskConfirm}
+            />
+          )}
+        </SortableNode>
       )
     },
-    [openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, draggingId, dropHint, renamingId, accentStyleMap, onSelect, onDelete, onSleep, handleCardContextMenu, handleCardDragStart, handleCardDragEnd, handleSetDropHint, handleClearDropHint, animatedReorder, animatedReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm],
+    [isMobile, openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, renamingId, accentStyleMap, onSelect, onDelete, onSleep, handleCardContextMenu, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm],
   )
 
   /** Resolve which ordered list a session belongs to and, when it lives in
@@ -711,68 +743,48 @@ export const SessionList = memo(function SessionList({
             The "+ Group" create control stays available on all viewports; the
             groups themselves remain visible as collapsible sections below. */}
         <div className="group-pills">
-          {!isMobile && groups.map((g, i) => (
-            <button
-              key={g.id}
-              type="button"
-              data-group-pill-id={g.id}
-              className={`group-pill ${g.id === activeGroupId ? 'active' : ''} ${
-                draggingGroupId === g.id ? 'dragging' : ''
-              } ${
-                groupReorderHint && groupReorderHint.id === g.id
-                  ? groupReorderHint.position === 'before'
-                    ? 'drop-before'
-                    : 'drop-after'
-                  : ''
-              }`}
-              aria-pressed={g.id === activeGroupId}
-              title={`Activate "${g.name}" (${g.sessionIds.length} sessions)${i < 9 ? ` · Alt+${i + 1}` : ''} · right-click for options · drag to reorder`}
-              onClick={() => onActivateGroup(g.id)}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                setGroupMenuTarget(g.id)
-                setGroupMenuPos({ x: e.clientX, y: e.clientY })
-              }}
-              draggable={!isMobile && !!onReorderGroups && groups.length > 1}
-              onDragStart={(e) => {
-                if (!onReorderGroups) return
-                handleGroupDragStart(e, g.id)
-                setDragPayload(e, { kind: 'group-card', id: g.id })
-              }}
-              onDragEnd={handleGroupDragEnd}
-              onDragOver={(e) => {
-                if (!onReorderGroups || !isInAppDrag(e)) return
-                if (draggingGroupId == null || draggingGroupId === g.id) return
-                e.preventDefault()
-                const rect = e.currentTarget.getBoundingClientRect()
-                const position: 'before' | 'after' =
-                  e.clientX < rect.left + rect.width / 2 ? 'before' : 'after'
-                handleSetGroupReorderHint(g.id, position)
-              }}
-              onDragLeave={(e) => {
-                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-                if (groupReorderHint?.id === g.id) setGroupReorderHint(null)
-              }}
-              onDrop={(e) => {
-                const payload = readDragPayload(e)
-                setGroupReorderHint(null)
-                setDraggingGroupId(null)
-                if (!payload || payload.kind !== 'group-card') return
-                if (!onReorderGroups) return
-                e.preventDefault()
-                const rect = e.currentTarget.getBoundingClientRect()
-                const position: 'before' | 'after' =
-                  e.clientX < rect.left + rect.width / 2 ? 'before' : 'after'
-                onReorderGroups(payload.id, g.id, position)
-              }}
-            >
-              {showGroupHints && i < 9 && (
-                <span className="group-pill-hint" aria-hidden="true">{i + 1}</span>
-              )}
-              {g.name}
-              <span className="group-pill-count">{g.sessionIds.length}</span>
-            </button>
-          ))}
+          {!isMobile && (
+            <SortableContext items={groups.map((g) => `pill-${g.id}`)} strategy={horizontalListSortingStrategy}>
+            {groups.map((g, i) => (
+              <SortableNode
+                key={g.id}
+                // Distinct node id from the group section (same App-level
+                // DndContext registers both; the registry is keyed by id).
+                // The payload id stays `g.id` — that's what the reorder
+                // handlers act on.
+                id={`pill-${g.id}`}
+                data={dndData({ kind: 'group-card', id: g.id }, { axis: 'x' })}
+                disabled={isMobile || !onReorderGroups || groups.length <= 1}
+              >
+                {({ isDragging, setActivatorNodeRef, listeners }) => (
+                  <button
+                    ref={setActivatorNodeRef}
+                    type="button"
+                    data-group-pill-id={g.id}
+                    className={`group-pill ${g.id === activeGroupId ? 'active' : ''} ${
+                      isDragging ? 'dragging' : ''
+                    }`}
+                    aria-pressed={g.id === activeGroupId}
+                    title={`Activate "${g.name}" (${g.sessionIds.length} sessions)${i < 9 ? ` · Alt+${i + 1}` : ''} · right-click for options · drag to reorder`}
+                    {...listeners}
+                    onClick={() => onActivateGroup(g.id)}
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setGroupMenuTarget(g.id)
+                      setGroupMenuPos({ x: e.clientX, y: e.clientY })
+                    }}
+                  >
+                    {showGroupHints && i < 9 && (
+                      <span className="group-pill-hint" aria-hidden="true">{i + 1}</span>
+                    )}
+                    {g.name}
+                    <span className="group-pill-count">{g.sessionIds.length}</span>
+                  </button>
+                )}
+              </SortableNode>
+            ))}
+            </SortableContext>
+          )}
           {showNewGroupInput ? (
             <input
               ref={newGroupInputRef}
@@ -835,8 +847,13 @@ export const SessionList = memo(function SessionList({
               </div>
             )
           ) : filteredSections.length > 0 ? (
-          // ── Sectioned view (groups exist) ──
-          filteredSections.map((sec) => {
+          // ── Sectioned view (groups exist). One SortableContext over all
+          // group sections: useSortable needs it to resolve an item's index
+          // (without it sections never compute displacement transforms). The
+          // Ungrouped section isn't a sortable member — its cards have their
+          // own context below.
+          <SortableContext items={filteredSections.filter((s) => s.kind === 'group').map((s) => s.group.id)} strategy={verticalListSortingStrategy}>
+          {filteredSections.map((sec) => {
             if (sec.kind === 'group') {
               const collapsed = !!collapsedGroups[sec.group.id]
               const active = isGroupActive(sec.group)
@@ -857,18 +874,36 @@ export const SessionList = memo(function SessionList({
               }
               const groupBodyId = `group-body-${sec.group.id}`
               return (
-                <div key={sec.group.id} data-group-section-id={sec.group.id} className={`session-section ${active ? 'group-active' : ''}`}>
+                // The whole section is the sortable node (live-displaces when
+                // groups reorder); the header strip is the drag activator.
+                // Dropping a session card on the header or body moves it into
+                // the group — resolved by App's DndContext onDragEnd (the
+                // payload kind of the section node is `group-card`).
+                <SortableNode
+                  key={sec.group.id}
+                  id={sec.group.id}
+                  data={dndData({ kind: 'group-card', id: sec.group.id }, { axis: 'y' })}
+                  disabled={!onReorderGroups || isMobile || groups.length <= 1}
+                  className={`session-section ${active ? 'group-active' : ''}`}
+                  nodeAttrs={{ 'data-group-section-id': sec.group.id }}
+                  extraDrop={{
+                    // Independent drop target for "move a session card into
+                    // this group" — must stay enabled even when the section
+                    // sortable is disabled (single group), and it drives the
+                    // header's drop ring.
+                    id: `group-head-${sec.group.id}`,
+                    data: dndData({ kind: 'group-card', id: sec.group.id }),
+                    disabled: isMobile || !onDropIntoGroup,
+                  }}
+                >
+                  {({ isDragging: groupDragging, isOverDrop, setActivatorNodeRef, listeners }) => (
+                    <>
                   <div
+                    ref={setActivatorNodeRef}
                     className={`session-group-header list-first${collapsed || sec.sessions.length === 0 ? ' list-last' : ''} ${
-                      groupDropHint === sec.group.id ? 'drop-target' : ''
+                      groupDragging ? 'dragging' : ''
                     } ${
-                      draggingGroupId === sec.group.id ? 'dragging' : ''
-                    } ${
-                      groupReorderHint && groupReorderHint.id === sec.group.id
-                        ? groupReorderHint.position === 'before'
-                          ? 'drop-before'
-                          : 'drop-after'
-                        : ''
+                      isOverDrop ? 'drop-target' : ''
                     }`}
                     role="button"
                     tabIndex={0}
@@ -877,6 +912,7 @@ export const SessionList = memo(function SessionList({
                         ? `${collapsed ? 'Expand' : 'Collapse'} group ${sec.group.name}`
                         : `Activate group ${sec.group.name}`
                     }
+                    {...listeners}
                     aria-controls={groupBodyId}
                     // On mobile a single panel is shown, so "activating" a group
                     // (swapping the whole panel set) is meaningless — the header
@@ -904,62 +940,6 @@ export const SessionList = memo(function SessionList({
                         ? `${collapsed ? 'Expand' : 'Collapse'} ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
                         : `Activate ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
                     }
-                    draggable={!isMobile && !!onReorderGroups && groups.length > 1}
-                    onDragStart={(e) => {
-                      if (!onReorderGroups) return
-                      handleGroupDragStart(e, sec.group.id)
-                      setDragPayload(e, { kind: 'group-card', id: sec.group.id })
-                    }}
-                    onDragEnd={handleGroupDragEnd}
-                    onDragOver={(e) => {
-                      if (!isInAppDrag(e)) return
-                      // Group-reorder branch — a group-card is being dragged.
-                      // The payload kind isn't readable mid-drag (browsers only
-                      // populate getData on drop), so we branch on our own drag
-                      // state, which is mutually exclusive with `draggingId`.
-                      if (draggingGroupId != null) {
-                        if (!onReorderGroups || draggingGroupId === sec.group.id) return
-                        e.preventDefault()
-                        const rect = e.currentTarget.getBoundingClientRect()
-                        const position: 'before' | 'after' =
-                          e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-                        handleSetGroupReorderHint(sec.group.id, position)
-                        return
-                      }
-                      // Session-card-into-group branch (existing behaviour).
-                      if (!onDropIntoGroup) return
-                      // Don't accept drops if group is full (unless reordering within same group)
-                      if (sec.group.sessionIds.length >= maxGroupSize && !sec.group.sessionIds.includes(draggingId ?? '')) return
-                      e.preventDefault()
-                      if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
-                    }}
-                    onDragLeave={(e) => {
-                      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-                      if (groupDropHint === sec.group.id) setGroupDropHint(null)
-                      if (groupReorderHint?.id === sec.group.id) setGroupReorderHint(null)
-                    }}
-                    onDrop={(e) => {
-                      const payload = readDragPayload(e)
-                      setGroupDropHint(null)
-                      setGroupReorderHint(null)
-                      setDraggingId(null)
-                      setDraggingGroupId(null)
-                      if (!payload) return
-                      if (payload.kind === 'group-card') {
-                        if (!onReorderGroups) return
-                        e.preventDefault()
-                        const rect = e.currentTarget.getBoundingClientRect()
-                        const position: 'before' | 'after' =
-                          e.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
-                        onReorderGroups(payload.id, sec.group.id, position)
-                        return
-                      }
-                      if (payload.kind === 'sidebar-card') {
-                        if (!onDropIntoGroup) return
-                        e.preventDefault()
-                        animatedAddToGroup(payload.id, sec.group.id)
-                      }
-                    }}
                   >
                     <button
                       className="group-collapse-arrow"
@@ -1000,54 +980,18 @@ export const SessionList = memo(function SessionList({
                   </div>
                   <AnimatedCollapse open={!collapsed} className="session-group-collapse">
                     {sec.sessions.length > 0 ? (
-                      <div
-                        id={groupBodyId}
-                        className={`group-sessions ${groupDropHint === sec.group.id ? 'drop-target' : ''}`}
-                        onDragOver={(e) => {
-                          if (!onDropIntoGroup || !isInAppDrag(e)) return
-                          // A group-card being dragged isn't a session-drop —
-                          // don't light the "drop session here" ring. The body
-                          // is not a group-reorder target (that's the header).
-                          if (draggingGroupId != null) return
-                          // Accept drops anywhere in the group body that
-                          // aren't intercepted by a specific card. The
-                          // event bubbles up from cards, so we only
-                          // highlight when the target is the body itself.
-                          if (e.target !== e.currentTarget) return
-                          // Don't accept drops if group is full (unless reordering within same group)
-                          if (sec.group.sessionIds.length >= maxGroupSize && !sec.group.sessionIds.includes(draggingId ?? '')) return
-                          e.preventDefault()
-                          if (groupDropHint !== sec.group.id) setGroupDropHint(sec.group.id)
-                        }}
-                        onDragLeave={(e) => {
-                          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
-                          if (groupDropHint === sec.group.id) setGroupDropHint(null)
-                        }}
-                        onDrop={(e) => {
-                          if (!onDropIntoGroup) return
-                          // Only act on drops directly on the body, not
-                          // bubbled from a child card (the card has its
-                          // own onDrop and already stopped propagation by
-                          // calling preventDefault). Target check below.
-                          if (e.target !== e.currentTarget) {
-                            setGroupDropHint(null)
-                            return
-                          }
-                          const payload = readDragPayload(e)
-                          setGroupDropHint(null)
-                          setDraggingId(null)
-                          if (!payload || payload.kind !== 'sidebar-card') return
-                          e.preventDefault()
-                          animatedAddToGroup(payload.id, sec.group.id)
-                        }}
-                      >
-                        {sec.sessions.map((s, i) =>
-                          renderCard(s, sec.group.id, false, i === sec.sessions.length - 1, i),
-                        )}
-                      </div>
+                      <GroupSessionBody
+                        group={sec.group}
+                        maxGroupSize={maxGroupSize}
+                        sessions={sec.sessions}
+                        renderCard={renderCard}
+                        domId={groupBodyId}
+                      />
                     ) : null}
                   </AnimatedCollapse>
-                </div>
+                    </>
+                  )}
+                </SortableNode>
               )
             }
             if (sec.kind === 'ungrouped') {
@@ -1059,29 +1003,36 @@ export const SessionList = memo(function SessionList({
                     <span className="group-header-count">{sec.sessions.length}</span>
                   </div>
                   <div className="group-sessions">
-                    {sec.sessions.map((s, i) =>
-                      renderCard(s, undefined, i === 0, i === sec.sessions.length - 1, i),
-                    )}
+                    <SortableContext items={sec.sessions.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+                      {sec.sessions.map((s, i) =>
+                        renderCard(s, undefined, i === 0, i === sec.sessions.length - 1, i),
+                      )}
+                    </SortableContext>
                   </div>
                 </div>
               )
             }
             return null
-          })
+          })}
+          </SortableContext>
           ) : visibleSessions.length === 0 ? (
             <div className="sidebar-empty-note">
               No sessions match "{filter}".
             </div>
           ) : (
-            // ── Flat view (no groups) — virtualized ──
-            <Virtuoso
-              data={visibleSessions}
-              style={{ flex: 1 }}
-              scrollerRef={virtuosoScrollerRef}
-              itemContent={(index, s) =>
-                renderCard(s, undefined, index === 0, index === visibleSessions.length - 1, index)
-              }
-            />
+            // ── Flat view (no groups) — virtualized. SortableContext wraps
+            // the list so cards reorder live; only rendered items register
+            // as droppables, which is fine for pointer-driven drags.
+            <SortableContext items={visibleSessions.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+              <Virtuoso
+                data={visibleSessions}
+                style={{ flex: 1 }}
+                scrollerRef={virtuosoScrollerRef}
+                itemContent={(index, s) =>
+                  renderCard(s, undefined, index === 0, index === visibleSessions.length - 1, index)
+                }
+              />
+            </SortableContext>
           )}
       </div>
 

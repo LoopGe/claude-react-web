@@ -45,17 +45,12 @@ const baseProps: SessionCardProps = {
   hasUnread: false,
   isDragging: false,
   isDeleting: false,
-  dropPosition: null,
   isRenaming: false,
   renameDraft: '',
   onSelect: vi.fn(),
   onDelete: vi.fn(),
   onSleep: vi.fn(),
   onContextMenu: vi.fn(),
-  onDragStart: vi.fn(),
-  onDragEnd: vi.fn(),
-  onSetDropHint: vi.fn(),
-  onClearDropHint: vi.fn(),
   onCommitRename: vi.fn(),
   onCancelRename: vi.fn(),
   onStartRename: vi.fn(),
@@ -221,14 +216,6 @@ describe('SessionCard', () => {
     const { container } = render(<SessionCard {...baseProps} isDragging />)
     const card = container.querySelector('.session-item')
     expect(card?.classList.contains('dragging')).toBe(true)
-  })
-
-  it('applies drop-before/drop-after classes', () => {
-    const { container: c1 } = render(<SessionCard {...baseProps} dropPosition="before" />)
-    expect(c1.querySelector('.drop-before')).not.toBeNull()
-
-    const { container: c2 } = render(<SessionCard {...baseProps} dropPosition="after" />)
-    expect(c2.querySelector('.drop-after')).not.toBeNull()
   })
 
   it('replaces the status chip with an unread dot for an open session', () => {

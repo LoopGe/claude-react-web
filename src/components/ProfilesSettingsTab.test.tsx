@@ -1,29 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import * as useProfiles from '../hooks/useProfiles'
 import type { ProviderProfile } from '../types/config'
-
-/** Minimal DataTransfer stand-in. jsdom has no HTML5 DnD, and
- *  `isInAppDrag` / `readDragPayload` both go through `types` + custom
- *  MIME — so the mock has to keep `types` in sync with `setData`. */
-function makeDataTransfer() {
-  const store = new Map<string, string>()
-  const types: string[] = []
-  return {
-    effectAllowed: 'none' as string,
-    get types() {
-      return types.slice()
-    },
-    setData(type: string, value: string) {
-      if (!store.has(type)) types.push(type)
-      store.set(type, value)
-    },
-    getData(type: string) {
-      return store.get(type) ?? ''
-    },
-  }
-}
 
 vi.mock('../hooks/useProfiles', () => ({ useProfiles: vi.fn() }))
 
@@ -104,7 +83,7 @@ describe('ProfilesSettingsTab', () => {
     expect(screen.queryAllByText('ma')).toHaveLength(0)
   })
 
-  describe('drag-reorder', () => {
+  describe('drag-reorder (dnd-kit)', () => {
     const multi: ProviderProfile[] = [
       {
         id: 'a',
@@ -136,42 +115,79 @@ describe('ProfilesSettingsTab', () => {
       return update
     }
 
-    function dragOnto(source: HTMLElement, target: HTMLElement) {
-      // jsdom's DragEvent does not forward `clientY` into the React synthetic
-      // event (`undefined < midpoint` is false), so every drop reads as
-      // 'after'. That is enough to prove the reorder wiring end-to-end; the
-      // 'before' branch is the same ternary with the comparison flipped and
-      // isn't expressible here. Use fireEvent (native dispatchEvent does not
-      // reach React's delegated handlers in this setup).
-      const dt = makeDataTransfer()
-      fireEvent.dragStart(source, { dataTransfer: dt })
-      fireEvent.dragOver(target, { dataTransfer: dt })
-      fireEvent.drop(target, { dataTransfer: dt })
+    /** Give the sortable rows/cards real geometry — jsdom reports every rect
+     *  as 0×0, which would collapse dnd-kit's closestCenter collision
+     *  detection. Rows stack at 40px; group cards sit below at 200px+. */
+    function primeRects(container: HTMLElement) {
+      // Scope to the Available-Models list (the first .settings-model-list):
+      // group cards contain their own .settings-model-row header.
+      const list = container.querySelector<HTMLElement>('.settings-model-list')!
+      list.querySelectorAll<HTMLElement>(':scope > .settings-model-row').forEach((el, i) => {
+        el.getBoundingClientRect = () => rect(0, i * 40, 300, 38)
+      })
+      container.querySelectorAll<HTMLElement>('.settings-model-group').forEach((el, i) => {
+        el.getBoundingClientRect = () => rect(0, 200 + i * 60, 300, 58)
+      })
     }
 
-    it('reorders model rows via drag (drop below → insert after)', () => {
+    function rect(x: number, y: number, w: number, h: number): DOMRect {
+      return {
+        x, y, width: w, height: h,
+        top: y, left: x, right: x + w, bottom: y + h,
+        toJSON: () => ({}),
+      } as DOMRect
+    }
+
+    /** Pointer-press the grip, drag `toY`, release. ≥5px of travel activates
+     *  dnd-kit's PointerSensor (see dnd/sensors.ts). TWO moves: the first
+     *  crosses the activation distance, but droppable rects are measured
+     *  asynchronously (rAF) after activation — the second move is what
+     *  collision detection sees with real geometry. On release, dnd-kit
+     *  removes its document-level click stopper on a 50ms timer, so callers
+     *  must await this before firing further clicks. */
+    async function dragGripTo(grip: HTMLElement, toY: number) {
+      fireEvent.pointerDown(grip, { pointerId: 1, button: 0, buttons: 1, isPrimary: true, clientX: 150, clientY: 20 })
+      act(() => {
+        fireEvent.pointerMove(document, { pointerId: 1, buttons: 1, clientX: 150, clientY: toY })
+        fireEvent.pointerMove(document, { pointerId: 1, buttons: 1, clientX: 150, clientY: toY })
+      })
+      fireEvent.pointerUp(document, { pointerId: 1, buttons: 0 })
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60))
+      })
+    }
+
+    /** Model order, scoped to the list container — the DragOverlay ghost
+     *  clone also renders a `.settings-model-row` and must not count. */
+    const modelOrder = (container: HTMLElement) => {
+      const list = container.querySelector<HTMLElement>('.settings-model-list')!
+      return [...list.querySelectorAll<HTMLElement>(':scope > .settings-model-row > code')].map((el) => el.textContent)
+    }
+
+    /** Grip (rank badge) of each row in the Available-Models list, excluding
+     *  the group cards' header rows. */
+    const modelGrips = (container: HTMLElement) =>
+      [...container.querySelectorAll<HTMLElement>('.settings-model-list > .settings-model-row > .settings-model-rank')]
+
+    it('reorders model rows via drag (drop below → insert after)', async () => {
       mockMulti()
-      render(<ProfilesSettingsTab />)
-      // The rank badge is the drag grip; the row is the drop target.
-      const rows = screen.getAllByRole('code').map((el) => el.closest<HTMLElement>('.settings-model-row')!)
-      const grips = rows.map((r) => r.querySelector<HTMLElement>('.settings-model-rank')!)
-      // Drag 'ma' below 'mc' → mb, mc, ma.
-      dragOnto(grips[0], rows[2])
-      const order = screen.getAllByRole('code').map((el) => el.textContent)
-      expect(order).toEqual(['mb', 'mc', 'ma'])
+      const { container } = render(<ProfilesSettingsTab />)
+      primeRects(container)
+      // The rank badge is the drag grip; drag 'ma' (y≈20) down to 'mc' (y≈100).
+      const grips = modelGrips(container)
+      expect(grips.length).toBe(3)
+      await dragGripTo(grips[0], 100)
+      expect(modelOrder(container)).toEqual(['mb', 'mc', 'ma'])
     })
 
-    it('ignores a no-op drop (item onto its own row) and stays clean', async () => {
+    it('ignores a no-op drag (item back onto its own slot) and stays clean', async () => {
       const update = mockMulti()
-      render(<ProfilesSettingsTab />)
-      const rows = screen.getAllByRole('code').map((el) => el.closest<HTMLElement>('.settings-model-row')!)
-      const grips = rows.map((r) => r.querySelector<HTMLElement>('.settings-model-rank')!)
-      // Drop 'ma' onto its own row — order must not change.
-      dragOnto(grips[0], rows[0])
-      const order = screen.getAllByRole('code').map((el) => el.textContent)
-      expect(order).toEqual(['ma', 'mb', 'mc'])
-      // Save still PUTs the unchanged list (applyReorder short-circuited, so
-      // no shuffle leaked into state).
+      const { container } = render(<ProfilesSettingsTab />)
+      primeRects(container)
+      const grips = modelGrips(container)
+      // Drag 'ma' and release back over its own row — order must not change.
+      await dragGripTo(grips[0], 10)
+      expect(modelOrder(container)).toEqual(['ma', 'mb', 'mc'])
       fireEvent.click(screen.getByRole('button', { name: /^Save( changes)?$/i }))
       await vi.waitFor(() => {
         expect(update).toHaveBeenCalledWith(
@@ -181,14 +197,17 @@ describe('ProfilesSettingsTab', () => {
       })
     })
 
-    it('reorders model groups via the rank grip', () => {
+    it('reorders model groups via the rank grip', async () => {
       mockMulti()
       const { container } = render(<ProfilesSettingsTab />)
-      const grips = container.querySelectorAll<HTMLElement>('.settings-model-group .settings-model-rank')
-      const groups = container.querySelectorAll<HTMLElement>('.settings-model-group')
+      primeRects(container)
+      const grips = [...container.querySelectorAll<HTMLElement>('.settings-model-group > .settings-model-row > .settings-model-rank')]
       expect(grips).toHaveLength(2)
-      // Drag group 1's grip onto group 2's card → Group 2, Group 1.
-      dragOnto(grips[0], groups[1])
+      // Drag group 1's grip onto group 2's card → Group 2, Group 1. The drop
+      // point is g2's centre: dnd-kit caches the ACTIVE node's rect at mount
+      // (0×0 in jsdom — the stubs land after mount), so collision resolution
+      // keys off the drop coordinates against the freshly-measured droppables.
+      await dragGripTo(grips[0], 300)
       const names = [...container.querySelectorAll<HTMLInputElement>('.settings-model-group input[aria-label="Group name"]')]
         .map((el) => el.value)
       expect(names).toEqual(['Group 2', 'Group 1'])
@@ -196,20 +215,28 @@ describe('ProfilesSettingsTab', () => {
 
     it('marks the list dirty so Save flushes the new order', async () => {
       const update = mockMulti()
-      render(<ProfilesSettingsTab />)
-      const rows = screen.getAllByRole('code').map((el) => el.closest<HTMLElement>('.settings-model-row')!)
-      const grips = rows.map((r) => r.querySelector<HTMLElement>('.settings-model-rank')!)
-      dragOnto(grips[0], rows[2])
+      const { container } = render(<ProfilesSettingsTab />)
+      primeRects(container)
+      const grips = modelGrips(container)
+      await dragGripTo(grips[0], 100)
+      expect(modelOrder(container)).toEqual(['mb', 'mc', 'ma'])
       // Unified Save in the modal calls the registered dirty callback, which
       // PUTs the profile. Click the card-level Save that appears when dirty.
-      const saveBtn = screen.getByRole('button', { name: /^Save( changes)?$/i })
-      fireEvent.click(saveBtn)
+      fireEvent.click(screen.getByRole('button', { name: /^Save( changes)?$/i }))
       await vi.waitFor(() => {
         expect(update).toHaveBeenCalledWith(
           'a',
           expect.objectContaining({ modelList: ['mb', 'mc', 'ma'] }),
         )
       })
+    })
+
+    it('exposes keyboard-sortable grips (a11y contract of dnd-kit)', () => {
+      mockMulti()
+      const { container } = render(<ProfilesSettingsTab />)
+      const grips = modelGrips(container)
+      expect(grips[0].getAttribute('aria-roledescription')).toBe('sortable')
+      expect(grips[0].getAttribute('role')).toBe('button')
     })
   })
 
