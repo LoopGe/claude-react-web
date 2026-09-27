@@ -74,6 +74,14 @@ const SETTLE_STABLE_FRAMES = 3
  */
 const USER_SCROLL_INTENT_MS = 1200
 
+/** Seek-easing snap threshold: within this many px of the target the seek
+ *  stops easing and pins the final position. Small enough to read as exact. */
+const SEEK_SNAP_PX = 2
+/** Frames the seek loop HOLDS the anchor after landing, re-pinning if a late
+ *  row re-measurement (Virtuoso measures fresh-mounted rows a frame or two
+ *  after paint) shifts the content under the parked viewport. */
+const SEEK_HOLD_FRAMES = 8
+
 /** Keys that scroll a focused scroll container UPWARD — the only ones that can
  *  produce a leave. PageDown / Space / End can't, so they deliberately don't
  *  mark intent: a keypress that can't scroll up is no evidence that a later
@@ -164,6 +172,10 @@ export interface UseTranscriptScrollOptions {
   /** Committed height of the bottom-overlay spacer. Owned by the caller
    *  because it also drives the Footer slot. */
   bottomStackHeight: number
+  /** The hook's mirror of Virtuoso's `firstItemIndex` anchor. Kept in sync by
+   *  the owner (which owns the anchor), so seekToIndex can resolve DATA-space
+   *  indices to the OFFSET-space stamps Virtuoso writes on row elements. */
+  firstItemIndexRef: RefObject<number>
   /**
    * The top-most VISIBLE row changed, reported in Virtuoso's offset space
    * (dataIndex + firstItemIndex) — same space as `rangeChanged`.
@@ -179,6 +191,15 @@ export interface UseTranscriptScrollOptions {
    * callback's identity may change freely without re-binding listeners.
    */
   onVisibleTopChange?: (offsetIndex: number) => void
+  /**
+   * The user did something that scrolls this transcript (wheel / touch /
+   * scroll key / overlay-thumb drag), in EITHER direction. Consumers that keep
+   * a navigation cursor (prev/next user message) reset it here: a manual scroll
+   * invalidates the last programmatic target, so navigation must re-anchor to
+   * what the user is now looking at. Deliberately NOT fired by the programmatic
+   * seek's own scroll events.
+   */
+  onUserScrollIntent?: () => void
 }
 
 export interface TranscriptScrollApi {
@@ -217,7 +238,9 @@ export function useTranscriptScroll({
   itemCount,
   transcriptRevealKey,
   bottomStackHeight,
+  firstItemIndexRef,
   onVisibleTopChange,
+  onUserScrollIntent,
 }: UseTranscriptScrollOptions): TranscriptScrollApi {
   // Virtuoso's underlying scroll element. Captured through scrollerRefCb.
   const scrollerRef = useRef<HTMLElement | null>(null)
@@ -251,6 +274,10 @@ export function useTranscriptScroll({
   // cancels the previous loop instead of stacking two that fight over
   // scrollTop.
   const scrollAnimRafRef = useRef<number | null>(null)
+  // Seek-loop state (seekToIndex's own rAF easing): handle, sequence token (so
+  // a newer seek cancels the older loop), and the post-landing hold counter.
+  const seekAnimRafRef = useRef<number | null>(null)
+  const seekSeqRef = useRef(0)
   const [followDebounceRaw] = useLocalStorage<number>(
     'claude-react-web:follow-debounce-ms',
     150,
@@ -821,6 +848,10 @@ export function useTranscriptScroll({
   useEffect(() => {
     onVisibleTopChangeRef.current = onVisibleTopChange
   }, [onVisibleTopChange])
+  const onUserScrollIntentRef = useRef(onUserScrollIntent)
+  useEffect(() => {
+    onUserScrollIntentRef.current = onUserScrollIntent
+  }, [onUserScrollIntent])
   const lastVisibleTopRef = useRef<number | null>(null)
   const emitVisibleTop = useCallback(() => {
     const notify = onVisibleTopChangeRef.current
@@ -915,7 +946,7 @@ export function useTranscriptScroll({
     // the parent), so its drag never reaches them and has to be caught at the
     // document — pointer events retarget to the captured thumb mid-drag, which
     // is what keeps the intent fresh for the whole drag.
-    const markUserScrollIntent = () => { userScrollIntentRef.current = Date.now() }
+    const markUserScrollIntent = () => { userScrollIntentRef.current = Date.now(); onUserScrollIntentRef.current?.() }
     // A gesture that asks the viewport to move UP, seen while FOLLOWING (i.e.
     // parked at the bottom), IS the leave — and it has to be latched here rather
     // than from the scroll event the gesture produces. Mid-turn the append pin
@@ -954,8 +985,12 @@ export function useTranscriptScroll({
     // latch one.
     const onWheel = (e: WheelEvent) => {
       // ctrl+wheel is zoom (trackpad pinch), not scrolling.
-      if (e.deltaY >= 0 || e.ctrlKey || e.metaKey) return
+      if (e.ctrlKey || e.metaKey) return
       if (isInsideNestedScroller(e.target)) return
+      // ANY transcript wheel invalidates a pending user-message navigation
+      // target; the direction gate below is purely for the follow leave.
+      onUserScrollIntentRef.current?.()
+      if (e.deltaY >= 0) return
       markUserScrollIntent()
       leaveOnUpwardGesture()
     }
@@ -1004,6 +1039,9 @@ export function useTranscriptScroll({
       if (y == null || lastTouchY == null) { lastTouchY = y; return }
       const draggedDown = y > lastTouchY
       lastTouchY = y
+      // A drag in EITHER direction invalidates a pending navigation target;
+      // only the leave-capable direction marks follow intent.
+      onUserScrollIntentRef.current?.()
       if (draggedDown) markUserScrollIntent()
     }
     el.addEventListener('wheel', onWheel, { passive: true })
@@ -1048,12 +1086,16 @@ export function useTranscriptScroll({
     clearFollowTimer()
   }, [clearFollowTimer])
 
-  // Cancel any in-flight animated scroll on unmount so a pending rAF callback
-  // can't fire after the scroller is gone.
+  // Cancel any in-flight animated scroll (jump / seek) on unmount so a pending
+  // rAF callback can't fire after the scroller is gone.
   useEffect(() => () => {
     if (scrollAnimRafRef.current != null) {
       cancelAnimationFrame(scrollAnimRafRef.current)
       scrollAnimRafRef.current = null
+    }
+    if (seekAnimRafRef.current != null) {
+      cancelAnimationFrame(seekAnimRafRef.current)
+      seekAnimRafRef.current = null
     }
     scrollAnimatingRef.current = false
   }, [])
@@ -1138,7 +1180,145 @@ export function useTranscriptScroll({
     // bottom pin. Returning to FOLLOWING is the user's call — scrolling back to
     // the bottom, or invoking jump-to-bottom.
     setFollowing(false)
-    virtuosoRef.current?.scrollToIndex({ index, behavior: 'smooth', align })
+    // Drive the seek with our OWN rAF easing loop instead of Virtuoso's
+    // `scrollToIndex({ behavior: 'smooth' })`. Why not the native smooth scroll:
+    // mid-scroll row measurements (rows mounting as the viewport pans) fire
+    // `listRefresh`, and Virtuoso's initial-position latch re-issues the
+    // scrollToIndex a few frames later with the RECOMPUTED offset — which
+    // cancels the in-flight native smooth scroll and yanks the viewport back
+    // toward the launch point (measured: a 1044px up-seek from the bottom slid
+    // ~330px and was then dragged back 927px, reading as "the menu item did
+    // nothing"). The rAF loop owns the viewport until it lands: the target is
+    // re-read from the LIVE DOM every frame (rows carry `data-item-index` in
+    // offset space), so size corrections are absorbed instead of fighting the
+    // animation. A far target that's still virtualized away is NOT jumped to
+    // with an instant `behavior: 'auto'`: the loop extrapolates its position
+    // from the mounted rows (see `estimateTopInContent`) and eases toward that,
+    // swapping to the exact measurement once the target mounts — so every seek
+    // animates, near or far.
+    const el = scrollerRef.current
+    if (!el) {
+      virtuosoRef.current?.scrollToIndex({ index, behavior: 'smooth', align })
+      return
+    }
+    // One animation writer at a time: cancel any in-flight seek/jump loop.
+    if (seekAnimRafRef.current != null) {
+      cancelAnimationFrame(seekAnimRafRef.current)
+      seekAnimRafRef.current = null
+    }
+    if (scrollAnimRafRef.current != null) {
+      cancelAnimationFrame(scrollAnimRafRef.current)
+      scrollAnimRafRef.current = null
+      scrollAnimatingRef.current = false
+    }
+    const token = ++seekSeqRef.current
+    const offsetIndexOf = (row: HTMLElement): number => {
+      const raw = row.dataset.itemIndex
+      return raw == null ? Number.NaN : Number.parseInt(raw, 10)
+    }
+    const contentTopOf = (row: HTMLElement): number =>
+      row.getBoundingClientRect().top + el.scrollTop - el.getBoundingClientRect().top
+    // Offset-space stamp of the row (data space + firstItemIndex), or null
+    // while the row isn't rendered.
+    const rowTopInContent = (): number | null => {
+      const offsetIndex = index + firstItemIndexRef.current
+      const row = el.querySelector<HTMLElement>(`[data-item-index="${offsetIndex}"]`)
+      if (!row) return null
+      return contentTopOf(row)
+    }
+    const rowHeight = (): number => {
+      const offsetIndex = index + firstItemIndexRef.current
+      return el.querySelector<HTMLElement>(`[data-item-index="${offsetIndex}"]`)?.getBoundingClientRect().height ?? 0
+    }
+    // Position for a target that is still virtualized away. Virtuoso renders
+    // only a window around the viewport (overscan 600px), so a step over a tall
+    // message leaves the target unmounted. The old code answered that with an
+    // INSTANT `scrollToIndex({ behavior: 'auto' })`, which is why a far
+    // prev/next snapped with no animation. Extrapolate from the mounted rows
+    // instead (their measured heights give a local average per row), so the
+    // ease always has a target to chase: as the viewport pans, the window
+    // follows, the target mounts, and `rowTopInContent` takes over with the
+    // exact position. Re-derived every frame, so a bad estimate only changes
+    // the speed, never the landing.
+    const estimateTopInContent = (): number | null => {
+      const target = index + firstItemIndexRef.current
+      const rows = el.querySelectorAll<HTMLElement>('[data-item-index]')
+      const n = rows.length
+      if (n === 0) return null
+      const first = rows[0]
+      const last = rows[n - 1]
+      const firstOff = offsetIndexOf(first)
+      const lastOff = offsetIndexOf(last)
+      const firstTop = contentTopOf(first)
+      const lastTop = contentTopOf(last)
+      const lastBottom = lastTop + last.getBoundingClientRect().height
+      const span = lastOff - firstOff + 1
+      const avgH = span > 0 ? (lastBottom - firstTop) / span : el.clientHeight
+      if (!(avgH > 0)) return null
+      if (target > lastOff) return lastBottom + avgH * (target - lastOff - 1)
+      if (target < firstOff) return firstTop - avgH * (firstOff - target)
+      return null
+    }
+    // Where the viewport top should park for the row to sit at `align`.
+    // Clamped to the reachable scroll range: a target near the tail (or a row
+    // taller/shorter than the viewport under 'center') can ask for a scrollTop
+    // past the max. The browser silently clamps `scrollTo`, so the loop would
+    // see `remaining` never fall under the snap threshold and re-issue the same
+    // clamped write forever. Clamping here turns that into `remaining === 0`,
+    // which lands and releases the loop.
+    const desiredTop = (): number | null => {
+      const top = rowTopInContent() ?? estimateTopInContent()
+      if (top == null) return null
+      const raw = align === 'center' ? top - (el.clientHeight - (rowHeight() || el.clientHeight)) / 2 : top
+      const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
+      return Math.max(0, Math.min(raw, maxScrollTop))
+    }
+    // Safety bound: extrapolating to a row that never mounts (pathological size
+    // tree) must not pin the rAF loop forever. On exhaustion fall back to
+    // Virtuoso's own jump so the click still does something.
+    let easeFrames = 600
+    const step = () => {
+      seekAnimRafRef.current = null
+      if (token !== seekSeqRef.current || scrollerRef.current !== el) return
+      const desired = desiredTop()
+      if (desired == null) {
+        // Nothing measurable at all (empty list): defer to Virtuoso.
+        virtuosoRef.current?.scrollToIndex({ index, behavior: 'auto', align })
+        return
+      }
+      const current = el.scrollTop
+      const remaining = desired - current
+      if (Math.abs(remaining) <= SEEK_SNAP_PX) {
+        el.scrollTo({ top: desired, behavior: 'auto' })
+        // Hold position for a few frames: Virtuoso re-measures late-mounting
+        // rows after the viewport stops, and a correction that shifts content
+        // would otherwise strand the row off-target. The hold re-checks the
+        // anchor and re-pins if the content moved under us.
+        let holds = SEEK_HOLD_FRAMES
+        const hold = () => {
+          seekAnimRafRef.current = null
+          if (token !== seekSeqRef.current || scrollerRef.current !== el) return
+          const want = desiredTop()
+          if (want != null && Math.abs(el.scrollTop - want) > SEEK_SNAP_PX) {
+            el.scrollTo({ top: want, behavior: 'auto' })
+            holds = SEEK_HOLD_FRAMES
+          }
+          if (holds-- > 0) seekAnimRafRef.current = requestAnimationFrame(hold)
+        }
+        seekAnimRafRef.current = requestAnimationFrame(hold)
+        return
+      }
+      if (easeFrames-- <= 0) {
+        virtuosoRef.current?.scrollToIndex({ index, behavior: 'auto', align })
+        return
+      }
+      // Ease: cover ~25% of the remaining distance per frame (~250-350ms).
+      el.scrollTo({ top: current + remaining * 0.25, behavior: 'auto' })
+      seekAnimRafRef.current = requestAnimationFrame(step)
+    }
+    seekAnimRafRef.current = requestAnimationFrame(step)
+    // Ref read (firstItemIndexRef.current) is live-by-design — a ref needs no dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setFollowing, virtuosoRef])
 
   return {

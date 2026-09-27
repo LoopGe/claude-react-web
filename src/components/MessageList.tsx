@@ -560,17 +560,27 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // sites further down.
   const topVisibleIdxRef = useRef(0)
   const lastEmittedTopRef = useRef<number | null>(null)
+  // Last user-message index that prev/next navigation targeted. Navigation
+  // advances from HERE rather than from the live visible top, because a seek is
+  // animated: a second same-direction press while the first is still in flight
+  // would otherwise read a lagging top, recompute the SAME target and be
+  // swallowed (measured: nine rapid "next" presses all targeted one message).
+  // Invalidated whenever the user scrolls the transcript by hand (the hook's
+  // `onUserScrollIntent`) or the list is rebuilt.
+  const navCursorRef = useRef<number | null>(null)
   /* eslint-disable react-hooks/refs */
   const nextRowAnchor = advanceRowAnchor(rowAnchorRef.current, renderableItems)
   rowAnchorRef.current = nextRowAnchor
   if (nextRowAnchor.frontShift != null) {
     topVisibleIdxRef.current += nextRowAnchor.frontShift
     if (lastEmittedTopRef.current != null) lastEmittedTopRef.current += nextRowAnchor.frontShift
+    if (navCursorRef.current != null) navCursorRef.current += nextRowAnchor.frontShift
   } else {
     // Whole-list rebuild (replay replace / clear swap / emptied): the index
     // space is invalid. Reset and wait for the next real measurement.
     topVisibleIdxRef.current = 0
     lastEmittedTopRef.current = null
+    navCursorRef.current = null
   }
   /* eslint-enable react-hooks/refs */
   const firstItemIndex = nextRowAnchor.index
@@ -643,6 +653,12 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   const forwardVisibleTop = useCallback((offsetIndex: number) => {
     emitVisibleTopRef.current?.(offsetIndex)
   }, [])
+  // The hook's seek resolves rows through the OFFSET-space `data-item-index`
+  // stamps, so it needs the current `firstItemIndex` anchor. The anchor VALUE
+  // is computed below, in the render block that rebases it on front shifts;
+  // the ref is synced to it by the effect further down. Declared here — before
+  // the hook — so the hook can receive it (same pattern as emitVisibleTopRef).
+  const firstItemIndexValRef = useRef(firstItemIndex)
 
   // Scroll behaviour (L3) lives in `message-list/useTranscriptScroll.ts`:
   // bottom-follow gate, the rAF follow animation and the three re-pin
@@ -663,7 +679,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     itemCount: items.length,
     transcriptRevealKey,
     bottomStackHeight,
+    firstItemIndexRef: firstItemIndexValRef,
     onVisibleTopChange: forwardVisibleTop,
+    onUserScrollIntent: () => { navCursorRef.current = null },
   })
 
   // Scroll to the active search result when it changes.
@@ -673,6 +691,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     if (searchActiveMsgIdx === prevSearchActiveRef.current) return
     prevSearchActiveRef.current = searchActiveMsgIdx
     const virtIdx = itemToVirtIdx.get(searchActiveMsgIdx)
+    // A search jump is not a user-message navigation: drop the cursor so a
+    // later prev/next re-anchors on whatever the user actually scrolled to.
+    navCursorRef.current = null
     if (virtIdx != null) seekToIndex(virtIdx, 'center')
   }, [searchActiveMsgIdx, itemToVirtIdx, seekToIndex])
 
@@ -774,7 +795,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // so we subtract firstItemIndex to get back to the `scrollToIndex` space.
   // Kept in a ref (read by the navigate callback, never rendered). Declared
   // next to the anchor block above, which rebases it on front shifts.
-  const firstItemIndexValRef = useRef(firstItemIndex)
+  // (Declared before useTranscriptScroll above — the hook's seek reads it.)
   useEffect(() => {
     firstItemIndexValRef.current = firstItemIndex
   }, [firstItemIndex])
@@ -883,27 +904,39 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // the previous session can't suppress a fresh emit.
   useEffect(() => {
     lastPinnedIdRef.current = null
+    navCursorRef.current = null
     emitPinned(topVisibleIdxRef.current)
   }, [transcriptRevealKey, emitPinned])
 
+  // Every programmatic user-message jump (prev/next AND the dropdown's
+  // `to`) parks the navigation cursor on the target, so a following
+  // same-direction press steps from there instead of from the transient top.
   const navigateToIndex = useCallback((target: number) => {
+    navCursorRef.current = target
     seekToIndex(target, 'start')
   }, [seekToIndex])
 
   const navigate = useCallback((dir: 'prev' | 'next') => {
     const indices = userMsgIndicesRef.current
     if (indices.length === 0) return
-    const top = topVisibleIdxRef.current
+    // Anchor on the furthest-progressed of the live top and the last target:
+    // while a seek is in flight the live top lags, so a naive `index < top`
+    // re-selects the message the previous press already aimed at. `min`/`max`
+    // by direction keeps each press advancing one user message.
+    const cursor = navCursorRef.current
+    const anchor = cursor == null
+      ? topVisibleIdxRef.current
+      : dir === 'prev' ? Math.min(topVisibleIdxRef.current, cursor) : Math.max(topVisibleIdxRef.current, cursor)
     let target: number | undefined
     if (dir === 'prev') {
-      // Last user message strictly above the current viewport top.
+      // Last user message strictly above the anchor.
       for (let i = indices.length - 1; i >= 0; i--) {
-        if (indices[i] < top) { target = indices[i]; break }
+        if (indices[i] < anchor) { target = indices[i]; break }
       }
     } else {
-      // First user message strictly below the current viewport top.
+      // First user message strictly below the anchor.
       for (let i = 0; i < indices.length; i++) {
-        if (indices[i] > top) { target = indices[i]; break }
+        if (indices[i] > anchor) { target = indices[i]; break }
       }
     }
     if (target == null) return

@@ -1892,6 +1892,131 @@ describe('MessageList', () => {
     })
   })
 
+  it('prev-nav from a parked-at-bottom viewport finds a target and eases to it', () => {
+    // Regression guard for the right-click menu's "Scroll to previous user
+    // message" appearing to do nothing when the transcript was parked at the
+    // bottom. The seek must (a) resolve the last user message strictly above
+    // the viewport top, (b) drop follow, and (c) actually move the viewport to
+    // that row — here the rAF ease lands on the target row's content offset
+    // (800px) instead of bouncing off the native smooth scroll.
+    vi.useFakeTimers()
+    const msgs = [
+      makeMsg('user', { uuid: 'q-0', message: { content: [{ type: 'text', text: 'q0' }] } }),
+      makeMsg('assistant', { uuid: 'a-0', message: { content: [{ type: 'text', text: 'a0' }] } }),
+      makeMsg('user', { uuid: 'q-1', message: { content: [{ type: 'text', text: 'q1' }] } }),
+      makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'a1' }] } }),
+      makeMsg('user', { uuid: 'q-2', message: { content: [{ type: 'text', text: 'q2' }] } }),
+      makeMsg('assistant', { uuid: 'a-2', message: { content: [{ type: 'text', text: 'a2' }] } }),
+    ]
+    const nav: { current: ScrollNavigator | null } = { current: null }
+    const { container } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        onRegisterNavigate={(n) => { nav.current = n }}
+      />,
+    )
+    if (!nav.current) throw new Error('navigator not registered')
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    // Rows 200px tall: q-2 (row 4) spans y 800..1000 — just above the fold of
+    // a viewport at [1000, 1600]. Parked at the bottom (scrollTop = max 1000).
+    Object.defineProperty(scroller, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 1000, bottom: 1600, left: 0, right: 800, height: 600, width: 800 }),
+    })
+    // Rows scroll WITH the viewport (a static rect would let the seek's hold
+    // loop chase a phantom offset forever, since `scrollTo` writes scrollTop).
+    const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-item-index]'))
+    rows.forEach((row, i) => {
+      Object.defineProperty(row, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => {
+          const top = i * 200 - scroller.scrollTop + 1000
+          return { top, bottom: top + 200, left: 0, right: 800, height: 200, width: 800 }
+        },
+      })
+    })
+    virtuosoMockState.scrollHeight = 1600
+    virtuosoMockState.clientHeight = 600
+    virtuosoMockState.scrollTop = 1000
+    act(() => { fireEvent.scroll(scroller) })
+    expect(followingOf(container)).toBe('true')
+
+    vi.mocked(Element.prototype.scrollTo).mockClear()
+    act(() => { nav.current!.prev() })
+    // Follow dropped immediately (seekToIndex's first act).
+    expect(followingOf(container)).toBe('false')
+
+    // Run the rAF ease to completion: it must LAND on row 4's content offset.
+    act(() => { vi.runAllTimers() })
+    expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
+      expect.objectContaining({ top: 800, behavior: 'auto' }),
+    )
+  })
+
+  it('advances one user message per press when same-direction presses overlap an in-flight seek', () => {
+    // Regression guard: prev/next used to recompute the target from the LIVE
+    // visible top. The seek is animated, so a second same-direction press while
+    // the first was still in flight read a lagging top, re-selected the SAME
+    // message and was swallowed (measured: nine rapid "next" presses all
+    // targeted one message and the viewport barely moved). Navigation now
+    // advances from the last target instead.
+    vi.useFakeTimers()
+    const msgs: SdkMessage[] = []
+    for (let i = 0; i < 6; i++) {
+      msgs.push(makeMsg('user', { uuid: `q-${i}`, message: { content: [{ type: 'text', text: `q${i}` }] } }))
+      msgs.push(makeMsg('assistant', { uuid: `a-${i}`, message: { content: [{ type: 'text', text: `a${i}` }] } }))
+    }
+    const nav: { current: ScrollNavigator | null } = { current: null }
+    const { container } = render(
+      <MessageList items={toItems(msgs)} onRegisterNavigate={(n) => { nav.current = n }} />,
+    )
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    Object.defineProperty(scroller, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 0, bottom: 600, left: 0, right: 800, height: 600, width: 800 }),
+    })
+    // Rows measure from the live scroll position (so the seek's own scrollTo
+    // moves them, like a real DOM), and scrollTo clamps + fires the scroll
+    // event the way the browser does.
+    const stubRows = () => {
+      Array.from(container.querySelectorAll<HTMLElement>('[data-item-index]')).forEach((row, i) => {
+        Object.defineProperty(row, 'getBoundingClientRect', {
+          configurable: true,
+          value: () => {
+            const top = i * 200 - virtuosoMockState.scrollTop
+            return { top, bottom: top + 200, left: 0, right: 800, height: 200, width: 800 }
+          },
+        })
+      })
+    }
+    ;(scroller as unknown as { scrollTo: (o: { top: number }) => void }).scrollTo = (o) => {
+      const max = virtuosoMockState.scrollHeight - virtuosoMockState.clientHeight
+      virtuosoMockState.scrollTop = Math.max(0, Math.min(o.top, max))
+      fireEvent.scroll(scroller)
+    }
+    virtuosoMockState.scrollHeight = 12 * 200
+    virtuosoMockState.clientHeight = 600
+    // Mount pins to the bottom (following); drop follow and park at the top.
+    act(() => { stubRows(); fireEvent.scroll(scroller) })
+    act(() => {
+      userWheel(scroller)
+      virtuosoMockState.scrollTop = 0
+      fireEvent.scroll(scroller)
+    })
+    act(() => { vi.advanceTimersByTime(32) })
+    expect(followingOf(container)).toBe('false')
+
+    // Two presses 2 frames apart — the second lands mid-flight of the first.
+    act(() => { nav.current!.next() })
+    act(() => { vi.advanceTimersByTime(32) })
+    act(() => { nav.current!.next() })
+    for (let f = 0; f < 200; f++) act(() => { vi.advanceTimersByTime(16) })
+
+    // Advanced to the SECOND user message (index 4 → 800px). Without the fix
+    // the second press re-targeted the first (index 2 → 400px).
+    expect(Math.round(virtuosoMockState.scrollTop)).toBe(800)
+  })
+
   it('animates jump-to-bottom and lands at the real bottom when content grows mid-flight', () => {
     // Regression guard for the "click scroll-to-bottom sometimes lands short"
     // bug. Native `behavior: 'smooth'` captured scrollHeight once at click
