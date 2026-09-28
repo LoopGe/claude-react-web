@@ -38,6 +38,45 @@ describe('useProfiles', () => {
     expect(api.post).toHaveBeenCalledWith('/profiles/activate', { profileId: 'b' })
   })
 
+  it('create() resolves with the created profile from the POST response', async () => {
+    vi.mocked(api.get).mockResolvedValue(PROFILES)
+    const created = { id: 'p_new', name: 'N', isActive: false }
+    vi.mocked(api.post).mockResolvedValue({ profile: created })
+    const { result } = renderHook(() => useProfiles())
+    await waitFor(() => expect(result.current.profiles.length).toBeGreaterThan(0))
+    let out: unknown
+    await act(async () => { out = await result.current.create({ name: 'N' }) })
+    expect(out).toEqual(created)
+  })
+
+  it('create() during an in-flight refresh still lands the post-create snapshot', async () => {
+    // GET #1 (mount) is issued, then create fires. Its refresh must NOT dedup
+    // into GET #1 — that snapshot predates the POST and would leave `profiles`
+    // without the created profile (the accordion would pin to a missing id).
+    const stale = { profiles: [{ id: 'a', name: 'A', isActive: true }], activeProfileId: 'a' }
+    const fresh = {
+      profiles: [{ id: 'a', name: 'A', isActive: true }, { id: 'p_new', name: 'N', isActive: false }],
+      activeProfileId: 'a',
+    }
+    let resolveStale: () => void = () => {}
+    let resolveFresh: () => void = () => {}
+    vi.mocked(api.get)
+      .mockImplementationOnce(() => new Promise((r) => { resolveStale = () => r(stale as never) }))
+      .mockImplementationOnce(() => new Promise((r) => { resolveFresh = () => r(fresh as never) }))
+    vi.mocked(api.post).mockResolvedValue({ profile: { id: 'p_new', name: 'N', isActive: false } })
+    const { result } = renderHook(() => useProfiles())
+    await act(async () => {
+      const creating = result.current.create({ name: 'N' })
+      resolveStale() // the pre-POST GET completes while create awaits its POST
+      // Wait for the fresh GET (post-POST) rather than spinning a fixed
+      // number of microtask flushes — the chain depth may change.
+      await vi.waitFor(() => expect(vi.mocked(api.get)).toHaveBeenCalledTimes(2))
+      resolveFresh()
+      await creating
+    })
+    expect(result.current.profiles.some((p) => p.id === 'p_new')).toBe(true)
+  })
+
   it.each(['update', 'create', 'remove', 'activate'] as const)('dispatches crw-profiles-changed on %s', async (method) => {
     vi.mocked(api.get).mockResolvedValue(PROFILES)
     if (method === 'update') vi.mocked(api.put).mockResolvedValue({ ok: true })

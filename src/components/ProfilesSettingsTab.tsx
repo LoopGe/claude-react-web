@@ -102,12 +102,115 @@ export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObj
   // Accordion: one profile expanded at a time. `undefined` means the user
   // hasn't toggled anything yet — default to the active profile (or the
   // first); `null` collapses everything; a string pins a specific profile.
+  // A pinned id that no longer exists (the card was deleted here or in another
+  // tab) falls back as if unpinned instead of folding everything onto a
+  // phantom. The create hand-off's expansion below does NOT write this state
+  // until it completes — so a create whose follow-up refresh never lands
+  // leaves no phantom pin behind.
   const [expandedId, setExpandedId] = useState<string | null | undefined>(undefined)
+  // "+ Add profile" focus hand-off. Without this the accordion keeps the
+  // previously expanded card open and the fresh card joins the list folded —
+  // visually nothing happens. After create resolves this records the created
+  // id; while it is armed AND the refreshed list has landed the card, the
+  // accordion force-expands it (folding every other one) and the effect below
+  // completes the hand-off: scroll into view, caret into the Name field, and
+  // commit the pin to `expandedId`. If the refresh never lands the card, the
+  // 10s window closes and the hand-off is dropped without a trace — a much
+  // later refresh then joins the card folded instead of yanking the UI.
+  const [pendingFocusId, setPendingFocusId] = useState<string | null>(null)
+  // In-flight guard: a second click before the POST resolves would create a
+  // duplicate profile (the server has no name-uniqueness check).
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  // Set when the user toggles the accordion. A toggle DURING an in-flight
+  // create must outlive that render, so it rides a ref the create handler
+  // consumes when it resolves (refs here are only read in handlers, never
+  // during render).
+  const userTookOverRef = useRef(false)
+  // Handle of the hand-off expiry timer, cleared on unmount so the lifetime
+  // is explicit.
+  const handOffTimerRef = useRef<number | null>(null)
+  useEffect(() => () => {
+    if (handOffTimerRef.current != null) window.clearTimeout(handOffTimerRef.current)
+  }, [])
+
   const activeId = profiles.some((p) => p.id === activeProfileId) ? activeProfileId : undefined
-  const effectiveExpanded = expandedId === undefined ? (activeId ?? profiles[0]?.id ?? null) : expandedId
+  const focusArmed = pendingFocusId != null && profiles.some((p) => p.id === pendingFocusId)
+  const pinnedExists = expandedId != null && profiles.some((p) => p.id === expandedId)
+  const effectiveExpanded = focusArmed
+    ? pendingFocusId
+    : expandedId === undefined || (expandedId !== null && !pinnedExists)
+      ? (activeId ?? profiles[0]?.id ?? null)
+      : expandedId
+
   const toggleExpand = (id: string) => {
+    userTookOverRef.current = true
+    setPendingFocusId(null) // the user took over — drop any armed focus hand-off
     setExpandedId(effectiveExpanded === id ? null : id)
   }
+
+  // While armed and landed; `focusArmed` already implies the card exists and
+  // (by the derivation above) is expanded, so this one value gates delivery.
+  const pendingProfile = focusArmed && pendingFocusId != null
+    ? profiles.find((p) => p.id === pendingFocusId)
+    : undefined
+
+  const handleAddProfile = async () => {
+    if (creating) return
+    setCreating(true)
+    setCreateError(null)
+    userTookOverRef.current = false
+    try {
+      const created = await create({ name: `New profile ${profiles.length + 1}` })
+      // The user toggled the accordion while the POST was in flight — their
+      // choice wins; the new card joins folded like it always did.
+      if (!created || userTookOverRef.current) return
+      setPendingFocusId(created.id)
+      // The hand-off must not survive indefinitely: if the follow-up refresh
+      // transiently failed, a much later refresh landing the card would yank
+      // focus and scroll in the middle of unrelated editing. Give it a short
+      // window (the create's own refresh lands in well under a second on the
+      // local server) and drop it after that.
+      if (handOffTimerRef.current != null) window.clearTimeout(handOffTimerRef.current)
+      handOffTimerRef.current = window.setTimeout(() => {
+        handOffTimerRef.current = null
+        setPendingFocusId((cur) => (cur === created.id ? null : cur))
+      }, 10_000)
+    } catch (e) {
+      setCreateError(formatError(e))
+    } finally {
+      setCreating(false)
+      userTookOverRef.current = false
+    }
+  }
+
+  useEffect(() => {
+    if (!pendingProfile) return
+    const card = document.querySelector<HTMLElement>(`[data-profile-card="${CSS.escape(pendingProfile.id)}"]`)
+    const nameInput = card?.querySelector<HTMLInputElement>('[data-profile-name-input]')
+    if (!card || !nameInput) return
+    // Focus is being delivered — the expiry timer must not fire between here
+    // and the pin commit below (it would fold the card under the caret).
+    if (handOffTimerRef.current != null) {
+      window.clearTimeout(handOffTimerRef.current)
+      handOffTimerRef.current = null
+    }
+    card.scrollIntoView({ block: 'nearest' })
+    nameInput.focus()
+    nameInput.select()
+    // Retire the hand-off and commit the accordion pin from a rAF callback —
+    // the focused frame paints first, and setState-in-a-callback is the
+    // sanctioned effect shape (a synchronous call here trips the cascading-
+    // render rule). A user toggle between effect and rAF re-runs this effect
+    // whose cleanup cancels the frame, so their choice is never overwritten.
+    // Two creates cannot overlap (`creating` guard serializes them), so the
+    // unconditional pin commit cannot clobber a newer hand-off.
+    const raf = window.requestAnimationFrame(() => {
+      setPendingFocusId((cur) => (cur === pendingProfile.id ? null : cur))
+      setExpandedId(pendingProfile.id)
+    })
+    return () => window.cancelAnimationFrame(raf)
+  }, [pendingProfile])
 
   return (
     <div className="settings-profiles-tab">
@@ -116,10 +219,13 @@ export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObj
           {profiles.length} profile{profiles.length !== 1 ? 's' : ''}. The active profile supplies
           credentials + model set for new sessions.
         </span>
-        <button className="btn" onClick={() => void create({ name: `New profile ${profiles.length + 1}` })}>
-          + Add profile
+        <button className="btn" onClick={() => void handleAddProfile()} disabled={creating}>
+          {creating ? 'Adding...' : '+ Add profile'}
         </button>
       </div>
+      {createError && (
+        <div className="settings-card-error">{createError}</div>
+      )}
       {profiles.length === 0 && (
         <div className="settings-profile-empty">
           No profiles yet. Add one to get started.
@@ -450,6 +556,7 @@ function ProfileCard({
               <input
                 className="input"
                 id={`${uid}-name`}
+                data-profile-name-input
                 value={name}
                 onChange={(e) => { setName(e.target.value); setDirty(true) }}
               />

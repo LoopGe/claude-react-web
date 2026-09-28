@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useProfiles } from '../hooks/useProfiles'
 import { api } from '../hooks/useApi'
-import { onProfilesChanged } from '../utils/profiles-events'
 import { ProfileActivateDialog } from './ProfileActivateDialog'
 import { IconChevronDown, IconChevronUp } from './icons/ToolIcons'
 import { useToast } from '../hooks/useToast'
@@ -17,18 +16,15 @@ interface PendingSwitch {
 }
 
 export function ProfileSwitcher({ onManageProfiles }: { onManageProfiles?: () => void }) {
-  const { profiles, activeProfileId, refresh, activate } = useProfiles()
+  const { profiles, activeProfileId, activate } = useProfiles()
   const toast = useToast()
   const [open, setOpen] = useState(false)
   const [pending, setPending] = useState<PendingSwitch | null>(null)
   const [busy, setBusy] = useState(false)
   const active = profiles.find((p) => p.id === activeProfileId) ?? profiles[0]
 
-  // Profile mutations can originate elsewhere (Settings → Profiles edit).
-  // useProfiles only refetches after ITS OWN mutations, so subscribe to the
-  // `crw-profiles-changed` window event (mirroring useModelOptions) to keep
-  // the switcher's list live without a page refresh.
-  useEffect(() => onProfilesChanged(() => void refresh()), [refresh])
+  // (The hook itself re-fetches on `crw-profiles-changed`, so mutations that
+  // originate elsewhere — Settings → Profiles edit — keep this list live.)
 
   const handleSelect = async (profile: ProviderProfile) => {
     if (profile.isActive) {

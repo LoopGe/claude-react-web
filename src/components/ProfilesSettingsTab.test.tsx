@@ -240,6 +240,177 @@ describe('ProfilesSettingsTab', () => {
     })
   })
 
+  describe('add profile focus', () => {
+    const createdProfile: ProviderProfile = {
+      id: 'new',
+      name: 'New profile 3',
+      isActive: false,
+      authTokenMasked: undefined,
+      baseUrl: '',
+      modelList: [],
+      modelGroups: [],
+      recapModel: '',
+      commitMessageModel: '',
+    }
+
+    function mockWithCreated() {
+      const create = vi.fn().mockResolvedValue(createdProfile)
+      vi.mocked(useProfiles.useProfiles).mockReturnValue({
+        profiles: [...profiles, createdProfile],
+        activeProfileId: 'a',
+        refresh: vi.fn(),
+        create,
+        update: vi.fn(),
+        remove: vi.fn(),
+        activate: vi.fn(),
+      })
+      return create
+    }
+
+    // happy-dom implements scrollIntoView natively; the focus test replaces it
+    // with a spy, and this puts the real method back so nothing leaks.
+    const originalScrollIntoView = Element.prototype.scrollIntoView
+    afterEach(() => {
+      Element.prototype.scrollIntoView = originalScrollIntoView
+    })
+
+    it('expands the newly created card (collapsing the others) and focuses its Name input', async () => {
+      mockWithCreated()
+      const scrollIntoView = vi.fn()
+      ;(Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView
+      render(<ProfilesSettingsTab />)
+      // Default state: the active card A is open, everything else folded.
+      expect(screen.queryAllByText('ma').length).toBeGreaterThan(0)
+      fireEvent.click(screen.getByRole('button', { name: '+ Add profile' }))
+      const input = await vi.waitFor(() => {
+        const el = document.querySelector<HTMLInputElement>('[data-profile-card="new"] [data-profile-name-input]')
+        expect(el).not.toBeNull()
+        expect(document.activeElement).toBe(el)
+        return el!
+      })
+      // The default name is selected so typing replaces it outright.
+      expect(input.selectionStart).toBe(0)
+      expect(input.selectionEnd).toBe(input.value.length)
+      // The fresh card scrolled into view…
+      expect(scrollIntoView).toHaveBeenCalledTimes(1)
+      expect(scrollIntoView.mock.instances[0]).toBe(input.closest('[data-profile-card="new"]'))
+      // …and every other card folded.
+      expect(screen.queryAllByText('ma')).toHaveLength(0)
+      expect(screen.queryAllByText('mb')).toHaveLength(0)
+    })
+
+    it('guards against a double-click creating two profiles', async () => {
+      // Never-resolving create: the request stays in flight for the whole test.
+      const create = vi.fn(() => new Promise<ProviderProfile>(() => {}))
+      vi.mocked(useProfiles.useProfiles).mockReturnValue({
+        profiles,
+        activeProfileId: 'a',
+        refresh: vi.fn(),
+        create,
+        update: vi.fn(),
+        remove: vi.fn(),
+        activate: vi.fn(),
+      })
+      render(<ProfilesSettingsTab />)
+      const add = screen.getByRole('button', { name: '+ Add profile' })
+      fireEvent.click(add)
+      // Second click while the first POST is still pending — the in-flight
+      // guard must swallow it (jsdom dispatches clicks to disabled buttons,
+      // so the handler guard is the real protection; disabled is the affordance).
+      fireEvent.click(add)
+      expect(create).toHaveBeenCalledTimes(1)
+      expect((add as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    it('lets an accordion toggle during the in-flight create win over the focus hand-off', async () => {
+      let resolveCreate!: (p: ProviderProfile) => void
+      const create = vi.fn(() => new Promise<ProviderProfile>((r) => { resolveCreate = r }))
+      vi.mocked(useProfiles.useProfiles).mockReturnValue({
+        profiles: [...profiles, createdProfile],
+        activeProfileId: 'a',
+        refresh: vi.fn(),
+        create,
+        update: vi.fn(),
+        remove: vi.fn(),
+        activate: vi.fn(),
+      })
+      render(<ProfilesSettingsTab />)
+      fireEvent.click(screen.getByRole('button', { name: '+ Add profile' }))
+      // The user picks card B while the POST is still pending.
+      fireEvent.click(screen.getByRole('button', { name: 'B' }))
+      await act(async () => {
+        resolveCreate(createdProfile)
+        await Promise.resolve()
+      })
+      // B stays expanded and the new card joins folded — the user's choice won.
+      expect(screen.queryAllByText('mb').length).toBeGreaterThan(0)
+      expect(document.querySelector('[data-profile-card="new"] [data-profile-name-input]')).toBeNull()
+    })
+
+    it('does not fold every card when the created profile never lands (refresh failed)', async () => {
+      // POST succeeds but the follow-up refresh never adds the card (its id is
+      // absent from `profiles`): the accordion must fall back to the active
+      // card instead of pinning a phantom and folding everything shut.
+      const create = vi.fn().mockResolvedValue({ ...createdProfile, id: 'phantom' })
+      vi.mocked(useProfiles.useProfiles).mockReturnValue({
+        profiles,
+        activeProfileId: 'a',
+        refresh: vi.fn(),
+        create,
+        update: vi.fn(),
+        remove: vi.fn(),
+        activate: vi.fn(),
+      })
+      render(<ProfilesSettingsTab />)
+      fireEvent.click(screen.getByRole('button', { name: '+ Add profile' }))
+      await vi.waitFor(() => {
+        expect(create).toHaveBeenCalledTimes(1)
+        expect(screen.queryAllByText('ma').length).toBeGreaterThan(0)
+      })
+    })
+
+    it('drops the focus hand-off after 10s so a late-landing refresh cannot yank the UI', async () => {
+      vi.useFakeTimers()
+      try {
+        let resolveCreate!: (p: ProviderProfile) => void
+        const create = vi.fn(() => new Promise<ProviderProfile>((r) => { resolveCreate = r }))
+        vi.mocked(useProfiles.useProfiles).mockReturnValue({
+          profiles, // the card is NOT in the list — the follow-up refresh failed
+          activeProfileId: 'a',
+          refresh: vi.fn(),
+          create,
+          update: vi.fn(),
+          remove: vi.fn(),
+          activate: vi.fn(),
+        })
+        const { rerender } = render(<ProfilesSettingsTab />)
+        fireEvent.click(screen.getByRole('button', { name: '+ Add profile' }))
+        await act(async () => {
+          resolveCreate(createdProfile)
+          await Promise.resolve()
+        })
+        // The hand-off expires before the card ever lands…
+        vi.advanceTimersByTime(10_000)
+        // …then a much later refresh finally lands it.
+        vi.mocked(useProfiles.useProfiles).mockReturnValue({
+          profiles: [...profiles, createdProfile],
+          activeProfileId: 'a',
+          refresh: vi.fn(),
+          create,
+          update: vi.fn(),
+          remove: vi.fn(),
+          activate: vi.fn(),
+        })
+        rerender(<ProfilesSettingsTab />)
+        // The card joins folded — no accordion jump, no stolen focus.
+        expect(screen.queryAllByText('ma').length).toBeGreaterThan(0)
+        expect(document.querySelector('[data-profile-card="new"] [data-profile-name-input]')).toBeNull()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
   describe('recap / commit model selects', () => {
     const stored: ProviderProfile[] = [
       {
