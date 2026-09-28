@@ -2597,6 +2597,402 @@ describe('SessionManager', () => {
     expect(usageStateOf(info.id).lastSdkAutoCompact).toBeUndefined()
   })
 
+  // --- turn-end context-usage reconciliation -------------------------------
+  //
+  // On aggregate-reporting backends (SDK 0.3.278 + e.g. mify proxies) a
+  // result's top-level `usage` is the turn's BILLING SUM across all API calls,
+  // so the pump's empty-iterations fallback used to inflate the bar by the
+  // call count — a real session cached 995,023/1M = 99.5% while the CLI's own
+  // accounting said 16%. The derivation now REFUSES that wire entirely, and
+  // every non-empty result that fails to yield a snapshot fires one background
+  // getContextUsage() probe whose answer (the CLI's own lens) feeds the bar.
+
+  /** An aggregate-reporting result: usage sums a ~35-call turn, iterations
+   *  empty → liteContextUsageFromResult refuses the wire (returns null), so
+   *  the pump fires the reconcile dep for it. */
+  const emitAggregateResult = () => {
+    mockHandles[0].emit({
+      type: 'result',
+      session_id: 'unused',
+      subtype: 'success',
+      is_error: false,
+      num_turns: 1,
+      uuid: 'r-agg',
+      usage: {
+        input_tokens: 81551,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 913472,
+        iterations: [],
+      },
+      modelUsage: { 'zhipuai/glm-5.3-flash': { contextWindow: 1000000, maxOutputTokens: 32000 } },
+    })
+  }
+
+  /** Seed the polluted aggregate snapshot the pump would have cached before
+   *  the derive gate existed — the state every reconcile test starts from. */
+  const seedAggregateSnapshot = (id: string) => {
+    usageStateOf(id).lastContextUsage = {
+      totalTokens: 995023,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      percentage: 99.5023,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      maxOutputTokens: 32000,
+    }
+  }
+
+  it('a result fires a background reconcile probe that corrects the cached snapshot', async () => {
+    const info = sm.create({})
+    seedAggregateSnapshot(info.id)
+    emitAggregateResult()
+    await tick()
+    // Precondition: the derive gate refused the aggregate, so the polluted
+    // seed is untouched.
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(995023)
+
+    mockHandles[0].getContextUsage.mockClear()
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      categories: [],
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      percentage: 16,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      isAutoCompactEnabled: true,
+      apiUsage: null,
+    })
+    emitAggregateResult()
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens !== 155641; i++) await tick()
+
+    // The probe asked for the cheap summary (no per-category token-count calls).
+    expect(mockHandles[0].getContextUsage).toHaveBeenCalledWith({ detail: 'summary' })
+    const usage = sm.getCachedContextUsage(info.id)
+    expect(usage!.totalTokens).toBe(155641)
+    expect(usage!.maxTokens).toBe(1000000)
+    expect(usage!.percentage).toBeCloseTo((155641 / 1000000) * 100, 5)
+    expect(usage!.model).toBe('zhipuai/glm-5.3-flash')
+    expect(usage!.autoCompactThreshold).toBe(967000)
+    // maxOutputTokens carries forward (model limit, not a billing sum); the
+    // per-call buckets do NOT — `last`'s are billing sums on this wire and
+    // the summary response reported no apiUsage.
+    expect(usage!.maxOutputTokens).toBe(32000)
+    expect(usage!.cacheReadTokens).toBeUndefined()
+    expect(usage!.degraded).toBeUndefined()
+  })
+
+  it('a failing reconcile probe leaves the derived snapshot and clears the in-flight flag', async () => {
+    const info = sm.create({})
+    seedAggregateSnapshot(info.id)
+
+    mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('subprocess busy'))
+    emitAggregateResult()
+    for (let i = 0; i < 5; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(995023)
+
+    // The flag cleared → the NEXT result's probe still fires and lands.
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      categories: [],
+    })
+    emitAggregateResult()
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens !== 155641; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(155641)
+  })
+
+  it('the reconcile probe is skipped while one is already in flight', async () => {
+    const info = sm.create({})
+    seedAggregateSnapshot(info.id)
+
+    let resolveProbe: (v: unknown) => void = () => {}
+    mockHandles[0].getContextUsage.mockClear()
+    mockHandles[0].getContextUsage.mockReturnValueOnce(new Promise((res) => { resolveProbe = res }))
+    emitAggregateResult()
+    for (let i = 0; i < 5; i++) await tick()
+
+    // A second result arrives while the first probe is still open — no
+    // second control request piles onto the subprocess.
+    emitAggregateResult()
+    for (let i = 0; i < 5; i++) await tick()
+    expect(mockHandles[0].getContextUsage).toHaveBeenCalledTimes(1)
+
+    resolveProbe({
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      categories: [],
+    })
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens !== 155641; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(155641)
+  })
+
+  it('the reconcile probe runs even with a turn still pending (queued-input sessions never idle)', async () => {
+    const info = sm.create({})
+    seedAggregateSnapshot(info.id)
+
+    // Simulate the queued-input state: the pump keeps pendingTurns=1 across
+    // back-to-back turns, so a pendingTurns skip would starve the correction
+    // forever (the exact 73a4960a scenario).
+    const s = usageStateOf(info.id) as unknown as { pendingTurns: number }
+    s.pendingTurns = 1
+
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      categories: [],
+    })
+    // Fire the private reconcile directly (the dep path is covered above);
+    // the point is the guard: pendingTurns must NOT skip it.
+    ;(sm as unknown as { reconcileContextUsage: (s: unknown) => void }).reconcileContextUsage(s)
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens !== 155641; i++) await tick()
+
+    expect(mockHandles[0].getContextUsage).toHaveBeenCalledWith({ detail: 'summary' })
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(155641)
+  })
+
+  it('a threshold-less reconcile response preserves the CLI threshold the correction carried', async () => {
+    const info = sm.create({})
+    seedAggregateSnapshot(info.id)
+
+    // Probe 1 reports the CLI's OWN threshold — 800000, distinct from the
+    // local formula's 967000 for a 1M/32k window.
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 800000,
+      categories: [],
+    })
+    emitAggregateResult()
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens !== 155641; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(800000)
+
+    // Probe 2's response omits autoCompactThreshold (e.g. auto-compact
+    // disabled at the CLI): the threshold fold must NOT replace the carried
+    // CLI number with the local formula (967000).
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 160000,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      categories: [],
+    })
+    emitAggregateResult()
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens !== 160000; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(160000)
+    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(800000)
+  })
+
+  it('a stale reconcile response never overwrites a newer snapshot', async () => {
+    const info = sm.create({})
+    seedAggregateSnapshot(info.id)
+
+    // Hold a probe open against the CURRENT snapshot object…
+    let resolveProbe: (v: unknown) => void = () => {}
+    mockHandles[0].getContextUsage.mockClear()
+    mockHandles[0].getContextUsage.mockReturnValueOnce(new Promise((res) => { resolveProbe = res }))
+    ;(sm as unknown as { reconcileContextUsage: (s: unknown) => void })
+      .reconcileContextUsage(usageStateOf(info.id))
+    for (let i = 0; i < 5; i++) await tick()
+
+    // …then the snapshot is replaced while it is in flight (a concurrent
+    // updater — e.g. a resume re-seed — landing between fire and response;
+    // control requests have no SDK-side timeout, so this ordering is real).
+    // Give the new snapshot DIFFERENT numbers so the two are distinguishable.
+    usageStateOf(info.id).lastContextUsage = {
+      totalTokens: 600000,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      percentage: 60,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+    }
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(600000)
+
+    // The stale response lands — it must NOT drag the bar backwards — and
+    // its skip RE-ARMS a fresh probe against the newest snapshot (without
+    // the re-arm, a burst of concurrent updates would starve corrections
+    // forever). Both payloads are distinctive: a guard failure would land
+    // 111111, the re-armed probe's answer lands 155641. Queue the re-arm's
+    // answer BEFORE resolving — the cascade runs inside one microtask drain.
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      categories: [],
+    })
+    resolveProbe({
+      totalTokens: 111111,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      categories: [],
+    })
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens !== 155641; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(155641)
+  })
+
+  /** Seed shape helper for tests that mutate the snapshot object identity. */
+  const seedAggregateSnapshotShape = () => ({
+    totalTokens: 995023,
+    maxTokens: 1000000,
+    rawMaxTokens: 1000000,
+    percentage: 99.5023,
+    model: 'zhipuai/glm-5.3-flash',
+    autoCompactThreshold: 967000,
+    maxOutputTokens: 32000,
+  })
+
+  it('caps stale re-arms so a churning snapshot cannot loop control requests', async () => {
+    const info = sm.create({})
+    seedAggregateSnapshot(info.id)
+
+    // Four held promises: the direct fire consumes the first; each stale
+    // resolve re-arms once, consuming the next. After the 3rd re-arm (cap)
+    // the 4th stale resolve must NOT fire a 5th probe.
+    const holders: Array<(v: unknown) => void> = []
+    for (let i = 0; i < 4; i++) {
+      mockHandles[0].getContextUsage.mockReturnValueOnce(
+        new Promise((res) => { holders.push(res) }),
+      )
+    }
+    ;(sm as unknown as { reconcileContextUsage: (s: unknown) => void })
+      .reconcileContextUsage(usageStateOf(info.id))
+    for (let i = 0; i < 5; i++) await tick()
+    expect(mockHandles[0].getContextUsage).toHaveBeenCalledTimes(1)
+
+    const resolveStale = (total: number) => {
+      holders.shift()!({
+        totalTokens: total,
+        maxTokens: 1000000,
+        rawMaxTokens: 1000000,
+        model: 'zhipuai/glm-5.3-flash',
+        autoCompactThreshold: 967000,
+        categories: [],
+      })
+    }
+
+    // Each cycle: the snapshot is replaced by a concurrent updater FIRST
+    // (making the held probe stale), then the probe resolves with a
+    // distinctive garbage reading (111xxx) the staleness guard must skip.
+    // The re-arm then targets the newest snapshot.
+    const churn = (total: number) => {
+      usageStateOf(info.id).lastContextUsage = { ...seedAggregateSnapshotShape(), totalTokens: total }
+    }
+
+    churn(600000)
+    resolveStale(111100)
+    for (let i = 0; i < 8 && mockHandles[0].getContextUsage.mock.calls.length < 2; i++) await tick()
+
+    churn(610000)
+    resolveStale(111200)
+    for (let i = 0; i < 8 && mockHandles[0].getContextUsage.mock.calls.length < 3; i++) await tick()
+
+    churn(620000)
+    resolveStale(111300)
+    for (let i = 0; i < 8 && mockHandles[0].getContextUsage.mock.calls.length < 4; i++) await tick()
+
+    churn(630000)
+    resolveStale(111400)
+    for (let i = 0; i < 10; i++) await tick()
+
+    // Cap hit after 3 re-arms: exactly 4 probes for the one initial fire; the
+    // garbage 111400 never landed and the newest churned snapshot stands.
+    expect(mockHandles[0].getContextUsage).toHaveBeenCalledTimes(4)
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(630000)
+  })
+
+  it('an identical reconcile reading does not replace the cached snapshot (no churn)', async () => {
+    const info = sm.create({})
+    seedAggregateSnapshot(info.id)
+    // First correction lands (fresh numbers).
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      categories: [],
+    })
+    emitAggregateResult()
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens !== 155641; i++) await tick()
+    const before = usageStateOf(info.id).lastContextUsage
+
+    // A second probe returning the SAME totals must not replace the object
+    // (no redundant broadcast) — steady-state turns that only consumed
+    // cached reads hit this every turn.
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      categories: [],
+    })
+    emitAggregateResult()
+    for (let i = 0; i < 10; i++) await tick()
+    expect(usageStateOf(info.id).lastContextUsage).toBe(before)
+  })
+
+  it('a wedged reconcile probe times out, frees the in-flight flag, and ignores the late resolve', async () => {
+    const info = sm.create({})
+    seedAggregateSnapshot(info.id)
+
+    let neverResolve: (v: unknown) => void = () => {}
+    mockHandles[0].getContextUsage.mockReturnValueOnce(new Promise((res) => { neverResolve = res }))
+    // Fire the reconcile directly with a tiny timeout (the default is 10s —
+    // far too slow for a test; the value itself is not what's under test).
+    const session = usageStateOf(info.id)
+    ;(sm as unknown as { reconcileContextUsage: (s: unknown, timeoutMs?: number) => void })
+      .reconcileContextUsage(session, 30)
+    // Poll for the timeout to land — no fixed wall-clock sleep (flake risk
+    // under loaded CI); bounded at ~3000 polls worst case. NOTE: the poll
+    // must be setTimeout(0)-based — an unref'd (or even ref'd) setTimeout
+    // NEVER fires while a setImmediate chain is spinning in this
+    // environment (measured: 3000 immediates starve a 30ms timer), so the
+    // suite's setImmediate tick() would hang here forever.
+    const tickMs = () => new Promise((r) => setTimeout(r, 0))
+    const flagState = () =>
+      (usageStateOf(info.id) as unknown as { contextUsageProbeInFlight?: boolean }).contextUsageProbeInFlight
+    for (let i = 0; i < 3000 && flagState() !== false; i++) await tickMs()
+
+    // The timeout freed the flag instead of wedging it for the session's life.
+    expect(flagState()).toBe(false)
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(995023)
+
+    // The eventually-resolving subprocess answer must be ignored…
+    neverResolve({ totalTokens: 777777, maxTokens: 1000000, model: 'zhipuai/glm-5.3-flash', categories: [] })
+    for (let i = 0; i < 5; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(995023)
+
+    // …and the next result's probe still fires and lands.
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      categories: [],
+    })
+    emitAggregateResult()
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens !== 155641; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(155641)
+  })
+
   // --- thinking config (Options.thinking at spawn + setMaxThinkingTokens live) ---
 
   it("setThinking() maps adaptive → null and forwards setMaxThinkingTokens(null, undefined) — absent display keeps the current mode", async () => {

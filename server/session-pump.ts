@@ -653,6 +653,20 @@ export interface PumpDeps {
    *  is). Optional so test fixtures that don't exercise snapshot behavior
    *  can omit it. */
   recordTurnSnapshot?: (sessionId: string, assistantUuid: string) => void
+  /** Request a context-usage reconciliation probe after a non-empty result
+   *  FAILED to yield a snapshot. The main failure mode: the aggregate-
+   *  reporting wire (SDK 0.3.278 + e.g. mify proxies) whose top-level usage
+   *  is the turn's BILLING SUM across all API calls and whose `iterations`
+   *  arrive empty — liteContextUsageFromResult refuses that shape (a real
+   *  session cached 995,023/1M = 99.5% off it while the CLI's own accounting
+   *  said 16%), so the probe is the bar's ONLY source there. Also covers
+   *  purely-compaction turns and garbage payloads the guards rejected. The
+   *  manager (which owns SDK control calls — see probeAutoCompactFacts)
+   *  answers by probing getContextUsage() and applying the CLI's
+   *  authoritative numbers via applyContextUsage. Fire-and-forget: the turn
+   *  path never awaits it. Optional so test fixtures that don't exercise
+   *  reconciliation can omit it. */
+  reconcileContextUsage?: (session: Session) => void
   /** Reference to the broadcaster — needed by the mutating-tool detector
    *  to schedule a debounced git-snapshot broadcast after Claude
    *  runs Edit/Write/NotebookEdit/Bash. Optional so test fixtures that
@@ -1210,21 +1224,34 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // the CLI subprocess for getContextUsage(). The full breakdown
         // (skills/agents/memoryFiles/mcpTools) still comes from the
         // on-demand REST endpoint when the user opens SettingsPanel.
+        // NOTE: on the empty-iterations wire this deliberately returns null
+        // (see the aggregate-capable gate inside) — the reconcile probe is
+        // the source of truth there, and the fire gate below keys on this
+        // failure.
+        let resultUsage: LiteContextUsage | null = null
+        const emptyResult = msg.type === 'result' ? isEmptyResultFrame(msg) : false
         if (msg.type === 'result') {
           // Pass the session's pinned auto-compact window (undefined = auto)
           // so the derived threshold reflects a user override, not just the
           // model's raw context window — plus any authoritative threshold the
-          // CLI already told us, which wins over our local replica.
-          const usage = liteContextUsageFromResult(msg, session.autoCompactWindow, session.lastSdkAutoCompact)
+          // CLI already told us, which wins over our local replica. When the
+          // provider's handle cannot be probed (no getContextUsage), the
+          // unverifiable fallback stays available — see the gate inside.
+          const usage = liteContextUsageFromResult(msg, session.autoCompactWindow, session.lastSdkAutoCompact, {
+            allowUnverifiableFallback: typeof session.handle?.getContextUsage !== 'function',
+          })
+          resultUsage = usage
           // Cold-start instrumentation: log once on the FIRST REAL result —
-          // the user-visible end of the first turn. The spawn/restart
-          // `result` warm-up carries an ALL-ZERO usage payload (liteContext
-          // returns null for it), so gating on `usage` skips that placeholder;
-          // a real turn's result always has input_tokens > 0. Combines our
-          // pump-side anchors with the SDK's own wire timings (ttft_ms = time
-          // to first token, request_sent_wall_ms = wall time from send to
-          // response, time_to_request_from_spawn_ms). Read defensively.
-          if (usage && session.firstTurnAtMs === undefined) {
+          // the user-visible end of the first turn. Empty warm-up results
+          // (num_turns: 0, or an all-zero usage payload) are placeholders,
+          // not turns. Deliberately NOT gated on derivation success: on the
+          // aggregate wire the gate refuses every real result, and the
+          // spawn→first-response latency measurement must survive that.
+          // Combines our pump-side anchors with the SDK's own wire timings
+          // (ttft_ms = time to first token, request_sent_wall_ms = wall time
+          // from send to response, time_to_request_from_spawn_ms). Read
+          // defensively.
+          if (!emptyResult && !isZeroUsageResult(msg) && session.firstTurnAtMs === undefined) {
             session.firstTurnAtMs = Date.now()
             const bootMs = session.bootStartedAt !== undefined ? session.firstTurnAtMs - session.bootStartedAt : undefined
             const initMs = session.initAtMs !== undefined ? session.firstTurnAtMs - session.initAtMs : undefined
@@ -1267,7 +1294,8 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // spawn/restart warm-up result. They are not real turns: they must
           // not become resume anchors or persisted result frames, and the
           // client transcript suppresses their footer (isEmptyResultFrame).
-          const emptyResult = isEmptyResultFrame(msg)
+          // (emptyResult is computed once above, shared with the cold-start
+          // anchor.)
           const resultIndex = (msg as { result_index?: unknown }).result_index
           if (typeof resultIndex === 'number' && Number.isFinite(resultIndex)) {
             if (lastResultIndex !== undefined && resultIndex > lastResultIndex + 1) {
@@ -1303,6 +1331,29 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             const resultUuid = (msg as { uuid?: string }).uuid
             if (resultUuid && session.lastAssistantUuid) {
               deps.recordResultFrame?.(session.id, resultUuid, session.lastAssistantUuid, msg)
+            }
+            // Ask the manager to reconcile the context snapshot against the
+            // CLI's own accounting (see the PumpDeps doc). Fire-and-forget.
+            //
+            // Fire gate: whenever this result FAILED to yield a trustworthy
+            // snapshot. That covers the unverifiable aggregate wire (the
+            // derivation returns null there BY DESIGN when a probe is
+            // possible — the probe is the source of truth on it), a
+            // purely-compaction turn (no 'message' iteration — the stale
+            // pre-turn number must not wait for the next ordinary result), a
+            // DEGRADED snapshot (corrupt bucket dropped; applyContextUsage
+            // will refuse it over a healthy last-good, so without a probe
+            // the bar would freeze), and any other garbage payload the
+            // guards rejected. A healthy derivation needs no probe — no
+            // round-trip is spent on wires whose per-call numbers are
+            // already exact. ERROR results are skipped too: the CLI's
+            // context accounting did not change, and an error loop would
+            // otherwise spend one control request per failed turn.
+            if (
+              (msg as { is_error?: boolean }).is_error !== true
+              && (resultUsage == null || resultUsage.degraded)
+            ) {
+              deps.reconcileContextUsage?.(session)
             }
           }
           // Capture the end-of-turn worktree state and append a patch (the
@@ -1538,6 +1589,14 @@ export interface LiteContextUsage {
    *  the under-reported fallback on every turn. Present only on the affected
    *  snapshot — a healthy snapshot leaves it undefined. */
   degraded?: boolean
+  /** Which lens produced this snapshot — the result/assistant derivation
+   *  (window = the advertised modelUsage window) or the reconcile probe
+   *  (window = the CLI response's own maxTokens). The reconcile builder keys
+   *  its window carry on this: a derived last refreshes its window every
+   *  ordinary turn (safe to carry), a probe-sourced last would pin a stale
+   *  window forever (always adopt the response's). Optional — pre-existing
+   *  snapshots and test seeds without it are treated as derived-lens. */
+  source?: 'result' | 'assistant' | 'probe'
 }
 
 /** Compute the auto-compact threshold (in tokens) from a model's advertised
@@ -1660,19 +1719,56 @@ function resolveAutoCompactThreshold(
  *  the replica to the real number without waiting for another turn.
  *
  *  Same shape as reapplyAutoCompactWindow below: mutate the cached snapshot's
- *  threshold only, no-op when nothing moved. */
-export function applySdkAutoCompactFacts(session: Session, facts: SdkAutoCompactFacts): void {
+ *  threshold only, no-op when nothing moved.
+ *
+ *  `logDrift` forwards to resolveAutoCompactThreshold — keep the default
+ *  (true) for rare paths (pin probe, REST pull); per-turn callers (the
+ *  reconcile probe) pass false so a persistently-drifted threshold doesn't
+ *  warn on every single turn. */
+export function applySdkAutoCompactFacts(
+  session: Session,
+  facts: SdkAutoCompactFacts,
+  logDrift = true,
+): void {
   session.lastSdkAutoCompact = facts
   const last = session.lastContextUsage
   if (!last) return
   const pinned = session.autoCompactWindow
   const effectiveWindow = pinned && pinned > 0 ? pinned : last.maxTokens
-  const next = resolveAutoCompactThreshold(facts, last.model, effectiveWindow, last.maxOutputTokens, true)
+  const next = resolveAutoCompactThreshold(facts, last.model, effectiveWindow, last.maxOutputTokens, logDrift)
   if (next === last.autoCompactThreshold) return
   const updated: LiteContextUsage = { ...last }
   if (typeof next === 'number') updated.autoCompactThreshold = next
   else delete updated.autoCompactThreshold
   applyContextUsage(session, updated)
+}
+
+/** Guard 1's bucket rule, shared by the result-derivation path and the
+ *  reconcile builder so the two lenses cannot drift: a cache bucket larger
+ *  than its lens window is BY DEFINITION garbage (a full prompt must fit in
+ *  the window), and so is anything negative or non-finite; a bucket EQUAL to
+ *  the window is a fully-cached prompt and is kept. The lens window is
+ *  whatever window the number was measured against — the derived
+ *  `contextWindow` for the result path, the response's own maxTokens for the
+ *  reconcile builder.
+ *  @internal — exported for unit tests; not part of the module's public API. */
+export function saneCacheBucket(value: unknown, lensWindow: number): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= lensWindow
+    ? value
+    : undefined
+}
+
+/** The spawn/restart warm-up result carries an ALL-ZERO usage payload — not a
+ *  user-visible turn end. Zero-ness of the raw buckets is the wire-independent
+ *  discriminator: derivation-success used to gate the cold-start anchor, but
+ *  the aggregate wire refuses every real result's derivation, so success can't
+ *  distinguish a warm-up from a real turn anymore.
+ *  @internal — exported for unit tests; not part of the module's public API. */
+export function isZeroUsageResult(msg: unknown): boolean {
+  const u = (msg as { usage?: Record<string, unknown> } | null | undefined)?.usage
+  if (!u || typeof u !== 'object') return true
+  const buckets = [u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens]
+  return buckets.every((v) => typeof v !== 'number' || v === 0)
 }
 
 /** Shared assembly for both `result`- and `assistant`-derived snapshots.
@@ -1721,9 +1817,9 @@ function assembleLiteUsage(opts: {
   // applyContextUsage), which stops an intermittently corrupt proxy from
   // flip-flopping the ContextBar every turn.
   let degraded = false
-  if (cacheCreation != null && cacheCreation > opts.contextWindow) {
+  if (cacheCreation != null && saneCacheBucket(cacheCreation, opts.contextWindow) === undefined) {
     log.debug(
-      `[context-usage] cache_creation bucket > contextWindow → dropping ` +
+      `[context-usage] cache_creation bucket outside contextWindow → dropping ` +
       `(source=${opts.source ?? 'unknown'}, model=${opts.model}, ` +
       `inputTokens=${opts.inputTokens}, cacheCreation=${cacheCreation}, ` +
       `cacheRead=${cacheRead}, contextWindow=${opts.contextWindow})`,
@@ -1731,9 +1827,9 @@ function assembleLiteUsage(opts: {
     cacheCreation = undefined
     degraded = true
   }
-  if (cacheRead != null && cacheRead > opts.contextWindow) {
+  if (cacheRead != null && saneCacheBucket(cacheRead, opts.contextWindow) === undefined) {
     log.debug(
-      `[context-usage] cache_read bucket > contextWindow → dropping ` +
+      `[context-usage] cache_read bucket outside contextWindow → dropping ` +
       `(source=${opts.source ?? 'unknown'}, model=${opts.model}, ` +
       `inputTokens=${opts.inputTokens}, cacheCreation=${cacheCreation}, ` +
       `cacheRead=${cacheRead}, contextWindow=${opts.contextWindow})`,
@@ -1776,6 +1872,7 @@ function assembleLiteUsage(opts: {
     rawMaxTokens: opts.contextWindow,
     percentage: (totalTokens / opts.contextWindow) * 100,
     model: opts.model,
+    source: opts.source ?? 'result',
   }
   if (degraded) out.degraded = true
   // Forward the cache buckets only when the proxy reported a number, so
@@ -1808,7 +1905,7 @@ function assembleLiteUsage(opts: {
  *  `lastContextUsage` is either undefined (first turn) or already degraded, so
  *  the guard below doesn't fire and the input-only estimate is what the bar
  *  shows, keeping it live. */
-function applyContextUsage(session: Session, usage: LiteContextUsage): void {
+export function applyContextUsage(session: Session, usage: LiteContextUsage): void {
   const last = session.lastContextUsage
   if (usage.degraded && last && !last.degraded) {
     log.debug(
@@ -1823,6 +1920,160 @@ function applyContextUsage(session: Session, usage: LiteContextUsage): void {
   for (const sub of session.contextUsageSubscribers) {
     try { sub.push(usage) } catch { /* subscriber dead — skip */ }
   }
+}
+
+/** Build a corrected LiteContextUsage from a raw getContextUsage() response —
+ *  the CLI's OWN accounting (categories + totals), as opposed to the result
+ *  payload's API-usage lens that liteContextUsageFromResult reads.
+ *
+ *  Why this exists: on aggregate-reporting backends (SDK 0.3.278 + e.g. mify
+ *  proxies) a result's top-level `usage` is the turn's BILLING SUM across all
+ *  API calls (`input_tokens` == per-call inputs summed, `cache_read` ==
+ *  per-call cache reads summed, `iterations: []`), so the empty-iterations
+ *  fallback in liteContextUsageFromResult treats the sum as one prompt and
+ *  inflates the bar by the call count — a real session cached 995,023/1M =
+ *  99.5% while the CLI's own accounting said 155,641/1M = 16%. This builder
+ *  turns the authoritative response into the replacement snapshot.
+ *
+ *  DENOMINATOR CONTRACT: keyed on the LAST SNAPSHOT'S SOURCE (see
+ *  LiteContextUsage.source).
+ *    - last derived (source result/assistant, or unknown on pre-existing
+ *      seeds): its window is the advertised modelUsage one and refreshes
+ *      every ordinary turn, so it is carried — model-keyed (a model switch
+ *      adopts the response's window; carrying would label the new model with
+ *      the old one's denominator) and only while the reading fits (an
+ *      over-carried-window reading means the window grew; carrying would
+ *      print an impossible >100%).
+ *    - last probe-sourced: every snapshot on that wire comes from a probe,
+ *      so the response refreshes the window each time — carrying would pin a
+ *      stale window forever; the response's own window is adopted.
+ *    - standalone (no last snapshot): the response's own window, seeding a
+ *      bar on backends whose results lack modelUsage entirely.
+ *  In every branch rawMaxTokens is emitted EQUAL to maxTokens — the client's
+ *  contextWindowTokens() prefers rawMaxTokens as its denominator, so a
+ *  divergent pair would render a fill that disagrees with the served
+ *  percentage. The resolved-vs-advertised distinction lives in the
+ *  auto-compact THRESHOLD only (and a carried threshold that does not fit
+ *  the adopted window is dropped — the client clamps nothing).
+ *
+ *  Per-call lens buckets (cache read/creation, output) come from the
+ *  response's `apiUsage` ONLY, per-field and sanity-checked (finite, >= 0,
+ *  < the rendered window — the same corruption class Guard 1 drops in the
+ *  result path). They are deliberately NOT carried forward from `last`: on
+ *  the aggregate wire that motivated this builder, `last`'s buckets are
+ *  themselves billing sums (a 913k cache-read next to a 155k context total),
+ *  so carrying them would render an internally inconsistent "authoritative"
+ *  snapshot; a bucket the response doesn't report is simply omitted.
+ *  maxOutputTokens always carries from `last` (a model limit, not a billing
+ *  sum; the response doesn't report it).
+ *
+ *  Returns null when the response carries no usable reading — non-object,
+ *  missing/zero/non-finite totalTokens or maxTokens, a total that exceeds the
+ *  response's OWN maxTokens (the lens the CLI measured the total against —
+ *  the same impossible-reading guard as assembleLiteUsage; validating against
+ *  the carried window would both admit false-low readings and reject true
+ *  over-window ones), or no model to attribute the reading to when no last
+ *  snapshot exists — callers keep the derived snapshot, exactly as before.
+ *  @internal — exported for the SessionManager's reconcile probe and unit
+ *              tests. */
+export function liteContextUsageFromSdkUsage(
+  raw: unknown,
+  last?: LiteContextUsage,
+): LiteContextUsage | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as {
+    totalTokens?: unknown
+    maxTokens?: unknown
+    // rawMaxTokens is deliberately NOT read: the builder always emits
+    // rawMaxTokens === maxTokens (see the doc) — the resolved-vs-advertised
+    // distinction lives in the auto-compact threshold, never the denominator.
+    model?: unknown
+    autoCompactThreshold?: unknown
+    isAutoCompactEnabled?: unknown
+    apiUsage?: unknown
+  }
+  if (typeof r.totalTokens !== 'number' || !Number.isFinite(r.totalTokens) || r.totalTokens <= 0) return null
+  if (typeof r.maxTokens !== 'number' || !Number.isFinite(r.maxTokens) || r.maxTokens <= 0) return null
+  const totalTokens = Math.round(r.totalTokens)
+  // A fractional total in (0, 0.5) passes the raw guard but rounds to 0 —
+  // that would land a "0 / N · 0.0%" snapshot, the exact clobber shape Guard
+  // 2 prevents on the result path.
+  if (totalTokens <= 0) return null
+  const responseMax = Math.round(r.maxTokens)
+  if (totalTokens > responseMax) return null
+  const model = typeof r.model === 'string' && r.model.length > 0 ? r.model : last?.model
+  if (!model) return null
+  // The window/threshold fields of `last` are only trustworthy for THIS model
+  // — a model switch adopts the response's regime wholesale.
+  const sameModel = last != null && last.model === model
+  // Denominator: KEYED ON THE LAST SNAPSHOT'S SOURCE.
+  //  - last derived (source result/assistant, or unknown — pre-existing
+  //    seeds): its window is the advertised modelUsage one and refreshes
+  //    every ordinary turn, so carrying it never goes stale; adopting the
+  //    CLI's (possibly compaction-shrunk) response window here would make the
+  //    bar oscillate between two lenses around every compaction cycle. Carry —
+  //  but only while the reading fits (an over-carried-window reading means
+  //  the window grew; carrying would print an impossible >100%).
+  //  - last probe-sourced: every snapshot on that wire comes from a probe,
+  //    so the response refreshes the window each time — carrying would pin a
+  //    stale window forever. Adopt the response's own window.
+  const derivedLens = last != null && last.source !== 'probe'
+  const maxTokens =
+    derivedLens && sameModel && last.maxTokens > 0 && totalTokens <= last.maxTokens
+      ? last.maxTokens
+      : responseMax
+  // NOTE on a compaction-shrunk backend (response window ≠ advertised): the
+  // first correction after a derived snapshot carries the advertised window,
+  // and every correction after that (last is probe-sourced) uses the CLI's
+  // own lens — a ONE-TIME jump to the operative denominator, then stable.
+  // That is deliberate: the CLI's own window is what its auto-compact timing
+  // actually uses.
+  // rawMaxTokens ALWAYS equals maxTokens. The client's contextWindowTokens()
+  // prefers rawMaxTokens as its denominator, and the derived snapshots set
+  // both to the same context window — a divergent pair would make the bar
+  // render a different fill than the served percentage. The resolved-vs-
+  // advertised distinction lives in the auto-compact THRESHOLD only.
+  const out: LiteContextUsage = {
+    totalTokens,
+    maxTokens,
+    rawMaxTokens: maxTokens,
+    percentage: (totalTokens / maxTokens) * 100,
+    model,
+    source: 'probe',
+  }
+  if (typeof r.autoCompactThreshold === 'number' && Number.isFinite(r.autoCompactThreshold) && r.autoCompactThreshold > 0) {
+    out.autoCompactThreshold = Math.round(r.autoCompactThreshold)
+  } else if (
+    sameModel
+    && r.isAutoCompactEnabled !== false
+    && typeof last?.autoCompactThreshold === 'number'
+    // A threshold computed for a LARGER window must not tag along onto a
+    // smaller adopted one — the client renders the marker at
+    // threshold/maxTokens with no clamp, and 967000/200000 pins it at 483%.
+    && last.autoCompactThreshold <= maxTokens
+  ) {
+    out.autoCompactThreshold = last.autoCompactThreshold
+  }
+  if (typeof last?.maxOutputTokens === 'number' && sameModel) out.maxOutputTokens = last.maxOutputTokens
+  // Per-call lens buckets: fresh from the response where reported and sane
+  // (same shared rule Guard 1 applies on the result path — a bucket must fit
+  // BOTH its measuring lens (the response's window) and the rendered
+  // denominator, whichever is smaller), omitted otherwise (never carried
+  // from `last` — see the doc above).
+  const api = r.apiUsage
+  const a = (api && typeof api === 'object' ? api : undefined) as {
+    cache_read_input_tokens?: unknown
+    cache_creation_input_tokens?: unknown
+    output_tokens?: unknown
+  } | undefined
+  const bucketBound = Math.min(responseMax, maxTokens)
+  const cacheRead = saneCacheBucket(a?.cache_read_input_tokens, bucketBound)
+  if (cacheRead !== undefined) out.cacheReadTokens = cacheRead
+  const cacheCreation = saneCacheBucket(a?.cache_creation_input_tokens, bucketBound)
+  if (cacheCreation !== undefined) out.cacheCreationTokens = cacheCreation
+  const output = saneCacheBucket(a?.output_tokens, bucketBound)
+  if (output !== undefined) out.outputTokens = output
+  return out
 }
 
 /** Recompute the auto-compact threshold on the cached context-usage snapshot
@@ -1860,6 +2111,24 @@ export function reapplyAutoCompactWindow(session: Session, windowOverride?: numb
   applyContextUsage(session, updated)
 }
 
+/** The wire shape where the top-level usage CANNOT be verified: the SDK type
+ *  is `iterations?: IterationUsage[] | null`, and both degenerate values ride
+ *  the aggregate bug — an EMPTY array and a NULL array are what
+ *  aggregate-reporting backends emit atop a billing-sum top-level usage (a
+ *  real session cached 995,023/1M = 99.5% off it while the CLI's own
+ *  accounting said 16%), while an ABSENT field means a pre-iteration CLI
+ *  whose top-level usage IS the one call's prompt. Populated arrays gave the
+ *  derivation an exact last-iteration snapshot. Kept as a predicate so the
+ *  derive gate and the reconcile fire gate can't drift apart when the wire
+ *  evolves.
+ *  @internal — exported for unit tests; not part of the module's public API. */
+export function resultUsageUnverifiable(msg: unknown): boolean {
+  const usage = (msg as { usage?: { iterations?: unknown } } | null | undefined)?.usage
+  if (usage?.iterations === undefined) return false
+  if (usage.iterations === null) return true
+  return Array.isArray(usage.iterations) && usage.iterations.length === 0
+}
+
 /** Build a LiteContextUsage from a `result` SDK message. Returns null when
  *  the message lacks the expected fields (e.g. result errors before the
  *  API call landed).
@@ -1881,6 +2150,7 @@ export function liteContextUsageFromResult(
   msg: SDKMessage,
   windowOverride?: number,
   facts?: SdkAutoCompactFacts,
+  opts?: { allowUnverifiableFallback?: boolean },
 ): LiteContextUsage | null {
   if (msg.type !== 'result') return null
   // The result message's `usage` and `modelUsage` shapes are SDK-specific
@@ -1902,6 +2172,44 @@ export function liteContextUsageFromResult(
   const modelUsage = result.modelUsage
   if (!usage || !modelUsage) return null
 
+  // Always log the raw payload so we can diagnose context-usage issues.
+  // This fires once per turn (when a result message lands). The JSON.stringify
+  // calls are gated behind an enabled() check because the variadic log.debug
+  // would otherwise evaluate them eagerly at the default info level —
+  // `usage.iterations` can be a sizable array, so building it per turn is
+  // pure waste when debug is off. Deliberately BEFORE the aggregate-capable
+  // refusal below — the payload shape on that wire is exactly what this dump
+  // exists to diagnose. (model/contextWindow are picked further down, so
+  // this dump logs the modelUsage keys instead.)
+  if (log.enabled('debug')) {
+    log.debug(
+      `[context-usage] raw payload (models=${JSON.stringify(Object.keys(modelUsage))}): ` +
+      `top-level=${JSON.stringify({
+        input_tokens: usage.input_tokens,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+        cache_read_input_tokens: usage.cache_read_input_tokens,
+      })} ` +
+      `iterations=${JSON.stringify(usage.iterations ?? null)}`,
+    )
+  }
+
+  // Aggregate-capable wire: `iterations` present and EMPTY (or null — the
+  // SDK type allows both, and aggregate backends serialize the empty list as
+  // either). On this wire the top-level usage is UNVERIFIABLE — a turn's
+  // billing sum (multi-call) and an honest single-call prompt are
+  // indistinguishable, and on the backends that report this shape it is in
+  // fact the billing sum (a real session cached 995,023/1M = 99.5% here
+  // while the CLI's own accounting said 16%). The turn-end reconcile probe
+  // is the source of truth on this wire; deriving here would broadcast a
+  // possibly-inflated number that the probe then corrects ~300ms later — a
+  // guaranteed near-100% flicker every turn. See resultUsageUnverifiable /
+  // PumpDeps.reconcileContextUsage.
+  //
+  // Providers whose handle exposes NO getContextUsage can never be probed —
+  // for them the unverifiable fallback stays available (a live, possibly
+  // inflated bar beats a frozen one). The pump decides.
+  if (resultUsageUnverifiable(result) && !opts?.allowUnverifiableFallback) return null
+
   // Pick the model with a contextWindow set. In practice modelUsage has
   // exactly one entry per turn — but we iterate defensively.
   let model = ''
@@ -1916,24 +2224,6 @@ export function liteContextUsageFromResult(
     }
   }
   if (contextWindow <= 0) return null
-
-  // Always log the raw payload so we can diagnose context-usage issues.
-  // This fires once per turn (when a result message lands). The JSON.stringify
-  // calls are gated behind an enabled() check because the variadic log.debug
-  // would otherwise evaluate them eagerly at the default info level —
-  // `usage.iterations` can be a sizable array, so building it per turn is
-  // pure waste when debug is off.
-  if (log.enabled('debug')) {
-    log.debug(
-      `[context-usage] raw payload for model=${model} contextWindow=${contextWindow}: ` +
-      `top-level=${JSON.stringify({
-        input_tokens: usage.input_tokens,
-        cache_creation_input_tokens: usage.cache_creation_input_tokens,
-        cache_read_input_tokens: usage.cache_read_input_tokens,
-      })} ` +
-      `iterations=${JSON.stringify(usage.iterations ?? null)}`,
-    )
-  }
 
   // Context-window usage = the prompt size of the most recent regular
   // sampling iteration. We must:

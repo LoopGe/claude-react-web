@@ -12,6 +12,9 @@ import {
   isTaskNotificationUserMessage,
   liteContextUsageFromAssistant,
   liteContextUsageFromResult,
+  liteContextUsageFromSdkUsage,
+  resultUsageUnverifiable,
+  saneCacheBucket,
   pump,
   applySdkAutoCompactFacts,
   parseSdkAutoCompactFacts,
@@ -374,7 +377,12 @@ describe('liteContextUsageFromResult', () => {
     expect(out!.cacheReadTokens).toBe(400000)
   })
 
-  it('falls back to top-level usage when iterations is empty or null', () => {
+  it('returns null on the empty-iterations wire (unverifiable — the reconcile probe is the source there)', () => {
+    // On this wire the top-level usage is a turn BILLING SUM on aggregate
+    // backends and an honest single-call prompt elsewhere — indistinguishable.
+    // Deriving would broadcast a possibly-inflated number that the turn-end
+    // reconcile probe then corrects, flickering the bar every turn; the probe
+    // alone feeds the bar on this wire instead.
     const msgEmpty = makeResult({
       usage: {
         input_tokens: 1000,
@@ -384,8 +392,10 @@ describe('liteContextUsageFromResult', () => {
       },
       modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
     })
-    expect(liteContextUsageFromResult(msgEmpty)!.totalTokens).toBe(6200)
+    expect(liteContextUsageFromResult(msgEmpty)).toBeNull()
+  })
 
+  it('refuses a null iterations array too (the SDK type allows it — same unverifiable class)', () => {
     const msgNull = makeResult({
       usage: {
         input_tokens: 1000,
@@ -395,7 +405,7 @@ describe('liteContextUsageFromResult', () => {
       },
       modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
     })
-    expect(liteContextUsageFromResult(msgNull)!.totalTokens).toBe(6200)
+    expect(liteContextUsageFromResult(msgNull)).toBeNull()
   })
 
   it('handles iteration cache fields that are explicitly null', () => {
@@ -1792,7 +1802,11 @@ function makePumpSession(msgs: SDKMessage[]): {
   const taskSnapshots: TaskRecordUi[][] = []
   const session = {
     id: 's-pump',
-    handle: { messages, abortSignal: new AbortController().signal, queueDepth: 0 },
+    // The claude provider's handle exposes getContextUsage — the reconcile
+    // fire gate checks for it (a provider WITHOUT it falls back to the
+    // unverifiable derivation instead of freezing the bar). Tests that need
+    // the no-probe provider delete it.
+    handle: { messages, abortSignal: new AbortController().signal, queueDepth: 0, getContextUsage: vi.fn(async () => ({})) },
     subscribers: new Map([['c1', { push: (m: SDKMessage) => broadcasts.push(m) }]]),
     permissionSubscribers: new Map(),
     elicitationSubscribers: new Map(),
@@ -2148,6 +2162,23 @@ describe('pump: context-usage degraded-snapshot guard', () => {
     expect(contextPushes[0].degraded).toBeUndefined()
   })
 
+  it('drops a NEGATIVE cache bucket via the shared saneCacheBucket rule (degraded fallback)', async () => {
+    // Guard 1 historically only checked the >window direction; the shared
+    // predicate also rejects negative buckets (same corruption class) on the
+    // result path, matching the reconcile builder.
+    const { session } = makePumpSession([
+      makeResult({
+        usage: { input_tokens: 400, cache_creation_input_tokens: -5 },
+        modelUsage: { 'deepseek/deepseek-v4-flash': { contextWindow: 1000000 } },
+      }),
+    ])
+    await pump(session, makePumpDeps())
+
+    expect(session.lastContextUsage!.totalTokens).toBe(400)
+    expect(session.lastContextUsage!.cacheCreationTokens).toBeUndefined()
+    expect(session.lastContextUsage!.degraded).toBe(true)
+  })
+
   it('applies a degraded snapshot when no healthy last-good exists (always-corrupt proxy)', async () => {
     const { session } = makePumpSession([
       makeResult({
@@ -2189,6 +2220,522 @@ describe('pump: context-usage degraded-snapshot guard', () => {
     expect(contextPushes[1].degraded).toBeUndefined()
     expect(session.lastContextUsage!.totalTokens).toBe(804000)
     expect(session.lastContextUsage!.degraded).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// liteContextUsageFromSdkUsage — the CLI-authoritative correction snapshot.
+//
+// On SDK 0.3.278 + aggregate-reporting backends (e.g. mify proxies), a result's
+// top-level `usage` is the turn's BILLING SUM across all API calls (proven:
+// reported input_tokens == per-call inputs summed, cache_read == per-call
+// cache_reads summed), with `iterations: []`. liteContextUsageFromResult's
+// empty-iterations fallback treats it as "the final call's prompt size",
+// inflating totalTokens by the call count — a ~35-call first turn landed at
+// 995,023/1M = 99.5% while the CLI's own accounting said 16%. The reconcile
+// probe re-reads getContextUsage() (the CLI's own lens) after each result and
+// this builder turns that payload into the corrected snapshot.
+// ---------------------------------------------------------------------------
+
+describe('liteContextUsageFromSdkUsage', () => {
+  /** The real mify payload shape from session 73a4960a's turn-1 result. */
+  const cliPayload = {
+    categories: [],
+    totalTokens: 155641,
+    maxTokens: 1000000,
+    rawMaxTokens: 1000000,
+    percentage: 16,
+    model: 'zhipuai/glm-5.3-flash',
+    autoCompactThreshold: 967000,
+    isAutoCompactEnabled: true,
+    apiUsage: null,
+  }
+  /** The polluted aggregate-derived snapshot the pump cached from the result. */
+  const aggregateLast = (): LiteContextUsage => ({
+    totalTokens: 995023,
+    maxTokens: 1000000,
+    rawMaxTokens: 1000000,
+    percentage: 99.5023,
+    model: 'zhipuai/glm-5.3-flash',
+    autoCompactThreshold: 967000,
+    maxOutputTokens: 32000,
+    cacheReadTokens: 913472,
+    outputTokens: 10372,
+  })
+
+  it('builds the corrected snapshot from the CLI payload (per-call buckets only from apiUsage)', () => {
+    const out = liteContextUsageFromSdkUsage(cliPayload, aggregateLast())
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(155641)
+    expect(out!.maxTokens).toBe(1000000)
+    expect(out!.rawMaxTokens).toBe(1000000)
+    expect(out!.percentage).toBeCloseTo((155641 / 1000000) * 100, 5)
+    expect(out!.model).toBe('zhipuai/glm-5.3-flash')
+    // The CLI's own threshold wins.
+    expect(out!.autoCompactThreshold).toBe(967000)
+    // maxOutputTokens carries forward (model limit, not a billing sum).
+    expect(out!.maxOutputTokens).toBe(32000)
+    // NO bucket carry-forward: on the aggregate wire `last`'s buckets are
+    // themselves billing sums (913k cache-read "reads" against a 155k
+    // context), and the response reported no apiUsage — the readout is
+    // omitted rather than shown inconsistent.
+    expect(out!.cacheReadTokens).toBeUndefined()
+    expect(out!.outputTokens).toBeUndefined()
+    // Authoritative → never flagged degraded.
+    expect(out!.degraded).toBeUndefined()
+  })
+
+  it('takes per-call buckets from apiUsage when present', () => {
+    const out = liteContextUsageFromSdkUsage(
+      { ...cliPayload, apiUsage: { input_tokens: 147, output_tokens: 900, cache_creation_input_tokens: 0, cache_read_input_tokens: 120128 } },
+      aggregateLast(),
+    )
+    expect(out).not.toBeNull()
+    expect(out!.cacheReadTokens).toBe(120128)
+    expect(out!.outputTokens).toBe(900)
+  })
+
+  it('omits buckets a partial apiUsage does not report (no carry from an aggregate last)', () => {
+    const out = liteContextUsageFromSdkUsage(
+      { ...cliPayload, apiUsage: { input_tokens: 0, output_tokens: 900, cache_creation_input_tokens: 0, cache_read_input_tokens: undefined } },
+      aggregateLast(),
+    )
+    expect(out).not.toBeNull()
+    expect(out!.outputTokens).toBe(900)
+    // last's 913472 cache-read is a billing sum on this wire — it must NOT
+    // resurface next to the corrected 155k context total.
+    expect(out!.cacheReadTokens).toBeUndefined()
+  })
+
+  it('drops corrupt apiUsage buckets (negative or window-sized) instead of applying them', () => {
+    const out = liteContextUsageFromSdkUsage(
+      { ...cliPayload, apiUsage: { input_tokens: 0, output_tokens: 900, cache_creation_input_tokens: -5, cache_read_input_tokens: 9e9 } },
+      aggregateLast(),
+    )
+    expect(out).not.toBeNull()
+    expect(out!.cacheCreationTokens).toBeUndefined()
+    expect(out!.cacheReadTokens).toBeUndefined()
+    // The authoritative totals still land.
+    expect(out!.totalTokens).toBe(155641)
+  })
+
+  it('bounds apiUsage buckets by BOTH lenses (response window and rendered window)', () => {
+    // Carried advertised 1M + response resolved 200k: a 500k bucket exceeds
+    // the response lens → garbage (Guard 1's rule).
+    const out = liteContextUsageFromSdkUsage(
+      { ...cliPayload, maxTokens: 200000, rawMaxTokens: 200000, apiUsage: { input_tokens: 0, output_tokens: 900, cache_creation_input_tokens: 0, cache_read_input_tokens: 500000 } },
+      aggregateLast(),
+    )
+    expect(out).not.toBeNull()
+    expect(out!.cacheReadTokens).toBeUndefined()
+    // A bucket that fits the response lens still lands — INCLUDING one equal
+    // to it (Guard 1 keeps bucket == window; only a strict excess is garbage).
+    const out2 = liteContextUsageFromSdkUsage(
+      { ...cliPayload, maxTokens: 200000, rawMaxTokens: 200000, apiUsage: { input_tokens: 0, output_tokens: 900, cache_creation_input_tokens: 0, cache_read_input_tokens: 120000 } },
+      aggregateLast(),
+    )
+    expect(out2!.cacheReadTokens).toBe(120000)
+    const out3 = liteContextUsageFromSdkUsage(
+      { ...cliPayload, maxTokens: 200000, rawMaxTokens: 200000, apiUsage: { input_tokens: 0, output_tokens: 900, cache_creation_input_tokens: 0, cache_read_input_tokens: 200000 } },
+      aggregateLast(),
+    )
+    expect(out3!.cacheReadTokens).toBe(200000)
+    // Mirror case — carried 200k UNDER a response 1M: a 500k bucket fits the
+    // response lens but towers over the rendered 200k denominator; it must
+    // not land either.
+    const out4 = liteContextUsageFromSdkUsage(
+      { ...cliPayload, maxTokens: 1000000, rawMaxTokens: 1000000, apiUsage: { input_tokens: 0, output_tokens: 900, cache_creation_input_tokens: 0, cache_read_input_tokens: 500000 } },
+      { ...aggregateLast(), source: 'result', maxTokens: 200000, rawMaxTokens: 200000 },
+    )
+    expect(out4!.cacheReadTokens).toBeUndefined()
+    const out5 = liteContextUsageFromSdkUsage(
+      { ...cliPayload, maxTokens: 1000000, rawMaxTokens: 1000000, apiUsage: { input_tokens: 0, output_tokens: 900, cache_creation_input_tokens: 0, cache_read_input_tokens: 150000 } },
+      { ...aggregateLast(), source: 'result', maxTokens: 200000, rawMaxTokens: 200000 },
+    )
+    expect(out5!.cacheReadTokens).toBe(150000)
+  })
+
+  it('omits the carried threshold when the response reports auto-compact DISABLED', () => {
+    // isAutoCompactEnabled: false with no threshold is the CLI's authoritative
+    // "compact will not fire" — carrying the previous threshold would keep the
+    // marker on the bar forever.
+    const { autoCompactThreshold: _dropped, ...noThreshold } = cliPayload
+    const out = liteContextUsageFromSdkUsage(
+      { ...noThreshold, isAutoCompactEnabled: false },
+      aggregateLast(),
+    )
+    expect(out).not.toBeNull()
+    expect(out!.autoCompactThreshold).toBeUndefined()
+  })
+
+  it('omits a carried threshold that does not fit the adopted window (no marker past 100%)', () => {
+    // Same-model threshold carry, but the response's window SHRANK (CLI
+    // resolved a compaction policy) and the response reports no threshold:
+    // 967000 over a 200k denominator would render the compact marker at
+    // 483% — drop it instead.
+    const { autoCompactThreshold: _dropped, ...noThreshold } = cliPayload
+    const out = liteContextUsageFromSdkUsage(
+      { ...noThreshold, maxTokens: 200000, rawMaxTokens: 200000 },
+      { ...aggregateLast(), source: 'probe' },
+    )
+    expect(out).not.toBeNull()
+    expect(out!.maxTokens).toBe(200000)
+    expect(out!.autoCompactThreshold).toBeUndefined()
+  })
+
+  it('falls back to the last snapshot for an absent threshold / model (same model)', () => {
+    const out = liteContextUsageFromSdkUsage(
+      { totalTokens: 50000, maxTokens: 200000 },
+      aggregateLast(),
+    )
+    expect(out).not.toBeNull()
+    expect(out!.autoCompactThreshold).toBe(967000)
+    expect(out!.model).toBe('zhipuai/glm-5.3-flash')
+    // aggregateLast has no source → treated as derived-lens → the advertised
+    // window carries (the reading fits it). rawMaxTokens tracks maxTokens.
+    expect(out!.maxTokens).toBe(1000000)
+    expect(out!.rawMaxTokens).toBe(1000000)
+    expect(out!.percentage).toBeCloseTo((50000 / 1000000) * 100, 5)
+  })
+
+  it('uses the response\'s own window when the last snapshot was probe-sourced (no stale-carried window)', () => {
+    // Probe-only wire (no modelUsage): every snapshot comes from a probe, so
+    // the response refreshes the window each time — carrying would pin a
+    // stale window forever (a 200k seed under a 1M response would read 75%
+    // instead of 15%).
+    const probeLast: LiteContextUsage = { ...aggregateLast(), source: 'probe', maxTokens: 200000, rawMaxTokens: 200000 }
+    const out = liteContextUsageFromSdkUsage(
+      { ...cliPayload, totalTokens: 155641, maxTokens: 1000000, rawMaxTokens: 1000000 },
+      probeLast,
+    )
+    expect(out).not.toBeNull()
+    expect(out!.maxTokens).toBe(1000000)
+    expect(out!.source).toBe('probe')
+  })
+
+  it('carries the derived window on a deriving wire (no denominator oscillation around compaction cycles)', () => {
+    // On a wire whose results DO derive, the cached window is the advertised
+    // modelUsage one and refreshes every ordinary turn — a probe fired for a
+    // compaction-only/degraded result must not swap the denominator to the
+    // CLI's (possibly compaction-shrunk) lens for one reading.
+    const derivedLast: LiteContextUsage = { ...aggregateLast(), source: 'result' }
+    const out = liteContextUsageFromSdkUsage(
+      { ...cliPayload, maxTokens: 200000, rawMaxTokens: 200000 },
+      derivedLast,
+    )
+    expect(out).not.toBeNull()
+    expect(out!.maxTokens).toBe(1000000)
+    expect(out!.rawMaxTokens).toBe(1000000)
+    expect(out!.percentage).toBeCloseTo((155641 / 1000000) * 100, 5)
+    expect(out!.source).toBe('probe')
+  })
+
+  it('adopts the response window when the reading exceeds the carried one (window grew, no modelUsage backend)', () => {
+    // `last` was seeded by an earlier correction on a 200k-window model; the
+    // user switched to a 1M-window model and the CLI now reports 300k.
+    // Carrying the 200k denominator would print 150% — the same
+    // impossible-reading class the result path rejects.
+    const seededLast: LiteContextUsage = { ...aggregateLast(), maxTokens: 200000, rawMaxTokens: 200000 }
+    const out = liteContextUsageFromSdkUsage(
+      { ...cliPayload, totalTokens: 300000, maxTokens: 1000000, rawMaxTokens: 1000000 },
+      seededLast,
+    )
+    expect(out).not.toBeNull()
+    expect(out!.maxTokens).toBe(1000000)
+    expect(out!.rawMaxTokens).toBe(1000000)
+    expect(out!.percentage).toBeCloseTo((300000 / 1000000) * 100, 5)
+  })
+
+  it('adopts the response window on a model switch even at low usage (carry is model-keyed)', () => {
+    // Same no-modelUsage backend: model A (200k window) → model B (1M). The
+    // reading is small, so a magnitude-only carry would keep A's 200k
+    // denominator under B's model label — 77.8% instead of 15.6%.
+    const seededLast: LiteContextUsage = { ...aggregateLast(), model: 'old-model', maxTokens: 200000, rawMaxTokens: 200000 }
+    // A threshold-less response (auto-compact off at the CLI) — otherwise the
+    // raw threshold would legitimately fill the field.
+    const { autoCompactThreshold: _dropped, ...noThreshold } = cliPayload
+    const out = liteContextUsageFromSdkUsage(
+      { ...noThreshold, model: 'zhipuai/glm-5.3-flash', totalTokens: 155641, maxTokens: 1000000, rawMaxTokens: 1000000 },
+      seededLast,
+    )
+    expect(out).not.toBeNull()
+    expect(out!.model).toBe('zhipuai/glm-5.3-flash')
+    expect(out!.maxTokens).toBe(1000000)
+    expect(out!.percentage).toBeCloseTo((155641 / 1000000) * 100, 5)
+    // A's CLI threshold (and A's output cap) must NOT tag along onto model B
+    // — the client renders the marker at threshold/maxTokens with no clamp,
+    // and a cross-model threshold pins it somewhere it was never computed
+    // for.
+    expect(out!.autoCompactThreshold).toBeUndefined()
+    expect(out!.maxOutputTokens).toBeUndefined()
+  })
+
+  it('always pairs rawMaxTokens with maxTokens (the client divides by rawMaxTokens when present)', () => {
+    // A resolved-shrunk rawMaxTokens (200k) under a 1M maxTokens would make
+    // the client render 77.8% while the served percentage says 15.6% — the
+    // builder therefore never emits a divergent pair (matching the derived
+    // snapshots, where both equal the context window).
+    const out = liteContextUsageFromSdkUsage(
+      { ...cliPayload, maxTokens: 1000000, rawMaxTokens: 200000 },
+      aggregateLast(),
+    )
+    expect(out).not.toBeNull()
+    expect(out!.maxTokens).toBe(1000000)
+    expect(out!.rawMaxTokens).toBe(1000000)
+    const standalone = liteContextUsageFromSdkUsage(
+      { ...cliPayload, maxTokens: 1000000, rawMaxTokens: 200000 },
+      undefined,
+    )
+    expect(standalone).not.toBeNull()
+    expect(standalone!.maxTokens).toBe(1000000)
+    expect(standalone!.rawMaxTokens).toBe(1000000)
+  })
+
+  it('returns null when totalTokens exceeds the RESPONSE\'s own maxTokens — even under a larger carried window', () => {
+    // Over the response's own window: rejected like assembleLiteUsage's
+    // impossible-reading guard.
+    const out = liteContextUsageFromSdkUsage(
+      { ...cliPayload, totalTokens: 1200000 },
+      aggregateLast(),
+    )
+    expect(out).toBeNull()
+    // The review's exact scenario: the CLI is over its own (shrunk) window
+    // while the carried advertised window is 1M — validating against the
+    // carried window would show a false 21%; validating against the lens the
+    // CLI measured in rejects it.
+    const out2 = liteContextUsageFromSdkUsage(
+      { ...cliPayload, totalTokens: 210000, maxTokens: 200000, rawMaxTokens: 200000 },
+      aggregateLast(),
+    )
+    expect(out2).toBeNull()
+  })
+
+  it('builds a standalone snapshot with no last (seeds a bar on backends whose results lack modelUsage)', () => {
+    const out = liteContextUsageFromSdkUsage({ ...cliPayload }, undefined)
+    expect(out).not.toBeNull()
+    expect(out!.totalTokens).toBe(155641)
+    expect(out!.maxTokens).toBe(1000000)
+    expect(out!.model).toBe('zhipuai/glm-5.3-flash')
+    expect(out!.autoCompactThreshold).toBe(967000)
+    expect(out!.cacheReadTokens).toBeUndefined()
+  })
+
+  it('returns null for a standalone payload with no model (an unattributable reading never lands)', () => {
+    const { model: _model, ...noModel } = cliPayload
+    expect(liteContextUsageFromSdkUsage(noModel, undefined)).toBeNull()
+    // With a last snapshot the model carries forward instead.
+    const out = liteContextUsageFromSdkUsage(noModel, aggregateLast())
+    expect(out).not.toBeNull()
+    expect(out!.model).toBe('zhipuai/glm-5.3-flash')
+  })
+
+  it.each([
+    ['non-object', 'nope'],
+    ['missing totalTokens', { maxTokens: 1000 }],
+    ['zero totalTokens', { totalTokens: 0, maxTokens: 1000 }],
+    ['NaN totalTokens', { totalTokens: Number.NaN, maxTokens: 1000 }],
+    ['fractional totalTokens that rounds to zero', { totalTokens: 0.4, maxTokens: 1000 }],
+    ['missing maxTokens', { totalTokens: 500 }],
+    ['negative maxTokens', { totalTokens: 500, maxTokens: -1 }],
+  ])('returns null for %s', (_name, raw) => {
+    expect(liteContextUsageFromSdkUsage(raw, aggregateLast())).toBeNull()
+  })
+})
+
+describe('resultUsageUnverifiable', () => {
+  it('is true when the wire cannot verify the top-level usage (iterations absent-null, or present-empty)', () => {
+    expect(resultUsageUnverifiable(makeResult({ usage: { input_tokens: 1, iterations: [] } }))).toBe(true)
+    expect(resultUsageUnverifiable(makeResult({ usage: { input_tokens: 1, iterations: null } }))).toBe(true)
+    expect(resultUsageUnverifiable(makeResult({ usage: { input_tokens: 1 } }))).toBe(false)
+    expect(resultUsageUnverifiable(makeResult({ usage: { input_tokens: 1, iterations: [{ type: 'message' }] } }))).toBe(false)
+    expect(resultUsageUnverifiable(makeResult({}))).toBe(false)
+    expect(resultUsageUnverifiable(null)).toBe(false)
+  })
+})
+
+describe('saneCacheBucket', () => {
+  it('keeps finite non-negative buckets up to and including the lens window', () => {
+    expect(saneCacheBucket(120000, 200000)).toBe(120000)
+    expect(saneCacheBucket(200000, 200000)).toBe(200000)
+    expect(saneCacheBucket(0, 200000)).toBe(0)
+  })
+  it.each([
+    ['negative', -5],
+    ['over-window', 200001],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['non-number', '120000'],
+    ['undefined', undefined],
+  ])('drops %s buckets', (_name, value) => {
+    expect(saneCacheBucket(value, 200000)).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pump: reconcileContextUsage dep — fire-and-forget probe request per result.
+//
+// The aggregate pollution lands WITH the result, so the correction probe must
+// fire at the same moment (the manager owns the actual getContextUsage call).
+// Fire gate: pollution happens ONLY through liteContextUsageFromResult's
+// empty-iterations fallback — a wire that reports `iterations: []` cannot be
+// told apart from an aggregate, while a wire that POPULATES iterations gave
+// the derivation an exact last-iteration snapshot (nothing to correct) and an
+// older wire omits the field entirely (top-level IS the one call's prompt).
+// So the probe fires exactly when iterations is present and empty. Empty
+// warm-up results (num_turns: 0) are not turns — no probe for them either.
+// ---------------------------------------------------------------------------
+
+describe('pump: reconcileContextUsage dep', () => {
+  const realResultWith = (usage: Record<string, unknown>) =>
+    makeResult({
+      usage,
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+    })
+
+  it('fires the reconcile dep after a non-empty result on the empty-iterations wire', async () => {
+    const { session } = makePumpSession([
+      realResultWith({ input_tokens: 1000, cache_read_input_tokens: 5000, iterations: [] }),
+    ])
+    const reconcileContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ reconcileContextUsage }))
+
+    expect(reconcileContextUsage).toHaveBeenCalledTimes(1)
+    expect(reconcileContextUsage).toHaveBeenCalledWith(session)
+  })
+
+  it('does not fire when iterations is populated (exact last-iteration snapshot — nothing to correct)', async () => {
+    const { session } = makePumpSession([
+      realResultWith({
+        input_tokens: 1000,
+        cache_read_input_tokens: 5000,
+        iterations: [{ type: 'message', input_tokens: 1000, cache_read_input_tokens: 5000 }],
+      }),
+    ])
+    const reconcileContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ reconcileContextUsage }))
+
+    expect(reconcileContextUsage).not.toHaveBeenCalled()
+  })
+
+  it('does not fire when the result reports no iterations field at all', async () => {
+    const { session } = makePumpSession([
+      realResultWith({ input_tokens: 1000, cache_read_input_tokens: 5000 }),
+    ])
+    const reconcileContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ reconcileContextUsage }))
+
+    expect(reconcileContextUsage).not.toHaveBeenCalled()
+  })
+
+  it('fires the reconcile dep when the derivation fails on a populated-but-messageless turn (compaction-only)', async () => {
+    // A purely-compaction turn yields no snapshot AND no empty-iterations
+    // shape — the stale pre-turn number would otherwise sit on the bar until
+    // the next ordinary result. "Derivation failed" is the fire condition.
+    const { session } = makePumpSession([
+      makeResult({
+        usage: {
+          input_tokens: 999,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          iterations: [
+            { type: 'compaction', input_tokens: 2337000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 },
+          ],
+        },
+        modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+      }),
+    ])
+    const reconcileContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ reconcileContextUsage }))
+
+    expect(reconcileContextUsage).toHaveBeenCalledTimes(1)
+  })
+
+  it('fires the reconcile dep when the derivation lands DEGRADED (suspect turn → let the CLI answer)', async () => {
+    // A degraded snapshot (corrupt bucket dropped) is refused over a healthy
+    // last-good by applyContextUsage — without firing the probe the bar
+    // would freeze at the last-good forever on a persistently-corrupt
+    // backend.
+    const { session } = makePumpSession([
+      makeResult({
+        usage: { input_tokens: 400, cache_creation_input_tokens: -5 },
+        modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
+      }),
+    ])
+    const reconcileContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ reconcileContextUsage }))
+
+    expect(reconcileContextUsage).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fire the reconcile dep for an error result (the CLI context did not change)', async () => {
+    // An error loop would otherwise spend one control request (and one 10s
+    // timer) per failed turn; the next successful turn probes instead.
+    const { session } = makePumpSession([
+      {
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        num_turns: 1,
+        result: 'boom',
+        total_cost_usd: 0,
+        uuid: 'r-err',
+      } as unknown as SDKMessage,
+    ])
+    const reconcileContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ reconcileContextUsage }))
+
+    expect(reconcileContextUsage).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the unverifiable derivation when the provider has no getContextUsage (a live bar beats a frozen one)', async () => {
+    // A third-party provider without the optional handle method can never be
+    // probed — refusing the aggregate wire would leave the bar empty for the
+    // session's whole life. Derive anyway (possibly inflated) instead.
+    const { session } = makePumpSession([
+      makeResult({
+        usage: { input_tokens: 81551, cache_read_input_tokens: 913472, iterations: [] },
+        modelUsage: { 'claude-opus-4-7': { contextWindow: 1000000 } },
+      }),
+    ])
+    delete (session.handle as { getContextUsage?: unknown }).getContextUsage
+    const reconcileContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ reconcileContextUsage }))
+
+    // The old fallback ran (bar live, possibly inflated) and no probe was
+    // spent — there is nothing to probe with.
+    expect(session.lastContextUsage!.totalTokens).toBe(995023)
+    expect(reconcileContextUsage).not.toHaveBeenCalled()
+  })
+
+  it('stamps firstTurnAtMs on the first non-empty result even when the derivation refuses the wire', async () => {
+    // The cold-start anchor used to gate on derivation success — on the
+    // aggregate wire the gate refuses every real result, which would silence
+    // the spawn→first-response latency measurement for those sessions.
+    const { session } = makePumpSession([
+      realResultWith({ input_tokens: 1000, cache_read_input_tokens: 5000, iterations: [] }),
+    ])
+    await pump(session, makePumpDeps())
+
+    expect(session.firstTurnAtMs).toBeDefined()
+  })
+
+  it('does not fire the reconcile dep for an empty warm-up result', async () => {
+    const { session } = makePumpSession([
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        num_turns: 0,
+        result: '',
+        total_cost_usd: 0,
+        usage: { input_tokens: 1, iterations: [] },
+        uuid: 'r-empty',
+      } as unknown as SDKMessage,
+    ])
+    const reconcileContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ reconcileContextUsage }))
+
+    expect(reconcileContextUsage).not.toHaveBeenCalled()
   })
 })
 

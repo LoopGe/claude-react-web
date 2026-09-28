@@ -64,6 +64,8 @@ import {
   reapplyAutoCompactWindow,
   applySdkAutoCompactFacts,
   parseSdkAutoCompactFacts,
+  applyContextUsage,
+  liteContextUsageFromSdkUsage,
   type PumpDeps,
 } from './session-pump.js'
 import {
@@ -499,6 +501,17 @@ const log = createLogger('session')
  *  the oldest entries only means very old ghosts could survive on a tab that
  *  was offline across more than 200 withdrawn turns — an acceptable bound. */
 const WITHDRAWN_UUIDS_CAP = 200
+
+/** How long a background getContextUsage() probe (auto-compact facts /
+ *  turn-end context-usage reconciliation) may wait for the subprocess before
+ *  giving up. Control requests have no SDK-side timeout and a busy subprocess
+ *  typically answers within a few hundred ms (the SettingsPanel's live pull
+ *  measures 250–400ms), so 10s is generous headroom, not a tuned value. */
+const CONTEXT_USAGE_PROBE_TIMEOUT_MS = 10_000
+
+/** Max consecutive stale re-arms per fired reconcile probe (see
+ *  reconcileContextUsage). */
+const MAX_RECONCILE_REARMS = 3
 
 /** A user message after `stampReceivedAt` has stamped `receivedAt` on it.
  *  The SDK's `SDKUserMessage` type doesn't include `receivedAt` (it's a
@@ -4767,35 +4780,208 @@ export class SessionManager {
    *  threshold reapplyAutoCompactWindow already broadcast stays as the
    *  fallback, which is the pre-existing behaviour. */
   private probeAutoCompactFacts(s: Session): void {
-    if (!s.running || s.terminated || s.pendingTurns > 0) return
-    if (s.autoCompactProbeInFlight) return
+    this.fireContextUsageProbe(s, {
+      flag: 'autoCompactProbeInFlight',
+      skipMidTurn: true,
+      label: 'auto-compact fact probe',
+      onResolved: (raw) => {
+        const facts = parseSdkAutoCompactFacts(raw)
+        if (facts) applySdkAutoCompactFacts(s, facts)
+      },
+    })
+  }
+
+  /** Fire-and-forget getContextUsage() that REPLACES the pump-derived
+   *  context snapshot with the CLI's OWN accounting, fired by the pump after
+   *  every non-empty result whose derivation failed (see
+   *  PumpDeps.reconcileContextUsage) — primarily the aggregate-reporting
+   *  wire, where this probe is the bar's only source.
+   *
+   *  Why: on aggregate-reporting backends (SDK 0.3.278 + e.g. mify proxies)
+   *  a result's top-level `usage` is the turn's BILLING SUM across all API
+   *  calls, and the pump's mid-turn assistant correction path is inert there
+   *  (stream assistant messages carry no `message.usage`) — deriving from
+   *  the result would put an inflated reading on the bar (99.5% vs the
+   *  CLI's 16% on a real session), so the derivation refuses the wire and
+   *  this probe feeds it instead.
+   *
+   *  Unlike probeAutoCompactFacts this deliberately does NOT skip while
+   *  pendingTurns > 0: queued-input sessions flow from turn to turn without
+   *  ever going idle, so a pendingTurns guard would starve the correction
+   *  forever — the exact scenario it exists for. Control requests do get
+   *  answered mid-turn (interrupt/setModel rely on it); the response may be
+   *  slower, which the staleness guard below makes safe. Every failure is
+   *  swallowed to debug — the pump-derived snapshot stays as the fallback,
+   *  which is the pre-fix behaviour.
+   *
+   *  `timeoutMs` exists for tests only (the default is 10s); it overrides how
+   *  long the probe may take before giving up. */
+  private reconcileContextUsage(s: Session, timeoutMs?: number, rearmDepth = 0): void {
+    // Staleness capture: the correction may only land on the snapshot this
+    // probe was fired FOR. A control response has no SDK-side timeout, so a
+    // slow one can arrive after turn N+1's own (fresher — even if aggregate)
+    // snapshot replaced the cache; applying then would drag the bar
+    // backwards. Identity works because applyContextUsage always REPLACES
+    // the object. On a skip, the re-arm below re-fires against the newest.
+    const lastAtFire = s.lastContextUsage
+    let stale = false
+    this.fireContextUsageProbe(s, {
+      flag: 'contextUsageProbeInFlight',
+      timeoutMs,
+      label: 'context-usage reconcile probe',
+      onResolved: (raw) => {
+        if (s.lastContextUsage !== lastAtFire) {
+          // A newer snapshot landed while this probe was in flight (a
+          // hybrid wire whose assistant frames carry usage, a resume
+          // re-seed, an assistant-derived update). Mark stale — the re-arm
+          // below runs after the flag releases — because applying would
+          // drag the bar backwards. Capped at MAX_RECONCILE_REARMS per
+          // fired probe so a snapshot that keeps churning cannot loop
+          // control requests indefinitely.
+          stale = true
+          return
+        }
+        const corrected = liteContextUsageFromSdkUsage(raw, s.lastContextUsage)
+        if (corrected) {
+          const last = s.lastContextUsage
+          // No-churn: an identical reading (same totals, window, model,
+          // threshold) replaces the object and re-broadcasts for nothing —
+          // steady-state turns that only consumed cache reads hit this
+          // every turn. Identity still matters for the staleness capture
+          // above, so a real change replaces; equality skips.
+          if (
+            last
+            && !last.degraded
+            && last.totalTokens === corrected.totalTokens
+            && last.maxTokens === corrected.maxTokens
+            && last.model === corrected.model
+            && last.autoCompactThreshold === corrected.autoCompactThreshold
+          ) {
+            return
+          }
+          applyContextUsage(s, corrected)
+        }
+        // The same response also carries the CLI's auto-compact facts.
+        // Fold ONLY when the response reports a threshold: the corrected
+        // snapshot carries the CLI's previously-reported one, and a
+        // threshold-less response would otherwise resolve to the local
+        // FORMULA and overwrite that real number on every turn. Runs after
+        // the correction so the fold lands on the corrected snapshot.
+        // logDrift=false: this fires per turn — the drift warning is for
+        // the rare paths (see resolveAutoCompactThreshold's contract).
+        const facts = parseSdkAutoCompactFacts(raw)
+        if (facts?.threshold !== undefined) {
+          applySdkAutoCompactFacts(s, facts, false)
+        }
+      },
+      onSettled: () => {
+        if (!stale) return
+        if (rearmDepth >= MAX_RECONCILE_REARMS) {
+          log.debug(
+            `[session ${s.id}] context-usage reconcile re-arm cap (${rearmDepth}) hit — waiting for the next result`,
+          )
+          return
+        }
+        log.debug(
+          `[session ${s.id}] context-usage reconcile skipped (newer snapshot in flight) — re-arming against it`,
+        )
+        this.reconcileContextUsage(s, timeoutMs, rearmDepth + 1)
+      },
+    })
+  }
+
+  /** Control requests carry no SDK-side timeout (a busy/wedged subprocess can
+   *  delay control_response indefinitely), so background probes race their
+   *  own timer — without it, one wedged subprocess would hold the in-flight
+   *  flag for the session's remaining life and silently disable the probe
+   *  forever. Shared scaffolding for probeAutoCompactFacts (pin changes) and
+   *  reconcileContextUsage (turn-end correction): running/terminated guard,
+   *  optional mid-turn skip, per-flag in-flight dedup, sync-throw containment,
+   *  timeout race, and flag release in finally. */
+  private fireContextUsageProbe(
+    s: Session,
+    opts: {
+      flag: 'autoCompactProbeInFlight' | 'contextUsageProbeInFlight'
+      label: string
+      onResolved: (raw: unknown) => void
+      /** Called AFTER the in-flight flag has been released (both success and
+       *  failure paths). Runs outside the flag guard, so a callback that
+       *  wants to fire another probe (the reconcile re-arm) can. NOT called
+       *  when the handle threw synchronously — the probe never started, and
+       *  a re-arm there would recurse on a permanently-throwing handle. */
+      onSettled?: () => void
+      skipMidTurn?: boolean
+      timeoutMs?: number
+    },
+  ): void {
+    if (!s.running || s.terminated) return
+    if (opts.skipMidTurn && s.pendingTurns > 0) return
+    if (s[opts.flag]) return
     const fn = s.handle.getContextUsage
     if (typeof fn !== 'function') return
-    s.autoCompactProbeInFlight = true
-    // try/catch as well as .catch(): a handle that throws SYNCHRONOUSLY (closed
-    // transport) would otherwise propagate out of a setter whose SDK write
-    // already succeeded — turning a cosmetic probe into a failed pin — and
-    // leave the in-flight flag stuck on, blocking every later probe.
+    s[opts.flag] = true
+    const timeoutMs = opts.timeoutMs ?? CONTEXT_USAGE_PROBE_TIMEOUT_MS
+    let timer: NodeJS.Timeout | undefined
+    // try/catch as well as .catch(): a handle that throws SYNCHRONOUSLY
+    // (closed transport) must neither escape as an unhandled rejection of the
+    // caller's turn path nor leave the in-flight flag stuck on.
     try {
-      // `detail: 'summary'` (SDK ≥0.3.257) skips the per-category token-count
-      // API calls — this probe only needs the auto-compact facts / window, not
-      // the skills/agents/memoryFiles breakdown the SettingsPanel fetches via
-      // contextUsage(). Falls back to 'full' on CLIs that predate the option.
-      void fn
-        .call(s.handle, { detail: 'summary' })
+      // `detail: 'summary'` (SDK ≥0.3.257) answers with local estimates —
+      // no per-category token-count API calls. Both consumers only need the
+      // scalar totals/facts, not the SettingsPanel breakdown.
+      const startedAt = Date.now()
+      const call = fn.call(s.handle, { detail: 'summary' })
+      // Observe the ACTUAL round-trip in the same series timeSdkControl
+      // records for every other control op — the timeout race below may
+      // settle first, but the underlying call's duration (and this probe
+      // being the most frequent control call in the app) belongs in the
+      // histogram. Distinct op label so per-turn probe load is visible.
+      void call
+        .then(() => metrics.observe('sdk_control_ms', Date.now() - startedAt, { op: 'getContextUsage.probe' }))
+        .catch(() => metrics.observe('sdk_control_ms', Date.now() - startedAt, { op: 'getContextUsage.probe' }))
+      void Promise.race([
+        call,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`${opts.label} timed out after ${timeoutMs}ms`)),
+            timeoutMs,
+          )
+          // A probe timer must never hold the process open.
+          timer.unref?.()
+        }),
+      ])
         .then((raw) => {
-          const facts = parseSdkAutoCompactFacts(raw)
-          if (facts) applySdkAutoCompactFacts(s, facts)
+          // Response-handler containment lives HERE, once: a bug inside a
+          // consumer's onResolved must not masquerade as a transport/timeout
+          // failure (the .catch below), nor escape as an unhandled rejection.
+          try {
+            opts.onResolved(raw)
+          } catch (err) {
+            log.debug(`[session ${s.id}] ${opts.label} handler failed:`, err)
+          }
         })
         .catch((err) => {
-          log.debug(`[session ${s.id}] auto-compact fact probe failed:`, err)
+          // Transport/timeout only — response-handler errors are contained
+          // above with their own label.
+          log.debug(`[session ${s.id}] ${opts.label} failed (transport/timeout):`, err)
         })
         .finally(() => {
-          s.autoCompactProbeInFlight = false
+          if (timer != null) clearTimeout(timer)
+          s[opts.flag] = false
+          // Flag FIRST, then the hook — a re-arm here must pass the guard.
+          // Contained: a synchronous throw here would otherwise become an
+          // unhandled rejection on the already-chained promise (fatal on
+          // Node 20) for what is still just a background probe.
+          try {
+            opts.onSettled?.()
+          } catch (err) {
+            log.debug(`[session ${s.id}] ${opts.label} onSettled failed:`, err)
+          }
         })
     } catch (err) {
-      s.autoCompactProbeInFlight = false
-      log.debug(`[session ${s.id}] auto-compact fact probe threw synchronously:`, err)
+      if (timer != null) clearTimeout(timer)
+      s[opts.flag] = false
+      log.debug(`[session ${s.id}] ${opts.label} threw synchronously:`, err)
     }
   }
 
@@ -6225,6 +6411,11 @@ export class SessionManager {
             }
           })()
         },
+        // The pump asks for a context-usage reconciliation after every
+        // non-empty result — the manager owns the getContextUsage control
+        // call (see reconcileContextUsage for the aggregate-payload bug
+        // this corrects).
+        reconcileContextUsage: (s) => this.reconcileContextUsage(s),
       }
     }
     return this.cachedPumpDeps

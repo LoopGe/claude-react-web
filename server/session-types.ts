@@ -512,6 +512,12 @@ export interface Session {
    *  flight. The control request has no SDK-side timeout, so this keeps a
    *  wedged subprocess from accumulating one hung promise per pin drag. */
   autoCompactProbeInFlight?: boolean
+  /** True while the turn-end context-usage reconciliation probe (see
+   *  PumpDeps.reconcileContextUsage) is in flight — same no-timeout concern
+   *  as autoCompactProbeInFlight. Deliberately a SEPARATE flag: the pin probe
+   *  skips mid-turn while the reconcile probe fires exactly at turn end
+   *  (including with queued turns still pending), so the two can coexist. */
+  contextUsageProbeInFlight?: boolean
   /** Per-subscriber pushables for prompt_suggestion events — separate from
    *  message history (suggestions are ephemeral, not conversation content).
    *  Same shape as contextUsageSubscribers. */
