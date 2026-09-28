@@ -22,29 +22,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import type { ContextUsage } from '../hooks/useChatStream'
-
-/** Shared used%/threshold/level math for every context-usage surface
- *  (the bar itself and the composer's ContextOrb ring). One ladder so the
- *  resting ring tint can never drift from the panel it opens. */
-export function contextUsageStats(usage: ContextUsage | null | undefined) {
-  const max = usage?.rawMaxTokens ?? usage?.maxTokens
-  const hasData = usage != null && max != null && max > 0
-  const usedTokens = hasData && usage ? (usage.totalTokens ?? 0) : null
-  // Prefer SDK's percentage (it may weigh differently than raw tokens / max)
-  // but fall back to a straight division if absent.
-  const bounded =
-    hasData && usage && usedTokens != null && max != null
-      ? clamp(usage.percentage ?? (usedTokens / max) * 100, 0, 100)
-      : null
-  const level: 'ok' | 'warn' | 'danger' =
-    bounded == null ? 'ok' : bounded >= 90 ? 'danger' : bounded >= 70 ? 'warn' : 'ok'
-  const threshold = hasData && usage ? usage.autoCompactThreshold : undefined
-  const thresholdPct =
-    typeof threshold === 'number' && threshold > 0 && max != null
-      ? (threshold / max) * 100
-      : null
-  return { max, hasData, usedTokens, bounded, level, threshold, thresholdPct }
-}
+import { contextUsageStats } from '../utils/context-usage'
 import { formatTokens } from '../utils/format'
 import { windowForAutoCompactThreshold } from '../../shared/auto-compact'
 import { clamp } from '../utils/clamp'

@@ -1640,6 +1640,42 @@ button.tool-group-failed-jump:focus-visible {
 .settings-kv-source { color: var(--fg-muted); font-size: var(--fs-xs); }
 .settings-kv-tokens { margin-left: auto; color: var(--fg-muted); font-size: var(--fs-xs); }
 
+/* ── Context composition (SettingsPanel → Context tab) ─────────────
+   Kind badges reuse the exact theme token pairs the provenance badges
+   use (accent/ok/warn), so dark and light themes stay in parity without
+   any new colours. The wrapper is a plain div (never .settings-section —
+   the Context tab root already provides that chrome); it only re-creates
+   the section's flex-column gap for its own children. */
+.settings-context-composition {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2-5);
+}
+.ctx-kind-badge {
+  font-size: var(--fs-2xs);
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-3xs);
+  color: var(--fg-muted);
+  flex: none;
+}
+/* Selectors match the classes the component actually emits
+   (`ctx-kind-${kind}`), not bare kind names. */
+.ctx-kind-badge.ctx-kind-used { color: var(--accent-text); border-color: var(--accent); }
+.ctx-kind-badge.ctx-kind-free { color: var(--ok-text); border-color: var(--ok); }
+.ctx-kind-badge.ctx-kind-buffer { color: var(--warn-text); border-color: var(--warn); }
+.ctx-kind-badge.ctx-kind-deferred { color: var(--fg-muted); border-color: var(--border); }
+.ctx-kind-share { color: var(--fg-muted); font-size: var(--fs-xs); }
+.ctx-kind-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2-5);
+  margin-top: var(--space-1-5);
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+.ctx-kind-legend-item { display: inline-flex; align-items: center; gap: var(--space-1); }
+
 .settings-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);

@@ -13,7 +13,8 @@
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { ContextUsage } from '../hooks/useChatStream'
-import { ContextBar, contextUsageStats } from './ContextBar'
+import { ContextBar } from './ContextBar'
+import { contextUsageStats } from '../utils/context-usage'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 

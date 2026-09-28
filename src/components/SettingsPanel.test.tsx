@@ -43,7 +43,7 @@ function renderPanel(opts: {
   session?: SessionInfo
   globalPrefs?: Record<string, unknown>
   /** Tab to deep-link into. Defaults to 'mcp' (the historical callers). */
-  tab?: 'general' | 'appearance' | 'mcp'
+  tab?: 'general' | 'appearance' | 'mcp' | 'context' | 'skills'
 }) {
   return render(
     <ToastProvider>
@@ -733,5 +733,214 @@ describe('SettingsPanel MCP source grouping', () => {
     expect(builtIn!.querySelector('.settings-first-party-card')).toBeDefined()
     // The old bare note header is gone — the box head is the only label.
     expect(container.querySelector('.settings-section > .settings-note')).toBeNull()
+  })
+})
+
+describe('SettingsPanel Context / Skills tab split', () => {
+  const detailedUsage = {
+    totalTokens: 50000,
+    maxTokens: 200000,
+    rawMaxTokens: 200000,
+    percentage: 25,
+    model: 'test-model',
+    skills: {
+      includedSkills: 1,
+      totalSkills: 2,
+      tokenCount: 800,
+      skillFrontmatter: [{ name: 'commit-helper', source: 'project', tokens: 800 }],
+    },
+    agents: { tokenCount: 1200, agents: [{ agentType: 'Explore', source: 'built-in', tokens: 1200 }] },
+    memoryFiles: { tokenCount: 900 },
+    mcpTools: { tokenCount: 1500 },
+    categories: [
+      { name: 'System prompt', tokens: 10000, kind: 'used' },
+      { name: 'MCP tools', tokens: 1500, kind: 'used' },
+      { name: 'Deferred tool', tokens: 30000, kind: 'deferred' },
+      { name: 'Auto-compact reserve', tokens: 40000, kind: 'buffer' },
+      { name: 'Free space', tokens: 118500, kind: 'free' },
+    ],
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/context-usage')) return Promise.resolve({ usage: detailedUsage })
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      if (url === '/profiles') return Promise.resolve({ profiles: [] })
+      if (url === '/config') return Promise.resolve({ models: [] })
+      if (url.startsWith('/skills')) {
+        return Promise.resolve({ skills: [], policy: { mode: 'default', enabledSkills: [] } })
+      }
+      return Promise.resolve({})
+    })
+  })
+
+  /** The composition block: a plain div (NOT .settings-section — nesting
+   *  one inside the tab's section would double its chrome). */
+  const compositionSection = (container: HTMLElement) =>
+    container.querySelector('.settings-context-composition')
+
+  it('moves the skill policy card to the Skills tab and keeps it off Context', async () => {
+    const { container } = renderPanel({ tab: 'skills' })
+    await waitFor(() => expect(container.textContent).toContain('Session skill policy'))
+    // The Skills tab wants the skills token detail too, so the detailed
+    // fetch fires here as well (one-shot guard shared with Context). The
+    // GET now carries an AbortSignal — assert the 2-arg shape, a 1-arg
+    // expectation would fail (and a 1-arg negative would pass vacuously).
+    await waitFor(() =>
+      expect(api.get).toHaveBeenCalledWith('/sessions/s1/context-usage', expect.anything()))
+    await waitFor(() => expect(container.textContent).toContain('Skills:'))
+    expect(container.textContent).toContain('Reload skills')
+
+    const { container: ctx } = renderPanel({ tab: 'context' })
+    await waitFor(() => expect(ctx.textContent).toContain('Context composition'))
+    expect(ctx.textContent).not.toContain('Session skill policy')
+    expect(ctx.textContent).not.toContain('Reload skills')
+  })
+
+  it('auto-loads the detailed breakdown on Context open and renders kind-badged rows with the legend', async () => {
+    const { container } = renderPanel({ tab: 'context' })
+    await waitFor(() => expect(container.textContent).toContain('System prompt'))
+
+    const section = compositionSection(container)
+    expect(section, 'composition section').toBeDefined()
+    // Exactly the canonical categories rows — no supplement duplicates of
+    // memoryFiles/mcpTools while the categories list is present.
+    expect(section!.querySelectorAll('.settings-kv-row')).toHaveLength(5)
+    expect(section!.querySelector('.ctx-kind-used')).not.toBeNull()
+    expect(section!.querySelector('.ctx-kind-free')).not.toBeNull()
+    expect(section!.querySelector('.ctx-kind-deferred')).not.toBeNull()
+    expect(section!.querySelector('.ctx-kind-buffer')).not.toBeNull()
+    expect(section!.textContent).toContain('auto-compact reserve')
+    expect(section!.textContent).toContain('not injected (awareness only)')
+    // Sub-1% rows render '<1%' instead of a rounding-to-zero '0%'
+    // (MCP tools: 1500 / 200000 = 0.75%).
+    expect(section!.textContent).toContain('<1%')
+  })
+
+  it('falls back to memoryFiles/mcpTools supplement rows when the payload has no categories', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/context-usage')) {
+        const { categories: _omitted, ...rest } = detailedUsage
+        return Promise.resolve({ usage: rest })
+      }
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      return Promise.resolve({})
+    })
+
+    const { container } = renderPanel({ tab: 'context' })
+    await waitFor(() => expect(container.textContent).toContain('Memory files'))
+
+    const section = compositionSection(container)!
+    expect(section.querySelectorAll('.settings-kv-row')).toHaveLength(2)
+    // No canonical rows → no kind legend (nothing to explain).
+    expect(section.querySelector('.ctx-kind-legend')).toBeNull()
+  })
+
+  it('does not fetch the detailed breakdown for a dormant session', async () => {
+    // /context-usage is a live-Query-only control read (the server 410s it
+    // for dormant sessions) — the auto-load must stay gated on running.
+    const { container } = renderPanel({
+      tab: 'context',
+      session: { id: 's1', running: false, terminated: false } as unknown as SessionInfo,
+    })
+    await new Promise((res) => setTimeout(res, 0))
+    // Count over mock.calls: a negative toHaveBeenCalledWith would pass
+    // vacuously if a regression changed the call arity.
+    const contextUsageCalls = () =>
+      (api.get as ReturnType<typeof vi.fn>).mock.calls.filter(([u]) =>
+        String(u).endsWith('/context-usage')).length
+    expect(contextUsageCalls()).toBe(0)
+    // And the tab says why there is no breakdown instead of a silent blank.
+    expect(container.textContent).toContain('Resume the session to load the context breakdown.')
+  })
+
+  it('offers a retry on the Skills tab when the detailed fetch fails, and recovers', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/context-usage')) return Promise.reject(new Error('timed out'))
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url.startsWith('/skills')) {
+        return Promise.resolve({ skills: [], policy: { mode: 'default', enabledSkills: [] } })
+      }
+      return Promise.resolve({})
+    })
+
+    const { container } = renderPanel({ tab: 'skills' })
+    await waitFor(() => expect(container.textContent).toContain("Couldn't load the skill token breakdown"))
+
+    // Recover the endpoint, click retry → the skills summary appears.
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/context-usage')) return Promise.resolve({ usage: detailedUsage })
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url.startsWith('/skills')) {
+        return Promise.resolve({ skills: [], policy: { mode: 'default', enabledSkills: [] } })
+      }
+      return Promise.resolve({})
+    })
+    const retry = [...container.querySelectorAll('.settings-reset-link')].find(
+      (b) => b.textContent === 'retry',
+    )!
+    fireEvent.click(retry)
+    await waitFor(() => expect(container.textContent).toContain('Skills:'))
+    expect(container.textContent).not.toContain("Couldn't load the skill token breakdown")
+  })
+
+  it('surfaces the failed breakdown on the Context tab too, with a retry', async () => {
+    // The Skills tab has its own error hint; the composition section on the
+    // Context tab must not render a silent blank on the same failure.
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/context-usage')) return Promise.reject(new Error('timed out'))
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      return Promise.resolve({})
+    })
+
+    const { container } = renderPanel({ tab: 'context' })
+    await waitFor(() =>
+      expect(container.textContent).toContain("Couldn't load the breakdown"))
+    expect(compositionSection(container)!.textContent).toContain('retry')
+
+    // Recover + retry → rows land.
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/context-usage')) return Promise.resolve({ usage: detailedUsage })
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      return Promise.resolve({})
+    })
+    fireEvent.click(compositionSection(container)!.querySelector('.settings-reset-link')!)
+    await waitFor(() => expect(container.textContent).toContain('System prompt'))
+  })
+
+  it('refetches the token breakdown after Reload skills (one-shot guard re-armed)', async () => {
+    const { container } = renderPanel({ tab: 'skills' })
+    await waitFor(() => expect(container.textContent).toContain('Skills:'))
+
+    const contextUsageCalls = () =>
+      (api.get as ReturnType<typeof vi.fn>).mock.calls.filter(([u]) =>
+        String(u).endsWith('/context-usage')).length
+    const before = contextUsageCalls()
+    expect(before).toBeGreaterThan(0)
+
+    const reload = [...container.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Reload skills',
+    )!
+    fireEvent.click(reload)
+    // Dropping the usageFetchedRef.current = false re-arm in reloadSkills
+    // keeps every other test green — this pins it.
+    await waitFor(() => expect(contextUsageCalls()).toBe(before + 1))
+  })
+
+  it('tells a dormant session to resume before the skill breakdown can load', async () => {
+    const { container } = renderPanel({
+      tab: 'skills',
+      session: { id: 's1', running: false, terminated: false } as unknown as SessionInfo,
+    })
+    await waitFor(() =>
+      expect(container.textContent).toContain('Resume the session to load the skill token breakdown.'))
   })
 })

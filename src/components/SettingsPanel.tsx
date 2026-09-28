@@ -20,6 +20,7 @@ import { GIT_TOOLS_SERVER_NAME } from '../../shared/first-party'
 import { McpToolRow, firstPartyToolDefsAsMcpTools } from './McpToolsList'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
+import { ContextComposition } from './ContextComposition'
 import { IconChevronUp, IconChevronDown, IconLoader, IconSparkles, IconTerminal } from './icons/ToolIcons'
 import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
@@ -51,7 +52,7 @@ import { formatTokens, formatJson } from '../utils/format'
 import { pluginTagOf } from '../utils/text'
 import type { ContextUsage } from '../hooks/useChatStream'
 
-type SettingsTab = 'general' | 'appearance' | 'context' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents' | 'tools' | 'diagnostics' | 'performance'
+type SettingsTab = 'general' | 'appearance' | 'context' | 'skills' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents' | 'tools' | 'diagnostics' | 'performance'
 
 interface Props {
   session: SessionInfo
@@ -75,8 +76,9 @@ interface Props {
   /** Live context-usage pushed over the WebSocket (the "lite" shape from
    *  session-pump.ts: totalTokens/maxTokens/rawMaxTokens/percentage/model).
    *  Enough to paint ContextBar immediately, with zero blocking SDK round-
-   *  trip. The full breakdown (skills/agents/memoryFiles) is lazy-loaded
-   *  only when the user expands the detail sections. */
+   *  trip. The full breakdown (skills/agents/memoryFiles/categories) is
+   *  fetched once the user opens the Context or Skills tab — see
+   *  loadDetailedUsage(). */
   contextUsage?: ContextUsage | null
   /** Nonce-stamped request to switch tabs (the `/mcp` local command). The
    *  nonce changes on every request so the switch re-applies even when the
@@ -113,10 +115,15 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   const panelUid = useId()
   const [settingsText, setSettingsText] = useState('{}')
   // Full context-usage breakdown from the (blocking) REST endpoint. Null
-  // until the user expands a detail section — see loadDetailedUsage().
+  // until it is fetched — now automatic when the Context or Skills tab
+  // opens (see the effect near loadDetailedUsage()).
   // ContextBar itself runs off the WS-pushed `contextUsage` prop and never
   // waits on this.
   const [detailedUsage, setDetailedUsage] = useState<ContextUsage | null>(null)
+  // True when the last detailed-fetch attempt failed — the Skills tab offers
+  // a retry link (on the Context tab the raw-JSON disclosure is the retry
+  // path). Cleared on the next successful read.
+  const [usageError, setUsageError] = useState(false)
   const [loadingUsage, setLoadingUsage] = useState(false)
   // One-shot guard so re-opening a <details> doesn't re-fire the request.
   const usageFetchedRef = useRef(false)
@@ -402,19 +409,60 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   }, [session.id])
 
   // Lazy-load the full context-usage breakdown (skills / agents /
-  // memoryFiles / mcpTools). This is the BLOCKING SDK control request we
-  // deliberately keep off the panel-open path; it only fires when the user
-  // actually expands a detail section. Fetched once per panel mount.
+  // memoryFiles / mcpTools / categories). This is the BLOCKING SDK control
+  // request we deliberately keep off the panel-open path; it fires when the
+  // user opens the Context or Skills tab (see the effect below) or expands
+  // the raw-JSON disclosure. Fetched once per panel mount.
+  // Monotonic token for the detailed fetch. reloadSkills re-arms the
+  // one-shot guard mid-flight, so two GETs CAN overlap (retry link /
+  // disclosure / reload are independent entry points); only the LATEST
+  // request may write state — a stale pre-reload response landing last
+  // must not silently overwrite fresh numbers.
+  const usageFetchSeqRef = useRef(0)
+  // The GET is a blocking SDK control request serialized on the CLI
+  // subprocess — a superseded request is aborted, not just ignored, so it
+  // can't hold the control channel and delay its replacement.
+  const usageAbortRef = useRef<AbortController | null>(null)
+  // Panel unmount (session switch / close) releases an in-flight read too.
+  useEffect(() => () => { usageAbortRef.current?.abort() }, [])
   const loadDetailedUsage = useCallback(() => {
     if (usageFetchedRef.current || !session.running) return
     usageFetchedRef.current = true
+    usageAbortRef.current?.abort()
+    const ac = new AbortController()
+    usageAbortRef.current = ac
+    const seq = ++usageFetchSeqRef.current
     setLoadingUsage(true)
     api
-      .get<{ usage: unknown }>(`/sessions/${session.id}/context-usage`)
-      .then((r) => setDetailedUsage(r.usage as ContextUsage))
-      .catch(() => { usageFetchedRef.current = false /* allow retry */ })
-      .finally(() => setLoadingUsage(false))
+      .get<{ usage: unknown }>(`/sessions/${session.id}/context-usage`, { signal: ac.signal })
+      .then((r) => {
+        if (seq !== usageFetchSeqRef.current) return // superseded
+        setDetailedUsage(r.usage as ContextUsage)
+        setUsageError(false)
+      })
+      .catch(() => {
+        if (seq !== usageFetchSeqRef.current) return // superseded / aborted
+        usageFetchedRef.current = false /* allow retry */
+        setUsageError(true)
+      })
+      .finally(() => {
+        if (seq === usageFetchSeqRef.current) setLoadingUsage(false)
+      })
   }, [session.id, session.running])
+
+  // Opening the Context or Skills tab IS the request for the breakdown —
+  // don't make the user expand a disclosure to trigger it. Same one-shot
+  // guard as above makes this idempotent with the disclosure's own
+  // onOpenChange trigger. Deferred through setTimeout so the synchronous
+  // setLoadingUsage inside loadDetailedUsage never runs during the effect
+  // body (react-hooks/set-state-in-effect — same shape as the plugins
+  // auto-load effect below).
+  useEffect(() => {
+    if (tab !== 'context' && tab !== 'skills') return
+    if (!session.running || session.terminated) return
+    const t = setTimeout(() => loadDetailedUsage(), 0)
+    return () => clearTimeout(t)
+  }, [tab, session.running, session.terminated, loadDetailedUsage])
 
   // Merge: WS-pushed lite usage paints the bar and keeps tracking every
   // turn; the detailed REST payload (when loaded) supplies the extra
@@ -423,10 +471,13 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // (totalTokens/maxTokens/percentage/model) always win — otherwise the
   // one-shot detailed snapshot would shadow the live prop and freeze the
   // ContextBar at the moment the user first expanded the breakdown.
-  const usage: ContextUsage | null =
-    detailedUsage || contextUsage
-      ? { ...detailedUsage, ...contextUsage }
-      : null
+  // Memoized on identity: a fresh literal every render would defeat
+  // ContextComposition's memo (re-render on every unrelated panel state
+  // change, e.g. title typing).
+  const usage: ContextUsage | null = useMemo(
+    () => (detailedUsage || contextUsage ? { ...detailedUsage, ...contextUsage } : null),
+    [detailedUsage, contextUsage],
+  )
 
   // ── Auto-compact window (fused into the ContextBar as a draggable marker) ──
   // The ContextBar owns the %→tokens inversion and the drag/double-click
@@ -735,6 +786,13 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     try {
       await api.post(`/sessions/${session.id}/skills/reload`)
       onSkillsReloaded?.()
+      // Refresh the token breakdown too: the 'Skills: X/Y loaded' summary
+      // and per-skill rows sit directly beside this button and read from
+      // the detailed usage snapshot — without a re-fetch they would keep
+      // mount-time numbers until the panel remounts. Re-arm the one-shot
+      // guard first (loadDetailedUsage early-returns while it is set).
+      usageFetchedRef.current = false
+      loadDetailedUsage()
     } catch (e) {
       toast.error(`Couldn't reload skills: ${(e as Error).message}`)
     } finally {
@@ -959,6 +1017,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     { key: 'general', label: 'General' },
     { key: 'appearance', label: 'Appearance' },
     { key: 'context', label: 'Context' },
+    { key: 'skills', label: 'Skills' },
     { key: 'hooks', label: 'Hooks' },
     { key: 'plugins', label: 'Plugins' },
     { key: 'mcp', label: 'MCP Servers' },
@@ -1537,16 +1596,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
 
       {tab === 'context' && (
       <div className="settings-section">
-        <SessionSkillPolicyCard
-          session={session}
-          disabled={busy || session.terminated}
-          onApply={setSkillOverride}
-        />
         <h4>Context usage</h4>
         {/* ContextBar runs off the WS-pushed lite usage — paints instantly,
-            no blocking request. The detail disclosures below lazy-load the
-            full breakdown (a blocking SDK control request) only when the
-            user actually opens one. */}
+            no blocking request. The full breakdown (composition table and
+            agents below) comes from the detailed fetch, which the tab-open
+            effect fires automatically for running sessions. */}
         <ContextBar
           usage={usage}
           editable
@@ -1572,27 +1626,21 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           </span>
         </div>
 
-        {usage?.skills && (
-          <div className="settings-skill-reload-row">
-            <AnimatedDetails
-              className="settings-detail"
-              summary={`Skills: ${usage.skills.includedSkills}/${usage.skills.totalSkills} loaded, ${formatTokens(usage.skills.tokenCount)}`}
-            >
-              <div className="settings-detail-body">
-                {usage.skills.skillFrontmatter?.map((s) => (
-                  <div key={s.name} className="settings-kv-row">
-                    <code>{s.name}</code>
-                    <span className="settings-kv-source">{s.source}</span>
-                    <span className="settings-kv-tokens">{formatTokens(s.tokens)}</span>
-                  </div>
-                ))}
-              </div>
-            </AnimatedDetails>
-            <button className="btn btn-sm" onClick={reloadSkills} disabled={busy || session.terminated || reloadingSkills}>
-              {reloadingSkills ? <IconLoader size={12} className="settings-card-spin" /> : 'Reload skills'}
-            </button>
-          </div>
+        {/* Composition breakdown — static explainer plus the SDK's canonical
+            categories rows (kind-badged). Skill loading policy and the
+            per-skill token detail live on their own Skills tab. error is
+            gated on liveness: a dormant session gets the resume hint below
+            instead of a retry that would silently no-op. */}
+        <ContextComposition
+          usage={usage}
+          loading={loadingUsage}
+          error={usageError && session.running}
+          onRetry={loadDetailedUsage}
+        />
+        {!session.running && !session.terminated && (
+          <span className="hint">Resume the session to load the context breakdown.</span>
         )}
+
         {usage?.agents && (
           <AnimatedDetails
             className="settings-detail settings-detail-tight"
@@ -1609,25 +1657,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             </div>
           </AnimatedDetails>
         )}
-        {usage?.categories && usage.categories.length > 0 && (
-          <AnimatedDetails
-            className="settings-detail settings-detail-tight"
-            summary={`Categories: ${usage.categories.length}`}
-          >
-            <div className="settings-detail-body">
-              {usage.categories.map((c, i) => (
-                <div key={`${c.kind}:${c.name}:${i}`} className="settings-kv-row">
-                  <code>{c.name}</code>
-                  <span className="settings-kv-source">{c.kind}</span>
-                  <span className="settings-kv-tokens">{formatTokens(c.tokens)}</span>
-                </div>
-              ))}
-            </div>
-          </AnimatedDetails>
-        )}
         {/* Always-present disclosure: opening it triggers the lazy fetch of
-            the full breakdown. The skills/agents sections above light up
-            once it resolves (they read from the same merged `usage`). */}
+            the full breakdown (a no-op when the tab-open effect already
+            fired — the one-shot guard dedupes). */}
         <AnimatedDetails
           className="settings-detail"
           onOpenChange={(nextOpen) => { if (nextOpen) loadDetailedUsage() }}
@@ -1643,6 +1675,63 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
                   : '-'}
           </pre>
         </AnimatedDetails>
+      </div>
+      )}
+
+      {tab === 'skills' && (
+      <div className="settings-section">
+        <SessionSkillPolicyCard
+          session={session}
+          disabled={busy || session.terminated}
+          onApply={setSkillOverride}
+        />
+        {usage?.skills && (
+          <div className="settings-skill-reload-row">
+            <AnimatedDetails
+              className="settings-detail"
+              summary={`Skills: ${usage.skills.includedSkills}/${usage.skills.totalSkills} loaded, ${formatTokens(usage.skills.tokenCount)}`}
+            >
+              <div className="settings-detail-body">
+                {usage.skills.skillFrontmatter?.map((s) => (
+                  <div key={s.name} className="settings-kv-row">
+                    <code>{s.name}</code>
+                    <span className="settings-kv-source">{s.source}</span>
+                    <span className="settings-kv-tokens">{formatTokens(s.tokens)}</span>
+                  </div>
+                ))}
+              </div>
+            </AnimatedDetails>
+            {/* Also disabled for dormant sessions: a cached breakdown keeps
+                the row visible after running→dormant (the panel is keyed by
+                session id, not liveness), but the reload POST would 410 and
+                the follow-up refetch could never run. */}
+            <button className="btn btn-sm" onClick={reloadSkills} disabled={busy || session.terminated || !session.running || reloadingSkills || loadingUsage}>
+              {reloadingSkills ? <IconLoader size={12} className="settings-card-spin" /> : 'Reload skills'}
+            </button>
+          </div>
+        )}
+        {/* The token detail rides the live-only detailed read; surface its
+            non-success states instead of silently rendering nothing. The
+            error hint is gated on usageError ALONE (plus !loadingUsage): a
+            failed refresh must stay visible even while stale rows render,
+            but not double up with the loading hint during a retry. */}
+        {!session.running && !session.terminated && (
+          <span className="hint">Resume the session to load the skill token breakdown.</span>
+        )}
+        {/* Shown for BOTH the initial load and a reload-triggered refetch —
+            gating it on !usage?.skills would leave a refresh spinning with
+            stale rows and no visible reason for the disabled button. */}
+        {session.running && loadingUsage && (
+          <span className="hint">Loading skill breakdown…</span>
+        )}
+        {session.running && usageError && !loadingUsage && (
+          <span className="hint">
+            {usage?.skills
+              ? "Couldn't refresh the skill token breakdown — showing last known numbers. "
+              : "Couldn't load the skill token breakdown — "}
+            <button type="button" className="settings-reset-link" onClick={loadDetailedUsage}>retry</button>
+          </span>
+        )}
       </div>
       )}
 
