@@ -2265,7 +2265,9 @@
 .monitor-bar-header {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  /* space-between pins the title left and the chevron+count group right —
+     same header shape as .todo-panel-header. */
+  justify-content: space-between;
   margin-bottom: var(--space-1-5);
 }
 .monitor-bar-title {
@@ -2283,6 +2285,48 @@
   padding: 1px 6px;
   border-radius: var(--radius-pill);
 }
+.monitor-bar-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+/* Collapse toggle — mirrors .todo-panel-collapse (borderless, fg-muted →
+   hover bg, chevron rotates 180° when open) at the same compact 20×20, so
+   the two sticky cards' headers read as one system. */
+.monitor-bar-collapse {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--size-20px);
+  height: var(--size-20px);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.monitor-bar-collapse:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.monitor-bar-collapse.open svg {
+  transform: rotate(180deg);
+}
+.monitor-bar-collapse svg {
+  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.monitor-bar-collapse:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 1px;
+}
+/* Collapsed: the header doubles as the whole bar — drop its bottom gap. */
+.monitor-bar.monitor-bar-collapsed .monitor-bar-header {
+  margin-bottom: 0;
+}
 .monitor-bar-list {
   list-style: none;
   margin: 0;
@@ -2290,16 +2334,37 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  /* Same 240px cap as .todo-panel-list so the two cards read at one size.
-     This list has no AnimatedCollapse between it and .chat-bottom-stack, so it
-     is also what absorbs the stack's height cap: it shrinks (flex-shrink +
-     min-height: 0) and scrolls in one movement. The todo card's list is held at
-     its intrinsic height by the collapse content instead, so that card scrolls
-     its collapse body under the same cap (see .todo-panel .animated-collapse). */
-  flex: 1 1 auto;
-  min-height: 0;
+  /* Natural cap, kept at the list's OWN height (never squeezed or stretched to
+     the collapse body's animated height) — the same shape as .todo-panel-list,
+     which this card now mirrors: this box IS the collapse content's box that
+     AnimatedCollapse's ResizeObserver measures, so a row appearing or
+     disappearing is always reported. Past the 240px cap the list scrolls
+     internally with the overlay thumb useOverlayScrollbar attaches to it,
+     while the stack's height cap lands one level up on the collapse body
+     (see .monitor-bar .animated-collapse below). */
+  flex: 0 0 auto;
   max-height: 240px;
   overflow-y: auto;
+}
+/* Shrink chain (see .todo-panel .animated-collapse): with the list folded
+   inside an AnimatedCollapse, the stack's height cap must land on the collapse
+   BODY — which scrolls — while the list inside keeps its intrinsic height.
+   Scoped to this card so AnimatedCollapse's many other consumers (session
+   list, settings panels) keep their flow-root layout untouched. The body's
+   scrollbar is hidden (overlay-scrollbar.css): the body is pinned shorter
+   than its content for the length of every height tween, so a native bar
+   would appear and vanish on each one. */
+.monitor-bar .animated-collapse {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+/* Intrinsic height, deliberately NOT stretched to the body's animated height
+   (full rationale on .todo-panel .animated-collapse-content). */
+.monitor-bar .animated-collapse-content {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
 }
 .monitor-item {
   display: flex;

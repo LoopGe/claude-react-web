@@ -1909,7 +1909,7 @@ export const Chat = memo(function Chat({
           clearing={effectiveClearing}
           sessionId={session.id}
         />
-        <MonitorBar messages={stream.messages} clearing={effectiveClearing} />
+        <MonitorBar messages={stream.messages} clearing={effectiveClearing} sessionId={session.id} />
         {/* Composer dock is last so it stays pinned to the panel bottom;
             MessageList measures the overlay and reserves a Virtuoso footer
             spacer equal to its height. */}

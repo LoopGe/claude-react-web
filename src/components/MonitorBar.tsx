@@ -25,11 +25,14 @@
 // stream — so a text scan would falsely hide a RUNNING monitor. Showing a
 // finished monitor slightly too long is far better than hiding a live one.
 
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { SdkMessage } from '../types'
 import { AnimatePresence } from 'motion/react'
 import { BottomCardMotion } from './BottomCardMotion'
-import { IconCircleDot } from './icons/ToolIcons'
+import { AnimatedCollapse } from './AnimatedCollapse'
+import { IconChevronDown, IconCircleDot } from './icons/ToolIcons'
+import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 
 interface MonitorInfo {
   /** tool_use id of the Monitor call — stable key. */
@@ -48,12 +51,38 @@ interface Props {
    *  The last visible list is frozen for the duration so the bar stays
    *  mounted (and fading) after `messages` empties. */
   clearing?: boolean
+  /** Per-session persistence key for the collapse state. When omitted the
+   *  state stays in memory only (no localStorage writes) — the tests rely
+   *  on this. Mirrors TodoChecklist's sessionId contract. */
+  sessionId?: string
 }
 
 const TICK_MS = 5000
 
-export const MonitorBar = memo(function MonitorBar({ messages, clearing }: Props) {
+// localStorage key for the per-session collapse state (same scheme as the
+// TodoChecklist card). null → pure in-memory state.
+const LS_PREFIX = 'claude-react-web:monitor:'
+function keyCollapsed(sid?: string): string | null {
+  return sid ? `${LS_PREFIX}collapsed:${sid}` : null
+}
+
+export const MonitorBar = memo(function MonitorBar({ messages, clearing, sessionId }: Props) {
   const [now, setNow] = useState(() => Date.now())
+
+  // Overlay scrollbar for the list (same treatment as .todo-panel-list: the
+  // native bar is hidden and a leave-autohide thumb is drawn instead).
+  const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
+
+  // Unique per mounted bar: up to 3 chat panels can each render a MonitorBar,
+  // and a hardcoded id would duplicate across them (invalid HTML — every
+  // button's aria-controls would resolve to whichever card mounts first).
+  const listId = useId()
+
+  // Collapse state — persisted per session like the TodoChecklist card's
+  // (null sessionId → in-memory only, which the tests rely on).
+  const [collapsed, setCollapsed] = useLocalStorage<boolean>(keyCollapsed(sessionId), false, {
+    validate: (v): v is boolean => typeof v === 'boolean',
+  })
 
   // Refresh `now` so the timeout heuristic advances. Only meaningful while the
   // bar might be showing, but the cost is trivial; keep it simple.
@@ -90,27 +119,50 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing }: Props
       {renderList.length > 0 && (
         <BottomCardMotion key="monitor-bar">
           <div
-            className={`monitor-bar${clearing ? ' monitor-bar-clearing' : ''}`}
+            className={`monitor-bar${clearing ? ' monitor-bar-clearing' : ''}${collapsed ? ' monitor-bar-collapsed' : ''}`}
             role="status"
             aria-label="Running monitors"
           >
             <div className="monitor-bar-header">
               <span className="monitor-bar-title">Monitors</span>
-              <span className="monitor-bar-count">{renderList.length}</span>
+              <div className="monitor-bar-header-right">
+                <button
+                  type="button"
+                  className={`monitor-bar-collapse${collapsed ? '' : ' open'}`}
+                  onClick={() => setCollapsed((c) => !c)}
+                  title={collapsed ? 'Expand monitor list' : 'Collapse monitor list'}
+                  aria-expanded={!collapsed}
+                  aria-controls={listId}
+                  aria-label={collapsed ? 'Expand monitor list' : 'Collapse monitor list'}
+                >
+                  <IconChevronDown size={16} />
+                </button>
+                <span className="monitor-bar-count">{renderList.length}</span>
+              </div>
             </div>
-            <ul className="monitor-bar-list">
-              {renderList.map((m) => (
-                <li key={m.key} className="monitor-item">
-                  <span className="monitor-icon" aria-hidden>
-                    <IconCircleDot size={12} />
-                  </span>
-                  <span className="monitor-text">
-                    <span className="monitor-text-shimmer">{m.description}</span>
-                  </span>
-                  {m.persistent && <span className="tool-chip tool-chip-accent">persistent</span>}
-                </li>
-              ))}
-            </ul>
+            {/* Same fold topology as the TodoChecklist card: the stack's height
+                cap lands on the collapse BODY (which scrolls), the list keeps
+                its intrinsic height, and animateResize tweens a row appearing
+                or disappearing (see .monitor-bar .animated-collapse).
+                unmountOnExit stays OFF so the folded body keeps `listId`
+                reachable for the button's aria-controls — AnimatedCollapse
+                marks it aria-hidden once the fold settles, which is the exact
+                case its `id` prop documents. */}
+            <AnimatedCollapse open={!collapsed} unmountOnExit={false} id={listId} animateResize remeasureWhileClamped>
+              <ul ref={setListOs} className="monitor-bar-list">
+                {renderList.map((m) => (
+                  <li key={m.key} className="monitor-item">
+                    <span className="monitor-icon" aria-hidden>
+                      <IconCircleDot size={12} />
+                    </span>
+                    <span className="monitor-text">
+                      <span className="monitor-text-shimmer">{m.description}</span>
+                    </span>
+                    {m.persistent && <span className="tool-chip tool-chip-accent">persistent</span>}
+                  </li>
+                ))}
+              </ul>
+            </AnimatedCollapse>
           </div>
         </BottomCardMotion>
       )}

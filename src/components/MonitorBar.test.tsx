@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
+import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import { MonitorBar } from './MonitorBar'
 import type { SdkMessage } from '../types'
 
@@ -160,4 +160,89 @@ describe('MonitorBar — exit animation', () => {
     expect(bar?.classList.contains('monitor-bar-clearing')).toBe(true)
     expect(container.querySelector('.monitor-text')?.textContent).toBe('Watch build')
   })
+})
+
+// Header collapse — mirrors the TodoChecklist card's affordance so the two
+// bottom cards read as one system: chevron + count grouped on the RIGHT of the
+// header (todo-panel-header-right pattern), the list folds under
+// AnimatedCollapse, and the collapsed state persists per session.
+describe('MonitorBar — collapse', () => {
+  const msgs = [...runningMonitor('m1', 'Watch build')]
+
+  // The persistence test writes real keys (:collapsed:s1 / :collapsed:s2) into
+  // this file's shared jsdom localStorage — clear them per test so no later
+  // test inherits another's collapsed state via execution order.
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
+  it('renders the count on the right of a collapse chevron in the header', () => {
+    const { container } = render(<MonitorBar messages={msgs} />)
+    const right = container.querySelector('.monitor-bar-header-right')
+    expect(right).not.toBeNull()
+    // Chevron first, count last — the count is the far-right element.
+    expect(right?.querySelector('.monitor-bar-collapse')).not.toBeNull()
+    expect(right?.querySelector('.monitor-bar-count')?.textContent).toBe('1')
+    expect(right?.lastElementChild?.classList.contains('monitor-bar-count')).toBe(true)
+    // aria-controls resolves to the collapse content box, whose id is a
+    // useId() — unique per bar, so up to 3 parallel chat panels never
+    // duplicate it in the document.
+    const btn = container.querySelector('.monitor-bar-collapse')!
+    const target = container.querySelector('.animated-collapse-content')!
+    expect(target.id).not.toBe('')
+    expect(btn.getAttribute('aria-controls')).toBe(target.id)
+  })
+
+  it('collapses the list via the header chevron and restores it', () => {
+    vi.useFakeTimers()
+    const { container } = render(<MonitorBar messages={msgs} />)
+    expect(container.querySelector('.monitor-bar-list')).not.toBeNull()
+
+    fireEvent.click(container.querySelector('.monitor-bar-collapse')!)
+    expect(container.querySelector('.monitor-bar')?.classList.contains('monitor-bar-collapsed')).toBe(true)
+    // Collapse is animated — the fold settles over ~240 ms (AnimatedCollapse).
+    // Header + count stay throughout, and the body STAYS MOUNTED
+    // (unmountOnExit off) so the button's aria-controls never dangles —
+    // once settled it is merely aria-hidden.
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+    expect(container.querySelector('.monitor-bar-list')).not.toBeNull()
+    expect(container.querySelector('.monitor-bar .animated-collapse')?.getAttribute('aria-hidden')).toBe('true')
+    expect(container.querySelector('.monitor-bar-count')?.textContent).toBe('1')
+
+    fireEvent.click(container.querySelector('.monitor-bar-collapse')!)
+    // Expand clears the hidden marker synchronously — only the height tween
+    // animates.
+    expect(container.querySelector('.monitor-bar')?.classList.contains('monitor-bar-collapsed')).toBe(false)
+    expect(container.querySelector('.monitor-bar .animated-collapse')?.getAttribute('aria-hidden')).toBeNull()
+    expect(container.querySelector('.monitor-bar-list')).not.toBeNull()
+  })
+
+  it('persists collapsed state per sessionId', () => {
+    const first = render(<MonitorBar messages={msgs} sessionId="s1" />)
+    fireEvent.click(first.container.querySelector('.monitor-bar-collapse')!)
+    expect(first.container.querySelector('.monitor-bar-collapsed')).not.toBeNull()
+    first.unmount()
+
+    // Same session → still collapsed on remount.
+    const second = render(<MonitorBar messages={msgs} sessionId="s1" />)
+    expect(second.container.querySelector('.monitor-bar-collapsed')).not.toBeNull()
+    second.unmount()
+
+    // Different session → expanded again.
+    const other = render(<MonitorBar messages={msgs} sessionId="s2" />)
+    expect(other.container.querySelector('.monitor-bar-collapsed')).toBeNull()
+  })
+
+  it('never writes to localStorage when sessionId is omitted', () => {
+    const { container, unmount } = render(<MonitorBar messages={msgs} />)
+    fireEvent.click(container.querySelector('.monitor-bar-collapse')!)
+    unmount()
+    expect(window.localStorage.getItem('claude-react-web:monitor:collapsed:')).toBeNull()
+  })
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
