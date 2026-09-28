@@ -2578,6 +2578,22 @@ button.tool-group-failed-jump:focus-visible {
     flex-shrink: 0;
     white-space: nowrap;
   }
+  /* Two-level nav: the group pills always fit (wrap if ever needed); only
+     the leaf row scrolls horizontally. */
+  .settings-tabs-grouped {
+    overflow: visible;
+  }
+  .settings-tab-groups {
+    flex-wrap: wrap;
+  }
+  .settings-tab-leaves {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none; /* Firefox: hide the scrollbar, swipe still works */
+  }
+  .settings-tab-leaves::-webkit-scrollbar {
+    display: none; /* WebKit: same */
+  }
 
   /* Command palette: sit higher on small screens so the keyboard doesn't
      bury it and more results are visible. dvh tracks the mobile URL-bar

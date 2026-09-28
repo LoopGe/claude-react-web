@@ -1712,6 +1712,54 @@
   color: var(--accent-text);
   border-bottom-color: var(--accent);
 }
+/* Two-level variant (SettingsTabNav): group pills row over leaf tabs row.
+   Stacked on .global-settings-tabs (whose other remaining consumer is
+   ShortcutHelp) and counter-mands its row layout; the leaf buttons still
+   reuse .global-settings-tab styling for visual consistency. Both settings
+   hosts (session SettingsPanel and GlobalSettingsModal) share these classes. */
+.settings-tabs-grouped {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 0;
+  padding: 0;
+}
+.settings-tab-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3) var(--space-1);
+}
+.settings-tab-group {
+  background: none;
+  border: none;
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    background-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.settings-tab-group:hover {
+  color: var(--fg);
+  background: var(--bg-elev-2);
+}
+.settings-tab-group.active {
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.settings-tab-leaves {
+  display: flex;
+  /* Wrap on desktop: on narrow-but->768px viewports (multi-panel layout) the
+     leaves must not clip against .settings-panel's overflow:hidden — the
+     horizontal-scroll fallback below only applies on small screens. */
+  flex-wrap: wrap;
+  padding: 0 var(--space-3);
+}
 .global-settings-body {
   flex: 1;
   min-height: 0;

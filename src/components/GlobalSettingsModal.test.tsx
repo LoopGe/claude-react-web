@@ -22,6 +22,10 @@ function mockGet(config: Record<string, unknown>, fpServers: unknown[] = [gitToo
   vi.mocked(api.get).mockImplementation((url: string) => {
     if (url === '/mcp-config') return Promise.resolve({ servers: [] })
     if (url === '/first-party-tools') return Promise.resolve({ servers: fpServers })
+    // LogsTab is reachable by landing on the System group's first leaf, so
+    // the /log shape it reads at mount must always be present.
+    if (url === '/log') return Promise.resolve({ level: 'info', availableLevels: ['error', 'warn', 'info', 'debug', 'trace'] })
+    if (url === '/log/file') return Promise.resolve({ enabled: false, path: null })
     return Promise.resolve(config)
   })
 }
@@ -58,6 +62,9 @@ describe('GlobalSettingsModal host-capability gating', () => {
   it('shows the "Open on phone" tab on the web host', async () => {
     mockGet({})
     render(<GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />)
+    // "Open on phone" lives in the System group now — open the group first.
+    await waitFor(() => expect(screen.getByText('System')).toBeTruthy())
+    fireEvent.click(screen.getByText('System'))
     await waitFor(() => expect(screen.getByText('Open on phone')).toBeTruthy())
   })
 
@@ -67,7 +74,8 @@ describe('GlobalSettingsModal host-capability gating', () => {
     render(<GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />)
     // Wait for the tab bar to render (Profiles is always present)…
     await waitFor(() => expect(screen.getByText('Profiles')).toBeTruthy())
-    // …then assert the LAN-sharing entry point is absent.
+    // …open the System group, then assert the LAN-sharing entry is absent.
+    fireEvent.click(screen.getByText('System'))
     expect(screen.queryByText('Open on phone')).toBeNull()
   })
 
@@ -79,6 +87,8 @@ describe('GlobalSettingsModal host-capability gating', () => {
         <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />
       </ToastProvider>,
     )
+    await waitFor(() => expect(screen.getByText('System')).toBeTruthy())
+    fireEvent.click(screen.getByText('System'))
     await waitFor(() => expect(screen.getByText('About')).toBeTruthy())
     fireEvent.click(screen.getByText('About'))
   }
@@ -111,6 +121,8 @@ describe('GlobalSettingsModal first-party tools section', () => {
         <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />
       </ToastProvider>,
     )
+    await waitFor(() => expect(screen.getByText('Extensions')).toBeTruthy())
+    fireEvent.click(screen.getByText('Extensions'))
     await waitFor(() => expect(screen.getByText('MCP Servers')).toBeTruthy())
     fireEvent.click(screen.getByText('MCP Servers'))
   }
@@ -314,6 +326,8 @@ describe('GlobalSettingsModal About tab', () => {
         <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} {...props} />
       </ToastProvider>,
     )
+    await waitFor(() => expect(screen.getByText('System')).toBeTruthy())
+    fireEvent.click(screen.getByText('System'))
     await waitFor(() => expect(screen.getByRole('button', { name: 'About' })).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'About' }))
   }
@@ -500,5 +514,36 @@ describe('GlobalSettingsModal Appearance tab', () => {
         autoExpandRunningGroups: false,
       }))
     })
+  })
+})
+
+describe('GlobalSettingsModal grouped tab nav', () => {
+  const groupBtns = () => [...document.querySelectorAll('.settings-tab-groups button')]
+  const leafBtns = () => [...document.querySelectorAll('.settings-tab-leaves button')]
+
+  it('renders three group pills and only the active group’s leaves', async () => {
+    mockGet({})
+    render(<GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Profiles')).toBeTruthy())
+    expect(groupBtns().map((b) => b.textContent)).toEqual(['General', 'Extensions', 'System'])
+    expect(leafBtns().map((b) => b.textContent)).toEqual(['Profiles', 'Server', 'Appearance'])
+  })
+
+  it('opens a group on click and lands on its first leaf', async () => {
+    mockGet({})
+    render(
+      <ToastProvider>
+        <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />
+      </ToastProvider>,
+    )
+    await waitFor(() => expect(screen.getByText('Profiles')).toBeTruthy())
+    fireEvent.click(groupBtns().find((b) => b.textContent === 'Extensions')!)
+    await waitFor(() => expect(screen.getByText('MCP Servers')).toBeTruthy())
+    expect(leafBtns().map((b) => b.textContent)).toEqual([
+      'Skills', 'MCP Servers', 'Marketplace', 'App Plugins',
+    ])
+    // The group click must land on the group's FIRST leaf (Skills), not
+    // merely render the row.
+    expect(document.querySelector('.settings-tab-leaves .active')?.textContent).toBe('Skills')
   })
 })

@@ -34,6 +34,8 @@ import { isStableVersion, isUpdateNagNeeded, isVersionNewer } from '../../shared
 import { reportUpdateResult } from '../utils/update-action'
 import { formatError } from '../utils/format-error'
 import { formatRelativeFromMs } from '../utils/format'
+import { SettingsTabNav } from './SettingsTabNav'
+import type { SettingsNavGroup } from './SettingsTabNav'
 
 // MarketplaceTab pulls in catalog-rendering UI; McpInstaller is a heavy
 // modal-within-modal. Both are only opened on demand from inside the
@@ -345,19 +347,43 @@ export function GlobalSettingsModal({
   }
 
   const caps = getHostCapabilities()
-  const tabs: { key: Tab; label: string }[] = [
-    { key: 'profiles', label: 'Profiles' },
-    { key: 'server', label: 'Server' },
-    { key: 'appearance', label: 'Appearance' },
-    { key: 'skills', label: 'Skills' },
-    { key: 'mcp', label: 'MCP Servers' },
-    { key: 'marketplace', label: 'Marketplace' },
-    { key: 'app-plugins', label: 'App Plugins' },
-    // "Open on phone" shares a LAN URL — meaningless on the desktop build,
-    // which has no reachable HTTP origin.
-    ...(caps.lanSharing ? [{ key: 'share' as const, label: 'Open on phone' }] : []),
-    { key: 'logs', label: 'Logs' },
-    { key: 'about', label: 'About' },
+  // Two-level nav (see SettingsTabNav): group pills over leaf tabs. The tab
+  // state stays a flat leaf key; grouping is purely presentational.
+  const tabGroups: SettingsNavGroup<Tab>[] = [
+    {
+      key: 'general',
+      label: 'General',
+      tabs: [
+        { key: 'profiles', label: 'Profiles' },
+        { key: 'server', label: 'Server' },
+        { key: 'appearance', label: 'Appearance' },
+      ],
+    },
+    {
+      key: 'extensions',
+      label: 'Extensions',
+      tabs: [
+        { key: 'skills', label: 'Skills' },
+        { key: 'mcp', label: 'MCP Servers' },
+        { key: 'marketplace', label: 'Marketplace' },
+        { key: 'app-plugins', label: 'App Plugins' },
+      ],
+    },
+    {
+      key: 'system',
+      label: 'System',
+      tabs: [
+        // Logs and About lead the group so a System pill click (the normal
+        // path here) lands on a free render — "Open on phone" last, since
+        // mounting ShareTab fires GET /access-info plus the lazy qrcode
+        // chunk nobody asked for.
+        { key: 'logs', label: 'Logs' },
+        { key: 'about', label: 'About' },
+        // "Open on phone" shares a LAN URL — meaningless on the desktop build,
+        // which has no reachable HTTP origin.
+        ...(caps.lanSharing ? [{ key: 'share' as const, label: 'Open on phone' }] : []),
+      ],
+    },
   ]
 
   const heightAnimationKey = [
@@ -408,18 +434,8 @@ export function GlobalSettingsModal({
           <button className="btn" onClick={onClose} style={{ padding: '2px 10px' }} aria-label="Close"><IconX size={14} /></button>
         </div>
 
-        {/* Tab bar */}
-        <div className="global-settings-tabs">
-          {tabs.map((t) => (
-            <button
-              key={t.key}
-              className={`global-settings-tab${tab === t.key ? ' active' : ''}`}
-              onClick={() => switchTab(t.key)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        {/* Tab bar — two-level nav (group pills over leaf tabs). */}
+        <SettingsTabNav groups={tabGroups} active={tab} onSelect={switchTab} />
 
         {err && <div className="modal-error">{err}</div>}
 

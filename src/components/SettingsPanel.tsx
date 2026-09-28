@@ -31,6 +31,8 @@ import { UsagePanel } from './UsagePanel'
 import { DiagnosticsPanel } from './DiagnosticsPanel'
 import { PerformancePanel } from './PerformancePanel'
 import { SessionProfileSelect } from './SessionProfileSelect'
+import { SettingsTabNav } from './SettingsTabNav'
+import type { SettingsNavGroup } from './SettingsTabNav'
 import { Overlay } from './Overlay'
 import { Switch } from './Switch'
 import { SettingsRow } from './SettingsRow'
@@ -53,6 +55,48 @@ import { pluginTagOf } from '../utils/text'
 import type { ContextUsage } from '../hooks/useChatStream'
 
 type SettingsTab = 'general' | 'appearance' | 'context' | 'skills' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents' | 'tools' | 'diagnostics' | 'performance'
+
+// Two-level nav grouping (see SettingsTabNav). The tab state stays a flat
+// leaf key; grouping is purely presentational, so the tabRequest deep link
+// (`/mcp`) still lands on the exact leaf and its group is derived from it.
+const SESSION_TAB_GROUPS: SettingsNavGroup<SettingsTab>[] = [
+  {
+    key: 'general',
+    label: 'General',
+    tabs: [
+      { key: 'general', label: 'General' },
+      { key: 'appearance', label: 'Appearance' },
+    ],
+  },
+  {
+    key: 'behavior',
+    label: 'Behavior',
+    tabs: [
+      { key: 'skills', label: 'Skills' },
+      { key: 'agents', label: 'Agents' },
+      { key: 'tools', label: 'Tools' },
+      { key: 'hooks', label: 'Hooks' },
+    ],
+  },
+  {
+    key: 'integrations',
+    label: 'Integrations',
+    tabs: [
+      { key: 'mcp', label: 'MCP Servers' },
+      { key: 'plugins', label: 'Plugins' },
+    ],
+  },
+  {
+    key: 'diagnostics',
+    label: 'Diagnostics',
+    tabs: [
+      { key: 'context', label: 'Context' },
+      { key: 'usage', label: 'Usage' },
+      { key: 'performance', label: 'Performance' },
+      { key: 'diagnostics', label: 'Diagnostics' },
+    ],
+  },
+]
 
 interface Props {
   session: SessionInfo
@@ -1013,20 +1057,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     return result
   }, [commands, agents, reloadedPlugins])
 
-  const tabs: { key: SettingsTab; label: string }[] = [
-    { key: 'general', label: 'General' },
-    { key: 'appearance', label: 'Appearance' },
-    { key: 'context', label: 'Context' },
-    { key: 'skills', label: 'Skills' },
-    { key: 'hooks', label: 'Hooks' },
-    { key: 'plugins', label: 'Plugins' },
-    { key: 'mcp', label: 'MCP Servers' },
-    { key: 'agents', label: 'Agents' },
-    { key: 'tools', label: 'Tools' },
-    { key: 'usage', label: 'Usage' },
-    { key: 'performance', label: 'Performance' },
-    { key: 'diagnostics', label: 'Diagnostics' },
-  ]
+  // Module-level SESSION_TAB_GROUPS: fully static, and a stable identity
+  // keeps the memoized SettingsTabNav from re-diffing on WS-driven re-renders.
+  const tabGroups = SESSION_TAB_GROUPS
 
   const panelBodyRef = useRef<HTMLDivElement | null>(null)
   const setPanelBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
@@ -1076,19 +1109,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         </button>
       </div>
 
-      {/* Tab bar — reuses the global settings modal's tab styling for
-          visual consistency. */}
-      <div className="global-settings-tabs">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            className={`global-settings-tab${tab === t.key ? ' active' : ''}`}
-            onClick={() => switchTab(t.key)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {/* Tab bar — two-level nav (group pills over leaf tabs), sharing the
+          leaf styling with the global settings modal for visual consistency. */}
+      <SettingsTabNav groups={tabGroups} active={tab} onSelect={switchTab} />
 
       {/* All settings feedback (success/error) flows through the global
           toast hub now (see ToastHost). The toast itself is the live

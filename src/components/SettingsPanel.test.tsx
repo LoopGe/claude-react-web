@@ -948,3 +948,63 @@ describe('SettingsPanel Context / Skills tab split', () => {
       expect(container.textContent).toContain('Resume the session to load the skill token breakdown.'))
   })
 })
+
+describe('SettingsPanel grouped tab nav', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // Same per-URL mocks as the MCP/Appearance describes — the MCP tab reads
+    // `mcp` straight off the /mcp-status payload, so a bare `{}` 500s it.
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      if (url === '/profiles') return Promise.resolve({ profiles: [] })
+      if (url === '/config') return Promise.resolve({ models: [] })
+      return Promise.resolve({})
+    })
+    vi.mocked(api.post).mockResolvedValue({ session: mkSession() })
+  })
+
+  const groupBtns = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLButtonElement>('.settings-tab-groups button')]
+  const leafBtns = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLButtonElement>('.settings-tab-leaves button')]
+  const activeGroup = (container: HTMLElement) =>
+    container.querySelector('.settings-tab-groups .active')?.textContent
+  const activeLeaf = (container: HTMLElement) =>
+    container.querySelector('.settings-tab-leaves .active')?.textContent
+  const clickBtn = (buttons: () => HTMLElement[], label: string) =>
+    fireEvent.click(buttons().find((b) => b.textContent === label)!)
+
+  it('renders four group pills and only the active group’s leaves', () => {
+    const { container } = renderPanel({ tab: 'general' })
+    expect(groupBtns(container).map((b) => b.textContent)).toEqual([
+      'General', 'Behavior', 'Integrations', 'Diagnostics',
+    ])
+    expect(leafBtns(container).map((b) => b.textContent)).toEqual(['General', 'Appearance'])
+    expect(activeGroup(container)).toBe('General')
+    expect(activeLeaf(container)).toBe('General')
+  })
+
+  it('deep-links into a leaf via tabRequest and activates the leaf’s group', () => {
+    const { container } = renderPanel({ tab: 'mcp' })
+    expect(activeGroup(container)).toBe('Integrations')
+    expect(activeLeaf(container)).toBe('MCP Servers')
+  })
+
+  it('clicking a group lands on its first leaf and remembers the last visited leaf', async () => {
+    const { container } = renderPanel({ tab: 'general' })
+
+    clickBtn(() => groupBtns(container), 'Integrations')
+    await waitFor(() => expect(activeLeaf(container)).toBe('MCP Servers'))
+
+    clickBtn(() => leafBtns(container), 'Plugins')
+    await waitFor(() => expect(activeLeaf(container)).toBe('Plugins'))
+
+    // Away and back: the group reopens on the leaf last visited in it.
+    clickBtn(() => groupBtns(container), 'General')
+    await waitFor(() => expect(activeLeaf(container)).toBe('General'))
+    clickBtn(() => groupBtns(container), 'Integrations')
+    await waitFor(() => expect(activeLeaf(container)).toBe('Plugins'))
+  })
+})
