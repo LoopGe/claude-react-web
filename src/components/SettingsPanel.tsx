@@ -1826,7 +1826,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           </div>
           <span className="settings-group-desc">Skills and agents bundled by the plugins connected to this session.</span>
         </div>
-        <div className="settings-group-body settings-mcp-group-body">
+        <div className="settings-group-body settings-carded-group-body">
           {pluginGroups.length === 0 && !commands.length && (
             <div className="settings-note">No plugins loaded</div>
           )}
@@ -1889,7 +1889,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
                 Ships with claude-react-web — runs in-process; toggles apply to this session.
               </span>
             </div>
-            <div className="settings-group-body settings-mcp-group-body">
+            <div className="settings-group-body settings-carded-group-body">
               {firstPartyTools.map((tool) => {
                 const override = session.firstPartyTools?.[tool.name]
                 // Display chain mirrors the server's firstPartyEnabled:
@@ -1922,7 +1922,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               <h4>{box.title}</h4>
               <span className="settings-group-desc">{box.desc}</span>
             </div>
-            <div className="settings-group-body settings-mcp-group-body">
+            <div className="settings-group-body settings-carded-group-body">
               {box.servers.map((srv) => (
                 <McpServerCard
                   key={srv.name}
@@ -1948,7 +1948,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
                 Global config store unavailable — provenance unknown.
               </span>
             </div>
-            <div className="settings-group-body settings-mcp-group-body">
+            <div className="settings-group-body settings-carded-group-body">
               {effectiveMcpWithOverride.map((srv) => (
                 <McpServerCard
                   key={srv.name}
@@ -1974,7 +1974,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               <h4>Available from global config</h4>
               <span className="settings-group-desc">Enabled global servers not connected to this session.</span>
             </div>
-            <div className="settings-group-body settings-mcp-group-body">
+            <div className="settings-group-body settings-carded-group-body">
               {availableMcpNames.map((name) => (
                 <div key={name} className="settings-mcp-available-row">
                   <span className="settings-mcp-available-name">{name}</span>

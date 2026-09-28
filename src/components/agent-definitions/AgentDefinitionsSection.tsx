@@ -51,7 +51,7 @@ export function AgentDefinitionsSection({
           </div>
           <span className="settings-group-desc">Custom subagent definitions available to sessions.</span>
         </div>
-        <div className="settings-group-body settings-mcp-group-body">
+        <div className="settings-group-body settings-carded-group-body">
           {error && <div className="settings-card-error">Failed to load agents: {error}</div>}
 
           {agents.length === 0 && !error && (

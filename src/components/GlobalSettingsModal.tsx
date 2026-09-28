@@ -1408,7 +1408,7 @@ function McpTab({
           <h4>Servers</h4>
           <span className="settings-group-desc">MCP servers available to every session. Toggling here is the global default.</span>
         </div>
-        <div className="settings-group-body settings-mcp-group-body">
+        <div className="settings-group-body settings-carded-group-body">
           {servers.length === 0 && (
             <EmptyState
               icon={<IconTerminal size={16} />}
@@ -1431,7 +1431,7 @@ function McpTab({
               control.
             </span>
           </div>
-          <div className="settings-group-body settings-mcp-group-body">
+          <div className="settings-group-body settings-carded-group-body">
             {fpError && <div className="settings-mcp-tools-error">Tool listing unavailable: {fpError}</div>}
             {firstPartyEntries.map(([name, def]) => (
               <FirstPartyCard

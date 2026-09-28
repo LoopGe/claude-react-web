@@ -239,7 +239,7 @@ export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObj
             credentials + model set for new sessions.
           </span>
         </div>
-        <div className="settings-group-body settings-mcp-group-body">
+        <div className="settings-group-body settings-carded-group-body">
           {profiles.length === 0 && (
             <div className="settings-profile-empty">
               No profiles yet. Add one to get started.

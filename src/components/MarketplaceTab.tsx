@@ -464,7 +464,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
           <h4>Marketplaces</h4>
           <span className="settings-group-desc">Registered plugin marketplaces and their plugins.</span>
         </div>
-        <div className="settings-group-body settings-mcp-group-body">
+        <div className="settings-group-body settings-carded-group-body">
         {!loading && items.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {/* The button stays mounted mid-bulk-update even while badges clear,

@@ -1627,7 +1627,7 @@ button.tool-group-failed-jump:focus-visible {
 .settings-detail { margin-top: var(--space-1-5); }
 /* Inside a .settings-group-body the flex gap already spaces siblings — the
    margins above were tuned for the old flat .settings-section flow and
-   double up on move (same reset pattern as .settings-mcp-group-body). All
+   double up on move (same reset pattern as .settings-carded-group-body). All
    four targets are direct children of a group body in their only consumer;
    the child combinator keeps the reset away from any future nested reuse
    (SettingsPanel nests .settings-skill-allowlist inside a plain wrapper,

@@ -1150,16 +1150,17 @@
   border-top: 1px solid var(--border);
 }
 
-/* Carded group bodies (session settings): the group body already gaps its
-   children, so the cards' own margins would double the spacing —
-   .settings-card margin-top on every card, .settings-mcp-card margin-bottom
-   on the first-party cards, .settings-mcp-available-row margin-bottom in
-   the Available box. Started as the MCP provenance boxes; the plugins and
-   agent-definitions card lists now ride the same class. Other group-bodies
-   (FlagSettings editor, sandbox) are untouched. The two-class selectors
-   out-specify their one-class targets, so file order is irrelevant. */
-.settings-mcp-group-body > .settings-card { margin-top: 0; margin-bottom: 0; }
-.settings-mcp-group-body > .settings-mcp-available-row { margin-bottom: 0; }
+/* Carded group bodies: the group body already gaps its children, so the
+   cards' own margins would double the spacing — .settings-card margin-top
+   on every card, .settings-mcp-card margin-bottom on the first-party cards,
+   .settings-mcp-available-row margin-bottom in the Available box. Started
+   as the MCP provenance boxes' class (settings-mcp-group-body); renamed
+   once profiles, plugins, agent-definitions and the marketplace list rode
+   the same hook. Other group-bodies (FlagSettings editor, sandbox) are
+   untouched. The two-class selectors out-specify their one-class targets,
+   so file order is irrelevant. */
+.settings-carded-group-body > .settings-card { margin-top: 0; margin-bottom: 0; }
+.settings-carded-group-body > .settings-mcp-available-row { margin-bottom: 0; }
 
 /* Carded groups live inside the global settings body (16px padding) but the
    session settings panel content has no padding of its own — sections used
