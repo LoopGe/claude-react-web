@@ -841,12 +841,9 @@
    (no .input class) plus .field-label / .settings-hint captions that have no
    standalone rule. Scoped under .tools-tab so the generic .field-label name
    never leaks into StructuredPanel, whose own .structured-panel .field-label
-   rule is self-contained. */
-.tools-tab .settings-hint {
-  margin: 0;
-  color: var(--fg-muted);
-  font-size: var(--fs-base);
-}
+   rule is self-contained. (The old .settings-hint explainer moved into the
+   group's .settings-group-desc when the tab became a settings-group — no
+   .settings-hint remains under .tools-tab.) */
 .tools-tab .field-label {
   display: block;
   font-size: var(--fs-sm);
@@ -927,7 +924,8 @@
   gap: 3px;
   background: var(--bg-elev);
 }
-.settings-group-head h4 {
+.settings-group-head h4,
+.settings-tab-head h4 {
   margin: 0;
   font-size: var(--fs-xs);
   text-transform: uppercase;
@@ -938,6 +936,14 @@
   font-size: var(--fs-sm);
   line-height: 1.45;
   color: var(--fg-muted);
+}
+/* Title row inside a group head that carries actions: h4 left, buttons
+   right (the head itself is a column so the desc spans under both). */
+.settings-group-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
 
 .settings-row {
@@ -1144,11 +1150,12 @@
   border-top: 1px solid var(--border);
 }
 
-/* MCP provenance boxes (session settings → MCP tab): the group body already
-   gaps its children, so the cards' own margins would double the spacing —
+/* Carded group bodies (session settings): the group body already gaps its
+   children, so the cards' own margins would double the spacing —
    .settings-card margin-top on every card, .settings-mcp-card margin-bottom
    on the first-party cards, .settings-mcp-available-row margin-bottom in
-   the Available box. Scoped to the MCP boxes — other group-bodies
+   the Available box. Started as the MCP provenance boxes; the plugins and
+   agent-definitions card lists now ride the same class. Other group-bodies
    (FlagSettings editor, sandbox) are untouched. The two-class selectors
    out-specify their one-class targets, so file order is irrelevant. */
 .settings-mcp-group-body > .settings-card { margin-top: 0; margin-bottom: 0; }

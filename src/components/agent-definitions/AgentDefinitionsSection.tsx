@@ -38,22 +38,28 @@ export function AgentDefinitionsSection({
   }
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
-        <h4>Agents</h4>
-        <button className="btn btn-sm" disabled={disabled} onClick={() => setEditDef(undefined)}>
-          New
-        </button>
-      </div>
+    <div className="settings-stack">
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <div className="settings-group-head-row">
+            <h4>Agents</h4>
+            <div className="settings-section-head-actions">
+              <button className="btn btn-sm" disabled={disabled} onClick={() => setEditDef(undefined)}>
+                New
+              </button>
+            </div>
+          </div>
+          <span className="settings-group-desc">Custom subagent definitions available to sessions.</span>
+        </div>
+        <div className="settings-group-body settings-mcp-group-body">
+          {error && <div className="settings-card-error">Failed to load agents: {error}</div>}
 
-      {error && <div className="settings-card-error">Failed to load agents: {error}</div>}
+          {agents.length === 0 && !error && (
+            <div className="settings-note">No agents defined</div>
+          )}
 
-      {agents.length === 0 && !error && (
-        <div className="settings-note">No agents defined</div>
-      )}
-
-      {agents.map((def) => (
-        <div key={def.name} className="settings-card">
+          {agents.map((def) => (
+            <div key={def.name} className="settings-card">
           <div className="settings-card-head">
             <span className="settings-card-dot" />
             <div className="settings-card-toggle">
@@ -81,7 +87,9 @@ export function AgentDefinitionsSection({
             </button>
           </div>
         </div>
-      ))}
+          ))}
+        </div>
+      </section>
     </div>
   )
 }

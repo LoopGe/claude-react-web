@@ -1,12 +1,13 @@
 // Context-composition breakdown for the SettingsPanel's Context tab.
 //
-// Two halves: a short static explanation of what a context window holds,
-// and a live table driven by the SDK's canonical `categories` rows. Rows
-// are classified on `kind` — never on the English `name` — so new SDK
-// categories render with no changes here (see ContextUsage.categories in
-// useChatStream.ts). memoryFiles / mcpTools ride in as supplement rows
-// only when the payload carries no categories (older SDK shapes), so the
-// two views can never double-count the same tokens.
+// Body content only: the hosting .settings-group carries the title and the
+// static "what a context window holds" explainer in its settings-group-head
+// (same pattern as every other tab). The live table is driven by the SDK's
+// canonical `categories` rows. Rows are classified on `kind` — never on the
+// English `name` — so new SDK categories render with no changes here (see
+// ContextUsage.categories in useChatStream.ts). memoryFiles / mcpTools ride
+// in as supplement rows only when the payload carries no categories (older
+// SDK shapes), so the two views can never double-count the same tokens.
 
 import { memo } from 'react'
 import type { ContextUsage } from '../hooks/useChatStream'
@@ -84,20 +85,11 @@ export const ContextComposition = memo(function ContextComposition({
   }
 
   return (
-    // Plain div, NOT .settings-section: the Context tab already wraps this
-    // in a .settings-section (padding + border-bottom + flex gap) — a nested
-    // one would double the horizontal padding and draw a stray rule mid-tab.
-    // The section's descendant `h4` styling still applies through the outer
-    // wrapper; this class only carries the inner stack spacing.
+    // Plain div inside the .settings-group body — a nested .settings-section
+    // or a second card chrome would double the group's own. This class only
+    // carries the inner stack spacing between the rows and the state hints;
+    // the group body's flex gap handles the rest.
     <div className="settings-context-composition">
-      <h4>Context composition</h4>
-      <span className="hint">
-        Each turn sends the model the whole window: the system prompt
-        (CLAUDE.md, environment info, tool schemas for built-in and MCP
-        tools), discovered skills and agent definitions, memory files, and
-        the conversation so far. The SDK keeps a buffer at the top of the
-        window for auto-compact; whatever is left is free space.
-      </span>
       {rows.length > 0 ? (
         // Plain wrapper — .settings-detail-body's margin-top would stack
         // with this stack's flex gap and break the spacing rhythm.

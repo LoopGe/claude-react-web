@@ -277,8 +277,8 @@ export const UsagePanel = memo(function UsagePanel({
   )
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
+    <div className="settings-stack">
+      <div className="settings-tab-head">
         <span className="settings-section-head-title">
           <h4>Session usage</h4>
           {subLabel && <span className="usage-sub-badge">{subLabel}</span>}

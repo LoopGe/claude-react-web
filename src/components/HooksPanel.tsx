@@ -235,23 +235,27 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
   }, [])
 
   if (loading) {
+    // .settings-stack wrapper: the panel content has no padding of its own —
+    // only a root stack gets it (messages.css `.settings-panel-content >
+    // .settings-stack`), so a bare node would render flush to the edge.
     return (
-      <div className="settings-section">
+      <div className="settings-stack">
         <div className="settings-note">Loading hooks…</div>
       </div>
     )
   }
 
   return (
-    <>
+    <div className="settings-stack">
       {/* ── Configured Hooks ──────────────────────────────────────── */}
-      <div className="settings-section">
-        <div className="settings-section-head">
+      <section className="settings-group">
+        <div className="settings-group-head">
           <h4>Configured Hooks</h4>
+          <span className="settings-group-desc">Hook matchers registered on this session's events.</span>
         </div>
-
-        {configuredEntries.length > 0 ? (
-          <div className="hooks-config-list">
+        <div className="settings-group-body">
+          {configuredEntries.length > 0 ? (
+            <div className="hooks-config-list">
             {configuredEntries.map(({ event, matcherIdx, matcher }) => (
               <div key={`${event}-${matcherIdx}`} className="hooks-config-card">
                 <div className="hooks-config-head">
@@ -320,26 +324,31 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
           <EmptyState icon={<IconZap size={16} />} title="No hooks configured" />
         )}
 
-        {dirty && (
-          <button
-            className="btn btn-sm btn-primary settings-apply-btn"
-            onClick={() => applyConfig(text)}
-            disabled={disabled || saving}
-          >
-            {saving ? 'Applying…' : 'Apply changes'}
-          </button>
-        )}
-      </div>
+          {dirty && (
+            <button
+              className="btn btn-sm btn-primary settings-apply-btn"
+              onClick={() => applyConfig(text)}
+              disabled={disabled || saving}
+            >
+              {saving ? 'Applying…' : 'Apply changes'}
+            </button>
+          )}
+        </div>
+      </section>
 
       {/* ── Available Events ──────────────────────────────────────── */}
-      <div className="settings-section">
-        <div className="settings-section-head">
+      <section className="settings-group">
+        <div className="settings-group-head">
           <h4>Available Events</h4>
+          <span className="settings-group-desc">Click an event to toggle it for this session.</span>
         </div>
-        <div className="settings-note">
-          Click an event to toggle it. {totalConfigured > 0 && `${totalConfigured} hook${totalConfigured === 1 ? '' : 's'} configured.`}
-        </div>
-        <div className="hooks-categories">
+        <div className="settings-group-body">
+          <span className="hint">
+            {totalConfigured > 0
+              ? `${totalConfigured} hook${totalConfigured === 1 ? '' : 's'} configured.`
+              : 'No hooks configured yet.'}
+          </span>
+          <div className="hooks-categories">
           {EVENT_CATEGORIES.map((cat, ci) => {
             const count = categoryCounts[ci].total
             return (
@@ -378,47 +387,55 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
             )
           })}
         </div>
-      </div>
+        </div>
+      </section>
 
       {/* ── Raw JSON Editor ───────────────────────────────────────── */}
-      <div className="settings-section">
-        <div className="settings-section-head">
-          <h4>Advanced</h4>
-          <div className="settings-section-head-actions">
-            <button className="btn btn-sm" onClick={insertTemplate} disabled={disabled || saving}>
-              Template
-            </button>
-            <button
-              className="btn btn-sm btn-primary"
-              onClick={() => applyConfig(text)}
-              disabled={disabled || saving || loading}
-            >
-              {saving ? 'Applying…' : 'Apply hooks'}
-            </button>
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <div className="settings-group-head-row">
+            <h4>Advanced</h4>
+            <div className="settings-section-head-actions">
+              <button className="btn btn-sm" onClick={insertTemplate} disabled={disabled || saving}>
+                Template
+              </button>
+              <button
+                className="btn btn-sm btn-primary"
+                onClick={() => applyConfig(text)}
+                disabled={disabled || saving || loading}
+              >
+                {saving ? 'Applying…' : 'Apply hooks'}
+              </button>
+            </div>
           </div>
+          <span className="settings-group-desc">Edit the raw hooks JSON this session sends to the SDK.</span>
         </div>
-        {dirty && <span className="hint" style={{ fontSize: 'var(--fs-xs)' }}>Unsaved changes</span>}
-        <AnimatedDetails className="hooks-json-toggle" summary="Raw JSON editor">
-          <textarea
-            className="textarea"
-            value={text}
-            onChange={(e) => handleTextChange(e.target.value)}
-            rows={14}
-            spellCheck={false}
-            disabled={disabled || saving || loading}
-            style={{ marginTop: 6 }}
-          />
-        </AnimatedDetails>
-        {error && <div className="settings-card-error" style={{ marginTop: 6 }}>{error}</div>}
-      </div>
+        <div className="settings-group-body">
+          {dirty && <span className="hint" style={{ fontSize: 'var(--fs-xs)' }}>Unsaved changes</span>}
+          <AnimatedDetails className="hooks-json-toggle" summary="Raw JSON editor">
+            <textarea
+              className="textarea"
+              value={text}
+              onChange={(e) => handleTextChange(e.target.value)}
+              rows={14}
+              spellCheck={false}
+              disabled={disabled || saving || loading}
+              style={{ marginTop: 6 }}
+            />
+          </AnimatedDetails>
+          {error && <div className="settings-card-error" style={{ marginTop: 6 }}>{error}</div>}
+        </div>
+      </section>
 
       {/* ── Hook Activity ─────────────────────────────────────────── */}
-      <div className="settings-section">
-        <div className="settings-section-head">
+      <section className="settings-group">
+        <div className="settings-group-head">
           <h4>Hook Activity</h4>
+          <span className="settings-group-desc">Live hook executions, streamed as they run.</span>
         </div>
-        {runs.length === 0 && <EmptyState icon={<IconClock size={16} />} title="No hook runs yet" />}
-        {runs.map((run) => {
+        <div className="settings-group-body">
+          {runs.length === 0 && <EmptyState icon={<IconClock size={16} />} title="No hook runs yet" />}
+          {runs.map((run) => {
           const meta = STATUS_META[run.status] ?? STATUS_META.cancelled
           return (
             <div key={run.id} className="hooks-activity-card">
@@ -445,7 +462,8 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
             </div>
           )
         })}
-      </div>
-    </>
+        </div>
+      </section>
+    </div>
   )
 }

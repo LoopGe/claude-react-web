@@ -158,14 +158,20 @@ export function PerformancePanel() {
 
   if (loading && !data) {
     return (
-      <div className="settings-section">
-        <span className="settings-note">Loading metrics…</span>
-        <Skeleton rows={2} />
+      <div className="settings-stack">
+        <div>
+          <span className="settings-note">Loading metrics…</span>
+          <Skeleton rows={2} />
+        </div>
       </div>
     )
   }
   if (error && !data) {
-    return <div className="settings-section"><div className="settings-card-error">{error}</div></div>
+    return (
+      <div className="settings-stack">
+        <div className="settings-card-error">{error}</div>
+      </div>
+    )
   }
   if (!data) return null
 
@@ -175,8 +181,8 @@ export function PerformancePanel() {
   const sessions = pickPrefix(data, ['session_spawn_ms', 'interrupt_ms', 'sdk_control_ms', 'auto_classify_ms', 'anthropic_api_ms'])
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
+    <div className="settings-stack">
+      <div className="settings-tab-head">
         <h4>Performance</h4>
         <div className="perf-controls">
           <label className="perf-auto">
@@ -187,8 +193,7 @@ export function PerformancePanel() {
         </div>
       </div>
 
-      <div className="settings-stack">
-        <section className="settings-group">
+      <section className="settings-group">
           <div className="settings-group-head">
             <h4>Overview</h4>
             <span className="settings-group-desc">Uptime and live gauges (since process start).</span>
@@ -232,7 +237,6 @@ export function PerformancePanel() {
           </div>
           <HistTable entries={sessions} history={history} />
         </section>
-      </div>
     </div>
   )
 }

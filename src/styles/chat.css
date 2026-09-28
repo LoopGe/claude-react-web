@@ -565,6 +565,15 @@
   flex-direction: column;
   gap: var(--space-1);
 }
+/* SettingsPanel Context tab: the bar sits inside a .settings-group body —
+   the group card is the container now, so the chat-strip chrome (elevated
+   background, top rule, reading-inset side padding) becomes a box-in-box.
+   Same strip-and-reset shape as the .ctx-orb-pop override above. */
+.settings-group-body .ctx-bar {
+  padding: 0;
+  background: transparent;
+  border-top: none;
+}
 .ctx-orb-pop .ctx-bar {
   padding: 0;
   background: transparent;

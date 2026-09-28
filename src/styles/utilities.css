@@ -1604,6 +1604,16 @@ button.tool-group-failed-jump:focus-visible {
    subscription badge) so they sit on one baseline. */
 .settings-section-head-title { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .settings-section-head-actions { display: flex; gap: var(--space-1-5); }
+/* Tab-level header row (title + tab-wide actions) for tabs whose body is a
+   .settings-stack of groups. Only tabs WITH tab-level actions render one
+   (MCP's Manage, Usage/Diagnostics/Performance's Refresh) — action-free tabs
+   go straight into their self-titled groups. The h4 chrome is shared with
+   .settings-group-head h4 in messages.css. */
+.settings-tab-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
 .settings-apply-btn { align-self: flex-start; }
 .settings-note {
   color: var(--fg-muted);
@@ -1611,7 +1621,13 @@ button.tool-group-failed-jump:focus-visible {
   margin-top: var(--space-1-5);
 }
 .settings-detail { margin-top: var(--space-1-5); }
-.settings-detail-tight { margin-top: var(--space-1); }
+/* Inside a .settings-group-body the flex gap already spaces siblings — the
+   margins above were tuned for the old flat .settings-section flow and
+   double up on move (same reset pattern as .settings-mcp-group-body). */
+.settings-group-body > .settings-detail,
+.settings-group-body > .settings-skill-reload-row {
+  margin-top: 0;
+}
 .settings-detail > summary {
   cursor: pointer;
   font-size: var(--fs-sm);

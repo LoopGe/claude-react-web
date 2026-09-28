@@ -777,14 +777,18 @@ describe('SettingsPanel Context / Skills tab split', () => {
     })
   })
 
-  /** The composition block: a plain div (NOT .settings-section — nesting
-   *  one inside the tab's section would double its chrome). */
+  /** The composition block: a plain div inside the group body (NOT a
+   *  .settings-section — nesting one inside the .settings-group would
+   *  double its chrome). */
   const compositionSection = (container: HTMLElement) =>
     container.querySelector('.settings-context-composition')
 
   it('moves the skill policy card to the Skills tab and keeps it off Context', async () => {
     const { container } = renderPanel({ tab: 'skills' })
-    await waitFor(() => expect(container.textContent).toContain('Session skill policy'))
+    // 'Skill policy' now comes from the static group head; assert text only
+    // the CARD renders (a mode-card title) so a card regression can't hide
+    // behind the boilerplate.
+    await waitFor(() => expect(container.textContent).toContain('Inherit (use global)'))
     // The Skills tab wants the skills token detail too, so the detailed
     // fetch fires here as well (one-shot guard shared with Context). The
     // GET now carries an AbortSignal — assert the 2-arg shape, a 1-arg
@@ -796,7 +800,7 @@ describe('SettingsPanel Context / Skills tab split', () => {
 
     const { container: ctx } = renderPanel({ tab: 'context' })
     await waitFor(() => expect(ctx.textContent).toContain('Context composition'))
-    expect(ctx.textContent).not.toContain('Session skill policy')
+    expect(ctx.textContent).not.toContain('Skill policy')
     expect(ctx.textContent).not.toContain('Reload skills')
   })
 

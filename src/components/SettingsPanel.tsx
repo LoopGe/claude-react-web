@@ -1595,143 +1595,189 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       )}
 
       {tab === 'context' && (
-      <div className="settings-section">
-        <h4>Context usage</h4>
-        {/* ContextBar runs off the WS-pushed lite usage — paints instantly,
-            no blocking request. The full breakdown (composition table and
-            agents below) comes from the detailed fetch, which the tab-open
-            effect fires automatically for running sessions. */}
-        <ContextBar
-          usage={usage}
-          editable
-          custom={session.autoCompactWindow != null}
-          disabled={autoCompactDisabled}
-          onSetWindow={commitWindow}
-        />
-
-        <div className="settings-section">
-          <h4>Auto-compact window</h4>
-          {!session.running && !session.terminated && (
-            <span className="hint">Resume the session to change the auto-compact window.</span>
-          )}
+      <div className="settings-stack">
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Context usage</h4>
+          <span className="settings-group-desc">Live usage of this session's context window.</span>
+        </div>
+        <div className="settings-group-body">
+          {/* ContextBar runs off the WS-pushed lite usage — paints instantly,
+              no blocking request. The full breakdown (composition table and
+              agents below) comes from the detailed fetch, which the tab-open
+              effect fires automatically for running sessions. The marker IS
+              the auto-compact control, so its instructions ride here. */}
+          <ContextBar
+            usage={usage}
+            editable
+            custom={session.autoCompactWindow != null}
+            disabled={autoCompactDisabled}
+            onSetWindow={commitWindow}
+          />
           <span className="hint">
-            Drag the marker on the bar above to pin when the conversation
-            auto-compacts (20–100%, step 5). Double-click it to reset to the
-            model default.
+            Drag the marker to pin when the conversation auto-compacts
+            (20–100%, step 5). Double-click it to reset to the model default.
           </span>
           <span className="hint">
             Auto-compact triggers when the conversation reaches the marked share
             of the context window. Lower values compact earlier — cheaper turns
             at the cost of more summarization.
           </span>
+          {!session.running && !session.terminated && (
+            <span className="hint">Resume the session to change the auto-compact window.</span>
+          )}
         </div>
+      </section>
 
-        {/* Composition breakdown — static explainer plus the SDK's canonical
-            categories rows (kind-badged). Skill loading policy and the
-            per-skill token detail live on their own Skills tab. error is
-            gated on liveness: a dormant session gets the resume hint below
-            instead of a retry that would silently no-op. */}
-        <ContextComposition
-          usage={usage}
-          loading={loadingUsage}
-          error={usageError && session.running}
-          onRetry={loadDetailedUsage}
-        />
-        {!session.running && !session.terminated && (
-          <span className="hint">Resume the session to load the context breakdown.</span>
-        )}
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Context composition</h4>
+          <span className="settings-group-desc">
+            Each turn sends the model the whole window: the system prompt
+            (CLAUDE.md, environment info, tool schemas for built-in and MCP
+            tools), discovered skills and agent definitions, memory files,
+            and the conversation so far. The SDK keeps a buffer at the top of
+            the window for auto-compact; whatever is left is free space.
+          </span>
+        </div>
+        <div className="settings-group-body">
+          {/* Composition table — the SDK's canonical categories rows
+              (kind-badged). Skill loading policy and the per-skill token
+              detail live on their own Skills tab. error is gated on
+              liveness: a dormant session gets the resume hint below instead
+              of a retry that would silently no-op. */}
+          <ContextComposition
+            usage={usage}
+            loading={loadingUsage}
+            error={usageError && session.running}
+            onRetry={loadDetailedUsage}
+          />
+          {!session.running && !session.terminated && (
+            <span className="hint">Resume the session to load the context breakdown.</span>
+          )}
+        </div>
+      </section>
 
-        {usage?.agents && (
-          <AnimatedDetails
-            className="settings-detail settings-detail-tight"
-            summary={`Agents: ${usage.agents.agents?.length ?? 0}, ${formatTokens(usage.agents.tokenCount)}`}
-          >
-            <div className="settings-detail-body">
-              {usage.agents.agents?.map((a, i) => (
-                <div key={i} className="settings-kv-row">
-                  <code>{a.agentType}</code>
-                  <span className="settings-kv-source">{a.source}</span>
-                  <span className="settings-kv-tokens">{formatTokens(a.tokens)}</span>
-                </div>
-              ))}
-            </div>
-          </AnimatedDetails>
-        )}
-        {/* Always-present disclosure: opening it triggers the lazy fetch of
-            the full breakdown (a no-op when the tab-open effect already
-            fired — the one-shot guard dedupes). */}
-        <AnimatedDetails
-          className="settings-detail"
-          onOpenChange={(nextOpen) => { if (nextOpen) loadDetailedUsage() }}
-          summary={`Detailed breakdown${!detailedUsage && loadingUsage ? ' (loading...)' : ''}`}
-        >
-          <pre className="tool-input settings-raw-pre">
-            {detailedUsage
-              ? formatJson(detailedUsage)
-              : loadingUsage
-                ? 'Loading...'
-                : usage
-                  ? formatJson(usage)
-                  : '-'}
-          </pre>
-        </AnimatedDetails>
-      </div>
-      )}
-
-      {tab === 'skills' && (
-      <div className="settings-section">
-        <SessionSkillPolicyCard
-          session={session}
-          disabled={busy || session.terminated}
-          onApply={setSkillOverride}
-        />
-        {usage?.skills && (
-          <div className="settings-skill-reload-row">
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Details</h4>
+          <span className="settings-group-desc">Per-agent token cost and the raw usage payload.</span>
+        </div>
+        <div className="settings-group-body">
+          {usage?.agents && (
             <AnimatedDetails
               className="settings-detail"
-              summary={`Skills: ${usage.skills.includedSkills}/${usage.skills.totalSkills} loaded, ${formatTokens(usage.skills.tokenCount)}`}
+              summary={`Agents: ${usage.agents.agents?.length ?? 0}, ${formatTokens(usage.agents.tokenCount)}`}
             >
               <div className="settings-detail-body">
-                {usage.skills.skillFrontmatter?.map((s) => (
-                  <div key={s.name} className="settings-kv-row">
-                    <code>{s.name}</code>
-                    <span className="settings-kv-source">{s.source}</span>
-                    <span className="settings-kv-tokens">{formatTokens(s.tokens)}</span>
+                {usage.agents.agents?.map((a, i) => (
+                  <div key={i} className="settings-kv-row">
+                    <code>{a.agentType}</code>
+                    <span className="settings-kv-source">{a.source}</span>
+                    <span className="settings-kv-tokens">{formatTokens(a.tokens)}</span>
                   </div>
                 ))}
               </div>
             </AnimatedDetails>
-            {/* Also disabled for dormant sessions: a cached breakdown keeps
-                the row visible after running→dormant (the panel is keyed by
-                session id, not liveness), but the reload POST would 410 and
-                the follow-up refetch could never run. */}
-            <button className="btn btn-sm" onClick={reloadSkills} disabled={busy || session.terminated || !session.running || reloadingSkills || loadingUsage}>
-              {reloadingSkills ? <IconLoader size={12} className="settings-card-spin" /> : 'Reload skills'}
-            </button>
-          </div>
-        )}
-        {/* The token detail rides the live-only detailed read; surface its
-            non-success states instead of silently rendering nothing. The
-            error hint is gated on usageError ALONE (plus !loadingUsage): a
-            failed refresh must stay visible even while stale rows render,
-            but not double up with the loading hint during a retry. */}
-        {!session.running && !session.terminated && (
-          <span className="hint">Resume the session to load the skill token breakdown.</span>
-        )}
-        {/* Shown for BOTH the initial load and a reload-triggered refetch —
-            gating it on !usage?.skills would leave a refresh spinning with
-            stale rows and no visible reason for the disabled button. */}
-        {session.running && loadingUsage && (
-          <span className="hint">Loading skill breakdown…</span>
-        )}
-        {session.running && usageError && !loadingUsage && (
-          <span className="hint">
-            {usage?.skills
-              ? "Couldn't refresh the skill token breakdown — showing last known numbers. "
-              : "Couldn't load the skill token breakdown — "}
-            <button type="button" className="settings-reset-link" onClick={loadDetailedUsage}>retry</button>
+          )}
+          {/* Always-present disclosure: opening it triggers the lazy fetch of
+              the full breakdown (a no-op when the tab-open effect already
+              fired — the one-shot guard dedupes). */}
+          <AnimatedDetails
+            className="settings-detail"
+            onOpenChange={(nextOpen) => { if (nextOpen) loadDetailedUsage() }}
+            summary={`Detailed breakdown${!detailedUsage && loadingUsage ? ' (loading...)' : ''}`}
+          >
+            <pre className="tool-input settings-raw-pre">
+              {detailedUsage
+                ? formatJson(detailedUsage)
+                : loadingUsage
+                  ? 'Loading...'
+                  : usage
+                    ? formatJson(usage)
+                    : '-'}
+            </pre>
+          </AnimatedDetails>
+        </div>
+      </section>
+      </div>
+      )}
+
+      {tab === 'skills' && (
+      <div className="settings-stack">
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Skill policy</h4>
+          <span className="settings-group-desc">
+            Override the global skill loading policy for just this session.
+            RAM-only — resets to inherit when the session is resumed or the
+            server restarts.
           </span>
-        )}
+        </div>
+        <div className="settings-group-body">
+          <SessionSkillPolicyCard
+            session={session}
+            disabled={busy || session.terminated}
+            onApply={setSkillOverride}
+          />
+        </div>
+      </section>
+
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Loaded skills</h4>
+          <span className="settings-group-desc">Token cost of the skills loaded into this session.</span>
+        </div>
+        <div className="settings-group-body">
+          {usage?.skills && (
+            <div className="settings-skill-reload-row">
+              <AnimatedDetails
+                className="settings-detail"
+                summary={`Skills: ${usage.skills.includedSkills}/${usage.skills.totalSkills} loaded, ${formatTokens(usage.skills.tokenCount)}`}
+              >
+                <div className="settings-detail-body">
+                  {usage.skills.skillFrontmatter?.map((s) => (
+                    <div key={s.name} className="settings-kv-row">
+                      <code>{s.name}</code>
+                      <span className="settings-kv-source">{s.source}</span>
+                      <span className="settings-kv-tokens">{formatTokens(s.tokens)}</span>
+                    </div>
+                  ))}
+                </div>
+              </AnimatedDetails>
+              {/* Also disabled for dormant sessions: a cached breakdown keeps
+                  the row visible after running→dormant (the panel is keyed by
+                  session id, not liveness), but the reload POST would 410 and
+                  the follow-up refetch could never run. */}
+              <button className="btn btn-sm" onClick={reloadSkills} disabled={busy || session.terminated || !session.running || reloadingSkills || loadingUsage}>
+                {reloadingSkills ? <IconLoader size={12} className="settings-card-spin" /> : 'Reload skills'}
+              </button>
+            </div>
+          )}
+          {/* The token detail rides the live-only detailed read; surface its
+              non-success states instead of silently rendering nothing. The
+              error hint is gated on usageError ALONE (plus !loadingUsage): a
+              failed refresh must stay visible even while stale rows render,
+              but not double up with the loading hint during a retry. */}
+          {!session.running && !session.terminated && (
+            <span className="hint">Resume the session to load the skill token breakdown.</span>
+          )}
+          {/* Shown for BOTH the initial load and a reload-triggered refetch —
+              gating it on !usage?.skills would leave a refresh spinning with
+              stale rows and no visible reason for the disabled button. */}
+          {session.running && loadingUsage && (
+            <span className="hint">Loading skill breakdown…</span>
+          )}
+          {session.running && usageError && !loadingUsage && (
+            <span className="hint">
+              {usage?.skills
+                ? "Couldn't refresh the skill token breakdown — showing last known numbers. "
+                : "Couldn't load the skill token breakdown — "}
+              <button type="button" className="settings-reset-link" onClick={loadDetailedUsage}>retry</button>
+            </span>
+          )}
+        </div>
+      </section>
       </div>
       )}
 
@@ -1744,47 +1790,56 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       )}
 
       {tab === 'plugins' && (
-      <>
-      <div className="settings-section">
-        <div className="settings-section-head">
-          <h4>Plugins</h4>
-          <button className="btn btn-sm" onClick={reloadPlugins} disabled={busy || session.terminated || reloadingPlugins}>
-            {reloadingPlugins ? <IconLoader size={12} className="settings-card-spin" /> : 'Reload plugins'}
-          </button>
+      <div className="settings-stack">
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <div className="settings-group-head-row">
+            <h4>Plugins</h4>
+            <div className="settings-section-head-actions">
+              <button className="btn btn-sm" onClick={reloadPlugins} disabled={busy || session.terminated || reloadingPlugins}>
+                {reloadingPlugins ? <IconLoader size={12} className="settings-card-spin" /> : 'Reload plugins'}
+              </button>
+            </div>
+          </div>
+          <span className="settings-group-desc">Skills and agents bundled by the plugins connected to this session.</span>
         </div>
-        {pluginGroups.length === 0 && !commands.length && (
-          <div className="settings-note">No plugins loaded</div>
-        )}
-        {pluginGroups.map(([key, group]) => (
-          <PluginCard
-            key={key}
-            name={key === '__builtin__' ? 'Built-in' : key}
-            plugin={group.plugin}
-            commands={group.commands}
-            agents={group.agents}
-            sessionId={session.id}
-            disabled={busy || session.terminated}
-          />
-        ))}
-      </div>
+        <div className="settings-group-body settings-mcp-group-body">
+          {pluginGroups.length === 0 && !commands.length && (
+            <div className="settings-note">No plugins loaded</div>
+          )}
+          {pluginGroups.map(([key, group]) => (
+            <PluginCard
+              key={key}
+              name={key === '__builtin__' ? 'Built-in' : key}
+              plugin={group.plugin}
+              commands={group.commands}
+              agents={group.agents}
+              sessionId={session.id}
+              disabled={busy || session.terminated}
+            />
+          ))}
+        </div>
+      </section>
 
-      <div className="settings-section">
-        <div className="settings-section-head">
-          <h4>Marketplace</h4>
-          <button className="btn btn-sm" onClick={() => setShowMarketplace(true)}>
-            Browse plugins
-          </button>
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <div className="settings-group-head-row">
+            <h4>Marketplace</h4>
+            <div className="settings-section-head-actions">
+              <button className="btn btn-sm" onClick={() => setShowMarketplace(true)}>
+                Browse plugins
+              </button>
+            </div>
+          </div>
+          <span className="settings-group-desc">Browse and install plugins from registered marketplaces.</span>
         </div>
-        <div className="settings-note">
-          Browse and install plugins from registered marketplaces.
-        </div>
+      </section>
       </div>
-      </>
       )}
 
       {tab === 'mcp' && (
-      <div className="settings-section">
-        <div className="settings-section-head">
+      <div className="settings-stack">
+        <div className="settings-tab-head">
           <h4>MCP servers</h4>
           <div className="settings-section-head-actions">
             <button
@@ -2122,16 +2177,11 @@ function SessionSkillPolicyCard({
   }, [kind, globalPolicy, currentAllowlist, skillNames])
 
   return (
-    <div className="settings-skill-policy-card">
-      <div className="settings-section-head compact">
-        <div>
-          <h4>Session skill policy</h4>
-          <span className="settings-note">
-            Override the global skill loading policy for just this session.
-            RAM-only — resets to inherit when the session is resumed or the server restarts.
-          </span>
-        </div>
-      </div>
+    // Plain wrapper — the Skills tab's .settings-group provides the card
+    // chrome (border/background/head) and the title now lives in its
+    // settings-group-head. The old .settings-skill-policy-card class stays
+    // reserved for the global settings modal's own card.
+    <div>
       <div className="settings-skill-mode-grid">
         {SESSION_SKILL_OPTIONS.map((option) => (
           <label

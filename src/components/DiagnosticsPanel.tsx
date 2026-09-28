@@ -26,27 +26,32 @@ export function DiagnosticsPanel({ sessionId }: { sessionId: string }) {
 
   if (loading && !data) {
     return (
-      <div className="settings-section">
-        <span className="settings-note">Loading diagnostics…</span>
-        <Skeleton rows={2} />
+      <div className="settings-stack">
+        <div>
+          <span className="settings-note">Loading diagnostics…</span>
+          <Skeleton rows={2} />
+        </div>
       </div>
     )
   }
   if (error && !data) {
-    return <div className="settings-section"><div className="settings-card-error">{error}</div></div>
+    return (
+      <div className="settings-stack">
+        <div className="settings-card-error">{error}</div>
+      </div>
+    )
   }
 
   const stderrLines = data?.stderrTail ?? []
 
   return (
-    <div className="settings-section">
-      <div className="settings-section-head">
+    <div className="settings-stack">
+      <div className="settings-tab-head">
         <h4>Diagnostics</h4>
         <button className="btn btn-sm" onClick={() => void refresh()}>Refresh</button>
       </div>
 
-      <div className="settings-stack">
-        <section className="settings-group">
+      <section className="settings-group">
           <div className="settings-group-head">
             <h4>CLI debugging</h4>
             <span className="settings-group-desc">Verbose logging from the CLI subprocess backing this session.</span>
@@ -95,7 +100,6 @@ export function DiagnosticsPanel({ sessionId }: { sessionId: string }) {
             </SettingsRow>
           </section>
         )}
-      </div>
 
       {mutationError && <div className="settings-card-error">{mutationError}</div>}
     </div>
