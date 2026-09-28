@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import * as useProfiles from '../hooks/useProfiles'
 import type { ProviderProfile } from '../types/config'
@@ -62,6 +62,18 @@ function mockUseProfiles() {
 }
 
 describe('ProfilesSettingsTab', () => {
+  /** The template dialog gates every "+ Add profile" flow. The dialog's own
+   *  buttons must be scoped with `within` — the cards behind the modal also
+   *  contain an "Add" button (the model-list row), which an unscoped query
+   *  would happily hit and make the test pass for the wrong reason. */
+  const openAddDialog = () => {
+    fireEvent.click(screen.getByRole('button', { name: '+ Add profile' }))
+    return screen.getByRole('dialog', { name: 'Add profile' })
+  }
+  const confirmAddDialog = () => {
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Add profile' })).getByRole('button', { name: 'Add' }))
+  }
+
   it('renders one card per profile with the active badge', () => {
     mockUseProfiles()
     render(<ProfilesSettingsTab />)
@@ -281,7 +293,10 @@ describe('ProfilesSettingsTab', () => {
       render(<ProfilesSettingsTab />)
       // Default state: the active card A is open, everything else folded.
       expect(screen.queryAllByText('ma').length).toBeGreaterThan(0)
-      fireEvent.click(screen.getByRole('button', { name: '+ Add profile' }))
+      // The template dialog gates the create; the preselected active profile
+      // is what the historic behavior used, so confirming unchanged works.
+      openAddDialog()
+      confirmAddDialog()
       const input = await vi.waitFor(() => {
         const el = document.querySelector<HTMLInputElement>('[data-profile-card="new"] [data-profile-name-input]')
         expect(el).not.toBeNull()
@@ -313,20 +328,24 @@ describe('ProfilesSettingsTab', () => {
       })
       render(<ProfilesSettingsTab />)
       const add = screen.getByRole('button', { name: '+ Add profile' })
-      fireEvent.click(add)
-      // Second click while the first POST is still pending — the in-flight
-      // guard must swallow it (jsdom dispatches clicks to disabled buttons,
-      // so the handler guard is the real protection; disabled is the affordance).
-      fireEvent.click(add)
+      // The template dialog gates the create; confirm starts it in flight and
+      // the dialog STAYS OPEN (busy) until the create settles.
+      openAddDialog()
+      confirmAddDialog()
+      const dialog = screen.getByRole('dialog', { name: 'Add profile' })
+      const confirm = within(dialog).getByRole('button', { name: 'Adding...' }) as HTMLButtonElement
+      expect(confirm.disabled).toBe(true)
+      // jsdom still dispatches clicks to disabled buttons — the handler guard
+      // is the real protection; disabled is the affordance.
+      fireEvent.click(confirm)
       expect(create).toHaveBeenCalledTimes(1)
       expect((add as HTMLButtonElement).disabled).toBe(true)
     })
 
-    it('lets an accordion toggle during the in-flight create win over the focus hand-off', async () => {
-      let resolveCreate!: (p: ProviderProfile) => void
-      const create = vi.fn(() => new Promise<ProviderProfile>((r) => { resolveCreate = r }))
+    it('keeps the dialog open with the error on a failed create, so the choice survives for a retry', async () => {
+      const create = vi.fn().mockRejectedValue(new Error('profile not found'))
       vi.mocked(useProfiles.useProfiles).mockReturnValue({
-        profiles: [...profiles, createdProfile],
+        profiles,
         activeProfileId: 'a',
         refresh: vi.fn(),
         create,
@@ -335,17 +354,46 @@ describe('ProfilesSettingsTab', () => {
         activate: vi.fn(),
       })
       render(<ProfilesSettingsTab />)
-      fireEvent.click(screen.getByRole('button', { name: '+ Add profile' }))
-      // The user picks card B while the POST is still pending.
-      fireEvent.click(screen.getByRole('button', { name: 'B' }))
-      await act(async () => {
-        resolveCreate(createdProfile)
-        await Promise.resolve()
+      openAddDialog()
+      confirmAddDialog()
+      // Failure: the dialog must still be there, the server error shown
+      // inside it — closing it would throw away the picked template.
+      await vi.waitFor(() => {
+        expect(within(screen.getByRole('dialog', { name: 'Add profile' })).getByText('profile not found')).toBeTruthy()
       })
-      // B stays expanded and the new card joins folded — the user's choice won.
-      expect(screen.queryAllByText('mb').length).toBeGreaterThan(0)
-      expect(document.querySelector('[data-profile-card="new"] [data-profile-name-input]')).toBeNull()
     })
+
+    it('does not show the previous attempt error when the dialog is reopened', async () => {
+      const create = vi.fn()
+        .mockRejectedValueOnce(new Error('stale error'))
+        .mockResolvedValue(undefined)
+      vi.mocked(useProfiles.useProfiles).mockReturnValue({
+        profiles,
+        activeProfileId: 'a',
+        refresh: vi.fn(),
+        create,
+        update: vi.fn(),
+        remove: vi.fn(),
+        activate: vi.fn(),
+      })
+      render(<ProfilesSettingsTab />)
+      // First attempt fails; the error shows in the dialog.
+      openAddDialog()
+      confirmAddDialog()
+      await vi.waitFor(() => {
+        expect(within(screen.getByRole('dialog', { name: 'Add profile' })).getByText('stale error')).toBeTruthy()
+      })
+      // Cancel, then reopen — the fresh dialog must not carry the old error.
+      fireEvent.click(within(screen.getByRole('dialog', { name: 'Add profile' })).getByRole('button', { name: 'Cancel' }))
+      const dialog = openAddDialog()
+      expect(within(dialog).queryByText('stale error')).toBeNull()
+    })
+
+    // NOTE: the pre-dialog test "accordion toggle during the in-flight create
+    // wins over the focus hand-off" was removed with the takeover machinery:
+    // the create only starts from the template dialog now, which holds a
+    // full-viewport busy modal (Escape/backdrop blocked) for the whole
+    // in-flight window, so nothing can toggle the accordion mid-create.
 
     it('does not fold every card when the created profile never lands (refresh failed)', async () => {
       // POST succeeds but the follow-up refresh never adds the card (its id is
@@ -362,7 +410,8 @@ describe('ProfilesSettingsTab', () => {
         activate: vi.fn(),
       })
       render(<ProfilesSettingsTab />)
-      fireEvent.click(screen.getByRole('button', { name: '+ Add profile' }))
+      openAddDialog()
+      confirmAddDialog()
       await vi.waitFor(() => {
         expect(create).toHaveBeenCalledTimes(1)
         expect(screen.queryAllByText('ma').length).toBeGreaterThan(0)
@@ -384,7 +433,8 @@ describe('ProfilesSettingsTab', () => {
           activate: vi.fn(),
         })
         const { rerender } = render(<ProfilesSettingsTab />)
-        fireEvent.click(screen.getByRole('button', { name: '+ Add profile' }))
+        openAddDialog()
+        confirmAddDialog()
         await act(async () => {
           resolveCreate(createdProfile)
           await Promise.resolve()
@@ -408,6 +458,75 @@ describe('ProfilesSettingsTab', () => {
       } finally {
         vi.useRealTimers()
       }
+    })
+  })
+
+  describe('add profile dialog', () => {
+    it('opens the template dialog on + Add profile, preselected to the active profile', () => {
+      mockUseProfiles()
+      render(<ProfilesSettingsTab />)
+      const dialog = openAddDialog()
+      // The active profile is preselected — the historic default — and Blank
+      // is offered alongside it.
+      expect((within(dialog).getByRole('radio', { name: /^A / }) as HTMLInputElement).checked).toBe(true)
+      expect((within(dialog).getByRole('radio', { name: /^Blank/ }) as HTMLInputElement).checked).toBe(false)
+    })
+
+    it('cancels without creating', () => {
+      const create = vi.fn()
+      vi.mocked(useProfiles.useProfiles).mockReturnValue({
+        profiles,
+        activeProfileId: 'a',
+        refresh: vi.fn(),
+        create,
+        update: vi.fn(),
+        remove: vi.fn(),
+        activate: vi.fn(),
+      })
+      render(<ProfilesSettingsTab />)
+      openAddDialog()
+      fireEvent.click(within(screen.getByRole('dialog', { name: 'Add profile' })).getByRole('button', { name: 'Cancel' }))
+      expect(screen.queryByRole('dialog', { name: 'Add profile' })).toBeNull()
+      expect(create).not.toHaveBeenCalled()
+    })
+
+    it('creates with template "blank" when Blank is picked and confirmed', async () => {
+      const create = vi.fn().mockResolvedValue(undefined)
+      vi.mocked(useProfiles.useProfiles).mockReturnValue({
+        profiles,
+        activeProfileId: 'a',
+        refresh: vi.fn(),
+        create,
+        update: vi.fn(),
+        remove: vi.fn(),
+        activate: vi.fn(),
+      })
+      render(<ProfilesSettingsTab />)
+      openAddDialog()
+      fireEvent.click(within(screen.getByRole('dialog', { name: 'Add profile' })).getByRole('radio', { name: /^Blank/ }))
+      confirmAddDialog()
+      await vi.waitFor(() => {
+        expect(create).toHaveBeenCalledWith({ name: 'New profile 3', template: 'blank' })
+      })
+    })
+
+    it('creates with the preselected active profile id when confirmed unchanged', async () => {
+      const create = vi.fn().mockResolvedValue(undefined)
+      vi.mocked(useProfiles.useProfiles).mockReturnValue({
+        profiles,
+        activeProfileId: 'a',
+        refresh: vi.fn(),
+        create,
+        update: vi.fn(),
+        remove: vi.fn(),
+        activate: vi.fn(),
+      })
+      render(<ProfilesSettingsTab />)
+      openAddDialog()
+      confirmAddDialog()
+      await vi.waitFor(() => {
+        expect(create).toHaveBeenCalledWith({ name: 'New profile 3', template: 'a' })
+      })
     })
   })
 

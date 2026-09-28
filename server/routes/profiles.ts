@@ -5,6 +5,7 @@
 import { Hono } from 'hono'
 import { HttpError } from '../errors.js'
 import { safeJson } from './index.js'
+import { PROFILE_TEMPLATE_ACTIVE, PROFILE_TEMPLATE_BLANK } from '../../shared/profile-templates.js'
 import {
   config as serverConfig, DEFAULT_PROFILE, loadConfig, queueConfigWrite,
 } from '../config.js'
@@ -53,30 +54,49 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
     if (!configDir) throw new HttpError(500, 'configDir not set')
     const body = await safeJson<{
       name?: string; authToken?: string; baseUrl?: string; modelList?: string[];
-      modelGroups?: unknown[]; recapModel?: string; commitMessageModel?: string
+      modelGroups?: unknown[]; recapModel?: string; commitMessageModel?: string;
+      template?: unknown
     }>(c.req)
     const name = typeof body.name === 'string' ? body.name.trim() : ''
     if (!name) throw new HttpError(400, 'name is required')
+    // Template selection. Absent / 'active' → the active profile (the historic
+    // behavior, also the UI's default pick); 'blank' → the built-in DEFAULT
+    // profile (official API + stock model list, not any user profile's
+    // customization); any other string → a profile id to copy from. The token
+    // is never part of the template — only the user can supply credentials.
     const active = serverConfig.profiles.find((p) => p.id === serverConfig.activeProfileId) ?? serverConfig.profiles[0]
+    let templateSource: typeof active = active
+    if (body.template !== undefined) {
+      if (typeof body.template !== 'string') throw new HttpError(400, 'template must be a string')
+      if (body.template === PROFILE_TEMPLATE_BLANK) {
+        templateSource = DEFAULT_PROFILE
+      } else if (body.template !== PROFILE_TEMPLATE_ACTIVE) {
+        // Live config profiles are already id-trimmed by the reader, so an
+        // exact match here is the same match GET /profiles resolves.
+        const hit = serverConfig.profiles.find((p) => p.id === body.template)
+        if (!hit) throw new HttpError(400, `template profile ${body.template} not found`)
+        templateSource = hit
+      }
+    }
     const id = 'p_' + Math.random().toString(36).slice(2, 10)
     const created: Record<string, unknown> = {
       id,
       name,
       authToken: typeof body.authToken === 'string' ? body.authToken.trim() : '',
       baseUrl: typeof body.baseUrl === 'string' && body.baseUrl.trim()
-        ? body.baseUrl.trim().replace(/\/+$/, '') : active?.baseUrl ?? DEFAULT_PROFILE.baseUrl,
-      modelList: normalizeModelList(body.modelList, active?.modelList ?? DEFAULT_PROFILE.modelList),
-      modelGroups: Array.isArray(body.modelGroups) ? body.modelGroups : active?.modelGroups ?? DEFAULT_PROFILE.modelGroups,
+        ? body.baseUrl.trim().replace(/\/+$/, '') : templateSource?.baseUrl ?? DEFAULT_PROFILE.baseUrl,
+      modelList: normalizeModelList(body.modelList, templateSource?.modelList ?? DEFAULT_PROFILE.modelList),
+      modelGroups: Array.isArray(body.modelGroups) ? body.modelGroups : templateSource?.modelGroups ?? DEFAULT_PROFILE.modelGroups,
       // An explicitly-sent value wins on create too — including '' and null
       // ("unset", the same rule PUT /profiles/:id applies, since the settings
       // tab sends `value || null`). Only an ABSENT field templates from the
-      // active profile.
+      // resolved template source.
       recapModel: typeof body.recapModel === 'string' || body.recapModel === null
         ? (typeof body.recapModel === 'string' ? body.recapModel.trim() : '')
-        : active?.recapModel ?? DEFAULT_PROFILE.recapModel,
+        : templateSource?.recapModel ?? DEFAULT_PROFILE.recapModel,
       commitMessageModel: typeof body.commitMessageModel === 'string' || body.commitMessageModel === null
         ? (typeof body.commitMessageModel === 'string' ? body.commitMessageModel.trim() : '')
-        : active?.commitMessageModel ?? DEFAULT_PROFILE.commitMessageModel,
+        : templateSource?.commitMessageModel ?? DEFAULT_PROFILE.commitMessageModel,
     }
     await queueConfigWrite(configDir, (existing) => {
       const profiles = Array.isArray(existing.profiles) ? existing.profiles : []

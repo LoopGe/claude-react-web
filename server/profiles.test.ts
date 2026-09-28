@@ -1,9 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ModelGroupConfig, ProviderProfile } from './config.js'
 import {
   coerceModelGroups, coerceProfileEntries, coerceProfiles, findProfile, maskToken,
   normalizeModelList, profileDefaultModel, profileFromLegacyFields, resolveActiveProfile,
 } from './profiles.js'
+
+// coerceProfileEntries warns (never throws) on operator-facing config
+// problems; capture the logger so those warnings are assertable.
+const logWarn = vi.hoisted(() => vi.fn())
+vi.mock('./log.js', () => ({
+  createLogger: () => ({ error: vi.fn(), warn: logWarn, info: vi.fn(), debug: vi.fn(), trace: vi.fn() }),
+}))
 
 const FALLBACK: ProviderProfile = {
   id: 'default', name: 'Default', authToken: '',
@@ -56,6 +63,27 @@ describe('coerceProfileEntries', () => {
   it('reports the raw index of each surviving entry', () => {
     const entries = coerceProfileEntries([raw('a', 'A'), { garbage: true }, raw('b', 'B')], FALLBACK)
     expect(entries.map((e) => [e.profile.id, e.index])).toEqual([['a', 0], ['b', 2]])
+  })
+
+  it('keeps reserved-id entries and warns once per id per process, not per coercion', () => {
+    // Only a hand-edited config.json can produce id 'blank' / 'active'
+    // (generated ids are 'default' / 'p_*'). The entry must SURVIVE coercion —
+    // dropping it would delete the user's profile — but on POST /profiles the
+    // template keyword wins over the id, so the operator needs a warning.
+    // coerceProfileEntries also runs per PUT /profiles/:id (index resolution),
+    // so the warn is deduped per id per process; counts are asserted
+    // RELATIVELY (before vs after repeated coercion) because the module-level
+    // dedupe set is shared across this file's tests.
+    const reservedWarns = () => logWarn.mock.calls.filter((c) => /reserved/.test(String(c[0]))).length
+    logWarn.mockClear()
+    const raws = [raw('blank', 'Blank'), raw('active', 'Active')]
+    const entries = coerceProfileEntries(raws, FALLBACK)
+    expect(entries.map((e) => e.profile.id)).toEqual(['blank', 'active'])
+    const afterFirst = reservedWarns()
+    expect([0, 2]).toContain(afterFirst) // both ids fresh → 2; pre-warmed → 0
+    coerceProfileEntries(raws, FALLBACK)
+    coerceProfileEntries(raws, FALLBACK)
+    expect(reservedWarns()).toBe(afterFirst)
   })
 
   it('reports the LAST index for a duplicate id, matching the dedup', () => {

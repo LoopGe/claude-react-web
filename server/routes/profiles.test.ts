@@ -345,3 +345,159 @@ describe('profiles router', () => {
     }
   })
 })
+
+describe('profiles router: POST /profiles template', () => {
+  /** Seed a config.json with the given profiles and load it, returning the
+   *  app under test. The POST route reads `active` off the LIVE config, so
+   *  every template test needs loadConfig — same reason the blank-modelList
+   *  sibling above loads explicitly. */
+  async function seed(profiles: unknown[], activeProfileId = 'default') {
+    const { promises: fs } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const dir = await fs.mkdtemp(join(tmpdir(), 'crw-profiles-template-'))
+    await fs.writeFile(join(dir, 'config.json'), JSON.stringify({ profiles, activeProfileId }))
+    await loadConfig(dir)
+    const app = appWith(dir)
+    const readDisk = async () =>
+      JSON.parse(await fs.readFile(join(dir, 'config.json'), 'utf8')) as {
+        profiles: Array<Record<string, unknown>>
+      }
+    const cleanup = () => fs.rm(dir, { recursive: true, force: true })
+    return { app, readDisk, cleanup }
+  }
+
+  const ACTIVE = {
+    id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
+    modelList: ['active/model-a'], modelGroups: [],
+    recapModel: 'active-recap', commitMessageModel: 'active-commit',
+  }
+
+  it('copies non-credential fields from the named profile when template is a profile id', async () => {
+    const OTHER = {
+      id: 'p_other', name: 'Other', authToken: 'sk-other', baseUrl: 'https://other.example',
+      modelList: ['other/model-1', 'other/model-2'],
+      modelGroups: [{ id: 'g1', name: 'Group 1', main: 'opus', opus: 'other/model-1' }],
+      recapModel: 'other-recap', commitMessageModel: 'other-commit',
+    }
+    const { app, readDisk, cleanup } = await seed([ACTIVE, OTHER])
+    try {
+      const res = await app.request('/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Third', template: 'p_other' }),
+      })
+      expect(res.status).toBe(201)
+
+      const onDisk = await readDisk()
+      const created = onDisk.profiles.find((p) => p.name === 'Third')
+      expect(created).toBeDefined()
+      // Everything the template carries except its credentials.
+      expect(created?.baseUrl).toBe('https://other.example')
+      expect(created?.modelList).toEqual(['other/model-1', 'other/model-2'])
+      expect(created?.modelGroups).toEqual(OTHER.modelGroups)
+      expect(created?.recapModel).toBe('other-recap')
+      expect(created?.commitMessageModel).toBe('other-commit')
+      // The token is NEVER templated — the user must type one.
+      expect(created?.authToken).toBe('')
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it('templates from the active profile when template is "active" or absent', async () => {
+    const { app, readDisk, cleanup } = await seed([ACTIVE])
+    try {
+      for (const body of [{ name: 'ViaActive', template: 'active' }, { name: 'ViaAbsent' }]) {
+        const res = await app.request('/profiles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        expect(res.status).toBe(201)
+      }
+
+      const onDisk = await readDisk()
+      for (const name of ['ViaActive', 'ViaAbsent']) {
+        const created = onDisk.profiles.find((p) => p.name === name)
+        expect(created?.baseUrl, name).toBe('https://gw.example')
+        expect(created?.modelList, name).toEqual(['active/model-a'])
+        expect(created?.recapModel, name).toBe('active-recap')
+      }
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it('creates a blank profile from built-in defaults when template is "blank"', async () => {
+    const { app, readDisk, cleanup } = await seed([ACTIVE])
+    try {
+      const res = await app.request('/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Fresh', template: 'blank' }),
+      })
+      expect(res.status).toBe(201)
+
+      const onDisk = await readDisk()
+      const created = onDisk.profiles.find((p) => p.name === 'Fresh')
+      // Built-in defaults — NOT the active profile's gateway/model set.
+      expect(created?.baseUrl).toBe('https://api.anthropic.com')
+      expect(created?.modelList).toEqual([
+        'anthropic/claude-sonnet-4-20250514',
+        'claude-opus-4-20250514',
+        'claude-haiku-3-5-20241022',
+      ])
+      expect(created?.modelGroups).toEqual([])
+      expect(created?.recapModel).toBe('')
+      expect(created?.commitMessageModel).toBe('')
+      expect(created?.authToken).toBe('')
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it('lets explicitly-sent fields win over the chosen template', async () => {
+    // Pre-existing rule: an explicitly-sent field beats templating (the
+    // recap/commit tests above pin it for the active path). The template
+    // switch must not change it for blank either.
+    const { app, readDisk, cleanup } = await seed([ACTIVE])
+    try {
+      const res = await app.request('/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Mixed', template: 'blank', modelList: ['custom/model'] }),
+      })
+      expect(res.status).toBe(201)
+
+      const onDisk = await readDisk()
+      const created = onDisk.profiles.find((p) => p.name === 'Mixed')
+      expect(created?.modelList).toEqual(['custom/model'])
+      // The untouched fields still come from the blank template.
+      expect(created?.baseUrl).toBe('https://api.anthropic.com')
+    } finally {
+      await cleanup()
+    }
+  })
+
+  it('rejects an unknown template profile id and a non-string template with 400', async () => {
+    const { app, readDisk, cleanup } = await seed([ACTIVE])
+    try {
+      for (const template of ['p_nope', 42, true, { id: 'p_other' }]) {
+        const res = await app.request('/profiles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Bad', template }),
+        })
+        expect(res.status, `template=${JSON.stringify(template)}`).toBe(400)
+        expect(((await res.json()) as { error: string }).error).toBeTruthy()
+      }
+
+      // A rejected create must not have written anything.
+      const onDisk = await readDisk()
+      expect(onDisk.profiles).toHaveLength(1)
+    } finally {
+      await cleanup()
+    }
+  })
+})

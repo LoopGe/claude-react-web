@@ -28,6 +28,7 @@ import { randomId } from '../utils/uuid'
 import { IconArrowUp, IconArrowDown, IconChevronDown, IconChevronRight, IconCheck, IconX } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { StatusBadge } from './StatusBadge'
+import { ProfileCreateDialog } from './ProfileCreateDialog'
 import { formatError } from '../utils/format-error'
 import { cx } from '../utils/cx'
 
@@ -118,15 +119,10 @@ export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObj
   // 10s window closes and the hand-off is dropped without a trace — a much
   // later refresh then joins the card folded instead of yanking the UI.
   const [pendingFocusId, setPendingFocusId] = useState<string | null>(null)
-  // In-flight guard: a second click before the POST resolves would create a
+  // In-flight guard: a second confirm before the POST resolves would create a
   // duplicate profile (the server has no name-uniqueness check).
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
-  // Set when the user toggles the accordion. A toggle DURING an in-flight
-  // create must outlive that render, so it rides a ref the create handler
-  // consumes when it resolves (refs here are only read in handlers, never
-  // during render).
-  const userTookOverRef = useRef(false)
   // Handle of the hand-off expiry timer, cleared on unmount so the lifetime
   // is explicit.
   const handOffTimerRef = useRef<number | null>(null)
@@ -144,8 +140,7 @@ export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObj
       : expandedId
 
   const toggleExpand = (id: string) => {
-    userTookOverRef.current = true
-    setPendingFocusId(null) // the user took over — drop any armed focus hand-off
+    setPendingFocusId(null) // a manual toggle drops any armed focus hand-off
     setExpandedId(effectiveExpanded === id ? null : id)
   }
 
@@ -155,16 +150,21 @@ export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObj
     ? profiles.find((p) => p.id === pendingFocusId)
     : undefined
 
-  const handleAddProfile = async () => {
+  // Whether the "+ Add profile" template dialog is open. The dialog asks
+  // where the new profile starts from (Blank = built-in defaults, or an
+  // existing profile); the create itself runs on confirm.
+  const [showCreateDialog, setShowCreateDialog] = useState(false)
+
+  const handleCreateFromTemplate = async (template: string) => {
     if (creating) return
     setCreating(true)
     setCreateError(null)
-    userTookOverRef.current = false
     try {
-      const created = await create({ name: `New profile ${profiles.length + 1}` })
-      // The user toggled the accordion while the POST was in flight — their
-      // choice wins; the new card joins folded like it always did.
-      if (!created || userTookOverRef.current) return
+      const created = await create({ name: `New profile ${profiles.length + 1}`, template })
+      // Success closes the dialog; failure keeps it open with the error so
+      // the picked template survives for a retry.
+      setShowCreateDialog(false)
+      if (!created) return
       setPendingFocusId(created.id)
       // The hand-off must not survive indefinitely: if the follow-up refresh
       // transiently failed, a much later refresh landing the card would yank
@@ -180,7 +180,6 @@ export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObj
       setCreateError(formatError(e))
     } finally {
       setCreating(false)
-      userTookOverRef.current = false
     }
   }
 
@@ -219,12 +218,22 @@ export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObj
           {profiles.length} profile{profiles.length !== 1 ? 's' : ''}. The active profile supplies
           credentials + model set for new sessions.
         </span>
-        <button className="btn" onClick={() => void handleAddProfile()} disabled={creating}>
+        <button
+          className="btn"
+          onClick={() => { setCreateError(null); setShowCreateDialog(true) }}
+          disabled={creating}
+        >
           {creating ? 'Adding...' : '+ Add profile'}
         </button>
       </div>
-      {createError && (
-        <div className="settings-card-error">{createError}</div>
+      {showCreateDialog && (
+        <ProfileCreateDialog
+          profiles={profiles}
+          busy={creating}
+          error={createError ?? undefined}
+          onConfirm={(template) => void handleCreateFromTemplate(template)}
+          onCancel={() => { setCreateError(null); setShowCreateDialog(false) }}
+        />
       )}
       {profiles.length === 0 && (
         <div className="settings-profile-empty">

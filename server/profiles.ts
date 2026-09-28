@@ -3,9 +3,15 @@
 // only imports here from config.ts are TYPE-only, erased at runtime).
 
 import type { ModelGroupConfig, ProviderProfile } from './config.js'
+import { isReservedProfileTemplateId } from '../shared/profile-templates.js'
 import { createLogger } from './log.js'
 
 const log = createLogger('profiles')
+
+// Reserved POST /profiles template keywords already warned about this process.
+// coerceProfileEntries also runs per PUT (index resolution), so without this
+// guard one hand-edited reserved id would re-emit its line on every save.
+const warnedReservedIds = new Set<string>()
 
 /** The six legacy top-level credential/model fields migrated into profiles[0]. */
 export interface LegacyProfileFields {
@@ -150,6 +156,15 @@ export function coerceProfileEntries(raw: unknown, fallback: ProviderProfile): C
     if (!id || !name) {
       log.warn('dropping profile with a missing/blank id or name')
       continue
+    }
+    // POST /profiles reserves 'blank' / 'active' as template keywords, so a
+    // profile carrying one as its id (only possible via a hand-edited
+    // config.json — generated ids are 'default' / 'p_*') can never be
+    // selected as a template by that name: the keyword wins. The entry stays
+    // usable everywhere else, but the operator needs to know at load time.
+    if (isReservedProfileTemplateId(id) && !warnedReservedIds.has(id)) {
+      warnedReservedIds.add(id)
+      log.warn(`profile id "${id}" collides with a reserved POST /profiles template keyword; that keyword creates a template, not this profile`)
     }
     const baseUrl = typeof e.baseUrl === 'string' && e.baseUrl.trim()
       ? e.baseUrl.trim().replace(/\/+$/, '')
