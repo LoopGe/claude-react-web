@@ -1613,6 +1613,10 @@ button.tool-group-failed-jump:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* Wrap + gap so a wide right side (e.g. the skills stats chips) drops to a
+     second row on narrow modals instead of being squeezed to its min-width. */
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 .settings-apply-btn { align-self: flex-start; }
 .settings-note {
@@ -1623,10 +1627,29 @@ button.tool-group-failed-jump:focus-visible {
 .settings-detail { margin-top: var(--space-1-5); }
 /* Inside a .settings-group-body the flex gap already spaces siblings — the
    margins above were tuned for the old flat .settings-section flow and
-   double up on move (same reset pattern as .settings-mcp-group-body). */
+   double up on move (same reset pattern as .settings-mcp-group-body). All
+   four targets are direct children of a group body in their only consumer;
+   the child combinator keeps the reset away from any future nested reuse
+   (SettingsPanel nests .settings-skill-allowlist inside a plain wrapper,
+   where the margin is still the only spacing). */
 .settings-group-body > .settings-detail,
-.settings-group-body > .settings-skill-reload-row {
+.settings-group-body > .settings-skill-reload-row,
+.settings-group-body > .settings-skill-allowlist,
+.settings-group-body > .settings-profile-empty {
   margin-top: 0;
+}
+/* The skills import group carries the old drag-drop affordance on the group
+   card itself (it used to be a dashed import card): dashed border at rest
+   so the drop target is visible before a drag starts, accent border + tinted
+   body while dragging. */
+.settings-group.settings-skill-import-group {
+  border-style: dashed;
+}
+.settings-group.settings-skill-import-group.dragging {
+  border-color: var(--accent);
+}
+.settings-group.settings-skill-import-group.dragging .settings-group-body {
+  background: var(--btn-hover-bg);
 }
 .settings-detail > summary {
   cursor: pointer;
@@ -1843,9 +1866,6 @@ button.tool-group-failed-jump:focus-visible {
   font-size: var(--fs-sm);
   color: var(--danger-text);
   background: var(--bg);
-}
-.settings-mcp-head {
-  margin-bottom: var(--space-2);
 }
 .settings-mcp-count {
   margin-top: 0;
@@ -2713,11 +2733,10 @@ button.tool-group-failed-jump:focus-visible {
 
 /* ── "Open on phone" settings tab (QR access) ────────────────────── */
 
-.share-tab {
-  padding: var(--space-1) var(--space-0-5);
-}
+/* Share tab — always rendered inside a .settings-group-body (the flex gap
+   owns the rhythm), so these carry no margins of their own. */
 .share-tab-hint {
-  margin: 0 0 var(--space-2);
+  margin: 0;
   color: var(--fg-muted);
   font-size: var(--fs-base);
   line-height: 1.5;
@@ -2725,7 +2744,6 @@ button.tool-group-failed-jump:focus-visible {
 .share-tab-qr {
   display: flex;
   justify-content: center;
-  margin: var(--space-3) 0 var(--space-4);
 }
 /* White quiet-zone box so the code scans in dark theme too. */
 .share-tab-qr-img {
@@ -2749,7 +2767,6 @@ button.tool-group-failed-jump:focus-visible {
   gap: var(--space-1);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
-  margin-bottom: var(--space-3);
   max-width: 240px;
 }
 .share-tab-url-row {
@@ -2772,51 +2789,15 @@ button.tool-group-failed-jump:focus-visible {
   color: var(--code-fg);
 }
 .share-tab-warn {
-  margin: var(--space-3) 0 0;
+  margin: 0;
   color: var(--warn-text, var(--fg-muted));
   font-size: var(--fs-sm);
   line-height: 1.5;
 }
 
-/* Skills management in global settings */
-.settings-skills-tab {
-  display: grid;
-  gap: var(--space-3);
-}
-.settings-skill-hero,
-.settings-skill-policy-card,
-.settings-skill-import-card {
-  border: 1px solid var(--border);
-  background: var(--bg-elev);
-  border-radius: var(--radius-xl);
-  padding: var(--space-3);
-}
-.settings-skill-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3-5);
-}
-.settings-skill-kicker {
-  color: var(--accent-text);
-  font-size: var(--fs-xs);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  margin-bottom: var(--space-1);
-}
-.settings-skill-hero h3,
-.settings-skill-import-main h4,
-.settings-skill-policy-card h4 {
-  margin: 0;
-}
-.settings-skill-hero p,
-.settings-skill-import-main p {
-  margin: var(--space-1) 0 0;
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
-  line-height: 1.45;
-}
+/* Skills management in global settings — the tab renders as settings-groups
+   now, so only the tab-head stats chips and the mode/allowlist/import
+   internals keep their own rules. */
 .settings-skill-stats {
   display: flex;
   flex-wrap: wrap;
@@ -2837,9 +2818,6 @@ button.tool-group-failed-jump:focus-visible {
 }
 .settings-skill-stats strong { color: var(--fg); }
 .settings-skill-stats .warn { color: var(--danger-text); }
-.settings-section-head.compact {
-  margin-bottom: var(--space-2-5);
-}
 .settings-skill-mode-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3006,32 +2984,6 @@ input[type="checkbox"]:disabled {
   cursor: not-allowed;
 }
 
-.settings-skill-import-card {
-  display: grid;
-  gap: var(--space-2-5);
-  border-style: dashed;
-}
-.settings-skill-import-card.dragging {
-  border-color: var(--accent);
-  background: var(--btn-hover-bg);
-}
-.settings-skill-import-main {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2-5);
-}
-.settings-skill-import-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-lg);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent-text);
-  background: var(--code-bg);
-  border: 1px solid var(--border);
-  flex: 0 0 auto;
-}
 .settings-skill-import-controls {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr) auto;
@@ -3255,9 +3207,6 @@ input[type="checkbox"]:disabled {
   .settings-skill-import-controls,
   .settings-skill-path-row {
     grid-template-columns: 1fr;
-  }
-  .settings-skill-hero {
-    flex-direction: column;
   }
   .settings-skill-stats {
     justify-content: flex-start;

@@ -212,20 +212,7 @@ export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObj
   }, [pendingProfile])
 
   return (
-    <div className="settings-profiles-tab">
-      <div className="settings-section-head">
-        <span className="settings-note">
-          {profiles.length} profile{profiles.length !== 1 ? 's' : ''}. The active profile supplies
-          credentials + model set for new sessions.
-        </span>
-        <button
-          className="btn"
-          onClick={() => { setCreateError(null); setShowCreateDialog(true) }}
-          disabled={creating}
-        >
-          {creating ? 'Adding...' : '+ Add profile'}
-        </button>
-      </div>
+    <div className="settings-stack">
       {showCreateDialog && (
         <ProfileCreateDialog
           profiles={profiles}
@@ -235,24 +222,44 @@ export function ProfilesSettingsTab({ saveAllRef }: { saveAllRef?: MutableRefObj
           onCancel={() => { setCreateError(null); setShowCreateDialog(false) }}
         />
       )}
-      {profiles.length === 0 && (
-        <div className="settings-profile-empty">
-          No profiles yet. Add one to get started.
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <div className="settings-group-head-row">
+            <h4>Profiles</h4>
+            <button
+              className="btn"
+              onClick={() => { setCreateError(null); setShowCreateDialog(true) }}
+              disabled={creating}
+            >
+              {creating ? 'Adding...' : '+ Add profile'}
+            </button>
+          </div>
+          <span className="settings-group-desc">
+            {profiles.length} profile{profiles.length !== 1 ? 's' : ''}. The active profile supplies
+            credentials + model set for new sessions.
+          </span>
         </div>
-      )}
-      {profiles.map((p) => (
-        <ProfileCard
-          key={p.id}
-          profile={p}
-          canDelete={profiles.length > 1}
-          expanded={effectiveExpanded === p.id}
-          onToggleExpand={() => toggleExpand(p.id)}
-          onSave={(updates) => update(p.id, updates)}
-          onDelete={() => remove(p.id)}
-          onActivate={() => activate(p.id)}
-          onRegisterDirtySave={(save) => registerDirtySave(p.id, save)}
-        />
-      ))}
+        <div className="settings-group-body settings-mcp-group-body">
+          {profiles.length === 0 && (
+            <div className="settings-profile-empty">
+              No profiles yet. Add one to get started.
+            </div>
+          )}
+          {profiles.map((p) => (
+            <ProfileCard
+              key={p.id}
+              profile={p}
+              canDelete={profiles.length > 1}
+              expanded={effectiveExpanded === p.id}
+              onToggleExpand={() => toggleExpand(p.id)}
+              onSave={(updates) => update(p.id, updates)}
+              onDelete={() => remove(p.id)}
+              onActivate={() => activate(p.id)}
+              onRegisterDirtySave={(save) => registerDirtySave(p.id, save)}
+            />
+          ))}
+        </div>
+      </section>
     </div>
   )
 }

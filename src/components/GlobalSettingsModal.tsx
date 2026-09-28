@@ -6,7 +6,7 @@ import { api } from '../hooks/useApi'
 import { getHostCapabilities } from '../host-capabilities'
 import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
-import { IconX, IconCheck, IconChevronDown, IconFolder, IconDownload, IconRefresh, IconFileText, IconSparkles, IconTerminal } from './icons/ToolIcons'
+import { IconX, IconCheck, IconChevronDown, IconFolder, IconRefresh, IconFileText, IconSparkles, IconTerminal } from './icons/ToolIcons'
 import { EmptyState } from './EmptyState'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
@@ -1155,7 +1155,7 @@ function SkillsTab({
     return nested.flat()
   }
 
-  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+  const handleDrop = (event: React.DragEvent<HTMLElement>) => {
     event.preventDefault()
     setDragActive(false)
     void filesFromDrop(event.dataTransfer).then((files) => importBrowserFiles(files))
@@ -1168,13 +1168,9 @@ function SkillsTab({
   ]
 
   return (
-    <div className="settings-skills-tab">
-      <div className="settings-skill-hero">
-        <div>
-          <div className="settings-skill-kicker">Skills</div>
-          <h3>Manage reusable instructions</h3>
-          <p>User skills live in your home profile. Project skills live under this workspace and can be shared with the repo.</p>
-        </div>
+    <div className="settings-stack">
+      <div className="settings-tab-head">
+        <h4>Skills</h4>
         <div className="settings-skill-stats">
           <span><strong>{skills.length}</strong> total</span>
           <span><strong>{projectSkills.length}</strong> project</span>
@@ -1183,117 +1179,125 @@ function SkillsTab({
         </div>
       </div>
 
-      <div className="settings-skill-policy-card">
-        <div className="settings-section-head compact">
-          <div>
-            <h4>Session Skill Loading</h4>
-            <span className="settings-note">Applies when a session starts. File edits hot-reload active sessions when the SDK supports it.</span>
-          </div>
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Session Skill Loading</h4>
+          <span className="settings-group-desc">Applies when a session starts. File edits hot-reload active sessions when the SDK supports it.</span>
         </div>
-        <div className="settings-skill-mode-grid">
-          {loadModeOptions.map((option) => (
-            <label key={option.mode} className={`settings-skill-mode-card${skillLoadMode === option.mode ? ' active' : ''}`}>
-              <input type="radio" checked={skillLoadMode === option.mode} onChange={() => onSkillLoadModeChange(option.mode)} />
-              <span>
-                <strong>{option.title}</strong>
-                <small>{option.desc}</small>
-              </span>
-            </label>
-          ))}
-        </div>
-        {skillLoadMode === 'allowlist' && (
-          <div className="settings-skill-allowlist">
-            {skillNames.length === 0 && <EmptyState icon={<IconSparkles size={16} />} title="No skills discovered yet" />}
-            {skillNames.map((name) => (
-              <label key={name} className={`settings-skill-check${enabledSkills.includes(name) ? ' active' : ''}`}>
-                <input type="checkbox" checked={enabledSkills.includes(name)} onChange={() => toggleEnabled(name)} />
-                <span>{name}</span>
+        <div className="settings-group-body">
+          <div className="settings-skill-mode-grid">
+            {loadModeOptions.map((option) => (
+              <label key={option.mode} className={`settings-skill-mode-card${skillLoadMode === option.mode ? ' active' : ''}`}>
+                <input type="radio" checked={skillLoadMode === option.mode} onChange={() => onSkillLoadModeChange(option.mode)} />
+                <span>
+                  <strong>{option.title}</strong>
+                  <small>{option.desc}</small>
+                </span>
               </label>
             ))}
           </div>
-        )}
-      </div>
+          {skillLoadMode === 'allowlist' && (
+            <div className="settings-skill-allowlist">
+              {skillNames.length === 0 && <EmptyState icon={<IconSparkles size={16} />} title="No skills discovered yet" />}
+              {skillNames.map((name) => (
+                <label key={name} className={`settings-skill-check${enabledSkills.includes(name) ? ' active' : ''}`}>
+                  <input type="checkbox" checked={enabledSkills.includes(name)} onChange={() => toggleEnabled(name)} />
+                  <span>{name}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
 
-      <div
-        className={`settings-skill-import-card${dragActive ? ' dragging' : ''}`}
+      <section
+        className={`settings-group settings-skill-import-group${dragActive ? ' dragging' : ''}`}
         onDragEnter={(event) => { event.preventDefault(); setDragActive(true) }}
         onDragOver={(event) => event.preventDefault()}
         onDragLeave={(event) => { if (event.currentTarget === event.target) setDragActive(false) }}
         onDrop={handleDrop}
       >
-        <div className="settings-skill-import-main">
-          <span className="settings-skill-import-icon"><IconDownload size={16} /></span>
-          <div>
-            <h4>Install from folder</h4>
-            <p>Choose a server-side directory or drag a local folder containing <code>SKILL.md</code>.</p>
+        <div className="settings-group-head">
+          <h4>Install from folder</h4>
+          <span className="settings-group-desc">Choose a server-side directory or drag a local folder containing <code>SKILL.md</code> onto this card.</span>
+        </div>
+        <div className="settings-group-body">
+          <div className="settings-skill-import-controls">
+            <div className="settings-scope-toggle">
+              <button
+                type="button"
+                className={`settings-scope-btn${importScope === 'project' ? ' active' : ''}`}
+                onClick={() => setImportScope('project')}
+              >
+                Project
+              </button>
+              <button
+                type="button"
+                className={`settings-scope-btn${importScope === 'user' ? ' active' : ''}`}
+                onClick={() => setImportScope('user')}
+              >
+                User
+              </button>
+            </div>
+            <input className="input" placeholder="Optional import name" aria-label="Import name" value={importName} onChange={(e) => setImportName(e.target.value)} />
+            <label className="settings-skill-overwrite"><input type="checkbox" checked={overwriteImport} onChange={(e) => setOverwriteImport(e.target.checked)} /> Replace existing</label>
+          </div>
+          <div className="settings-skill-path-row">
+            <input className="input" placeholder="Absolute server path to a skill folder" aria-label="Server path to skill folder" value={importPath} onChange={(e) => setImportPath(e.target.value)} spellCheck={false} />
+            <button className="btn" onClick={() => setShowImportPicker(true)} disabled={importingSkill}><IconFolder size={14} /> Browse</button>
+            <button className="btn btn-primary" onClick={() => void importFromServerPath()} disabled={importingSkill || !importPath.trim()}>
+              {importingSkill ? 'Installing…' : 'Install'}
+            </button>
+          </div>
+          <div className="settings-actions-row settings-skill-import-actions">
+            <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={importingSkill}><IconFileText size={14} /> Select Local Folder</button>
+            <span className="settings-note">Directory upload works in Chromium-based browsers; drag-and-drop uses the same importer.</span>
+            <input
+              ref={fileInputRef}
+              className="settings-skill-file-input"
+              type="file"
+              multiple
+              onChange={(event) => void importBrowserFiles(Array.from(event.currentTarget.files ?? []))}
+              {...directoryInputProps}
+            />
           </div>
         </div>
-        <div className="settings-skill-import-controls">
-          <div className="settings-scope-toggle">
-            <button
-              type="button"
-              className={`settings-scope-btn${importScope === 'project' ? ' active' : ''}`}
-              onClick={() => setImportScope('project')}
-            >
-              Project
-            </button>
-            <button
-              type="button"
-              className={`settings-scope-btn${importScope === 'user' ? ' active' : ''}`}
-              onClick={() => setImportScope('user')}
-            >
-              User
-            </button>
+      </section>
+
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <div className="settings-group-head-row">
+            <h4>Installed Skills</h4>
+            <button className="btn" onClick={() => void refresh()} disabled={loading}><IconRefresh size={14} /> {loading ? 'Refreshing…' : 'Refresh'}</button>
           </div>
-          <input className="input" placeholder="Optional import name" aria-label="Import name" value={importName} onChange={(e) => setImportName(e.target.value)} />
-          <label className="settings-skill-overwrite"><input type="checkbox" checked={overwriteImport} onChange={(e) => setOverwriteImport(e.target.checked)} /> Replace existing</label>
+          <span className="settings-group-desc">
+            {skills.length} filesystem skill{skills.length !== 1 ? 's' : ''}. User skills live in your
+            home profile; project skills live under this workspace and can be shared with the repo.
+          </span>
         </div>
-        <div className="settings-skill-path-row">
-          <input className="input" placeholder="Absolute server path to a skill folder" aria-label="Server path to skill folder" value={importPath} onChange={(e) => setImportPath(e.target.value)} spellCheck={false} />
-          <button className="btn" onClick={() => setShowImportPicker(true)} disabled={importingSkill}><IconFolder size={14} /> Browse</button>
-          <button className="btn btn-primary" onClick={() => void importFromServerPath()} disabled={importingSkill || !importPath.trim()}>
-            {importingSkill ? 'Installing…' : 'Install'}
-          </button>
+        <div className="settings-group-body">
+          {error && <div className="settings-error">{error}</div>}
+          {notice && <div className="settings-success">{notice}</div>}
+          <div className="settings-skill-grid">
+            <div className="settings-skill-list">
+              {skills.length === 0 && <EmptyState icon={<IconSparkles size={16} />} title="Create or import a project/user skill to get started" />}
+              {skills.map((skill) => (
+                <button
+                  key={`${skill.scope}:${skill.name}`}
+                  className={`settings-skill-row${previewPresence.value?.scope === skill.scope && previewPresence.value?.name === skill.name ? ' active' : ''}${!skill.valid ? ' invalid' : ''}`}
+                  onClick={() => void openSkill(skill)}
+                >
+                  <span className="settings-skill-name">{skill.name}</span>
+                  <span className="settings-card-badge">{skill.scope}</span>
+                  {!skill.valid && <span className="settings-card-badge warn">invalid</span>}
+                  <span className="settings-skill-desc">{skill.description || skill.errors[0] || 'No description'}</span>
+                  <span className="settings-skill-path-mini">{skill.relativePath || skill.path}</span>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
-        <div className="settings-actions-row settings-skill-import-actions">
-          <button className="btn" onClick={() => fileInputRef.current?.click()} disabled={importingSkill}><IconFileText size={14} /> Select Local Folder</button>
-          <span className="settings-note">Directory upload works in Chromium-based browsers; drag-and-drop uses the same importer.</span>
-          <input
-            ref={fileInputRef}
-            className="settings-skill-file-input"
-            type="file"
-            multiple
-            onChange={(event) => void importBrowserFiles(Array.from(event.currentTarget.files ?? []))}
-            {...directoryInputProps}
-          />
-        </div>
-      </div>
-
-      <div className="settings-section-head">
-        <span className="settings-note">{skills.length} filesystem skill{skills.length !== 1 ? 's' : ''}</span>
-        <button className="btn" onClick={() => void refresh()} disabled={loading}><IconRefresh size={14} /> {loading ? 'Refreshing…' : 'Refresh'}</button>
-      </div>
-      {error && <div className="settings-error">{error}</div>}
-      {notice && <div className="settings-success">{notice}</div>}
-
-      <div className="settings-skill-grid">
-        <div className="settings-skill-list">
-          {skills.length === 0 && <EmptyState icon={<IconSparkles size={16} />} title="Create or import a project/user skill to get started" />}
-          {skills.map((skill) => (
-            <button
-              key={`${skill.scope}:${skill.name}`}
-              className={`settings-skill-row${previewPresence.value?.scope === skill.scope && previewPresence.value?.name === skill.name ? ' active' : ''}${!skill.valid ? ' invalid' : ''}`}
-              onClick={() => void openSkill(skill)}
-            >
-              <span className="settings-skill-name">{skill.name}</span>
-              <span className="settings-card-badge">{skill.scope}</span>
-              {!skill.valid && <span className="settings-card-badge warn">invalid</span>}
-              <span className="settings-skill-desc">{skill.description || skill.errors[0] || 'No description'}</span>
-              <span className="settings-skill-path-mini">{skill.relativePath || skill.path}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+      </section>
 
       {previewPresence.value != null && (() => {
         const ps = previewPresence.value!
@@ -1388,49 +1392,59 @@ function McpTab({
     return () => { live = false }
   }, [])
   return (
-    <>
-      <div className="settings-section-head settings-mcp-head">
+    <div className="settings-stack">
+      <div className="settings-tab-head">
         <span className="settings-note settings-mcp-count">
           {servers.length} server{servers.length !== 1 ? 's' : ''} configured
         </span>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div className="settings-section-head-actions">
           <button className="btn" onClick={onImport}>Import</button>
           <button className="btn" onClick={onExport}>Export</button>
           <button className="btn" onClick={onAdd}>+ Add Server</button>
         </div>
       </div>
-      {servers.length === 0 && (
-        <EmptyState
-          icon={<IconTerminal size={16} />}
-          title="No MCP servers configured"
-          body='Click "Add Server" to get started.'
-        />
-      )}
-      {servers.map((srv) => (
-        <McpCard key={srv.name} server={srv} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onRefresh={onRefresh} />
-      ))}
-      {firstPartyEntries.length > 0 && (
-        <>
-          <div className="settings-section-head compact" style={{ marginTop: 16 }}>
-            <span className="settings-note">First-party tools</span>
-          </div>
-          <div className="settings-note">
-            Global default for new sessions. Open sessions without a per-session
-            override keep their current state — use the panel toggle for instant
-            control.
-          </div>
-          {fpError && <div className="settings-mcp-tools-error">Tool listing unavailable: {fpError}</div>}
-          {firstPartyEntries.map(([name, def]) => (
-            <FirstPartyCard
-              key={name}
-              info={fpInfo[name] ?? { name, description: '', tools: [] }}
-              enabled={def.enabled}
-              onToggle={onToggleFirstParty}
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Servers</h4>
+          <span className="settings-group-desc">MCP servers available to every session. Toggling here is the global default.</span>
+        </div>
+        <div className="settings-group-body settings-mcp-group-body">
+          {servers.length === 0 && (
+            <EmptyState
+              icon={<IconTerminal size={16} />}
+              title="No MCP servers configured"
+              body='Click "Add Server" to get started.'
             />
+          )}
+          {servers.map((srv) => (
+            <McpCard key={srv.name} server={srv} onEdit={onEdit} onDelete={onDelete} onToggle={onToggle} onRefresh={onRefresh} />
           ))}
-        </>
+        </div>
+      </section>
+      {firstPartyEntries.length > 0 && (
+        <section className="settings-group">
+          <div className="settings-group-head">
+            <h4>First-party tools</h4>
+            <span className="settings-group-desc">
+              Global default for new sessions. Open sessions without a per-session
+              override keep their current state — use the panel toggle for instant
+              control.
+            </span>
+          </div>
+          <div className="settings-group-body settings-mcp-group-body">
+            {fpError && <div className="settings-mcp-tools-error">Tool listing unavailable: {fpError}</div>}
+            {firstPartyEntries.map(([name, def]) => (
+              <FirstPartyCard
+                key={name}
+                info={fpInfo[name] ?? { name, description: '', tools: [] }}
+                enabled={def.enabled}
+                onToggle={onToggleFirstParty}
+              />
+            ))}
+          </div>
+        </section>
       )}
-    </>
+    </div>
   )
 }
 
@@ -1758,72 +1772,86 @@ function LogsTab() {
   }
 
   return (
-    <div>
-      <Field
-        label="Level"
-        hint="Threshold — only messages at this level or higher get printed. Affects all scopes."
-      >
-        <select
-          className="input"
-          value={config.level}
-          disabled={busy}
-          onChange={(e) => void apply({ level: e.target.value as LogLevel })}
-        >
-          {config.availableLevels.map((lvl) => (
-            <option key={lvl} value={lvl}>{lvl}</option>
-          ))}
-        </select>
-      </Field>
+    <div className="settings-stack">
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Logging</h4>
+          <span className="settings-group-desc">
+            Level / scope changes apply immediately but are <strong>not
+            persisted</strong>. A restart reverts to the boot-time values
+            (LOG_LEVEL / LOG_SCOPES env vars, default <code>info</code> / all).
+          </span>
+        </div>
+        <div className="settings-group-body">
+          <Field
+            label="Level"
+            hint="Threshold — only messages at this level or higher get printed. Affects all scopes."
+          >
+            <select
+              className="input"
+              value={config.level}
+              disabled={busy}
+              onChange={(e) => void apply({ level: e.target.value as LogLevel })}
+            >
+              {config.availableLevels.map((lvl) => (
+                <option key={lvl} value={lvl}>{lvl}</option>
+              ))}
+            </select>
+          </Field>
 
-      <Field
-        label="Scope filter"
-        hint='Comma-separated scope names (e.g. "broker,pump"). Leave empty to allow all scopes. Use "*" to be explicit. Only listed scopes log at all when set.'
-      >
-        <input
-          className="input"
-          type="text"
-          value={scopesInput}
-          disabled={busy}
-          placeholder="(empty = all scopes)"
-          onChange={(e) => setScopesInput(e.target.value)}
-          onBlur={onScopesBlur}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              ;(e.target as HTMLInputElement).blur()
-            }
-          }}
-          style={{ width: '100%' }}
-        />
-      </Field>
+          <Field
+            label="Scope filter"
+            hint='Comma-separated scope names (e.g. "broker,pump"). Leave empty to allow all scopes. Use "*" to be explicit. Only listed scopes log at all when set.'
+          >
+            <input
+              className="input"
+              type="text"
+              value={scopesInput}
+              disabled={busy}
+              placeholder="(empty = all scopes)"
+              onChange={(e) => setScopesInput(e.target.value)}
+              onBlur={onScopesBlur}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  ;(e.target as HTMLInputElement).blur()
+                }
+              }}
+              style={{ width: '100%' }}
+            />
+          </Field>
+        </div>
+      </section>
 
-      <div style={{ marginTop: 12, fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>
-        Level / scope changes apply immediately but are <strong>not
-        persisted</strong>. A restart reverts to the boot-time values
-        (LOG_LEVEL / LOG_SCOPES env vars, default <code>info</code> / all).
-      </div>
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>File logging</h4>
+          <span className="settings-group-desc">
+            {fileLogEnabled && fileLogPath
+              ? `Writing to ${fileLogPath}`
+              : 'Write server logs to a daily-rotated file. Persisted across restarts.'}
+          </span>
+        </div>
+        <div className="settings-group-body">
+          <Field label="Log to file">
+            <button
+              className="btn"
+              style={{ padding: '4px 16px', fontSize: 'var(--fs-sm)' }}
+              disabled={fileBusy}
+              onClick={toggleFileLogging}
+            >
+              {fileBusy ? '...' : fileLogEnabled ? 'ON' : 'OFF'}
+            </button>
+          </Field>
+        </div>
+      </section>
 
-      <div style={{ borderTop: '1px solid var(--border)', margin: '16px 0 12px' }} />
-
-      <Field
-        label="Log to file"
-        hint={fileLogEnabled && fileLogPath
-          ? `Writing to ${fileLogPath}`
-          : 'Write server logs to a daily-rotated file. Persisted across restarts.'}
-      >
-        <button
-          className="btn"
-          style={{ padding: '4px 16px', fontSize: 'var(--fs-sm)' }}
-          disabled={fileBusy}
-          onClick={toggleFileLogging}
-        >
-          {fileBusy ? '...' : fileLogEnabled ? 'ON' : 'OFF'}
-        </button>
-      </Field>
-
-      {err && <div className="modal-error" style={{ marginTop: 12 }}>{err}</div>}
+      {/* Tab-level status strip — err/savedAt are shared by BOTH groups
+          (apply() and toggleFileLogging() write the same state), so it must
+          not read as belonging to the File logging card. */}
+      {err && <div className="modal-error">{err}</div>}
       {savedAt && !err && (
-        <div style={{ marginTop: 8, fontSize: 'var(--fs-sm)', color: 'var(--ok-text)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--ok-text)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <IconCheck size={12} /> Updated
         </div>
       )}
@@ -2006,7 +2034,13 @@ function AboutTab({
   }
 
   return (
-    <div>
+    <div className="settings-stack">
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Version</h4>
+          <span className="settings-group-desc">Running build and detected tool versions.</span>
+        </div>
+        <div className="settings-group-body">
       <Field label="Project">
         <div style={{ fontSize: 'var(--fs-base)' }}>claude-react-web</div>
       </Field>
@@ -2146,12 +2180,20 @@ function AboutTab({
           </div>
         </Field>
       )}
+        </div>
+      </section>
       {/* Self-update block: the registry probe, the in-app npm install, and
           the version switcher. All of it is meaningless on the desktop build
           (updates ship as a new app bundle), so it is gated on `selfUpdate`.
           Everything above — running version, CLI/SDK versions, restart
           state — stays visible on every host. */}
-      {selfUpdate && (<>
+      {selfUpdate && (
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Updates</h4>
+          <span className="settings-group-desc">Registry probe, in-app update and version pinning. Field changes take effect after Save.</span>
+        </div>
+        <div className="settings-group-body">
       <Field
         label="Update registry"
         hint="npm registry probed for the `latest` dist-tag. Leave empty to disable update checks. Changes take effect after Save."
@@ -2206,16 +2248,16 @@ function AboutTab({
         </Field>
       )}
       {displayError && !disabled && (
-        <div className="modal-error" style={{ marginTop: 8 }}>
+        <div className="modal-error">
           Could not reach the registry: {displayError}
         </div>
       )}
       {updateError && (
-        <div className="modal-error" style={{ marginTop: 8 }}>
+        <div className="modal-error">
           Update failed: {updateError}
         </div>
       )}
-      <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <button
           className="btn"
           // Probe the CURRENTLY-TYPED registry, not the saved value — the
@@ -2255,7 +2297,7 @@ function AboutTab({
           an in-app "Install" button runs the pinned install; for npx/unknown
           the copy-command is the recovery path that works from a terminal
           even when the app is bricked. */}
-      <div style={{ marginTop: 16, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+      <div>
         <button
           className="btn"
           style={{ width: '100%', justifyContent: 'space-between' }}
@@ -2270,7 +2312,10 @@ function AboutTab({
           />
         </button>
         {switcherOpen && (
-          <div style={{ marginTop: 10 }}>
+          // Plain block (not a .settings-group-body), so spacing between the
+          // Field / Install button / error strips comes from this flex gap —
+          // Field itself carries no margin since it moved into group bodies.
+          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
             {versionsDisabled ? (
               <div className="hint" style={{ marginTop: 0 }}>
                 Update checks are disabled - set an update registry above and Save to enable version switching.
@@ -2345,12 +2390,12 @@ function AboutTab({
                   {updating ? 'Installing...' : `Install ${effectivePicked || ''}`.trim()}
                 </button>
                 {versionsError && (
-                  <div className="modal-error" style={{ marginTop: 8 }}>
+                  <div className="modal-error">
                     Could not load versions: {versionsError}
                   </div>
                 )}
                 {installVersionError && (
-                  <div className="modal-error" style={{ marginTop: 8 }}>
+                  <div className="modal-error">
                     Install failed: {installVersionError}
                   </div>
                 )}
@@ -2359,7 +2404,9 @@ function AboutTab({
           </div>
         )}
       </div>
-      </>)}
+        </div>
+      </section>
+      )}
     </div>
   )
 }
@@ -2385,7 +2432,7 @@ function Field({ label, hint, controlId, children }: { label: string; hint?: str
     ? cloneElement(children as React.ReactElement<{ id?: string }>, { id: fieldId })
     : children
   return (
-    <div className="settings-field" style={{ marginBottom: 12 }}>
+    <div className="settings-field">
       <label htmlFor={linkedId}>{label}</label>
       {control}
       {hint && <span className="hint">{hint}</span>}

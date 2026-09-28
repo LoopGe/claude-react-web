@@ -102,66 +102,68 @@ export function AppPluginsTab({ saveAllRef }: { saveAllRef?: MutableRefObject<((
   }, [refresh])
 
   return (
-    <div className="app-plugins-tab">
-      <p className="app-plugins-intro">
-        App Plugins (Mods) add menus, commands, and panels to the app. Claude Plugins
-        (Marketplace) add tools and servers to the agent — the two are separate.
-      </p>
-
+    <div className="settings-stack">
       <AppPluginMarketplaceSection />
 
-      <h4 className="app-plugins-installed-heading">Installed</h4>
-      <div className="app-plugins-install">
-        <input
-          className="input"
-          type="text"
-          placeholder="Local plugin directory path…"
-          value={installPath}
-          onChange={(e) => setInstallPath(e.target.value)}
-          aria-label="Plugin directory path"
-        />
-        <button className="btn" onClick={() => setShowDirPicker(true)} disabled={busy} title="Browse">
-          <IconFolder size={14} /> Browse
-        </button>
-        <button className="btn btn-primary" disabled={busy || !installPath.trim()} onClick={install}>
-          {busy ? 'Installing…' : 'Install'}
-        </button>
-      </div>
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Installed</h4>
+          <span className="settings-group-desc">Local plugin directories installed on this server.</span>
+        </div>
+        <div className="settings-group-body">
+          <div className="app-plugins-install">
+            <input
+              className="input"
+              type="text"
+              placeholder="Local plugin directory path…"
+              value={installPath}
+              onChange={(e) => setInstallPath(e.target.value)}
+              aria-label="Plugin directory path"
+            />
+            <button className="btn" onClick={() => setShowDirPicker(true)} disabled={busy} title="Browse">
+              <IconFolder size={14} /> Browse
+            </button>
+            <button className="btn btn-primary" disabled={busy || !installPath.trim()} onClick={install}>
+              {busy ? 'Installing…' : 'Install'}
+            </button>
+          </div>
 
-      {error && <div className="modal-error">{error}</div>}
+          {error && <div className="modal-error">{error}</div>}
 
-      {showDirPicker && createPortal(
-        <DirectoryPicker
-          title="Pick a plugin folder"
-          selectLabel="Install this folder"
-          footerHint="Select a folder that contains crw-plugin.json"
-          onPick={(path) => {
-            setInstallPath(path)
-            setShowDirPicker(false)
-            void installFromPath(path)
-          }}
-          onClose={() => setShowDirPicker(false)}
-        />,
-        document.body,
-      )}
+          {showDirPicker && createPortal(
+            <DirectoryPicker
+              title="Pick a plugin folder"
+              selectLabel="Install this folder"
+              footerHint="Select a folder that contains crw-plugin.json"
+              onPick={(path) => {
+                setInstallPath(path)
+                setShowDirPicker(false)
+                void installFromPath(path)
+              }}
+              onClose={() => setShowDirPicker(false)}
+            />,
+            document.body,
+          )}
 
-      <ul className="app-plugins-list">
-        {plugins.length === 0 && <li className="app-plugins-empty">No app plugins installed.</li>}
-        {plugins.map((p) => (
-          <PluginRow
-            key={p.id}
-            plugin={p}
-            expanded={expanded === p.id}
-            modelList={modelList}
-            onToggleExpand={() => setExpanded(expanded === p.id ? null : p.id)}
-            onEnable={() => enable(p.id)}
-            onDisable={() => disable(p.id)}
-            onUninstall={(del) => uninstall(p.id, del)}
-            busy={busy}
-            onRegisterDirtySave={registerDirtySave}
-          />
-        ))}
-      </ul>
+          <ul className="app-plugins-list">
+            {plugins.length === 0 && <li className="app-plugins-empty">No app plugins installed.</li>}
+            {plugins.map((p) => (
+              <PluginRow
+                key={p.id}
+                plugin={p}
+                expanded={expanded === p.id}
+                modelList={modelList}
+                onToggleExpand={() => setExpanded(expanded === p.id ? null : p.id)}
+                onEnable={() => enable(p.id)}
+                onDisable={() => disable(p.id)}
+                onUninstall={(del) => uninstall(p.id, del)}
+                busy={busy}
+                onRegisterDirtySave={registerDirtySave}
+              />
+            ))}
+          </ul>
+        </div>
+      </section>
     </div>
   )
 }

@@ -406,16 +406,15 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   const anyCheckError = items.some((it) => !!updateById[it.id]?.error)
 
   return (
-    <div>
+    <div className="settings-stack">
       {/* Add form ---------------------------------------------------- */}
-      <div style={{
-        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: 12, marginBottom: 16,
-        background: 'var(--bg-elev)',
-      }}>
-        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)', marginBottom: 6 }}>
-          Add a marketplace from a public https git repository.
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Add marketplace</h4>
+          <span className="settings-group-desc">Add a marketplace from a public https git repository.</span>
         </div>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+        <div className="settings-group-body">
+        <div style={{ display: 'flex', gap: 6 }}>
           <input
             className="input"
             style={{ flex: 1, fontSize: 'var(--fs-sm)' }}
@@ -449,23 +448,32 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
           Only https:// URLs are accepted. Cloning runs as a depth-1 fetch and is
           stored under the server's state directory.
         </div>
-      </div>
+        </div>
+      </section>
 
+      {/* Tab-level error strip — `error` is written by BOTH the Add form and
+          the per-marketplace operations, so it must not read as list output. */}
       {error && (
-        <div className="modal-error" style={{ marginBottom: 12 }}>
+        <div className="modal-error">
           {error}
         </div>
       )}
 
-      {!loading && items.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          {/* The button stays mounted mid-bulk-update even while badges clear,
-              so it can show its progress label instead of flashing the
-              "up to date" note between the last refresh and the re-probe.
-              Badges also outrank the whole-check error note below: when any
-              marketplace still reports an update, the Update-all button is
-              the actionable recovery even if a re-probe just failed. */}
-          {bulkBusy || updateableCount > 0 ? (
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Marketplaces</h4>
+          <span className="settings-group-desc">Registered plugin marketplaces and their plugins.</span>
+        </div>
+        <div className="settings-group-body settings-mcp-group-body">
+        {!loading && items.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* The button stays mounted mid-bulk-update even while badges clear,
+                so it can show its progress label instead of flashing the
+                "up to date" note between the last refresh and the re-probe.
+                Badges also outrank the whole-check error note below: when any
+                marketplace still reports an update, the Update-all button is
+                the actionable recovery even if a re-probe just failed. */}
+            {bulkBusy || updateableCount > 0 ? (
             <button
               className="btn btn-primary"
               onClick={() => void handleUpdateAll()}
@@ -547,6 +555,8 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
           />
         </div>
       ))}
+        </div>
+      </section>
     </div>
   )
 }
@@ -585,7 +595,7 @@ function MarketplaceCard({
   )
   return (
     <div style={{
-      border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', marginBottom: 6, overflow: 'hidden',
+      border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden',
       opacity: busy || bulkBusy ? 0.7 : 1,
     }}>
       <div style={{

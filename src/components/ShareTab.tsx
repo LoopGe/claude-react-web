@@ -94,7 +94,16 @@ export function ShareTab() {
   }, [selectedUrl, toast])
 
   return (
-    <div className="share-tab">
+    <div className="settings-stack">
+      <section className="settings-group">
+        <div className="settings-group-head">
+          {/* Not "Open on phone" — that exact string is the leaf-tab button
+              label in GlobalSettingsModal's nav, and a same-text heading here
+              would make text queries in tests (and readers) ambiguous. */}
+          <h4>Share access</h4>
+          <span className="settings-group-desc">Signed-in access from a device on the same network.</span>
+        </div>
+        <div className="settings-group-body">
       {error && <p className="share-tab-hint">{error}</p>}
 
       {!error && info && !info.lanReachable && (
@@ -166,6 +175,8 @@ export function ShareTab() {
       )}
 
       {!error && !info && <p className="share-tab-hint">Loading…</p>}
+        </div>
+      </section>
     </div>
   )
 }

@@ -2202,8 +2202,8 @@ function SessionSkillPolicyCard({
   return (
     // Plain wrapper — the Skills tab's .settings-group provides the card
     // chrome (border/background/head) and the title now lives in its
-    // settings-group-head. The old .settings-skill-policy-card class stays
-    // reserved for the global settings modal's own card.
+    // settings-group-head. The old .settings-skill-policy-card class is gone:
+    // the global settings modal's Skills tab converted to groups too.
     <div>
       <div className="settings-skill-mode-grid">
         {SESSION_SKILL_OPTIONS.map((option) => (

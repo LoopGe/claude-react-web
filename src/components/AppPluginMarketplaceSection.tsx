@@ -171,9 +171,16 @@ export function AppPluginMarketplaceSection() {
   }
 
   return (
-    <div className="app-plugins-marketplace">
-      <h4>Marketplace</h4>
-      <p className="app-plugins-intro">Add a GitHub-hosted App Plugin marketplace URL, then browse and install.</p>
+    <section className="settings-group">
+      <div className="settings-group-head">
+        <h4>Marketplace</h4>
+        <span className="settings-group-desc">
+          App Plugins (Mods) add menus, commands, and panels to the app; Claude
+          Plugins (Marketplace) add tools and servers to the agent — the two are
+          separate. Add a GitHub-hosted marketplace URL, then browse and install.
+        </span>
+      </div>
+      <div className="settings-group-body">
       <div className="app-plugins-install">
         <input
           className="input"
@@ -205,7 +212,7 @@ export function AppPluginMarketplaceSection() {
       {error && <div className="modal-error">{error}</div>}
 
       {marketplaces.length > 0 && (
-        <div className="app-plugins-update-all" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <div className="app-plugins-update-all" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <button
             className="btn btn-primary"
             onClick={() => void handleUpdateAll()}
@@ -232,7 +239,8 @@ export function AppPluginMarketplaceSection() {
           />
         ))}
       </ul>
-    </div>
+      </div>
+    </section>
   )
 }
 
