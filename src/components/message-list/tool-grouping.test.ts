@@ -13,7 +13,7 @@ function toolBlock(id: string, name = 'Read', input: Record<string, unknown> = {
 describe('summarizeToolGroup', () => {
   it('returns count and one entry per tool name, in first-seen order', () => {
     const blocks = [toolBlock('a', 'Read'), toolBlock('b', 'Grep'), toolBlock('c', 'Read')]
-    const result = summarizeToolGroup(blocks, new Map(), new Map())
+    const result = summarizeToolGroup(blocks, new Map())
     expect(result.count).toBe(3)
     // No targets in these inputs → the old count-only form.
     expect(result.entries).toEqual([
@@ -30,7 +30,7 @@ describe('summarizeToolGroup', () => {
       toolBlock('b', 'Read', { file_path: 'src/hooks/useWsHub.ts' }),
       toolBlock('c', 'Grep', { pattern: 'useWsHub' }),
     ]
-    const result = summarizeToolGroup(blocks, new Map(), new Map())
+    const result = summarizeToolGroup(blocks, new Map())
     expect(result.entries).toEqual([
       { name: 'Read', target: 'MessageList.tsx', extra: 1 },
       { name: 'Grep', target: '\u201cuseWsHub\u201d', extra: 0 },
@@ -40,7 +40,7 @@ describe('summarizeToolGroup', () => {
 
   it('takes a later target when the first call of that tool had none', () => {
     const blocks = [toolBlock('a', 'Bash', {}), toolBlock('b', 'Bash', { command: 'npm test' })]
-    const result = summarizeToolGroup(blocks, new Map(), new Map())
+    const result = summarizeToolGroup(blocks, new Map())
     expect(result.entries).toEqual([{ name: 'Bash', target: 'npm test', extra: 1 }])
   })
 
@@ -49,7 +49,7 @@ describe('summarizeToolGroup', () => {
     const blocks = names.map((n, i) =>
       toolBlock(`t${i}`, n, { file_path: `src/very/deep/path/File${i}Name.tsx` }),
     )
-    const result = summarizeToolGroup(blocks, new Map(), new Map())
+    const result = summarizeToolGroup(blocks, new Map())
     expect(result.entries.length).toBeGreaterThan(0)
     expect(result.entries.length).toBeLessThan(names.length)
     // Prefix, in order — never a reshuffle as later tools land.
@@ -66,21 +66,21 @@ describe('summarizeToolGroup', () => {
       toolBlock('a', 'A'.repeat(120), { command: 'ls' }),
       toolBlock('b', 'Grep', { pattern: 'needle' }),
     ]
-    const result = summarizeToolGroup(blocks, new Map(), new Map())
+    const result = summarizeToolGroup(blocks, new Map())
     expect(result.entries).toHaveLength(1)
     expect(result.overflow).toBe(1)
   })
 
   it('summarises the spoken list too, so a 20-tool run stays announceable', () => {
     const blocks = Array.from({ length: 9 }, (_, i) => toolBlock(`t${i}`, `Tool${i}`))
-    const result = summarizeToolGroup(blocks, new Map(), new Map())
+    const result = summarizeToolGroup(blocks, new Map())
     expect(result.fullSummary).toBe('Tool0 · Tool1 · Tool2 · Tool3 · Tool4 · Tool5 · +3 more')
   })
 
   it('marks anyRunning when a tool has no status entry', () => {
     const blocks = [toolBlock('a'), toolBlock('b')]
     const statuses = new Map<string, ToolStatus>([['a', 'success']])
-    const result = summarizeToolGroup(blocks, statuses, new Map())
+    const result = summarizeToolGroup(blocks, statuses)
     expect(result.anyRunning).toBe(true)
   })
 
@@ -90,7 +90,7 @@ describe('summarizeToolGroup', () => {
       ['a', 'success'],
       ['b', 'running'],
     ])
-    const result = summarizeToolGroup(blocks, statuses, new Map())
+    const result = summarizeToolGroup(blocks, statuses)
     expect(result.anyRunning).toBe(true)
   })
 
@@ -100,18 +100,20 @@ describe('summarizeToolGroup', () => {
       ['a', 'success'],
       ['b', 'error'],
     ])
-    const result = summarizeToolGroup(blocks, statuses, new Map())
+    const result = summarizeToolGroup(blocks, statuses)
     expect(result.anyError).toBe(true)
     expect(result.anyRunning).toBe(false)
   })
 
-  it('marks anyPendingInteractive for a pending ExitPlanMode', () => {
+  it('never reads an ExitPlanMode as running', () => {
+    // ExitPlanMode is a run boundary (isToolGroupEligible) so it never enters
+    // a group; if one ever shows up here anyway, its absence from the generic
+    // status map (TOOL_STATUS_EXCLUDE) must not read as in-flight.
     const blocks = [toolBlock('a'), toolBlock('p', 'ExitPlanMode')]
     const statuses = new Map<string, ToolStatus>([['a', 'success']])
-    const planStatuses = new Map([['p', 'pending' as const]])
-    const result = summarizeToolGroup(blocks, statuses, planStatuses)
-    expect(result.anyPendingInteractive).toBe(true)
+    const result = summarizeToolGroup(blocks, statuses)
     expect(result.anyRunning).toBe(false)
+    expect(result.anyError).toBe(false)
   })
 
   describe('tools that keep their own lifecycle (absent from toolStatus by design)', () => {
@@ -126,7 +128,6 @@ describe('summarizeToolGroup', () => {
         const result = summarizeToolGroup(
           [toolBlock('a', 'Agent', { description: 'audit' })],
           new Map(),
-          new Map(),
           sub(status),
         )
         expect(result.anyRunning, status).toBe(false)
@@ -137,7 +138,6 @@ describe('summarizeToolGroup', () => {
     it('still holds the group open for a subagent that IS running', () => {
       const result = summarizeToolGroup(
         [toolBlock('a', 'Task', { description: 'audit' })],
-        new Map(),
         new Map(),
         sub('running'),
       )
@@ -151,7 +151,6 @@ describe('summarizeToolGroup', () => {
         const result = summarizeToolGroup(
           [toolBlock('a', 'Explore', {})],
           new Map(),
-          new Map(),
           sub(status),
         )
         expect(result.anyRunning, status).toBe(false)
@@ -159,28 +158,28 @@ describe('summarizeToolGroup', () => {
     })
 
     it('does not invent a running state when the record is missing entirely', () => {
-      const result = summarizeToolGroup([toolBlock('a', 'Agent', {})], new Map(), new Map())
+      const result = summarizeToolGroup([toolBlock('a', 'Agent', {})], new Map())
       expect(result.anyRunning).toBe(false)
     })
 
     it('applies the same rule to Workflow', () => {
       const wf = (status: string) => new Map([['a', { status } as unknown as WorkflowRecord]])
       const blocks = [toolBlock('a', 'Workflow', { description: 'ship it' })]
-      expect(summarizeToolGroup(blocks, new Map(), new Map(), undefined, wf('done')).anyRunning)
+      expect(summarizeToolGroup(blocks, new Map(), undefined, wf('done')).anyRunning)
         .toBe(false)
-      expect(summarizeToolGroup(blocks, new Map(), new Map(), undefined, wf('running')).anyRunning)
+      expect(summarizeToolGroup(blocks, new Map(), undefined, wf('running')).anyRunning)
         .toBe(true)
     })
 
     it('never reads an inline marker (EnterPlanMode) as running', () => {
-      const result = summarizeToolGroup([toolBlock('a', 'EnterPlanMode', {})], new Map(), new Map())
+      const result = summarizeToolGroup([toolBlock('a', 'EnterPlanMode', {})], new Map())
       expect(result.anyRunning).toBe(false)
     })
   })
 
   it('treats a block with no id as running (prevents premature fold)', () => {
     const block = { type: 'tool_use', name: 'Read' } as unknown as Block
-    const result = summarizeToolGroup([block], new Map(), new Map())
+    const result = summarizeToolGroup([block], new Map())
     expect(result.anyRunning).toBe(true)
   })
 })

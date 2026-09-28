@@ -1,18 +1,21 @@
 // Collapsible container for a folded run of tool-only assistant rows
 // (see ./transcript-rows.ts foldToolGroupRows).
 //
-// Settled groups collapse to a one-line header; a running tool or pending
-// Plan/Question keeps the group open — unless `autoExpandRunningGroups` is
-// off, in which case a RUNNING tool no longer opens the group (the header
-// badge still reports it) while pending Plan/Question still always does.
-// Search force-expands only when the group's own name/input may match (tool
-// results force-expand themselves via ToolResultDetails). Children are
-// existing BlockView / ToolUseBlock cards — no tool view is rewritten.
+// Settled groups collapse to a one-line header; a running tool keeps the
+// group open — unless `autoExpandRunningGroups` is off, in which case a
+// RUNNING tool no longer opens the group (the header badge still reports
+// it). AskUserQuestion and ExitPlanMode never enter a group at all (they
+// are run boundaries in isToolGroupEligible and render as their own
+// QuestionCard / PlanCard). Search force-expands only when the group's own
+// name/input may match (tool results force-expand themselves via
+// ToolResultDetails). Children are existing BlockView / ToolUseBlock cards
+// — no tool view is rewritten.
 //
-// Collapsed header still surfaces running / waiting / failed so a failure
-// or blocked turn is never hidden. The automatic post-turn fold also waits
-// out a pointer resting on the card or a selection running through it — see
-// isEngaged.
+// Collapsed header still surfaces running / failed so a failure is never
+// hidden. (A pending decision can no longer be buried either — AskUserQuestion
+// and ExitPlanMode are run boundaries and render as their own always-visible
+// cards.) The automatic post-turn fold also waits out a pointer resting on
+// the card or a selection running through it — see isEngaged.
 //
 // A group of ONE tool keeps the chrome too. It does stack a second header on
 // the inner ToolCard, which is a real cost — but vertical space is the
@@ -33,7 +36,7 @@ import {
 import { AnimatedCollapse } from '../AnimatedCollapse'
 import { useRevealClass } from '../../hooks/useRevealClass'
 import { BlockView } from './blocks'
-import { usePlanStatusMap, useToolStatuses } from '../../hooks/usePlanStatus'
+import { useToolStatuses } from '../../hooks/usePlanStatus'
 import { groupMayMatchSearch, summarizeToolGroup } from './tool-grouping'
 import { extractToolUseId, getBlocks } from '../../session-store/normalize'
 import {
@@ -41,7 +44,6 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconLoader,
-  IconMessageQuestion,
 } from '../icons/ToolIcons'
 import type { Block, SdkMessage } from '../../types'
 import type { ActiveSubagent, WorkflowRecord } from '../../session-store/types'
@@ -81,23 +83,19 @@ interface ToolGroupCardProps {
   subagentStatuses?: ReadonlyMap<string, ActiveSubagent>
   workflowStatuses?: ReadonlyMap<string, WorkflowRecord>
   /** True when a non-foldable row (assistant text / thinking / a user message
-   *  / AskUserQuestion) follows this group. The row model folds ALL
-   *  consecutive tool-only rows into one group, so once a boundary row lands
-   *  the group's membership is FINAL — future tool-only rows start a NEW
+   *  / AskUserQuestion / ExitPlanMode) follows this group. The row model folds
+   *  ALL consecutive tool-only rows into one group, so once a boundary row
+   *  lands the group's membership is FINAL — future tool-only rows start a NEW
    *  group. Under that signal a settled group folds mid-turn instead of
    *  staying pinned open until the whole turn ends. Last row (nothing
    *  follows) is `false`, so live growth is still held open. */
   closed?: boolean
   /** Whether a group holding a RUNNING tool auto-expands (the transcript's
-   *  `autoExpandRunningGroups` UI pref). True = today's behavior: a running
-   *  member force-opens the group and the turn-latch keeps it open through
-   *  the turn. False = running groups stay folded (the header badge still
-   *  reports running and clicking opens them) — the latch/settle-fold
-   *  machinery itself is unchanged, so a group that was auto-expanded by
-   *  anything else (a pending plan/question, an earlier toggle of this
-   *  pref) still pins and folds exactly as before. Pending interactive
-   *  members ALWAYS force-open regardless of this pref — a folded plan
-   *  would hide a decision the turn is parked on. Defaults to true. */
+   *  `autoExpandRunningGroups` UI pref). True = a running member force-opens
+   *  the group and the turn-latch keeps it open through the turn. False =
+   *  running groups stay folded (the header badge still reports running and
+   *  clicking opens them) — the latch/settle-fold machinery itself is
+   *  unchanged. Defaults to true. */
   autoExpandRunningGroups?: boolean
 }
 
@@ -109,10 +107,11 @@ interface ToolGroupCardProps {
 // in one place instead of being spread across a pile of latch effects.
 
 interface FoldState {
-  /** Latch: this group had a running tool / pending decision at some point
-   *  during the CURRENT turn. Survives the gaps between sequential tools
-   *  (result landed, next tool_use not yet emitted); reset when a new turn
-   *  starts so a previous turn's tail group can't flash back open. */
+  /** Latch: this group had a RUNNING tool at some point during the CURRENT
+   *  turn. (Pending decisions never latch — they are run boundaries outside
+   *  the group.) Survives the gaps between sequential tools (result landed,
+   *  next tool_use not yet emitted); reset when a new turn starts so a
+   *  previous turn's tail group can't flash back open. */
   wasLive: boolean
   /** Post-turn grace window is running (see SETTLE_HOLD_MS). */
   held: boolean
@@ -239,7 +238,6 @@ function ToolGroupCardInner({
   autoExpandRunningGroups = true,
 }: ToolGroupCardProps) {
   const toolStatuses = useToolStatuses()
-  const planStatuses = usePlanStatusMap()
 
   // Stable, page-unique id for the folded body, so the header button can point
   // aria-controls at it (multiple group cards can coexist in one transcript).
@@ -283,8 +281,8 @@ function ToolGroupCardInner({
   }, [flatMembers.length])
 
   const summary = useMemo(
-    () => summarizeToolGroup(toolBlocks, toolStatuses, planStatuses, subagentStatuses, workflowStatuses),
-    [toolBlocks, toolStatuses, planStatuses, subagentStatuses, workflowStatuses],
+    () => summarizeToolGroup(toolBlocks, toolStatuses, subagentStatuses, workflowStatuses),
+    [toolBlocks, toolStatuses, subagentStatuses, workflowStatuses],
   )
 
   const hasSearchHit = useMemo(
@@ -293,13 +291,11 @@ function ToolGroupCardInner({
   )
   // `live` is the signal that force-opens the group AND (via the turn latch
   // in the reducer) keeps it pinned through the turn + triggers the
-  // post-turn settle fold. The pref gates ONLY the running half of it: with
-  // the pref off a running member no longer opens the group, so gating the
-  // latch with the same signal is what keeps `autoOpen` from re-opening it
-  // mid-turn (`wasLive && turnActive`). A pending plan/question is never
-  // gated — a folded decision would hide a turn the user has to act on.
-  const live =
-    summary.anyPendingInteractive || (autoExpandRunningGroups && summary.anyRunning)
+  // post-turn settle fold. The pref gates the running half: with the pref
+  // off a running member no longer opens the group, so gating the latch
+  // with the same signal is what keeps `autoOpen` from re-opening it
+  // mid-turn (`wasLive && turnActive`).
+  const live = autoExpandRunningGroups && summary.anyRunning
   const turnActive = working === true
 
   const [fold, dispatch] = useReducer(foldReducer, { live, working: turnActive }, initFoldState)
@@ -343,10 +339,10 @@ function ToolGroupCardInner({
   // turn ended).
   const autoOpen = !closed && ((fold.wasLive && turnActive) || fold.held)
 
-  // Search hits and live state are hard overrides — a folded running tool or
-  // a folded pending plan would hide a turn the user has to act on. Anything
-  // softer than that yields to an explicit toggle, so clicking the header
-  // always does something visible.
+  // Search hits and live state are hard overrides — a folded running tool
+  // would hide work the user can't see happening. Anything softer than that
+  // yields to an explicit toggle, so clicking the header always does
+  // something visible.
   const open = hasSearchHit || live || (fold.userOpen ?? autoOpen)
 
   // Body-mount latch. The header is always rendered, but members (BlockView →
@@ -425,17 +421,6 @@ function ToolGroupCardInner({
       <IconLoader size={12} />
       <span className="tool-status-label">running</span>
     </span>
-  ) : summary.anyPendingInteractive ? (
-    // Its own class, not tool-status-running: nothing is in flight here, and
-    // the running rule spins the glyph (IconMessageQuestion isn't rotationally
-    // symmetric, so it visibly wobbles).
-    <span
-      className="tool-status tool-status-waiting"
-      title="Waiting on you — a plan or question in this group needs a decision."
-    >
-      <IconMessageQuestion size={12} />
-      <span className="tool-status-label">waiting</span>
-    </span>
   ) : summary.anyError ? (
     // Clickable: knowing the group failed is only half an answer when the body
     // holds a dozen cards. This takes the user to the one that did.
@@ -454,10 +439,7 @@ function ToolGroupCardInner({
   return (
     <div
       ref={cardRef}
-      className={
-        'tool-group-card' +
-        (summary.anyPendingInteractive && !summary.anyRunning ? ' tool-group-has-pending' : '')
-      }
+      className="tool-group-card"
       data-state={open ? 'open' : 'closed'}
     >
       {/* Two targets, so a real <button> for each rather than one role=button

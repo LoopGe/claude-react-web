@@ -470,6 +470,27 @@ describe('buildTranscriptRows: tool-group fold', () => {
     expect(rows[2]!.toolGroup!.memberIds).toEqual(['t3'])
   })
 
+  it('treats ExitPlanMode as a run boundary like AskUserQuestion', () => {
+    // A plan proposal is a decision point: it always renders as its own
+    // full PlanCard, never folded into a collapsed group — and the
+    // plan-approval transition separates planning work from execution work.
+    const { rows } = buildTranscriptRows({
+      items: [
+        toolOnlyAssistant('t1', 'Read'),
+        toolOnlyAssistant('t2', 'Grep'),
+        toolOnlyAssistant('plan', 'ExitPlanMode'),
+        toolOnlyAssistant('t3', 'Glob'),
+        toolOnlyAssistant('t4', 'Edit'),
+      ],
+      isResultConsumed: () => true,
+    })
+    expect(ids(rows)).toEqual(['t1', 'plan', 't3'])
+    expect(rows[0]!.toolGroup!.memberIds).toEqual(['t1', 't2'])
+    // Plan row is NOT a group — it stays a plain MessageView / PlanCard
+    expect(rows[1]!.toolGroup).toBeUndefined()
+    expect(rows[2]!.toolGroup!.memberIds).toEqual(['t3', 't4'])
+  })
+
   it('toolGroupCards: false keeps every tool row unfolded with stable ids and itemIndex', () => {
     const { rows } = buildTranscriptRows({
       items: [

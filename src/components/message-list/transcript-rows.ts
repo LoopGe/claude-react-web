@@ -45,7 +45,7 @@ import type { SdkMessage } from '../../types'
 import type { ActiveSubagent, TranscriptItem } from '../../session-store/types'
 import { getBlocks, userMessageHasToolResult } from '../../session-store/normalize'
 import { QUESTION_TOOL_NAME } from '../../utils/question-answers'
-import { MARKER_TOOL_NAMES } from '../../constants/toolNames'
+import { MARKER_TOOL_NAMES, PLAN_TOOL_NAMES } from '../../constants/toolNames'
 import { willRenderEmpty } from './rendering'
 
 /**
@@ -174,6 +174,11 @@ function pushRow(
  *  AskUserQuestion is also a boundary — like thinking, it always renders
  *  as its own QuestionCard so the prompt is never buried in a fold.
  *
+ *  ExitPlanMode (PLAN_TOOL_NAMES) is a boundary for the same reason: a plan
+ *  proposal is a decision the turn parks on, and it renders as its own full
+ *  PlanCard. The plan-approval transition also separates the planning work
+ *  before it from the execution work after it, so it splits the run.
+ *
  *  The inline-marker tools (MARKER_TOOL_NAMES: EnterPlanMode plus the
  *  worktree pair) are boundaries too: they render as thin mode-transition
  *  cues (tool-views/markers.tsx), not tool cards, and a mode transition
@@ -189,6 +194,7 @@ export function isToolGroupEligible(row: TranscriptRow): boolean {
     if (b == null) return false
     if (b.type === 'tool_use') {
       if (b.name === QUESTION_TOOL_NAME) return false
+      if (b.name != null && PLAN_TOOL_NAMES.has(b.name)) return false
       if (b.name != null && MARKER_TOOL_NAMES.has(b.name)) return false
       hasToolUse = true
       continue

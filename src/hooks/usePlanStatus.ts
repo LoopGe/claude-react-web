@@ -123,12 +123,6 @@ export function useToolStatuses(): ReadonlyMap<string, ToolStatus> {
   return useContext(ToolStatusCtx)
 }
 
-/** Read the full plan-status map from context. Used by ToolGroupCard to
- *  detect pending interactive plans inside a folded group. */
-export function usePlanStatusMap(): PlanStatusMap {
-  return useContext(Ctx)
-}
-
 /** Read the whole tool_result map. Used by MessageView's user branch to
  *  decide, per tool_result block, whether it's already been merged into a
  *  card (so the standalone bubble can be suppressed) or is an orphan that

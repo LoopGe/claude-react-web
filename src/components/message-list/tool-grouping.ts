@@ -4,9 +4,7 @@
 
 import type { Block } from '../../types'
 import type { ActiveSubagent, ToolStatus, WorkflowRecord } from '../../session-store/types'
-import type { PlanStatusMap } from '../../utils/plan-status'
 import { extractToolUseId, TOOL_STATUS_EXCLUDE } from '../../session-store/normalize'
-import { PLAN_TOOL_NAMES } from '../../constants/toolNames'
 import { toolTargetLabel } from './tool-target'
 
 /** One tool NAME in a folded group, with the target of its first call and a
@@ -35,9 +33,6 @@ export interface ToolGroupSummary {
   /** tool_use id of the FIRST failed call, so the header's `failed` badge can
    *  take the user straight to it instead of leaving them to scan the body. */
   firstErrorToolUseId?: string
-  /** Pending ExitPlanMode. AskUserQuestion never enters a group (see
-   *  isToolGroupEligible) — it is a run boundary like thinking. */
-  anyPendingInteractive: boolean
 }
 
 /** Character budget for the visible header line. This is NOT the layout
@@ -99,12 +94,13 @@ function buildFullSummary(all: ToolGroupEntry[]): string {
 /** Build a one-line summary for a collapsed group header.
  *
  *  `toolBlocks` are the tool_use blocks extracted from the group's member
- *  messages. Status maps come from the context providers that MessageList
+ *  messages. ExitPlanMode and AskUserQuestion never appear here — both are
+ *  run boundaries in isToolGroupEligible and render as their own cards.
+ *  Status maps come from the context providers that MessageList
  *  already wraps the transcript in. */
 export function summarizeToolGroup(
   toolBlocks: Block[],
   toolStatuses: ReadonlyMap<string, ToolStatus>,
-  planStatuses: PlanStatusMap,
   /** Lifecycle records for the tools that never appear in `toolStatuses`
    *  (see TOOL_STATUS_EXCLUDE): Agent / Task / Explore, and Workflow. Omit
    *  them and such a call simply never counts as in flight. */
@@ -118,7 +114,6 @@ export function summarizeToolGroup(
   let anyRunning = false
   let anyError = false
   let firstErrorToolUseId: string | undefined
-  let anyPendingInteractive = false
 
   for (const block of toolBlocks) {
     const name = (block as { name?: string }).name
@@ -144,13 +139,6 @@ export function summarizeToolGroup(
     if (!id) {
       // No id yet — treat as in-flight so the group never prematurely folds.
       anyRunning = true
-      continue
-    }
-
-    // Plan uses its own status map; a pending plan force-opens the group.
-    if (name && PLAN_TOOL_NAMES.has(name)) {
-      const ps = planStatuses.get(id)
-      if (!ps || ps === 'pending') anyPendingInteractive = true
       continue
     }
 
@@ -190,7 +178,6 @@ export function summarizeToolGroup(
     anyRunning,
     anyError,
     firstErrorToolUseId,
-    anyPendingInteractive,
   }
 }
 
