@@ -189,7 +189,16 @@ class FakeBroadcaster implements SessionBroadcaster {
   listPendingElicitation() { return [] }
   listPendingDialogs() { return [] }
 
-  subscribeContextUsage() { return null }
+  subscribeContextUsage() { return this.ctxUsageSub }
+  /** When non-null, subscribeContextUsage hands this to the connection (the
+   *  cached-snapshot seeding path); null = no context channel at all. */
+  ctxUsageSub: {
+    iterable: AsyncIterable<never>
+    snapshot?: import('./session-pump.js').LiteContextUsage
+    unsubscribe: () => void
+  } | null = null
+  ensureContextUsageSeeds: string[] = []
+  ensureContextUsageSeed(sessionId: string) { this.ensureContextUsageSeeds.push(sessionId) }
   subscribePromptSuggestion() { return null }
   subscribeTasks() { return null }
   subscribeGitStatus() { return null }
@@ -295,6 +304,39 @@ describe('SessionConnection (in-memory sink)', () => {
     expect(sink.kinds('subscribe-result')[0]).toMatchObject({ ok: true, reason: 'already-live' })
     const replay = await waitForFrame(sink, (f) => f.kind === 'replay')
     expect(replay.kind === 'replay' && replay.messages).toHaveLength(1)
+  })
+
+  it('subscribe with no cached context snapshot requests a zero-turn seed', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+
+    expect(sm.ensureContextUsageSeeds).toEqual(['s1'])
+    // No snapshot existed, so no context-usage frame was served either.
+    expect(sink.kinds('context-usage')).toHaveLength(0)
+  })
+
+  it('subscribe with a cached context snapshot serves it and skips the seed', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    sm.ctxUsageSub = {
+      iterable: (async function* () { /* no live frames */ })(),
+      snapshot: { totalTokens: 62000, maxTokens: 200000, rawMaxTokens: 200000, percentage: 31, model: 'claude-sonnet-4-5' },
+      unsubscribe: () => {},
+    }
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+
+    const frame = sink.kinds('context-usage')[0]
+    expect(frame).toMatchObject({ kind: 'context-usage', sessionId: 's1' })
+    expect(sm.ensureContextUsageSeeds).toEqual([])
   })
 
   it('replies to ping with pong echoing the nonce', () => {

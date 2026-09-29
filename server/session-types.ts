@@ -532,12 +532,18 @@ export interface Session {
    *  (including with queued turns still pending), so the two can coexist. */
   contextUsageProbeInFlight?: boolean
   /** True while the zero-turn context-usage SEED probe (see
-   *  SessionManager.seedContextUsageOnInit) is in flight. Deliberately a
+   *  SessionManager.seedContextUsage) is in flight. Deliberately a
    *  THIRD flag, separate from the reconcile's: on an aggregate-reporting
    *  wire a seed still in flight when turn 1's result lands must not suppress
    *  that result's reconcile correction (the flag-busy early return never
    *  re-arms), so the two probes have to be able to coexist. */
   contextUsageSeedInFlight?: boolean
+  /** Wall-clock stamp of the last zero-turn seed ATTEMPT (set whenever the
+   *  seed probe actually starts). Backstop for the subscribe trigger: a
+   *  backend whose answer is always refused would otherwise pay one control
+   *  round-trip per reconnect / panel remount forever — the in-flight flag
+   *  only dedups CONCURRENT attempts. Not persisted. */
+  lastContextUsageSeedAt?: number
   /** Per-subscriber pushables for prompt_suggestion events — separate from
    *  message history (suggestions are ephemeral, not conversation content).
    *  Same shape as contextUsageSubscribers. */
@@ -900,6 +906,13 @@ export interface SessionBroadcaster {
   listPending(sessionId: string): PermissionRequestSnapshot[]
   listPendingElicitation(sessionId: string): ElicitationRequestUi[]
   listPendingDialogs(sessionId: string): UserDialogRequestUi[]
+  /** Ask for a zero-turn context-usage seed on a session whose cached
+   *  snapshot is still empty (fresh spawn, or a server restart that wiped
+   *  the in-memory snapshot). Fired by the WS subscribe path the moment the
+   *  bar becomes visible but has no data to serve. Optional so test
+   *  fixtures can omit it; all guards (unknown id, cache-empty, in-flight,
+   *  staleness) live manager-side. */
+  ensureContextUsageSeed?(sessionId: string): void
   subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: import('./session-pump.js').LiteContextUsage | undefined; unsubscribe: () => void } | null
   subscribePromptSuggestion(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null
   subscribeTasks(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null

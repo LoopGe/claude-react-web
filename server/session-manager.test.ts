@@ -2860,6 +2860,10 @@ describe('SessionManager', () => {
   it('caps stale re-arms so a churning snapshot cannot loop control requests', async () => {
     const info = sm.create({})
     seedAggregateSnapshot(info.id)
+    // Settle + clear the spawn-time seed probe so the call counts below
+    // belong to the reconcile probe alone.
+    for (let i = 0; i < 10; i++) await tick()
+    mockHandles[0].getContextUsage.mockClear()
 
     // Four held promises: the direct fire consumes the first; each stale
     // resolve re-arms once, consuming the next. After the 3rd re-arm (cap)
@@ -3018,8 +3022,20 @@ describe('SessionManager', () => {
     mockHandles[0].emit({ type: 'system', subtype: 'init', session_id: id, uuid: 'init-1', model: 'claude-sonnet-4-5' })
   }
 
+  /** Settle the spawn-time seed probe: create() now fires it synchronously
+   *  (default {} mock → refused, in-flight flag released after a microtask
+   *  chain, cooldown stamp set). Every seed scenario below must start from
+   *  that quiescent state, or its mock queue gets consumed by whichever
+   *  probe happens to fire. The cooldown stamp is reset so scenarios that
+   *  seed manually aren't rate-limited by the spawn attempt. */
+  const settleSpawnProbe = async (id: string) => {
+    for (let i = 0; i < 10; i++) await tick()
+    ;(usageStateOf(id) as unknown as { lastContextUsageSeedAt?: number }).lastContextUsageSeedAt = 0
+  }
+
   it('init landing fires a background seed probe that paints the zero-turn bar', async () => {
     const info = sm.create({})
+    await settleSpawnProbe(info.id)
     const sub = sm.subscribeContextUsage(info.id)!
     const it = sub.iterable[Symbol.asyncIterator]()
     mockHandles[0].getContextUsage.mockClear()
@@ -3045,6 +3061,7 @@ describe('SessionManager', () => {
 
   it('a garbage seed answer leaves the cache empty and the session unharmed', async () => {
     const info = sm.create({})
+    await settleSpawnProbe(info.id)
     // Default mock resolves {} — liteContextUsageFromSdkUsage refuses it.
     emitInit(info.id)
     for (let i = 0; i < 10; i++) await tick()
@@ -3053,6 +3070,7 @@ describe('SessionManager', () => {
 
   it('a rejected seed probe is silent and does not wedge later usage updates', async () => {
     const info = sm.create({})
+    await settleSpawnProbe(info.id)
     mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('subprocess busy'))
     emitInit(info.id)
     for (let i = 0; i < 10; i++) await tick()
@@ -3082,6 +3100,7 @@ describe('SessionManager', () => {
 
   it('the seed probe is skipped while a turn is already pending (resume with queued input)', async () => {
     const info = sm.create({})
+    await settleSpawnProbe(info.id)
     sm.send(info.id, 'hi')
     mockHandles[0].getContextUsage.mockClear()
     emitInit(info.id)
@@ -3093,6 +3112,7 @@ describe('SessionManager', () => {
 
   it('a delayed seed response never overwrites a newer turn-derived snapshot', async () => {
     const info = sm.create({})
+    await settleSpawnProbe(info.id)
     // Seed probe fired at init and HANGS (control responses have no SDK-side
     // timeout — the reason every probe races its own 10s timer).
     let resolveSeed: (v: unknown) => void = () => {}
@@ -3132,6 +3152,7 @@ describe('SessionManager', () => {
 
   it('a seed still in flight does not block turn-1 reconcile on the aggregate wire', async () => {
     const info = sm.create({})
+    await settleSpawnProbe(info.id)
     // Seed probe in flight when turn 1 completes…
     let resolveSeed: (v: unknown) => void = () => {}
     mockHandles[0].getContextUsage.mockClear()
@@ -3176,6 +3197,7 @@ describe('SessionManager', () => {
 
   it('a completed turn whose own snapshots all failed voids the stale seed answer', async () => {
     const info = sm.create({})
+    await settleSpawnProbe(info.id)
     let resolveSeed: (v: unknown) => void = () => {}
     mockHandles[0].getContextUsage.mockClear()
     mockHandles[0].getContextUsage.mockReturnValueOnce(new Promise((res) => { resolveSeed = res }))
@@ -3195,6 +3217,98 @@ describe('SessionManager', () => {
     resolveSeed(freshSessionUsage)
     for (let i = 0; i < 10; i++) await tick()
     expect(sm.getCachedContextUsage(info.id)).toBeNull()
+  })
+
+  it('spawning a session fires the seed probe immediately (no init-frame dependency)', async () => {
+    // The mify-proxy backend can delay the pump's `system/init` frame by
+    // minutes (or forever) while control requests answer in ~2s — the seed
+    // must therefore fire at spawn, not wait for init.
+    const info = sm.create({})
+    // The spawn-time probe is the first control call of the session's life.
+    expect(mockHandles[0].getContextUsage).toHaveBeenCalledWith({ detail: 'summary' })
+
+    // A valid answer seeds the bar (queue one for the next probe; the spawn
+    // probe consumed the default {} mock and was refused).
+    await settleSpawnProbe(info.id)
+    mockHandles[0].getContextUsage.mockClear()
+    mockHandles[0].getContextUsage.mockResolvedValueOnce(freshSessionUsage)
+    sm.ensureContextUsageSeed(info.id)
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id) === null; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(62000)
+  })
+
+  it('ensureContextUsageSeed() stands down when the cache already holds a snapshot', async () => {
+    const info = sm.create({})
+    await settleSpawnProbe(info.id)
+    mockHandles[0].getContextUsage.mockClear()
+    mockHandles[0].getContextUsage.mockResolvedValueOnce(freshSessionUsage)
+    sm.ensureContextUsageSeed(info.id)
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id) === null; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)).not.toBeNull()
+
+    // A second call (another tab subscribing) must not re-probe.
+    mockHandles[0].getContextUsage.mockClear()
+    sm.ensureContextUsageSeed(info.id)
+    for (let i = 0; i < 5; i++) await tick()
+    expect(mockHandles[0].getContextUsage).not.toHaveBeenCalled()
+  })
+
+  it('ensureContextUsageSeed() is a no-op for an unknown session', () => {
+    expect(() => sm.ensureContextUsageSeed('ghost')).not.toThrow()
+  })
+
+  it('ensureContextUsageSeed() rate-limits repeated attempts while the cache stays empty', async () => {
+    const info = sm.create({})
+    await settleSpawnProbe(info.id)
+    mockHandles[0].getContextUsage.mockClear()
+
+    // A rejected probe leaves the cache empty…
+    mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('backend down'))
+    sm.ensureContextUsageSeed(info.id)
+    for (let i = 0; i < 10; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)).toBeNull()
+
+    // …but the attempt stamps the session: an immediate re-trigger (another
+    // tab subscribing) must not pile another probe onto a backend that just
+    // refused one.
+    sm.ensureContextUsageSeed(info.id)
+    for (let i = 0; i < 5; i++) await tick()
+    expect(mockHandles[0].getContextUsage).toHaveBeenCalledTimes(1)
+
+    // Once the cooldown window has passed, the next subscribe retries —
+    // this is the self-heal path for a backend that recovered.
+    ;(usageStateOf(info.id) as unknown as { lastContextUsageSeedAt?: number }).lastContextUsageSeedAt = Date.now() - 60_000
+    mockHandles[0].getContextUsage.mockResolvedValueOnce(freshSessionUsage)
+    sm.ensureContextUsageSeed(info.id)
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id) === null; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(62000)
+  })
+
+  it('a mid-turn seed attempt is skipped WITHOUT consuming the cooldown window', async () => {
+    const info = sm.create({})
+    await settleSpawnProbe(info.id)
+    mockHandles[0].getContextUsage.mockClear()
+
+    // Subscribe while a turn is pending: the seed must stand down AND leave
+    // the cooldown unstamped — otherwise the post-turn self-heal would wait
+    // 15s for an attempt that never ran.
+    sm.send(info.id, 'hi')
+    sm.ensureContextUsageSeed(info.id)
+    for (let i = 0; i < 5; i++) await tick()
+    expect(mockHandles[0].getContextUsage).not.toHaveBeenCalled()
+
+    // Turn completes on the aggregate wire; its reconcile fails too, so the
+    // cache is still empty and the seed is the only remaining source.
+    mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('control timeout'))
+    emitAggregateResult()
+    for (let i = 0; i < 10; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)).toBeNull()
+
+    // The immediate post-turn subscribe must probe NOW, not in 15s.
+    mockHandles[0].getContextUsage.mockResolvedValueOnce(freshSessionUsage)
+    sm.ensureContextUsageSeed(info.id)
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id) === null; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(62000)
   })
 
   // --- thinking config (Options.thinking at spawn + setMaxThinkingTokens live) ---

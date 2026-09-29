@@ -533,6 +533,17 @@ const WITHDRAWN_UUIDS_CAP = 200
  *  measures 250–400ms), so 10s is generous headroom, not a tuned value. */
 const CONTEXT_USAGE_PROBE_TIMEOUT_MS = 10_000
 
+/** Min interval between zero-turn context-usage SEED attempts for one
+ *  session. The subscribe and init triggers fire on every fresh attach /
+ *  init landing; without this backstop a backend whose summary answer is
+ *  always refused would pay one control round-trip per reconnect / panel
+ *  remount forever (the in-flight flag only dedups concurrent attempts).
+ *  Equal to the probe timeout so a TIMED-OUT spawn attempt's window expires
+ *  exactly when its flag releases — no dead zone between "probe gave up"
+ *  and "retry allowed" (a 15s window would leave init landings at t=10–15s
+ *  suppressed for nothing). */
+const CONTEXT_USAGE_SEED_MIN_INTERVAL_MS = CONTEXT_USAGE_PROBE_TIMEOUT_MS
+
 /** Max consecutive stale re-arms per fired reconcile probe (see
  *  reconcileContextUsage). */
 const MAX_RECONCILE_REARMS = 3
@@ -2792,6 +2803,10 @@ export class SessionManager {
     this.sessions.set(id, session)
     metrics.gauge('sessions_active', this.sessions.size)
     log.info(`[session ${id}] spawned model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
+    // Zero-turn Context bar seed — fire at spawn, NOT at init: control
+    // requests answer seconds before the (proxy-delayable) init frame
+    // reaches the pump. See seedContextUsage for the trigger family.
+    this.seedContextUsage(session)
     // Classify the model's effort capability (keyword-based, synchronous) so
     // the very first `created` frame below already carries the correct
     // visible/levels state — no follow-up update needed.
@@ -4924,7 +4939,13 @@ export class SessionManager {
   }
 
   /** Fire-and-forget getContextUsage() that seeds the FIRST context snapshot
-   *  the moment the init handshake lands (PumpDeps.seedContextUsageOnInit).
+   *  for a session with an empty cache. Three triggers funnel into this one
+   *  method: spawn completion (SessionManager's spawned path), the pump's
+   *  init handshake (PumpDeps.seedContextUsage — a retry when the spawn-time
+   *  probe timed out; on slow-init backends init lands after the cooldown
+   *  window, which is exactly where this retry matters), and a client
+   *  subscribing while the cache is empty (ensureContextUsageSeed, the
+   *  self-heal for server restarts).
    *
    *  Why: every pre-existing snapshot path is downstream of a turn — the pump
    *  derives from `result` frames, the reconcile probe fires after non-empty
@@ -4932,42 +4953,69 @@ export class SessionManager {
    *  so a brand-new session showed no Context bar until its first turn
    *  completed, while the Settings panel (on-demand blocking fetch) did. This
    *  probe closes that zero-turn gap with the same fire-and-forget shape as
-   *  reconcile: skipped mid-turn (a resume with queued input gets its snapshot
-   *  from the turn's own result), failures swallowed.
+   *  reconcile; failures swallowed.
    *
-   *  OWN in-flight flag, not the reconcile's: on an aggregate-reporting wire
-   *  the reconcile is a slow turn's ONLY corrector, and a seed still in flight
-   *  when that turn's result landed would otherwise silently drop it (the
-   *  flag-busy early return never reaches onSettled, so no re-arm runs). With
-   *  separate flags both probes proceed; the ordering hazard that creates —
-   *  the seed's pre-turn answer invalidating the reconcile's fire-time
-   *  identity — is absorbed by reconcile's stale→re-arm.
+   *  Spawn-time (not init-time) is the PRIMARY trigger: on proxy backends the
+   *  pump's `system/init` frame can arrive minutes late or never, while
+   *  control requests answer in ~2s — keying the seed on init made it dead
+   *  there (measured: 8+ minutes of zero frames with supportedCommands
+   *  resolving fine at 2.2s). The spawn leg ALWAYS fires pre-turn (input can
+   *  only be enqueued after spawn() returns), so the mid-turn skip below
+   *  gates the init and subscribe legs only; a first message sent
+   *  immediately after create simply means the seed answer lands mid-turn,
+   *  where the staleness check decides.
    *
-   *  Staleness, mirrored from reconcile: the "cache is empty" justification
-   *  holds at FIRE time, not resolve time. TWO identity captures decide
-   *  whether the answer is still the newest truth at resolve time —
-   *  `lastContextUsage` (a newer snapshot landed mid-flight → it wins) and
-   *  `lastTurnAt` (a turn COMPLETED mid-flight, even when every snapshot for
-   *  it failed to land, so the zero-turn reading must not paint itself as
-   *  post-turn truth). Identity captures, not null checks, so a future
-   *  re-seed on a session that already holds state stays correct. */
-  private seedContextUsageOnInit(s: Session): void {
-    const lastUsageAtFire = s.lastContextUsage
+   *  Guards, in order:
+   *  - Cache-empty: a cached snapshot is what the bar serves, so a re-seed
+   *    would be a wasted control round-trip (this also stops the init hook
+   *    double-probing after every successful spawn-time probe).
+   *  - Cooldown (lastContextUsageSeedAt): bounds the subscribe and init
+   *    triggers on a backend whose answer is always refused — one attempt
+   *    per window instead of one per reconnect, forever. Stamped ONLY when
+   *    the probe actually starts (fireContextUsageProbe's boolean return):
+   *    a mid-turn skip or flag-busy no-op must not consume the window, or
+   *    the post-turn self-heal would wait out the cooldown for an attempt
+   *    that never ran.
+   *  - OWN in-flight flag, not the reconcile's: on an aggregate-reporting
+   *    wire the reconcile is a slow turn's ONLY corrector, and a seed still
+   *    in flight when that turn's result landed would otherwise silently
+   *    drop it (the flag-busy early return never reaches onSettled, so no
+   *    re-arm runs). With separate flags both probes proceed; the ordering
+   *    hazard that creates — the seed's pre-turn answer invalidating the
+   *    reconcile's fire-time identity — is absorbed by reconcile's
+   *    stale→re-arm.
+   *
+   *  Staleness at resolve time: the cache was empty at fire (guard above),
+   *  so ANY snapshot present at resolve landed mid-flight and wins — skip.
+   *  The `lastTurnAt` identity capture covers the subtler case: a turn
+   *  COMPLETED mid-flight but every snapshot for it failed to land — the
+   *  zero-turn reading must not paint itself as post-turn truth. */
+  private seedContextUsage(s: Session): void {
+    if (s.lastContextUsage) return
+    if (Date.now() - (s.lastContextUsageSeedAt ?? 0) < CONTEXT_USAGE_SEED_MIN_INTERVAL_MS) return
     const lastTurnAtFire = s.lastTurnAt
-    this.fireContextUsageProbe(s, {
+    const started = this.fireContextUsageProbe(s, {
       flag: 'contextUsageSeedInFlight',
       skipMidTurn: true,
       label: 'context-usage seed probe',
       onResolved: (raw) => {
-        if (s.lastContextUsage !== lastUsageAtFire || s.lastTurnAt !== lastTurnAtFire) return
-        // `last` mirrors the reconcile call: on a snapshot-holding session the
-        // builder carries the threshold/window per the same denominator
-        // contract instead of taking the standalone branch.
-        const seeded = liteContextUsageFromSdkUsage(raw, s.lastContextUsage)
+        if (s.lastContextUsage || s.lastTurnAt !== lastTurnAtFire) return
+        const seeded = liteContextUsageFromSdkUsage(raw)
         if (seeded) applyContextUsage(s, seeded)
         this.foldSdkAutoCompactFacts(s, raw)
       },
     })
+    if (started) s.lastContextUsageSeedAt = Date.now()
+  }
+
+  /** Public seed entry for the WS subscribe path: a tab attached to a session
+   *  whose cache is still empty (fresh spawn under a slow-init backend, or a
+   *  server restart that wiped the in-memory snapshot) asks for a seed at the
+   *  exact moment the bar becomes visible. No-op for unknown sessions; all
+   *  guards live in seedContextUsage. */
+  ensureContextUsageSeed(id: string): void {
+    const s = this.sessions.get(id)
+    if (s) this.seedContextUsage(s)
   }
 
   /** The probe-response facts-fold rule, shared by every getContextUsage
@@ -4985,10 +5033,14 @@ export class SessionManager {
    *  delay control_response indefinitely), so background probes race their
    *  own timer — without it, one wedged subprocess would hold the in-flight
    *  flag for the session's remaining life and silently disable the probe
-   *  forever. Shared scaffolding for probeAutoCompactFacts (pin changes) and
-   *  reconcileContextUsage (turn-end correction): running/terminated guard,
-   *  optional mid-turn skip, per-flag in-flight dedup, sync-throw containment,
-   *  timeout race, and flag release in finally. */
+   *  forever. Shared scaffolding for probeAutoCompactFacts (pin changes),
+   *  reconcileContextUsage (turn-end correction), and seedContextUsage
+   *  (zero-turn bar paint): running/terminated guard, optional mid-turn
+   *  skip, per-flag in-flight dedup, sync-throw containment, timeout race,
+   *  and flag release in finally. Returns whether the probe actually
+   *  started — skipped attempts (mid-turn, flag-busy, non-running, missing
+   *  capability) report false so callers that meter attempts (the seed
+   *  cooldown) don't charge for them. */
   private fireContextUsageProbe(
     s: Session,
     opts: {
@@ -5004,12 +5056,12 @@ export class SessionManager {
       skipMidTurn?: boolean
       timeoutMs?: number
     },
-  ): void {
-    if (!s.running || s.terminated) return
-    if (opts.skipMidTurn && s.pendingTurns > 0) return
-    if (s[opts.flag]) return
+  ): boolean {
+    if (!s.running || s.terminated) return false
+    if (opts.skipMidTurn && s.pendingTurns > 0) return false
+    if (s[opts.flag]) return false
     const fn = s.handle.getContextUsage
-    if (typeof fn !== 'function') return
+    if (typeof fn !== 'function') return false
     s[opts.flag] = true
     const timeoutMs = opts.timeoutMs ?? CONTEXT_USAGE_PROBE_TIMEOUT_MS
     let timer: NodeJS.Timeout | undefined
@@ -5074,6 +5126,10 @@ export class SessionManager {
       s[opts.flag] = false
       log.debug(`[session ${s.id}] ${opts.label} threw synchronously:`, err)
     }
+    // "Started" = past every guard with the flag held. A synchronous handle
+    // throw above still counts as started (the cooldown/flag machinery
+    // treats it as a failed attempt — bounded, same as a transport error).
+    return true
   }
 
   /** Structured /usage data for one session: cost/usage totals plus
@@ -6507,8 +6563,10 @@ export class SessionManager {
         // call (see reconcileContextUsage for the aggregate-payload bug
         // this corrects).
         reconcileContextUsage: (s) => this.reconcileContextUsage(s),
-        // Zero-turn Context bar seed — see seedContextUsageOnInit.
-        seedContextUsageOnInit: (s) => this.seedContextUsageOnInit(s),
+        // Zero-turn Context bar seed — see seedContextUsage. Fired here on
+        // the init handshake as a free retry when the spawn-time probe
+        // timed out (the cache/in-flight guards make it a no-op otherwise).
+        seedContextUsage: (s) => this.seedContextUsage(s),
       }
     }
     return this.cachedPumpDeps

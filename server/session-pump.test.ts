@@ -2008,27 +2008,27 @@ describe('pump: cold-start timing', () => {
 })
 
 describe('pump: context-usage seed on init', () => {
-  it('fires seedContextUsageOnInit exactly once when the first init lands', async () => {
+  it('fires seedContextUsage exactly once when the first init lands', async () => {
     const { session } = makePumpSession([
       sysFrame('init'),
       sysFrame('init'), // duplicate init (respawn edge) — must not re-fire
       { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
     ])
-    const seedContextUsageOnInit = vi.fn()
-    await pump(session, makePumpDeps({ seedContextUsageOnInit }))
+    const seedContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ seedContextUsage }))
 
-    expect(seedContextUsageOnInit).toHaveBeenCalledTimes(1)
-    expect(seedContextUsageOnInit).toHaveBeenCalledWith(session)
+    expect(seedContextUsage).toHaveBeenCalledTimes(1)
+    expect(seedContextUsage).toHaveBeenCalledWith(session)
   })
 
   it('never fires the seed dep when no init frame lands', async () => {
     const { session } = makePumpSession([
       { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
     ])
-    const seedContextUsageOnInit = vi.fn()
-    await pump(session, makePumpDeps({ seedContextUsageOnInit }))
+    const seedContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ seedContextUsage }))
 
-    expect(seedContextUsageOnInit).not.toHaveBeenCalled()
+    expect(seedContextUsage).not.toHaveBeenCalled()
   })
 
   it('a throwing seed dep does not break the pump (later frames still process)', async () => {
@@ -2036,8 +2036,8 @@ describe('pump: context-usage seed on init', () => {
       sysFrame('init'),
       { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
     ])
-    const seedContextUsageOnInit = vi.fn(() => { throw new Error('seed blew up') })
-    await pump(session, makePumpDeps({ seedContextUsageOnInit }))
+    const seedContextUsage = vi.fn(() => { throw new Error('seed blew up') })
+    await pump(session, makePumpDeps({ seedContextUsage }))
 
     // The result still reached the message channel; the ring keeps init
     // (by design — fastModeState extraction) and the result.

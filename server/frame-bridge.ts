@@ -624,9 +624,14 @@ export class SessionConnection {
       // 2.6) Send the cached context-usage snapshot if there is one, so a
       //      tab that subscribes between turns (reconnect / new panel /
       //      refresh+resume) shows the Context bar immediately instead of
-      //      waiting for the next `result` to land.
+      //      waiting for the next `result` to land. With NO cached snapshot
+      //      (fresh spawn under a slow-init backend, or a server restart
+      //      that wiped the cache) ask for a zero-turn seed instead — this
+      //      is the self-heal trigger; the manager dedups/guards it.
       if (ctxSub?.snapshot) {
         this.sink.send({ kind: 'context-usage', sessionId, usage: ctxSub.snapshot })
+      } else {
+        this.sm.ensureContextUsageSeed?.(sessionId)
       }
 
       // 2.7) Send the cached prompt-suggestion snapshot if there is one.

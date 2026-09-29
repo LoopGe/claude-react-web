@@ -667,15 +667,20 @@ export interface PumpDeps {
    *  path never awaits it. Optional so test fixtures that don't exercise
    *  reconciliation can omit it. */
   reconcileContextUsage?: (session: Session) => void
-  /** Seed the session's context-usage snapshot when the init handshake lands
-   *  (first `system/init` of a pump's life — `initAtMs` never resets, so an
-   *  in-place respawn on the SAME session object does not re-fire; a fresh
-   *  Session from spawn/resume always does). The manager answers with a
-   *  fire-and-forget getContextUsage() probe so a brand-new session paints
-   *  its Context bar before the first turn completes — the zero-turn gap the
-   *  result-derivation path (and the subscribe seed) cannot cover. Optional
-   *  so test fixtures that don't exercise seeding can omit it. */
-  seedContextUsageOnInit?: (session: Session) => void
+  /** Seed the session's context-usage snapshot (first `system/init` of a
+   *  pump's life — `initAtMs` never resets, so an in-place respawn on the
+   *  SAME session object does not re-fire; a fresh Session from
+   *  spawn/resume always does). The manager answers with a fire-and-forget
+   *  getContextUsage() probe so a brand-new session paints its Context bar
+   *  before the first turn completes. This init hook is the RETRY leg of a
+   *  three-trigger family (spawn completion + empty-cache subscribe are the
+   *  others — see SessionManager.seedContextUsage): on proxy backends the
+   *  init frame can arrive minutes late or never, so spawn is the primary
+   *  trigger and this one only re-fires when the early probe failed. All
+   *  guards (cache-empty, in-flight, staleness) live manager-side; safe to
+   *  call redundantly. Optional so test fixtures that don't exercise
+   *  seeding can omit it. */
+  seedContextUsage?: (session: Session) => void
   /** Reference to the broadcaster — needed by the mutating-tool detector
    *  to schedule a debounced git-snapshot broadcast after Claude
    *  runs Edit/Write/NotebookEdit/Bash. Optional so test fixtures that
@@ -1005,15 +1010,16 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             `[${session.id}] init handshake done in ${bootMs ?? '?'}ms from pump start` +
               (model ? ` (model=${model})` : ''),
           )
-          // Zero-turn Context bar seed — see PumpDeps.seedContextUsageOnInit.
-          // Contained like onBackgroundSubagentLaunched: this is an injected
-          // dep boundary, not a trusted internal call — the pump loop must
-          // survive any implementation (test fixtures inject throwers).
-          if (deps.seedContextUsageOnInit) {
+          // Zero-turn Context bar seed (retry leg) — see
+          // PumpDeps.seedContextUsage. Contained like
+          // onBackgroundSubagentLaunched: this is an injected dep boundary,
+          // not a trusted internal call — the pump loop must survive any
+          // implementation (test fixtures inject throwers).
+          if (deps.seedContextUsage) {
             try {
-              deps.seedContextUsageOnInit(session)
+              deps.seedContextUsage(session)
             } catch (err) {
-              log.warn(`[${session.id}] seedContextUsageOnInit threw:`, err)
+              log.warn(`[${session.id}] seedContextUsage threw:`, err)
             }
           }
         }
