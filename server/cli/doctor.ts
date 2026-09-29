@@ -53,7 +53,9 @@ async function runDoctor(ctx: CliContext, parsed: ParsedOptions): Promise<Doctor
     name: 'claude-binary',
     ok: !!bin,
     detail: bin ?? 'auto-detect (SDK default)',
-    fix: bin ? undefined : 'install the claude CLI or pass --claude-binary <path>',
+    fix: bin
+      ? undefined
+      : 'install the claude CLI or pass --claude-binary <path to cli.js or claude.exe — an unresolvable .cmd shim is rejected on Windows>',
   })
   let writable = false
   try { await fs.access(ctx.stateDir, fs.constants.W_OK); writable = true } catch { writable = false }

@@ -23,10 +23,11 @@
 
 import { execFile, execSync } from 'node:child_process'
 import { promisify } from 'node:util'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
+import { resolveCmdShim as sharedResolveCmdShim } from './cmd-shim.js'
 import { MAX_BUFFER_BYTES } from './constants.js'
 
 const log = createLogger('npm-install')
@@ -73,22 +74,11 @@ function findNpmCliJs(npmExecPath: string): string | null {
   return null
 }
 
-/** Parse an npm cmd-shim .cmd file to extract the real script path. Mirrors
- *  resolveCmdShim() in cli.ts. */
+/** Parse an npm cmd-shim .cmd file to extract the real script path. Uses the
+ *  shared hardened parser in cmd-shim.ts (rejects node.exe/.cjs/.cmd targets
+ *  — see that file for why). */
 function resolveCmdShim(cmdPath: string): string | null {
-  try {
-    const content = readFileSync(cmdPath, 'utf8')
-    const cmdDir = dirname(cmdPath)
-    const match =
-      content.match(/%dp0%\\([^"]+\.js)"?\s*[%*]/) ?? content.match(/"%dp0%\\([^"]+)"/)
-    if (match) {
-      const resolved = join(cmdDir, match[1])
-      if (existsSync(resolved)) return resolved
-    }
-  } catch {
-    /* unreadable .cmd — fall through */
-  }
-  return null
+  return sharedResolveCmdShim(cmdPath)
 }
 
 /** Resolve how to invoke npm, once. Returns null if npm can't be located. */
