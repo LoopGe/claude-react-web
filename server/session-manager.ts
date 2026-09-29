@@ -494,6 +494,29 @@ function projectHistoryFrame(m: SDKMessage): DebugSessionDetail['historyTail'][n
   }
 }
 
+/** Compare the pump-cached LiteContextUsage against the CLI's live rich
+ *  breakdown for debugSession's `contextUsageMismatch` flag. True only when
+ *  BOTH readings carry a positive totalTokens and they diverge by more than
+ *  CONTEXT_USAGE_MISMATCH_RATIO in either direction — the "one lens is
+ *  lying" signal (normal lens jitter between the API-bucket sum and the
+ *  CLI's own accounting is well under 1.5×; the aggregate-usage bug
+ *  diverged 6.4×). Missing/unparseable readings compare as false: absence is
+ *  not evidence of a lie. */
+function debugContextUsageMismatch(
+  cached: import('./session-pump.js').LiteContextUsage | null,
+  live: unknown,
+): boolean {
+  const cachedTotal = cached?.totalTokens
+  const liveTotal = (live as { totalTokens?: unknown } | null | undefined)?.totalTokens
+  if (
+    typeof cachedTotal !== 'number' || !Number.isFinite(cachedTotal) || cachedTotal <= 0
+    || typeof liveTotal !== 'number' || !Number.isFinite(liveTotal) || liveTotal <= 0
+  ) {
+    return false
+  }
+  return Math.max(cachedTotal, liveTotal) / Math.min(cachedTotal, liveTotal) > CONTEXT_USAGE_MISMATCH_RATIO
+}
+
 const log = createLogger('session')
 
 /** Cap on the per-session `withdrawnUuids` memory (replayed to late msgstat
@@ -512,6 +535,13 @@ const CONTEXT_USAGE_PROBE_TIMEOUT_MS = 10_000
 /** Max consecutive stale re-arms per fired reconcile probe (see
  *  reconcileContextUsage). */
 const MAX_RECONCILE_REARMS = 3
+
+/** How far the cached LiteContextUsage and the CLI's live breakdown may
+ *  diverge (in either direction, as a ratio of the larger to the smaller)
+ *  before debugSession flags `contextUsageMismatch`. Normal lens jitter
+ *  between the API-bucket sum and the CLI's own accounting is well under
+ *  1.5× (measured ~0.5%); the aggregate-usage bug diverged 6.4×. */
+const CONTEXT_USAGE_MISMATCH_RATIO = 1.5
 
 /** A user message after `stampReceivedAt` has stamped `receivedAt` on it.
  *  The SDK's `SDKUserMessage` type doesn't include `receivedAt` (it's a
@@ -4247,6 +4277,8 @@ export class SessionManager {
   async debugSession(id: string, historyLimit = 30): Promise<DebugSessionDetail> {
     const info = this.get(id)
     const s = this.sessions.get(id)
+    const contextUsageLive = s ? await this.contextUsageOrNull(id) : null
+    const cachedContextUsage = s?.lastContextUsage ?? null
     return {
       ...debugSummaryFromInfo(info),
       pendingTurns: s?.pendingTurns ?? 0,
@@ -4277,7 +4309,9 @@ export class SessionManager {
       // of them is worth widening an existing endpoint's behavior for.
       cli: s ? await this.getDiagnostics(id) : null,
       toolServers: s ? this.toolServerStatus(id) : null,
-      contextUsage: s ? await this.contextUsageOrNull(id) : null,
+      contextUsage: contextUsageLive,
+      cachedContextUsage,
+      contextUsageMismatch: debugContextUsageMismatch(cachedContextUsage, contextUsageLive),
     }
   }
 

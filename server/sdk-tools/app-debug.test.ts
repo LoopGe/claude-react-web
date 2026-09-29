@@ -26,7 +26,7 @@ function summary(over: Partial<DebugSessionSummary> = {}): DebugSessionSummary {
 }
 
 function detail(): DebugSessionDetail {
-  return { ...summary(), historyTail: [], withdrawnUuids: [], promptUuids: [], tasks: [], cli: { cliDebug: { global: false, effective: false }, stderrTail: [], debugLog: { exists: false } }, toolServers: [], contextUsage: null }
+  return { ...summary(), historyTail: [], withdrawnUuids: [], promptUuids: [], tasks: [], cli: { cliDebug: { global: false, effective: false }, stderrTail: [], debugLog: { exists: false } }, toolServers: [], contextUsage: null, cachedContextUsage: null, contextUsageMismatch: false }
 }
 
 const host = vi.hoisted(() => ({

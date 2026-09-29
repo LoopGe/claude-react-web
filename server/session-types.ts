@@ -114,6 +114,19 @@ export interface DebugSessionDetail extends DebugSessionSummary {
   /** `contextUsage(id)` result, or null when the session is not live
    *  (contextUsage requires a live Query and throws otherwise). */
   contextUsage: unknown | null
+  /** The pump-cached LiteContextUsage — what the WS `context-usage` frames and
+   *  the ContextBar actually serve — or null before any snapshot exists.
+   *  Read side by side with `contextUsage` (the CLI's live rich breakdown):
+   *  this pair is the context-usage debugging lens, and a large mismatch
+   *  between the two is the signature of a wrong cached snapshot (the
+   *  aggregate-usage bug cached 995,023/1M while the CLI's own accounting
+   *  said 155,641/1M). Live-only — mirrors the pump's in-memory cache, null
+   *  for a dormant or terminated session. */
+  cachedContextUsage: import('./session-pump.js').LiteContextUsage | null
+  /** Derived, live-only: true when BOTH readings exist and their totalTokens
+   *  disagree by more than CONTEXT_USAGE_MISMATCH_RATIO in either direction —
+   *  the "one lens is lying" signal. False when either side is missing. */
+  contextUsageMismatch: boolean
 }
 
 /** Subscriber — each connected client gets one of these. */

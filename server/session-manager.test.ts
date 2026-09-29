@@ -4740,11 +4740,67 @@ describe('SessionManager', () => {
       const dormant = await sm.debugSession(info.id, 0)
       expect(dormant.phase).toBe('dormant')
       expect(dormant.contextUsage).toBeNull()
+      expect(dormant.cachedContextUsage).toBeNull()
+      expect(dormant.contextUsageMismatch).toBe(false)
       expect(dormant.cli).toBeNull()
       expect(dormant.toolServers).toBeNull()
       expect(dormant.historyTail).toEqual([])
       expect(dormant.withdrawnUuids).toEqual([])
       expect(dormant.tasks).toEqual([])
+    })
+
+    it('exposes the cached Lite snapshot beside the live breakdown and flags a large mismatch', async () => {
+      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+      sm.send(info.id, 'hello')
+
+      // Seed the pump-cached snapshot with the aggregate-bug signature
+      // (995,023 cached while the CLI's own accounting says 155,641 — a 6.4×
+      // divergence; normal lens jitter is well under 1.5×).
+      ;(sm as unknown as { sessions: Map<string, { lastContextUsage?: Record<string, unknown> }> })
+        .sessions.get(info.id)!.lastContextUsage = {
+        totalTokens: 995023,
+        maxTokens: 1000000,
+        rawMaxTokens: 1000000,
+        percentage: 99.5023,
+        model: 'test-model',
+      }
+
+      mockHandles[0].getContextUsage.mockResolvedValueOnce({
+        categories: [],
+        totalTokens: 155641,
+        maxTokens: 1000000,
+        rawMaxTokens: 1000000,
+        percentage: 16,
+        model: 'test-model',
+        isAutoCompactEnabled: true,
+      })
+      const detail = await sm.debugSession(info.id, 0)
+      // Both lenses side by side — the pair that would have made the
+      // 73a4960a investigation a one-call diagnosis.
+      expect(detail.cachedContextUsage?.totalTokens).toBe(995023)
+      expect((detail.contextUsage as { totalTokens?: number }).totalTokens).toBe(155641)
+      expect(detail.contextUsageMismatch).toBe(true)
+
+      // Matching readings (normal lens jitter) do not flag.
+      ;(sm as unknown as { sessions: Map<string, { lastContextUsage?: Record<string, unknown> }> })
+        .sessions.get(info.id)!.lastContextUsage = {
+        totalTokens: 155641,
+        maxTokens: 1000000,
+        rawMaxTokens: 1000000,
+        percentage: 16,
+        model: 'test-model',
+      }
+      mockHandles[0].getContextUsage.mockResolvedValueOnce({
+        categories: [],
+        totalTokens: 155641,
+        maxTokens: 1000000,
+        rawMaxTokens: 1000000,
+        percentage: 16,
+        model: 'test-model',
+        isAutoCompactEnabled: true,
+      })
+      const matched = await sm.debugSession(info.id, 0)
+      expect(matched.contextUsageMismatch).toBe(false)
     })
 
     it('throws for an unknown session id', async () => {

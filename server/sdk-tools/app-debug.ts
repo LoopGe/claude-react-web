@@ -163,7 +163,7 @@ export function buildDebugTools(host: DebugHost): SdkMcpToolDefinition<any>[] {
     ),
     tool(
       'session',
-      'Deep-dive one session: the overview fields plus history-tail routing metadata (no message bodies), withdrawn/prompt uuids, the task table, CLI diagnostics, first-party tool server status, and context usage. Works for dormant sessions too; cli, toolServers and contextUsage are null off-live.',
+      'Deep-dive one session: the overview fields plus history-tail routing metadata (no message bodies), withdrawn/prompt uuids, the task table, CLI diagnostics, first-party tool server status, and context usage — BOTH lenses: `contextUsage` is the CLI\'s live rich breakdown, `cachedContextUsage` is the pump-cached Lite snapshot the WS/ContextBar actually serve, and `contextUsageMismatch` flags when the two disagree by more than 1.5× (the "one lens is lying" signal). Works for dormant sessions too; cli, toolServers, contextUsage and cachedContextUsage are null off-live.',
       { id: z.string(), history: z.number().int().min(0).max(200).optional() },
       async (a) => guard(async () => json(await host.debugSession(a.id, a.history))),
       { annotations: readOnly },
