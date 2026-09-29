@@ -4801,6 +4801,30 @@ describe('SessionManager', () => {
       })
       const matched = await sm.debugSession(info.id, 0)
       expect(matched.contextUsageMismatch).toBe(false)
+
+      // A DEGRADED cached snapshot is the pump's self-declared estimate for a
+      // corrupt turn — it never accuses the lens of lying, however far the
+      // numbers drift.
+      ;(sm as unknown as { sessions: Map<string, { lastContextUsage?: Record<string, unknown> }> })
+        .sessions.get(info.id)!.lastContextUsage = {
+        totalTokens: 50000,
+        maxTokens: 1000000,
+        rawMaxTokens: 1000000,
+        percentage: 5,
+        model: 'test-model',
+        degraded: true,
+      }
+      mockHandles[0].getContextUsage.mockResolvedValueOnce({
+        categories: [],
+        totalTokens: 300000,
+        maxTokens: 1000000,
+        rawMaxTokens: 1000000,
+        percentage: 30,
+        model: 'test-model',
+        isAutoCompactEnabled: true,
+      })
+      const degraded = await sm.debugSession(info.id, 0)
+      expect(degraded.contextUsageMismatch).toBe(false)
     })
 
     it('throws for an unknown session id', async () => {

@@ -496,12 +496,12 @@ function projectHistoryFrame(m: SDKMessage): DebugSessionDetail['historyTail'][n
 
 /** Compare the pump-cached LiteContextUsage against the CLI's live rich
  *  breakdown for debugSession's `contextUsageMismatch` flag. True only when
- *  BOTH readings carry a positive totalTokens and they diverge by more than
- *  CONTEXT_USAGE_MISMATCH_RATIO in either direction — the "one lens is
- *  lying" signal (normal lens jitter between the API-bucket sum and the
- *  CLI's own accounting is well under 1.5×; the aggregate-usage bug
- *  diverged 6.4×). Missing/unparseable readings compare as false: absence is
- *  not evidence of a lie. */
+ *  BOTH readings carry a positive totalTokens, the cached snapshot is NOT
+ *  degraded (a degraded snapshot is the pump's deliberate input-only
+ *  estimate for a corrupt turn — it self-declares as an approximation, not a
+ *  lie), and they diverge by more than CONTEXT_USAGE_MISMATCH_RATIO in
+ *  either direction. Missing/unparseable readings compare as false: absence
+ *  is not evidence of a lie. */
 function debugContextUsageMismatch(
   cached: import('./session-pump.js').LiteContextUsage | null,
   live: unknown,
@@ -509,7 +509,8 @@ function debugContextUsageMismatch(
   const cachedTotal = cached?.totalTokens
   const liveTotal = (live as { totalTokens?: unknown } | null | undefined)?.totalTokens
   if (
-    typeof cachedTotal !== 'number' || !Number.isFinite(cachedTotal) || cachedTotal <= 0
+    cached?.degraded
+    || typeof cachedTotal !== 'number' || !Number.isFinite(cachedTotal) || cachedTotal <= 0
     || typeof liveTotal !== 'number' || !Number.isFinite(liveTotal) || liveTotal <= 0
   ) {
     return false
@@ -4272,13 +4273,18 @@ export class SessionManager {
    *  Resolves live OR dormant: `this.get(id)` is the public live-or-meta
    *  resolver (it throws 404 for an unknown id), while `this.require(id)`
    *  only ever resolves LIVE sessions and would 404 a store-backed one. The
-   *  in-memory collections are empty for a dormant session and the three
+   *  in-memory collections are empty for a dormant session and the four
    *  live-only sections are null — see the detail type. */
   async debugSession(id: string, historyLimit = 30): Promise<DebugSessionDetail> {
     const info = this.get(id)
     const s = this.sessions.get(id)
+    // Capture the cached lens BEFORE the live round-trip: a busy subprocess
+    // can stall contextUsageOrNull for seconds mid-turn, and sampling the
+    // pump cache after that await could pair the OLD live reading with the
+    // NEWER cached snapshot (or vice versa) — a mismatch flag computed from
+    // two different instants. Both lenses must be sampled at call start.
+    const cachedContextUsage = this.getCachedContextUsage(id)
     const contextUsageLive = s ? await this.contextUsageOrNull(id) : null
-    const cachedContextUsage = s?.lastContextUsage ?? null
     return {
       ...debugSummaryFromInfo(info),
       pendingTurns: s?.pendingTurns ?? 0,
