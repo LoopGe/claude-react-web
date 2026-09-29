@@ -2364,6 +2364,7 @@ export const Chat = memo(function Chat({
         createPortal(
           <ContextOrb
             usage={stream.contextUsage}
+            sessionId={session.id}
             editable
             custom={session.autoCompactWindow != null}
             disabled={session.terminated || !session.running}

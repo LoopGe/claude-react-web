@@ -1179,9 +1179,14 @@
 /* Popover hosts ContextBar. Escapes the card (card is overflow:visible
    so the rounded frame still paints; the pop sits above with z-index). */
 .ctx-orb-pop {
-  position: absolute;
-  bottom: calc(100% + 10px);
-  right: 0;
+  /* Portaled to <body> and fixed-positioned by ContextOrb's layout effect
+     (bottom/right inline styles from the orb's rect) — an absolute popover
+     inside the composer card was trapped in its backdrop-filter stacking
+     context and painted under the WorkingBubble. bottom-anchored so async
+     content growth extends upward, away from the composer. Deliberately NO
+     max-height: the breakdown renders at its natural height (a clamp here
+     just produces a scrollbar). */
+  position: fixed;
   width: min(320px, calc(100vw - 48px));
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -1198,6 +1203,35 @@
   border: 6px solid transparent;
   border-top-color: var(--bg-elev);
   filter: drop-shadow(0 1px 0 var(--border));
+}
+/* Composition breakdown inside the orb popover (below the bar). The shared
+   .settings-kv-row / .ctx-kind-* classes carry their own look; this wrapper
+   adds only popover-local rhythm: a hairline separator from the bar, a
+   scroll bound for tall breakdowns, and shrink-tolerant row names for the
+   ~320px width (long category names ellipsize instead of pushing the
+   share/token columns out). */
+.ctx-orb-pop-comp {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-xs);
+}
+.ctx-orb-pop-comp .settings-context-composition {
+  gap: var(--space-1-5);
+}
+.ctx-orb-pop-comp .settings-kv-row {
+  gap: var(--space-1);
+  padding: 2px 0;
+}
+.ctx-orb-pop-comp .settings-kv-row code {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx-orb-pop-comp .ctx-kind-share {
+  flex: none;
 }
 /* Spin the loader glyph during the brief optimistic-send window (before the
    server flips `working` true and the button swaps to Interrupt). Plays the
