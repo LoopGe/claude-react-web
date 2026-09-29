@@ -2993,6 +2993,210 @@ describe('SessionManager', () => {
     expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(155641)
   })
 
+  // --- zero-turn context-usage seed (init handshake) ------------------------
+  //
+  // A brand-new session has no `result` yet, so the pump's result-derivation
+  // path (and the subscribe seed, which serves the CACHE) can never paint the
+  // Context bar. The manager now fires ONE background getContextUsage() probe
+  // when the init handshake lands, seeding the snapshot the WS path serves.
+
+  /** The SDK's own answer for a fresh session: system prompt + tools already
+   *  occupy real tokens even at zero turns. */
+  const freshSessionUsage = {
+    categories: [],
+    totalTokens: 62000,
+    maxTokens: 200000,
+    rawMaxTokens: 200000,
+    percentage: 31,
+    model: 'claude-sonnet-4-5',
+    autoCompactThreshold: 167000,
+    isAutoCompactEnabled: true,
+    apiUsage: null,
+  }
+
+  const emitInit = (id: string) => {
+    mockHandles[0].emit({ type: 'system', subtype: 'init', session_id: id, uuid: 'init-1', model: 'claude-sonnet-4-5' })
+  }
+
+  it('init landing fires a background seed probe that paints the zero-turn bar', async () => {
+    const info = sm.create({})
+    const sub = sm.subscribeContextUsage(info.id)!
+    const it = sub.iterable[Symbol.asyncIterator]()
+    mockHandles[0].getContextUsage.mockClear()
+    mockHandles[0].getContextUsage.mockResolvedValueOnce(freshSessionUsage)
+    emitInit(info.id)
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id) === null; i++) await tick()
+
+    // The probe asked for the cheap summary (no per-category token-count calls).
+    expect(mockHandles[0].getContextUsage).toHaveBeenCalledTimes(1)
+    expect(mockHandles[0].getContextUsage).toHaveBeenCalledWith({ detail: 'summary' })
+    // The CLI's own numbers seeded the cache…
+    const usage = sm.getCachedContextUsage(info.id)
+    expect(usage!.totalTokens).toBe(62000)
+    expect(usage!.maxTokens).toBe(200000)
+    expect(usage!.model).toBe('claude-sonnet-4-5')
+    expect(usage!.autoCompactThreshold).toBe(167000)
+    expect(usage!.source).toBe('probe')
+    // …and the already-attached tab received the snapshot live (bar paints).
+    const pushed = (await it.next()).value as { totalTokens?: number }
+    expect(pushed.totalTokens).toBe(62000)
+    sub.unsubscribe()
+  })
+
+  it('a garbage seed answer leaves the cache empty and the session unharmed', async () => {
+    const info = sm.create({})
+    // Default mock resolves {} — liteContextUsageFromSdkUsage refuses it.
+    emitInit(info.id)
+    for (let i = 0; i < 10; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)).toBeNull()
+  })
+
+  it('a rejected seed probe is silent and does not wedge later usage updates', async () => {
+    const info = sm.create({})
+    mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('subprocess busy'))
+    emitInit(info.id)
+    for (let i = 0; i < 10; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)).toBeNull()
+
+    // The first real result still lands its derivation normally.
+    mockHandles[0].emit({
+      type: 'result',
+      session_id: info.id,
+      subtype: 'success',
+      is_error: false,
+      num_turns: 1,
+      uuid: 'r-1',
+      usage: {
+        input_tokens: 90_000,
+        cache_creation_input_tokens: null,
+        cache_read_input_tokens: null,
+        iterations: [
+          { type: 'message', input_tokens: 90_000, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 500 },
+        ],
+      },
+      modelUsage: { 'claude-sonnet-4-5': { contextWindow: 200_000, maxOutputTokens: 64_000 } },
+    })
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id) === null; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(90_000)
+  })
+
+  it('the seed probe is skipped while a turn is already pending (resume with queued input)', async () => {
+    const info = sm.create({})
+    sm.send(info.id, 'hi')
+    mockHandles[0].getContextUsage.mockClear()
+    emitInit(info.id)
+    for (let i = 0; i < 10; i++) await tick()
+    // Mid-turn: the seed stands down; the turn's own result will snapshot.
+    expect(mockHandles[0].getContextUsage).not.toHaveBeenCalled()
+    expect(sm.getCachedContextUsage(info.id)).toBeNull()
+  })
+
+  it('a delayed seed response never overwrites a newer turn-derived snapshot', async () => {
+    const info = sm.create({})
+    // Seed probe fired at init and HANGS (control responses have no SDK-side
+    // timeout — the reason every probe races its own 10s timer).
+    let resolveSeed: (v: unknown) => void = () => {}
+    mockHandles[0].getContextUsage.mockClear()
+    mockHandles[0].getContextUsage.mockReturnValueOnce(new Promise((res) => { resolveSeed = res }))
+    emitInit(info.id)
+    for (let i = 0; i < 5; i++) await tick()
+
+    // The user sends; turn 1 completes and the pump derives a FRESH snapshot
+    // from the result (90k — the pre-turn seed answer would say 62k).
+    mockHandles[0].emit({
+      type: 'result',
+      session_id: info.id,
+      subtype: 'success',
+      is_error: false,
+      num_turns: 1,
+      uuid: 'r-1',
+      usage: {
+        input_tokens: 90_000,
+        cache_creation_input_tokens: null,
+        cache_read_input_tokens: null,
+        iterations: [
+          { type: 'message', input_tokens: 90_000, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 500 },
+        ],
+      },
+      modelUsage: { 'claude-sonnet-4-5': { contextWindow: 200_000, maxOutputTokens: 64_000 } },
+    })
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens === undefined; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(90_000)
+
+    // The stale pre-turn seed answer lands afterwards — it must NOT drag the
+    // bar backwards (the reconcile probe's lastAtFire guard, mirrored here).
+    resolveSeed(freshSessionUsage)
+    for (let i = 0; i < 10; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(90_000)
+  })
+
+  it('a seed still in flight does not block turn-1 reconcile on the aggregate wire', async () => {
+    const info = sm.create({})
+    // Seed probe in flight when turn 1 completes…
+    let resolveSeed: (v: unknown) => void = () => {}
+    mockHandles[0].getContextUsage.mockClear()
+    mockHandles[0].getContextUsage.mockReturnValueOnce(new Promise((res) => { resolveSeed = res }))
+    emitInit(info.id)
+    for (let i = 0; i < 5; i++) await tick()
+
+    // …an aggregate-reporting result whose derivation the pump refuses — the
+    // reconcile probe is the bar's ONLY corrector there.
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      categories: [],
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      percentage: 16,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      isAutoCompactEnabled: true,
+      apiUsage: null,
+    })
+    // The reconcile's own staleness re-arm (the seed's answer landing in
+    // between invalidates its fire-time identity) consumes one more.
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      categories: [],
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      percentage: 16,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      isAutoCompactEnabled: true,
+      apiUsage: null,
+    })
+    emitAggregateResult()
+    for (let i = 0; i < 5; i++) await tick()
+
+    resolveSeed(freshSessionUsage)
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.totalTokens !== 155641; i++) await tick()
+    // The CLI-accurate correction for turn 1 landed (not the stale 62k seed).
+    expect(sm.getCachedContextUsage(info.id)?.totalTokens).toBe(155641)
+  })
+
+  it('a completed turn whose own snapshots all failed voids the stale seed answer', async () => {
+    const info = sm.create({})
+    let resolveSeed: (v: unknown) => void = () => {}
+    mockHandles[0].getContextUsage.mockClear()
+    mockHandles[0].getContextUsage.mockReturnValueOnce(new Promise((res) => { resolveSeed = res }))
+    emitInit(info.id)
+    for (let i = 0; i < 5; i++) await tick()
+
+    // Turn 1 completes on the aggregate wire: the derivation refuses it, the
+    // reconcile probe fires and FAILS (a busy subprocess delaying
+    // control_response — the failure class the probe timers defend against).
+    mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('control timeout'))
+    emitAggregateResult()
+    for (let i = 0; i < 10; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)).toBeNull()
+
+    // The seed's pre-turn answer lands last. The turn DID happen — the
+    // zero-turn reading must not paint itself as post-turn truth.
+    resolveSeed(freshSessionUsage)
+    for (let i = 0; i < 10; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)).toBeNull()
+  })
+
   // --- thinking config (Options.thinking at spawn + setMaxThinkingTokens live) ---
 
   it("setThinking() maps adaptive → null and forwards setMaxThinkingTokens(null, undefined) — absent display keeps the current mode", async () => {

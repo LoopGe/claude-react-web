@@ -531,6 +531,13 @@ export interface Session {
    *  skips mid-turn while the reconcile probe fires exactly at turn end
    *  (including with queued turns still pending), so the two can coexist. */
   contextUsageProbeInFlight?: boolean
+  /** True while the zero-turn context-usage SEED probe (see
+   *  SessionManager.seedContextUsageOnInit) is in flight. Deliberately a
+   *  THIRD flag, separate from the reconcile's: on an aggregate-reporting
+   *  wire a seed still in flight when turn 1's result lands must not suppress
+   *  that result's reconcile correction (the flag-busy early return never
+   *  re-arms), so the two probes have to be able to coexist. */
+  contextUsageSeedInFlight?: boolean
   /** Per-subscriber pushables for prompt_suggestion events — separate from
    *  message history (suggestions are ephemeral, not conversation content).
    *  Same shape as contextUsageSubscribers. */

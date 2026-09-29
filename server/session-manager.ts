@@ -4902,17 +4902,10 @@ export class SessionManager {
           applyContextUsage(s, corrected)
         }
         // The same response also carries the CLI's auto-compact facts.
-        // Fold ONLY when the response reports a threshold: the corrected
-        // snapshot carries the CLI's previously-reported one, and a
-        // threshold-less response would otherwise resolve to the local
-        // FORMULA and overwrite that real number on every turn. Runs after
-        // the correction so the fold lands on the corrected snapshot.
-        // logDrift=false: this fires per turn — the drift warning is for
-        // the rare paths (see resolveAutoCompactThreshold's contract).
-        const facts = parseSdkAutoCompactFacts(raw)
-        if (facts?.threshold !== undefined) {
-          applySdkAutoCompactFacts(s, facts, false)
-        }
+        // Fold ONLY when the response reports a threshold (shared rule —
+        // see foldSdkAutoCompactFacts). Runs after the correction so the
+        // fold lands on the corrected snapshot.
+        this.foldSdkAutoCompactFacts(s, raw)
       },
       onSettled: () => {
         if (!stale) return
@@ -4930,6 +4923,64 @@ export class SessionManager {
     })
   }
 
+  /** Fire-and-forget getContextUsage() that seeds the FIRST context snapshot
+   *  the moment the init handshake lands (PumpDeps.seedContextUsageOnInit).
+   *
+   *  Why: every pre-existing snapshot path is downstream of a turn — the pump
+   *  derives from `result` frames, the reconcile probe fires after non-empty
+   *  results, and the WS subscribe seed serves only the already-cached value —
+   *  so a brand-new session showed no Context bar until its first turn
+   *  completed, while the Settings panel (on-demand blocking fetch) did. This
+   *  probe closes that zero-turn gap with the same fire-and-forget shape as
+   *  reconcile: skipped mid-turn (a resume with queued input gets its snapshot
+   *  from the turn's own result), failures swallowed.
+   *
+   *  OWN in-flight flag, not the reconcile's: on an aggregate-reporting wire
+   *  the reconcile is a slow turn's ONLY corrector, and a seed still in flight
+   *  when that turn's result landed would otherwise silently drop it (the
+   *  flag-busy early return never reaches onSettled, so no re-arm runs). With
+   *  separate flags both probes proceed; the ordering hazard that creates —
+   *  the seed's pre-turn answer invalidating the reconcile's fire-time
+   *  identity — is absorbed by reconcile's stale→re-arm.
+   *
+   *  Staleness, mirrored from reconcile: the "cache is empty" justification
+   *  holds at FIRE time, not resolve time. TWO identity captures decide
+   *  whether the answer is still the newest truth at resolve time —
+   *  `lastContextUsage` (a newer snapshot landed mid-flight → it wins) and
+   *  `lastTurnAt` (a turn COMPLETED mid-flight, even when every snapshot for
+   *  it failed to land, so the zero-turn reading must not paint itself as
+   *  post-turn truth). Identity captures, not null checks, so a future
+   *  re-seed on a session that already holds state stays correct. */
+  private seedContextUsageOnInit(s: Session): void {
+    const lastUsageAtFire = s.lastContextUsage
+    const lastTurnAtFire = s.lastTurnAt
+    this.fireContextUsageProbe(s, {
+      flag: 'contextUsageSeedInFlight',
+      skipMidTurn: true,
+      label: 'context-usage seed probe',
+      onResolved: (raw) => {
+        if (s.lastContextUsage !== lastUsageAtFire || s.lastTurnAt !== lastTurnAtFire) return
+        // `last` mirrors the reconcile call: on a snapshot-holding session the
+        // builder carries the threshold/window per the same denominator
+        // contract instead of taking the standalone branch.
+        const seeded = liteContextUsageFromSdkUsage(raw, s.lastContextUsage)
+        if (seeded) applyContextUsage(s, seeded)
+        this.foldSdkAutoCompactFacts(s, raw)
+      },
+    })
+  }
+
+  /** The probe-response facts-fold rule, shared by every getContextUsage
+   *  consumer: only a response that REPORTS a threshold may override the
+   *  local formula replica — a threshold-less response would resolve the
+   *  local FORMULA and overwrite a real number (see reconcile's note).
+   *  logDrift=false: probes fire per-turn/periodically — the drift warning
+   *  is for the rare paths (pin probe, REST pull). */
+  private foldSdkAutoCompactFacts(s: Session, raw: unknown): void {
+    const facts = parseSdkAutoCompactFacts(raw)
+    if (facts?.threshold !== undefined) applySdkAutoCompactFacts(s, facts, false)
+  }
+
   /** Control requests carry no SDK-side timeout (a busy/wedged subprocess can
    *  delay control_response indefinitely), so background probes race their
    *  own timer — without it, one wedged subprocess would hold the in-flight
@@ -4941,7 +4992,7 @@ export class SessionManager {
   private fireContextUsageProbe(
     s: Session,
     opts: {
-      flag: 'autoCompactProbeInFlight' | 'contextUsageProbeInFlight'
+      flag: 'autoCompactProbeInFlight' | 'contextUsageProbeInFlight' | 'contextUsageSeedInFlight'
       label: string
       onResolved: (raw: unknown) => void
       /** Called AFTER the in-flight flag has been released (both success and
@@ -6456,6 +6507,8 @@ export class SessionManager {
         // call (see reconcileContextUsage for the aggregate-payload bug
         // this corrects).
         reconcileContextUsage: (s) => this.reconcileContextUsage(s),
+        // Zero-turn Context bar seed — see seedContextUsageOnInit.
+        seedContextUsageOnInit: (s) => this.seedContextUsageOnInit(s),
       }
     }
     return this.cachedPumpDeps

@@ -2007,6 +2007,45 @@ describe('pump: cold-start timing', () => {
   })
 })
 
+describe('pump: context-usage seed on init', () => {
+  it('fires seedContextUsageOnInit exactly once when the first init lands', async () => {
+    const { session } = makePumpSession([
+      sysFrame('init'),
+      sysFrame('init'), // duplicate init (respawn edge) — must not re-fire
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const seedContextUsageOnInit = vi.fn()
+    await pump(session, makePumpDeps({ seedContextUsageOnInit }))
+
+    expect(seedContextUsageOnInit).toHaveBeenCalledTimes(1)
+    expect(seedContextUsageOnInit).toHaveBeenCalledWith(session)
+  })
+
+  it('never fires the seed dep when no init frame lands', async () => {
+    const { session } = makePumpSession([
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const seedContextUsageOnInit = vi.fn()
+    await pump(session, makePumpDeps({ seedContextUsageOnInit }))
+
+    expect(seedContextUsageOnInit).not.toHaveBeenCalled()
+  })
+
+  it('a throwing seed dep does not break the pump (later frames still process)', async () => {
+    const { session, broadcasts } = makePumpSession([
+      sysFrame('init'),
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const seedContextUsageOnInit = vi.fn(() => { throw new Error('seed blew up') })
+    await pump(session, makePumpDeps({ seedContextUsageOnInit }))
+
+    // The result still reached the message channel; the ring keeps init
+    // (by design — fastModeState extraction) and the result.
+    expect(broadcasts.map((m) => (m as { subtype?: string }).subtype)).toEqual(['success'])
+    expect(session.history.map((m) => (m as { subtype?: string }).subtype)).toEqual(['init', 'success'])
+  })
+})
+
 describe('pump: task lifecycle frames', () => {
   it('early-continues task_started/updated/progress: folds state + snapshot, skips ring + broadcast', async () => {
     const { session, broadcasts, taskSnapshots } = makePumpSession([
