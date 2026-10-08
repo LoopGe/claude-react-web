@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { realpath } from 'node:fs/promises'
 import { join, isAbsolute } from 'node:path'
 import { createLogger } from '../log.js'
 import { DEFAULT_MAX_UNTRACKED_BYTES } from '../constants.js'
@@ -73,26 +74,30 @@ async function safeExec(
   }
 }
 
-/** On Windows, Node's `os.tmpdir()` and `mkdtemp` can return paths with
- *  8.3 short names (e.g. `GEZELI~1` instead of `Ge Zelin`), while git
- *  always returns long-form paths. This causes `path.relative()` in
- *  `scopeFromCwd` to produce spurious `..` segments.
- *  This helper reconstructs the long-form absolute cwd by combining
- *  `git rev-parse --show-toplevel` (worktree root, always long-form)
- *  with `--show-prefix` (relative path from root to cwd). Falls back
- *  to the original path on non-Windows or when not inside a git repo. */
+/** Node's `os.tmpdir()` / `mkdtemp` (and user-supplied cwds generally) can
+ *  differ from the canonical form git reports: macOS temp dirs sit under
+ *  symlinked components (`/var` → `/private/var`), and Windows has 8.3 short
+ *  names (`GEZELI~1`). Either way `path.relative()` in `scopeFromCwd`
+ *  produces spurious `..` segments against git's canonical `--show-toplevel`
+ *  and the capture is rejected. `fs.realpath` resolves both cases in-process
+ *  (libuv uses GetFinalPathNameByHandle on Windows, which also expands 8.3
+ *  names) — no git subprocess needed, so non-git cwds pay nothing. Falls
+ *  back to the original path when it cannot be resolved. */
 async function resolveLongPath(cwd: string): Promise<string> {
-  if (process.platform !== 'win32') return cwd
   try {
-    const res = await safeExec(cwd, ['rev-parse', '--show-toplevel', '--show-prefix'])
-    if (!res || res.code !== 0) return cwd
-    const lines = res.stdout.split('\n').map((l) => l.trim())
-    const toplevel = lines[0]
-    const prefix = lines[1] ?? ''
-    if (!toplevel) return cwd
-    // prefix is '' when cwd === worktree root, or 'src/sub/' for subdirs
-    return prefix ? join(toplevel, prefix) : toplevel
-  } catch { /* ignore */ }
+    if (process.platform === 'win32') {
+      // realpath.native is the 8.3-expanding variant; it may return a
+      // `\\?\`-prefixed path, which path.relative handles but which should
+      // not leak into comparisons against git's plain output. Typed via a
+      // narrow cast: the native variant exists at runtime (libuv) but older
+      // @types/node builds omit it on the promises API.
+      const native = (realpath as typeof realpath & { native?: (p: string) => Promise<string> }).native
+      if (!native) return cwd
+      const p = await native(cwd)
+      return p.startsWith('\\\\?\\') ? p.slice(4) : p
+    }
+    return await realpath(cwd)
+  } catch { /* unresolvable — fall back to the raw cwd */ }
   return cwd
 }
 
