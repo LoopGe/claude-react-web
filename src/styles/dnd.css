@@ -77,6 +77,22 @@ body.has-bg .chat-panel.chat-panel-ghost {
   -webkit-backdrop-filter: none;
 }
 
+/* The clone is a FROZEN snapshot — animations are transient state. Every
+   element inside the cloned panel that carries an entrance animation (the
+   empty-state stack's chat-empty-item-in stagger, message-reveal staggers,
+   working/queued pulses, …) would restart from 0% the moment the fresh
+   clone mounts — visibly replaying inside the ghost. (The de-identify step
+   in App strips the panel-level `entering` class, but staggered entrances
+   declared on the elements' OWN classes ride the clone verbatim.) Blanket-
+   suppress: every animation in the source was already finished at rest
+   (fill-mode both), and `animation: none` returns exactly that at-rest
+   look. Transitions are untouched — the ghost is inert + aria-hidden, so
+   nothing hovers inside it anyway. */
+.chat-panel-ghost,
+.chat-panel-ghost * {
+  animation: none !important;
+}
+
 /* Group pill ghost: the cloned element keeps its real classes; this only
    adds the grabbing cursor. (The panel ghost keeps the real header classes
    too — see the .dnd-ghost-panel block above.) */
