@@ -48,6 +48,7 @@ import { usePhaseDwell } from '../hooks/usePhaseDwell'
 import { Composer } from './Composer'
 import { ContextOrb } from './ContextOrb'
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
+import { ChatEmptyStateEnv } from './ChatEmptyStateEnv'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog, type QuestionDraft } from './QuestionDialog'
 import { ElicitationDialog } from './ElicitationDialog'
@@ -1915,6 +1916,28 @@ export const Chat = memo(function Chat({
     [stream.messages, session.working, skin, effectiveClearing, session.id],
   )
 
+  // Empty-state environment section: the MCP servers / plugins this session
+  // was spawned with (ChatEmptyStateEnv renders null when there is nothing
+  // to show — legacy sessions keep the plain stack). Memoized on joined
+  // array CONTENT, not the arrays: every session snapshot re-parses fresh
+  // array instances, so depending on them directly would fail MessageList's
+  // memo() shallow compare on every session-list tick (same reasoning as
+  // the bottomOverlay memo above).
+  const mcpNamesSig = session.mcpServerNames?.join('\u0000') ?? ''
+  const pluginsSig = session.enabledPlugins?.join('\u0000') ?? ''
+  const emptyStateExtra = useMemo(
+    () => (
+      <ChatEmptyStateEnv
+        mcpServerNames={session.mcpServerNames}
+        enabledPlugins={session.enabledPlugins}
+        sessionId={session.id}
+        running={session.running}
+      />
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the content sigs ARE the real deps; the arrays are content-stable whenever the sigs match
+    [mcpNamesSig, pluginsSig, session.id, session.running],
+  )
+
   return (
     <div className="chat">
       {exportMenuPos && (
@@ -2175,6 +2198,7 @@ export const Chat = memo(function Chat({
           // MessageList's Footer spacer (never permanently hidden).
           // `bottomOverlay` is memoized above — see the note there.
           bottomOverlay={bottomOverlay}
+          emptyStateExtra={emptyStateExtra}
         />
         </div>
         {discardConfirm && (

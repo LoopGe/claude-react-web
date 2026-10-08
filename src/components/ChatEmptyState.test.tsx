@@ -93,3 +93,19 @@ describe('ChatEmptyState easter-egg trigger', () => {
     expect(animateSpy).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('ChatEmptyState env section', () => {
+  it('renders the env node below the subtitle when provided', () => {
+    render(<ChatEmptyState env={<div data-testid="env-section">MCP: github</div>} />)
+    const subtitle = screen.getByText('Type a message below, or paste an image to begin')
+    const env = screen.getByTestId('env-section')
+    // env follows the subtitle in DOM order, inside the .chat-empty stack
+    expect(subtitle.compareDocumentPosition(env) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(env.closest('.chat-empty')).toBeTruthy()
+  })
+
+  it('renders nothing extra when env is omitted', () => {
+    render(<ChatEmptyState />)
+    expect(document.querySelector('.chat-empty-env')).toBeNull()
+  })
+})

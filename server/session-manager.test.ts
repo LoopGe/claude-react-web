@@ -5242,6 +5242,190 @@ describe('mergeMcpServers', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// MCP re-spawn semantics: every re-spawn path (resume / fork / clear / …)
+// carries the session's OWN persisted selection instead of re-injecting
+// whatever is globally enabled right now (the silent-widen bug: a server the
+// user never activated for this session appeared after a resume).
+// ---------------------------------------------------------------------------
+
+describe('MCP re-spawn semantics', () => {
+  let dir: string
+  let store: SessionStore
+  let mcpDir: string
+  let mcpStore: McpConfigStore
+  let sm: SessionManager
+
+  beforeEach(async () => {
+    mockHandles.length = 0
+    mockGetSessionInfo.mockReset()
+    mockGetSessionInfo.mockImplementation(async (id) => ({ sessionId: id }))
+    mockListSessions.mockReset()
+    mockListSessions.mockImplementation(async () => [])
+    dir = makeTmpDir()
+    mcpDir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    mcpStore = new McpConfigStore({ stateDir: mcpDir })
+    await mcpStore.load()
+    mcpStore.upsert({
+      name: 'global-a', type: 'stdio', command: 'node', args: ['a.js'],
+      createdAt: 1, updatedAt: 1,
+    })
+    mcpStore.upsert({
+      name: 'global-b', type: 'sse', url: 'http://b.local',
+      createdAt: 1, updatedAt: 1,
+    })
+    mcpStore.upsert({
+      name: 'global-off', type: 'stdio', command: 'node', enabled: false,
+      createdAt: 1, updatedAt: 1,
+    })
+    await mcpStore.flush()
+    sm = new SessionManager({ store, mcpConfigStore: mcpStore })
+  })
+
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+    rmRf(mcpDir)
+  })
+
+  const lastOpts = () =>
+    mockHandles[mockHandles.length - 1].options as { mcpServers?: Record<string, unknown> }
+  // The SDK options legitimately include first-party in-process servers
+  // (type: 'sdk', injected by spawn AFTER snapshotMeta) — they are not part
+  // of the user's selection and must not pollute these assertions.
+  const userMcpNames = () => {
+    const mcp = lastOpts().mcpServers as Record<string, { type?: string }> | undefined
+    return Object.keys(mcp ?? {}).filter((n) => mcp![n].type !== 'sdk')
+  }
+
+  it('resume carries the session\'s own selection instead of the current global set', async () => {
+    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
+    expect(info.mcpServerNames).toEqual(['global-a'])
+    await sm.unload(info.id)
+    await sm.resume(info.id)
+    // global-b is globally enabled but was never selected for this session
+    expect(userMcpNames()).toEqual(['global-a'])
+  })
+
+  it('an explicit empty selection stays empty across resume', async () => {
+    const info = sm.create({ cwd: dir, enabledMcpServers: [] } as any)
+    expect(info.mcpServerNames).toEqual([])
+    await sm.unload(info.id)
+    const resumed = await sm.resume(info.id)
+    expect(userMcpNames()).toEqual([])
+    // The explicit-none survives the respawn — a second resume must not
+    // widen it to the global set.
+    expect(resumed.mcpServerNames).toEqual([])
+  })
+
+  it('a legacy session without recorded names falls back to the global set', async () => {
+    const info = sm.create({ cwd: dir } as any)
+    expect(info.mcpServerNames).toBeUndefined()
+    await sm.unload(info.id)
+    const resumed = await sm.resume(info.id)
+    // global-off is globally disabled — excluded from the fallback set
+    expect(userMcpNames().sort()).toEqual(['global-a', 'global-b'])
+    // The fallback resolves ONCE and is then recorded as the session's own
+    // list — later re-spawns no longer track global changes.
+    expect(resumed.mcpServerNames).toEqual(['global-a', 'global-b'])
+  })
+
+  it('names that no longer resolve are dropped instead of blocking the spawn', async () => {
+    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-a', 'ghost'] } as any)
+    expect(info.mcpServerNames).toEqual(['global-a', 'ghost'])
+    await sm.unload(info.id)
+    const resumed = await sm.resume(info.id)
+    expect(userMcpNames()).toEqual(['global-a'])
+    // Self-healing: the respawn re-snapshots the RESOLVED set
+    expect(resumed.mcpServerNames).toEqual(['global-a'])
+  })
+
+  it('an explicitly-requested globally-disabled name survives resume', async () => {
+    // A globally-disabled server is "off by default", but a create-time
+    // opt-in is the user's explicit choice — the carry-forward must honor
+    // it, same as the create path does.
+    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-off'] } as any)
+    await sm.unload(info.id)
+    await sm.resume(info.id)
+    expect(userMcpNames()).toEqual(['global-off'])
+  })
+
+  it('fork carries the source session\'s own selection', async () => {
+    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
+    // fork() refuses turn-less sessions — complete one turn first
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await sm.fork(info.id)
+    // The fork is a NEW session — its handle is the last one
+    expect(userMcpNames()).toEqual(['global-a'])
+  })
+
+  it('auto-resume (respawnInPlace) does not leak the app-level MCP selection into the SDK options', async () => {
+    // respawnInPlace (autoResume / crash recovery / restart) bypasses
+    // spawn()'s app-level-key strip and feeds providerExtras.sdkOptions
+    // straight into query() — the applySessionMcpServers stamp must be
+    // stripped there too, or the CLI arg builder sees a non-SDK key.
+    // Driven via buildResumeOpts → respawnInPlace directly (the exact leak
+    // path) rather than through autoResume's lifecycle guards.
+    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
+    sm.send(info.id, 'first')
+    await tick()
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    const internals = sm as unknown as {
+      sessions: Map<string, unknown>
+      buildResumeOpts: (session: unknown) => Promise<Record<string, unknown>>
+      respawnInPlace: (session: unknown, opts: Record<string, unknown>, reason: string) => void
+    }
+    const session = internals.sessions.get(info.id)!
+    const resumeOpts = await internals.buildResumeOpts(session)
+    // Precondition: the stamp is present on the resume opts when they leave
+    // buildResumeOpts (snapshotMeta is NOT called on this path, so the stamp
+    // is dead weight here — but must not reach the SDK either way).
+    expect((resumeOpts as { enabledMcpServers?: string[] }).enabledMcpServers).toEqual(['global-a'])
+    internals.respawnInPlace(session, resumeOpts as Record<string, unknown>, 'test')
+    expect(mockHandles).toHaveLength(2)
+    const opts = mockHandles[1].options as {
+      mcpServers?: Record<string, { type?: string }>
+      enabledMcpServers?: unknown
+    }
+    // The resolved selection rides as Options.mcpServers (first-party sdk
+    // servers excluded — they are not the user's selection)…
+    expect(Object.keys(opts.mcpServers ?? {}).filter((n) => opts.mcpServers![n].type !== 'sdk')).toEqual(['global-a'])
+    // …first-party in-process servers ARE re-injected (they exist only when
+    // passed per-spawn — without this they'd vanish from the recovered
+    // session), and the app-level stamp must NOT reach the SDK.
+    expect(Object.values(opts.mcpServers ?? {}).some((c) => c.type === 'sdk')).toBe(true)
+    expect(opts.enabledMcpServers).toBeUndefined()
+  })
+
+  it('respawnInPlace re-applies the RAM tool profile onto the SDK options', async () => {
+    // The tool profile is spawn-time-only (plain Options keys — no Settings
+    // layer can re-apply it post-spawn), so an in-place respawn must
+    // project it again or the recovered session silently regains the
+    // disallowed tools.
+    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
+    await sm.setToolProfile(info.id, { disallowedTools: ['WebSearch'] } as never)
+    sm.send(info.id, 'first')
+    await tick()
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    const internals = sm as unknown as {
+      sessions: Map<string, unknown>
+      buildResumeOpts: (session: unknown) => Promise<Record<string, unknown>>
+      respawnInPlace: (session: unknown, opts: Record<string, unknown>, reason: string) => void
+    }
+    const session = internals.sessions.get(info.id)!
+    const resumeOpts = await internals.buildResumeOpts(session)
+    internals.respawnInPlace(session, resumeOpts as Record<string, unknown>, 'test')
+    const opts = mockHandles[1].options as { disallowedTools?: string[] }
+    expect(opts.disallowedTools).toEqual(['WebSearch'])
+  })
+})
+
 describe('plugin subset selection', () => {
   let dir: string
   let store: SessionStore

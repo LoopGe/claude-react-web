@@ -522,6 +522,28 @@ describe('MessageList', () => {
     expect(container.querySelector('.chat-empty')).toBeNull()
   })
 
+  it('injects emptyStateExtra into the default empty state', () => {
+    const { container } = render(
+      <MessageList items={[]} emptyStateExtra={<div data-testid="env-extra">mcp chips</div>} />,
+    )
+    const extra = container.querySelector('[data-testid="env-extra"]')
+    expect(extra).toBeTruthy()
+    // Inside the default ChatEmptyState stack — an addition, not a replacement
+    expect(extra!.closest('.chat-empty')).toBeTruthy()
+  })
+
+  it('ignores emptyStateExtra when emptyStateContent overrides the default', () => {
+    const { container } = render(
+      <MessageList
+        items={[]}
+        emptyStateContent={<div data-testid="custom-empty">side chat hint</div>}
+        emptyStateExtra={<div data-testid="env-extra">mcp chips</div>}
+      />,
+    )
+    expect(container.querySelector('[data-testid="env-extra"]')).toBeNull()
+    expect(container.querySelector('[data-testid="custom-empty"]')).toBeTruthy()
+  })
+
   it('adds transcript reveal only after keyed messages are ready', async () => {
     const msgs = [
       makeMsg('assistant', {

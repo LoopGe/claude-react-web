@@ -2045,6 +2045,11 @@ export function App() {
           // exists for Y, so without this the restart silently widens the
           // session to every globally-enabled plugin.
           enabledPlugins: source.enabledPlugins,
+          // Preserve the MCP selection — without this the restarted session
+          // silently loses every MCP server (the create route treats an
+          // absent field as no selection; undefined for a legacy session
+          // keeps that same historical behavior via JSON.stringify drop).
+          enabledMcpServers: source.mcpServerNames,
           // Preserve the panel's per-session UI overrides. Y is a fresh id
           // with no persisted meta, so without these the replacement would
           // silently revert to the global defaults (and writeStore would then

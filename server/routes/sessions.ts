@@ -285,6 +285,11 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     }
     const mergedMcp = await sm.mergeMcpServersAsync(enabledMcpServers, mcpServers)
     if (mergedMcp) rest.mcpServers = mergedMcp
+    // Thread the RAW selection through (may be [] = deliberate none): spawn
+    // snapshots it as mcpServerNames so re-spawn paths carry the user's own
+    // list instead of re-widening to the current global set. Stripped from
+    // the SDK options inside spawn() — the SDK only sees the resolved map.
+    if (enabledMcpServers !== undefined) (rest as { enabledMcpServers?: string[] }).enabledMcpServers = enabledMcpServers
     if (enabledPlugins !== undefined) (rest as { enabledPlugins?: string[] }).enabledPlugins = enabledPlugins
     const narrowed = narrowCreateBody(rest)
     if (!narrowed.ok) return c.json({ error: narrowed.error }, 400)

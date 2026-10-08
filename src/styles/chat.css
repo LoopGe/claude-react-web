@@ -400,7 +400,8 @@
    the rest of the app's motion language. */
 .chat-empty-icon,
 .chat-empty-title,
-.chat-empty-subtitle {
+.chat-empty-subtitle,
+.chat-empty-env {
   animation: chat-empty-item-in var(--motion-duration-slow) var(--motion-ease-enter) both;
 }
 .chat-empty-icon {
@@ -411,6 +412,9 @@
 }
 .chat-empty-subtitle {
   animation-delay: 200ms;
+}
+.chat-empty-env {
+  animation-delay: 280ms;
 }
 @keyframes chat-empty-item-in {
   from {
@@ -425,7 +429,8 @@
 @media (prefers-reduced-motion: reduce) {
   .chat-empty-icon,
   .chat-empty-title,
-  .chat-empty-subtitle {
+  .chat-empty-subtitle,
+  .chat-empty-env {
     animation: none;
   }
 }
@@ -464,6 +469,114 @@
 .chat-empty-icon--armed {
   color: var(--accent-text);
   border-color: var(--accent);
+}
+
+/* Empty-state environment section (ChatEmptyStateEnv): MCP servers and
+   plugins the session was spawned with, as quiet muted chips under the
+   subtitle. The whole section renders null when there is nothing to show,
+   so legacy sessions keep the plain stack with no reserved space. */
+.chat-empty-env {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1-5);
+  max-width: 320px;
+}
+.chat-empty-env-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  max-width: 100%;
+}
+.chat-empty-env-label {
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.chat-empty-env-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.chat-empty-env-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1-5);
+  line-height: 1.6;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  font-family: inherit;
+}
+/* Actionable (running session) chips are buttons — same look, pointer cursor
+   and a hover affordance signaling the quick-action menu. Display-only chips
+   are spans and stay inert. */
+button.chat-empty-env-chip {
+  cursor: pointer;
+}
+button.chat-empty-env-chip:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+.chat-empty-env-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Per-server connection status dot (useMcpStatusLite; silent degrade = no
+   dot). Existing semantic tokens only — no new colors. */
+.chat-empty-env-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+}
+.chat-empty-env-dot[data-status='connected'] {
+  background: var(--ok);
+}
+.chat-empty-env-dot[data-status='failed'] {
+  background: var(--danger);
+}
+.chat-empty-env-dot[data-status='needs-auth'] {
+  background: var(--warn);
+}
+.chat-empty-env-dot[data-status='disabled'] {
+  background: transparent;
+  border: 1px solid var(--fg-muted);
+}
+/* While the async mcp-status lookup is in flight the dot pulses as a loading
+   placeholder, then hands over to the resolved color. Same opacity-pulse
+   shape as the other dot pulses (msg-queued-pulse / subagent-child-pulse),
+   gated by reduced-motion. */
+.chat-empty-env-dot[data-status='loading'] {
+  background: var(--fg-muted);
+  animation: chat-empty-env-dot-pulse 1.4s var(--motion-ease-standard) infinite;
+}
+@keyframes chat-empty-env-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-empty-env-dot[data-status='loading'] {
+    animation: none;
+  }
 }
 
 /* Easter-egg game overlay: fills the empty-state flex container (which already

@@ -255,6 +255,14 @@ interface Props {
    *  the conversation." prompt. Side Chat overrides this to communicate the
    *  ephemeral nature of the drawer. */
   emptyStateContent?: ReactNode
+  /** Extra node injected into the DEFAULT empty state (rendered inside
+   *  ChatEmptyState below the subtitle) — the environment section showing
+   *  the session's spawned-with MCP servers / plugins. Ignored when
+   *  `emptyStateContent` overrides the default (Side Chat, SubagentOverlay),
+   *  and the easter-egg game branch never sees it. Callers must pass a
+   *  referentially stable node — an inline element fails this component's
+   *  memo() shallow compare on every parent render. */
+  emptyStateExtra?: ReactNode
   /** True when the session is expected to have history (e.g. a discard-fork
    *  seeded from a prior conversation, or a resumed session). When set, the
    *  empty-state is suppressed until `replayReady` so the "Start a
@@ -347,7 +355,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -1341,7 +1349,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           <div className="chat-messages-empty">
             {emptyStateContent ?? (gameOpen
                 ? <EasterEggGame onExit={closeEasterEgg} />
-                : <ChatEmptyState onUnlockEasterEgg={openEasterEgg} />)}
+                : <ChatEmptyState onUnlockEasterEgg={openEasterEgg} env={emptyStateExtra} />)}
           </div>
         )}
       </div>

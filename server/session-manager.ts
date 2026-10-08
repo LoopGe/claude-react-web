@@ -1207,7 +1207,11 @@ export class SessionManager {
       hooks: settingsHooks,
       // Capture the resolved MCP server names so the client can compute
       // "available" without the flaky mcp-status SDK control request.
-      mcpServerNames: opts.mcpServers ? Object.keys(opts.mcpServers as Record<string, unknown>) : undefined,
+      // Prefer the explicit user selection (create route / re-spawn carry it;
+      // may be [] = deliberate none) over the resolved spawn map — unknown
+      // names stay visible and self-heal out on the next applySessionMcpServers.
+      mcpServerNames: (opts as { enabledMcpServers?: string[] }).enabledMcpServers
+        ?? (opts.mcpServers ? Object.keys(opts.mcpServers as Record<string, unknown>) : undefined),
       enabledPlugins: (opts as { enabledPlugins?: string[] }).enabledPlugins,
       // Sandbox intent passed at create (app-level `sandbox` body field) is
       // the session's initial intent. Normalised: a present sandbox object is
@@ -1530,9 +1534,10 @@ export class SessionManager {
     // Carry the start-as agent forward only while its def still exists and
     // is enabled; otherwise resume drops it (logged) to a normal session.
     resumeOpts.agent = this.effectiveStartAsAgent(meta, 'resume', id)
-    // Re-apply globally configured MCP servers so a resumed session picks up
-    // the same tools it had before the restart.
-    await this.applyGlobalMcpServers(resumeOpts)
+    // Re-apply the session's OWN MCP selection (falls back to the global set
+    // only for sessions with no recorded selection) so a resumed session
+    // picks up the same tools it had before the restart — no more, no less.
+    await this.applySessionMcpServers(resumeOpts, meta.mcpServerNames, id)
     // uuid bridge: load the server-minted prompt uuids recorded for this
     // session and rewrite the disk-seed's top-level prompt uuids (SDK V →
     // server U) so the client's uuid-anchored replay overlap detection works
@@ -1596,8 +1601,8 @@ export class SessionManager {
     // persists that as the new truth — silently clearing a persona the user
     // set, with nothing to restore it from.
     freshOpts.agent = this.effectiveStartAsAgent(meta, 'respawnFresh', id)
-    // Re-apply globally configured MCP servers (same as resume / clear).
-    await this.applyGlobalMcpServers(freshOpts)
+    // Re-apply the session's OWN MCP selection (same as resume / clear).
+    await this.applySessionMcpServers(freshOpts, meta.mcpServerNames, id)
     log.info(
       `[session ${id}] respawnFresh: no transcript + no completed turn — ` +
       `starting a fresh conversation on the same id`,
@@ -1644,6 +1649,12 @@ export class SessionManager {
       // Non-null so the no_data guard passes — the transcript file existing
       // already proves a completed turn.
       lastTurnAt: info.lastModified ?? now,
+      // Record the current global set as the adopted session's own selection
+      // so future re-spawns carry THIS list (own-list semantics) instead of
+      // re-widening to whatever is globally enabled at that future time.
+      // An empty store records [] — correct: the host injects nothing, and
+      // the CLI still discovers its own config-side servers independently.
+      mcpServerNames: Object.keys(this.mcpStore?.toSdkConfig() ?? {}),
     }
     this.store?.upsert(meta)
     log.info(`[session ${id}] adopted disk session (cwd=${info.cwd ?? '<none>'}) for resume`)
@@ -1863,8 +1874,8 @@ export class SessionManager {
     // Carry the sandbox intent onto the new id (fork has no existingMeta —
     // snapshotMeta captures it from here).
     forkOpts.sandbox = meta.sandbox
-    // Re-apply globally configured MCP servers (same as resume).
-    await this.applyGlobalMcpServers(forkOpts)
+    // Re-apply the source session's OWN MCP selection (same as resume).
+    await this.applySessionMcpServers(forkOpts, meta.mcpServerNames, id)
     // Inherit the parent's session-level skill override when the source is
     // currently live (override is RAM-only — dormant sources have nothing to
     // copy and the fork falls back to the global policy, same as resume).
@@ -2329,8 +2340,8 @@ export class SessionManager {
         snapshot: false,
       },
     }
-    // Re-apply globally configured MCP servers (same as fork).
-    await this.applyGlobalMcpServers(sideChatOpts)
+    // Re-apply the parent's OWN MCP selection (same as fork).
+    await this.applySessionMcpServers(sideChatOpts, meta.mcpServerNames, parentId)
     return this.spawn(randomUUID(), sideChatOpts)
   }
 
@@ -2719,6 +2730,10 @@ export class SessionManager {
     // own resolution). baseSpawnOptions' return rides into sdkOptions through
     // providerExtras — leaving it in would hand the CLI arg builder an unknown key.
     delete (sdkOptions as { cliDebug?: boolean }).cliDebug
+    // Strip the app-level MCP selection (the raw create-time name list): the
+    // resolved map already rides as Options.mcpServers — the SDK has no
+    // Options.enabledMcpServers key. Same unknown-key hazard as cliDebug.
+    delete (sdkOptions as { enabledMcpServers?: unknown }).enabledMcpServers
     // Strip the create-time per-session UI prefs (the client restart flow
     // sends them on the body). They are pure app-level state mirrored into
     // SessionInfo — the SDK has no such Options keys.
@@ -3488,6 +3503,10 @@ export class SessionManager {
         hooks: s.hooks,
         fastMode: s.fastMode,
         enabledPlugins: s.enabledPlugins,
+        // Carry X's MCP selection onto Y — a /clear must not widen the tool
+        // set to whatever is globally enabled right now (same semantics as
+        // resume / fork; applySessionMcpServers consumes this).
+        mcpServerNames: s.mcpServerNames,
         parentId: s.parentId,
         memory: s.memory,
         sandbox: s.sandbox,
@@ -3569,7 +3588,7 @@ export class SessionManager {
         }
         freshOpts.parentId = settings.parentId
       }
-      await this.applyGlobalMcpServers(freshOpts)
+      await this.applySessionMcpServers(freshOpts, settings.mcpServerNames, id)
       // spawn() builds a fresh canUseTool for Y (permBroker.buildCanUseTool),
       // so we do NOT reuse X's canUseTool closure — Y gets its own permission
       // tracker. spawn() also applies the skill policy to sdkOptions.
@@ -6707,13 +6726,58 @@ export class SessionManager {
     return true
   }
 
-  /** Re-apply the globally configured MCP servers onto a spawn/resume Options
-   *  object. Refreshes OAuth tokens for any configured remote servers BEFORE
-   *  snapshotting the config so the SDK receives fresh access tokens. No-op
-   *  when no global servers are configured. This exact block was previously
-   *  duplicated verbatim across doResume/respawnFresh/fork/clear/
-   *  buildResumeOpts — centralized here so none of the five re-spawn paths
-   *  can drift on MCP re-application semantics. */
+  /** Re-apply the session's OWN MCP selection onto a re-spawn Options object.
+   *  `names` is the session's persisted `mcpServerNames` (the user's
+   *  create-time selection). Each name is resolved against the CURRENT global
+   *  config (create-time semantics: an explicit name overrides the global
+   *  `enabled` flag; names that no longer resolve are dropped + logged, not
+   *  fatal). The RESOLVED keys are re-stamped onto the options so snapshotMeta
+   *  persists the self-healed set — unresolvable names leave the recorded
+   *  selection after the respawn that dropped them. (spawn()-based paths
+   *  only: the respawnInPlace paths — autoResume / crash recovery / restart —
+   *  never call snapshotMeta, so there the recorded set keeps a dead name
+   *  until the next spawn()-based re-spawn.)
+   *
+   *  `names === undefined` (CLI-created sessions adopted from disk, or
+   *  pre-field legacy sessions) falls back to the historical behavior:
+   *  inject the current global enabled set. That fallback resolves once and
+   *  is then recorded as the session's own list — so it also stabilizes
+   *  (when the global store has servers; an empty store records nothing and
+   *  the session keeps tracking global changes until it has some).
+   *
+   *  This replaces the previous unconditional `applyGlobalMcpServers` call on
+   *  every re-spawn path, which silently WIDENED a session to the current
+   *  global set — activating servers the user never selected for it
+   *  (observed: chrome-devtools appearing on every session after a resume).
+   *  Centralized here so none of the re-spawn paths can drift on semantics. */
+  private async applySessionMcpServers<T extends { mcpServers?: Options['mcpServers'] }>(
+    opts: T,
+    names: string[] | undefined,
+    id: string,
+  ): Promise<T> {
+    if (names === undefined) return this.applyGlobalMcpServers(opts)
+    const resolved = await this.mcp.mergeMcpServersAsync(names, undefined)
+    const resolvedKeys = new Set(Object.keys(resolved ?? {}))
+    const dropped = names.filter((n) => !resolvedKeys.has(n))
+    if (dropped.length > 0) {
+      log.warn(
+        `[session ${id}] dropped MCP servers no longer resolvable from the global config: ${dropped.join(', ')}`,
+      )
+    }
+    opts.mcpServers = resolved as Options['mcpServers']
+    // Re-stamp the RESOLVED keys (not the raw list) so snapshotMeta persists
+    // the self-healed set: names that no longer resolve leave the recorded
+    // selection after this respawn instead of haunting it forever.
+    ;(opts as { enabledMcpServers?: string[] }).enabledMcpServers = resolved ? Object.keys(resolved) : []
+    return opts
+  }
+
+  /** Legacy fallback for re-spawns of sessions with no recorded selection:
+   *  re-apply the globally configured MCP servers. Refreshes OAuth tokens for
+   *  any configured remote servers BEFORE snapshotting the config so the SDK
+   *  receives fresh access tokens. No-op when no global servers are
+   *  configured. This exact block was previously duplicated verbatim across
+   *  doResume/respawnFresh/fork/clear/buildResumeOpts — centralized here. */
   private async applyGlobalMcpServers<T extends { mcpServers?: Options['mcpServers'] }>(opts: T): Promise<T> {
     const allGlobalMcpNames = Object.keys(this.mcpStore?.toSdkConfig() ?? {})
     if (allGlobalMcpNames.length > 0) {
@@ -6804,8 +6868,8 @@ export class SessionManager {
         snapshot: false,
       }
     }
-    // Re-apply globally configured MCP servers (same as resume/fork).
-    await this.applyGlobalMcpServers(resumeOpts)
+    // Re-apply the session's OWN MCP selection (same as resume/fork).
+    await this.applySessionMcpServers(resumeOpts, session.mcpServerNames, session.id)
     if (session.canUseTool) resumeOpts.canUseTool = session.canUseTool
     // Re-apply the elicitation callback too — without it the resumed Query
     // auto-declines every MCP elicitation (OAuth auth prompts included).
@@ -6844,6 +6908,26 @@ export class SessionManager {
     const pendingInput = session.handle.drainQueuedInput?.() ?? []
     session.handle.destroy(destroyReason)
     const provider = this.providers.get(session.provider)
+    // Inject the first-party in-process MCP servers (same as spawn()): they
+    // exist only when passed per-spawn, so an in-place respawn must re-inject
+    // or they silently vanish from the recovered session. Record the
+    // pre-injection user map so a first-party toggle can re-run injection.
+    session.dynamicMcpServers = resumeOpts.mcpServers as Record<string, unknown> | undefined
+    session.firstPartyErrors = undefined
+    resumeOpts.mcpServers = this.mcp.injectAll(resumeOpts.mcpServers as Record<string, unknown> | undefined, session) as Options['mcpServers'] | undefined
+    // respawnInPlace bypasses spawn()'s tool-profile projection and
+    // app-level-key strip, and feeds providerExtras.sdkOptions straight into
+    // the SDK. Mirror both here: the RAM-only tool profile must re-apply
+    // (spawn-time-only Options — nothing can re-apply them post-spawn), and
+    // the app-level MCP selection stamp (set by applySessionMcpServers for
+    // snapshotMeta on the spawn() paths) must be removed — the SDK has no
+    // Options.enabledMcpServers key, and the injected map already rides as
+    // Options.mcpServers.
+    const sdkOptions = applyToolProfile(
+      applySkillPolicyToOptions(resumeOpts, session.skillOverride),
+      session.toolProfile,
+    ) as Options & { enabledMcpServers?: unknown }
+    delete sdkOptions.enabledMcpServers
     session.handle = provider.createSession({
       id: session.id,
       provider: session.provider,
@@ -6877,7 +6961,7 @@ export class SessionManager {
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onUserDialog: session.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,
       supportedDialogKinds: session.onUserDialog ? [...SUPPORTED_DIALOG_KINDS] : undefined,
-      providerExtras: { sdkOptions: applySkillPolicyToOptions(resumeOpts, session.skillOverride) },
+      providerExtras: { sdkOptions },
     })
     // Re-enqueue recovered turns onto the fresh handle, oldest first.
     for (const msg of pendingInput) session.handle.enqueueUserMessage(msg)

@@ -1,5 +1,5 @@
 import { prefersReducedMotion } from '../utils/reduced-motion'
-import { useRef } from 'react'
+import { useRef, type ReactNode } from 'react'
 
 // Default empty state for a chat panel: shown when there are zero messages
 // and replay is ready. A minimal, theme-token-driven stack — line-art icon
@@ -24,6 +24,11 @@ import { useRef } from 'react'
 // `--armed` remains a classList toggle (pure color/border, no `animation`).
 interface ChatEmptyStateProps {
   onUnlockEasterEgg?: () => void
+  /** Optional environment section (MCP servers / plugins the session was
+   *  spawned with — ChatEmptyStateEnv) rendered below the subtitle. The node
+   *  renders null itself when there is nothing to show, so legacy sessions
+   *  keep the plain stack. */
+  env?: ReactNode
 }
 
 const CHAIN_TIMEOUT_MS = 800
@@ -34,7 +39,7 @@ const UNLOCK_CLICKS = 3
 // which is not a valid WAAPI easing).
 const BOUNCE_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)'
 
-export function ChatEmptyState({ onUnlockEasterEgg }: ChatEmptyStateProps) {
+export function ChatEmptyState({ onUnlockEasterEgg, env }: ChatEmptyStateProps) {
   const countRef = useRef(0)
   const lastClickAtRef = useRef(0)
   const iconRef = useRef<HTMLDivElement>(null)
@@ -112,6 +117,7 @@ export function ChatEmptyState({ onUnlockEasterEgg }: ChatEmptyStateProps) {
       </div>
       <div className="chat-empty-title">Start a conversation</div>
       <div className="chat-empty-subtitle">Type a message below, or paste an image to begin</div>
+      {env}
     </div>
   )
 }

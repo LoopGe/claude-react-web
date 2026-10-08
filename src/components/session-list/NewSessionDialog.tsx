@@ -483,7 +483,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       allowedTools: csv(allowedToolsStr),
       disallowedTools: csv(disallowedToolsStr),
       tools: csv(toolsStr),
-      enabledMcpServers: enabledMcpServers.size > 0 ? Array.from(enabledMcpServers) : undefined,
+      // ALWAYS send the array (even []) — an explicit empty selection must
+      // persist as mcpServerNames: [] so a later resume doesn't widen the
+      // session to whatever is globally enabled at that time. Omitting the
+      // field here would mean "no recorded selection" = legacy fallback.
+      enabledMcpServers: Array.from(enabledMcpServers),
       enabledPlugins: enabledPlugins.size === allPluginKeys.length
         ? undefined
         : Array.from(enabledPlugins),
