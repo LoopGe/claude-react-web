@@ -62,6 +62,38 @@ const EMPTY_TASK_MAP = new Map<string, never>()
  *  times per second for nothing. */
 const EMPTY_VIRT_IDX = new Map<number, number>()
 
+/** Where the live turn's text renders. 'overlay' (default): the capped
+ *  bottom-overlay bubble in `.chat-bottom-stack` (current behavior).
+ *  'inline': an in-flow tail row at the end of the Virtuoso list — grows
+ *  with the turn, scrolls with the transcript, scrollable back through
+ *  (the card-era feel). Selected by the module constant; a future UI
+ *  setting threads through the `streamingMode` prop. See
+ *  docs/superpowers/specs/2026-09-29-dual-mode-streaming-render-design.md. */
+export type StreamingRenderMode = 'overlay' | 'inline'
+export const DEFAULT_STREAMING_RENDER_MODE: StreamingRenderMode = 'overlay'
+
+/** Virtualization key of the inline streaming tail row. A module constant
+ *  distinct from every message uuid, so the finalized row that replaces it
+ *  can never collide in React's key space. */
+const STREAMING_ROW_KEY = 'live-turn-streaming'
+
+/** The inline-mode live turn as a Virtuoso data element. NOT a TranscriptRow:
+ *  it has no message, no itemIndex, no plainText — consumers that iterate
+ *  rows (`renderableItems`) never see it. Narrow with `'kind' in item`
+ *  (TranscriptRow carries no `kind` field, so the negative branch of the
+ *  narrow is TranscriptRow). */
+interface StreamingRowItem {
+  kind: 'streaming'
+  content: string
+}
+type VirtuosoItem = TranscriptRow | StreamingRowItem
+/** Type predicate for the inline streaming tail row. Runtime-exact: rows
+ *  built by buildTranscriptRows never carry a `kind` property. A type
+ *  predicate (not an inline `'kind' in x && x.kind === 'streaming'` check)
+ *  because TS's composite in+negative narrowing does not exclude
+ *  StreamingRowItem from the else branch — the predicate narrows both ways. */
+const isStreamingRowItem = (item: VirtuosoItem): item is StreamingRowItem => 'kind' in item
+
 /** Scroll-navigation surface registered by MessageList and held by the parent
  *  (Chat) for the pinned-header dropdown + right-click menu. `to(index)`
  *  jumps to a specific renderable item (used by the dropdown); `prev`/`next`
@@ -133,6 +165,11 @@ interface Props {
   /** Accumulated text from streaming deltas. When non-null, a live
    *  "typing" bubble is rendered at the bottom of the transcript. */
   streamingContent?: string | null
+  /** Which streaming render mode this transcript uses. Defaults to the
+   *  module constant (currently 'overlay'). Exists as a prop so tests can
+   *  force either mode and a future UI setting can thread through without
+   *  touching internals. */
+  streamingMode?: StreamingRenderMode
   /** Transient `api_retry` frame (rate-limit retry indicator), or null when
    *  no retry is in flight. Rendered as a tail divider via ApiRetryView (it
    *  lives outside items/messages/IDB — a dedicated transient slot — so this
@@ -307,7 +344,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, streamingContent, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -392,16 +429,25 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // (reducer sets `liveTurn: null`), which triggers the exit branch and
   // keeps the last non-empty content visible during the fade-out.
   const liveStreamingContent = streamingContent && streamingContent.length > 0 ? streamingContent : null
+  // Which streaming render mode this transcript uses. Defaults to the module
+  // constant (currently 'overlay') so production behavior is unchanged; the
+  // prop exists for tests and a future UI setting.
+  const resolvedMode = streamingMode ?? DEFAULT_STREAMING_RENDER_MODE
+  // The exit-fade presence machinery is overlay-only: the inline row unmounts
+  // abruptly at finalize (spec §6 — no fade), so in inline mode presence must
+  // never see a non-null source (which would churn the 180ms exit timer for
+  // a region that never renders).
+  const presenceSource = resolvedMode === 'overlay' ? liveStreamingContent : null
   const [streamingPresence, setStreamingPresence] = useState(() => ({
-    source: liveStreamingContent,
-    content: liveStreamingContent,
+    source: presenceSource,
+    content: presenceSource,
     exiting: false,
   }))
   const streamingExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const nextStreamingPresence = liveStreamingContent !== streamingPresence.source
-    ? liveStreamingContent != null
-      ? { source: liveStreamingContent, content: liveStreamingContent, exiting: false }
+  const nextStreamingPresence = presenceSource !== streamingPresence.source
+    ? presenceSource != null
+      ? { source: presenceSource, content: presenceSource, exiting: false }
       : { source: null, content: streamingPresence.content, exiting: streamingPresence.content != null }
     : streamingPresence
 
@@ -950,7 +996,25 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     onRegisterNavigate?.({ prev: () => navigate('prev'), next: () => navigate('next'), to: navigateToIndex, toBottom: jumpToBottom })
   }, [onRegisterNavigate, navigate, navigateToIndex, jumpToBottom])
 
-  const itemContent = useCallback((_index: number, item: TranscriptRow) => {
+  const itemContent = useCallback((_index: number, virtuosoItem: VirtuosoItem) => {
+    if (isStreamingRowItem(virtuosoItem)) {
+      // Inline-mode live turn row (spec §1). No data-message-id, no
+      // enter-animation hooks, no reveal snapshot: it is not a message and
+      // unmounts at finalize. Fresh content arrives via the item (the data
+      // array is rebuilt per flush in inline mode).
+      const item = virtuosoItem
+      return (
+        <div className={TRANSCRIPT_ROW_CLASS}>
+          {/* key=variant: remounts on a variant flip so useMergedRef's
+              first-render ref capture (mergedRef.ts) stays correct. */}
+          <StreamingFooter key="inline" content={item.content} variant="inline" />
+        </div>
+      )
+    }
+    // Rebind to a const carrying the narrowed TranscriptRow type: closures
+    // below (handleRowAnimationEnd) reset parameter narrowing, and every
+    // `item.` reference in the body stays untouched by this rename.
+    const item = virtuosoItem
     // Only pipe `activeMatchInItem` into the message that actually
     // contains the active navigation target. Every other message gets
     // `undefined` so its <mark>s render at the default colour. This
@@ -1121,7 +1185,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // prompt+result rows) and is unique within a list — the same id the
   // entrance-animation gate and `nextItemTypeMap` already rely on.
   const computeItemKey = useCallback(
-    (_index: number, item: TranscriptRow) => item.id,
+    (_index: number, item: VirtuosoItem) => ('kind' in item ? STREAMING_ROW_KEY : item.id),
     [],
   )
 
@@ -1143,6 +1207,26 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   const streamingRegionClassName = nextStreamingPresence.exiting
     ? 'chat-streaming-region exiting'
     : 'chat-streaming-region'
+
+  // Inline mode appends the live turn as a TAIL data row. Overlay mode returns
+  // `renderableItems` ITSELF, so Virtuoso's `data` identity stays per-items
+  // stable there — the per-flush rebuild is inline-only (spec §Risks). The
+  // memo keeps that guarantee exact: a rebuild happens ONLY when the stream
+  // text (or the rows, or the mode) actually changes — unrelated re-renders
+  // during a turn (task-card ResizeObserver commits, toolStatus/toolResults
+  // map updates, fold toggles) reuse the same array identity. The tail
+  // append never shifts an existing row's index, so `itemToVirtIdx` /
+  // `nextItemTypeMap` / entrance-gating (all built from `renderableItems`)
+  // stay valid; `handleRangeChanged` reads only `range.startIndex` (a number —
+  // a tail append can never become startIndex while rows exist), so it needs
+  // no guard.
+  const virtuosoData: VirtuosoItem[] = useMemo(
+    () =>
+      resolvedMode === 'inline' && liveStreamingContent != null
+        ? [...renderableItems, { kind: 'streaming', content: liveStreamingContent }]
+        : renderableItems,
+    [renderableItems, resolvedMode, liveStreamingContent],
+  )
 
   // Virtuoso Footer is reserved for transcript metadata and invisible bottom
   // breathing room. The bottom overlay stack (live streaming bubble + task
@@ -1217,9 +1301,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         <Virtuoso
           ref={virtuosoRef}
           scrollerRef={scrollerRefCb}
-          data={renderableItems}
+          data={virtuosoData}
           firstItemIndex={firstItemIndex}
-          initialTopMostItemIndex={renderableItems.length > 0 ? renderableItems.length - 1 : 0}
+          initialTopMostItemIndex={virtuosoData.length > 0 ? virtuosoData.length - 1 : 0}
           followOutput={followOutput}
           atBottomStateChange={atBottomStateChange}
           startReached={startReached}
@@ -1260,13 +1344,15 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         )}
       </div>
       <div className="chat-bottom-stack" ref={bottomStackRef}>
-        {visibleStreamingContent != null && (
+        {resolvedMode === 'overlay' && visibleStreamingContent != null && (
           <div className="chat-streaming-clip">
             <div
               className={streamingRegionClassName}
               aria-hidden={nextStreamingPresence.exiting}
             >
-              <StreamingFooter content={visibleStreamingContent} />
+              {/* key=variant: remounts on a variant flip so useMergedRef's
+                  first-render ref capture (mergedRef.ts) stays correct. */}
+              <StreamingFooter key="overlay" content={visibleStreamingContent} />
             </div>
           </div>
         )}

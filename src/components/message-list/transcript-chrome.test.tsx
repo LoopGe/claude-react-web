@@ -36,6 +36,38 @@ describe('StreamingFooter', () => {
     expect(scroller?.textContent).not.toMatch(/\n{2,}/)
   })
 
+  it('inline variant: plain text + cursor, no glass, no scrollbar chrome, no cap class', () => {
+    const { container } = render(
+      <StreamingFooter content={'para one\n\n\npara two'} variant="inline" />,
+    )
+    const wrapper = container.querySelector('.streaming-footer-wrapper')
+    expect(wrapper?.classList.contains('streaming-footer-wrapper--inline')).toBe(true)
+    const bubble = container.querySelector('.streaming-msg')
+    expect(bubble?.classList.contains('streaming-msg--inline')).toBe(true)
+    // In-flow row has nothing behind it to refract — glass chrome must be off.
+    expect(bubble?.classList.contains('liquid-glass')).toBe(false)
+    expect(container.querySelector('.liquid-glass-defs')).toBeNull()
+    expect(container.querySelector('.streaming-refraction')).toBeNull()
+    // Shared body semantics survive: newline fold + cursor.
+    const body = container.querySelector('.streaming-plain')
+    expect(body?.textContent).toContain('para one\npara two')
+    expect(body?.querySelector('.streaming-cursor')).toBeTruthy()
+    // The uncapped body is NOT a scroll container: no overlay-scrollbar
+    // attachment (that chrome exists for the capped overlay bubble only).
+    expect(body?.hasAttribute('data-os-native-hidden')).toBe(false)
+    expect(bubble?.querySelector('.os-track')).toBeNull()
+  })
+
+  it('overlay variant (explicit): keeps glass-capable bubble and scrollbar chrome', () => {
+    // Pins the default: passing variant="overlay" explicitly must behave
+    // exactly like the no-prop renders the earlier tests assert.
+    const longContent = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join('\n')
+    const { container } = render(<StreamingFooter content={longContent} variant="overlay" />)
+    const scroller = container.querySelector('.streaming-plain') as HTMLElement
+    expect(scroller.hasAttribute('data-os-native-hidden')).toBe(true)
+    expect(container.querySelector('.streaming-msg')?.classList.contains('streaming-msg--inline')).toBe(false)
+  })
+
   /* Temporarily disabled along with the live code-block rendering in
    * StreamingFooter (see transcript-chrome.tsx) — the streaming bubble now
    * renders the whole turn as plain text. Uncomment together with the source

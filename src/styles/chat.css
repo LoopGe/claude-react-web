@@ -2204,6 +2204,34 @@
 /* Reduced-motion already freezes the border pulse above; the refraction
    itself is static (only rebuilds on resize), so nothing extra needed. */
 
+/* ---- Inline streaming row (streamingMode='inline') ----
+   The live turn renders as an in-flow tail row at the end of the Virtuoso
+   list: uncapped (the transcript scrolls — the row is part of it), no
+   internal scrollbar, no glass. Shares the bubble chrome (.streaming-msg)
+   and plain-text body (.streaming-plain) with the overlay variant; only the
+   cap/scroll/mask chrome differs. */
+.streaming-footer-wrapper--inline {
+  /* The overlay wrapper sets pointer-events:none so it never blocks
+     scrolling; an in-flow row is real content and must be selectable. */
+  pointer-events: auto;
+  /* The wrapper's horizontal inset (tuned for the overlay placement OUTSIDE
+     the item wrappers) must be neutralized in-flow: the row already sits
+     inside .virtuoso-item-wrapper's --chat-reading-inset, so keeping both
+     insets doubles the live bubble's side padding and makes it visibly jump
+     wider the moment it swaps for the settled message. The bottom rhythm is
+     owned by the item wrapper as well. */
+  padding-left: 0;
+  padding-right: 0;
+  padding-bottom: 0;
+}
+.streaming-msg--inline .streaming-plain {
+  max-height: none;
+  overflow-y: visible;
+  scroll-padding-bottom: 0;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
 /* Image preview thumbnails in the composer */
 .image-previews {
   display: flex;

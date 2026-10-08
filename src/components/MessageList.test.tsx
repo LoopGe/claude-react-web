@@ -69,6 +69,9 @@ const virtuosoMockState = vi.hoisted(() => ({
   // the upward pre-render (which is what keeps a scroll-up from painting
   // blank) can't silently regress to 0.
   lastIncreaseViewportBy: undefined as { top: number; bottom: number } | number | undefined,
+  // Distinct `data` array identities seen by the mock, in order (see the
+  // push in the Virtuoso mock body).
+  dataIdentities: [] as unknown[],
   // Captures the `rangeChanged` prop so a test can drive it the way real
   // Virtuoso does when its RENDERED window shifts.
   rangeChanged: undefined as ((range: { startIndex: number; endIndex: number }) => void) | undefined,
@@ -112,6 +115,12 @@ vi.mock('react-virtuoso', async () => {
     }) => {
       virtuosoMockState.lastIncreaseViewportBy = increaseViewportBy
       virtuosoMockState.rangeChanged = rangeChanged
+      // Track `data` identity transitions so tests can assert the overlay
+      // stability / inline rebuild contract: `dataIdentities` grows by one
+      // entry per DISTINCT array identity the mock receives.
+      if (virtuosoMockState.dataIdentities[virtuosoMockState.dataIdentities.length - 1] !== data) {
+        virtuosoMockState.dataIdentities.push(data)
+      }
       const mockScrollerRef = React.useRef<HTMLDivElement | null>(null)
       // Mirror real Virtuoso: it calls followOutput when the data array
       // grows at the tail. Capture the return so tests can assert on it.
@@ -1545,6 +1554,150 @@ describe('MessageList', () => {
     expect(scroller.scrollTop).toBe(150)
 
     vi.useRealTimers()
+  })
+
+  it('inline mode: renders the live turn as an in-flow tail row inside the scroller', () => {
+    const msgs = [makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } })]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingMode="inline" streamingContent="streaming answer" />,
+    )
+    // In-list, as the LAST data row.
+    const list = container.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
+    expect(list).not.toBeNull()
+    const rows = list.querySelectorAll('[data-item-index]')
+    const last = rows[rows.length - 1]
+    expect(last?.querySelector('.streaming-footer-wrapper--inline')).not.toBeNull()
+    expect(last?.querySelector('.streaming-plain')?.textContent).toContain('streaming answer')
+    // The overlay path must NOT double-render: the overlay region is
+    // overlay-mode-only.
+    expect(container.querySelector('.chat-streaming-clip')).toBeNull()
+  })
+
+  it('inline mode: no streaming row before text arrives or after it clears', () => {
+    const msgs = [makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } })]
+    const props = { items: toItems(msgs as SdkMessage[]), streamingMode: 'inline' as const }
+    const { container, rerender } = render(<MessageList {...props} streamingContent="" />)
+    // '' = pre-text phase (or all-sidechain turn): no row, no overlay region.
+    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
+    rerender(<MessageList {...props} streamingContent="tail text" />)
+    expect(container.querySelector('.streaming-msg--inline')?.textContent).toContain('tail text')
+    rerender(<MessageList {...props} streamingContent={null} />)
+    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
+  })
+
+  it('inline mode: finalize swaps the streaming row for the settled message (no double bubble)', () => {
+    const user = makeMsg('user', { uuid: 'q-1', message: { content: [{ type: 'text', text: 'q' }] } })
+    const assistant = makeMsg('assistant', {
+      uuid: 'a-1',
+      message: { content: [{ type: 'text', text: 'partial answer' }] },
+    })
+    const { container, rerender } = render(
+      <MessageList
+        items={toStableItems([user] as SdkMessage[])}
+        streamingMode="inline"
+        streamingContent="partial answer"
+      />,
+    )
+    expect(container.querySelectorAll('.streaming-footer-wrapper')).toHaveLength(1)
+    // Finalize: the settled assistant lands while the store prunes the live
+    // text to null — same commit, the row unmounts above the settled row.
+    rerender(
+      <MessageList
+        items={toStableItems([user, assistant] as SdkMessage[])}
+        streamingMode="inline"
+        streamingContent={null}
+      />,
+    )
+    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
+    expect(container.querySelector('[data-message-id="a-1"]')).not.toBeNull()
+    // Exactly one copy of the text on screen: the settled message. (The key
+    // sentinel STREAMING_ROW_KEY is what lets React drop the old row without
+    // colliding with the new one — observable here as "no duplicate".)
+    const occurrences = (container.textContent ?? '').split('partial answer').length - 1
+    expect(occurrences).toBe(1)
+  })
+
+  it('overlay mode (default): the streaming region stays in the bottom stack, nothing in-list', () => {
+    // Regression fence for the seam: without streamingMode, NOTHING in-list.
+    const msgs = [makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } })]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="streaming answer" />,
+    )
+    expect(container.querySelector('.chat-streaming-clip .streaming-footer-wrapper')).not.toBeNull()
+    const list = container.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
+    expect(list.querySelector('.streaming-footer-wrapper')).toBeNull()
+  })
+
+  it('inline mode: streaming-row growth re-pins the viewport to the bottom', () => {
+    // Mirrors the geometry-stub pattern of the overlay re-pin regression
+    // tests: local scrollHeight/clientHeight/scrollTop over the scroller,
+    // fired through the item-list ResizeObserver the way a real browser does.
+    vi.useFakeTimers()
+    virtuosoMockState.atBottomReport = true
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.streamingSpacerHeight = 0
+
+    let contentHeight = 200
+    let rawScrollTop = 200
+
+    const msgs = [makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } })]
+    const { container } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        streamingMode="inline"
+        streamingContent="growing tail"
+      />,
+    )
+
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => contentHeight })
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 100 })
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => {
+        const max = Math.max(0, contentHeight - 100)
+        if (rawScrollTop > max) rawScrollTop = max // browser clamp-on-shrink
+        return rawScrollTop
+      },
+      set: (v: number) => { rawScrollTop = v },
+    })
+
+    // The inline row grows by 120px; the item-list observer fires.
+    contentHeight = 320
+    const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
+    act(() => { fireResize(itemList) })
+
+    // The viewport MUST follow to the new bottom (320 - 100).
+    expect(scroller.scrollTop).toBe(220)
+    vi.useRealTimers()
+  })
+
+  it('inline mode: unrelated re-renders keep the data identity (only flushes rebuild it)', () => {
+    // The overlay mode's `data` identity is per-items stable; inline mode
+    // accepts a per-FLUSH rebuild (streamingContent changes each flush) but
+    // must NOT hand Virtuoso a fresh array on unrelated re-renders (task-card
+    // ResizeObserver commits, toolStatus/toolResults map updates, fold
+    // toggles) — each identity change re-triggers Virtuoso's listState diff
+    // over all rows.
+    virtuosoMockState.dataIdentities = []
+    const msgs = [makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } })]
+    const base = {
+      items: toItems(msgs as SdkMessage[]),
+      streamingMode: 'inline' as const,
+      streamingContent: 'live text',
+    }
+    const { rerender } = render(<MessageList {...base} />)
+    const afterFirst = virtuosoMockState.dataIdentities.length
+    // Two unrelated re-renders: fresh Map identities, unchanged stream text.
+    rerender(<MessageList {...base} toolStatus={new Map()} />)
+    rerender(<MessageList {...base} toolStatus={new Map()} />)
+    const afterUnrelated = virtuosoMockState.dataIdentities.length
+    // A real flush: new streaming content rebuilds the data array.
+    rerender(<MessageList {...base} streamingContent="live text 2" />)
+    const afterFlush = virtuosoMockState.dataIdentities.length
+    expect(afterFirst).toBe(1)
+    expect(afterUnrelated).toBe(afterFirst)
+    expect(afterFlush).toBe(afterFirst + 1)
   })
 
   it('stays following when the scroller cannot scroll down', async () => {

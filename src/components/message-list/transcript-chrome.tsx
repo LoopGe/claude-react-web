@@ -63,20 +63,38 @@ const StreamCodeSegment = memo(function StreamCodeSegment({
 })
 */
 
-export const StreamingFooter = memo(function StreamingFooter({ content }: { content: string }) {
+/** Where the live-turn bubble renders. 'overlay': the capped bubble pinned
+ *  below the Virtuoso scroller (`.chat-bottom-stack`). 'inline': an in-flow
+ *  tail row at the end of the Virtuoso list — uncapped, scrolls with the
+ *  transcript, no glass (nothing behind it to refract), no internal
+ *  scrollbar (the body never scrolls). */
+export type StreamingFooterVariant = 'overlay' | 'inline'
+
+export const StreamingFooter = memo(function StreamingFooter({
+  content,
+  variant = 'overlay',
+}: {
+  content: string
+  variant?: StreamingFooterVariant
+}) {
+  const inline = variant === 'inline'
   // Render the in-progress turn as PLAIN TEXT, not Markdown. The live turn
   // flushes a growing string many times per second; running Markdown and
   // syntax highlighting over the accumulated text on every flush is costly.
   const bodyRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
-  // Reuse the project's self-built overlay scrollbar (the same one MessageList
-  // uses on the Virtuoso scroller) instead of the native scrollbar on the
-  // capped streaming bubble. Merged onto bodyRef so the scroll-follow effects
-  // below still read .current off the same node the overlay is attached to.
+  // Overlay-only: the capped bubble is a scroll container and gets the
+  // project's overlay scrollbar (the same one MessageList uses on the
+  // Virtuoso scroller). The inline body is uncapped and never scrolls, so
+  // there is nothing to attach; the hook stays called (rules of hooks) but
+  // its ref is not merged in. `key={variant}` at the call sites remounts the
+  // component on a variant flip, which keeps useMergedRef's first-render ref
+  // capture correct.
   const setOsScroller = useOverlayScrollbar({ autoHide: 'leave' })
-  const setBodyRef = useMergedRef(bodyRef, setOsScroller)
+  const setBodyRef = useMergedRef(bodyRef, inline ? null : setOsScroller)
 
   useEffect(() => {
+    if (inline) return
     const el = bodyRef.current
     if (!el) return
     const onScroll = () => {
@@ -85,13 +103,14 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [])
+  }, [inline])
 
   useEffect(() => {
+    if (inline) return
     const el = bodyRef.current
     if (!el) return
     if (followRef.current) el.scrollTop = el.scrollHeight
-  }, [content])
+  }, [content, inline])
 
   // The streaming bubble sizes to its content directly — no JS height
   // animation. The previous implementation animated `max-height` on every
@@ -102,17 +121,21 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
   // motion that cost a reflow per flush. See Anim C1 in the audit.
   const msgRef = useRef<HTMLDivElement>(null)
 
-  // Liquid-glass refraction. Bezel/radius are tuned to the streaming
-  // bubble's CSS: border-radius 8px, and a ~16px refractive rim that
-  // keeps the text area optically clear while the edges bend the
-  // transcript behind them. supported is false off-Chromium and in
+  // Liquid-glass refraction — overlay-only. The filter samples the transcript
+  // BEHIND the bubble; an in-flow row has nothing behind it, so glass is
+  // meaningless there and `enabled` keeps the hook dormant. Bezel/radius are
+  // tuned to the streaming bubble's CSS: border-radius 8px, and a ~16px
+  // refractive rim that keeps the text area optically clear while the edges
+  // bend the transcript behind them. supported is false off-Chromium and in
   // jsdom, where we render the existing frosted-glass styling instead.
   const GLASS_STRENGTH = 22
   const { supported, filterId, feImageRef, feDispRef } = useLiquidGlass(msgRef, {
     radius: 8,
     bezel: 16,
     strength: GLASS_STRENGTH,
+    enabled: !inline,
   })
+  const glassActive = supported && !inline
   // A gentle blur rides along with the geometric refraction so the glass
   // reads as frosted as well as refractive. Filter functions compose, so
   // the blur and the displacement url() are applied as one backdrop-filter.
@@ -138,8 +161,10 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
   const displayContent = useMemo(() => content.replace(/\n{2,}/g, '\n'), [content])
 
   return (
-    <div className="streaming-footer-wrapper">
-      {supported && (
+    <div
+      className={`streaming-footer-wrapper${inline ? ' streaming-footer-wrapper--inline' : ''}`}
+    >
+      {glassActive && (
         <svg className="liquid-glass-defs" width="0" height="0" aria-hidden="true" focusable="false">
           <defs>
             <filter
@@ -169,9 +194,9 @@ export const StreamingFooter = memo(function StreamingFooter({ content }: { cont
       )}
       <div
         ref={msgRef}
-        className={`msg streaming-msg${supported ? ' liquid-glass' : ''}`}
+        className={`msg streaming-msg${glassActive ? ' liquid-glass' : ''}${inline ? ' streaming-msg--inline' : ''}`}
       >
-        {supported && (
+        {glassActive && (
           <span
             className="streaming-refraction"
             aria-hidden="true"
