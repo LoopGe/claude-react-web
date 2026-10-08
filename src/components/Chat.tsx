@@ -81,7 +81,6 @@ import { usePluginCommands } from '../app-plugins/usePluginCommands'
 import { buildWhenContext, filterContributions } from '../app-plugins/when'
 import { IconSearch, IconFileText, IconFileCode, IconX, IconCopy, IconSettings, IconArrowUp, IconArrowDown, IconArrowDownToLine, IconMessageCircle, IconArrowLeft, IconTrash, IconGlobe, IconScissors, IconRotateCcw } from './icons/ToolIcons'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
-import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useToast } from '../hooks/useToast'
 import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
 import { Overlay } from './Overlay'
@@ -1657,17 +1656,14 @@ export const Chat = memo(function Chat({
     }
   }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, requestCompactSession, runBashCommand])
 
-  // Overlay scrollbars on the settings + git overlay backdrops (these scroll
-  // when the panel card exceeds the viewport). Passed to the <Overlay>
-  // backdropRef so the scrollbar styles the same element the focus trap and
-  // Escape stack target. The Overlay primitive owns the focus traps and
-  // presence for both overlays; its `mounted && open` active gate reproduces
-  // the old `gitPresence.shouldRender && gitPanelOpen` fix (the trap engages
-  // only once the git overlay is actually mounted, so the chip's :focus
-  // tooltip doesn't stick open).
-  const setSettingsOverlayOs = useOverlayScrollbar({ autoHide: 'leave' })
-  const setGitOverlayOs = useOverlayScrollbar({ autoHide: 'leave' })
-
+  // The Overlay primitive owns the focus traps and presence for the settings
+  // + git overlays; its `mounted && open` active gate reproduces the old
+  // `gitPresence.shouldRender && gitPanelOpen` fix (the trap engages only
+  // once the git overlay is actually mounted, so the chip's :focus tooltip
+  // doesn't stick open). NOTE: the backdrops are deliberately NOT scroll
+  // containers (see .tasks-overlay in tasks-panel.css) and their cards are
+  // max-height: 100% capped, so instrumenting a backdrop with an overlay
+  // scrollbar would be dead weight (pinned by overlay-backdrop-scroll.test.ts).
   const interrupt = useCallback(async () => {
     // Arm App's post-interrupt Esc suppression window at REQUEST time (not
     // after the await): the trailing Esc of an impatient double-press can
@@ -2498,7 +2494,6 @@ export const Chat = memo(function Chat({
         trapRefTarget="backdrop"
         focusEscapeSelector=".chat-panel"
         keepMounted={settingsEverOpened}
-        backdropRef={setSettingsOverlayOs}
       >
         {settingsEverOpened && (
           <Suspense fallback={null}>
@@ -2527,7 +2522,6 @@ export const Chat = memo(function Chat({
         renderCard={false}
         trapRefTarget="backdrop"
         focusEscapeSelector=".chat-panel"
-        backdropRef={setGitOverlayOs}
       >
         <Suspense fallback={null}>
           <GitPanel

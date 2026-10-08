@@ -151,7 +151,11 @@
   background: color-mix(in srgb, var(--bg) 65%, transparent);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
-  overflow-y: auto;
+  /* Deliberately NOT a scroll container — same invariant as .tasks-overlay
+     (tasks-panel.css): the card child is capped by max-height: 100% and a
+     scrollable backdrop would turn a mid-animation track poke into a native
+     scrollbar. Canonical comment: src/utils/overlay-scrollbar.ts; pinned by
+     overlay-backdrop-scroll.test.ts. */
 }
 .panel-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
 .panel-overlay[data-state="closing"] {

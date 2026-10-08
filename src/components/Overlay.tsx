@@ -1,11 +1,10 @@
-import { useRef, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
+import { useCallback, useRef, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { PORTAL_MARKER } from '../theme'
 import { motion } from 'motion/react'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useEscapeStack } from '../hooks/useEscapeStack'
-import { useMergedRef } from '../utils/mergedRef'
 import { useOverlayMotion } from '../utils/transitions'
 
 /**
@@ -155,9 +154,6 @@ export interface OverlayProps {
   /** Card-level keydown handler (arrow navigation, Enter to confirm, Tab
    *  containment for palettes). */
   onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void
-  /** Extra ref on the backdrop element (e.g. useOverlayScrollbar). Must be a
-   *  stable ref — see useMergedRef's jsdoc. */
-  backdropRef?: (node: HTMLElement | null) => void
 }
 
 export function Overlay(props: OverlayProps) {
@@ -186,7 +182,6 @@ export function Overlay(props: OverlayProps) {
     exitDurationMs,
     inertOnExit = false,
     onKeyDown,
-    backdropRef,
   } = props
 
   const classes = VARIANT_CLASSES[variant]
@@ -208,8 +203,14 @@ export function Overlay(props: OverlayProps) {
   const mounted = keepMounted ? true : shouldRender
 
   const backdropElRef = useRef<HTMLDivElement>(null)
+  // Stable callback alias for backdropElRef: backdropProps' ref slot is typed
+  // as a callback ref, and an inline closure would change identity every
+  // render, making React detach/reattach the ref (a null .current window the
+  // escape-stack/focus-trap getContainer reads through).
+  const setBackdropEl = useCallback((node: HTMLDivElement | null) => {
+    backdropElRef.current = node
+  }, [])
   const cardElRef = useRef<HTMLDivElement>(null)
-  const mergedBackdropRef = useMergedRef(backdropElRef, backdropRef)
 
   // Register in the Escape stack while open. The getContainer is the backdrop
   // (it contains the card + focus), so the stack's containment scan resolves
@@ -260,7 +261,7 @@ export function Overlay(props: OverlayProps) {
     // declares itself portalled and lets the compensations hang off it —
     // see PORTAL_MARKER (src/theme.ts) and the body.has-bg block in layout.css.
     ...(usePortal ? { [PORTAL_MARKER]: '' } : {}),
-    ref: mergedBackdropRef,
+    ref: setBackdropEl,
     ...(backdropDismiss
       ? {
           onMouseDown: (e: React.MouseEvent<HTMLDivElement>) => {
