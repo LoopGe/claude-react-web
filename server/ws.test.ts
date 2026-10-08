@@ -521,9 +521,13 @@ describe('WebSocket multiplexer', () => {
     await waitForFrame(client.frames, (f) => f.kind === 'replay-done')
 
     client.send({ kind: 'unsubscribe', sessionId: info.id })
-    // A tick is enough to propagate the unsubscribe through the
-    // SessionManager — its subscriber map is synchronous.
-    await tick()
+    // Wait for a real I/O turn so the unsubscribe frame has been READ and
+    // processed server-side before we snapshot. A single tick() is NOT
+    // enough: it resumes in the check phase, BEFORE the poll phase that
+    // delivers the socket data — and the emit below then reaches the pump
+    // via a microtask, so the broadcast can race ahead of the unsubscribe
+    // and legitimately stream one message (observed as a ~80% flake).
+    await new Promise((r) => setTimeout(r, 20))
 
     const before = client.frames.length
     mockHandles[0].emit({ type: 'assistant', message: { role: 'assistant', content: [] } })
