@@ -373,6 +373,22 @@ export const ChatPanel = memo(function ChatPanel({
     data: dndData({ kind: 'main-panel', id: session.id }),
   })
   const dropActive = panelDrop.isOver
+  // Stable combined node ref for the section (draggable + droppable). The
+  // draggable NODE is the whole panel: dnd-kit aligns the drag ghost and
+  // measures the drop animation's target from this node's rect, and the
+  // ghost content is a whole-panel clone — anchoring the node to the HEADER
+  // (the old wiring) made the clone render at the header's rect, displacing
+  // the ghost downward by the panel's 2px top border for the entire drag: a
+  // pop at lift and a matching few-px snap at the drop handoff. The header
+  // stays the drag HANDLE via setActivatorNodeRef (activator event /
+  // constraints). An inline arrow here would instead detach/reattach both
+  // node refs on EVERY render of this heaviest component — transiently
+  // nulling them mid-commit, drag included — so the combined callback is
+  // memoized; both dnd-kit setters are stable, so it never churns.
+  const panelNodeRef = useCallback((el: HTMLElement | null) => {
+    panelDrop.setNodeRef(el)
+    panelDrag.setNodeRef(el)
+  }, [panelDrop.setNodeRef, panelDrag.setNodeRef])
   // A pickup within the panel-enter window (open → grab fast) must cancel
   // the entrance animation: its keyframes own `opacity` (fill both) and would
   // override the source-dim until they end — the drag would read as two full
@@ -791,7 +807,7 @@ export const ChatPanel = memo(function ChatPanel({
 
   return (
     <section
-      ref={panelDrop.setNodeRef}
+      ref={panelNodeRef}
       data-panel-id={session.id}
       className={cx(
         'chat-panel',
@@ -817,10 +833,7 @@ export const ChatPanel = memo(function ChatPanel({
       }}
     >
       <div
-        ref={(el) => {
-          panelDrag.setNodeRef(el)
-          panelDrag.setActivatorNodeRef(el)
-        }}
+        ref={panelDrag.setActivatorNodeRef}
         className="chat-panel-header"
         // The header is the drag handle for panel swaps — the body stays
         // non-draggable so textarea text selection and scrolling work.
