@@ -48,6 +48,7 @@ import remarkRehype from 'remark-rehype'
 import rehypeKatex from 'rehype-katex'
 import { toJsxRuntime, type Options as ToJsxOptions } from 'hast-util-to-jsx-runtime'
 import { rehypeStripStructuralWhitespace } from '../../shared/search/rehype-strip-structural-whitespace'
+import { htmlAsTextHandlers } from '../../shared/markdown-html-text'
 import { rehypeHighlightLite } from '../components/markdown-highlight'
 import { rehypeHighlightQuery } from '../search'
 import { MD_COMPONENTS } from '../components/markdown-components'
@@ -178,7 +179,11 @@ function getBaseProcessor(breaks: boolean) {
     let p: any = unified().use(remarkParse).use(remarkGfm).use(remarkMath)
     if (breaks) p = p.use(remarkBreaks)
     proc = p
-      .use(remarkRehype)
+      // htmlAsTextHandlers: raw HTML renders as literal text — remark-rehype's
+      // default DROPS html nodes, which blanked a bubble whose body was one
+      // big pasted HTML blob. Shared with extract.ts so the search index
+      // agrees (see shared/markdown-html-text.ts for the contract).
+      .use(remarkRehype, { handlers: htmlAsTextHandlers })
       .use(rehypeStripStructuralWhitespace)
       .use(rehypeKatex, KATEX_OPTIONS)
       .use(rehypeHighlightLite)
@@ -193,7 +198,7 @@ function buildSearchProcessor(opts: CompileMarkdownOptions) {
   let p: any = unified().use(remarkParse).use(remarkGfm).use(remarkMath)
   if (opts.breaks) p = p.use(remarkBreaks)
   return p
-    .use(remarkRehype)
+    .use(remarkRehype, { handlers: htmlAsTextHandlers })
     .use(rehypeStripStructuralWhitespace)
     .use(rehypeHighlightLite)
     // Attacher wrap mirrors Markdown.tsx (rehypeHighlightQuery returns a

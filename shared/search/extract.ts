@@ -38,6 +38,7 @@ import remarkRehype from 'remark-rehype'
 import { flattenHast, type HastNode } from './hast-walk.js'
 import { lineDiff } from './line-diff.js'
 import { rehypeStripStructuralWhitespace } from './rehype-strip-structural-whitespace.js'
+import { htmlAsTextHandlers } from '../markdown-html-text.js'
 
 interface SearchableMessage {
   type?: string
@@ -61,7 +62,10 @@ function getProcessor(): Processor {
   _processor = unified()
     .use(remarkParse)
     .use(remarkGfm)
-    .use(remarkRehype)
+    // htmlAsTextHandlers: keep the index aligned with the renderer, which
+    // shows raw HTML as literal text (see shared/markdown-html-text.ts for
+    // the contract).
+    .use(remarkRehype, { handlers: htmlAsTextHandlers })
     .use(rehypeStripStructuralWhitespace) as unknown as Processor
   return _processor
 }

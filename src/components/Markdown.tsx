@@ -8,8 +8,12 @@
 // component shell around `compileMarkdown`.
 //
 // We deliberately do NOT enable rehype-raw or any HTML-passthrough plugin —
-// assistant output is only semi-trusted and we prefer to render raw HTML
-// as text rather than risk XSS.
+// assistant output is only semi-trusted. Raw HTML is rendered as literal,
+// inert text: the shared htmlAsTextHandlers (shared/markdown-html-text.ts)
+// turn mdast `html` nodes into text nodes, because remark-rehype's default
+// treatment is to DROP them — which once blanked a bubble whose body was a
+// pasted HTML blob. The same handler runs in the search-index pipeline
+// (shared/search/extract.ts) so the index sees the text the bubble shows.
 
 import { memo } from 'react'
 import { ErrorBoundary } from './ErrorBoundary'

@@ -91,6 +91,14 @@ const SAMPLES: Array<{ name: string; md: string; queries: string[] }> = [
     md: 'Normal **bold _nested italic_ end** done',
     queries: ['bold', 'nested italic', 'bold nested italic end'],
   },
+  {
+    // Raw HTML renders as literal text (shared/markdown-html-text.ts) — the
+    // index and the highlighter must agree on those characters too, or a
+    // query matching visible markup finds nothing (N/M desyncs from <mark>s).
+    name: 'raw html as literal text',
+    md: '<div class="tasks-overlay">boxed text</div>\n\nplain after',
+    queries: ['boxed text', 'class="tasks-overlay"', 'plain after', '<div'],
+  },
 ]
 
 describe('search alignment invariant', () => {

@@ -167,6 +167,10 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   // `items[]` itself is still NOT persisted — it is rebuilt cheaply from the
   // messages + cached plainTexts, and its other derived fields
   // (isCompactSummary / hiddenByDefault / deliveryStatus) are cheap flags.
+  //
+  // v4 bump: the v3 entries were computed by the extractor that dropped raw
+  // html; see the v4 note below the plainTexts array for why they are
+  // re-derived instead of trusted.
   const mirror = state.mirror
   // Project each message (no-op ref for small messages). Live state is never
   // touched — projection is persist-only.
@@ -185,6 +189,12 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   // stays correct AND never holds undefined (which the budget-trim size
   // estimate below would choke on: JSON.stringify(undefined).length throws).
   const plainTexts: (string | null)[] = projected.map((_, i) => mirror.items[i]?.plainText ?? null)
+  // v4 (plainText re-extraction): htmlAsTextHandlers (shared/markdown-html-text.ts)
+  // changed what extractMessagePlainText produces for html-bearing messages —
+  // raw HTML is now literal text, previously dropped. v3 caches hold the old
+  // output and normalize.ts trusts a cached value unconditionally, so the
+  // version bump makes loadFromStorage re-derive (one-time, the same cost the
+  // v2→v3 upgrade accepted); this write upgrades the cache to v4.
   const lastMessageUuid = mirror.lastMessageUuid
   const dismissedSubagents = Array.from(state.intent.dismissedSubagents)
 
@@ -193,7 +203,7 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   // Fast path: stringify once. The projection caps usually keep a session
   // well under the budget, so this single stringify is the common case.
   const fullPayload = JSON.stringify({
-    v: 3,
+    v: 4,
     savedAt: Date.now(),
     messages: projected,
     plainTexts,
@@ -222,7 +232,7 @@ function persistToStorage(sessionId: string, state: SessionState): void {
     const keptMessages = kept < projected.length ? projected.slice(projected.length - kept) : projected
     const keptPlainTexts = kept < plainTexts.length ? plainTexts.slice(plainTexts.length - kept) : plainTexts
     toWrite = JSON.stringify({
-      v: 3,
+      v: 4,
       savedAt: Date.now(),
       messages: keptMessages,
       plainTexts: keptPlainTexts,
@@ -254,20 +264,26 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   }
 }
 
-function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMessages: unknown[]; lastMessageUuid: string | null; dismissedSubagents: string[] } | null {
+function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMessages: unknown[]; lastMessageUuid: string | null; dismissedSubagents: string[]; cacheVersion: 2 | 3 | 4 } | null {
   try {
     const raw = localStorage.getItem(STORAGE_PREFIX + sessionId)
     if (!raw) return null
     const data = JSON.parse(raw)
-    // v3 shape: { v:3, savedAt, messages: SdkMessage[], plainTexts,
-    //             lastMessageUuid }. v2 caches (same shape, no plainTexts) are
-    // still accepted — hydrate re-derives plainText through the markdown
-    // pipeline as before, and the next persist upgrades the cache to v3.
-    // v1 caches (which stored a duplicated items[] array) are discarded —
-    // the cache is a non-essential render hint and the WS replay repopulates
-    // within seconds.
-    if (!data || (data.v !== 3 && data.v !== 2) || !Array.isArray(data.messages)) return null
-    const plainTexts = Array.isArray(data.plainTexts) ? (data.plainTexts as (string | null | undefined)[]) : null
+    // v4 shape: { v:4, savedAt, messages: SdkMessage[], plainTexts,
+    //             lastMessageUuid }. v3 caches are the same shape — but their
+    // plainTexts were computed by the pre-v4 extractor, which DROPPED raw
+    // html instead of rendering it as text (htmlAsTextHandlers), so they are
+    // accepted for their messages while the plainTexts array is IGNORED: the
+    // one-time re-derive is the same cost the v2→v3 upgrade accepted, and the
+    // next persist upgrades the cache to v4. v2 caches (no plainTexts) behave
+    // the same. v1 caches (which stored a duplicated items[] array) are
+    // discarded — the cache is a non-essential render hint and the WS replay
+    // repopulates within seconds.
+    if (!data || (data.v !== 4 && data.v !== 3 && data.v !== 2) || !Array.isArray(data.messages)) return null
+    // Only a v4 cache's plainTexts are trustworthy (see the version note above).
+    const plainTexts = data.v === 4 && Array.isArray(data.plainTexts)
+      ? (data.plainTexts as (string | null | undefined)[])
+      : null
     // Strip transient `api_retry` from old caches (pre-cutover caches stored
     // it inside messages; it now lives in the apiRetry slot and must not be
     // re-persisted to IDB). toTranscriptItem already drops it from items;
@@ -308,6 +324,9 @@ function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMe
       dismissedSubagents: Array.isArray(data.dismissedSubagents)
         ? (data.dismissedSubagents as unknown[]).filter((x): x is string => typeof x === 'string')
         : [],
+      // The version guard above narrowed data.v to one of these; JSON.parse
+      // is `any`, so re-assert for the caller.
+      cacheVersion: data.v as 2 | 3 | 4,
     }
   } catch {
     return null
@@ -490,11 +509,11 @@ export class SessionStore {
     })
   }
 
-  /** Restore the localStorage cache (v2/v3) into the store, off the render
-   *  path. Runs once, as a microtask from the constructor. With the v3 cache
+  /** Restore the localStorage cache (v2/v3/v4) into the store, off the render
+   *  path. Runs once, as a microtask from the constructor. With the v4 cache
    *  the markdown pipeline is skipped entirely (plainText is persisted), so
-   *  this is ~10-20ms even for a 2MB cache; with a legacy v2 cache it pays the
-   *  one-time re-derive and the next persist upgrades the cache to v3. */
+   *  this is ~10-20ms even for a 2MB cache; with a legacy v2/v3 cache it pays
+   *  the one-time re-derive and the next persist upgrades the cache to v4. */
   private hydrateFromCache(sessionId: string, hadCache: boolean): void {
     try {
       const cached = loadFromStorage(sessionId)
@@ -543,6 +562,13 @@ export class SessionStore {
         // replays on every reconnect, and a tail-first opt-in it must not
         // make (see ADOPT_CURSOR).
         this.state = reduceSessionState(this.state, { type: 'ADOPT_CURSOR' })
+        // Upgrade write for a pre-v4 cache (v2: no plainTexts; v3: plainTexts
+        // from the html-dropping extractor). Without this, the re-derive above
+        // is only "one-time" for sessions that see a state-changing dispatch —
+        // a dormant session whose replay fully dedups would re-pay it on every
+        // mount. Synchronous (persistNow, not the debounce) so the upgrade is
+        // deterministic and test-visible right after hydrateDone.
+        if (cached.cacheVersion !== 4) this.persistNow()
       }
       // No cache (or empty): leave the empty state as-is — replayReady stays
       // false so the skeleton shows until the WS replay lands.

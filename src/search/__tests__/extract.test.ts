@@ -48,6 +48,16 @@ describe('extractPlainText', () => {
   it('returns empty string for empty input', () => {
     expect(extractPlainText('')).toBe('')
   })
+
+  it('keeps raw HTML as searchable literal text (aligns with the renderer)', () => {
+    // The renderer (markdown-cache.ts) shows raw HTML as literal text — the
+    // index must see the same characters, or a query matching visible text
+    // finds nothing and the N/M counter desyncs from the <mark>s.
+    const md = '<div class="tasks-overlay">Tasks</div>\n\nplain after'
+    const out = extractPlainText(md)
+    expect(out).toContain('<div class="tasks-overlay">')
+    expect(out).toContain('plain after')
+  })
 })
 
 describe('extractMessagePlainText', () => {

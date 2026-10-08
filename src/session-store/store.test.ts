@@ -155,7 +155,8 @@ describe('SessionStore hydration', () => {
     const raw = localStorage.getItem(STORAGE_PREFIX + sessionId)
     expect(raw).not.toBeNull()
     const data = JSON.parse(raw!)
-    expect(data.v).toBe(3)
+    // v4 — see the cache-version note on loadFromStorage in store.ts.
+    expect(data.v).toBe(4)
     expect(Array.isArray(data.messages)).toBe(true)
     expect(Array.isArray(data.plainTexts)).toBe(true)
     expect(data.plainTexts).toHaveLength(data.messages.length)
@@ -180,6 +181,51 @@ describe('SessionStore hydration', () => {
       expect(rederived[i].plainText).toBe(liveItems[i].plainText)
       expect(rederived[i].deliveryStatus).toBe(liveItems[i].deliveryStatus)
     }
+  })
+
+  it('re-derives stale plainText in a v3 cache (raw-HTML extractor change)', async () => {
+    // The v4 extractor change (htmlAsTextHandlers: raw HTML is now literal
+    // text instead of dropped) changed extractMessagePlainText's output for
+    // html-bearing messages. A v3 cache holds plainText computed by the OLD
+    // extractor — '' for a pasted-DOM prompt — and normalize.ts trusts a
+    // cached value unconditionally. Re-deriving on hydrate (the same one-time
+    // cost the v2→v3 upgrade accepted) keeps the find-bar counter, the
+    // prompt-signature dedup (countPromptOverlap) and the rendered bubble in
+    // agreement; the next persist writes v4 and the cache is warm again.
+    const sessionId = 'session-v3-stale-plaintext'
+    const htmlMessage = {
+      type: 'user',
+      uuid: 'u-html',
+      message: { role: 'user', content: '<aside class="tasks-panel">Tasks</aside> 为什么渲染不出来' },
+    } as unknown as SdkMessage
+    localStorage.setItem(
+      STORAGE_PREFIX + sessionId,
+      JSON.stringify({
+        v: 3,
+        savedAt: Date.now(),
+        messages: [htmlMessage],
+        // Old-extractor output: the html block was dropped, leaving only the
+        // typed tail. If hydrate trusts this, the item disagrees with what
+        // the bubble renders.
+        plainTexts: ['为什么渲染不出来'],
+        lastMessageUuid: 'u-html',
+        dismissedSubagents: [],
+      }),
+    )
+
+    const store = new SessionStore(sessionId)
+    await store.hydrateDone
+    const items = store.getSnapshot().items
+    expect(items).toHaveLength(1)
+    expect(items[0]!.plainText).toContain('<aside class="tasks-panel">')
+    expect(items[0]!.plainText).toContain('为什么渲染不出来')
+
+    // The upgrade must be a real one-time cost: hydrate itself persists the
+    // re-derived state as v4, so a dormant session doesn't re-pay the
+    // markdown re-derivation on every mount until some unrelated dispatch.
+    const upgraded = JSON.parse(localStorage.getItem(STORAGE_PREFIX + sessionId)!)
+    expect(upgraded.v).toBe(4)
+    expect(upgraded.plainTexts[0]).toContain('<aside class="tasks-panel">')
   })
 
   it('starts with an empty toolStatus when no cache exists', async () => {
@@ -273,7 +319,8 @@ describe('SessionStore projection (persist-only capping)', () => {
     const raw = localStorage.getItem(STORAGE_PREFIX + id)
     expect(raw).not.toBeNull()
     const data = JSON.parse(raw!)
-    expect(data.v).toBe(3)
+    // v4 — see the cache-version note on loadFromStorage in store.ts.
+    expect(data.v).toBe(4)
     const msgs = data.messages as SdkMessage[]
 
     // tool_result content capped (<= 8000 + marker).
@@ -341,7 +388,8 @@ describe('SessionStore projection (persist-only capping)', () => {
     const raw = localStorage.getItem(STORAGE_PREFIX + id)
     expect(raw).not.toBeNull()
     const data = JSON.parse(raw!)
-    expect(data.v).toBe(3)
+    // v4 — see the cache-version note on loadFromStorage in store.ts.
+    expect(data.v).toBe(4)
     expect(Array.isArray(data.plainTexts)).toBe(true)
     expect(data.plainTexts).toHaveLength(data.messages.length)
     // The uuid-less message is the newest → kept by the largest-suffix trim,
