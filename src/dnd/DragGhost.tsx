@@ -22,18 +22,22 @@ import { tiltFromVelocity } from './payload'
  *  to oscillate. Shared by every surface so the motion language matches. */
 const TILT_SPRING = { stiffness: 500, damping: 38, mass: 0.7 }
 
-export function DragGhost({ children, className, style }: {
+export function DragGhost({ children, className, style, tilt = true }: {
   children: ReactNode
   className?: string
   /** Surface-specific sizing (e.g. the session ghost matches the live
    *  sidebar width). Merged under the tilt so `rotate` stays authoritative. */
   style?: CSSProperties
+  /** Rigid surfaces pass false to skip the velocity tilt: the full-panel
+   *  ghost drags with window semantics, and a tall card pivoting around its
+   *  center would swing the grabbed header far off the pointer. */
+  tilt?: boolean
 }) {
   const tiltRaw = useMotionValue(0)
-  const tilt = useSpring(tiltRaw, TILT_SPRING)
+  const tiltSpring = useSpring(tiltRaw, TILT_SPRING)
 
   useEffect(() => {
-    if (prefersReducedMotion()) return
+    if (!tilt || prefersReducedMotion()) return
     let lastX: number | null = null
     let lastT = 0
     // Decay loop: when the pointer stops moving, ease the tilt back to 0
@@ -71,12 +75,12 @@ export function DragGhost({ children, className, style }: {
       window.removeEventListener('pointermove', onMove)
       if (decayRaf) cancelAnimationFrame(decayRaf)
     }
-  }, [tiltRaw])
+  }, [tilt, tiltRaw])
 
   return (
     <motion.div
       className={className ? `dnd-ghost ${className}` : 'dnd-ghost'}
-      style={{ rotate: tilt, ...style }}
+      style={{ rotate: tilt ? tiltSpring : 0, ...style }}
       // The ghost is a visual clone of real, focusable markup (SessionCard,
       // sortable grips) — keep the clone out of the tab order and the a11y
       // tree; dnd-kit's live region announces the drag on its own.

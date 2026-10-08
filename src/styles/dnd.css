@@ -27,6 +27,15 @@
   opacity: 0.35;
 }
 
+/* Panels use the same source-dim language, scaled up: a near-fullscreen
+   surface snapping to 0.35 reads as a glitch, so the dim eases. The
+   transition lives on the panel base (not the dimmed state) so the release
+   fade-back animates too. Keyframe animations (.chat-panel.entering) are
+   unaffected by a transition on opacity. */
+.chat-panel {
+  transition: opacity 160ms ease;
+}
+
 /* The session-card ghost's width is set inline by App (live sidebar width
    minus the list padding) so it tracks the resizable sidebar; only the
    cursor hint lives here. */
@@ -34,10 +43,44 @@
   cursor: grabbing;
 }
 
-/* Group pill / panel-header ghosts: the cloned element keeps its real
-   classes; these only add the grabbing cursor. */
-.group-pill-ghost,
-.chat-panel-header-ghost {
+/* The full-panel ghost drags RIGID — window semantics: no lift scale (the
+   ghost is already the panel's exact measured size; a 5% inflate visibly
+   detaches it from the pointer) and no velocity tilt (DragGhost tilt={false};
+   a tall card pivoting at its center would swing the grabbed header far off
+   the pointer). The base .dnd-ghost drop-shadow FILTER is also dropped: a
+   filter re-processes a near-viewport-height layer every frame (repaint
+   pressure → compositor tile dropout on Windows GPUs); the clone's opaque
+   rectangle silhouette is exactly its border box, so box-shadow below is
+   pixel-identical at a fraction of the cost. App composes the ghost at drag
+   activation as a frozen clone of the whole .chat-panel (messages included),
+   carrying the chat-panel-ghost marker class. */
+.dnd-ghost-panel {
+  scale: 1;
+  filter: none;
+}
+
+/* The clone is an OPAQUE solid surface, overriding .chat-panel's
+   `background: var(--bg)`: the ghost is portaled to <body>, so anything
+   translucent shows the APP UI beneath it, not the wallpaper the real panel
+   composes over — and under body.has-bg the wallpaper block would also give
+   it backdrop-filter: blur, re-sampling a near-fullscreen backdrop every
+   frame while it moves. Solid --bg-solid + box-shadow reads as the lifted
+   panel in both modes. (Specificity bumped past `body.has-bg .chat-panel`
+   so the wallpaper remap can't win the cascade.) */
+.chat-panel.chat-panel-ghost {
+  background: var(--bg-solid);
+  box-shadow: var(--card-shadow);
+}
+body.has-bg .chat-panel.chat-panel-ghost {
+  background-color: var(--bg-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Group pill ghost: the cloned element keeps its real classes; this only
+   adds the grabbing cursor. (The panel ghost keeps the real header classes
+   too — see the .dnd-ghost-panel block above.) */
+.group-pill-ghost {
   cursor: grabbing;
 }
 
@@ -45,5 +88,18 @@
   .dnd-ghost {
     scale: 1;
     filter: drop-shadow(var(--toast-shadow));
+  }
+
+  /* The media block sits later in source order and would otherwise re-enable
+     the per-frame filter on the near-fullscreen panel ghost (same
+     specificity as the base .dnd-ghost-panel rule). */
+  .dnd-ghost-panel {
+    filter: none;
+  }
+
+  /* Same opt-out convention as layout.css's reduced-motion block for the
+     panel label transitions. */
+  .chat-panel {
+    transition: none;
   }
 }

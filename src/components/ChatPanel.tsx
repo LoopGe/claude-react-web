@@ -373,6 +373,15 @@ export const ChatPanel = memo(function ChatPanel({
     data: dndData({ kind: 'main-panel', id: session.id }),
   })
   const dropActive = panelDrop.isOver
+  // A pickup within the panel-enter window (open → grab fast) must cancel
+  // the entrance animation: its keyframes own `opacity` (fill both) and would
+  // override the source-dim until they end — the drag would read as two full
+  // panels, exactly what the dim prevents. onAnimEnd clears the entering flag
+  // through App's existing channel; `animationend` would never fire for a
+  // cancelled animation.
+  useEffect(() => {
+    if (panelDrag.isDragging && entering) onAnimEnd?.(session.id)
+  }, [panelDrag.isDragging, entering, onAnimEnd, session.id])
   /** Tracks the `generatedAt` of the recap the user has dismissed. When it
    *  matches the current session.recap.generatedAt, the floating window
    *  stays hidden; a NEW recap (different generatedAt) auto-reopens it.
@@ -789,6 +798,10 @@ export const ChatPanel = memo(function ChatPanel({
         focused ? 'focused' : '',
         dropActive ? 'drop-target' : '',
         entering ? 'entering' : '',
+        // The lifted ghost IS this panel's frozen clone — recede the source
+        // into a quiet hole for the drag (same .dnd-source-dim language the
+        // sidebar cards use), so the screen doesn't read as two panels.
+        panelDrag.isDragging ? 'dnd-source-dim' : '',
         `mode-${permMode}`,
       )}
       style={accentStyle}

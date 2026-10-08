@@ -13,7 +13,7 @@ import { sessionTitleOrFallback } from './utils/session-title'
 import { prefersReducedMotion } from './utils/reduced-motion'
 import { DndContext, pointerWithin, rectIntersection, useDroppable, type Collision, type CollisionDetection, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent, type UniqueIdentifier } from '@dnd-kit/core'
 import { useAppDndSensors } from './dnd/sensors'
-import type { DragPayload } from './dnd/payload'
+import type { DragPayload, PanelGhostSnapshot } from './dnd/payload'
 import { dndData, dndExtraOf, dndPayloadOf } from './dnd/payload'
 import { DragGhost } from './dnd/DragGhost'
 import { DragOverlayPortal } from './dnd/DragOverlayPortal'
@@ -3656,6 +3656,43 @@ export function App() {
   //   main-grid     — drop a sidebar card on the empty grid to open it
   const dndSensors = useAppDndSensors()
   const [dndActive, setDndActive] = useState<DragPayload | null>(null)
+  /** Frozen whole-panel clone for the panel-drag ghost, captured at drag
+   *  activation (see handleDndStart) so the lifted ghost IS the session —
+   *  header, messages and composer included. The clone node mounts as-is
+   *  (no HTML round-trip); transient DOM state cloneNode can't carry rides
+   *  alongside (scroll offsets, composer text) and is restored on mount by
+   *  mountGhostDom. Cleared on end/cancel. */
+  const [panelGhost, setPanelGhost] = useState<PanelGhostSnapshot | null>(null)
+  /** Mount the frozen clone and restore its transient state. The clone node
+   *  is appended as-is — no HTML round-trip, so the scroll-restore indices
+   *  (captured against the live panel's `querySelectorAll('*')` order) line
+   *  up with the clone tree by construction. Restored state: every scrolled
+   *  descendant's offsets (the message-list scroller above all — Virtuoso
+   *  positions its rendered window with transforms for the offset it was
+   *  rendered at, so a clone without this reads as scrolled to the top: a
+   *  blank strip with the items parked far below — plus panned code blocks)
+   *  and the composer textareas' typed text (`value` is a property, not an
+   *  attribute). Ref callback = runs at commit, before paint, so the first
+   *  ghost frame is already aligned. Idempotent on re-fires (StrictMode's
+   *  simulated remount re-fires refs; the guard only re-appends when the
+   *  node isn't already in place). */
+  const mountGhostDom = useCallback((el: HTMLDivElement | null) => {
+    if (!el || !panelGhost) return
+    if (el.firstElementChild !== panelGhost.clone) el.replaceChildren(panelGhost.clone)
+    const els = panelGhost.clone.querySelectorAll('*')
+    for (const [index, st, sl] of panelGhost.scrolls) {
+      const target = els[index] as HTMLElement | undefined
+      if (target) {
+        target.scrollTop = st
+        target.scrollLeft = sl
+      }
+    }
+    const boxes = panelGhost.clone.querySelectorAll('textarea')
+    panelGhost.composerText.forEach((value, i) => {
+      const t = boxes[i]
+      if (t) t.value = value
+    })
+  }, [panelGhost])
   /** Last live move applied this drag — dragOver refires constantly while
    *  hovering, so this is the spam guard (apply only on change). */
   const dndLastMoveRef = useRef<{ id: string; position: 'before' | 'after' } | null>(null)
@@ -3691,8 +3728,18 @@ export function App() {
     // app chrome) to the geometrically nearest target and fire real moves the
     // user never aimed at. Empty pool → over = null → the drop is a no-op,
     // matching the old HTML5 behaviour for releases off any target.
+    // main-panel drags skip the fallback entirely: their ghost is the WHOLE
+    // panel (dnd-kit measures the clone section, so the collision rect is
+    // near-viewport-sized), which would keep intersecting the panels below
+    // even when the pointer is up on the app header or other non-droppable
+    // chrome — a release there must stay a no-op, and a panel swap is always
+    // aimed with the pointer over the target anyway.
     const within = pointerWithin(args).filter(eligible)
-    const pool = within.length > 0 ? within : rectIntersection(args).filter(eligible)
+    const pool = within.length > 0
+      ? within
+      : activeKind === 'main-panel'
+        ? []
+        : rectIntersection(args).filter(eligible)
     if (pool.length === 0) return []
     if (pool.length === 1) return pool
     const sameKind = pool.filter((c) => kindOf(c) === activeKind)
@@ -3740,6 +3787,51 @@ export function App() {
         openIds: openIdsRef.current,
       }
     }
+    if (payload.kind === 'main-panel') {
+      // Snapshot the WHOLE panel for the drag ghost — a frozen clone of the
+      // live section (header + message list + composer), so the lifted ghost
+      // IS the session, content included. App can't re-render this faithfully
+      // (the header chips and the message list live in ChatPanel's hooks), so
+      // it clones the DOM instead. Reading here — at drag activation, keyed
+      // off the ACTIVATED drag's id — keeps a stray second pointer from
+      // poisoning the snapshot and keeps plain header clicks free.
+      const panel = document.querySelector<HTMLElement>(`[data-panel-id="${payload.id}"]`)
+      if (panel) {
+        const clone = panel.cloneNode(true) as HTMLElement
+        // De-identify: the ghost must never answer [data-panel-id] lookups
+        // meant for the live panel (panel-slot queries, re-entry of this very
+        // snapshot path). drop-target / entering are transient states, not
+        // at-rest look (entering would replay the panel entrance animation
+        // inside the ghost). ids are stripped too: useId-generated ids
+        // (FoldableBody, ToolGroupCard, MonitorBar, …) must not exist twice
+        // in the document while the drag is airborne — the clone is inert +
+        // aria-hidden, so the a11y wiring they serve is moot inside it.
+        clone.removeAttribute('data-panel-id')
+        clone.classList.add('chat-panel-ghost')
+        clone.classList.remove('drop-target', 'entering')
+        clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'))
+        // Pin the measured box: the clone would otherwise size to CONTENT —
+        // the virtualized list reports its FULL scroll height.
+        clone.style.width = `${panel.offsetWidth}px`
+        clone.style.height = `${panel.offsetHeight}px`
+        // Scroll positions are properties, not attributes — cloneNode drops
+        // them, so every scrolled descendant (message-list scroller, panned
+        // code blocks) rides alongside as an index into the clone tree and is
+        // re-applied on mount. Deliberate limitation: canvas bitmaps and
+        // video frames don't clone either and are left blank.
+        const scrolls: Array<[number, number, number]> = []
+        panel.querySelectorAll('*').forEach((el, i) => {
+          if (el.scrollTop > 0 || el.scrollLeft > 0) scrolls.push([i, el.scrollTop, el.scrollLeft])
+        })
+        setPanelGhost({
+          clone,
+          scrolls,
+          composerText: Array.from(panel.querySelectorAll('textarea'), (t) => t.value),
+        })
+      } else {
+        setPanelGhost(null)
+      }
+    }
     setDndActive(payload)
   }, [orderedSessions])
 
@@ -3779,6 +3871,10 @@ export function App() {
 
   const handleDndEnd = useCallback((e: DragEndEvent) => {
     setDndActive(null)
+    // The ghost snapshot outlives this render only inside AnimationManager's
+    // CLONE (the drop animation replays the last overlay subtree), so wiping
+    // the state here can't cut the spring-back short.
+    setPanelGhost(null)
     dndLastMoveRef.current = null
     const a = dndPayloadOf(e.active.data.current)
     const o = dndPayloadOf(e.over?.data.current)
@@ -3837,14 +3933,18 @@ export function App() {
       dndSnapshotRef.current = null
     }
     setDndActive(null)
+    setPanelGhost(null)
     dndLastMoveRef.current = null
   }, [setSidebarOrder, setGroups, setOpenIds])
 
   /** Floating ghost for the active drag, rendered inside the portaled
-   *  DragOverlay. Each branch re-renders the REAL widget (SessionCard, the
-   *  group pill) so the ghost is pixel-identical to the source at rest — a
-   *  hand-rolled approximation drifts out of sync with the real markup and
-   *  reads as a different element mid-drag. */
+   *  DragOverlay. The sidebar-card / group-pill branches re-render the REAL
+   *  widget (SessionCard, the group pill) so the ghost is pixel-identical to
+   *  the source at rest — a hand-rolled approximation drifts out of sync
+   *  with the real markup and reads as a different element mid-drag. The
+   *  main-panel branch is the deliberate exception: it renders a frozen DOM
+   *  CLONE of the panel (see handleDndStart) because the panel's markup is
+   *  driven by ChatPanel-local runtime state App cannot re-render. */
   const renderDndGhost = () => {
     if (!dndActive) return null
     if (dndActive.kind === 'sidebar-card') {
@@ -3908,11 +4008,17 @@ export function App() {
       )
     }
     if (dndActive.kind === 'main-panel') {
-      const s = orderedSessions.find((x) => x.id === dndActive.id)
-      if (!s) return null
+      if (!panelGhost) return null
       return (
-        <DragGhost>
-          <span className="chat-panel-header chat-panel-header-ghost">{sessionTitleOrFallback(s)}</span>
+        // The lifted WHOLE panel — a frozen clone of the real section
+        // (messages included), window-drag semantics: rigid, no lift scale,
+        // no velocity tilt (see .dnd-ghost-panel / DragGhost tilt).
+        <DragGhost tilt={false} className="dnd-ghost-panel">
+          {/* The clone node is appended imperatively by mountGhostDom — this
+              div stays childless from React's perspective. The clone is our
+              own React-rendered markup, and the DragGhost root is inert +
+              pointer-events:none, so nothing inside it is interactive. */}
+          <div ref={mountGhostDom} />
         </DragGhost>
       )
     }

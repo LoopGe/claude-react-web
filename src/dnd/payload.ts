@@ -99,6 +99,39 @@ export function pointerOnlyListeners(
 /** Maximum tilt (degrees) the drag ghost can reach at any speed. */
 export const MAX_TILT_DEG = 4
 
+/** A chat panel's drag-ghost snapshot, captured by App at drag activation
+ *  (the panel is located via its data-panel-id; see handleDndStart): a full
+ *  frozen clone of the `.chat-panel` section — header, message list and
+ *  composer — so the lifted ghost IS the session, content included. The
+ *  clone node is mounted as-is (no outerHTML round-trip), so tree structure
+ *  — and therefore the scroll-restore indices below — match the live panel
+ *  by construction, and the drag holds no second serialized copy of the
+ *  subtree. */
+export interface PanelGhostSnapshot {
+  /** The detached whole-`.chat-panel` clone, decorated for ghost duty:
+   *  `chat-panel-ghost` marker class, `data-panel-id` and every `id`
+   *  attribute stripped (the ghost must never answer live-panel lookups,
+   *  and duplicated useId ids would leave two elements per id in the
+   *  document while the drag is airborne), transient state classes
+   *  (drop-target / entering) removed, pinned to the measured panel box —
+   *  the clone would otherwise size to CONTENT (the virtualized list
+   *  reports its FULL scroll height). Deliberate limitation: canvas
+   *  bitmaps and video frames don't clone and are left blank. */
+  clone: HTMLElement
+  /** Non-zero scroll offsets of the live panel's descendants (the
+   *  message-list scroller, horizontally panned code blocks, …) as
+   *  `[elementIndex, scrollTop, scrollLeft]`. Scroll positions are
+   *  properties, not attributes, and cloneNode(true) drops them; element
+   *  indices are `querySelectorAll('*')` order, which the structural clone
+   *  preserves exactly. */
+  scrolls: Array<[number, number, number]>
+  /** Composer textarea values in DOM order. `value` is a property, not an
+   *  attribute — cloneNode drops typed text, so it's carried and restored
+   *  alongside the scrolls. (The composer itself is a contentEditable whose
+   *  text survives cloning; this covers any real textareas.) */
+  composerText: string[]
+}
+
 /** Map horizontal pointer velocity (px/ms) to a ghost tilt angle in degrees.
  *  Sub-linear so gentle nudges stay invisible while flicks read as motion,
  *  hard-clamped at ±MAX_TILT_DEG. Pure so it's unit-testable; DragGhost
