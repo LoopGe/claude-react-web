@@ -23,7 +23,7 @@ import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/normalize'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { OlderHistoryHeader, StreamingFooter } from './message-list/transcript-chrome'
+import { OlderHistoryHeader, StreamingFooter, type StreamingFooterVariant } from './message-list/transcript-chrome'
 import { ChatEmptyState } from './ChatEmptyState'
 import { EasterEggGame } from './EasterEggGame'
 import { ResultConsumedCtx } from './message-list/result-consumed-context'
@@ -68,8 +68,11 @@ const EMPTY_VIRT_IDX = new Map<number, number>()
  *  with the turn, scrolls with the transcript, scrollable back through
  *  (the card-era feel). Selected by the module constant; a future UI
  *  setting threads through the `streamingMode` prop. See
- *  docs/superpowers/specs/2026-09-29-dual-mode-streaming-render-design.md. */
-export type StreamingRenderMode = 'overlay' | 'inline'
+ *  docs/superpowers/specs/2026-09-29-dual-mode-streaming-render-design.md.
+ *  Derived from StreamingFooterVariant (transcript-chrome.tsx — the
+ *  renderer's own contract) so the mode seam and the footer placement stay
+ *  one union: a third value added there flows here automatically. */
+export type StreamingRenderMode = StreamingFooterVariant
 export const DEFAULT_STREAMING_RENDER_MODE: StreamingRenderMode = 'overlay'
 
 /** Virtualization key of the inline streaming tail row. A module constant
@@ -1002,12 +1005,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       // enter-animation hooks, no reveal snapshot: it is not a message and
       // unmounts at finalize. Fresh content arrives via the item (the data
       // array is rebuilt per flush in inline mode).
-      const item = virtuosoItem
       return (
         <div className={TRANSCRIPT_ROW_CLASS}>
           {/* key=variant: remounts on a variant flip so useMergedRef's
               first-render ref capture (mergedRef.ts) stays correct. */}
-          <StreamingFooter key="inline" content={item.content} variant="inline" />
+          <StreamingFooter key="inline" content={virtuosoItem.content} variant="inline" />
         </div>
       )
     }
