@@ -105,6 +105,26 @@ describe('ToastHost — title/body hierarchy & pile stacking', () => {
     expect(document.querySelector('.toast-title')).toBeNull()
   })
 
+  it('renders the hint detail as a second line when provided', () => {
+    setup((toast) => {
+      toast.error('MCP toggle failed: Connection closed', {
+        detail: 'Run the server\'s start command in a terminal to see the real error.',
+      })
+    })
+    expect(document.querySelector('.toast-message')?.textContent).toBe('MCP toggle failed: Connection closed')
+    expect(document.querySelector('.toast-detail')?.textContent).toBe(
+      'Run the server\'s start command in a terminal to see the real error.',
+    )
+  })
+
+  it('omits the detail line entirely when no detail is given', () => {
+    setup((toast) => {
+      toast.error('Something broke')
+    })
+    expect(screen.getByText('Something broke')).toBeTruthy()
+    expect(document.querySelector('.toast-detail')).toBeNull()
+  })
+
   it('stacks newest toast in front with older shells peeking below', () => {
     setup((toast) => {
       toast.info('A', { title: 'First' })

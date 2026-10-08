@@ -1,6 +1,16 @@
 import { useContext, useMemo } from 'react'
 import { ToastContext, type PushOptions, type Toast } from './toastContext'
 
+/** Toast options carrying an ApiError's structured hint as the secondary
+ *  detail line — undefined when the error has no hint, so callers can spread
+ *  conditionally: `toast.error(e.message, apiErrorToastOpts(e))`. Single
+ *  source for every control-error toast surface (SettingsPanel MCP paths,
+ *  ChatEmptyStateEnv quick actions) so the hint plumbing can't drift. */
+export function apiErrorToastOpts(e: unknown): PushOptions | undefined {
+  const hint = (e as { hint?: unknown } | null | undefined)?.hint
+  return typeof hint === 'string' && hint ? { detail: hint } : undefined
+}
+
 /** App-wide toast hub. Exposes `error/success/info` shorthands plus the
  *  raw `show` and `dismiss`. Auto-dismiss timers live in the provider so
  *  consumers can fire-and-forget — call `toast.error('boom')` and walk

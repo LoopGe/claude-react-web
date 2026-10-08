@@ -102,9 +102,13 @@ export function ToastHost() {
           <>
             <span className="toast-title">{t.title}</span>
             <span className="toast-message">{t.message}</span>
+            {t.detail && <span className="toast-detail">{t.detail}</span>}
           </>
         ) : (
-          <span className="toast-message toast-message-main">{t.message}</span>
+          <>
+            <span className="toast-message toast-message-main">{t.message}</span>
+            {t.detail && <span className="toast-detail">{t.detail}</span>}
+          </>
         )
         return (
           <div key={t.id} className="toast-shell" style={shellStyle}>

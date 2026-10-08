@@ -116,6 +116,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     (kind: ToastKind, message: string, opts?: PushOptions): string => {
       const id = makeId()
       const title = opts?.title
+      const detail = opts?.detail
       const durationMs = opts?.durationMs ?? DEFAULT_DURATIONS[kind]
       const onClick = opts?.onClick
       const actionLabel = opts?.actionLabel
@@ -143,7 +144,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         }
       }
       commitToasts([
-        { id, kind, message, title, durationMs, onClick, actionLabel, onDismiss },
+        { id, kind, message, title, detail, durationMs, onClick, actionLabel, onDismiss },
         ...toastsRef.current.map((t) => (evictedIds.has(t.id) ? { ...t, exiting: true } : t)),
       ])
       for (const droppedId of evictedIds) {

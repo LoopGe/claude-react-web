@@ -15,6 +15,10 @@ export interface ApiError extends Error {
    *  `{ error: { code, message } }` (e.g. PluginCommandError). Undefined for
    *  plain `{ error: "string" }` bodies. */
   code?: string
+  /** Actionable hint for the failure when the server attached one (structured
+   *  control-error bodies carry it — see shared/control-errors). Rendered as
+   *  a secondary toast line / card note; undefined otherwise. */
+  hint?: string
 }
 
 /** Map a non-ok Response + parsed body to an ApiError. Shared by every
@@ -38,18 +42,21 @@ export function toApiError(res: Response, body: unknown): ApiError {
 
   // The server returns errors in one of three shapes:
   //   { error: "string" }                          -> plain message
-  //   { error: { code, message } }                 -> typed (PluginCommandError)
+  //   { error: { code, message, hint? } }          -> typed (PluginCommandError;
+  //                                                   control errors add hint)
   //   { errors: [{ path, message }, ...] }         -> validation list (above)
   let message = ''
   let code: string | undefined
+  let hint: string | undefined
   if (body && typeof body === 'object' && 'error' in body) {
     const errField = (body as { error: unknown }).error
     if (typeof errField === 'string') {
       message = errField
     } else if (errField && typeof errField === 'object') {
-      const obj = errField as { code?: unknown; message?: unknown }
+      const obj = errField as { code?: unknown; message?: unknown; hint?: unknown }
       if (typeof obj.message === 'string') message = obj.message
       if (typeof obj.code === 'string') code = obj.code
+      if (typeof obj.hint === 'string') hint = obj.hint
     }
   }
   if (!message && validationErrors) message = validationErrors
@@ -58,6 +65,7 @@ export function toApiError(res: Response, body: unknown): ApiError {
   const err = new Error(message) as ApiError
   err.status = res.status
   if (code) err.code = code
+  if (hint) err.hint = hint
   return err
 }
 

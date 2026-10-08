@@ -42,6 +42,8 @@ interface MockQueryHandle {
   supportedCommands: ReturnType<typeof vi.fn>
   supportedAgents: ReturnType<typeof vi.fn>
   mcpServerStatus: ReturnType<typeof vi.fn>
+  toggleMcpServer: ReturnType<typeof vi.fn>
+  reconnectMcpServer: ReturnType<typeof vi.fn>
   setMcpServers: ReturnType<typeof vi.fn>
   setMcpPermissionModeOverride: ReturnType<typeof vi.fn>
   getContextUsage: ReturnType<typeof vi.fn>
@@ -205,6 +207,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         supportedCommands: vi.fn(async () => []),
         supportedAgents: vi.fn(async () => []),
         mcpServerStatus: vi.fn(async () => ({})),
+        toggleMcpServer: vi.fn(async () => {}),
+        reconnectMcpServer: vi.fn(async () => {}),
         setMcpServers: vi.fn(async (servers: Record<string, unknown>) => ({
           added: Object.keys(servers),
           removed: [],
@@ -254,6 +258,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         supportedCommands: handle.supportedCommands,
         supportedAgents: handle.supportedAgents,
         mcpServerStatus: handle.mcpServerStatus,
+        toggleMcpServer: handle.toggleMcpServer,
+        reconnectMcpServer: handle.reconnectMcpServer,
         setMcpServers: handle.setMcpServers,
         setMcpPermissionModeOverride: handle.setMcpPermissionModeOverride,
         getContextUsage: handle.getContextUsage,
@@ -5411,6 +5417,29 @@ describe('provider control-op error wrapping', () => {
     expect(err).toBeInstanceOf(HttpError)
     expect((err as HttpError).status).toBe(502)
     expect((err as HttpError).message).toBe('context usage failed: Connection closed')
+  })
+
+  it('forwards classify opt-in from the MCP manager wiring into the structured 502 body', async () => {
+    // Guards the deps-arrow wiring in SessionManager's constructor: the
+    // SessionMcpManager deps are satisfied by arrows whose fewer parameters
+    // still typecheck, so a dropped `opts` would silently turn every
+    // `{ classify: true }` into dead plumbing (no code/hint on the wire).
+    const info = sm.create({ cwd: '/tmp' })
+    mockHandles[0].toggleMcpServer.mockRejectedValueOnce(new Error('Connection closed'))
+    const err = await rejectOf(sm.toggleMcpServer(info.id, 'x', true))
+    expect(err).toBeInstanceOf(HttpError)
+    expect((err as HttpError).status).toBe(502)
+    const body = (err as HttpError).body as { error?: { code?: string } } | undefined
+    expect(body?.error?.code).toBe('connection-closed')
+  })
+
+  it('does not attach MCP-flavored hints to non-MCP control actions', async () => {
+    const info = sm.create({ cwd: '/tmp' })
+    mockHandles[0].interrupt.mockRejectedValueOnce(new Error('Connection closed'))
+    const err = await rejectOf(sm.interrupt(info.id))
+    expect(err).toBeInstanceOf(HttpError)
+    expect((err as HttpError).message).toBe('interrupt failed: Connection closed')
+    expect((err as HttpError).body).toBeUndefined()
   })
 })
 

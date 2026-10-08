@@ -23,6 +23,7 @@
 import { policyToDynamicSkillOverrides, type SessionSkillOverride, type EffectiveSkillPolicy } from '../shared/skills.js'
 import type { SessionToolProfile } from '../shared/tool-profile.js'
 import { listSkills } from './skills.js'
+import type { ControlWrapOpts } from './errors.js'
 import type { Session, SessionInfo } from './session-types.js'
 import type { ProviderCapabilities, ProviderSessionHandle } from './providers/types.js'
 import { createLogger } from './log.js'
@@ -35,12 +36,16 @@ const log = createLogger('skill-manager')
 export interface SkillManagerDeps {
   /** Resolve a session by id, requiring it to be alive (running Query). */
   requireLive(id: string): Session
-  /** Bind + capability-gate + error-wrap a provider handle method. */
+  /** Bind + capability-gate + error-wrap a provider handle method. The
+   *  trailing `opts` (e.g. `{ classify }`) is forwarded to the shared
+   *  control-error wrapper — skills never set it, but the shape must match
+   *  so the wiring arrow can forward every argument. */
   requireHandleMethod<T extends (...args: never[]) => unknown>(
     s: Session,
     method: keyof ProviderSessionHandle,
     action: string,
     capability?: keyof ProviderCapabilities,
+    opts?: ControlWrapOpts,
   ): T
   /** Time an SDK control round-trip (slow-call logging + 502 wrapping). */
   timeSdkControl<T>(id: string, label: string, fn: () => Promise<T>): Promise<T>

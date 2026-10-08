@@ -1867,6 +1867,46 @@ button.tool-group-failed-jump:focus-visible {
   color: var(--danger-text);
   background: var(--bg);
 }
+/* Failed MCP server card: classified headline above the raw error, muted
+   actionable hint below, then the self-diagnosis command/URL block. */
+.settings-card-error-title {
+  padding: var(--space-1) var(--space-2-5) 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--danger-text);
+}
+.settings-card-error-hint {
+  padding: 0 var(--space-2-5) var(--space-1);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+.settings-mcp-diagnostic {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0 var(--space-2-5);
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2xs);
+  min-width: 0;
+}
+.settings-mcp-diagnostic code {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-mcp-diagnostic-hint {
+  padding: var(--space-1) var(--space-2-5) 0;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
 .settings-mcp-count {
   margin-top: 0;
 }

@@ -91,7 +91,7 @@ import {
   type DebugSessionDetail,
   endAllSubscribers,
 } from './session-types.js'
-import { HttpError } from './errors.js'
+import { HttpError, controlHttpError, type ControlWrapOpts } from './errors.js'
 import { filterClientEnv } from './session-env.js'
 import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
@@ -718,8 +718,12 @@ export class SessionManager {
     this.mcp = new SessionMcpManager({
       requireLive: (id) => this.requireLive(id),
       require: (id) => this.require(id),
-      requireHandleMethod: (s, method, action, capability) =>
-        this.requireHandleMethod(s, method, action, capability),
+      // Forward ALL params — including the trailing opts bag. A
+      // fewer-parameter arrow would typecheck but silently drop the
+      // MCP manager's `{ classify: true }` (pinned by a wiring
+      // regression test in session-manager.test.ts).
+      requireHandleMethod: (s, method, action, capability, opts) =>
+        this.requireHandleMethod(s, method, action, capability, opts),
       writeStore: (s) => this.writeStore(s),
       broadcastGlobal: (ev) => this.broadcastGlobal(ev),
       info: (s) => this.info(s),
@@ -743,8 +747,8 @@ export class SessionManager {
 
     this.skills = new SessionSkillManager({
       requireLive: (id) => this.requireLive(id),
-      requireHandleMethod: (s, method, action, capability) =>
-        this.requireHandleMethod(s, method, action, capability),
+      requireHandleMethod: (s, method, action, capability, opts) =>
+        this.requireHandleMethod(s, method, action, capability, opts),
       timeSdkControl: (id, label, fn) => this.timeSdkControl(id, label, fn),
       broadcastCommandsChanged: (id, commands) => this.broadcastCommandsChanged(id, commands),
       persist: (s) => this.persist(s),
@@ -4625,8 +4629,7 @@ export class SessionManager {
       // Same semantic wrap as requireHandleMethod: a plain SDK failure becomes
       // a 502 naming the action; HttpErrors pass through untouched (so the
       // wrap in requireHandleMethod is never doubled).
-      if (err instanceof HttpError) throw err
-      throw new HttpError(502, `${label} failed: ${err instanceof Error ? err.message : String(err)}`)
+      throw controlHttpError(label, err)
     } finally {
       // Record ALL outcomes — the wedged-subprocess / init-stall failures
       // this wrapper exists to make visible must land in the histogram too.
@@ -6255,6 +6258,7 @@ export class SessionManager {
     method: keyof ProviderSessionHandle,
     action: string,
     capability?: keyof ProviderCapabilities,
+    opts?: ControlWrapOpts,
   ): T {
     if (capability) this.requireProviderCapability(s.provider, capability, action)
     const fn = s.handle[method]
@@ -6271,9 +6275,13 @@ export class SessionManager {
       try {
         return await bound(...args)
       } catch (err) {
+        // The instanceof pre-check is load-bearing beyond dedup with
+        // controlHttpError's own pass-through: it keeps phase-guard HttpErrors
+        // (interrupt-while-idle, capability 501s, …) out of the warn log —
+        // those are expected client-visible responses, not anomalies.
         if (err instanceof HttpError) throw err
         log.warn(`[session ${s.id}] ${action} failed:`, err)
-        throw new HttpError(502, `${action} failed: ${err instanceof Error ? err.message : String(err)}`)
+        throw controlHttpError(action, err, opts)
       }
     }
     return wrapped as T

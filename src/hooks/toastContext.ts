@@ -8,6 +8,9 @@ export type Toast = {
   id: string
   kind: ToastKind
   message: string
+  /** Optional secondary line rendered below `message` (muted, smaller) —
+   *  used for actionable hints alongside the raw error prose. */
+  detail?: string
   /** Optional headline. When present, the toast renders as a two-line
    *  card: `title` (bold) above `message` (muted body). When omitted the
    *  toast is a single-line `message`. */
@@ -32,6 +35,8 @@ export type Toast = {
 }
 
 export type PushOptions = {
+  /** Optional secondary line rendered below `message`. See Toast.detail. */
+  detail?: string
   /** Optional headline rendered above `message`. See Toast.title. */
   title?: string
   /** Override the kind's default lifetime. Pass `0` for sticky. */

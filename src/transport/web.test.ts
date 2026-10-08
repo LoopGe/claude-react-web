@@ -36,6 +36,24 @@ describe('createWebTransport: request', () => {
     }))
     await expect(transport.request('/missing')).rejects.toMatchObject({ message: 'nope', status: 404 })
   })
+
+  it('carries code and hint from a structured error body onto the ApiError', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => Promise.resolve({
+        error: { code: 'connection-closed', message: 'MCP toggle failed: Connection closed', hint: 'Run the start command.' },
+      }),
+      text: () => Promise.resolve(''),
+    }))
+    await expect(transport.request('/x')).rejects.toMatchObject({
+      message: 'MCP toggle failed: Connection closed',
+      status: 502,
+      code: 'connection-closed',
+      hint: 'Run the start command.',
+    })
+  })
 })
 
 describe('createWebTransport: connect', () => {

@@ -943,6 +943,14 @@ mark.search-hl.search-hl-active {
   color: var(--fg-muted);
   word-break: break-word;
 }
+/* Secondary hint line (Toast.detail) — actionable guidance under the raw
+   error prose. Muted like .toast-message; no new color tokens needed. */
+.toast-detail {
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--fg-muted);
+  word-break: break-word;
+}
 /* Single-line toasts (no title) read at the title weight, not muted, so
    a bare "Settings applied" isn't demoted to a caption. */
 .toast-message-main {

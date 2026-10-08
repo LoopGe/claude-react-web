@@ -4,10 +4,11 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { api } from '../hooks/useApi'
+import type { ApiError } from '../transport/types'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
-import { useToast } from '../hooks/useToast'
+import { useToast, apiErrorToastOpts } from '../hooks/useToast'
 import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
 import { useSessionUsage } from '../hooks/useSessionUsage'
 import { useModelOptions } from '../hooks/useModelOptions'
@@ -17,7 +18,10 @@ import type { SkillRecord } from '../../shared/skills'
 import type { SandboxSetting } from '../../shared/sandbox'
 import type { FirstPartyToolDef } from '../../shared/first-party'
 import { GIT_TOOLS_SERVER_NAME } from '../../shared/first-party'
+import { classifyControlError } from '../../shared/control-errors'
+import { mcpDiagnostic } from '../../shared/mcp-types'
 import { McpToolRow, firstPartyToolDefsAsMcpTools } from './McpToolsList'
+import { CopyButton } from './ToolCard'
 import { FlagSettingsEditor } from './FlagSettingsEditor'
 import { ContextBar } from './ContextBar'
 import { ContextComposition } from './ContextComposition'
@@ -227,6 +231,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // clicked button shows a spinner instead of silently awaiting a round-trip;
   // Reconnect rides the same set for its in-flight spinner.
   const [pendingMcp, setPendingMcp] = useState<Set<string>>(new Set())
+  // Monotonic per-server epoch for toggleMcp's self-heal reads — see
+  // toggleMcp. Ref, not state: bumping it must not re-render, only
+  // invalidate stale async clears.
+  const mcpToggleEpochs = useRef(new Map<string, number>())
   // In-flight first-party toggle names (mirror of pendingMcp for the
   // first-party section) so the card shows the same spinner the MCP cards do.
   const [pendingFirstParty, setPendingFirstParty] = useState<Set<string>>(new Set())
@@ -756,7 +764,8 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       // failed: Connection closed") — no client-side prefix needed. The card
       // is left untouched on failure: no override teardown or background
       // refresh that could contradict the error toast.
-      toast.error((e as Error).message)
+      const err = e as ApiError
+      toast.error(err.message, apiErrorToastOpts(err))
     } finally {
       setPendingMcp((s) => {
         const n = new Set(s)
@@ -768,6 +777,12 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
 
   const toggleMcp = async (name: string, enabled: boolean) => {
     if (pendingMcp.has(name)) return
+    // Monotonic per-server epoch: the fire-and-forget self-heal below
+    // resolves AFTER pendingMcp is cleared, so the user can start a NEW
+    // toggle (of this or any server) before it lands. A stale read confirming
+    // an OLD direction must not clear a NEWER toggle's optimistic override.
+    const epoch = (mcpToggleEpochs.current.get(name) ?? 0) + 1
+    mcpToggleEpochs.current.set(name, epoch)
     // Optimistic status shown while the round-trip is in flight. Disable lands
     // on 'disabled'; Enable passes through 'pending' on its way to connected.
     const optimisticStatus: McpServerStatus['status'] = enabled ? 'pending' : 'disabled'
@@ -784,17 +799,33 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     setMcpOverride((o) => ({ ...o, [name]: { ...o[name], status: optimisticStatus } }))
     try {
       await api.post(`/sessions/${session.id}/mcp/${encodeURIComponent(name)}/toggle`, { enabled })
-      const r = await api.get<{ mcp: McpServerStatus[] }>(`/sessions/${session.id}/mcp-status`)
-      setMcp(r.mcp)
-      // If the SDK now confirms the toggle, the override is redundant. If it
-      // doesn't (flaky read / not yet propagated), KEEP the override so the
-      // card doesn't flicker back to the pre-toggle state — a later refresh
-      // will correct it.
-      if (isConfirmed(r.mcp.find((s) => s.name === name)?.status)) {
+      // Cap the confirm-read like reconnectMcp does: mcp-status is a
+      // hang-prone SDK control read, and letting it hit the catch below would
+      // report a SUCCESSFUL toggle as a failure and revert the optimistic
+      // card. refreshMcp swallows its own errors — an unconfirmed read keeps
+      // the override so the card doesn't flicker back to the pre-toggle state;
+      // a later refresh corrects it.
+      const fresh = await refreshMcp(10_000)
+      if (isConfirmed(fresh?.find((s) => s.name === name)?.status)) {
         clearMcpOverride(name)
+      } else if (fresh === undefined) {
+        // The capped confirm-read didn't land at all. Schedule one uncapped
+        // self-heal read so a slow-but-successful status fetch still resolves
+        // the optimistic override — otherwise the card sits on 'pending'
+        // until the user's next action (the mcp fetch otherwise runs once on
+        // mount and after actions). The epoch guard drops the self-heal when
+        // a newer toggle has started: a stale read confirming THIS direction
+        // must not wipe the newer toggle's override.
+        void refreshMcp().then((r) => {
+          if (epoch !== mcpToggleEpochs.current.get(name)) return
+          if (isConfirmed(r?.find((s) => s.name === name)?.status)) {
+            clearMcpOverride(name)
+          }
+        })
       }
     } catch (e) {
-      toast.error((e as Error).message)
+      const err = e as ApiError
+      toast.error(err.message, apiErrorToastOpts(err))
       // Revert to the real status — drop the optimistic override and re-sync.
       clearMcpOverride(name)
       void refreshMcp()
@@ -2473,7 +2504,41 @@ function FirstPartyStatusCard({
   )
 }
 
-function McpServerCard({
+/** Failed-state panel for McpServerCard. Layers three kinds of guidance over
+ *  the raw CLI error, which is transport-level text ("Connection closed") and
+ *  never carries the real cause (the CLI swallows MCP-server stderr):
+ *  1. The shared classifier's title/hint when the message matches a known
+ *     pattern — unknown messages keep the raw text only, no invented reasons.
+ *  2. The raw error itself, always.
+ *  3. A self-diagnosis block — the runnable start command (stdio) or the
+ *     endpoint URL (http/sse) — since running it in a terminal is how the
+ *     real cause (npm E401, crash on boot, unreachable host …) shows. */
+function McpFailedPanel({ error, config }: { error: string; config?: unknown }) {
+  const info = classifyControlError(error)
+  const diag = mcpDiagnostic(config)
+  return (
+    <>
+      {info && <div className="settings-card-error-title">{info.title}</div>}
+      <div className="settings-card-error">{error}</div>
+      {info && <div className="settings-card-error-hint">{info.hint}</div>}
+      {diag && (
+        <>
+          <div className="settings-mcp-diagnostic">
+            <code>{diag.value}</code>
+            <CopyButton getValue={() => diag.value} label="Copy" />
+          </div>
+          <div className="settings-mcp-diagnostic-hint">
+            {diag.kind === 'command'
+              ? 'Run it in a terminal to see the actual error.'
+              : 'Check that this endpoint is reachable and its token is valid.'}
+          </div>
+        </>
+      )}
+    </>
+  )
+}
+
+export function McpServerCard({
   server,
   isGlobal,
   provenanceKnown = true,
@@ -2559,8 +2624,10 @@ function McpServerCard({
           </button>
         )}
       </div>
-      {server.error && (
-        <div className="settings-card-error">{server.error}</div>
+      {server.status === 'failed' && server.error ? (
+        <McpFailedPanel error={server.error} config={server.config} />
+      ) : (
+        server.error && <div className="settings-card-error">{server.error}</div>
       )}
       {server.status === 'needs-auth' && (
         <div className="settings-card-desc">

@@ -21,6 +21,7 @@
 //   - Persisting mcpServerNames as part of the Session/SessionMeta shape
 
 import type { FirstPartyToolDef } from '../shared/first-party.js'
+import type { ControlWrapOpts } from './errors.js'
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
 import { LEGACY_GIT_TOOLS_SERVER_NAME, migrateLegacyGitToolsKey } from '../shared/first-party.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
@@ -46,6 +47,7 @@ export interface McpManagerDeps {
     method: keyof ProviderSessionHandle,
     action: string,
     capability?: keyof ProviderCapabilities,
+    opts?: ControlWrapOpts,
   ): T
   /** Persist session metadata without a global broadcast. */
   writeStore(s: Session): void
@@ -75,16 +77,29 @@ export class SessionMcpManager {
       'MCP status',
       'supportsMcp',
     )
+    // Deliberately NO classify here: a failed mcp-status READ means the
+    // session's own CLI subprocess died or wedged ("MCP status failed:
+    // Connection closed"), not an individual MCP server — the server-process
+    // taxonomy would hand out nonsense advice for that case. Per-server
+    // failures are reported inside the status payload's `error` fields.
     return this.deps.timeSdkControl(id, 'mcpServerStatus', fn)
   }
 
   async reconnectMcpServer(id: string, serverName: string): Promise<void> {
+    // Mutations keep { classify: true } despite an irreducible ambiguity: a
+    // 'Connection closed' here can mean the MCP server died OR the session's
+    // own CLI subprocess died, and the two are indistinguishable host-side.
+    // Mutations still opt in because the MCP-server cause is the common case
+    // for a live session (the card disables these actions once
+    // session.terminated), and the classifier's hint names the
+    // possibilities rather than asserting one.
     const s = this.deps.requireLive(id)
     await this.deps.requireHandleMethod<(name: string) => Promise<void>>(
       s,
       'reconnectMcpServer',
       'MCP reconnect',
       'supportsMcp',
+      { classify: true },
     )(serverName)
   }
 
@@ -95,6 +110,7 @@ export class SessionMcpManager {
       'toggleMcpServer',
       'MCP toggle',
       'supportsMcp',
+      { classify: true },
     )(serverName, enabled)
   }
 
@@ -110,6 +126,7 @@ export class SessionMcpManager {
       'setMcpServers',
       'dynamic MCP servers',
       'supportsMcp',
+      { classify: true },
     )(injected ?? servers)
 
     // Update the tracked MCP server names + the runtime dynamic map so the
@@ -141,6 +158,7 @@ export class SessionMcpManager {
       'setMcpPermissionModeOverride',
       'MCP permission mode',
       'supportsMcp',
+      { classify: true },
     )(serverName, mode)
   }
 
