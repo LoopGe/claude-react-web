@@ -27,6 +27,7 @@ import { useComposerSnippets } from './hooks/useComposerSnippets'
 import { usePanelColumnResize } from './hooks/usePanelColumnResize'
 import { useSidebarResize } from './hooks/useSidebarResize'
 import { useSessionNotifications } from './hooks/useSessionNotifications'
+import { useClientDebug } from './hooks/useClientDebug'
 import { useSessionUrl } from './hooks/useSessionUrl'
 import { registerSW } from './sw-register'
 import { useTheme } from './hooks/useTheme'
@@ -884,6 +885,11 @@ export function App() {
   // session-event callbacks the WS hub effect calls into.
   const { notifications, maybeNotify, maybePermissionNotify, maybeCliNotify, seedWorkingState, pruneSession, dismissPermissionToast } =
     useSessionNotifications({ focusedIdRef, sessionsRef, handleSelectRef, swRegRef })
+
+  // Dev-only appdebug client-debug answerer: runs DOM ops (query / computed
+  // styles / screenshot / eval) requested by the host's mcp__appdebug__dom_*
+  // tools and POSTs the answer. Cheap no-op unless a frame arrives.
+  useClientDebug()
 
   // Single push-based subscription to the server's session list. All
   // events now ride on the shared WebSocket hub — one connection per

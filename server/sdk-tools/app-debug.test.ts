@@ -34,6 +34,7 @@ const host = vi.hoisted(() => ({
   debugSession: vi.fn(),
   setCliDebug: vi.fn(),
   send: vi.fn(),
+  clientDebugRequest: vi.fn(),
 }))
 
 // Resolve the tool by bare name, then call its handler. The arity matches
@@ -59,19 +60,23 @@ beforeEach(() => {
 })
 
 describe('appdebug tool surface', () => {
-  it('exposes exactly the 7 declared tools', () => {
+  it('exposes exactly the 11 declared tools', () => {
     expect(buildDebugTools(host as unknown as DebugHost).map((t) => t.name)).toEqual([
-      'logs', 'metrics', 'sessions', 'session', 'set_log', 'set_cli_debug', 'send_message',
+      'logs', 'metrics', 'sessions', 'session',
+      'dom_query', 'dom_computed_styles', 'dom_screenshot',
+      'set_log', 'set_cli_debug', 'send_message', 'dom_eval',
     ])
   })
 
-  it('declares exactly the 4 read tools read-only, and they carry the annotation', () => {
-    expect([...DEBUG_READ_ONLY_TOOLS].sort()).toEqual(['logs', 'metrics', 'session', 'sessions'])
+  it('declares exactly the 7 read tools read-only, and they carry the annotation', () => {
+    expect([...DEBUG_READ_ONLY_TOOLS].sort()).toEqual([
+      'dom_computed_styles', 'dom_query', 'dom_screenshot', 'logs', 'metrics', 'session', 'sessions',
+    ])
     const tools = buildDebugTools(host as unknown as DebugHost)
-    for (const readOnlyName of ['logs', 'metrics', 'sessions', 'session']) {
+    for (const readOnlyName of ['logs', 'metrics', 'sessions', 'session', 'dom_query', 'dom_computed_styles', 'dom_screenshot']) {
       expect(tools.find((t) => t.name === readOnlyName)!.annotations?.readOnlyHint).toBe(true)
     }
-    for (const writeName of ['set_log', 'set_cli_debug', 'send_message']) {
+    for (const writeName of ['set_log', 'set_cli_debug', 'send_message', 'dom_eval']) {
       expect(tools.find((t) => t.name === writeName)!.annotations?.readOnlyHint ?? false).toBe(false)
     }
   })
@@ -82,7 +87,7 @@ describe('appdebug tool surface', () => {
     expect(server.requiresCwd).toBe(false)
     expect(server.defaultEnabled).toBe(true)
     expect(server.mutatingToolNames).toBeUndefined()
-    expect(server.buildTools(null).map((t) => t.name)).toHaveLength(7)
+    expect(server.buildTools(null).map((t) => t.name)).toHaveLength(11)
   })
 })
 
@@ -198,5 +203,43 @@ describe('error handling', () => {
     const res = await callTool('send_message', { sessionId: 's1', text: 'hi' })
     expect(res.isError).toBe(true)
     expect(firstText(res)).toBe('session is terminated')
+  })
+})
+
+describe('client-debug dom tools', () => {
+  it('dom_query forwards its op and params to the host and returns the JSON result', async () => {
+    host.clientDebugRequest.mockResolvedValue({ total: 1, nodes: [{ tag: 'h1', text: 'hi' }] })
+    const res = await callTool('dom_query', { selector: 'h1', maxNodes: 3, includeHtml: false })
+    expect(res.isError).toBeFalsy()
+    expect(host.clientDebugRequest).toHaveBeenCalledWith('dom_query', { selector: 'h1', maxNodes: 3, includeHtml: false })
+    expect(JSON.parse(firstText(res))).toEqual({ total: 1, nodes: [{ tag: 'h1', text: 'hi' }] })
+  })
+
+  it('dom_computed_styles forwards the property subset', async () => {
+    host.clientDebugRequest.mockResolvedValue({ tag: 'div', styles: { color: 'red' } })
+    const res = await callTool('dom_computed_styles', { selector: '.x', properties: ['color'] })
+    expect(host.clientDebugRequest).toHaveBeenCalledWith('dom_computed_styles', { selector: '.x', properties: ['color'] })
+    expect(res.isError).toBeFalsy()
+  })
+
+  it('dom_screenshot forwards the optional selector', async () => {
+    host.clientDebugRequest.mockResolvedValue({ dataUrl: 'data:image/png;base64,x', width: 10, height: 10 })
+    const res = await callTool('dom_screenshot', { selector: '#app' })
+    expect(host.clientDebugRequest).toHaveBeenCalledWith('dom_screenshot', { selector: '#app' })
+    expect(res.isError).toBeFalsy()
+  })
+
+  it('dom_eval forwards the code', async () => {
+    host.clientDebugRequest.mockResolvedValue({ value: 4 })
+    const res = await callTool('dom_eval', { code: '2+2' })
+    expect(host.clientDebugRequest).toHaveBeenCalledWith('dom_eval', { code: '2+2' })
+    expect(JSON.parse(firstText(res))).toEqual({ value: 4 })
+  })
+
+  it('turns a client-side failure (no tab / timeout / executor error) into isError', async () => {
+    host.clientDebugRequest.mockRejectedValue(new Error('no connected browser tab — open the web UI to use dom_query'))
+    const res = await callTool('dom_query', { selector: 'h1' })
+    expect(res.isError).toBe(true)
+    expect(firstText(res)).toBe('no connected browser tab — open the web UI to use dom_query')
   })
 })

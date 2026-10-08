@@ -91,6 +91,8 @@ import {
   type DebugSessionDetail,
   endAllSubscribers,
 } from './session-types.js'
+import type { ClientDebugAnswer, ClientDebugOp } from '../shared/client-debug.js'
+import type { WsClientDebugRequest } from '../shared/ws-protocol.js'
 import { HttpError, controlHttpError, type ControlWrapOpts } from './errors.js'
 import { filterClientEnv } from './session-env.js'
 import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
@@ -105,6 +107,7 @@ import { coerceReadFileOutput, type FileReadResult } from '../shared/read-file.j
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
 import { migrateLegacyGitToolsKey } from '../shared/first-party.js'
 import { PermissionBroker } from './permission-broker.js'
+import { ClientDebugBroker } from './client-debug-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
@@ -615,6 +618,13 @@ export class SessionManager {
   private providers: ProviderRegistry
   private defaultProvider: string
   private globalSubscribers = new Map<string, GlobalSubscriber>()
+  /** Per-connection subscribers for dev-only `client-debug-request` frames.
+   *  Deliberately SEPARATE from `globalSubscribers`: internal consumers
+   *  (ScheduledSendManager) also hold global subscriptions for the process
+   *  lifetime, so counting that set can never reach 0 and the broker's
+   *  no-tab fail-fast would be dead code. Only live WS connections appear
+   *  here, so its size IS the tab count. */
+  private clientDebugSubscribers = new Map<string, { push: (frame: WsClientDebugRequest) => void; end: () => void }>()
   private permBroker: PermissionBroker
   /** MCP elicitation (OAuth auth / server-initiated form) arbitration.
    *  Mirrors permBroker: owns the onElicitation callback construction,
@@ -624,6 +634,11 @@ export class SessionManager {
    *  Mirrors elicitBroker: owns the onUserDialog callback construction,
    *  pending registry, decide/cancelAll, and per-session broadcast. */
   private dialogBroker: DialogBroker
+  /** Dev-only client-debug request broker (appdebug dom_* tools): parks
+   *  MCP tool calls and awaits the first browser tab's answer through the
+   *  answer route. Broadcasts ride the global channel; dev-mode gating is
+   *  upstream (see dev-mode.ts / sdk-tools/app-debug.ts). */
+  private clientDebugBroker: ClientDebugBroker
   /** Owns recap lifecycle for every session. Public so the recap route
    *  can call requestGenerate() without going through a wrapper method —
    *  the route is the only HTTP surface for recap, and proxying through
@@ -656,6 +671,15 @@ export class SessionManager {
     this.permBroker = new PermissionBroker((id) => this.auxTargetFor(id, 'classifier'))
     this.elicitBroker = new ElicitationBroker()
     this.dialogBroker = new DialogBroker()
+    this.clientDebugBroker = new ClientDebugBroker((frame) => {
+      // Only real WS connections subscribe to this channel (see the field
+      // doc), so its size IS the browser-tab count. Zero live tabs → report
+      // 0 so the broker fails fast instead of burning its timeout.
+      const n = this.clientDebugSubscribers.size
+      if (n === 0) return 0
+      for (const sub of this.clientDebugSubscribers.values()) sub.push(frame)
+      return n
+    })
     this.autoResumeEnabled = opts.autoResume ?? false
     this.crashRecoveryEnabled = opts.crashRecovery ?? false
     this.maxCrashRecovery = opts.maxCrashRecovery ?? 2
@@ -1161,6 +1185,28 @@ export class SessionManager {
       unsubscribe: () => {
         sub.end()
         this.globalSubscribers.delete(subId)
+      },
+    }
+  }
+
+  /** Subscribe the connection to dev-only `client-debug-request` frames.
+   *  Global (not per-session); no snapshot — requests are one-shot and
+   *  broadcast live only. See the clientDebugSubscribers field doc for why
+   *  this is not the global session-list channel. */
+  subscribeClientDebug(): {
+    iterable: AsyncIterable<WsClientDebugRequest>
+    unsubscribe: () => void
+  } {
+    const subId = randomUUID()
+    const sub = createAsyncSubscription<WsClientDebugRequest>(() => {
+      this.clientDebugSubscribers.delete(subId)
+    })
+    this.clientDebugSubscribers.set(subId, sub)
+    return {
+      iterable: sub.iterable,
+      unsubscribe: () => {
+        sub.end()
+        this.clientDebugSubscribers.delete(subId)
       },
     }
   }
@@ -4286,6 +4332,21 @@ export class SessionManager {
     }
   }
 
+  /** Dev-only (`appdebug` client-debug): broadcast one DOM debug op to the
+   *  connected browser tabs and await the first tab's answer. Throws when
+   *  no tab is connected or the answer is an error / times out — the MCP
+   *  tool's `guard` turns that into an `isError` text result. */
+  clientDebugRequest(op: ClientDebugOp, params: Record<string, unknown>): Promise<unknown> {
+    return this.clientDebugBroker.request(op, params)
+  }
+
+  /** Dev-only (`appdebug` client-debug): the answer route's entry — resolve
+   *  a pending request by id. False for an unknown / already-answered id
+   *  (the first-answer-wins race's losing tab). */
+  resolveClientDebug(id: string, answer: ClientDebugAnswer): boolean {
+    return this.clientDebugBroker.resolve(id, answer)
+  }
+
   /** Dev-only (`appdebug`): plain-JSON overview of every session — live ones
    *  from their in-memory state, the rest (hibernated, from the store) with
    *  zeroed counters. */
@@ -6167,6 +6228,10 @@ export class SessionManager {
 
   async shutdown(): Promise<void> {
     this.healthMonitor.stop()
+    // Reject every parked client-debug tool call and clear its timer — an
+    // armed request timer would otherwise keep the event loop alive up to
+    // its full timeout after SIGINT (see ClientDebugBroker.disposeAll).
+    this.clientDebugBroker.disposeAll('host shutting down')
     // End all global subscribers so their iterators resolve and
     // don't hang waiting for events that will never arrive.
     for (const sub of this.globalSubscribers.values()) sub.end()

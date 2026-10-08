@@ -64,6 +64,7 @@ export function enableDevMode(deps: DevModeDeps): void {
   deps.registry.register(createDebugAppTools(deps.sm))
   log.info(
     `registered ${DEBUG_TOOLS_SERVER_NAME} (dev runtime) — ` +
-      'read-only: logs, metrics, sessions, session; writes prompt for permission',
+      'read-only: logs, metrics, sessions, session, dom_query, dom_computed_styles, dom_screenshot; ' +
+      'writes (incl. dom_eval) prompt for permission',
   )
 }

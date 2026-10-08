@@ -862,6 +862,15 @@ export interface SessionBroadcaster {
     snapshot: SessionInfo[]
     unsubscribe: () => void
   }
+  /** Per-connection subscription for dev-only `client-debug-request` frames
+   *  (see shared/client-debug.ts). Deliberately separate from the global
+   *  session-list channel so the subscriber count is the live TAB count —
+   *  internal consumers (ScheduledSendManager) hold global subscriptions
+   *  forever, which would break the broker's no-tab fail-fast. */
+  subscribeClientDebug(): {
+    iterable: AsyncIterable<import('./ws-protocol.js').WsClientDebugRequest>
+    unsubscribe: () => void
+  }
   /** Return the session's current info. Throws HttpError(404) for a
    *  session that is neither live nor in the persisted store — i.e.
    *  deleted or never tracked. Returns `running: false` for a

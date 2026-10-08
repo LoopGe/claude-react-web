@@ -19,7 +19,7 @@ import type {
   SessionInfo,
   UserDialogRequestUi,
 } from './session-types.js'
-import type { WsClientFrame, WsServerFrame } from './ws-protocol.js'
+import type { WsClientDebugRequest, WsClientFrame, WsServerFrame } from './ws-protocol.js'
 
 const tick = () => new Promise<void>((r) => setImmediate(r))
 
@@ -100,6 +100,7 @@ interface FakeSession {
  *  which the bridge is contractually required to tolerate. */
 class FakeBroadcaster implements SessionBroadcaster {
   global = chan<GlobalSessionEvent>()
+  clientDebug = chan<WsClientDebugRequest>()
   globalSnapshot: SessionInfo[] = []
   resumed: string[] = []
   globalUnsubs = 0
@@ -141,6 +142,13 @@ class FakeBroadcaster implements SessionBroadcaster {
       iterable: this.global.iterable,
       snapshot: this.globalSnapshot,
       unsubscribe: () => { this.globalUnsubs++ },
+    }
+  }
+
+  subscribeClientDebug() {
+    return {
+      iterable: this.clientDebug.iterable,
+      unsubscribe: () => this.clientDebug.end(),
     }
   }
 
@@ -261,6 +269,17 @@ describe('SessionConnection (in-memory sink)', () => {
     await tick()
     expect(sink.kinds('session-created')).toHaveLength(1)
     expect(sink.kinds('session-removed')).toHaveLength(1)
+  })
+
+  it('fans a client-debug-request from the dedicated channel out verbatim', async () => {
+    const { sm, sink, conn } = setup()
+    conn.start()
+    sm.clientDebug.push({
+      kind: 'client-debug-request', id: 'req-1', op: 'dom_query', params: { selector: 'h1' },
+    })
+    await tick()
+    const frame = await waitForFrame(sink, (f) => f.kind === 'client-debug-request')
+    expect(frame).toMatchObject({ kind: 'client-debug-request', id: 'req-1', op: 'dom_query', params: { selector: 'h1' } })
   })
 
   it('serves replay + ack on subscribe, then streams live messages via sendRaw', async () => {

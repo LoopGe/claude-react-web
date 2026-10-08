@@ -121,6 +121,7 @@ export class SessionConnection {
 
   private globalCleanup: (() => void) | null = null
   private appPluginCleanup: (() => void) | null = null
+  private clientDebugCleanup: (() => void) | null = null
   private closed = false
 
   constructor(deps: FrameBridgeDeps, sink: FrameSink) {
@@ -129,12 +130,13 @@ export class SessionConnection {
     this.sink = sink
   }
 
-  /** Begin the always-on channels (global session list + app plugins).
-   *  Call once after the transport's inbound listeners are wired, so no
-   *  client frame can race channel setup. */
+  /** Begin the always-on channels (global session list + app plugins +
+   *  client-debug). Call once after the transport's inbound listeners are
+   *  wired, so no client frame can race channel setup. */
   start(): void {
     this.startGlobal()
     this.startAppPlugins()
+    this.startClientDebug()
   }
 
   // --- global channel: sessions list + global permission mirror ----
@@ -203,6 +205,27 @@ export class SessionConnection {
     })()
   }
 
+  // --- client-debug channel (dev-only client-debug-request frames) ---
+  // Subscribed unconditionally: only a dev-mode SessionManager ever
+  // broadcasts here, and SessionBroadcaster guarantees the method. Frames
+  // are forwarded verbatim — no per-session routing, no replay.
+  private startClientDebug(): void {
+    const sub = this.sm.subscribeClientDebug()
+    this.clientDebugCleanup = () => sub.unsubscribe()
+    void (async () => {
+      try {
+        for await (const frame of sub.iterable) {
+          if (this.closed) return
+          this.sink.send(frame)
+        }
+      } catch (err) {
+        if (!this.closed) {
+          this.sink.send({ kind: 'error', message: `client-debug channel: ${(err as Error).message}` })
+        }
+      }
+    })()
+  }
+
   // --- inbound client frames ---------------------------------------
   /** Handle one client frame. `input` is a raw JSON string (WebSocket) or an
    *  already-decoded object (structured-clone transports like MessagePort). */
@@ -257,6 +280,8 @@ export class SessionConnection {
     this.globalCleanup = null
     this.appPluginCleanup?.()
     this.appPluginCleanup = null
+    this.clientDebugCleanup?.()
+    this.clientDebugCleanup = null
   }
 
   // --- per-session channel (subscribe/unsubscribe) -----------------
@@ -729,7 +754,7 @@ export class SessionConnection {
             // to one or more frames; the retag happens once at the bottom.
             switch (winner.kind) {
               case 'msg':
-                // The same message object reference is delivered to every
+                            // The same message object reference is delivered to every
                 // connection subscribed to this session, so serialize the
                 // frame once and reuse across all of them (see
                 // messageFrameJson). Falls back to send() if the value

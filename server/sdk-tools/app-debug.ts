@@ -26,6 +26,7 @@ import { tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { FirstPartyToolServer } from './types.js'
 import type { DebugSessionDetail, DebugSessionSummary } from '../session-types.js'
+import type { ClientDebugOp, DomComputedStylesParams, DomEvalParams, DomQueryParams, DomScreenshotParams } from '../../shared/client-debug.js'
 import {
   getLogConfig,
   getLogFilePath,
@@ -41,12 +42,18 @@ import { metrics } from '../metrics.js'
 export const DEBUG_TOOLS_SERVER_NAME = 'appdebug'
 
 /** Bare read-only tool names. Membership here is what makes the permission
- *  broker auto-approve the call in every mode. */
+ *  broker auto-approve the call in every mode. The dom_* reads only observe
+ *  the browser tab's DOM (same trust level as reading server logs) — but
+ *  note `dom_eval` is deliberately NOT here: it runs arbitrary JS in the
+ *  page and must prompt like any other tool. */
 export const DEBUG_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'logs',
   'metrics',
   'sessions',
   'session',
+  'dom_query',
+  'dom_computed_styles',
+  'dom_screenshot',
 ])
 
 /** The slice of SessionManager the debug tools need. Declared structurally so
@@ -60,6 +67,10 @@ export interface DebugHost {
    *  `SentUserMessage` is module-private there, and a sync value-returning
    *  method is assignable to this `void` signature. */
   send(id: string, text: string): void
+  /** Dev-only client-debug: broadcast one DOM op to the connected browser
+   *  tabs and await the first tab's answer. Rejects when no tab is
+   *  connected, the executor failed, or the request timed out. */
+  clientDebugRequest(op: ClientDebugOp, params: Record<string, unknown>): Promise<unknown>
 }
 
 function ok(text: string): CallToolResult {
@@ -169,6 +180,43 @@ export function buildDebugTools(host: DebugHost): SdkMcpToolDefinition<any>[] {
       { annotations: readOnly },
     ),
     tool(
+      'dom_query',
+      'Query the connected browser tab\'s DOM (dev-only; requires the web UI open). Returns per-node tag/id/classes/text summary plus truncated outerHTML. selector is a CSS selector; maxNodes caps results (default 10); includeHtml=false drops the HTML bodies. Answers from the FIRST tab that responds.',
+      {
+        selector: z.string().min(1),
+        maxNodes: z.number().int().min(1).max(50).optional(),
+        includeHtml: z.boolean().optional(),
+      },
+      async (a) =>
+        guard(async () =>
+          json(await host.clientDebugRequest('dom_query', a satisfies DomQueryParams)),
+        ),
+      { annotations: readOnly },
+    ),
+    tool(
+      'dom_computed_styles',
+      'Read the computed CSS of the first element matching a CSS selector in the connected browser tab (dev-only; requires the web UI open). Pass properties to narrow to a subset; omit it to get a curated set of common layout/typography/color properties.',
+      {
+        selector: z.string().min(1),
+        properties: z.array(z.string()).optional(),
+      },
+      async (a) =>
+        guard(async () =>
+          json(await host.clientDebugRequest('dom_computed_styles', a satisfies DomComputedStylesParams)),
+        ),
+      { annotations: readOnly },
+    ),
+    tool(
+      'dom_screenshot',
+      'Render a node (or the whole viewport when selector is omitted) of the connected browser tab to a PNG data URL via SVG foreignObject serialization (dev-only; requires the web UI open; no external deps). Fidelity is approximate — external images/CORS fonts may be missing.',
+      { selector: z.string().optional() },
+      async (a) =>
+        guard(async () =>
+          json(await host.clientDebugRequest('dom_screenshot', a satisfies DomScreenshotParams)),
+        ),
+      { annotations: readOnly },
+    ),
+    tool(
       'set_log',
       'Change the server log level and/or scope filter at runtime. Omit a key to leave it unchanged; scopes: [] clears the filter (server-wide, not per session).',
       { level: LEVEL.optional(), scopes: z.array(z.string()).optional() },
@@ -189,6 +237,15 @@ export function buildDebugTools(host: DebugHost): SdkMcpToolDefinition<any>[] {
           host.send(a.sessionId, a.text)
           return ok(`sent ${a.text.length} char(s) to ${a.sessionId}`)
         }),
+    ),
+    tool(
+      'dom_eval',
+      'Evaluate JavaScript in the connected browser tab\'s page context (dev-only; requires the web UI open). The code runs as an async function body; the result is JSON-safe serialized. NOT read-only: it can mutate the page and may execute more than once (every connected tab races to answer), so use it for inspection, not for stateful edits.',
+      { code: z.string().min(1) },
+      async (a) =>
+        guard(async () =>
+          json(await host.clientDebugRequest('dom_eval', a satisfies DomEvalParams)),
+        ),
     ),
   ]
 }

@@ -13,6 +13,7 @@ import { buildSessionRouter } from './sessions.js'
 import { buildPermissionRouter } from './permissions.js'
 import { buildElicitationRouter } from './elicitation.js'
 import { buildDialogRouter } from './dialog.js'
+import { buildClientDebugRouter } from './client-debug.js'
 import { buildUploadRouter } from './uploads.js'
 import { buildRecapRouter } from './recap.js'
 import { buildConfigRouter } from './config-routes.js'
@@ -108,6 +109,7 @@ export function buildApiRouter(
   app.route('/', buildPermissionRouter(sm))
   app.route('/', buildElicitationRouter(sm))
   app.route('/', buildDialogRouter(sm))
+  app.route('/', buildClientDebugRouter(sm))
   app.route('/', buildRecapRouter(sm))
   app.route('/', buildSearchRouter(sm))
   app.route('/', buildStructuredRouter(sm))

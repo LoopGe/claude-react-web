@@ -11,6 +11,7 @@ function fakeHost(): DebugHost {
     debugSession: vi.fn(async () => ({}) as never),
     setCliDebug: vi.fn(async () => ({})),
     send: vi.fn(async () => {}),
+    clientDebugRequest: vi.fn(async () => ({})),
   }
 }
 
@@ -63,11 +64,13 @@ describe('enableDevMode', () => {
     expect(registry.list()).toHaveLength(1)
   })
 
-  it('registers the 4 read tools as read-only and injects with no cwd', () => {
+  it('registers the 7 read tools as read-only and injects with no cwd', () => {
     const registry = new FirstPartyToolRegistry()
     enableDevMode({ registry, sm: fakeHost() })
     const server = registry.get(DEBUG_TOOLS_SERVER_NAME)!
-    expect([...server.readOnlyToolNames!].sort()).toEqual(['logs', 'metrics', 'session', 'sessions'])
+    expect([...server.readOnlyToolNames!].sort()).toEqual([
+      'dom_computed_styles', 'dom_query', 'dom_screenshot', 'logs', 'metrics', 'session', 'sessions',
+    ])
     // requiresCwd:false → injected even without a cwd.
     const injected = registry.injectAll(null, (n) => n === DEBUG_TOOLS_SERVER_NAME)
     expect(Object.keys(injected ?? {})).toEqual([DEBUG_TOOLS_SERVER_NAME])

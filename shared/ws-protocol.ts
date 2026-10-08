@@ -514,6 +514,22 @@ export interface WsAppPluginEvent {
   payload: StatGridPayload
 }
 
+/** Dev-only `appdebug` client-debug request: the host process asks the
+ *  connected browser tabs to run one DOM debug op (see
+ *  shared/client-debug.ts). Broadcast to ALL tabs on the global channel;
+ *  the first tab to POST /client-debug/:id/answer wins, so a tab must
+ *  answer even on failure. Ephemeral — no pending state survives a
+ *  disconnect; the host's broker times out unanswered requests. */
+export interface WsClientDebugRequest {
+  kind: 'client-debug-request'
+  /** Server-minted correlation id — the answer route's `:id` parameter. */
+  id: string
+  op: import('./client-debug.js').ClientDebugOp
+  /** Op-specific params; opaque to the transport, validated by the
+   *  browser executor. */
+  params: Record<string, unknown>
+}
+
 export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, HookEvent = never> =
   | WsSessionsSnapshot<Session>
   | WsSessionUpdate<Session>
@@ -545,6 +561,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsAppPluginStateChanged
   | WsAppPluginContributionsChanged
   | WsAppPluginEvent
+  | WsClientDebugRequest
   | WsPong
   | WsError
 
