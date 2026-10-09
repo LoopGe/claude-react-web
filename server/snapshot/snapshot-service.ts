@@ -83,18 +83,31 @@ async function safeExec(
  *  (libuv uses GetFinalPathNameByHandle on Windows, which also expands 8.3
  *  names) — no git subprocess needed, so non-git cwds pay nothing. Falls
  *  back to the original path when it cannot be resolved. */
+/** Strip the `\\?\` device prefix libuv's GetFinalPathNameByHandle may
+ *  prepend. `\\?\UNC\server\share\…` (network-share cwds) must map back to
+ *  the UNC form `\\server\share\…` — a blind slice(4) would leave the bogus
+ *  `\UNC\…`, which no git invocation accepts. */
+function stripWin32DevicePrefix(p: string): string {
+  if (p.startsWith('\\\\?\\UNC\\')) return `\\\\${p.slice(7)}`
+  return p.startsWith('\\\\?\\') ? p.slice(4) : p
+}
+
 async function resolveLongPath(cwd: string): Promise<string> {
   try {
     if (process.platform === 'win32') {
-      // realpath.native is the 8.3-expanding variant; it may return a
-      // `\\?\`-prefixed path, which path.relative handles but which should
-      // not leak into comparisons against git's plain output. Typed via a
-      // narrow cast: the native variant exists at runtime (libuv) but older
-      // @types/node builds omit it on the promises API.
+      // realpath.native is the 8.3-expanding variant (libuv's
+      // GetFinalPathNameByHandle). It exists on the CALLBACK fs API but
+      // Node ≥ 24 removed it from the promises API (undefined here), so
+      // this can legitimately be missing at runtime; the plain promises
+      // realpath resolves through the same libuv call and expands 8.3
+      // names on current Node (verified on v24.14: `…\GEZELI~1\…` →
+      // `…\Ge Zelin\…`). Without one of them the short path leaks into
+      // scopeFromCwd, `path.relative` sprouts `..` segments against git's
+      // long-form --show-toplevel, and every capture is rejected on
+      // machines whose tmpdir is short-pathed.
       const native = (realpath as typeof realpath & { native?: (p: string) => Promise<string> }).native
-      if (!native) return cwd
-      const p = await native(cwd)
-      return p.startsWith('\\\\?\\') ? p.slice(4) : p
+      const p = await (native ?? realpath)(cwd)
+      return stripWin32DevicePrefix(p)
     }
     return await realpath(cwd)
   } catch { /* unresolvable — fall back to the raw cwd */ }
