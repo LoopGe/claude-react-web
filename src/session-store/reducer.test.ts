@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { reduceSessionState, splitReplayAgainstCache, rebuildIndexesFromMessages, reapplyDismissed, settleStaleLiveSubagents } from './reducer'
+import { reduceSessionState, splitReplayAgainstCache, rebuildIndexesFromMessages, reapplyDismissed, settleStaleLiveSubagents, dedupeReplayPayload } from './reducer'
 import { createInitialSessionState, type SessionState, type ServerMirror } from './types'
 import { isTrimBoundary } from './normalize'
 import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
@@ -4709,5 +4709,87 @@ describe('reducer: a pure foreground (sync) subagent that also gets a task_notif
     // task_notification should only complete — must NOT flip sync to async
     state = reduceSessionState(state, { type: 'MESSAGE', message: notification('tu_sync', 20) })
     expect(state.mirror.activeSubagents.get('tu_sync')).toMatchObject({ status: 'done', isAsync: false })
+  })
+})
+
+describe('REPLAY_REPLACE payload dedup (superseded-burst concatenation)', () => {
+  // A superseded replay burst (server-side write-queue supersede) can leave
+  // the client's replay buffer holding [older-burst-prefix][newer-full-burst]
+  // — one REPLACE payload with INTERNAL repeated uuids. The cache-split in
+  // splitReplayAgainstCache only dedups against the cache, not within the
+  // payload, so a cold store would render the overlap twice. replayReplace
+  // must dedup the payload itself, keeping the FIRST occurrence.
+
+  it('dedups repeated uuids in a payload on a cold store', () => {
+    const state = replay(createInitialSessionState('s'), [
+      userMsg('u1', 'hi'),
+      asstMsg('a1', 'hello'),
+      userMsg('u1', 'hi'),
+      asstMsg('a1', 'hello'),
+    ])
+    expect(ids(state)).toEqual(['u1', 'a1'])
+  })
+
+  it('keeps the FIRST occurrence and preserves order', () => {
+    const state = replay(createInitialSessionState('s'), [
+      userMsg('u1', 'hi'),
+      asstMsg('a1', 'hello'),
+      asstMsg('a2', 'more'),
+      asstMsg('a1', 'hello'),
+      asstMsg('a2', 'more'),
+      resultMsg('r1'),
+    ])
+    expect(ids(state)).toEqual(['u1', 'a1', 'a2', 'r1'])
+  })
+
+  it('passes uuid-less messages through untouched (pure)', () => {
+    // thinking_tokens-style frames carry no uuid and are never transcript
+    // items — assert the payload-level contract directly on the pure fn.
+    const noUuidA = { type: 'system', subtype: 'thinking_tokens' } as unknown as SdkMessage
+    const noUuidB = { type: 'system', subtype: 'informational' } as unknown as SdkMessage
+    const out = dedupeReplayPayload([
+      userMsg('u1', 'hi'),
+      noUuidA,
+      userMsg('u1', 'hi'),
+      noUuidB,
+    ])
+    expect(out).toHaveLength(3)
+    expect(out.filter((m) => m.uuid === 'u1')).toHaveLength(1)
+    expect(out).toContain(noUuidA)
+    expect(out).toContain(noUuidB)
+  })
+
+  it('a superseded-concatenation payload renders each uuid once on a cold store', () => {
+    const noUuid = { type: 'system', subtype: 'thinking_tokens' } as unknown as SdkMessage
+    const state = replay(createInitialSessionState('s'), [
+      userMsg('u1', 'hi'),
+      asstMsg('a1', 'hello'),
+      noUuid,
+      userMsg('u1', 'hi'),
+      asstMsg('a1', 'hello'),
+    ])
+    // u1/a1 collapse; the uuid-less frame is not a transcript item at all
+    // (toTranscriptItem skips it) — the assertion is that dedup did not
+    // duplicate anything renderable.
+    expect(ids(state)).toEqual(['u1', 'a1'])
+  })
+
+  it('a payload with unique uuids produces the same transcript as before', () => {
+    const messages = [userMsg('u1', 'hi'), asstMsg('a1', 'hello'), resultMsg('r1')]
+    const state = replay(createInitialSessionState('s'), messages)
+    expect(ids(state)).toEqual(['u1', 'a1', 'r1'])
+  })
+
+  it('dedup also applies on the merge path (payload over an existing cache)', () => {
+    const cache = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
+    // Superseded concatenation arriving over a warm cache: prefix (already
+    // on screen) + full burst.
+    const state = replay(cache, [
+      userMsg('u1', 'hi'),
+      userMsg('u1', 'hi'),
+      asstMsg('a1', 'hello'),
+      asstMsg('a2', 'more'),
+    ])
+    expect(ids(state)).toEqual(['u1', 'a1', 'a2'])
   })
 })

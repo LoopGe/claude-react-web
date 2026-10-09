@@ -23,6 +23,7 @@ import type { SessionBroadcaster } from './session-types.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
 import { shouldBroadcastMessage } from './history-utils.js'
 import { planTailBackfillReplay } from './replay-plan.js'
+import { createReplayBurstToken, type ReplayBurstToken } from './replay-bursts.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
 import type {
@@ -47,13 +48,24 @@ const log = createLogger('ws')
  *  subscribed connection). Implementations own their own queueing,
  *  backpressure and overflow policy — the bridge only ever calls these.
  *
+ *  `burst` tags a frame as a member of one replay burst (one `sendReplay`
+ *  call). Sinks use it to supersede an older same-session burst still
+ *  queued unsent — see server/replay-bursts.ts. `sendRaw` (the broadcast
+ *  hot path) is never tagged.
+ *
+ *  `dropQueuedReplays` drops the session's queued replay remainder (the
+ *  client-unsubscribe path — the panel is gone, nobody will read it).
+ *
  *  `close` stops accepting frames and releases resources; the bridge calls it
  *  exactly once on teardown. */
 export interface FrameSink {
-  send(frame: WsServerFrame): void
+  send(frame: WsServerFrame, burst?: ReplayBurstToken): void
   sendRaw(data: string, kind?: string): void
+  dropQueuedReplays(sessionId: string): void
   close(): void
 }
+
+export type { ReplayBurstToken } from './replay-bursts.js'
 
 export interface FrameBridgeDeps {
   sm: SessionBroadcaster
@@ -374,6 +386,11 @@ export class SessionConnection {
       replayMode === 'tail-backfill' && !sinceUuid && !hasCachedTranscript
         ? planTailBackfillReplay(replayHistory, REPLAY_CHUNK_SIZE)
         : null
+    // ONE token per serve: the sink supersedes the previous same-session
+    // burst's queued frames when this token's first frame lands, so a
+    // StrictMode/multi-holder storm of re-serves collapses to ~one burst's
+    // bytes per session on the wire (see server/replay-bursts.ts).
+    const burst = createReplayBurstToken(sessionId)
     if (tailPlan) {
       log.info(
         `tail-first replay for ${sessionId}: tail=${tailPlan.tail.length} ` +
@@ -392,7 +409,7 @@ export class SessionConnection {
         ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
         ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),
         tail: true,
-      })
+      }, burst)
       for (const chunk of tailPlan.backfill) {
         this.sink.send({
           kind: 'replay',
@@ -400,9 +417,9 @@ export class SessionConnection {
           messages: chunk,
           permissions: [],
           backfill: true,
-        })
+        }, burst)
       }
-      this.sink.send({ kind: 'replay-done', sessionId })
+      this.sink.send({ kind: 'replay-done', sessionId }, burst)
     } else if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
       this.sink.send({
         kind: 'replay',
@@ -411,8 +428,8 @@ export class SessionConnection {
         permissions: pending?.permissions ?? [],
         ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
         ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),
-      })
-      this.sink.send({ kind: 'replay-done', sessionId })
+      }, burst)
+      this.sink.send({ kind: 'replay-done', sessionId }, burst)
     } else {
       for (let i = 0; i < replayHistory.length; i += REPLAY_CHUNK_SIZE) {
         this.sink.send({
@@ -420,7 +437,7 @@ export class SessionConnection {
           sessionId,
           messages: replayHistory.slice(i, i + REPLAY_CHUNK_SIZE),
           permissions: [],
-        })
+        }, burst)
       }
       // Permissions arrive with the final replay-done frame. The
       // client merges them from whichever frame carries them.
@@ -430,7 +447,7 @@ export class SessionConnection {
         permissions: pending?.permissions ?? [],
         ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
         ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),
-      })
+      }, burst)
     }
     metrics.observe('replay_build_ms', performance.now() - replayStart)
     metrics.count('replay_messages', undefined, replayHistory.length)
@@ -933,5 +950,8 @@ export class SessionConnection {
     // is closing itself (it already knows).
     this.subs.delete(sessionId)
     s.cleanup()
+    // The panel is gone — a replay burst still queued unsent for this
+    // session would never be read. Drop it (WsWriteQueue supersedes).
+    this.sink.dropQueuedReplays(sessionId)
   }
 }

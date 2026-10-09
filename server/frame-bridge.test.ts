@@ -7,7 +7,10 @@
 
 import { describe, expect, it } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { WebSocket } from 'ws'
 import { SessionConnection, type FrameSink } from './frame-bridge.js'
+import { WsFrameSink } from './ws-sink.js'
+import type { ReplayBurstToken } from './replay-bursts.js'
 import type {
   DialogEvent,
   ElicitationEvent,
@@ -53,7 +56,12 @@ function chan<T>(): Chan<T> {
             return new Promise((r) => { waiter = r })
           },
           return(): Promise<IteratorResult<T>> {
-            done = true
+            // Cleanup-driven return (driver stop / unsubscribe) ends THIS
+            // iterator only — NOT the shared channel. A re-subscribe to the
+            // same fake session must keep working (a real SessionManager
+            // hands each subscriber its own channel; ending the shared one
+            // here would make the next subscribe's driver exit instantly
+            // and emit a spurious `closed` ack).
             return Promise.resolve({ value: undefined as never, done: true })
           },
         }
@@ -63,23 +71,46 @@ function chan<T>(): Chan<T> {
 }
 
 /** In-memory FrameSink: records frames, counts the shared-JSON hot path,
- *  and mirrors close() so the bridge's teardown is observable. */
+ *  and mirrors close() so the bridge's teardown is observable. Also records
+ *  the burst token each frame was tagged with (index-aligned with `frames`)
+ *  and every dropQueuedReplays call, so the replay-burst tagging contract is
+ *  observable. */
 class FakeSink implements FrameSink {
   frames: WsServerFrame[] = []
+  bursts: Array<ReplayBurstToken | undefined> = []
   rawCount = 0
   closed = false
-  send(frame: WsServerFrame): void {
-    if (!this.closed) this.frames.push(frame)
+  droppedSessions: string[] = []
+  send(frame: WsServerFrame, burst?: ReplayBurstToken): void {
+    if (!this.closed) {
+      this.frames.push(frame)
+      this.bursts.push(burst)
+    }
   }
   sendRaw(data: string, _kind?: string): void {
     this.rawCount++
-    if (!this.closed) this.frames.push(JSON.parse(data) as WsServerFrame)
+    if (!this.closed) {
+      this.frames.push(JSON.parse(data) as WsServerFrame)
+      this.bursts.push(undefined)
+    }
+  }
+  dropQueuedReplays(sessionId: string): void {
+    this.droppedSessions.push(sessionId)
   }
   close(): void {
     this.closed = true
   }
   kinds(kind: WsServerFrame['kind']): WsServerFrame[] {
     return this.frames.filter((f) => f.kind === kind)
+  }
+  burstOf(frame: WsServerFrame): ReplayBurstToken | undefined {
+    const i = this.frames.indexOf(frame)
+    return i >= 0 ? this.bursts[i] : undefined
+  }
+  /** Clear the recording buffers (keeps closed state). */
+  reset(): void {
+    this.frames.length = 0
+    this.bursts.length = 0
   }
 }
 
@@ -480,5 +511,243 @@ describe('SessionConnection (in-memory sink)', () => {
     // Second close is a no-op — no double unsubscribe.
     conn.close()
     expect(sm.globalUnsubs).toBe(1)
+  })
+})
+
+describe('replay burst tagging (supersede contract)', () => {
+  const history120 = (): SDKMessage[] =>
+    Array.from({ length: 120 }, (_, i) => assistant(`m${i}`, `u${i}`))
+
+  it('tags the tail, the backfill chunks, and the replay-done of one tail-first burst with one shared token', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true, history: history120() })
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    send(conn, { kind: 'subscribe', sessionId: 's1', replayMode: 'tail-backfill' })
+    await tick()
+
+    const burstFrames = sink.frames.filter((f) => f.kind === 'replay' || f.kind === 'replay-done')
+    // tail(50) + backfill(50) + backfill(20) + replay-done
+    expect(burstFrames).toHaveLength(4)
+    const tokens = burstFrames.map((f) => sink.burstOf(f))
+    expect(tokens[0]).toBeDefined()
+    for (const t of tokens) expect(t).toBe(tokens[0])
+    expect(burstFrames[0]?.kind).toBe('replay')
+    expect((burstFrames[0] as { tail?: boolean }).tail).toBe(true)
+  })
+
+  it('tags the chunked path\'s replay frames and its permission-carrying replay-done with the burst token', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true, history: history120() })
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+
+    const burstFrames = sink.frames.filter((f) => f.kind === 'replay' || f.kind === 'replay-done')
+    // 120 msgs / 50 per chunk → 3 chunks + replay-done
+    expect(burstFrames).toHaveLength(4)
+    const tokens = burstFrames.map((f) => sink.burstOf(f))
+    expect(tokens[0]).toBeDefined()
+    for (const t of tokens) expect(t).toBe(tokens[0])
+    const done = sink.kinds('replay-done')[0]
+    expect(done).toBeDefined()
+  })
+
+  it('creates a fresh token per re-serve — a duplicate subscribe yields two distinct tokens', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    const firstToken = sink.burstOf(sink.kinds('replay')[0]!)
+    expect(firstToken).toBeDefined()
+
+    sink.reset()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    const secondToken = sink.burstOf(sink.kinds('replay')[0]!)
+    expect(secondToken).toBeDefined()
+    expect(secondToken).not.toBe(firstToken)
+  })
+
+  it('leaves the refused-subscribe error path untagged', async () => {
+    const sm = new FakeBroadcaster()
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    send(conn, { kind: 'subscribe', sessionId: 'ghost' })
+    await tick()
+
+    const err = sink.kinds('error')[0]
+    const done = sink.kinds('replay-done')[0]
+    expect(err).toBeDefined()
+    expect(done).toBeDefined()
+    expect(sink.burstOf(err!)).toBeUndefined()
+    expect(sink.burstOf(done!)).toBeUndefined()
+  })
+
+  it('calls sink.dropQueuedReplays exactly once on client unsubscribe', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    expect(sink.droppedSessions).toEqual([])
+
+    send(conn, { kind: 'unsubscribe', sessionId: 's1' })
+    await tick()
+    expect(sink.droppedSessions).toEqual(['s1'])
+  })
+
+  it('does not call dropQueuedReplays for a session with no channel', async () => {
+    const sm = new FakeBroadcaster()
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    send(conn, { kind: 'unsubscribe', sessionId: 'ghost' })
+    await tick()
+    expect(sink.droppedSessions).toEqual([])
+  })
+})
+
+describe('replay burst supersede end-to-end (QueueSink: real WsFrameSink)', () => {
+  // Drives SessionConnection through a REAL WsFrameSink over a fake WebSocket
+  // whose socket buffer is permanently full until released — the drain parks
+  // in the backpressure await after the first frame, so every later frame of
+  // the burst stays queued and supersede can be observed on the wire.
+  // This is the regression test for the group-switch "Stream reconnecting…"
+  // force-close: a StrictMode-shaped subscribe→unsubscribe→subscribe used to
+  // put two full bursts on the wire; it must now collapse to one.
+
+  interface FakeWs {
+    OPEN: number
+    readyState: number
+    bufferedAmount: number
+    sent: string[]
+    closeCalls: Array<{ code?: number; reason?: string }>
+    unblock(): void
+    releaseAll(): Promise<void>
+  }
+
+  function makeBlockedWs(): FakeWs & {
+    on(): void
+    off(): void
+    send(data: string, cb?: () => void): void
+    close(code?: number, reason?: string): void
+  } {
+    const sent: string[] = []
+    const closeCalls: Array<{ code?: number; reason?: string }> = []
+    const heldCbs: Array<() => void> = []
+    const ws = {
+      OPEN: 1,
+      readyState: 1,
+      bufferedAmount: 2_000_000,
+      sent,
+      closeCalls,
+      send(data: string, cb?: () => void) {
+        sent.push(data)
+        if (cb) heldCbs.push(cb)
+      },
+      close(code?: number, reason?: string) {
+        closeCalls.push({ code, reason })
+      },
+      on() {},
+      off() {},
+      unblock() {
+        ws.bufferedAmount = 0
+      },
+      async releaseAll() {
+        ws.bufferedAmount = 0
+        const cbs = heldCbs.splice(0)
+        for (const cb of cbs) cb()
+        for (let i = 0; i < 20; i++) await tick()
+      },
+    }
+    return ws
+  }
+
+  function setupQueueSink(sm: FakeBroadcaster) {
+    const ws = makeBlockedWs()
+    const sink = new WsFrameSink(ws as unknown as WebSocket)
+    const conn = new SessionConnection({ sm }, sink)
+    conn.start()
+    const wireFrames = () => ws.sent.map((s) => JSON.parse(s) as WsServerFrame)
+    return { sm, ws, conn, wireFrames }
+  }
+
+  it('subscribe → unsubscribe → subscribe (the StrictMode shape) puts exactly ONE complete burst on the wire', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
+    const { ws, conn, wireFrames } = setupQueueSink(sm)
+
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    send(conn, { kind: 'unsubscribe', sessionId: 's1' })
+    await tick()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+
+    await ws.releaseAll()
+
+    const frames = wireFrames()
+    // The drain is blocked on the sessions-snapshot's backpressure the whole
+    // time, so burst 1 is still fully queued when the unsubscribe's
+    // dropQueuedReplays retires it — the wire carries exactly ONE complete
+    // burst (burst 2's), where pre-fix it carried two (and a 12× storm would
+    // force-close the socket).
+    expect(frames.filter((f) => f.kind === 'replay')).toHaveLength(1)
+    expect(frames.filter((f) => f.kind === 'replay-done')).toHaveLength(1)
+    expect(frames.filter((f) => f.kind === 'subscribe-result' && (f as { ok?: boolean }).ok === true)).toHaveLength(2)
+    expect(ws.closeCalls).toHaveLength(0)
+  })
+
+  it('a duplicate subscribe while the first burst is still queued also leaves exactly one replay-done on the wire', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
+    const { ws, conn, wireFrames } = setupQueueSink(sm)
+
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+
+    await ws.releaseAll()
+
+    const frames = wireFrames()
+    // Burst 2's register supersedes burst 1 while it is still fully queued:
+    // the wire carries exactly one complete burst.
+    expect(frames.filter((f) => f.kind === 'replay')).toHaveLength(1)
+    expect(frames.filter((f) => f.kind === 'replay-done')).toHaveLength(1)
+    expect(ws.closeCalls).toHaveLength(0)
+  })
+
+  it('untagged frames (live messages) interleaved between bursts are never dropped', async () => {
+    const sm = new FakeBroadcaster()
+    const sess = sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
+    const { ws, conn, wireFrames } = setupQueueSink(sm)
+
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    sess.messages.push(assistant('live', 'u2'))
+    await tick()
+    send(conn, { kind: 'unsubscribe', sessionId: 's1' })
+    await tick()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+
+    await ws.releaseAll()
+
+    const frames = wireFrames()
+    const live = frames.find((f) => f.kind === 'message')
+    expect(live).toBeDefined()
+    expect(frames.filter((f) => f.kind === 'replay-done')).toHaveLength(1)
+    expect(ws.closeCalls).toHaveLength(0)
   })
 })

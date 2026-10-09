@@ -380,17 +380,58 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
   }
 }
 
+/** Keep-first uuid dedup over a REPLAY_REPLACE payload. A single
+ *  server-built burst is a contiguous ring slice and never repeats a uuid —
+ *  the only shape that does is a superseded-burst concatenation
+ *  ([older-burst-prefix][newer-full-burst], produced by the server's
+ *  write-queue supersede, see server/replay-bursts.ts), whose overlap the
+ *  cache-split below cannot see (it only splits against the cache, not
+ *  within the payload). Without this, a cold store renders the overlap
+ *  twice. Two-pass: the first scan exits without rebuilding when every
+ *  uuid is unique (the overwhelmingly common case); uuid-less frames can
+ *  never collide and are always kept. Exported for tests (same pattern as
+ *  splitReplayAgainstCache). */
+export function dedupeReplayPayload(messages: SdkMessage[]): SdkMessage[] {
+  const uuids = new Set<string>()
+  let hasDup = false
+  for (const m of messages) {
+    const u = typeof m?.uuid === 'string' ? m.uuid : null
+    if (u == null) continue
+    if (uuids.has(u)) {
+      hasDup = true
+      break
+    }
+    uuids.add(u)
+  }
+  if (!hasDup) return messages
+  const kept = new Set<string>()
+  const out: SdkMessage[] = []
+  for (const m of messages) {
+    const u = typeof m?.uuid === 'string' ? m.uuid : null
+    if (u == null) {
+      out.push(m)
+      continue
+    }
+    if (kept.has(u)) continue
+    kept.add(u)
+    out.push(m)
+  }
+  return out
+}
+
 function replayReplace(
   prevState: SessionState,
   messages: SdkMessage[],
   permissions: PermissionRequest[],
 ): SessionState {
+  // Dedup BEFORE anything reads the payload — see dedupeReplayPayload.
+  const payload = dedupeReplayPayload(messages)
   const prevMirror = prevState.mirror
   // If the server replay is empty but we already have cached messages
   // (from localStorage), keep the cache as a fallback. This prevents
   // blank screens when the server's history ring has been trimmed or
   // the session was garbage collected.
-  if (messages.length === 0 && prevMirror.items.length > 0) {
+  if (payload.length === 0 && prevMirror.items.length > 0) {
     return withMirror(prevState, { ...prevMirror, replayReady: true })
   }
   // Replay on top of an existing (cached) transcript. The replay payload can
@@ -410,8 +451,8 @@ function replayReplace(
   // already dedups it correctly (prependMessages for older, applyMessage for
   // newer, drop the overlap). This makes the merge correct regardless of how
   // the server happened to slice — no reliance on sinceUuid landing cleanly.
-  if (messages.length > 0 && prevMirror.items.length > 0) {
-    const { older, newer } = splitReplayAgainstCache(messages, prevMirror.items)
+  if (payload.length > 0 && prevMirror.items.length > 0) {
+    const { older, newer } = splitReplayAgainstCache(payload, prevMirror.items)
     // Preserve an in-progress turn's accumulated text across a benign
     // reconnect / panel-switch-back replay. The live turn's partial text lives
     // ONLY in `liveTurn` — stream_event deltas never enter the history ring
@@ -445,9 +486,9 @@ function replayReplace(
     // this, the next reconnect's sinceUuid misses the ring and the server
     // re-sends the same full replay on every reconnect until a live message
     // happens to land.
-    if (older.length === 0 && newer.length === 0 && messages.length > 0) {
-      const lastUuid = typeof messages[messages.length - 1].uuid === 'string'
-        ? (messages[messages.length - 1].uuid as string)
+    if (older.length === 0 && newer.length === 0 && payload.length > 0) {
+      const lastUuid = typeof payload[payload.length - 1].uuid === 'string'
+        ? (payload[payload.length - 1].uuid as string)
         : null
       if (lastUuid && state.mirror.lastMessageUuid !== lastUuid) {
         state = withMirror(state, { ...state.mirror, lastMessageUuid: lastUuid })
@@ -458,7 +499,7 @@ function replayReplace(
     if (finalLen < prevLen) {
       console.warn(
         `[replayReplace] MERGE: items shrunk ${prevLen} → ${finalLen} ` +
-        `(replay=${messages.length}, older=${older.length}, newer=${newer.length})`,
+        `(replay=${payload.length}, older=${older.length}, newer=${newer.length})`,
       )
     }
     // Never synthesize a turn end while merging a replay into an existing
@@ -484,15 +525,15 @@ function replayReplace(
   for (const permission of permissions) {
     working = reduceSessionState(working, { type: 'PERMISSION_REQUEST', request: permission })
   }
-  for (const message of messages) {
+  for (const message of payload) {
     working = applyMessage(working, message)
   }
   // A fresh replay without result frames is swept only when every frame came
   // from the persisted CLI transcript. A new tab can subscribe to a live
   // session mid-turn with an empty client cache; that fresh in-memory replay
   // also has no result yet and must preserve a running synchronous subagent.
-  const isDiskReplay = messages.length > 0 && messages.every((m) => m.restoredFromDisk === true)
-  const sweptMirror = isDiskReplay && !messages.some((m) => m.type === 'result')
+  const isDiskReplay = payload.length > 0 && payload.every((m) => m.restoredFromDisk === true)
+  const sweptMirror = isDiskReplay && !payload.some((m) => m.type === 'result')
     ? sweepAtTurnEnd(working.mirror)
     : working.mirror
   return withMirror(prevState, { ...sweptMirror, replayReady: true })
