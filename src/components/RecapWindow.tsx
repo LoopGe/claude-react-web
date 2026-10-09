@@ -174,7 +174,18 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
         </button>
       </div>
       <div className="recap-window-body" ref={setBodyOs}>
-        <div key={recap.status} className="recap-window-body-inner">
+        {/* Key includes generatedAt so a freshly-GENERATED summary (same
+            'ready' status, new generation) remounts and replays the per-block
+            reveal; pending carries no generatedAt (key 'pending:'). The
+            -ready class opts the mounted summary out of the whole-body
+            recap-body-in fade — the reveal is per-block there, and the two
+            fades would multiply into mush. */}
+        <div
+          key={`${recap.status}:${recap.generatedAt ?? ''}`}
+          className={`recap-window-body-inner${
+            recap.status === 'ready' ? ' recap-window-body-ready' : ''
+          }`}
+        >
           {recap.status === 'pending' ? (
             <div className="recap-msg-loading-body">
               <span className="recap-msg-loading-bar" aria-hidden />
@@ -192,9 +203,30 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
 })
 
 function RecapBody({ recap }: { recap: SessionRecap }) {
+  const revealRef = useRef<HTMLDivElement>(null)
+  // Index each top-level markdown block for the staggered reveal: CSS reads
+  // --i as the animation-delay multiplier (see .recap-reveal in
+  // overlays.css). The wrapper remounts on every fresh generation
+  // (body-inner key = status:generatedAt), so the pass — and the reveal —
+  // replays per summary. Runs pre-paint in a layout effect, so no block is
+  // ever painted at full opacity before its delay comes up. Keyed on the
+  // summary too: a ready frame that arrives summary-less (defensive server
+  // frame) then gains one with the SAME generatedAt must re-index, or the
+  // stagger collapses into a simultaneous flash.
+  useLayoutEffect(() => {
+    const root = revealRef.current
+    if (!root) return
+    Array.from(root.querySelectorAll('.md > *')).forEach((el, i) => {
+      ;(el as HTMLElement).style.setProperty('--i', String(i))
+    })
+  }, [recap.summary])
   // status === 'ready' — summary may still legitimately be missing if the
   // server constructed the ready frame defensively; bail rather than render a
   // half-card.
   if (!recap.summary) return null
-  return <Markdown text={recap.summary} />
+  return (
+    <div ref={revealRef} className="recap-reveal">
+      <Markdown text={recap.summary} />
+    </div>
+  )
 }

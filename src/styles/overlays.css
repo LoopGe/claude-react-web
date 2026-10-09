@@ -535,23 +535,43 @@
   line-height: 1.5;
   color: var(--fg);
 }
-/* When the recap status changes (pending → ready), the body content
-   re-mounts via key={status}. Fade it in so the height change reads as
-   a smooth reveal rather than a snap. */
-.recap-window-body-inner {
+/* When the recap status changes (pending → ready) or a fresh generation
+   lands, the body content re-mounts via key={status:generatedAt}. The
+   whole-body fade covers pending and error; the ready body opts out via
+   .recap-window-body-ready — its reveal is per-block (see .recap-reveal
+   below), and the two fades would multiply into mush. */
+.recap-window-body-inner:not(.recap-window-body-ready) {
   animation: recap-body-in var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 @keyframes recap-body-in {
   from { opacity: 0; }
   to   { opacity: 1; }
 }
+/* Per-block reveal of a freshly generated recap summary: each top-level
+   markdown block fades in and rises 6px, staggered by the --i index that
+   RecapBody's layout effect paints onto every .md child. The delay cap
+   keeps a long summary's last block landing within ~0.5s of the first —
+   the reveal is an accent, not a progress bar. */
+@keyframes recap-block-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.recap-reveal .md > * {
+  animation: recap-block-in var(--motion-duration-moderate) var(--motion-ease-standard) both;
+  animation-delay: min(calc(var(--i, 0) * 45ms), 480ms);
+}
 .recap-window-error {
   color: var(--danger-text);
   font-size: var(--fs-sm);
 }
 @media (prefers-reduced-motion: reduce) {
+  /* The body entry must mirror the base rule's :not() — the media query
+     doesn't raise specificity, so a plain .recap-window-body-inner here
+     would lose to the (0,2,0) base rule and reduced-motion users would
+     still get the fade. */
   .recap-window,
-  .recap-window-body-inner,
+  .recap-window-body-inner:not(.recap-window-body-ready),
+  .recap-reveal .md > *,
   .pinned-user-message { animation: none; }
   /* Mirror the transcript's reduced-motion clear: no animation; element stays
      visible (blur-only — no veil hides it now). Normal open/close is snapped

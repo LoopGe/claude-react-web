@@ -41,6 +41,37 @@ describe('RecapWindow', () => {
     expect(root?.className).toContain('recap-window-clearing')
   })
 
+  it('indexes markdown blocks for the staggered reveal', () => {
+    const { container } = render(
+      <RecapWindow
+        recap={{ ...readyRecap(), summary: 'First paragraph.\n\nSecond paragraph.' }}
+        onClose={() => {}}
+      />,
+    )
+    const blocks = container.querySelectorAll('.recap-reveal .md > *')
+    expect(blocks.length).toBe(2)
+    // The layout effect must have painted --i onto every block pre-paint —
+    // the CSS stagger (animation-delay: calc(var(--i) * 45ms)) reads it.
+    expect((blocks[0] as HTMLElement).style.getPropertyValue('--i')).toBe('0')
+    expect((blocks[1] as HTMLElement).style.getPropertyValue('--i')).toBe('1')
+  })
+
+  it('remounts the body on a fresh generation so the reveal replays', () => {
+    const { container, rerender } = render(<RecapWindow recap={readyRecap()} onClose={() => {}} />)
+    const firstReveal = container.querySelector('.recap-reveal')
+    expect(firstReveal).not.toBeNull()
+
+    rerender(<RecapWindow recap={{ ...readyRecap(), generatedAt: 2 }} onClose={() => {}} />)
+
+    // Same 'ready' status, new generatedAt — the body must have been
+    // REMOUNTED (old wrapper disconnected), not patched in place: the
+    // per-block reveal and the height tween both key off this remount.
+    expect(firstReveal?.isConnected).toBe(false)
+    const blocks = container.querySelectorAll('.recap-reveal .md > *')
+    expect(blocks.length).toBeGreaterThan(0)
+    expect((blocks[0] as HTMLElement).style.getPropertyValue('--i')).toBe('0')
+  })
+
   it('keeps the window mounted through the exit animation, then unmounts (AnimatePresence)', async () => {
     // Open/close motion is now driven by motion.div + AnimatePresence (the
     // old isExiting/data-state="closing" prop is gone). This is a smoke test
