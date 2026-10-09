@@ -1053,12 +1053,15 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
   // The SDK's enabledPlugins expects the "plugin@marketplace" compound key
   // (see MpStore.keyOf). When an MpStore is available we resolve the bare
   // URL-segment name to that format so the control_request actually matches.
+  // materialize: true pins the post-toggle spawn set onto the session's
+  // enabledPlugins subset — the durable per-session truth source (the global
+  // marketplace toggle's live ripple deliberately does NOT materialize).
   app.post('/sessions/:id/plugins/:name/toggle', async (c) => {
     const body = await safeJson<{ enabled?: boolean }>(c.req)
     if (typeof body.enabled !== 'boolean') return c.json({ error: 'enabled (boolean) is required' }, 400)
     const bare = c.req.param('name')
     const pluginKey = mpStore?.resolveCompoundKey(bare) ?? bare
-    const info = await sm.togglePlugin(c.req.param('id'), pluginKey, body.enabled)
+    const info = await sm.togglePlugin(c.req.param('id'), pluginKey, body.enabled, { materialize: true })
     return c.json({ session: info })
   })
 

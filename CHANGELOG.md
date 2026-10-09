@@ -19,6 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Per-session plugin toggles are now durable** — the Plugins tab's
+  Enable/Disable button (`POST /sessions/:id/plugins/:name/toggle`) no longer
+  records an ephemeral, refresh-losing override: the post-toggle spawn set is
+  materialized onto the session's `enabledPlugins` subset (an unpinned session
+  resolves it against the current global enabled list; an already-pinned one
+  flips membership), persisted on `SessionMeta`, and mirrored back through the
+  session-update feed — so the Plugins tab cards derive their initial dot from
+  recorded truth instead of "always enabled", and the empty-state plugin chips
+  render the pinned set directly. The SDK's `applyFlagSettings` stays
+  write-only, so this app-side recording is the only per-session truth source.
+  A toggle that changes nothing (disabling an already-absent key) deliberately
+  leaves the session unpinned, and the global marketplace toggle's live ripple
+  still never pins: those sessions keep following the global list via
+  spawn-time injection. A plugin pinned on while globally disabled is a
+  live-only state — spawn injection drops keys that are not globally enabled.
+  The card dot for an unpinned session renders as a hollow "follows
+  marketplace" ring instead of claiming enabled/disabled.
 - **New-session "Project" picker** — the New session dialog's free-text
   *Working directory* field is now a Desktop-style dropdown: the trigger shows
   the project name and its parent directory, and the menu lists the current

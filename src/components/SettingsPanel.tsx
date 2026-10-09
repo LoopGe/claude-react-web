@@ -1869,6 +1869,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               commands={group.commands}
               agents={group.agents}
               sessionId={session.id}
+              sessionEnabledPlugins={session.enabledPlugins}
               disabled={busy || session.terminated}
             />
           ))}
@@ -2290,6 +2291,7 @@ function PluginCard({
   commands,
   agents,
   sessionId,
+  sessionEnabledPlugins,
   disabled,
 }: {
   name: string
@@ -2297,13 +2299,25 @@ function PluginCard({
   commands: SlashCommand[]
   agents: AgentInfo[]
   sessionId?: string
+  /** The session's materialized plugin subset (SessionInfo.enabledPlugins).
+   *  Undefined = spawn contract "all enabled" → every loaded plugin starts
+   *  enabled; an explicit array is the durable per-session truth recorded by
+   *  the server's materialized toggle (the SDK offers no state read-back).
+   *  Key match is by `${name}@` prefix — compound keys are
+   *  `<plugin>@<marketplace>`, and a trailing `@` can't false-positive on a
+   *  different plugin name. */
+  sessionEnabledPlugins?: string[]
   disabled?: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
-  // The SDK doesn't expose enabled state, so we default to true and let the
-  // user toggle. After a page refresh the toggle resets — acceptable since
-  // the session-level override is ephemeral anyway.
-  const [enabled, setEnabled] = useState(true)
+  // Initial state derives from the materialized subset when present; after a
+  // toggle the optimistic local state stays the source of truth until this
+  // card remounts (tab re-entry) and re-derives from the session's subset.
+  const [enabled, setEnabled] = useState<boolean>(() =>
+    sessionEnabledPlugins === undefined
+      ? true
+      : sessionEnabledPlugins.some((k) => k === name || k.startsWith(`${name}@`)),
+  )
   const [toggling, setToggling] = useState(false)
   const toast = useToast()
 
@@ -2326,12 +2340,22 @@ function PluginCard({
   }
 
   const isBuiltin = name === 'Built-in'
+  // Undefined subset = the session follows the marketplace toggle (its live
+  // state is NOT observable client-side — the global ripple applies live
+  // without materializing). A filled dot would claim on/off either way, so
+  // the follow state renders as a hollow ring that asserts nothing.
+  const followGlobal = !isBuiltin && sessionEnabledPlugins === undefined
   const dotColor = isBuiltin || enabled ? 'var(--plugin-active)' : 'var(--plugin-inactive)'
 
   return (
     <div className="settings-card">
       <div className="settings-card-head">
-        <span className="settings-card-dot" style={{ '--dot': dotColor } as CSSProperties} />
+        <span
+          className="settings-card-dot"
+          style={{ '--dot': dotColor } as CSSProperties}
+          data-follow={followGlobal || undefined}
+          title={followGlobal ? 'Follows the marketplace enable state' : undefined}
+        />
         <span className="settings-card-name">{name}</span>
         {plugin?.source && (
           <span className="settings-card-badge">{plugin.source}</span>

@@ -91,6 +91,7 @@ import {
   type DebugSessionDetail,
   endAllSubscribers,
 } from './session-types.js'
+import type { MpStore } from './mp-store.js'
 import type { ClientDebugAnswer, ClientDebugOp } from '../shared/client-debug.js'
 import type { WsClientDebugRequest } from '../shared/ws-protocol.js'
 import { HttpError, controlHttpError, type ControlWrapOpts } from './errors.js'
@@ -614,6 +615,10 @@ export class SessionManager {
    *  appendPatch) share one writer per session. */
   private snapshots: SnapshotService
   private mcpStore?: McpConfigStore
+  /** Global marketplace plugin store. Held for togglePlugin's materialization
+   *  (resolving the session's spawn set when enabledPlugins is undefined) —
+   *  the providers get their own reference for spawn-time path injection. */
+  private mpStore?: MpStore
   private agentStore?: AgentDefinitionStore
   private providers: ProviderRegistry
   private defaultProvider: string
@@ -701,6 +706,7 @@ export class SessionManager {
       maxUntrackedBytes: defaultConfig.fileSnapshotsMaxUntrackedBytes,
     })
     this.mcpStore = opts.mcpConfigStore ?? new McpConfigStore()
+    this.mpStore = opts.mpStore
     this.agentStore = opts.agentStore
     this.providers = opts.providers ?? createDefaultProviders({
       claudeBinary: opts.claudeBinary,
@@ -4669,12 +4675,43 @@ export class SessionManager {
     return this.info(s)
   }
 
-  async togglePlugin(id: string, pluginName: string, enabled: boolean): Promise<SessionInfo> {
+  /** Toggle a marketplace plugin for a session. Two layers:
+   *  1. LIVE — applyFlagSettings({ enabledPlugins: { key: enabled } }) flips
+   *     the plugin in the running subprocess (always, both paths).
+   *  2. MATERIALIZED (opts.materialize, per-session route only) — record the
+   *     post-toggle spawn set onto the session's enabledPlugins subset so the
+   *     client gets a durable per-session truth source (the SDK's
+   *     applyFlagSettings is write-only — no state read-back exists). The
+   *     base list resolves the spawn contract: `undefined` = the global
+   *     enabled list at toggle time, an explicit array = the pinned subset.
+   *     The global-ripple path (applyToggleToLiveSessions) passes no flag —
+   *     pinning every live session to the toggle-time global state would
+   *     freeze them against future global changes; their next spawn picks up
+   *     the global state via spawn-time injection instead.
+   *  Without an mpStore there is no global list to resolve and spawn
+   *  injection is a no-op anyway — materializing would record a lie, so the
+   *  override stays live-only.
+   *  Note: getEnabledPluginAbsolutePathsFor drops keys that are not
+   *  globally enabled at spawn time, so a per-session enable of a
+   *  globally-disabled plugin is a live-only state (recorded, but not
+   *  injected on respawn) — the marketplace tab governs the global axis. */
+  async togglePlugin(id: string, pluginName: string, enabled: boolean, opts?: { materialize?: boolean }): Promise<SessionInfo> {
     return this.applyFlagSettingAndPersist(
       id,
       { enabledPlugins: { [pluginName]: enabled } },
       'plugins',
-      () => {},
+      (s) => {
+        if (!opts?.materialize || !this.mpStore) return
+        const base = s.enabledPlugins !== undefined
+          ? [...s.enabledPlugins]
+          : this.mpStore.enabledPluginEntries().map((e) => e.key)
+        // A content no-op (enabling a present key / disabling an absent one)
+        // must NOT pin: an unpinned session follows the global list, and
+        // freezing it to the toggle-time set would silently cut it off from
+        // future global ripples.
+        if (base.includes(pluginName) === enabled) return
+        s.enabledPlugins = enabled ? [...base, pluginName] : base.filter((k) => k !== pluginName)
+      },
       'supportsPlugins',
     )
   }

@@ -4,7 +4,7 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import { ToastHost } from './ToastHost'
 import { ToastProvider } from './ToastProvider'
 import { SettingsPanel } from './SettingsPanel'
-import type { SessionInfo } from '../types'
+import type { SessionInfo, SlashCommand } from '../types'
 
 vi.mock('../hooks/useApi', () => ({
   api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
@@ -43,12 +43,15 @@ function renderPanel(opts: {
   session?: SessionInfo
   globalPrefs?: Record<string, unknown>
   /** Tab to deep-link into. Defaults to 'mcp' (the historical callers). */
-  tab?: 'general' | 'appearance' | 'mcp' | 'context' | 'skills'
+  tab?: 'general' | 'appearance' | 'mcp' | 'context' | 'skills' | 'plugins'
+  /** Plugin-tab tests feed a command so a plugin group renders. */
+  commands?: SlashCommand[]
 }) {
   return render(
     <ToastProvider>
       <SettingsPanel
         session={opts.session ?? mkSession()}
+        commands={opts.commands}
         globalPrefs={
           {
             showPinnedUserMessage: true,
@@ -1006,5 +1009,88 @@ describe('SettingsPanel grouped tab nav', () => {
     await waitFor(() => expect(activeLeaf(container)).toBe('General'))
     clickBtn(() => groupBtns(container), 'Integrations')
     await waitFor(() => expect(activeLeaf(container)).toBe('Plugins'))
+  })
+})
+
+describe('SettingsPanel plugins tab — per-session enabled state', () => {
+  /** A command tagged `(plugA)` / `(plugB)` groups it under that plugin —
+   *  the tag must ALSO appear in the reloadPlugins response (pluginNames),
+   *  else keyFor() classifies it built-in. */
+  const taggedCommand = (plugin: string) => ({
+    name: `skill-${plugin}`,
+    description: `(${plugin}) A bundled skill`,
+    argumentHint: '',
+  }) as unknown as SlashCommand
+
+  const renderPluginsTab = (session: SessionInfo) => {
+    const panel = renderPanel({
+      session,
+      tab: 'plugins',
+      commands: [taggedCommand('plugA'), taggedCommand('plugB')],
+    })
+    const dotEl = (cardName: string) =>
+      [...panel.container.querySelectorAll('.settings-card')]
+        .find((el) => el.querySelector('.settings-card-name')?.textContent === cardName)
+        ?.querySelector<HTMLElement>('.settings-card-dot')
+    return {
+      ...panel,
+      // Cards only exist once the reload POST has landed (it supplies the
+      // plugin name→meta map).
+      open: async () => {
+        const reload = [...panel.container.querySelectorAll('button')].find(
+          (b) => b.textContent === 'Reload plugins',
+        )!
+        fireEvent.click(reload)
+        await waitFor(() => expect(panel.container.textContent).toContain('plugA'))
+      },
+      dotVar: (cardName: string) => dotEl(cardName)?.style.getPropertyValue('--dot'),
+      dotFollows: (cardName: string) => dotEl(cardName)?.hasAttribute('data-follow') ?? false,
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      if (url === '/profiles') return Promise.resolve({ profiles: [] })
+      if (url === '/config') return Promise.resolve({ models: [] })
+      return Promise.resolve({})
+    })
+    ;(api.post as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/plugins/reload')) {
+        return Promise.resolve({
+          result: {
+            plugins: [
+              { name: 'plugA', path: '/fake/plugA' },
+              { name: 'plugB', path: '/fake/plugB' },
+            ],
+          },
+        })
+      }
+      return Promise.resolve({})
+    })
+  })
+
+  it('derives the initial dot from the materialized session subset (plugA pinned on, plugB off)', async () => {
+    const view = renderPluginsTab(
+      { id: 's1', running: true, terminated: false, enabledPlugins: ['plugA@mp1'] } as unknown as SessionInfo,
+    )
+    await view.open()
+    expect(view.dotVar('plugA')).toBe('var(--plugin-active)')
+    expect(view.dotFollows('plugA')).toBe(false)
+    expect(view.dotVar('plugB')).toBe('var(--plugin-inactive)')
+    expect(view.dotFollows('plugB')).toBe(false)
+  })
+
+  it('renders an undefined subset as the hollow follows-marketplace dot, not a state claim', async () => {
+    // The unpinned session follows the marketplace toggle — its live state is
+    // not observable client-side (the global ripple applies live without
+    // materializing), so the dot must assert nothing.
+    const view = renderPluginsTab({ id: 's1', running: true, terminated: false } as unknown as SessionInfo)
+    await view.open()
+    expect(view.dotFollows('plugA')).toBe(true)
+    expect(view.dotFollows('plugB')).toBe(true)
   })
 })

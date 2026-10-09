@@ -5546,6 +5546,98 @@ describe('plugin subset selection', () => {
     } as any)
     expect(mockHandles[0].options.enabledPlugins).toBeUndefined()
   })
+
+  // ── per-session toggle materialization ────────────────────────────
+  // The SDK offers no read-back of enabledPlugins state (applyFlagSettings is
+  // write-only), so the app layer records the override: a MATERIALIZED toggle
+  // resolves the session's spawn set (undefined = the global enabled list) and
+  // pins the post-toggle list onto SessionMeta.enabledPlugins, giving the
+  // client a durable per-session truth source that survives refresh/respawn.
+
+  it('togglePlugin({ materialize }) on an all-enabled session resolves the global list minus the disabled key', async () => {
+    const info = sm.create({ cwd: dir } as any)
+    await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), false, { materialize: true })
+    // The live switch still forwards to the Query.
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
+      enabledPlugins: { [MpStore.keyOf('plugA', 'mp1')]: false },
+    })
+    const expected = [MpStore.keyOf('plugB', 'mp1')]
+    expect(sm.get(info.id)?.enabledPlugins).toEqual(expected)
+    expect(store.get(info.id)?.enabledPlugins).toEqual(expected)
+  })
+
+  it('togglePlugin({ materialize }) enabling an already-enabled key on an unpinned session leaves it unpinned', async () => {
+    // Content no-op on the resolved base list: the key is already on, the
+    // session follows the global list, so there is nothing to pin.
+    const info = sm.create({ cwd: dir } as any)
+    await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), true, { materialize: true })
+    expect(sm.get(info.id)?.enabledPlugins).toBeUndefined()
+  })
+
+  it('togglePlugin({ materialize }) re-enabling a key on a pinned session appends it to the subset', async () => {
+    const info = sm.create({
+      cwd: dir,
+      enabledPlugins: [MpStore.keyOf('plugB', 'mp1')],
+    } as any)
+    await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), true, { materialize: true })
+    expect(sm.get(info.id)?.enabledPlugins).toEqual([
+      MpStore.keyOf('plugB', 'mp1'),
+      MpStore.keyOf('plugA', 'mp1'),
+    ])
+    expect(store.get(info.id)?.enabledPlugins).toEqual([
+      MpStore.keyOf('plugB', 'mp1'),
+      MpStore.keyOf('plugA', 'mp1'),
+    ])
+  })
+
+  it('togglePlugin({ materialize }) disabling a key on a pinned session removes it from the subset', async () => {
+    const info = sm.create({
+      cwd: dir,
+      enabledPlugins: [MpStore.keyOf('plugA', 'mp1'), MpStore.keyOf('plugB', 'mp1')],
+    } as any)
+    await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), false, { materialize: true })
+    expect(sm.get(info.id)?.enabledPlugins).toEqual([MpStore.keyOf('plugB', 'mp1')])
+  })
+
+  it('togglePlugin without materialize (global-ripple path) forwards the live switch but leaves the subset untouched', async () => {
+    const info = sm.create({ cwd: dir } as any)
+    await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), false)
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
+      enabledPlugins: { [MpStore.keyOf('plugA', 'mp1')]: false },
+    })
+    // The marketplace ripple must not pin sessions: their next spawn picks up
+    // the global state via spawn-time injection (mp-marketplace.ts contract).
+    expect(sm.get(info.id)?.enabledPlugins).toBeUndefined()
+  })
+
+  it('togglePlugin({ materialize }) that changes nothing leaves the subset undefined (no pin on a no-op)', async () => {
+    // Disabling a key that is not in the resolved global list is a content
+    // no-op — pinning the session to the toggle-time global set would freeze
+    // it against future global ripples for a toggle that changed nothing.
+    const info = sm.create({ cwd: dir } as any)
+    // plugC@mp1 is not a marketplace plugin at all → absent from the base list.
+    await sm.togglePlugin(info.id, MpStore.keyOf('plugC', 'mp1'), false, { materialize: true })
+    expect(sm.get(info.id)?.enabledPlugins).toBeUndefined()
+    expect(store.get(info.id)?.enabledPlugins).toBeUndefined()
+  })
+
+  it('togglePlugin({ materialize }) without an mpStore leaves the subset untouched', async () => {
+    // No mpStore → no global list to resolve and spawn injection is a no-op
+    // anyway (applyStandardQueryOpts guards on mpStore) — materializing would
+    // record a lie.
+    mockHandles.length = 0
+    const smNoMp = new SessionManager({ store })
+    try {
+      const info = smNoMp.create({ cwd: dir } as any)
+      await smNoMp.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), false, { materialize: true })
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
+        enabledPlugins: { [MpStore.keyOf('plugA', 'mp1')]: false },
+      })
+      expect(smNoMp.get(info.id)?.enabledPlugins).toBeUndefined()
+    } finally {
+      await smNoMp.shutdown()
+    }
+  })
 })
 
 describe('provider control-op error wrapping', () => {

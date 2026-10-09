@@ -1735,6 +1735,14 @@ button.tool-group-failed-jump:focus-visible {
   background: var(--dot, var(--fg-muted));
   flex-shrink: 0;
 }
+/* "Follows marketplace" state (plugin cards on unpinned sessions): a hollow
+   ring — neither the active nor the inactive fill, because the live state is
+   not observable client-side and the dot must not claim one. Reuses
+   --fg-muted; no new color token needed. */
+.settings-card-dot[data-follow] {
+  background: transparent;
+  border: 1px solid var(--fg-muted);
+}
 .settings-card-pending {
   display: inline-flex;
   align-items: center;
