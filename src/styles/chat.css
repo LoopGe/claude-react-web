@@ -2411,6 +2411,7 @@ button.chat-empty-env-chip:hover {
 /* Rendered images in message history */
 .msg-image {
   display: block;
+  cursor: zoom-in;
   max-width: min(100%, 600px);
   max-height: 400px;
   /* Note: we used to set `min-height: 80px` to bound CLS during base64
@@ -4140,4 +4141,120 @@ button.chat-empty-env-chip:hover {
   font-weight: 600;
   white-space: pre;
   user-select: none;
+}
+
+/* ── Lightbox (full-screen image viewer) ────────────────────────────────
+   Mounted once by ImageViewerProvider via <Overlay variant="lightbox">
+   (card: null — the .lightbox-stage child IS the interactive card, so there
+   is exactly one). The stage covers the viewport, so backdrop clicks never
+   reach the backdrop element; the stage closes on its own empty-area
+   mousedown (target === currentTarget). The img is laid out at its fit size
+   and moved with translate/scale from useImageZoom, which REQUIRES
+   transform-origin 0 0 — the zoom math anchors against that exact mapping. */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--backdrop-color);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  z-index: var(--z-modal);
+}
+.lightbox-overlay[data-state='open'] {
+  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
+}
+.lightbox-overlay[data-state='closing'] {
+  pointer-events: none;
+  animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+}
+.lightbox-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: grab;
+  /* Pointer-events panning: let the browser hand us the moves instead of
+     scrolling/refresh gestures. */
+  touch-action: none;
+}
+.lightbox-stage.panning {
+  cursor: grabbing;
+}
+.lightbox-img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  /* REQUIRED by the zoom math (src/utils/image-zoom-math.ts) — do not remove. */
+  transform-origin: 0 0;
+  user-select: none;
+  -webkit-user-select: none;
+  border-radius: var(--radius-xs);
+}
+.lightbox-toolbar {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+.lightbox-tool {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--size-28px);
+  min-height: var(--size-28px);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+.lightbox-tool:hover:not(:disabled) {
+  background: var(--btn-hover-bg);
+}
+.lightbox-tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: calc(var(--size-28px) + var(--space-2));
+  min-height: calc(var(--size-28px) + var(--space-2));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-circle, 50%);
+  background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+  color: var(--fg);
+  cursor: pointer;
+}
+.lightbox-nav:hover {
+  background: var(--btn-hover-bg);
+}
+.lightbox-nav-prev {
+  left: var(--space-3);
+}
+.lightbox-nav-next {
+  right: var(--space-3);
+}
+.lightbox-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
 }

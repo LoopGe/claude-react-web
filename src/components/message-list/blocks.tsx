@@ -1,5 +1,6 @@
 import { memo } from 'react'
 import { Markdown } from '../Markdown'
+import { MsgImage } from '../MsgImage'
 import { ToolUseBlock } from '../ToolUseBlock'
 import { ToolResultDetails } from '../ToolCard'
 import { AnimatedDetails } from '../AnimatedCollapse'
@@ -24,14 +25,7 @@ export const BlockView = memo(function BlockView({ block, searchQuery, activeMat
   if (block.type === 'image') {
     const src = imageBlockToDataUrl(block)
     if (src) {
-      return (
-        <img
-          className="msg-image"
-          src={src}
-          alt="pasted image"
-          decoding="async"
-        />
-      )
+      return <MsgImage src={src} alt="pasted image" decoding="async" />
     }
     return <div className="tool-input">[image: invalid]</div>
   }

@@ -9,6 +9,7 @@ import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
 import { SessionCard } from './components/session-list/SessionCard'
 import { api } from './hooks/useApi'
+import { ImageViewerProvider } from './hooks/useImageViewer'
 import { sessionTitleOrFallback } from './utils/session-title'
 import { prefersReducedMotion } from './utils/reduced-motion'
 import { DndContext, pointerWithin, rectIntersection, useDroppable, type Collision, type CollisionDetection, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent, type UniqueIdentifier } from '@dnd-kit/core'
@@ -4377,6 +4378,7 @@ export function App() {
 
   return (
     <ErrorBoundary>
+    <ImageViewerProvider>
     <DndContext
       sensors={dndSensors}
       collisionDetection={appCollisionDetection}
@@ -4967,6 +4969,7 @@ export function App() {
     </div>
     <DragOverlayPortal>{renderDndGhost()}</DragOverlayPortal>
     </DndContext>
+    </ImageViewerProvider>
     </ErrorBoundary>
   )
 }

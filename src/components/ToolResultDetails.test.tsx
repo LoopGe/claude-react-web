@@ -4,8 +4,9 @@
 // text blocks. Runs in jsdom (src/** .tsx).
 
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, fireEvent } from '@testing-library/react'
 import { ToolResultDetails } from './ToolCard'
+import { ImageViewerProvider } from '../hooks/useImageViewer'
 
 afterEach(() => cleanup())
 
@@ -76,5 +77,31 @@ describe('ToolResultDetails images', () => {
     const { container } = render(<ToolResultDetails content={content} />)
 
     expect(container.textContent).toContain('survived')
+  })
+
+  it('opens the viewer grouped over the image run, at the clicked index', () => {
+    // happy-dom decodes data-URL PNGs — fixtures must be real images or the
+    // viewer shows its failure card instead of the img.
+    const PNG_1PX =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+    const content = [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: `${PNG_1PX}#a` } },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: `${PNG_1PX}#b` } },
+    ]
+    const { container } = render(
+      <ImageViewerProvider>
+        <ToolResultDetails content={content} />
+      </ImageViewerProvider>,
+    )
+
+    const imgs = container.querySelectorAll('img.msg-image')
+    expect(imgs).toHaveLength(2)
+    // Click the SECOND image: the viewer opens showing it…
+    fireEvent.click(imgs[1])
+    const viewerImg = document.body.querySelector('img.lightbox-img') as HTMLImageElement
+    expect(viewerImg.getAttribute('src')).toBe(`data:image/png;base64,${PNG_1PX}#b`)
+    // …and prev navigates to the first image of the same run (grouped).
+    fireEvent.click(document.body.querySelector('.lightbox-nav-prev') as HTMLButtonElement)
+    expect((document.body.querySelector('img.lightbox-img') as HTMLImageElement).getAttribute('src')).toBe(`data:image/png;base64,${PNG_1PX}#a`)
   })
 })

@@ -7,8 +7,9 @@
 // urlTransform + the img override end-to-end. Runs in jsdom (src/** .tsx).
 
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, fireEvent } from '@testing-library/react'
 import { Markdown } from './Markdown'
+import { ImageViewerProvider } from '../hooks/useImageViewer'
 
 afterEach(() => cleanup())
 
@@ -63,5 +64,22 @@ describe('Markdown image rendering', () => {
     expect(a).not.toBeNull()
     // defaultUrlTransform strips the unsafe scheme to ''.
     expect(a?.getAttribute('href')).toBe('')
+  })
+
+  it('opens the image viewer when a rendered image is clicked', () => {
+    // happy-dom decodes data-URL PNGs — the fixture must be a real image or
+    // the viewer shows its failure card instead of the img.
+    const PNG_1PX =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+    const { container } = render(
+      <ImageViewerProvider>
+        <Markdown text={`![x](${PNG_1PX})`} />
+      </ImageViewerProvider>,
+    )
+
+    fireEvent.click(container.querySelector('img.msg-image') as HTMLImageElement)
+    const viewerImg = document.body.querySelector('img.lightbox-img')
+    expect(viewerImg).not.toBeNull()
+    expect(viewerImg?.getAttribute('src')).toBe(PNG_1PX)
   })
 })

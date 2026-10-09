@@ -7,6 +7,7 @@
 import { memo, useRef } from 'react'
 import type { ComponentPropsWithoutRef, Ref } from 'react'
 import { defaultUrlTransform, type Components } from 'react-markdown'
+import { MsgImage } from './MsgImage'
 import { useMergedRef } from '../utils/mergedRef'
 import { useCopy } from '../hooks/useCopy'
 
@@ -56,7 +57,7 @@ export const MD_COMPONENTS: Components = {
   img: ({ src, alt, title }: { src?: string; alt?: string; title?: string }) => {
     const s = typeof src === 'string' ? src : ''
     if (s.startsWith('data:image/') || /^https?:\/\//i.test(s)) {
-      return <img className="msg-image" src={s} alt={alt ?? ''} title={title} loading="lazy" decoding="async" />
+      return <MsgImage src={s} alt={alt ?? ''} title={title} loading="lazy" decoding="async" />
     }
     return <span className="md-image-fallback" title={title}>[image{alt ? `: ${alt}` : ''} — {s}]</span>
   },

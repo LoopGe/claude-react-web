@@ -55,6 +55,12 @@ const VARIANT_CLASSES = {
   // first if you ever need that path.
   subagent: { backdrop: 'subagent-overlay', card: null, roleOn: 'backdrop', ariaModal: 'false' },
   workflow: { backdrop: 'workflow-overlay', card: null, roleOn: 'backdrop', ariaModal: 'false' },
+  // Full-viewport image viewer (Lightbox). card: null like settings/git — the
+  // child IS the card (the .lightbox-stage div carries the interactive
+  // handlers), so there is exactly ONE .lightbox-stage element. The stage
+  // covers the viewport, so backdrop clicks never reach the backdrop element;
+  // the stage closes on its own empty-area mousedown instead.
+  lightbox: { backdrop: 'lightbox-overlay', card: null, roleOn: 'backdrop', ariaModal: 'true' },
 } as const
 
 export type OverlayVariant = keyof typeof VARIANT_CLASSES
@@ -76,6 +82,7 @@ const FIXED_BACKDROP_VARIANTS: readonly OverlayVariant[] = [
   'globalSettings',
   'palette',
   'marketplace',
+  'lightbox',
 ]
 
 /** Div props used by both the css-mode <div> and motion-mode <motion.div>

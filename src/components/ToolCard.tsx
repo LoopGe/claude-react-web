@@ -30,6 +30,7 @@ import type { Block } from '../types'
 import { formatJson } from '../utils/format'
 import { truncate, stripAnsi } from '../utils/text'
 import { imageBlockToDataUrl } from '../utils/image-block'
+import { MsgImage } from './MsgImage'
 import { AnsiText } from './AnsiText'
 
 // ---------------------------------------------------------------------------
@@ -286,7 +287,9 @@ function buildToolResultBody(content: unknown): ToolResultBody {
   const blocks = raw as Block[]
   const parts: Array<string | ReactNode> = []
   let textBuf: string[] = []
-  let imgRun: ReactNode[] = []
+  // Image runs are collected as data (not nodes) so the flush can hand the
+  // WHOLE run to each MsgImage as its navigable viewer group.
+  let imgRun: Array<{ src: string }> = []
 
   const flushText = () => {
     if (textBuf.length === 0) return
@@ -298,7 +301,9 @@ function buildToolResultBody(content: unknown): ToolResultBody {
     if (imgRun.length === 0) return
     parts.push(
       <div key={`imgs-${parts.length}`} className="tool-result-images">
-        {imgRun}
+        {imgRun.map((img, i) => (
+          <MsgImage key={i} src={img.src} alt="tool result image" decoding="async" group={imgRun} index={i} />
+        ))}
       </div>,
     )
     imgRun = []
@@ -312,15 +317,7 @@ function buildToolResultBody(content: unknown): ToolResultBody {
     const src = imageBlockToDataUrl(b)
     if (src) {
       flushText()
-      imgRun.push(
-        <img
-          key={imgRun.length}
-          className="msg-image"
-          src={src}
-          alt="tool result image"
-          decoding="async"
-        />,
-      )
+      imgRun.push({ src })
     } else if (b.type === 'text' && typeof b.text === 'string') {
       flushImgs()
       textBuf.push(b.text)
