@@ -23,6 +23,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import type { ProcessExitInfo } from './process-monitor.js'
 import type { AuxLlmTarget } from './anthropic-api.js'
+import { sameCwd } from './cwd-equality.js'
 import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
@@ -6191,11 +6192,26 @@ export class SessionManager {
     })
   }
 
-  async searchMessages(query: string, opts: { limit?: number } = {}): Promise<MessageSearchHit[]> {
+  async searchMessages(
+    query: string,
+    opts: { limit?: number; sessionId?: string; cwd?: string } = {},
+  ): Promise<MessageSearchHit[]> {
     const q = query.trim()
     if (q.length < 2) return []
     const limit = clampSearchLimit(opts.limit)
-    const sessions = this.list()
+    // `sessionId` narrows to one session; `cwd` narrows to sessions spawned in
+    // that directory (first-party history-tools `sameCwdOnly`) — compared via
+    // canonical paths so symlinked spellings of the same dir still match.
+    let sessions = this.list()
+    if (opts.sessionId != null) sessions = sessions.filter((s) => s.id === opts.sessionId)
+    if (opts.cwd != null) {
+      const wanted = opts.cwd
+      const kept = []
+      for (const s of sessions) {
+        if (await sameCwd(s.cwd, wanted)) kept.push(s)
+      }
+      sessions = kept
+    }
 
     // Search sessions in parallel with a concurrency cap to avoid
     // overwhelming the filesystem or event loop.

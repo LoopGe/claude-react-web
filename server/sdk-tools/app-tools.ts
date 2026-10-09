@@ -14,8 +14,8 @@
 
 import { z } from 'zod'
 import { createSdkMcpServer, tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { FirstPartyToolServer } from './types.js'
+import { ok, err, guard } from './call-result.js'
 import { GIT_TOOLS_SERVER_NAME } from '../../shared/first-party.js'
 import {
   getStatus,
@@ -76,28 +76,6 @@ export const gitAppTools: FirstPartyToolServer = {
   buildTools: (cwd) => buildAppToolsTools(cwd ?? ''),
   readOnlyToolNames: APP_TOOLS_READ_ONLY_TOOLS,
   mutatingToolNames: APP_TOOLS_MUTATING_TOOLS,
-}
-
-/** Clean `CallToolResult` for a successful call. */
-function ok(text: string): CallToolResult {
-  return { content: [{ type: 'text', text }] }
-}
-
-/** `CallToolResult` carrying an error message (surfaced to the model, not a
- *  thrown exception that could reject the MCP call / hang the turn). */
-function err(message: string): CallToolResult {
-  return { content: [{ type: 'text', text: message }], isError: true }
-}
-
-/** Shorthand: run a git helper inside the session's try/catch so no handler
- *  can reject the MCP call — HttpError (bad path, conflict, non-repo) and
- *  plain errors both become an `isError:true` text result. */
-async function guard(fn: () => Promise<CallToolResult>): Promise<CallToolResult> {
-  try {
-    return await fn()
-  } catch (e) {
-    return err(e instanceof Error ? e.message : String(e))
-  }
 }
 
 const PATH_LIST = z.array(z.string()).describe('repo-relative paths (no "..", no absolute paths)')

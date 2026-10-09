@@ -18,7 +18,8 @@
 // reading it would be a fake interface.
 
 import { createLogger, enableLogRing } from './log.js'
-import { createDebugAppTools, DEBUG_TOOLS_SERVER_NAME, type DebugHost } from './sdk-tools/app-debug.js'
+import { createDebugAppTools, type DebugHost } from './sdk-tools/app-debug.js'
+import { createHistoryTools, type HistoryHost } from './sdk-tools/history-tools.js'
 import type { FirstPartyToolRegistry } from './sdk-tools/registry.js'
 
 const log = createLogger('dev-mode')
@@ -47,24 +48,28 @@ export interface DevModeDeps {
   /** Injected rather than importing the singleton so tests can pass a fresh
    *  registry — that avoids adding a test-only `unregister` to production. */
   registry: FirstPartyToolRegistry
-  sm: DebugHost
+  /** Both first-party dev servers take a narrow structural slice of
+   *  SessionManager; the real manager satisfies both. */
+  sm: DebugHost & HistoryHost
   /** Log-ring capacity; defaults to 1000 lines. */
   ringCapacity?: number
 }
 
-/** Turn on dev mode: start the log ring and register the `appdebug` server.
- *  Idempotent — the registry rejects duplicate names, so re-entry is guarded.
+/** Turn on dev mode: start the log ring and register the dev-only first-party
+ *  servers (`appdebug`, `history-tools`). Idempotent — the registry rejects
+ *  duplicate names, so re-entry is guarded per server.
  *
  *  Call this BEFORE any session spawns; sessions already running pick the
- *  server up through the existing per-session first-party toggle (which
+ *  servers up through the existing per-session first-party toggle (which
  *  re-runs injection), and dormant ones at their next spawn. */
 export function enableDevMode(deps: DevModeDeps): void {
   enableLogRing(deps.ringCapacity ?? 1000)
-  if (deps.registry.get(DEBUG_TOOLS_SERVER_NAME) !== undefined) return
-  deps.registry.register(createDebugAppTools(deps.sm))
-  log.info(
-    `registered ${DEBUG_TOOLS_SERVER_NAME} (dev runtime) — ` +
-      'read-only: logs, metrics, sessions, session, dom_query, dom_computed_styles, dom_screenshot; ' +
-      'writes (incl. dom_eval) prompt for permission',
-  )
+  for (const server of [createDebugAppTools(deps.sm), createHistoryTools(deps.sm)]) {
+    if (deps.registry.get(server.name) !== undefined) continue
+    deps.registry.register(server)
+    log.info(
+      `registered ${server.name} (dev runtime) — read-only: ` +
+        [...(server.readOnlyToolNames ?? [])].sort().join(', '),
+    )
+  }
 }

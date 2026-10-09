@@ -23,8 +23,8 @@
 
 import { z } from 'zod'
 import { tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { FirstPartyToolServer } from './types.js'
+import { ok, guard, json } from './call-result.js'
 import type { DebugSessionDetail, DebugSessionSummary } from '../session-types.js'
 import type { ClientDebugOp, DomComputedStylesParams, DomEvalParams, DomQueryParams, DomScreenshotParams } from '../../shared/client-debug.js'
 import {
@@ -71,29 +71,6 @@ export interface DebugHost {
    *  tabs and await the first tab's answer. Rejects when no tab is
    *  connected, the executor failed, or the request timed out. */
   clientDebugRequest(op: ClientDebugOp, params: Record<string, unknown>): Promise<unknown>
-}
-
-function ok(text: string): CallToolResult {
-  return { content: [{ type: 'text', text }] }
-}
-
-function err(message: string): CallToolResult {
-  return { content: [{ type: 'text', text: message }], isError: true }
-}
-
-/** Run a handler so no failure can reject the MCP call (a rejection hangs the
- *  turn); every error becomes an `isError` text result instead. */
-async function guard(fn: () => Promise<CallToolResult>): Promise<CallToolResult> {
-  try {
-    return await fn()
-  } catch (e) {
-    return err(e instanceof Error ? e.message : String(e))
-  }
-}
-
-/** Pretty-printed JSON result — what every read tool returns. */
-function json(value: unknown): CallToolResult {
-  return ok(JSON.stringify(value, null, 2))
 }
 
 const LEVEL = z.enum(['error', 'warn', 'info', 'debug', 'trace'])
