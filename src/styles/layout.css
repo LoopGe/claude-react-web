@@ -113,6 +113,181 @@ body.resizing-col .app {
   margin-left: auto;
 }
 
+/* Full-session nav strip in the top header (desktop, sidebar collapsed —
+   see App.tsx render condition). Every session in sidebar order; groups
+   render as a clickable name chip before their member tabs. The strip
+   absorbs the free width between the left chrome cluster and the toolbar
+   and scrolls horizontally, scrollbar hidden.
+   Entrance: fades/slides in when the sidebar collapses (mount = each
+   collapse, since the strip is conditionally rendered), timed to the
+   sidebar's own 240ms grid transition. */
+.session-nav-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  --fade-width: 24px;
+  /* Scroll-position-aware edge fade: --fade-start-w / --fade-end-w come from
+     the component as 0px (no hidden content on that side) or var(--fade-width)
+     (content hidden past that edge). At 0px the gradient's stops coincide and
+     the mask degrades to fully opaque. #000 is the alpha carrier, not a theme
+     colour (same convention as the fold-fade in chat.css). */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--fade-start-w, 0px),
+    #000 calc(100% - var(--fade-end-w, 0px)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 var(--fade-start-w, 0px),
+    #000 calc(100% - var(--fade-end-w, 0px)),
+    transparent 100%
+  );
+  animation: session-nav-strip-in var(--motion-duration-moderate) var(--motion-ease-enter);
+}
+@keyframes session-nav-strip-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--motion-distance-sm)));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-nav-strip {
+    animation: none;
+  }
+}
+.session-nav-strip::-webkit-scrollbar {
+  display: none;
+}
+/* One group's chip + member tabs, separated from the next section by a
+   hairline so group boundaries read at a glance. */
+.session-nav-section {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+  padding-right: var(--space-2);
+  border-right: 1px solid var(--border);
+}
+.session-nav-section:last-child {
+  border-right: none;
+}
+.session-nav-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 var(--space-2);
+  max-width: 140px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.session-nav-chip:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.session-nav-chip.active {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+.session-nav-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 180px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  /* scrollIntoView({inline:'nearest'}) parks the tab flush with the visible
+     edge — inside the fade ramp. This clearance keeps it fully opaque. */
+  scroll-margin-inline: var(--fade-width);
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.session-nav-tab:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.session-nav-tab.active {
+  /* Variant B (user-picked from the visual companion): accent wash + accent
+     ink, no border — a "dye" language against the chip's "outline" language.
+     Wash ratio (14%) matches the sidebar's .group-pill.active so accent
+     intensity stays consistent app-wide. Ink is the accent *text* token
+     (AA-fitted per skin/theme) and the wash mixes against the opaque header
+     surface, so status-ink-contrast.test.ts sees and verifies this plate. */
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
+  color: var(--accent-text);
+}
+/* Hover on the active tab brightens the label instead of deepening the wash —
+   the wash is already at the AA cap for accent ink (same precedent as the
+   chat mode badge, enforced by status-ink-contrast.test.ts). */
+.session-nav-tab.active:hover {
+  color: var(--fg);
+}
+.session-nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* Working pulse (accent) vs unread (bright accent): trailing dots after the
+   label, mirroring the titlebar tab rhythm. */
+.session-nav-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: session-nav-pulse 1.2s ease-in-out infinite;
+}
+@keyframes session-nav-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-nav-dot {
+    animation: none;
+  }
+}
+.session-nav-unread {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  background: var(--accent-bright);
+  flex-shrink: 0;
+}
+
 /* Profile quick-switcher in the top bar. */
 .profile-switcher {
   position: relative;

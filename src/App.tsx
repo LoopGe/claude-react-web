@@ -5,6 +5,7 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SessionList } from './components/SessionList'
+import { SessionNavStrip } from './components/SessionNavStrip'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
 import { SessionCard } from './components/session-list/SessionCard'
@@ -4521,6 +4522,23 @@ export function App() {
             </button>
           )}
           <ProfileSwitcher onManageProfiles={() => setGlobalSettingsOpen(true)} />
+          {/* Full-session nav strip (hosts without a custom titlebar:
+              browser, Linux desktop): while the desktop sidebar is collapsed,
+              every session stays reachable from the header — groups as
+              clickable name chips, sessions as tabs in sidebar order.
+              Clicking routes through the same handler as a sidebar card
+              click. Win/darwin Electron titlebars keep their own
+              always-visible open-panel tabs instead (no double strip). */}
+          {!isMobile && sidebarCollapsed && !hostCaps.customTitlebar && (
+            <SessionNavStrip
+              sections={sidebarSections}
+              focusedId={focusedId}
+              activeGroupId={activeGroupId}
+              unread={unread}
+              onSelect={handleSelectFromSidebar}
+              onActivateGroup={handleActivateGroup}
+            />
+          )}
           {/* Open-panel tabs in the custom titlebar (desktop win/darwin).
               Mirror openSessions — click focuses, × closes, + starts new.
               Sits AFTER the left chrome cluster (☰ / sidebar / profile) so
