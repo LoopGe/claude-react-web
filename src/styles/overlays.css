@@ -269,16 +269,22 @@
 .recap-window {
   /* The frosted card shell (radius / border / fill / blur / shadow) is shared
      with the transcript's bottom-overlay cards — see the "Transcript cards"
-     group in glass.css. Only what differs lives here. */
+     group in glass.css. Only what differs lives here.
+     Deliberately NO `transition: height` here: two different writers touch
+     this property and only one wants a CSS transition. The content-change
+     tween (RecapWindow useLayoutEffect) applies its own inline transition
+     for the tween's lifetime; motion's height-collapse exit and aborted-exit
+     re-entry write height per frame, and an always-on transition would lag
+     every written frame into a rubber-band.
+     Accepted trade-off: flex-driven height changes on this card (the
+     stack's 45% cap engaging under the pinned header, panel resizes) now
+     snap instead of easing — the worse failure was the motion
+     double-interpolation, and the flex cases are rare and single-step. */
   flex: 0 1 auto;
   min-height: 0;
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  /* Height is tweened via JS (RecapWindow useLayoutEffect) between explicit
-     px values on content change; transition the property so the swap reads
-     as a smooth grow/shrink instead of a snap. */
-  transition: height var(--motion-duration-base) var(--motion-ease-standard);
 }
 /* Shared base for the two transcript overlay stacks: one absolutely-anchored
    flex column whose empty area is click-through (each child re-enables
@@ -483,6 +489,10 @@
   animation: clear-blur-fade var(--motion-duration-slow) var(--motion-ease-exit) both;
   pointer-events: none;
 }
+/* (No exit-only companion rule: the height transition is scoped inline to
+   the content tween in RecapWindow, and the collapse itself is clipped by
+   glass.css's at-rest overflow:hidden — unlike the bottom-stack cards whose
+   wrappers need BottomCardMotion's exit-only clip.) */
 .recap-window-header {
   display: flex;
   align-items: center;

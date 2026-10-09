@@ -10,10 +10,10 @@
 
 import { prefersReducedMotion } from '../utils/reduced-motion'
 import { memo, useLayoutEffect, useRef } from 'react'
-import { motion } from 'motion/react'
+import { motion, useIsPresent } from 'motion/react'
 import type { SessionRecap } from '../../shared/session-info'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
-import { useTopBannerMotion } from '../utils/transitions'
+import { useTopBannerMotion, useTopCardMotion } from '../utils/transitions'
 import { Markdown } from './Markdown'
 import { IconSparkles, IconAlertTriangle, IconX } from './icons/ToolIcons'
 
@@ -37,8 +37,44 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
   // as the tween's start point.
   const prevHeightRef = useRef<number | null>(null)
   // Under reduced motion, snap (duration:0) instead of fading — see
-  // useMotionTransition.
+  // useMotionTransition. Normal close is the staggered fade + height collapse
+  // (useTopCardMotion): folding the card's height away progressively reveals
+  // the transcript beneath it instead of popping the covered messages into
+  // view when the node unmounts. The /clear dissolve keeps the old banner
+  // exit — the clear-blur-fade CSS animation owns the look there, and a
+  // height collapse would fight the transcript's own dissolve. banner's
+  // initial/animate go unused (card owns mount), but the hook stays the
+  // single source of the dissolve shape shared with PinnedUserMessage in the
+  // same stack — an inline copy would drift out of sync with it.
   const { banner } = useTopBannerMotion()
+  const { card } = useTopCardMotion()
+  // Presence read inside the AnimatePresence child (this component is one).
+  // isPresentRef below is what the content tween gates on; the flip effect
+  // that follows freezes any mid-flight content tween when the exit starts.
+  // The collapse itself needs no overflow clip — glass.css keeps
+  // .recap-window overflow:hidden at rest.
+  const isPresent = useIsPresent()
+  // Read by the content tween's effect WITHOUT being in its dep array — the
+  // tween is keyed on content only, so an aborted exit's re-entry (isPresent
+  // flip with unchanged content) can't re-run it and erase the inline height
+  // motion is mid-way through re-growing (animate carries height:'auto').
+  // Mirror of MessageList's settlingRef render-time sync pattern.
+  const isPresentRef = useRef(isPresent)
+  if (isPresentRef.current !== isPresent) isPresentRef.current = isPresent
+  // Exit start: motion takes ownership of height (per-frame collapse
+  // writes). A content tween caught mid-flight must not double-interpolate
+  // those writes — freeze the box at its CURRENT (mid-interpolation) height
+  // and drop the inline transition. Dropping the transition alone would let
+  // the box snap to the tween's end px; freezing first hands motion a
+  // seamless start value. (No overflow clip needed: glass.css keeps
+  // .recap-window overflow:hidden at rest.)
+  useLayoutEffect(() => {
+    if (isPresent) return
+    const el = windowRef.current
+    if (!el) return
+    el.style.height = getComputedStyle(el).height
+    el.style.removeProperty('transition')
+  }, [isPresent])
 
   // Animate the window height when the recap content changes (pending →
   // ready, a new ready summary arriving, ready → error). CSS can't transition
@@ -51,6 +87,14 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
   useLayoutEffect(() => {
     const el = windowRef.current
     if (!el) return
+    // On the EXITING ghost the skip is mandatory, not cosmetic: motion owns
+    // the height there (per-frame collapse writes; an exit that starts
+    // mid-tween freezes the box and takes over via the isPresent flip
+    // effect). Skipping the whole body — prevHeightRef bookkeeping included,
+    // since offsetHeight on a collapsing box is the animated height, not the
+    // natural one — and the effect is keyed on content only, so a re-entry
+    // can't re-run it either.
+    if (!isPresentRef.current) return
     const reduceMotion = prefersReducedMotion()
     if (reduceMotion) {
       el.style.height = ''
@@ -68,6 +112,12 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
     // First mount, or no height change — nothing to tween.
     if (prevHeight == null || prevHeight === endHeight) return
 
+    // The height transition is applied INLINE for the tween's lifetime (not
+    // on the base .recap-window rule): motion's exit / aborted-exit re-entry
+    // also write height per frame, and an always-on CSS transition would lag
+    // each written frame into a rubber-band. Scoped here, motion paths run
+    // transition-free and the tween still reads as a smooth grow/shrink.
+    el.style.transition = 'height var(--motion-duration-base) var(--motion-ease-standard)'
     // Freeze at the previous height, commit it with a reflow, then transition
     // to the new height. The reflow between the two writes is what makes the
     // browser register a property change to animate.
@@ -78,11 +128,14 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
     const onEnd = (e: TransitionEvent) => {
       if (e.target !== el || e.propertyName !== 'height') return
       el.style.height = ''
+      el.style.transition = ''
       el.removeEventListener('transitionend', onEnd)
     }
     el.addEventListener('transitionend', onEnd)
     return () => el.removeEventListener('transitionend', onEnd)
     // Content-driven deps: status swap, new summary, or a fresh generation.
+    // Presence is read via isPresentRef (not a dep) — a presence flip alone
+    // must not re-run this effect.
   }, [recap.status, recap.summary, recap.generatedAt])
 
   return (
@@ -91,15 +144,16 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
       className={`recap-window${clearing ? ' recap-window-clearing' : ''}`}
       role="dialog"
       aria-label="Session recap"
-      initial={banner.initial}
-      animate={banner.animate}
-      // Normal close slides up + fades (mirrors the old recap-window-out).
-      // pointerEvents:'none' disables the close button / body scrollbar while
-      // the element fades out — replaces the deleted
-      // [data-state="closing"]{pointer-events:none} CSS rule so the exiting
-      // ghost can't be re-clicked. The /clear dissolve stays CSS-driven
-      // (recap-window-clearing class); motion only owns normal open/close.
-      exit={banner.exit}
+      initial={card.initial}
+      animate={card.animate}
+      // Normal close fades + folds the height away (useTopCardMotion) so the
+      // transcript beneath is revealed progressively. pointerEvents:'none'
+      // disables the close button / body scrollbar while the element fades
+      // out — replaces the deleted [data-state="closing"]{pointer-events:none}
+      // CSS rule so the exiting ghost can't be re-clicked. The /clear
+      // dissolve stays CSS-driven (recap-window-clearing class) with the old
+      // banner exit; motion owns normal open/close.
+      exit={clearing ? banner.exit : card.exit}
     >
       <div className="recap-window-header">
         <span className="recap-window-title">

@@ -16,6 +16,11 @@ import { useReducedMotion } from 'motion/react'
 
 export const ENTER_TRANSITION = { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const }
 export const EXIT_TRANSITION = { duration: 0.12, ease: [0.4, 0, 1, 1] as const }
+// Bare ease arrays for per-key transition configs (motion's per-value
+// `transition` entries take an ease, not a full transition object). Same
+// token mirrors as above — keep in sync with tokens.css.
+const ENTER_EASE = ENTER_TRANSITION.ease
+const EXIT_EASE = EXIT_TRANSITION.ease
 
 // Menu/picker popovers (ContextMenu / EffortSlider / ModelPicker) use
 // --motion-duration-fast (120ms) for BOTH entrance and exit (the ctx-menu-in
@@ -90,9 +95,9 @@ export function usePopoverMotion() {
 }
 
 /**
- * Top slide-down banner motion (PinnedUserMessage / RecapWindow): drops 6px
- * from the top of the chat panel, no scale. Enter is ENTER (180ms), exit is
- * EXIT (120ms).
+ * Top slide-down banner motion (PinnedUserMessage; RecapWindow keeps it only
+ * for its /clear dissolve exit): drops 6px from the top of the chat panel,
+ * no scale. Enter is ENTER (180ms), exit is EXIT (120ms).
  */
 export function useTopBannerMotion() {
   const enter = useMotionTransition(ENTER_TRANSITION)
@@ -102,6 +107,59 @@ export function useTopBannerMotion() {
       initial: { opacity: 0, y: -6, transition: enter },
       animate: { opacity: 1, y: 0, transition: enter },
       exit: { opacity: 0, y: -6, pointerEvents: 'none' as const, transition: exit },
+    },
+  }
+}
+
+/**
+ * Top-overlay card motion (RecapWindow). Mount is the same top-banner drop-in
+ * as useTopBannerMotion (opacity + y:-6, ENTER 180ms); the exit is where it
+ * differs — a STAGGERED fade + height collapse, mirrored from
+ * useBottomCardMotion: the card fades/lifts in ~120ms while its height
+ * collapses over 200ms after a 90ms delay, so the shrinking box never
+ * squashes a still-visible card. The collapse is the point: the recap
+ * overlays the transcript (absolute .chat-top-stack), so folding its height
+ * away progressively reveals the messages beneath instead of popping them in
+ * when the node unmounts. AnimatePresence keeps the node mounted through the
+ * exit and owns the height auto → 0 animation. (No overflow clip is needed
+ * for the collapse: glass.css keeps .recap-window overflow:hidden at rest,
+ * so the shrinking box clips its own content.) Reduced motion snaps
+ * everything to 0.
+ */
+export function useTopCardMotion() {
+  const reduce = useReducedMotion()
+  if (reduce) {
+    return {
+      card: {
+        initial: { opacity: 0 },
+        // height:'auto' restores the natural size when an exit is aborted
+        // mid-collapse (AnimatePresence re-entry) — motion animates its
+        // internal height value back, so no stranded inline height.
+        animate: { opacity: 1, height: 'auto', transition: { duration: 0 } },
+        exit: { opacity: 0, height: 0, transition: { duration: 0 } },
+      },
+    }
+  }
+  return {
+    card: {
+      initial: { opacity: 0, y: -6 },
+      // height:'auto' in animate (vs the bare banner) is what makes an
+      // aborted exit recover: motion re-grows the collapsed height back to
+      // natural instead of leaving the box squashed at its last mid-collapse
+      // value. height: 0 in the exit target is the collapse itself — the
+      // transition entry below does nothing without it.
+      animate: { opacity: 1, y: 0, height: 'auto', transition: ENTER_TRANSITION },
+      exit: {
+        opacity: 0,
+        y: -6,
+        height: 0,
+        pointerEvents: 'none' as const,
+        transition: {
+          opacity: { duration: 0.12, ease: EXIT_EASE },
+          y: { duration: 0.12, ease: EXIT_EASE },
+          height: { duration: 0.2, ease: ENTER_EASE, delay: 0.09 },
+        },
+      },
     },
   }
 }

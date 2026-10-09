@@ -70,6 +70,25 @@
   display: flex;
   flex-direction: column;
 }
+/* One-shot settle when the recap window closes (useRecapSettle toggles the
+   class on close; onAnimationEnd with the keyframe's own name removes it, so
+   the on-time always matches the duration below): the transcript nudges up
+   from +10px so the reveal reads as the messages sliding up into the freed
+   space — paired with RecapWindow's height-collapse exit (useTopCardMotion),
+   which lifts the card itself. Pure transform: no scrollTop is touched, so
+   scroll semantics and Virtuoso's measurements are unaffected. */
+@keyframes transcript-settle-up {
+  from { transform: translateY(10px); }
+  to   { transform: translateY(0); }
+}
+.chat-messages-area-settle {
+  animation: transcript-settle-up var(--motion-duration-moderate) var(--motion-ease-standard) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-messages-area-settle {
+    animation: none;
+  }
+}
 /* Wraps the scroll container in a positioned ancestor so the bottom overlay
    stack can sit on top of it (absolutely positioned). The wrap takes the same
    flex space the inner scroll used to. */

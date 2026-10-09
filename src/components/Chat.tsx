@@ -65,6 +65,7 @@ import { TodoChecklist } from './TodoChecklist'
 import { MonitorBar } from './MonitorBar'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
+import { useRecapSettle } from '../hooks/useRecapSettle'
 import { useScheduledSends } from '../hooks/useScheduledSends'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
@@ -545,6 +546,22 @@ export const Chat = memo(function Chat({
    *  MessageList / MonitorBar. During a local `/clear` fade-in it comes from
    *  App via prop; during an SDK-emitted clear it comes from local state. */
   const effectiveClearing = (clearingProp ?? false) || localClearing
+
+  // ── Transcript settle on recap close ──────────────────────────────────
+  // The RecapWindow overlays the transcript (absolute .chat-top-stack), so
+  // closing it used to pop the covered messages into view with no motion.
+  // RecapWindow now folds its height away on exit (useTopCardMotion); the
+  // settle pairs with that: for one animation the whole message area
+  // translates up from +10px, so the reveal reads as the history sliding up
+  // into the freed space. Only the user close (recapOpen true→false with the
+  // recap data still on the session) gets it — a server invalidation (new
+  // turn) or a /clear moves the transcript for real, and the hook cuts those
+  // off mid-flight too. Opening search over the recap also unmounts it
+  // through the same AnimatePresence exit (collapse included; recapOpen
+  // unchanged) — deliberately no settle, and the window drops back in when
+  // search closes.
+  const { settleActive: recapSettle, handleAnimationEnd: handleRecapSettleEnd } =
+    useRecapSettle(!!recapOpen, !!session.recap, effectiveClearing)
 
   // Permissions first — its onRequest/onResolved are passed into the
   // stream hook so SDK messages and permission events share one WebSocket.
@@ -2147,7 +2164,8 @@ export const Chat = memo(function Chat({
         <SkillProvider value={skillCtxValue}>
         <ReopenQuestionProvider value={reopenCtxValue}>
         <div
-          className="chat-messages-area"
+          className={`chat-messages-area${recapSettle ? ' chat-messages-area-settle' : ''}`}
+          onAnimationEnd={(e) => handleRecapSettleEnd(e.animationName)}
           onContextMenu={(e) => {
             e.preventDefault()
             const selection = window.getSelection()?.toString() ?? ''
