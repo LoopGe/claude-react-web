@@ -1,5 +1,5 @@
-import type { KeyboardEvent, ImgHTMLAttributes } from 'react'
-import { useImageViewerActions, type ViewerImage } from '../hooks/image-viewer-context'
+import type { ImgHTMLAttributes } from 'react'
+import { useImageViewerTrigger, type ViewerImage } from '../hooks/image-viewer-context'
 
 type ImgAttrs = Pick<ImgHTMLAttributes<HTMLImageElement>, 'title' | 'loading' | 'decoding'>
 
@@ -7,7 +7,7 @@ type ImgAttrs = Pick<ImgHTMLAttributes<HTMLImageElement>, 'title' | 'loading' | 
  * The shared message-image renderer — every in-transcript image (markdown
  * references, pasted user images, tool-result screenshots) goes through this
  * one component, keeping the `msg-image` contract (class, no stray props) and
- * wiring the click to the app-wide Lightbox.
+ * wiring the click to the app-wide Lightbox via useImageViewerTrigger.
  *
  * `group`/`index` turn a row of images into one navigable set (e.g. a
  * tool-result screenshot run): clicking the second image opens the viewer ON
@@ -17,8 +17,8 @@ type ImgAttrs = Pick<ImgHTMLAttributes<HTMLImageElement>, 'title' | 'loading' | 
  * The actions context (not the state one) is subscribed deliberately: it is
  * stable for the provider's lifetime, so opening/navigating the viewer never
  * re-renders the hundreds of images a transcript can hold. The image is also
- * keyboard-activatable (role=button + Enter/Space) — the mouse-only click
- * would make the whole viewer unreachable without a pointer.
+ * keyboard-activatable — the mouse-only click would make the whole viewer
+ * unreachable without a pointer.
  */
 export function MsgImage({
   src,
@@ -34,28 +34,21 @@ export function MsgImage({
   /** This image's position within the group. */
   index?: number
 } & ImgAttrs) {
-  const actions = useImageViewerActions()
   // An ancestor link owns the interaction (markdown `[![img](src)](href)`):
   // clicking there follows the link, the viewer must not also fire.
-  const open = (el: Element) => {
-    if (el.closest('a')) return
-    actions.openViewer(group ?? [{ src, alt }], index ?? 0)
-  }
-  const onKeyDown = (e: KeyboardEvent<HTMLImageElement>) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault()
-      open(e.currentTarget)
-    }
-  }
+  const trigger = useImageViewerTrigger(group ?? [{ src, alt }], index ?? 0)
   return (
     <img
       className="msg-image"
       src={src}
       alt={alt ?? ''}
-      role="button"
-      tabIndex={0}
-      onClick={(e) => open(e.currentTarget)}
-      onKeyDown={onKeyDown}
+      {...trigger}
+      onClick={(e) => {
+        if (!e.currentTarget.closest('a')) trigger.onClick()
+      }}
+      onKeyDown={(e) => {
+        if (!e.currentTarget.closest('a')) trigger.onKeyDown(e)
+      }}
       {...attrs}
     />
   )

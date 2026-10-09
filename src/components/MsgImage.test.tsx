@@ -3,12 +3,10 @@
 // through ImageViewerApiContext — opening the viewer on the given group at
 // the given index, and doing nothing (without throwing) outside a provider.
 
-import { describe, it, expect, afterEach } from 'vitest'
-import { render, cleanup, fireEvent, act } from '@testing-library/react'
+import { describe, it, expect } from 'vitest'
+import { render, fireEvent, act } from '@testing-library/react'
 import { MsgImage } from './MsgImage'
 import { ImageViewerProvider } from '../hooks/useImageViewer'
-
-afterEach(cleanup)
 
 // happy-dom decodes data-URL PNGs; fixtures must be real decodable images.
 const PNG_1PX =

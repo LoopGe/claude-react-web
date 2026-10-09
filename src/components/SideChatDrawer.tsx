@@ -15,6 +15,7 @@ import { PermissionDialog } from './PermissionDialog'
 import { RichPromptInput } from './RichPromptInput'
 import { pasteAtCaret } from './richPromptApi'
 import { IconX, IconArrowLeft, IconSendInterruptToggle, IconLoader, IconPaperclip } from './icons/ToolIcons'
+import { ComposerImagePreviews } from './ComposerImagePreviews'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { usePastedImages } from '../hooks/usePastedImages'
@@ -302,21 +303,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
 
       <div className="side-chat-drawer-footer">
         {pastedImages.images.length > 0 && (
-          <div className="image-previews">
-            {pastedImages.images.map((img) => (
-              <div key={img.id} className="image-preview-card">
-                <img src={img.previewUrl} alt="Pasted image" />
-                <button
-                  type="button"
-                  className="image-preview-remove"
-                  onClick={() => pastedImages.removeImage(img.id)}
-                  aria-label="Remove image"
-                >
-                  <IconX size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
+          <ComposerImagePreviews images={pastedImages.images} onRemove={pastedImages.removeImage} />
         )}
         {pastedImages.error && (
           <div className="side-chat-image-error">{pastedImages.error}</div>

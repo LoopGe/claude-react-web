@@ -62,3 +62,28 @@ export function useImageViewer(): ImageViewerApi {
   const actions = useContext(ImageViewerActionsContext)
   return { state, ...actions }
 }
+
+/** The shared interaction wiring for an element that OPENS the viewer on a
+ *  group at an index: role/tabIndex for keyboard reachability plus the
+ *  click/Enter/Space handlers. Single owner so every trigger site (MsgImage,
+ *  composer thumbnails) stays in parity by construction. */
+export function useImageViewerTrigger(group: readonly ViewerImage[], index: number): {
+  role: 'button'
+  tabIndex: 0
+  onClick: () => void
+  onKeyDown: (e: { key: string; preventDefault: () => void }) => void
+} {
+  const actions = useImageViewerActions()
+  const open = () => actions.openViewer(group, index)
+  return {
+    role: 'button',
+    tabIndex: 0,
+    onClick: open,
+    onKeyDown: (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        open()
+      }
+    },
+  }
+}

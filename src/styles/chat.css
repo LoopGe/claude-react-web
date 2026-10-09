@@ -2385,6 +2385,8 @@ button.chat-empty-env-chip:hover {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  /* The thumb is the viewer trigger; the ✕ sibling stays the remove affordance. */
+  cursor: zoom-in;
 }
 .image-preview-remove {
   position: absolute;
@@ -4010,6 +4012,7 @@ button.chat-empty-env-chip:hover {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  /* cursor comes from the base .image-preview-card img rule */
 }
 .side-chat-drawer-footer .image-preview-remove {
   position: absolute;

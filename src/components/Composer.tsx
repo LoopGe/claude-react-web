@@ -14,6 +14,7 @@ import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerS
 import { useToast } from '../hooks/useToast'
 import { writeClipboard } from '../hooks/useCopy'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
+import { ComposerImagePreviews } from './ComposerImagePreviews'
 import { selectionOffsets, placeCaretIn, pasteAtCaret } from './richPromptApi'
 import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
 import { AnimatedCollapse } from './AnimatedCollapse'
@@ -683,21 +684,7 @@ export const Composer = memo(function Composer({
   }
   if (pastedImages.length > 0) {
     composerRows.push(
-      <div className="image-previews" key="image-previews">
-        {pastedImages.map((img) => (
-          <div key={img.id} className="image-preview-card">
-            <img src={img.previewUrl} alt="Pasted image" />
-            <button
-              type="button"
-              className="image-preview-remove"
-              onClick={() => onRemovePastedImage(img.id)}
-              aria-label="Remove image"
-            >
-              <IconX size={12} />
-            </button>
-          </div>
-        ))}
-      </div>,
+      <ComposerImagePreviews key="image-previews" images={pastedImages} onRemove={onRemovePastedImage} />,
     )
   }
   if (bashMode) {

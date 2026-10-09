@@ -7,16 +7,15 @@
 // and fireEvent.load it — exactly what the browser does natively before
 // onLoad fires.
 
-import { describe, it, expect, afterEach, vi } from 'vitest'
-import { cleanup, renderHook, act, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { renderHook, act, fireEvent } from '@testing-library/react'
 import { ImageViewerProvider, useImageViewer } from '../hooks/useImageViewer'
 
 // Exit-presence reads matchMedia (reduced motion) at close time; happy-dom's
 // implementation is fine but the stub keeps the animated-exit path
-// deterministic, matching Overlay.test.tsx.
+// deterministic, matching Overlay.test.tsx. (Cleanup is global — see
+// src/test-setup.ts; don't re-add per-file afterEach(cleanup).)
 vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
-
-afterEach(cleanup)
 
 function setup(images: Parameters<ReturnType<typeof useImageViewer>['openViewer']>[0], index = 0) {
   const { result } = renderHook(() => useImageViewer(), { wrapper: ImageViewerProvider })

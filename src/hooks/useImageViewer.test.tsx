@@ -3,11 +3,9 @@
 // Runs in happy-dom (renderHook). The provider also mounts the Lightbox, so
 // an integration pass (open → image visible → close) lives here too.
 
-import { describe, it, expect, afterEach } from 'vitest'
-import { cleanup, renderHook, act } from '@testing-library/react'
+import { describe, it, expect } from 'vitest'
+import { renderHook, act } from '@testing-library/react'
 import { ImageViewerProvider, useImageViewer } from './useImageViewer'
-
-afterEach(cleanup)
 
 /** Test hook exposing the api and forcing a re-render when it changes. */
 function useProbe(): { api: ReturnType<typeof useImageViewer>; version: number } {

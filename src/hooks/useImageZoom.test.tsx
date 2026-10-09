@@ -7,12 +7,10 @@
 // `transform: translate(tx, ty) scale(s)`. "Centered" therefore means
 // tx = (stageW - fitW) / 2.
 
-import { describe, it, expect, afterEach } from 'vitest'
-import { cleanup, renderHook } from '@testing-library/react'
+import { describe, it, expect } from 'vitest'
+import { renderHook } from '@testing-library/react'
 import { act } from 'react'
 import { useImageZoom } from './useImageZoom'
-
-afterEach(cleanup)
 
 function setViewport(w: number, h: number) {
   const hd = (window as unknown as { happyDOM?: { setViewport?: (v: { width: number; height: number }) => void } }).happyDOM
