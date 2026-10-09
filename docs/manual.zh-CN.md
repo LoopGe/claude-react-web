@@ -78,7 +78,7 @@ npm i -g claude-react-web && claude-react-web
 
 **会话状态徽标**：`working`（正在跑）、`waiting`（回合结束但后台子代理还在跑）、`live`（空闲在线）、`dormant`（已休眠）、`resuming…`、`ended`、`err`。
 
-**会话卡片右键菜单**（全部条目）：`Rename`、`Fork from this point`、`New session like this`、`Restart`、`Sleep (release resources)`、`Move up`/`Move down`、`Remove from group`、`Move to group ▸`、`Copy session ID`、`Copy working directory`、`Close panel`、`Accent colour…`、`Delete session`。
+**会话卡片右键菜单**（全部条目）：`Rename`、`Fork from this point`、`New session like this`、`Restart`、`Sleep (release resources)`、`Move up`/`Move down`、`Remove from group`、`Move to group ▸`、`Copy session ID`、`Copy working directory`、`Close panel`、`Delete session`。
 
 > 小技巧：双击卡片标题即可重命名。
 
@@ -125,7 +125,6 @@ npm i -g claude-react-web && claude-react-web
 | `Model` | 模型，可点最近使用的芯片 |
 | `Permission mode` | 见 [第 5 章](#5-权限与安全) |
 | `Group` | 放进哪个分组；满了的分组会标注 ` — will replace oldest` |
-| `Accent colour` | 该会话的强调色（品牌皮肤下隐藏） |
 | `System prompt (optional)` | 系统提示词 |
 
 展开 **`Advanced options`** 还有：`Effort`、`Thinking`（`adaptive`/`enabled`/`disabled` + `Thinking budget (tokens)`）、`Max turns`、`Max budget (USD)`、`Fallback model`、`Additional directories`、`Allowed tools`、`Disallowed tools`、`Tools`、`MCP servers`、`First-party tools`、`Plugins`、`Session MCP overrides (JSON)`、`Environment variables`。

@@ -1,30 +1,20 @@
 // Theme + accent-colour management.
 //
-// Encapsulates: light/dark/system theme, global accent colour, and
-// per-session accent overrides (which the SessionList colour picker
-// + the New-session dialog feed into).
+// Encapsulates: light/dark/system theme and the global accent colour.
 //
 // Two things this hook deliberately does NOT own:
 //   - notifications: separate concern, separate hook.
 //   - keyboard shortcuts: ditto.
-//
-// Returned `sessionAccentMap` is a Map (referentially stable across
-// renders that don't change `sessionColors`), not a per-call function.
-// ChatPanel is React.memo'd on its props, so a new accent style per
-// render would defeat that — stable map identity preserves the bail-out.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocalStorage } from './useLocalStorage'
 import {
   ACCENT_COLORS,
   ACCENT_COLOR_KEY,
-  SESSION_COLORS_KEY,
   accentStrongFor,
-  buildSessionAccentMap,
   onAccentFor,
 } from '../theme'
-import type { CSSProperties } from 'react'
-import { applySkin, applyTheme, getStoredSkin, getStoredTheme, isAccentLocked, onSystemThemeChange, toggleTheme, type Skin, type Theme } from '../utils/theme'
+import { applySkin, applyTheme, getStoredSkin, getStoredTheme, onSystemThemeChange, toggleTheme, type Skin, type Theme } from '../utils/theme'
 
 export interface UseThemeResult {
   theme: Theme
@@ -37,34 +27,6 @@ export interface UseThemeResult {
   setSkin: (skin: Skin) => void
   accentColor: string
   setAccentColor: (v: string) => void
-  /** Raw per-session accent map (id → hex). Exposed so consumers that
-   *  need a direct lookup (e.g. SessionList passing the current swatch
-   *  to its colour-picker context menu) don't have to allocate over
-   *  the pre-computed `sessionAccentMap`. */
-  sessionColors: Record<string, string>
-  /** Stable Map of per-session accent overrides. Use `.get(sessionId)`
-   *  in render to retrieve the inline `CSSProperties` (or undefined
-   *  when no override exists — caller passes that through to the
-   *  panel root and the global `--accent` cascade applies). */
-  sessionAccentMap: ReadonlyMap<string, CSSProperties>
-  /** Apply (or clear with `color === undefined`) a per-session accent
-   *  override. Writes through localStorage directly before calling
-   *  setState — see in-body comment for the React-19 unmount race
-   *  this guards against. */
-  handleSessionColorChange: (id: string, color: string | undefined) => void
-}
-
-/** Read the session-accent map from localStorage. Used inside
- *  `handleSessionColorChange` to merge with the latest persisted state
- *  rather than the React snapshot, which can be stale when the menu
- *  unmounts in the same tick. */
-function readSessionColors(): Record<string, string> {
-  try {
-    const raw = window.localStorage.getItem(SESSION_COLORS_KEY)
-    return raw ? (JSON.parse(raw) ?? {}) : {}
-  } catch {
-    return {}
-  }
 }
 
 export function useTheme(): UseThemeResult {
@@ -129,10 +91,6 @@ export function useTheme(): UseThemeResult {
     ACCENT_COLOR_KEY,
     ACCENT_COLORS[0].accent,
   )
-  const [sessionColors, setSessionColors] = useLocalStorage<Record<string, string>>(
-    SESSION_COLORS_KEY,
-    {},
-  )
 
   // Sync the chosen accent colour into :root CSS custom properties so the
   // entire stylesheet picks up the change without any further wiring.
@@ -158,43 +116,6 @@ export function useTheme(): UseThemeResult {
     root.setProperty('--on-accent', onAccentFor(accentColor))
   }, [accentColor, skin])
 
-  // Pre-computed per-session accent CSS overrides. Stable references so
-  // ChatPanel's React.memo can skip unchanged panels — recomputing only
-  // when sessionColors itself changes. Pass `skin` so an accent-locking
-  // skin (Anthropic / HC) yields an empty map — its brand accent is then
-  // inherited from the [data-skin] CSS instead of being overridden by
-  // stale per-session inline styles.
-  const sessionAccentMap = useMemo(
-    () => buildSessionAccentMap(sessionColors, skin),
-    [sessionColors, skin],
-  )
-
-  const handleSessionColorChange = useCallback(
-    (id: string, color: string | undefined) => {
-      // Accent-locking skins (Anthropic / HC) forbid per-session accent
-      // overrides — the UI hides the picker, but no-op here too as a
-      // backstop so a stale/programmatic call can't write a colour that
-      // buildSessionAccentMap would then suppress anyway.
-      if (isAccentLocked(skin)) return
-      // Bypass the React state updater. Opening the context menu is the
-      // only way this fires, and clicking a colour unmounts the menu in
-      // the same tick — React 19 may then discard a setState updater
-      // whose resulting state "won't matter" after unmount, exactly like
-      // the rememberIn bug. Write through directly, then sync React state
-      // for the still-mounted SessionList.
-      const curr = readSessionColors()
-      if (color) curr[id] = color
-      else delete curr[id]
-      try {
-        window.localStorage.setItem(SESSION_COLORS_KEY, JSON.stringify(curr))
-      } catch {
-        /* storage full / disabled — in-memory state still reflects it */
-      }
-      setSessionColors(curr)
-    },
-    [setSessionColors, skin],
-  )
-
   return {
     theme,
     toggleThemeNext,
@@ -203,8 +124,5 @@ export function useTheme(): UseThemeResult {
     setSkin,
     accentColor,
     setAccentColor,
-    sessionColors,
-    sessionAccentMap,
-    handleSessionColorChange,
   }
 }

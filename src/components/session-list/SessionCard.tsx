@@ -4,7 +4,6 @@
 // flips during streaming).
 
 import { memo, useEffect, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
 import { usePresenceValue } from '../../hooks/useExitPresence'
 import { shortenPath } from '../../utils/paths'
 import { statusLabel } from '../../utils/session-status'
@@ -29,8 +28,6 @@ export interface SessionCardProps {
   isDeleting: boolean
   /** True when this card's inline rename input is active. */
   isRenaming: boolean
-  /** Pre-computed accent-colour CSS overrides, or undefined for global accent. */
-  accentStyle?: CSSProperties
   /** dnd-kit pointer listeners from the shell's useSortable — the whole card
    *  surface is the drag activator. Spread BEFORE the card's own handlers so
    *  Enter/Space selection keeps precedence over the (unused) keyboard-drag
@@ -71,7 +68,6 @@ export const SessionCard = memo(function SessionCard({
   isDragging,
   isDeleting,
   isRenaming,
-  accentStyle,
   dragListeners,
   onSelect,
   onDelete,
@@ -206,10 +202,8 @@ export const SessionCard = memo(function SessionCard({
         hasUnread ? 'unread' : '',
         isDragging ? 'dragging' : '',
         isDeleting ? 'deleting' : '',
-        accentStyle ? 'tinted' : '',
         `mode-${permissionMode}`,
       )}
-      style={accentStyle}
       role="button"
       tabIndex={0}
       aria-disabled={isResuming || isDeleting}

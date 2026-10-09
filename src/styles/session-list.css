@@ -471,12 +471,6 @@
   .group-pill.dragging { transition: none; }
 }
 
-/* Idle tint for cards that have a per-session accent chosen. The left
-   rail is gone, so the accent is carried by a stronger body wash plus
-   the slot pill (which resolves --accent to this session's colour). */
-.session-item.tinted {
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev-1));
-}
 .session-item.terminated { opacity: 0.6; }
 /* Dormant keeps reduced opacity + the hollow status dot as its identity
    (no dashed border anymore — cards have no real border). */
@@ -635,9 +629,9 @@
   transform-origin: top left;
 }
 /* Entrance/exit motion is now driven by motion.div (initial/animate/exit) in
-   ContextMenu.tsx; the ctx-menu-in keyframe below is kept because .accent-popover
-   and .cmd-picker still reuse it. ctx-menu-out had no remaining users and was
-   removed. */
+   ContextMenu.tsx; the ctx-menu-in keyframe below is kept because .cmd-picker,
+   .appearance-panel and the .field-picker-menu still reuse it. ctx-menu-out
+   had no remaining users and was removed. */
 @keyframes ctx-menu-in {
   from { opacity: 0; transform: scale(var(--motion-scale-enter)) translateY(calc(-1 * var(--motion-distance-sm))); }
   to   { opacity: 1; transform: scale(1) translateY(0); }

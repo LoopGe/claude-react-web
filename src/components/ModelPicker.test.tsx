@@ -74,47 +74,36 @@ describe('ModelPicker', () => {
     expect(props.onClose).toHaveBeenCalledOnce()
   })
 
-  it('carries the session accent onto the portalled root and records its owner', () => {
-    // Portalling leaves behind the container that declares `--accent`
-    // (buildSessionAccentMap writes it inline on .chat-panel), so without the
-    // carry the picker's active row silently reverts to the global accent. The
-    // marker's VALUE is the owning panel id, which is what lets a per-panel
-    // consumer (EasterEggGame) tell this panel's popover from a sibling's.
+  it('records the owning panel id on the portalled root', () => {
+    // Portalling takes the picker out of the panel's subtree, so DOM ancestry
+    // can no longer answer "whose surface is this". The marker's VALUE is the
+    // owning panel id, which is what lets a per-panel consumer (EasterEggGame)
+    // tell this panel's popover from a sibling's.
     const panel = document.createElement('div')
     panel.className = 'chat-panel'
     panel.setAttribute('data-panel-id', 'sess-1')
-    panel.style.setProperty('--accent', 'rgb(255, 102, 204)')
     const chip = document.createElement('button')
     panel.appendChild(chip)
     document.body.appendChild(panel)
     try {
       render(<ModelPicker {...makeProps({ anchor: { x: 0, y: 0, source: chip } })} />)
       const picker = document.querySelector('.model-picker') as HTMLElement
-      expect(picker.style.getPropertyValue('--accent')).toBe('rgb(255, 102, 204)')
       expect(picker.getAttribute('data-portaled')).toBe('sess-1')
     } finally {
       panel.remove()
     }
   })
 
-  it('stamps the marker but writes no accent snapshot for an un-tinted panel', () => {
-    // All three properties are ALSO declared on :root, so reading them through
-    // getComputedStyle would never come back empty and would freeze :root's
-    // value onto every un-tinted popover. Inline-only is what keeps those on the
-    // live cascade.
-    const panel = document.createElement('div')
-    panel.className = 'chat-panel'
+  it('stamps the marker empty for a surface opened outside any panel', () => {
     const chip = document.createElement('button')
-    panel.appendChild(chip)
-    document.body.appendChild(panel)
+    document.body.appendChild(chip)
     try {
       render(<ModelPicker {...makeProps({ anchor: { x: 0, y: 0, source: chip } })} />)
       const picker = document.querySelector('.model-picker') as HTMLElement
-      expect(picker.style.getPropertyValue('--accent')).toBe('')
       // Marked (so the fill remap applies), with no owning panel id to record.
       expect(picker.getAttribute('data-portaled')).toBe('')
     } finally {
-      panel.remove()
+      chip.remove()
     }
   })
 })

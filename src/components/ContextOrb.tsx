@@ -35,7 +35,7 @@ import { useDetailedContextUsage } from '../hooks/useDetailedContextUsage'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { usePopoverMotion } from '../utils/transitions'
-import { applyPortaledThemeVars } from '../theme'
+import { PANEL_SELECTOR, markPortaledSurface } from '../theme'
 
 interface Props {
   usage: ContextUsage | null
@@ -118,7 +118,7 @@ function OrbPopover({
     const el = popRef.current
     const anchor = anchorRef.current
     if (!el || !anchor) return
-    applyPortaledThemeVars(el, anchor)
+    markPortaledSurface(el, anchor.closest(PANEL_SELECTOR))
     const rect = anchor.getBoundingClientRect()
     const vh = window.innerHeight
     const vw = window.innerWidth

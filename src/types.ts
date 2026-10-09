@@ -132,10 +132,6 @@ export interface NewSessionForm {
   mcpServers?: unknown
   /** Custom environment variables merged into the subprocess environment. */
   env?: Record<string, string>
-  /** Frontend-only: chosen accent hex (from theme ACCENT_COLORS). Not
-   *  sent to the server — stored in localStorage keyed by the returned
-   *  session id once creation succeeds. */
-  accent?: string
   /** Frontend-only: target group for the new session. Required. */
   groupId?: string
 }
@@ -273,6 +269,14 @@ export interface SdkMessage {
   parent_tool_use_id?: string | null
   /** Server marker for frames normalized from the CLI's persisted JSONL. */
   restoredFromDisk?: boolean
+  /** Client-only marker stamped by projectMessage when the persist projection
+   *  had to drop an image block from this message's cached copy. The stamped
+   *  flag rides the localStorage/IDB cache and is read at hydrate time
+   *  (SessionSnapshot.cacheHasDroppedMedia): a cache holding degraded copies
+   *  must subscribe WITHOUT the sinceUuid cursor, because an incremental
+   *  replay never re-sends older messages and the full copies could then
+   *  never replace the image-less ones. Never sent to the server. */
+  cacheDroppedMedia?: true
   /** SDK `SDKUserMessage.origin` — the true source of a user-role message.
    *  `kind: 'human'` is genuine human input; `'task-notification'` /
    *  `'peer'` / `'channel'` / `'coordinator'` / `'auto-continuation'` are

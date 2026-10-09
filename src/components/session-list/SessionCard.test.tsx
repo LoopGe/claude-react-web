@@ -429,11 +429,4 @@ describe('SessionCard', () => {
     expect(slot?.classList.contains('pending')).toBe(true)
     expect(slot?.classList.contains('focused')).toBe(true)
   })
-
-  it('applies tinted class when accentStyle is provided', () => {
-    const accentStyle = { '--accent': '#ff0000', '--accent-strong': '#cc0000' } as React.CSSProperties
-    const { container } = render(<SessionCard {...baseProps} accentStyle={accentStyle} />)
-    const card = container.querySelector('.session-item')
-    expect(card?.classList.contains('tinted')).toBe(true)
-  })
 })

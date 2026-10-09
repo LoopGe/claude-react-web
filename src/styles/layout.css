@@ -1644,15 +1644,16 @@ body.resizing-col .app {
      attribute stamped by whoever performs the portal (see PORTAL_MARKER in
      src/theme.ts). Deliberately a marker rather than a roster of class names: a
      surface gets the compensation by portalling, not by being listed here.
-     The three surfaces that portal on their own — .effort-slider,
-     .appearance-panel, .accent-popover — used to predate the marker and keep
-     opaque fills under a wallpaper today; they now stamp it too (EffortSlider /
-     AccentPicker / AppearancePanel each call `markPortaledSurface`). Note that
+     The two surfaces that portal on their own — .effort-slider,
+     .appearance-panel — used to predate the marker and keep opaque fills under
+     a wallpaper today; they now stamp it too (EffortSlider / AppearancePanel
+     each call `markPortaledSurface`). Note that
      .effort-slider is NOT a glass surface: its own fill is `var(--bg-elev)`, so
      stamping the marker makes the whole slider — panel, track, thumb outline —
-     follow the Content slider. The other two DO paint from --glass-surface-bg,
-     so only their inherited interior (swatch/skin rows, inputs) follows; that is
-     the same fixed-frost contract every floating glass surface has.
+     follow the Content slider. .appearance-panel DOES paint from
+     --glass-surface-bg, so only its inherited interior (swatch/skin rows,
+     inputs) follows; that is the same fixed-frost contract every floating
+     glass surface has.
      What the re-declaration actually buys was measured, not assumed: a portalled
      surface's own base fill reads --glass-surface-bg, which <html> had already
      resolved against the root token, so that fill tracked the Content slider
@@ -1678,8 +1679,7 @@ body.resizing-col .app {
      <body> (Overlay does it for its fixed variants; anchored popovers call
      createPortal directly), which is what makes their viewport coordinates mean
      what they say. Portalling forfeits the container's custom properties in
-     exchange, hence [data-portaled] below plus `applyPortaledThemeVars` in
-     src/theme.ts for the per-session accent triple. */
+     exchange, hence the [data-portaled] re-declaration below. */
   body.has-bg .sidebar,
   body.has-bg .main-header,
   body.has-bg .chat-panel,

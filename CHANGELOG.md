@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **Per-session accent colour** — the ability to give an individual session its
+  own accent (the session card's right-click `Accent colour…` entry and the
+  accent picker in the New session dialog) has been removed. Sessions now
+  always paint with the global accent (Global Settings → Appearance). The
+  swatch grid stays for the global picker, stored per-session colours in
+  `localStorage` (`claude-react-web:session-colors`) are simply orphaned, and
+  resetting browser appearance data still clears the key.
+
 ### Added
 
 - **New-session "Project" picker** — the New session dialog's free-text

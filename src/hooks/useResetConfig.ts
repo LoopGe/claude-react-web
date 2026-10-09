@@ -6,7 +6,7 @@ import { sessionStoreRegistry } from '../session-store/registry'
 import { DRAFT_KEY_PREFIX, SIDEBAR_WIDTH_KEY, SIDEBAR_MIN_KEY, SIDEBAR_MAX_KEY, PANEL_RATIOS_KEY, PANEL_MIN_RATIO_KEY, LAST_SEEN_TURN_KEY } from '../constants/storageKeys'
 import { RECENT_MODELS_KEY, RECENT_CWDS_KEY } from '../constants/recentKeys'
 import { THEME_KEY, SKIN_KEY } from '../utils/theme'
-import { ACCENT_COLOR_KEY, SESSION_COLORS_KEY, RECENT_COLORS_KEY } from '../theme'
+import { ACCENT_COLOR_KEY, RECENT_COLORS_KEY } from '../theme'
 import { NAG_DISMISS_STORAGE_KEY } from './useUpdateNag'
 import type { ServerResetItem, BrowserDataItem, ResetResponse } from '../../shared/reset'
 
@@ -14,11 +14,15 @@ import type { ServerResetItem, BrowserDataItem, ResetResponse } from '../../shar
  *  key constants their owners read/write — a new key must be added at its
  *  owner module, which keeps this list from silently drifting. */
 const APPEARANCE_KEYS = [
-  THEME_KEY, SKIN_KEY, ACCENT_COLOR_KEY, SESSION_COLORS_KEY, RECENT_COLORS_KEY,
+  THEME_KEY, SKIN_KEY, ACCENT_COLOR_KEY, RECENT_COLORS_KEY,
   SIDEBAR_WIDTH_KEY, SIDEBAR_MIN_KEY, SIDEBAR_MAX_KEY,
   PANEL_RATIOS_KEY, PANEL_MIN_RATIO_KEY,
   RECENT_MODELS_KEY, RECENT_CWDS_KEY,
   NAG_DISMISS_STORAGE_KEY, LAST_SEEN_TURN_KEY,
+  // Removed feature (per-session accent, key constant deleted from
+  // theme.ts). Kept here as a literal so "reset appearance data" still
+  // clears the orphaned entries older builds left behind.
+  'claude-react-web:session-colors',
 ]
 
 function clearBrowserItem(item: BrowserDataItem): void {

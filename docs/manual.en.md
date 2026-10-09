@@ -78,7 +78,7 @@ Three regions: the **left sidebar** (session list), the **panel area** (up to 3 
 
 **Status chips**: `working` (running), `waiting` (turn ended but a background subagent is still running), `live` (idle, attached), `dormant` (slept), `resuming…`, `ended`, `err`.
 
-**Session card right-click menu** (complete list): `Rename`, `Fork from this point`, `New session like this`, `Restart`, `Sleep (release resources)`, `Move up`/`Move down`, `Remove from group`, `Move to group ▸`, `Copy session ID`, `Copy working directory`, `Close panel`, `Accent colour…`, `Delete session`.
+**Session card right-click menu** (complete list): `Rename`, `Fork from this point`, `New session like this`, `Restart`, `Sleep (release resources)`, `Move up`/`Move down`, `Remove from group`, `Move to group ▸`, `Copy session ID`, `Copy working directory`, `Close panel`, `Delete session`.
 
 > Handy: double-click a card's title to rename it.
 
@@ -125,7 +125,6 @@ Overlays can be stacked over the panel area: session settings, Git panel, Tasks,
 | `Model` | Model, with recent-model chips |
 | `Permission mode` | See [chapter 5](#5-permissions-and-safety) |
 | `Group` | Which group to join; full groups are marked ` — will replace oldest` |
-| `Accent colour` | Per-session accent (hidden under branded skins) |
 | `System prompt (optional)` | System prompt |
 
 Expanding **`Advanced options`** adds: `Effort`, `Thinking` (`adaptive`/`enabled`/`disabled` plus `Thinking budget (tokens)`), `Max turns`, `Max budget (USD)`, `Fallback model`, `Additional directories`, `Allowed tools`, `Disallowed tools`, `Tools`, `MCP servers`, `First-party tools`, `Plugins`, `Session MCP overrides (JSON)`, and `Environment variables`.

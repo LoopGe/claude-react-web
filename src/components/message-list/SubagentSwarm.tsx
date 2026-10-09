@@ -33,7 +33,7 @@ import { useEscapeStack } from '../../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../../hooks/useOutsideMouseDown'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
-import { applyPortaledThemeVars } from '../../theme'
+import { PANEL_SELECTOR, markPortaledSurface } from '../../theme'
 import { ElapsedTimer } from '../ElapsedTimer'
 import { IconChevronDown, IconExternalLink } from '../icons/ToolIcons'
 import type { ActiveSubagent } from '../../session-store/types'
@@ -105,8 +105,8 @@ export const SubagentSwarmPill = memo(function SubagentSwarmPill({
   onOpenSubagent?: (toolUseId: string) => void
 }) {
   const [anchor, setAnchor] = useState<Anchor | null>(null)
-  /** This pill. Two roles, one node: the popover copies its panel accent from
-   *  here (`applyPortaledThemeVars`) and exempts it from outside-press
+  /** This pill. Two roles, one node: the popover stamps its owning panel from
+   *  here (`markPortaledSurface`) and exempts it from outside-press
    *  dismissal (a press on the trigger is the toggle). A ref rather than
    *  state so the exemption reads the live element. */
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -236,10 +236,10 @@ function SubagentSwarmPopover({
   // the singular for the same one-agent set.
   const popoverLabel = subagents.length === 1 ? 'Subagent in flight' : 'Subagents in flight'
 
-  // Measure after layout, clamp into the viewport, and carry the owning
-  // panel's per-session accent across the portal boundary. Re-runs on row
-  // count changes because the popover's height (and therefore its clamp)
-  // moves as agents settle.
+  // Measure after layout, clamp into the viewport, and stamp the owning
+  // panel (the popover portals to <body>, so DOM ancestry can no longer
+  // answer "whose surface is this"). Re-runs on row count changes because
+  // the popover's height (and therefore its clamp) moves as agents settle.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
@@ -247,7 +247,7 @@ function SubagentSwarmPopover({
     const nx = Math.min(anchor.x, window.innerWidth - rect.width - 4)
     const ny = Math.min(anchor.y, window.innerHeight - rect.height - 4)
     setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
-    applyPortaledThemeVars(el, triggerRef.current)
+    markPortaledSurface(el, triggerRef.current?.closest(PANEL_SELECTOR) ?? null)
   }, [anchor.x, anchor.y, triggerRef, subagents.length])
 
   // Esc closes just this popover. Registered through the shared stack (window

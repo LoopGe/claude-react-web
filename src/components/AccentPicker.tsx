@@ -1,29 +1,16 @@
-// Accent-colour picker — a single swatch button that opens a popover
-// hosting a grid of preset swatches plus a custom-colour input.
+// Accent-colour swatch grid — the pure presentational radiogroup of preset
+// swatches plus a custom-colour input, embedded inline by the AppearancePanel
+// (the global accent picker in the settings overlay).
 //
-// Replaces the old naked row of tiny coloured dots that lived inline in
-// the toolbar / dialogs. Three exports, bottom-up:
-//
-//   - AccentSwatchGrid  — pure presentational grid (radiogroup of swatches).
-//   - AccentPickerPanel — controlled popover body (positioned at x/y by the
-//                         caller; owns outside-click / Esc / viewport-nudge).
-//                         Used by the session right-click flow, where the
-//                         parent owns open state.
-//   - AccentPicker      — uncontrolled trigger button + panel. Used by the
-//                         toolbar and the new-session dialog.
-//
-// The popover reuses the same visual language and dismissal logic as
-// ContextMenu.tsx (bg-elev / border / radius / shadow, mousedown-outside
-// + capture-phase Esc + measured viewport clamp).
+// The former popover wrappers (the uncontrolled trigger+panel pair and the
+// controlled AccentPickerPanel) hosted this grid as a portaled floating
+// surface for the per-session accent flows; those flows were removed, and
+// with them the wrappers.
 
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { memo, useEffect, useRef } from 'react'
 import type { CSSProperties } from 'react'
-import { ACCENT_COLORS, isPresetAccent, markPortaledSurface } from '../theme'
+import { ACCENT_COLORS, isPresetAccent } from '../theme'
 import { useRecentColors } from '../hooks/useRecentColors'
-import { useEscapeStack } from '../hooks/useEscapeStack'
-import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
-import type { RefObject } from 'react'
 
 // --- Custom-colour swatch ---------------------------------------------------
 
@@ -81,11 +68,6 @@ interface AccentSwatchGridProps {
   /** Show the dashed "use global accent" swatch as the first cell. */
   allowDefault?: boolean
   ariaLabel?: string
-  /** Called after a discrete preset/default/recent selection so a hosting
-   *  popover can auto-close. Deliberately NOT called from the native
-   *  colour input's onChange (it fires continuously while the OS picker
-   *  is open, which would close the popover mid-drag). */
-  onCommit?: () => void
 }
 
 export const AccentSwatchGrid = memo(function AccentSwatchGrid({
@@ -93,7 +75,6 @@ export const AccentSwatchGrid = memo(function AccentSwatchGrid({
   onChange,
   allowDefault,
   ariaLabel,
-  onCommit,
 }: AccentSwatchGridProps) {
   const { recents, addRecent } = useRecentColors()
   const isCustom = value != null && !isPresetAccent(value)
@@ -113,10 +94,7 @@ export const AccentSwatchGrid = memo(function AccentSwatchGrid({
         <button
           type="button"
           className={`accent-swatch accent-swatch-default${value === undefined ? ' active' : ''}`}
-          onClick={() => {
-            onChange(undefined)
-            onCommit?.()
-          }}
+          onClick={() => onChange(undefined)}
           role="radio"
           aria-checked={value === undefined}
           aria-label="Use global accent"
@@ -129,10 +107,7 @@ export const AccentSwatchGrid = memo(function AccentSwatchGrid({
           type="button"
           className={`accent-swatch${value === c.accent ? ' active' : ''}`}
           style={{ '--swatch': c.accent, '--swatch-strong': c.strong } as CSSProperties}
-          onClick={() => {
-            onChange(c.accent)
-            onCommit?.()
-          }}
+          onClick={() => onChange(c.accent)}
           role="radio"
           aria-checked={value === c.accent}
           aria-label={c.name}
@@ -157,7 +132,6 @@ export const AccentSwatchGrid = memo(function AccentSwatchGrid({
                 onClick={() => {
                   onChange(hex)
                   addRecent(hex) // re-selecting bumps it to the front (LRU)
-                  onCommit?.()
                 }}
                 role="radio"
                 aria-checked={active}
@@ -171,183 +145,3 @@ export const AccentSwatchGrid = memo(function AccentSwatchGrid({
     </div>
   )
 })
-
-// --- Controlled popover panel ----------------------------------------------
-
-interface AccentPickerPanelProps {
-  /** Client-coordinate anchor (top-left of the panel before clamping). */
-  x: number
-  y: number
-  value: string | undefined
-  onChange: (v: string | undefined) => void
-  onClose: () => void
-  allowDefault?: boolean
-  ariaLabel?: string
-  /** The swatch button that toggles this panel, when the caller owns one
-   *  (the uncontrolled `AccentPicker` below does). Without it, a press on the
-   *  trigger is an ordinary outside press — the panel shuts on the mousedown
-   *  and the trigger's click then re-opens it, so the trigger can never
-   *  dismiss its own panel. Omit it in the controlled flows, where the parent
-   *  (a right-click elsewhere) opens the panel and there is no such button. */
-  triggerRef?: RefObject<Element | null>
-}
-
-export function AccentPickerPanel({
-  x,
-  y,
-  value,
-  onChange,
-  onClose,
-  allowDefault,
-  ariaLabel = 'Accent colour',
-  triggerRef,
-}: AccentPickerPanelProps) {
-  const ref = useRef<HTMLDivElement>(null)
-  // Measured position after layout — nudged inward if the panel would
-  // otherwise overflow the viewport (mirrors ContextMenu.tsx).
-  const [pos, setPos] = useState<{ x: number; y: number }>({ x, y })
-
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    // The wallpaper fill remap has to be re-declared for this <body> child:
-    // the swatch rows and the custom-colour field inside read --bg-elev*, so
-    // without the marker they stay opaque over an active background.
-    //
-    // No owner is stamped (data-portaled=""): this panel is shared between the
-    // app-level picker and the per-session one (SessionList), and the swatches
-    // paint from --swatch/--fg — never --accent — so there is none to carry.
-    // If the popover ever reads --accent, thread the session owner through
-    // here, or per-session picks will resolve against the global accent.
-    markPortaledSurface(el)
-    const rect = el.getBoundingClientRect()
-    const vw = window.innerWidth
-    const vh = window.innerHeight
-    const nx = Math.min(x, vw - rect.width - 4)
-    const ny = Math.min(y, vh - rect.height - 4)
-    setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
-  }, [x, y])
-
-  // Move focus to the active (or first) swatch on open; restore on close.
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const target =
-      el.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ??
-      el.querySelector<HTMLElement>('[role="radio"]')
-    target?.focus()
-  }, [])
-
-  // Outside-click dismissal (Escape is owned by the shared stack below).
-  useOutsideMouseDown({ ref, onClose, triggerRef })
-
-  // Esc closes via the shared escape stack. The popover's container is this
-  // root, so while it is the topmost layer whose container holds focus, one
-  // Esc collapses just the popover — never the modal/panel beneath it.
-  useEscapeStack({
-    active: true,
-    onEscape: onClose,
-    getContainer: () => ref.current,
-  })
-
-  return createPortal(
-    <div
-      ref={ref}
-      className="accent-popover"
-      style={{ left: pos.x, top: pos.y }}
-      role="dialog"
-      aria-label={ariaLabel}
-      // Stop mousedown so the window outside-click listener doesn't fire
-      // when the user clicks inside the panel itself.
-      onMouseDown={(e) => e.stopPropagation()}
-    >
-      <AccentSwatchGrid
-        value={value}
-        onChange={onChange}
-        allowDefault={allowDefault}
-        ariaLabel={ariaLabel}
-        onCommit={onClose}
-      />
-    </div>,
-    document.body,
-  )
-}
-
-// --- Uncontrolled trigger + panel ------------------------------------------
-
-interface AccentPickerProps {
-  value: string | undefined
-  onChange: (v: string | undefined) => void
-  allowDefault?: boolean
-  ariaLabel?: string
-  /** Applied to the trigger button (e.g. "btn btn-icon" in the toolbar). */
-  className?: string
-}
-
-export function AccentPicker({
-  value,
-  onChange,
-  allowDefault,
-  ariaLabel = 'Accent colour',
-  className,
-}: AccentPickerProps) {
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null)
-  const open = anchor !== null
-
-  const toggle = () => {
-    if (open) {
-      setAnchor(null)
-      return
-    }
-    const rect = triggerRef.current?.getBoundingClientRect()
-    if (rect) setAnchor({ x: rect.left, y: rect.bottom + 4 })
-  }
-
-  // Trigger swatch fill: a concrete hex shows that colour; undefined (only
-  // when allowDefault) shows the dashed "default" affordance.
-  const isCustom = value != null && !isPresetAccent(value)
-  const showDefault = value === undefined
-  const swatchStyle = {
-    '--swatch': showDefault ? 'transparent' : value,
-    '--swatch-strong': isCustom ? value : 'var(--fg)',
-  } as CSSProperties
-
-  return (
-    <>
-      <button
-        ref={triggerRef}
-        type="button"
-        className={`accent-trigger${className ? ` ${className}` : ''}`}
-        onClick={toggle}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-label={ariaLabel}
-        title={ariaLabel}
-      >
-        <span
-          className={`accent-swatch${showDefault ? ' accent-swatch-default' : ''}`}
-          style={swatchStyle}
-          aria-hidden
-        />
-      </button>
-      {anchor && (
-        <AccentPickerPanel
-          x={anchor.x}
-          y={anchor.y}
-          value={value}
-          onChange={onChange}
-          triggerRef={triggerRef}
-          onClose={() => {
-            setAnchor(null)
-            // Restore focus to the trigger on close (ref access is fine
-            // here — this runs in an event handler, not during render).
-            triggerRef.current?.focus()
-          }}
-          allowDefault={allowDefault}
-          ariaLabel={ariaLabel}
-        />
-      )}
-    </>
-  )
-}

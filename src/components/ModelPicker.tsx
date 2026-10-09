@@ -19,7 +19,7 @@ import type { ModelOptions } from '../hooks/useModelOptions'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
-import { applyPortaledThemeVars } from '../theme'
+import { PANEL_SELECTOR, markPortaledSurface } from '../theme'
 import { useMergedRef } from '../utils/mergedRef'
 import { usePopoverMotion } from '../utils/transitions'
 import { IconCheck, IconSearch } from './icons/ToolIcons'
@@ -27,9 +27,9 @@ import { IconCheck, IconSearch } from './icons/ToolIcons'
 interface Props {
   /** Client-coordinate anchor (typically the chip's bottom-left). `source` is
    *  required, not optional: the picker portals to <body> and needs the clicked
-   *  chip to find the container whose accent to carry (see
-   *  `applyPortaledThemeVars`) — an omitted source is a silent color regression
-   *  on a tinted session, so it is a type error instead. */
+   *  chip to resolve the owning panel for the `[data-portaled]` ownership stamp
+   *  (see `markPortaledSurface`) — an omitted source silently unowns the
+   *  surface, so it is a type error instead. */
   anchor: { x: number; y: number; source: Element | null }
   /** Currently selected model id. Undefined/empty means the session has
    *  no explicit model — the first model in the list is treated as the
@@ -181,9 +181,9 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
     const nx = Math.min(anchor.x, vw - rect.width - 4)
     const ny = Math.min(anchor.y, vh - rect.height - 4)
     setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
-    // The picker is a <body> child, so it sits outside the panel that carries
-    // this session's accent — copy it back off the clicked chip's container.
-    applyPortaledThemeVars(el, anchor.source)
+    // The picker is a <body> child, so it sits outside the panel it belongs
+    // to — stamp the owner off the clicked chip's panel.
+    markPortaledSurface(el, anchor.source?.closest(PANEL_SELECTOR) ?? null)
   }, [anchor.x, anchor.y, anchor.source, rows.length])
 
   // Esc closes via the shared escape stack, so it wins over the chat panel's

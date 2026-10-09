@@ -3,7 +3,7 @@
  *  placeholder when the session's Query isn't live. */
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
 import { Chat } from './Chat'
 import { SideChatDrawer } from './SideChatDrawer'
@@ -154,9 +154,6 @@ export interface ChatPanelProps {
   /** True while Ctrl/Cmd is held — paints the slot pill with a key-hint
    *  highlight so the mod+<n> mapping is discoverable. */
   showSlotHints?: boolean
-  /** Per-session accent overrides (sets --accent / --accent-strong on the
-   *  panel root so all child var() references pick up the session colour). */
-  accentStyle?: CSSProperties
   onFocus: (sessionId: string) => void
   onClose: (sessionId: string) => void
   /** Resume a dormant session directly from the panel's dormant empty-state
@@ -303,7 +300,6 @@ export const ChatPanel = memo(function ChatPanel({
   slot,
   composerFocusSignal,
   showSlotHints,
-  accentStyle,
   onFocus,
   onClose,
   onResume,
@@ -408,9 +404,9 @@ export const ChatPanel = memo(function ChatPanel({
     !!session.recap &&
     (recapDismissedAt === null || session.recap.generatedAt !== recapDismissedAt)
   /** Anchor for the model picker dropdown. Non-null = picker visible. `source`
-   *  is the chip itself, which the portalled picker needs to find this panel's
-   *  theme vars (see `applyPortaledThemeVars`); required so no caller can drop
-   *  the accent carry by accident. */
+   *  is the chip itself, which the portalled picker needs to stamp this
+   *  panel as the surface's owner (see `markPortaledSurface`); required so
+   *  no caller can drop the ownership stamp by accident. */
   const [modelMenu, setModelMenu] = useState<{ x: number; y: number; source: Element | null } | null>(null)
   /** Anchor for the permission-mode menu. Non-null = menu visible. A
    *  custom menu (rather than a native <select>) gives us full control
@@ -818,7 +814,6 @@ export const ChatPanel = memo(function ChatPanel({
         panelDrag.isDragging ? 'dnd-source-dim' : '',
         `mode-${permMode}`,
       )}
-      style={accentStyle}
       onAnimationEnd={(e) => {
         if (entering && e.target === e.currentTarget) onAnimEnd?.(session.id)
       }}

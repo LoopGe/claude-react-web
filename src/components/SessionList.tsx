@@ -12,13 +12,10 @@ import { SORTABLE_TRANSITION } from '../dnd/motion'
 import { prepareFlip } from '../utils/flip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
-import { buildSessionAccentMap } from '../theme'
-import { isAccentLocked, type Skin } from '../utils/theme'
 import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '../types'
 import type { ModelGroupConfig } from '../types/config'
 import { NewSessionDialog } from './session-list/NewSessionDialog'
 import { SessionContextMenu } from './session-list/SessionContextMenu'
-import { AccentPickerPanel } from './AccentPicker'
 import { SessionCard } from './session-list/SessionCard'
 import { ConfirmDialog } from './ConfirmDialog'
 // Lazy-loaded: PromptDialog is only used when the user renames a group.
@@ -221,14 +218,6 @@ interface Props {
    *  (Alt+N) can open it. Uncontrolled mode falls back to internal state. */
   newSessionDialogOpen?: boolean
   onNewSessionDialogChange?: (open: boolean) => void
-  /** Per-session accent-colour overrides (sessionId → hex). */
-  sessionColors?: Record<string, string>
-  /** Set or clear a session's accent colour. Pass `undefined` to reset. */
-  onSessionColorChange?: (sessionId: string, color: string | undefined) => void
-  /** Active skin. Accent-locking skins (Anthropic / HC) hide the per-session
-   *  accent picker and suppress per-session tinting so the brand accent
-   *  applies uniformly. */
-  skin?: Skin
   // --- Group management ---
   /** Persisted list of user-created session groups. */
   groups: SessionGroup[]
@@ -276,9 +265,6 @@ export const SessionList = memo(function SessionList({
   resumingIds,
   unread,
   deletingIds,
-  sessionColors,
-  onSessionColorChange,
-  skin,
   groups,
   sidebarSections,
   collapsedGroups,
@@ -321,10 +307,6 @@ export const SessionList = memo(function SessionList({
   const [renameDraft, setRenameDraft] = useState('')
   /** Active right-click menu. `id` tells us which session it targets. */
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
-  /** Accent-colour popover opened from the context menu. Owns its own
-   *  anchor (the menu's coordinates, captured before the menu closes) so
-   *  the unified AccentPickerPanel can render at the right spot. */
-  const [accentPopover, setAccentPopover] = useState<{ x: number; y: number; id: string } | null>(null)
   /** Sidebar filter text. Case-insensitive substring match against title,
    *  cwd, and the first 8 chars of the id. Not persisted — a stale filter
    *  after a reload causes more confusion than it saves typing. */
@@ -528,11 +510,6 @@ export const SessionList = memo(function SessionList({
     }
   }
 
-  /** Pre-computed accent styles per session so SessionCard's React.memo
-   *  sees stable references instead of new objects every render. Pass
-   *  `skin` so an accent-locking skin yields no per-session overrides. */
-  const accentStyleMap = useMemo(() => buildSessionAccentMap(sessionColors, skin), [sessionColors, skin])
-
   /** O(1) lookups for open-session state. */
   const openIdSet = useMemo(() => new Set(openIds), [openIds])
   const openIdSlotMap = useMemo(() => new Map(openIds.map((id, i) => [id, i])), [openIds])
@@ -607,7 +584,6 @@ export const SessionList = memo(function SessionList({
               isDragging={isDragging}
               isDeleting={isDeleting}
               isRenaming={renamingId === s.id}
-              accentStyle={accentStyleMap.get(s.id)}
               dragListeners={listeners}
               onSelect={onSelect}
               onDelete={onDelete}
@@ -624,7 +600,7 @@ export const SessionList = memo(function SessionList({
         </SortableNode>
       )
     },
-    [isMobile, openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, renamingId, accentStyleMap, onSelect, onDelete, onSleep, handleCardContextMenu, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm],
+    [isMobile, openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, renamingId, onSelect, onDelete, onSleep, handleCardContextMenu, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm],
   )
 
   /** Resolve which ordered list a session belongs to and, when it lives in
@@ -1056,9 +1032,6 @@ export const SessionList = memo(function SessionList({
         onFork={(id) => onFork?.(id)}
         onNewLikeThis={(id) => onNewLikeThis?.(id)}
         onRestart={(id) => onRestart?.(id)}
-        sessionColor={sessionColors?.[menu.id]}
-        onEditAccent={() => setAccentPopover({ x: menu.x, y: menu.y, id: menu.id })}
-        accentLocked={isAccentLocked(skin)}
         groups={groups}
         onAddToGroup={animatedAddToGroup}
         maxGroupSize={maxGroupSize}
@@ -1066,18 +1039,6 @@ export const SessionList = memo(function SessionList({
         onAskConfirm={handleAskConfirm}
       />
       })()}
-
-      {accentPopover && !isAccentLocked(skin) && (
-        <AccentPickerPanel
-          x={accentPopover.x}
-          y={accentPopover.y}
-          value={sessionColors?.[accentPopover.id]}
-          allowDefault
-          ariaLabel="Session accent"
-          onChange={(v) => onSessionColorChange?.(accentPopover.id, v)}
-          onClose={() => setAccentPopover(null)}
-        />
-      )}
 
       {newSessionPresence.shouldRender && (
         <NewSessionDialog
@@ -1089,7 +1050,6 @@ export const SessionList = memo(function SessionList({
           initialGroupId={activeGroupId ?? undefined}
           groups={groups}
           maxGroupSize={maxGroupSize}
-          accentLocked={isAccentLocked(skin)}
           firstPartyTools={firstPartyTools}
           onCancel={() => {
             setShowDialog(false)

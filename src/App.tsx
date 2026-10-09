@@ -357,9 +357,8 @@ export function App() {
   // Reconnected) rides the same hub via <ReconnectToasts /> — sticky while
   // offline — so every user-facing notice has one outlet.
   const toast = useToast()
-  // Theme + accent (global + per-session). Lives in its own hook so
-  // App.tsx isn't on the hook for the OS-theme subscription, accent
-  // CSS-var sync, and the React-19-unmount-race write-through pattern.
+  // Theme + accent. Lives in its own hook so App.tsx isn't on the hook for
+  // the OS-theme subscription and the accent CSS-var sync.
   const {
     theme,
     setMode,
@@ -367,9 +366,6 @@ export function App() {
     setSkin,
     accentColor,
     setAccentColor,
-    sessionColors,
-    sessionAccentMap,
-    handleSessionColorChange,
   } = useTheme()
   // Global background (default/glow skins). Depends on `skin` so a switch to a
   // background-locked skin suppresses the effect but keeps the stored choice
@@ -1747,8 +1743,8 @@ export function App() {
 
   const handleCreate = useCallback(
     async (form: NewSessionForm) => {
-      // `accent` and `groupId` are frontend-only fields — don't forward them to the SDK.
-      const { accent, groupId, ...rest } = form
+      // `groupId` is a frontend-only field — don't forward it to the SDK.
+      const { groupId, ...rest } = form
       try {
         const res = await api.post<{ session: SessionInfo }>('/sessions', rest)
         // Add Y to `sessions` locally so openSessions resolves it the instant
@@ -1785,17 +1781,11 @@ export function App() {
           setOpenIds([res.session.id])
           setLastSeenTurn((prev) => ({ ...prev, [res.session.id]: res.session.lastTurnAt ?? Date.now() }))
         }
-        if (accent) {
-          // Save the chosen accent under the new id. The hook's handler
-          // does the localStorage-then-setState dance that survives a
-          // dialog unmount in the same tick.
-          handleSessionColorChange(res.session.id, accent)
-        }
       } catch (e) {
         toast.error(`Couldn't create session: ${(e as Error).message}`)
       }
     },
-    [handleSessionColorChange, handleAddToGroup, activeGroupId, openSession, setLastSeenTurn, toast],
+    [handleAddToGroup, activeGroupId, openSession, setLastSeenTurn, toast],
   )
 
   const handleFork = useCallback(
@@ -1958,10 +1948,6 @@ export function App() {
         // whose writes then fail. Going through the registry destroys the
         // in-memory store first so the idle sweep can't re-persist it.
         sessionStoreRegistry.delete(id)
-        // Clean up per-session accent so it doesn't linger in storage.
-        // Passing `undefined` deletes the entry through the same
-        // localStorage-merge path the colour-menu uses.
-        handleSessionColorChange(id, undefined)
         // Remove deleted session from any group it belongs to so the
         // group's session count stays accurate.
         setGroups((prev) =>
@@ -1979,7 +1965,7 @@ export function App() {
         return false
       }
     },
-    [closeSession, setGroups, handleSessionColorChange, toast],
+    [closeSession, setGroups, toast],
   )
 
   /** Delete the session immediately. User-facing deletes confirm first via a
@@ -2083,7 +2069,7 @@ export function App() {
         await swapSession(id, res.session.id, res.session)
         swapped = true
         // Delete the old session server-side. performDelete→closeSession cleans
-        // up side-chat/registry/accent; its openIds/groups/sessions filters are
+        // up side-chat/registry; its openIds/groups/sessions filters are
         // no-ops (swapSession already moved X→Y), and the WS session-removed(X)
         // teardown is likewise a no-op for the swapped state.
         await performDelete(id)
@@ -3988,7 +3974,6 @@ export function App() {
               isDragging={false}
               isDeleting={false}
               isRenaming={false}
-              accentStyle={sessionAccentMap.get(s.id)}
               onSelect={dndNoop}
               onDelete={dndNoop}
               onSleep={dndNoop}
@@ -4436,9 +4421,6 @@ export function App() {
           resumingIds={resuming}
           unread={unread}
           deletingIds={deletingSessionIds}
-          sessionColors={sessionColors}
-          onSessionColorChange={handleSessionColorChange}
-          skin={skin}
           onSelect={handleSelectFromSidebar}
           onCreate={handleCreate}
           firstPartyTools={globalPrefs.firstPartyTools}
@@ -4669,7 +4651,6 @@ export function App() {
                       showSlotHints={heldModifiers.ctrlOrMeta}
                       entering={entering}
                       onAnimEnd={entering ? handlePanelAnimEnd : undefined}
-                      accentStyle={sessionAccentMap.get(s.id)}
                       onFocus={focusPanel}
                       onClose={closeSession}
                       onResume={handleResumePanel}
@@ -4763,7 +4744,6 @@ export function App() {
                 >
                   <section
                     className="chat-panel"
-                    style={sessionAccentMap.get(cp.id)}
                   >
                     <div className="chat-panel-header">
                       <span className="chat-panel-title">

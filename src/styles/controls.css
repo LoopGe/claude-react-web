@@ -107,13 +107,8 @@
   opacity: 1;
   stroke-dashoffset: 0;
 }
-/* Accent colour picker — a row of small coloured dots in the toolbar. */
-.accent-picker {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 0 var(--space-1);
-}
+/* Accent colour picker — swatch grid embedded by the AppearancePanel
+   (see the .appearance-section layout override below). */
 .accent-swatch {
   width: var(--size-16px);
   height: var(--size-16px);
@@ -175,66 +170,6 @@
   pointer-events: none;
 }
 
-/* Accent picker trigger: a single swatch button that opens the popover.
-   In the toolbar it also carries `.btn.btn-icon`, so it inherits that
-   button's sizing and hover treatment; we only centre the swatch inside. */
-.accent-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* Never let a flex/grid parent stretch the trigger to full width — it's
-     a compact swatch button, not a field. Matters in the New-session dialog
-     where `.settings-field` is a column flexbox (align-items: stretch). */
-  align-self: flex-start;
-}
-/* Standalone trigger (not carrying `.btn`): give it its own compact button
-   chrome so it reads as a button, not a bare dot. The toolbar trigger has
-   `.btn.btn-icon` for this; `:not(.btn)` keeps the two from fighting over
-   padding (equal specificity would otherwise let the later rule win). */
-.accent-trigger:not(.btn) {
-  padding: 5px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-.accent-trigger:not(.btn):hover {
-  border-color: var(--fg-muted);
-}
-.accent-trigger .accent-swatch {
-  width: var(--size-18px);
-  height: var(--size-18px);
-  pointer-events: none;
-}
-.accent-trigger:hover .accent-swatch {
-  border-color: var(--fg-muted);
-}
-
-/* Accent picker popover: reuses the .ctx-menu visual language. Hosts the
-   swatch grid (.accent-picker) laid out 5-per-row so 8 presets + default
-   + custom wrap into two tidy rows. */
-.accent-popover {
-  position: fixed;
-  padding: var(--space-2-5);
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--card-shadow);
-  z-index: var(--z-overlay);
-  /* Pop in from the anchor button (chip header), matching the other
-     dropdowns. Reuses ctx-menu-in keyframes from session-list.css. */
-  transform-origin: top right;
-  animation: ctx-menu-in var(--motion-duration-fast) var(--motion-ease-enter) both;
-}
-.accent-popover .accent-picker {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: var(--space-2-5);
-  padding: 0;
-}
-.accent-popover .accent-swatch {
-  width: var(--size-26px);
-  height: var(--size-26px);
-}
 /* Full-width section break inside the swatch grid (e.g. before "Recent").
    Spans every column so the swatches after it start on a fresh row. */
 .accent-picker-divider {
@@ -255,11 +190,9 @@
   color: var(--fg-muted);
 }
 
-/* Appearance panel embeds the swatch grid inline (no .accent-popover
-   wrapper), so it would otherwise fall back to the toolbar's single-row
-   inline-flex layout — which overflows once "Recent" colours are saved.
-   Reuse the popover's wrapped grid so presets + custom + recents flow into
-   tidy rows instead of one crowded line. */
+/* Appearance panel embeds the swatch grid inline — the sole mount of
+   .accent-picker, so the grid layout lives here: presets + custom + recents
+   flow into tidy rows instead of one overflowing line. */
 .appearance-section .accent-picker {
   display: grid;
   grid-template-columns: repeat(5, 1fr);

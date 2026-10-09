@@ -856,8 +856,7 @@
 [data-skin="glow"] .model-picker,
 [data-skin="glow"] .cmd-picker,
 [data-skin="glow"] .ctx-menu,
-[data-skin="glow"] .appearance-panel,
-[data-skin="glow"] .accent-popover {
+[data-skin="glow"] .appearance-panel {
   background-image: var(--surface-gradient);
 }
 
@@ -1222,9 +1221,9 @@ html, body, #root { height: 100%; margin: 0; }
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
-/* Per-session accent scrollbar: .chat-panel sets --accent via
-   accentStyle, so all descendants (including Virtuoso's internal
-   scroll container) pick up the session color. */
+/* Accent-tinted scrollbar inside the chat panel: --accent cascades from
+   :root (the global accent), so all descendants — including Virtuoso's
+   internal scroll container — pick it up. */
 .chat-panel * {
   scrollbar-color: color-mix(in srgb, var(--accent) 45%, transparent) transparent;
 }

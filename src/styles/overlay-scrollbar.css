@@ -65,8 +65,9 @@
   background: var(--fg-muted);
 }
 
-/* Per-session accent: .chat-panel sets --accent via accentStyle, so all
-   descendants pick up the session color. Mirrors tokens.css:857-871. */
+/* Accent-tinted custom scrollbar inside the chat panel: --accent cascades
+   from :root (the global accent), so all descendants pick it up. Native
+   counterparts live in tokens.css (scrollbar-color block). */
 .chat-panel .os-thumb {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
@@ -96,12 +97,10 @@
    PORTAL_MARKER in src/theme.ts and the CONTAINING-BLOCK HAZARD note in
    layout.css.
    Two honest limits on "same treatment as before":
-     * The newly portalled pickers carry the owning panel's accent
-       (applyPortaledThemeVars), so theirs is a faithful reproduction. Surfaces
-       that were portalled LONG before (McpInstaller, FileViewer, the
+     * Surfaces portalled LONG before (McpInstaller, FileViewer, the
        marketplace overlay) stamp the marker too, so their thumbs change from
-       neutral grey to the GLOBAL accent — Overlay has no anchor to carry a
-       session tint from. Deliberate: one rule for one structural fact beats a
+       neutral grey to the GLOBAL accent — Overlay has no anchor to read an
+       owner from. Deliberate: one rule for one structural fact beats a
        roster, and a global-accent thumb matches how the chrome already reads.
      * Scope limit before adding a rule for a specific surface:
        attachOverlayScrollbar appends the track to the SCROLLER'S PARENT, so this

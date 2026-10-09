@@ -44,7 +44,6 @@
 .ctx-menu,
 .model-picker,
 .cmd-picker,
-.accent-popover,
 .appearance-panel,
 .tt-bubble,
 .toast {
@@ -89,7 +88,6 @@
 .ctx-menu          { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
 .model-picker      { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
 .cmd-picker        { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
-.accent-popover    { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
 .appearance-panel  { box-shadow: var(--glass-edge-highlight), var(--card-shadow); }
 .tt-bubble         { box-shadow: var(--glass-edge-highlight), var(--tooltip-shadow); }
 /* Toasts additionally carry a soft kind-tint glow so success/error/info
@@ -123,7 +121,6 @@
   .ctx-menu,
   .model-picker,
   .cmd-picker,
-  .accent-popover,
   .appearance-panel,
   .tt-bubble,
   .toast,
@@ -185,7 +182,6 @@ html:not([data-skin="glow"]):not([data-skin="hc"]) .perm-overlay > .perm-card,
 html:not([data-skin="glow"]):not([data-skin="hc"]) .ctx-menu,
 html:not([data-skin="glow"]):not([data-skin="hc"]) .model-picker,
 html:not([data-skin="glow"]):not([data-skin="hc"]) .cmd-picker,
-html:not([data-skin="glow"]):not([data-skin="hc"]) .accent-popover,
 html:not([data-skin="glow"]):not([data-skin="hc"]) .appearance-panel {
   background-image: linear-gradient(
     to bottom,
@@ -204,7 +200,6 @@ html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .perm-ove
 html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .ctx-menu,
 html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .model-picker,
 html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .cmd-picker,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .accent-popover,
 html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .appearance-panel {
   background-image: linear-gradient(
     to bottom,

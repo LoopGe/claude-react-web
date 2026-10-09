@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom'
 import type { SlashCommand } from '../types'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
-import { applyPortaledThemeVars } from '../theme'
+import { PANEL_SELECTOR, markPortaledSurface } from '../theme'
 import { pluginTagOf } from '../utils/text'
 import { clamp } from '../utils/clamp'
 
@@ -84,10 +84,10 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
     const el = rootRef.current
     if (!el) return
     const anchor = anchorRef.current
-    // Portal compensation first: declare the surface portalled and carry the
-    // panel's per-session accent (both no-ops when there is no anchor to read
-    // from, and geometry doesn't depend on the anchor being there yet).
-    applyPortaledThemeVars(el, anchor)
+    // Portal compensation first: declare the surface portalled and stamp the
+    // owning panel (both no-ops when there is no anchor to read from, and
+    // geometry doesn't depend on the anchor being there yet).
+    markPortaledSurface(el, anchor?.closest(PANEL_SELECTOR) ?? null)
     if (!anchor) return
 
     const rect = anchor.getBoundingClientRect()

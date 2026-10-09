@@ -7,7 +7,6 @@ import { IconX, IconPencil } from '../icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from '../permission-mode-display'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { api } from '../../hooks/useApi'
-import { AccentPicker } from '../AccentPicker'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import type { ModelGroupConfig } from '../../types/config'
 import { PERMISSION_MODES, EFFORT_LEVELS } from '../../types'
@@ -60,16 +59,13 @@ export interface NewSessionDialogProps {
    *  One checkbox row per entry; the initial checked state is the entry's
    *  `enabled` value. Omitted / empty map → the cluster is hidden. */
   firstPartyTools?: Record<string, { enabled: boolean }>
-  /** When true the active skin locks the accent (Anthropic / HC), so the
-   *  per-session accent picker is hidden in the new-session form. */
-  accentLocked?: boolean
 }
 
 /** Stable empty default — a fresh `[]` per render would defeat modelOptions'
  *  useMemo (new array identity every keystroke). */
 const NO_MODEL_GROUPS: ModelGroupConfig[] = []
 
-export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, modelGroups = NO_MODEL_GROUPS, initialGroupId, maxGroupSize, accentLocked, firstPartyTools }: NewSessionDialogProps) {
+export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, onCancel, groups, serverModels, modelGroups = NO_MODEL_GROUPS, initialGroupId, maxGroupSize, firstPartyTools }: NewSessionDialogProps) {
   // Per-instance prefix for label↔control id linkage. useId keeps the
   // dialog's ids document-unique even if it ever mounts more than once.
   const uid = useId()
@@ -87,10 +83,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [systemPrompt, setSystemPrompt] = useState('')
   const [title, setTitle] = useState('')
-  /** Accent colour chosen in the dialog. `undefined` means "use the
-   *  global accent" — we don't write an entry to sessionColors unless
-   *  the user explicitly picks one. */
-  const [accent, setAccent] = useState<string | undefined>(undefined)
   // Seed the group picker with the active group (if any) BUT only when
   // it still has capacity — landing the new session into a group that
   // would immediately silently fail is worse than starting on "(none)".
@@ -471,7 +463,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       systemPrompt: systemPrompt.trim() || undefined,
       title: title.trim() || undefined,
       betas: [ONE_M_CONTEXT_BETA],
-      accent,
       groupId: activeGroup?.id,
       // Advanced options — only include when non-empty
       effort: (effort || undefined) as NewSessionForm['effort'],
@@ -690,18 +681,6 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                 options={groupOptions}
               />
             </div>
-
-            {!accentLocked && (
-            <div className="settings-field">
-              <label>Accent colour</label>
-              <AccentPicker
-                value={accent}
-                onChange={setAccent}
-                allowDefault
-                ariaLabel="Session accent"
-              />
-            </div>
-            )}
 
             <div className="settings-field">
               <label htmlFor={uid + '-system-prompt'}>System prompt (optional)</label>
