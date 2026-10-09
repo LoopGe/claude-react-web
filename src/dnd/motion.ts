@@ -4,6 +4,7 @@
 // CSS file — see styles/dnd.css).
 
 import { defaultDropAnimationSideEffects, type DropAnimationSideEffects } from '@dnd-kit/core'
+import { dndPayloadOf } from './payload'
 
 /** Ease-out with a soft overshoot tail — the "icon snaps into the grid"
  *  curve. Used for sortable displacement transitions and the overlay drop. */
@@ -40,7 +41,10 @@ export const DROP_ANIMATION = {
   duration: 260,
   easing: DND_EASE,
   sideEffects: ((args: Parameters<DropAnimationSideEffects>[0]) => {
-    const kind = (args.active.data.current as { kind?: string } | undefined)?.kind
+    // The payload rides under the `crw` wrapper key — read it through
+    // dndPayloadOf (a bare .kind read is always undefined and would
+    // silently route panels back to the whole-panel blanking).
+    const kind = dndPayloadOf(args.active.data.current as Record<string, unknown>)?.kind
     return kind === 'main-panel' ? undefined : defaultHideSource(args)
   }) as DropAnimationSideEffects,
 }
