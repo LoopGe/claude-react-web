@@ -112,6 +112,33 @@ describe('reducer: optimistic user message + server echo', () => {
     expect(isEmpty(state.intent.pendingPlaceholders)).toBe(true)
   })
 
+  it('acks preserve placeholder Map order so the FIFO echo-merge consumes the right one (two rapid sends)', () => {
+    // ackUserMessage re-keys the acked placeholder to its server uuid. That
+    // re-key must replace the entry AT ITS ORIGINAL SLOT: a delete+set moves
+    // it to the Map's end, so with a second send still pending (a) the
+    // rendered order transiently shows the newer un-acked bubble ABOVE the
+    // acked one, and (b) applyMessage's echo-merge — which consumes the
+    // OLDEST placeholder per top-level user echo in FIFO send order — eats
+    // the WRONG placeholder and the acked one lingers as a duplicate render
+    // until the turn-end sweep.
+    let state = createInitialSessionState('s1')
+    state = applyOptimistic(state, 'first', 'optimistic:1')
+    state = applyOptimistic(state, 'second', 'optimistic:2')
+
+    // POST 1 resolves before echo 1 is processed.
+    state = applyAck(state, 'optimistic:1', 'server-1')
+    expect(Array.from(state.intent.pendingPlaceholders.keys())).toEqual(['server-1', 'optimistic:2'])
+
+    // Echo 1: the FIFO merge consumes the oldest placeholder — the acked
+    // one — leaving exactly one placeholder and ONE rendered server-1.
+    state = applyServerEcho(state, 'first', 'server-1')
+    expect(state.intent.pendingPlaceholders.size).toBe(1)
+    expect(state.intent.pendingPlaceholders.has('optimistic:2')).toBe(true)
+    const rendered = renderedItems(state)
+    expect(rendered.filter((it) => it.id === 'server-1')).toHaveLength(1)
+    expect(rendered[rendered.length - 1].id).toBe('optimistic:2')
+  })
+
   it('applies a consumed signal that arrives before the REST ack', () => {
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'hello', 'optimistic:abc')

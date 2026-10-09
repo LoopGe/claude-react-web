@@ -2531,6 +2531,189 @@ describe('MessageList', () => {
     }
   })
 
+  it('does not replay the msg-enter animation when the server echo swaps the optimistic row', () => {
+    // The send flow: an optimistic placeholder (key `optimistic:…`) mounts and
+    // plays the entrance pop; when the server broadcast lands the row is
+    // re-keyed to the server uuid (ackUserMessage / applyMessage echo-merge),
+    // which REMOUNTS the Virtuoso row. A fresh DOM node restarts a CSS
+    // animation from its `from` keyframe, so if the entering flag transfers to
+    // the new id, the bubble visibly blinks out and re-runs the entrance —
+    // the reported "sent message flashes" bug. The pop belongs to the insert
+    // event only: the swapped-in row must render settled (no msg-enter).
+    const text = 'hello there'
+    const optimistic: TranscriptItem = {
+      id: 'optimistic:abc',
+      msg: makeMsg('user', {
+        uuid: 'optimistic:abc',
+        message: { content: [{ type: 'text', text }] },
+      }),
+      plainText: text,
+      isCompactSummary: false,
+      hiddenByDefault: false,
+      sending: true,
+      receivedAt: Date.now(),
+    }
+    const server: TranscriptItem = {
+      id: 'server-uuid-1',
+      msg: makeMsg('user', {
+        uuid: 'server-uuid-1',
+        message: { content: [{ type: 'text', text }] },
+      }),
+      plainText: text,
+      isCompactSummary: false,
+      hiddenByDefault: false,
+      receivedAt: Date.now(),
+    }
+
+    const { container, rerender } = render(<MessageList items={[optimistic]} />)
+    const before = container.querySelector('[data-message-id="optimistic:abc"]') as HTMLElement
+    expect(before).toBeTruthy()
+    // Precondition: the optimistic arrival animated the pop.
+    expect(before.classList.contains('msg-enter')).toBe(true)
+
+    // The echo swap: same list length, tail id changes (optimistic → server).
+    rerender(<MessageList items={[server]} />)
+    const after = container.querySelector('[data-message-id="server-uuid-1"]') as HTMLElement
+    expect(after).toBeTruthy()
+    // The re-key remounts the row (by-design uuid identity) — document it so
+    // the assertion below can't pass vacuously via an in-place update.
+    expect(after).not.toBe(before)
+    // THE FIX: the swapped-in row must not re-run the entrance animation.
+    expect(after.classList.contains('msg-enter')).toBe(false)
+  })
+
+  it('keeps the previous tail animation running when a new message appends', () => {
+    // The consumption block is scoped to delta === 0 (the length-preserving
+    // echo swap). A genuine tail append also changes the tail id, but the
+    // previous tail row is still mounted and possibly mid-pop — its entering
+    // flag must survive, or the class is stripped mid-animation and the
+    // running entrance snaps to its final state (a truncated pop). This is
+    // exactly the shape of "user sends message 2 while message 1's pop is
+    // still playing".
+    const mkUser = (id: string): TranscriptItem => ({
+      id,
+      msg: makeMsg('user', { uuid: id, message: { content: [{ type: 'text', text: `msg ${id}` }] } }),
+      plainText: `msg ${id}`,
+      isCompactSummary: false,
+      hiddenByDefault: false,
+      receivedAt: Date.now(),
+    })
+
+    const { container, rerender } = render(<MessageList items={[mkUser('u-1')]} />)
+    expect(container.querySelector('[data-message-id="u-1"]')!.classList.contains('msg-enter')).toBe(true)
+
+    // Append u-2 at the tail (delta > 0): u-1 keeps its running animation,
+    // u-2 is armed by the normal gate.
+    rerender(<MessageList items={[mkUser('u-1'), mkUser('u-2')]} />)
+    expect(container.querySelector('[data-message-id="u-1"]')!.classList.contains('msg-enter')).toBe(true)
+    expect(container.querySelector('[data-message-id="u-2"]')!.classList.contains('msg-enter')).toBe(true)
+  })
+
+  it('keeps send order and the pending pop when an earlier send is acked first', () => {
+    // Two rapid sends with the echoes still in flight: placeholders queue as
+    // [optimistic:1, optimistic:2]. The POST for message 1 resolves before
+    // its WS echo is processed, so ackUserMessage re-keys optimistic:1 →
+    // server-1. That re-key must preserve the placeholder Map's order (the
+    // store renders placeholders after mirror.items in Map order) — otherwise
+    // the acked bubble transiently jumps BELOW the newer un-acked one, and
+    // applyMessage's FIFO echo-merge would later eat the WRONG placeholder,
+    // leaving the acked message rendered twice. The tail swap shape here is
+    // "mid-list swap": the tail row (optimistic:2) keeps its running pop, the
+    // acked row mounts settled without one.
+    const mkPending = (id: string): TranscriptItem => ({
+      id,
+      msg: makeMsg('user', { uuid: id, message: { content: [{ type: 'text', text: `msg ${id}` }] } }),
+      plainText: `msg ${id}`,
+      isCompactSummary: false,
+      hiddenByDefault: false,
+      sending: true,
+      receivedAt: Date.now(),
+    })
+    const server1: TranscriptItem = {
+      id: 'server-1',
+      msg: makeMsg('user', { uuid: 'server-1', message: { content: [{ type: 'text', text: 'msg optimistic:1' }] } }),
+      plainText: 'msg optimistic:1',
+      isCompactSummary: false,
+      hiddenByDefault: false,
+      receivedAt: Date.now(),
+    }
+
+    const { container, rerender } = render(<MessageList items={[mkPending('optimistic:1'), mkPending('optimistic:2')]} />)
+    expect(container.querySelector('[data-message-id="optimistic:1"]')!.classList.contains('msg-enter')).toBe(true)
+    expect(container.querySelector('[data-message-id="optimistic:2"]')!.classList.contains('msg-enter')).toBe(true)
+
+    // ACK 1: the acked placeholder re-keys to server-1 at its ORIGINAL slot.
+    // The rerender feeds the row shape the order-preserving re-key produces
+    // ([server-1, optimistic:2]) — the Map-order guarantee itself is pinned
+    // in reducer.test.ts ('acks preserve placeholder Map order…'); what THIS
+    // test pins is the render-layer consequences of that shape: the acked
+    // row mounts settled, the un-acked tail keeps its running pop.
+    rerender(<MessageList items={[server1, mkPending('optimistic:2')]} />)
+    const ids = Array.from(container.querySelectorAll('.virtuoso-item-wrapper'))
+      .map((w) => w.getAttribute('data-message-id'))
+    expect(ids).toEqual(['server-1', 'optimistic:2'])
+    // The un-acked tail keeps its running animation; the acked row mounts
+    // settled (no replay).
+    expect(container.querySelector('[data-message-id="optimistic:2"]')!.classList.contains('msg-enter')).toBe(true)
+    expect(container.querySelector('[data-message-id="server-1"]')!.classList.contains('msg-enter')).toBe(false)
+  })
+
+  it('keeps the previous pop running on a net-zero remove+append batch (delta 0, not a swap)', () => {
+    // A delta===0 render is not always an echo swap: an eviction and an
+    // optimistic send coalesced into one commit (two WS frames in the same
+    // batch) also keeps the list length. The previous tail row is still
+    // mounted at an earlier index with its pop mid-flight — the consumption
+    // block must recognize it via the presence scan and leave its flag alone.
+    // The replacement arrival gets no pop (its batch contained an eviction,
+    // so it isn't a clean live trickle) — accepted.
+    const mk = (id: string): TranscriptItem => ({
+      id,
+      msg: makeMsg('user', { uuid: id, message: { content: [{ type: 'text', text: `msg ${id}` }] } }),
+      plainText: `msg ${id}`,
+      isCompactSummary: false,
+      hiddenByDefault: false,
+      receivedAt: Date.now(),
+    })
+
+    const { container, rerender } = render(<MessageList items={[mk('a'), mk('b')]} />)
+    expect(container.querySelector('[data-message-id="b"]')!.classList.contains('msg-enter')).toBe(true)
+
+    // "a" evicted + "c" appended in one commit: [a, b] → [b, c], delta 0,
+    // tail id changed, but "b" is still in the list → its pop keeps running.
+    rerender(<MessageList items={[mk('b'), mk('c')]} />)
+    expect(container.querySelector('[data-message-id="b"]')!.classList.contains('msg-enter')).toBe(true)
+    expect(container.querySelector('[data-message-id="c"]')!.classList.contains('msg-enter')).toBe(false)
+  })
+
+  it('does not re-arm a popped message when its uuid re-appends after an eviction', () => {
+    // After a tail echo swap the server uuid is recorded as seen immediately
+    // (the delta!==0 recording loop skips the swap render). Without that, an
+    // evict → re-append of the same uuid inside the recency window (e.g. a
+    // retraction followed by a narrow reconnect replay) would see an "unseen"
+    // id at the tail and replay the entrance pop on a message the user
+    // already saw.
+    const mk = (id: string, sending = false): TranscriptItem => ({
+      id,
+      msg: makeMsg('user', { uuid: id, message: { content: [{ type: 'text', text: `msg ${id}` }] } }),
+      plainText: `msg ${id}`,
+      isCompactSummary: false,
+      hiddenByDefault: false,
+      sending,
+      receivedAt: Date.now(),
+    })
+
+    const { container, rerender } = render(<MessageList items={[mk('optimistic:x', true)]} />)
+    expect(container.querySelector('[data-message-id="optimistic:x"]')!.classList.contains('msg-enter')).toBe(true)
+
+    // Echo swap at the tail.
+    rerender(<MessageList items={[mk('server-1')]} />)
+    // Evicted (retraction) …
+    rerender(<MessageList items={[]} />)
+    // … and the same uuid re-appends within the recency window.
+    rerender(<MessageList items={[mk('server-1')]} />)
+    expect(container.querySelector('[data-message-id="server-1"]')!.classList.contains('msg-enter')).toBe(false)
+  })
+
   it('animates streaming content out before unmounting it', () => {
     vi.useFakeTimers()
     const msgs = [

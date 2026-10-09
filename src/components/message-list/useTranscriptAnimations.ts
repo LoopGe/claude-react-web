@@ -147,9 +147,8 @@ export function useTranscriptAnimations({
   // scheduled, so we schedule exactly one per armed row (see enterNodeRef).
   const enterCleanupScheduledRef = useRef<Set<string>>(new Set())
   const prevLenRef = useRef(0)
-  // Tracks the id of the last row so the gate can detect an in-place echo
-  // replacement (optimistic id → server uuid at the same tail position) and
-  // transfer the entering flag for a seamless animation.
+  // Last row's id — lets the delta===0 consumption block below recognise the
+  // optimistic→server-uuid echo swap (rationale lives with that block).
   const prevLastIdRef = useRef<string | null>(null)
   // Whole-transcript reveal gate. It arms only for the first ready transcript
   // for a key, so an empty session's first live message keeps using the
@@ -206,26 +205,62 @@ export function useTranscriptAnimations({
         }
       }
     }
-    // Echo-replacement transfer: when the server echo replaces the optimistic
-    // placeholder in-place (same index, same list length, different id), the
-    // new id should inherit the entering flag so the animation continues
-    // seamlessly rather than snapping to a static bubble mid-transition. Only
-    // the last row is checked — the tail window where replacements actually
-    // happen — to keep this O(1) instead of scanning the whole list.
-    {
-      const prevLastId = prevLastIdRef.current
-      const curLastId = curLen > 0 ? rows[curLen - 1].id : null
-      if (
-        prevLastId != null &&
-        curLastId != null &&
-        curLastId !== prevLastId &&
-        enterIdsRef.current.has(prevLastId)
-      ) {
-        enterIdsRef.current.delete(prevLastId)
-        enterIdsRef.current.add(curLastId)
-      }
-      prevLastIdRef.current = curLastId
+    // Echo-replacement consumption: when the server echo (or the POST ack)
+    // re-keys the optimistic placeholder to the server uuid, the tail row's
+    // React key changes and Virtuoso REMOUNTS it. A fresh DOM node restarts a
+    // CSS animation from its `from` keyframe, so transferring the entering
+    // flag to the new id (the original behaviour) replayed the entrance from
+    // opacity 0 — the sent bubble visibly blinked out and re-ran the pop
+    // ("sent message flashes"). The pop belongs to the insert event only:
+    // consume the flag here so the swapped-in row mounts settled, straight
+    // into its acknowledged state (spinner gone, full opacity) — the correct
+    // end state of the insert's animation, with no replay.
+    //
+    // Scoped to delta === 0 (the swap is length-preserving: one item appended
+    // to mirror.items, the placeholder dropped from intent). A genuine tail
+    // append (delta > 0) changes the tail id too, but the PREVIOUS tail row is
+    // still mounted and possibly mid-animation — consuming its flag there
+    // would strip `.msg-enter` mid-flight and truncate the running pop.
+    // delta === 0 alone isn't a perfect discriminator: a net-zero
+    // remove+append batch (eviction + optimistic send coalesced into one
+    // commit) also lands here with the old tail STILL MOUNTED at an earlier
+    // index. The precise signature of the swap is that the previous tail id
+    // has LEFT the list entirely — gated on a presence scan. The scan runs
+    // only when the tail id actually changed at delta 0 (the swap itself, or
+    // a same-length replay reshape), so its O(n) cost is negligible.
+    //
+    // Two independent effects, both keyed on that swap shape:
+    //   1. Record the swapped-in uuid as seen — unconditionally, not gated on
+    //      the pop's flag: a slow ack (>240ms) lands after animationend has
+    //      already consumed the flag, and the uuid must still be marked seen
+    //      so a later evict + re-append inside the recency window (e.g. a
+    //      retraction followed by a narrow reconnect replay) can't re-arm a
+    //      pop the user already saw.
+    //   2. Consume the previous tail's entering flag (delete is a no-op when
+    //      animationend got there first).
+    // A swap that landed MID-LIST (second send queued before the first echo)
+    // matches neither shape here — its swapped-in id is recorded by the next
+    // delta!==0 render and its dead flag lives out ENTER_CLEANUP_MS. The
+    // residual hole (that message evicted + re-appended before any
+    // length-changing render, all inside the 10s recency window) re-plays one
+    // pop at worst and needs a store-level re-key signal to close exactly —
+    // accepted.
+    const curLastId = curLen > 0 ? rows[curLen - 1].id : null
+    const prevLastId = prevLastIdRef.current
+    if (
+      delta === 0 &&
+      // When prevLastId is set the list was non-empty last render, so
+      // delta===0 keeps it non-empty and curLastId is non-null too — the
+      // explicit check just makes that invariant visible (and satisfies TS).
+      curLastId != null &&
+      prevLastId != null &&
+      curLastId !== prevLastId &&
+      !rows.some((r) => r.id === prevLastId)
+    ) {
+      knownIdsRef.current.add(curLastId)
+      enterIdsRef.current.delete(prevLastId)
     }
+    prevLastIdRef.current = curLastId
     // Record every current id so a later in-place swap / re-mount of the same
     // message is recognised as already-seen and never re-animates.
     //
@@ -236,11 +271,9 @@ export function useTranscriptAnimations({
     // would be a no-op. For a 1000-message transcript at ~12fps streaming
     // that's ~12k wasted Set.add calls/sec otherwise.
     //
-    // A length-preserving in-place swap (optimistic echo → server uuid at the
-    // same index, delta === 0) skips this — the swapped-in id is recorded on
-    // the next genuine append. That's safe: re-mounts never re-animate anyway
-    // (the `armed` gate requires delta > 0), and the transfer block above
-    // already moved the entering flag to the new id.
+    // A length-preserving tail swap (delta === 0) skips this — the swap block
+    // above records its own swapped-in uuid; mid-list swap-ins and their
+    // residual hole are documented there too.
     if (delta !== 0) {
       for (const row of rows) knownIdsRef.current.add(row.id)
       // Bound the set so a multi-thousand-message session doesn't leak ids.

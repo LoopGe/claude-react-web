@@ -1079,9 +1079,27 @@ function ackUserMessage(
   }
   // Carry sending=false implicitly (toTranscriptItem doesn't set it). Re-key
   // the map to the server uuid so the next echo (if any) can match.
-  const next = new Map(state.intent.pendingPlaceholders)
-  next.delete(pendingId)
-  next.set(updated.id, updated)
+  //
+  // The re-key must PRESERVE the entry's position in the Map. A delete+set
+  // moves the ack'd entry to the end, which (with another send still pending)
+  // transiently renders the acked bubble BELOW the newer un-acked one — and
+  // worse, breaks applyMessage's echo-merge, which consumes the OLDEST
+  // placeholder on each top-level user echo in FIFO send order: after the
+  // reorder the oldest entry is the WRONG one, so the echo eats the newer
+  // placeholder and the acked one lingers as a duplicate bubble until the
+  // turn-end sweep. Map preserves insertion order, so rebuilding the map
+  // entry-by-entry (replacing the value at the ack'd entry's original slot)
+  // keeps order === send order across ack/echo interleavings. This closes
+  // the wrong-eat class ONLY for placeholders that eventually echo: a
+  // placeholder removed without its echo (rollbackUserMessage after the
+  // server nonetheless accepted, or a turn-end sweep racing a late echo)
+  // still shifts the FIFO — a pre-existing edge accepted here, since
+  // signature-based matching was explicitly deferred in applyMessage.
+  const next = new Map<string, TranscriptItem>()
+  for (const [key, value] of state.intent.pendingPlaceholders) {
+    if (key === pendingId) next.set(updated.id, updated)
+    else next.set(key, value)
+  }
 
   // If the consumed signal already arrived, drop it from the mirror cache
   // since we've folded it into the placeholder's msg.
