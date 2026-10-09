@@ -88,6 +88,18 @@ export const WorkingBubble = memo(function WorkingBubble({
   const active = _active ?? true
   const idle = !active && !waiting
 
+  // MCP tool names are `mcp__<server>__<tool>` — unbounded length, and in this
+  // mono-font status bar a long server name overflows the row. Every MCP call
+  // collapses to one fixed "Calling MCP..." label (the specific tool still
+  // shows on the tool-use card in the transcript); the phase key collapses to
+  // `mcp` with it, so swapping between two MCP tools doesn't replay the label
+  // entrance animation on identical text.
+  const phaseKey =
+    activePhase && activePhase !== 'thinking' && activePhase !== 'writing'
+      ? activePhase.name.startsWith('mcp__')
+        ? 'mcp'
+        : activePhase.name
+      : null
   // Per-phase key so the working-bar-label span remounts (and its entrance
   // animation replays) when the SDK crosses a thinking/writing/tool_use
   // boundary — a soft crossfade instead of a hard label swap. Distinct from
@@ -100,8 +112,8 @@ export const WorkingBubble = memo(function WorkingBubble({
         ? 'thinking'
         : activePhase === 'writing'
           ? 'writing'
-          : activePhase
-            ? `tool:${activePhase.name}`
+          : phaseKey
+            ? `tool:${phaseKey}`
             : 'working'
   const labelText = waiting
     ? 'Waiting...'
@@ -111,8 +123,10 @@ export const WorkingBubble = memo(function WorkingBubble({
         ? 'Thinking...'
         : activePhase === 'writing'
           ? 'Writing...'
-          : activePhase
-            ? `Calling ${activePhase.name}...`
+          : phaseKey
+            ? phaseKey === 'mcp'
+              ? 'Calling MCP...'
+              : `Calling ${phaseKey}...`
             : 'Working'
 
   // Live counters ease toward their targets (see useCountUp) so the
