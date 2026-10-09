@@ -102,8 +102,11 @@ function capToolInput(input: unknown): unknown {
 
 /** Cap a tool_result block's `content` (string | Block[] | undefined).
  *  Preserves `tool_use_id`, `is_error`, `type`. Returns the original block
- *  reference when nothing changed. */
-function capToolResultBlock(block: Block): Block {
+ *  reference when nothing changed. Sets `dropped.image` when an inner image
+ *  block is dropped, so the caller can stamp the message (see
+ *  `cacheDroppedMedia` — the subscribe path downgrades an incremental replay
+ *  to a full one when any cached copy lost an image). */
+function capToolResultBlock(block: Block, dropped: { image: boolean }): Block {
   const content = block.content
   let nextContent: unknown = content
   let changed = false
@@ -123,6 +126,7 @@ function capToolResultBlock(block: Block): Block {
     for (const inner of content) {
       if (inner && typeof inner === 'object' && (inner as Block).type === 'image') {
         arrChanged = true // drop
+        dropped.image = true
         continue
       }
       if (inner && typeof inner === 'object' && (inner as Block).type === 'text') {
@@ -151,8 +155,9 @@ function capToolResultBlock(block: Block): Block {
 }
 
 /** Project a single block. Returns the original reference when nothing
- *  changed (the common case for small blocks). Image blocks are dropped. */
-function projectBlock(block: Block): Block | null {
+ *  changed (the common case for small blocks). Image blocks are dropped and
+ *  reported through `dropped.image` so the caller can stamp the message. */
+function projectBlock(block: Block, dropped: { image: boolean }): Block | null {
   switch (block.type) {
     case 'text': {
       const t = block.text
@@ -173,11 +178,12 @@ function projectBlock(block: Block): Block | null {
       return cappedInput === block.input ? block : { ...block, input: cappedInput }
     }
     case 'tool_result':
-      return capToolResultBlock(block)
+      return capToolResultBlock(block, dropped)
     case 'image':
       // Images (base64) are the single largest field — 500KB-2MB each.
       // Drop on persist; replay restores them within seconds. The caller
       // substitutes a marker if this leaves the message with no blocks.
+      dropped.image = true
       return null
     default:
       return block
@@ -205,10 +211,11 @@ export function projectMessage(msg: SdkMessage): SdkMessage {
   if (!Array.isArray(content)) return msg
 
   // Array content — project each block, drop images.
+  const dropped = { image: false }
   let changed = false
   const out: Block[] = []
   for (const block of content) {
-    const projected = projectBlock(block as Block)
+    const projected = projectBlock(block as Block, dropped)
     if (projected === null) {
       changed = true // image dropped
     } else {
@@ -225,5 +232,14 @@ export function projectMessage(msg: SdkMessage): SdkMessage {
   }
 
   if (!changed) return msg
-  return { ...msg, message: { ...message, content: out } }
+  // Stamp the copy when this projection pass dropped an image, so the hydrate
+  // path knows the cache is degraded and a later subscribe can request a full
+  // replay to restore the lost images. `...msg` carries an existing stamp
+  // forward on re-projection (a hydrated copy drops nothing new but must stay
+  // marked — see the cacheDroppedMedia doc on SdkMessage).
+  return {
+    ...msg,
+    message: { ...message, content: out },
+    ...(dropped.image ? { cacheDroppedMedia: true as const } : {}),
+  }
 }

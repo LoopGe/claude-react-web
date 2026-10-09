@@ -155,8 +155,8 @@ describe('SessionStore hydration', () => {
     const raw = localStorage.getItem(STORAGE_PREFIX + sessionId)
     expect(raw).not.toBeNull()
     const data = JSON.parse(raw!)
-    // v4 — see the cache-version note on loadFromStorage in store.ts.
-    expect(data.v).toBe(4)
+    // v5 — see the CACHE_VERSION note on persistToStorage in store.ts.
+    expect(data.v).toBe(5)
     expect(Array.isArray(data.messages)).toBe(true)
     expect(Array.isArray(data.plainTexts)).toBe(true)
     expect(data.plainTexts).toHaveLength(data.messages.length)
@@ -319,8 +319,8 @@ describe('SessionStore projection (persist-only capping)', () => {
     const raw = localStorage.getItem(STORAGE_PREFIX + id)
     expect(raw).not.toBeNull()
     const data = JSON.parse(raw!)
-    // v4 — see the cache-version note on loadFromStorage in store.ts.
-    expect(data.v).toBe(4)
+    // v5 — see the CACHE_VERSION note on persistToStorage in store.ts.
+    expect(data.v).toBe(5)
     const msgs = data.messages as SdkMessage[]
 
     // tool_result content capped (<= 8000 + marker).
@@ -388,8 +388,8 @@ describe('SessionStore projection (persist-only capping)', () => {
     const raw = localStorage.getItem(STORAGE_PREFIX + id)
     expect(raw).not.toBeNull()
     const data = JSON.parse(raw!)
-    // v4 — see the cache-version note on loadFromStorage in store.ts.
-    expect(data.v).toBe(4)
+    // v5 — see the CACHE_VERSION note on persistToStorage in store.ts.
+    expect(data.v).toBe(5)
     expect(Array.isArray(data.plainTexts)).toBe(true)
     expect(data.plainTexts).toHaveLength(data.messages.length)
     // The uuid-less message is the newest → kept by the largest-suffix trim,
@@ -845,5 +845,244 @@ describe('SessionStore streamingContent projection', () => {
     expect(store.getSnapshot().streamingContent).toBe('hello world')
     store.dispatch({ type: 'LIVE_TURN_FLUSH' })
     expect(store.getSnapshot().streamingContent).toBe('hello world tail')
+  })
+})
+
+describe('SessionStore: dropped-media cache flag + version migration', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  function imagePromptMsg(uuid: string): SdkMessage {
+    return {
+      type: 'user',
+      uuid,
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'A'.repeat(100) } }],
+      },
+    } as unknown as SdkMessage
+  }
+
+  it('flags a pre-stamp (v4) cache as conservatively degraded', async () => {
+    // A v4 cache was written by a build that could not mark its dropped
+    // images, so its image-less copies are indistinguishable from honest
+    // ones. The store must assume degradation and let the subscribe path
+    // force a full replay.
+    const sessionId = 'session-v4-degraded'
+    localStorage.setItem(
+      STORAGE_PREFIX + sessionId,
+      JSON.stringify({
+        v: 4,
+        savedAt: Date.now(),
+        messages: [
+          { type: 'user', uuid: 'u1', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+        ],
+        plainTexts: ['hi'],
+        lastMessageUuid: 'u1',
+        dismissedSubagents: [],
+      }),
+    )
+    const store = new SessionStore(sessionId)
+    await store.hydrateDone
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(true)
+  })
+
+  it('flags a v5 cache by its stamps, not its version', async () => {
+    const sessionId = 'session-v5-stamped'
+    const stamped = { ...imagePromptMsg('u-stamped'), cacheDroppedMedia: true as const }
+    localStorage.setItem(
+      STORAGE_PREFIX + sessionId,
+      JSON.stringify({
+        v: 5,
+        savedAt: Date.now(),
+        messages: [stamped],
+        plainTexts: [null],
+        lastMessageUuid: 'u-stamped',
+        dismissedSubagents: [],
+      }),
+    )
+    const store = new SessionStore(sessionId)
+    await store.hydrateDone
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(true)
+  })
+
+  it('does not flag a v5 cache whose messages carry no stamps', async () => {
+    const sessionId = 'session-v5-clean'
+    localStorage.setItem(
+      STORAGE_PREFIX + sessionId,
+      JSON.stringify({
+        v: 5,
+        savedAt: Date.now(),
+        messages: [
+          { type: 'user', uuid: 'u1', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+        ],
+        plainTexts: ['hi'],
+        lastMessageUuid: 'u1',
+        dismissedSubagents: [],
+      }),
+    )
+    const store = new SessionStore(sessionId)
+    await store.hydrateDone
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(false)
+  })
+
+  it('writes v4 until the first replay refreshes the mirror, v5 after', async () => {
+    // The migratory safety rule: a mirror hydrated from a pre-stamp cache
+    // cannot vouch for its contents, so writes keep the old version. A
+    // REPLAY_REPLACE proves a replay ran against this cache, after which the
+    // projection's stamps are accurate and writes claim v5.
+    const sessionId = 'session-version-lifecycle'
+    localStorage.setItem(
+      STORAGE_PREFIX + sessionId,
+      JSON.stringify({
+        v: 4,
+        savedAt: Date.now(),
+        messages: [
+          { type: 'user', uuid: 'u1', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+        ],
+        plainTexts: ['hi'],
+        lastMessageUuid: 'u1',
+        dismissedSubagents: [],
+      }),
+    )
+    const store = new SessionStore(sessionId)
+    await store.hydrateDone
+    // A v4 cache triggers NO hydrate-time write (only v2/v3 upgrade-write)…
+    let data = JSON.parse(localStorage.getItem(STORAGE_PREFIX + sessionId)!)
+    // …so the stored version is trivially unchanged — the meaningful guard is
+    // the two writes below: any write from this pre-replay mirror must stay
+    // at v4, or a tab closed now would come back as "trustworthy v5, no
+    // stamps" and never migrate.
+    expect(data.v).toBe(4)
+
+    store.dispatch({ type: 'MESSAGE', message: {
+      type: 'assistant', uuid: 'a1', parent_tool_use_id: null,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
+    } as unknown as SdkMessage })
+    // A live MESSAGE alone (debounced save) still writes the old version.
+    data = JSON.parse(localStorage.getItem(STORAGE_PREFIX + sessionId)!)
+    expect(data.v).toBe(4)
+
+    store.persistNow() // flush the debounce deterministically
+    data = JSON.parse(localStorage.getItem(STORAGE_PREFIX + sessionId)!)
+    expect(data.v).toBe(4)
+
+    // The replay lands: the mirror is refreshed, stamps are trustworthy.
+    store.dispatch({ type: 'REPLAY_REPLACE', messages: [
+      { type: 'user', uuid: 'u1', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+      { type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] } },
+    ] as unknown as SdkMessage[], permissions: [] })
+    store.persistNow()
+    data = JSON.parse(localStorage.getItem(STORAGE_PREFIX + sessionId)!)
+    expect(data.v).toBe(5)
+  })
+})
+
+describe('SessionStore: replay coverage gates the migratory hold', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  function seedV4(sessionId: string): void {
+    localStorage.setItem(
+      STORAGE_PREFIX + sessionId,
+      JSON.stringify({
+        v: 4,
+        savedAt: Date.now(),
+        messages: [
+          { type: 'user', uuid: 'u1', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+        ],
+        plainTexts: ['hi'],
+        lastMessageUuid: 'u1',
+        dismissedSubagents: [],
+      }),
+    )
+  }
+
+  it('a full-coverage replay clears the flag and releases the version hold', async () => {
+    const sessionId = 'session-coverage-full'
+    seedV4(sessionId)
+    const store = new SessionStore(sessionId)
+    await store.hydrateDone
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(true)
+
+    // Payload carries every relevant cached frame (u1) → the merge verified
+    // (and, where degraded, replaced) each one.
+    store.dispatch({ type: 'REPLAY_REPLACE', messages: [
+      { type: 'user', uuid: 'u1', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+      { type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] } },
+    ] as unknown as SdkMessage[], permissions: [] })
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(false)
+    store.persistNow()
+    expect(JSON.parse(localStorage.getItem(STORAGE_PREFIX + sessionId)!).v).toBe(5)
+  })
+
+  it('an empty replay (trimmed ring) keeps the hold — nothing was restored', async () => {
+    const sessionId = 'session-coverage-empty'
+    seedV4(sessionId)
+    const store = new SessionStore(sessionId)
+    await store.hydrateDone
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(true)
+
+    store.dispatch({ type: 'REPLAY_REPLACE', messages: [], permissions: [] })
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(true)
+    store.persistNow()
+    // v4 must survive: a stamp-less degraded copy written as "clean v5" would
+    // never be revisited.
+    expect(JSON.parse(localStorage.getItem(STORAGE_PREFIX + sessionId)!).v).toBe(4)
+  })
+
+  it('a clean-reconnect tail (cache not covered) keeps the hold', async () => {
+    const sessionId = 'session-coverage-tail'
+    seedV4(sessionId)
+    const store = new SessionStore(sessionId)
+    await store.hydrateDone
+
+    // Strictly-newer payload: u1 is absent → the cached copies were not
+    // re-verified, so the hold must stay.
+    store.dispatch({ type: 'REPLAY_REPLACE', messages: [
+      { type: 'assistant', uuid: 'a2', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'newer' }] } },
+    ] as unknown as SdkMessage[], permissions: [] })
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(true)
+    store.persistNow()
+    expect(JSON.parse(localStorage.getItem(STORAGE_PREFIX + sessionId)!).v).toBe(4)
+  })
+
+  it('frames a replay can never carry do not block coverage', async () => {
+    const sessionId = 'session-coverage-frames'
+    // u1 (restorable) + a result frame + a system frame + a sidechain frame —
+    // only u1 is required to be in the payload.
+    localStorage.setItem(
+      STORAGE_PREFIX + sessionId,
+      JSON.stringify({
+        v: 4,
+        savedAt: Date.now(),
+        messages: [
+          { type: 'user', uuid: 'u1', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+          { type: 'result', subtype: 'success', uuid: 'r1' },
+          { type: 'system', subtype: 'error', uuid: 's1', message: 'err' },
+          { type: 'user', uuid: 'sc1', parent_tool_use_id: 'toolu_1', message: { role: 'user', content: 'inner' } },
+        ],
+        plainTexts: ['hi', null, null, null],
+        lastMessageUuid: 'sc1',
+        dismissedSubagents: [],
+      }),
+    )
+    const store = new SessionStore(sessionId)
+    await store.hydrateDone
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(true)
+
+    store.dispatch({ type: 'REPLAY_REPLACE', messages: [
+      { type: 'user', uuid: 'u1', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+    ] as unknown as SdkMessage[], permissions: [] })
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(false)
   })
 })

@@ -769,7 +769,15 @@ export function useChatStream(
     const hasCachedTranscript = !burstOpen && (cursor != null || store.getSnapshot().items.length > 0)
     const release = hub.subscribe(
       sessionId,
-      cursor,
+      // A cache whose persist projection dropped image blocks (see
+      // projectMessage's cacheDroppedMedia stamp) can never be refreshed by an
+      // incremental replay — the server only sends messages STRICTLY AFTER the
+      // cursor, and the degraded copies predate it. Skip the cursor so the
+      // server serves a full replay; the merge then replaces the image-less
+      // cached copies with authoritative ones (replaceStaleCachedMessages) and
+      // previously-pasted images come back after a reload. Sessions whose
+      // cache is intact keep the cheap incremental cursor.
+      store.getSnapshot().cacheHasDroppedMedia ? undefined : cursor,
       // This listener needs the history itself, not just a live channel: the
       // server re-serves the replay sliced at the cursor above, so a warm
       // store gets a near-empty burst and a cold one gets everything.

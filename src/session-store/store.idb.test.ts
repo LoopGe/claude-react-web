@@ -471,3 +471,58 @@ describe('SessionStore IDB cache (Phase 1)', () => {
     if (a2Idx >= 0) expect(a2Idx).toBeGreaterThan(ids.indexOf('u1'))
   })
 })
+
+describe('SessionStore IDB cache: dropped-media flag from IDB cold-load', () => {
+  beforeEach(() => {
+    resetIdb()
+    localStorage.clear()
+  })
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it('flags the session when a prepended IDB record carries the projection stamp', async () => {
+    // No LS cache — the transcript comes from IDB alone. A stamped record
+    // means the persist projection dropped an image from that copy; the
+    // subscribe path must force a full replay or the image-less copy could
+    // never be refreshed (it predates any cursor).
+    const sessionId = 's-idb-stamped'
+    const stamped: SdkMessage = {
+      type: 'user',
+      uuid: 'u-img',
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: '给你原图片' }],
+      },
+      cacheDroppedMedia: true,
+    } as unknown as SdkMessage
+    const db = await openDb()
+    if (!db) throw new Error('IDB unavailable')
+    await putMessages(
+      db,
+      [{ sessionId, uuid: 'u-img', seq: 1, msg: stamped }],
+      { sessionId, maxSeq: 1, minSeq: 1 },
+    )
+
+    const store = new SessionStore(sessionId)
+    await store.idbReady
+    expect(store.getSnapshot().items.length).toBe(1)
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(true)
+  })
+
+  it('does not flag when the IDB records carry no stamps', async () => {
+    const sessionId = 's-idb-clean'
+    const db = await openDb()
+    if (!db) throw new Error('IDB unavailable')
+    await putMessages(
+      db,
+      [{ sessionId, uuid: 'u1', seq: 1, msg: userMsg('u1', 'plain text') }],
+      { sessionId, maxSeq: 1, minSeq: 1 },
+    )
+
+    const store = new SessionStore(sessionId)
+    await store.idbReady
+    expect(store.getSnapshot().cacheHasDroppedMedia).toBe(false)
+  })
+})

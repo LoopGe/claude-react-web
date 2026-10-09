@@ -452,7 +452,7 @@ function replayReplace(
   // newer, drop the overlap). This makes the merge correct regardless of how
   // the server happened to slice — no reliance on sinceUuid landing cleanly.
   if (payload.length > 0 && prevMirror.items.length > 0) {
-    const { older, newer } = splitReplayAgainstCache(payload, prevMirror.items)
+    const { older, newer, overlap } = splitReplayAgainstCache(payload, prevMirror.items)
     // Preserve an in-progress turn's accumulated text across a benign
     // reconnect / panel-switch-back replay. The live turn's partial text lives
     // ONLY in `liveTurn` — stream_event deltas never enter the history ring
@@ -474,6 +474,10 @@ function replayReplace(
       state = reduceSessionState(state, { type: 'PERMISSION_REQUEST', request: permission })
     }
     if (older.length > 0) state = prependMessages(state, older)
+    // Overlap frames with a degraded cached copy are replaced by the
+    // authoritative replay copy BEFORE the newer tail appends — see the
+    // helper doc. Identical copies are skipped inside the helper.
+    state = replaceStaleCachedMessages(state, overlap)
     for (const message of newer) {
       state = applyMessage(state, message)
     }
@@ -539,9 +543,126 @@ function replayReplace(
   return withMirror(prevState, { ...sweptMirror, replayReady: true })
 }
 
+/** Cheap content-shape fingerprint for the replace-compare below. Block types
+ *  plus string lengths with head/tail anchors — NEVER a full serialization
+ *  (a replay payload routinely carries multi-MB base64 images, and the cached
+ *  copy holds one too after a restore; stringifying both per overlap frame
+ *  would churn tens of MB on the main thread).
+ *
+ *  Soundness for the same-uuid compare: the cached copy is either the server
+ *  copy verbatim (JSON round-trips preserve shape) or its persist projection,
+ *  which only ever SHRINKS content (drops blocks, truncates strings with a
+ *  marker appended). So equal shape ⟹ no shrink happened ⟹ identical content;
+ *  the head/tail anchors make a same-length different-bytes collision
+ *  impossible in practice. */
+function strShape(s: string): string {
+  return `${s.length}:${s.slice(0, 24)}:${s.slice(-24)}`
+}
+
+function blockShape(b: unknown): string {
+  if (!b || typeof b !== 'object') return '?'
+  const t = (b as { type?: unknown }).type
+  if (t === 'text' || t === 'thinking') {
+    const v = (b as { text?: unknown; thinking?: unknown })
+    const s = typeof v.text === 'string' ? v.text : typeof v.thinking === 'string' ? v.thinking : ''
+    return `${t === 'text' ? 't' : 'k'}:${strShape(s)}`
+  }
+  if (t === 'image') {
+    const d = (b as { source?: { data?: unknown } }).source?.data
+    return typeof d === 'string' ? `i:${strShape(d)}` : 'i'
+  }
+  if (t === 'tool_use') {
+    // Only the fields capToolInput can shrink — structural fields don't
+    // affect the compare and full-input serialization is unbounded.
+    const o = (b as { input?: unknown }).input
+    if (!o || typeof o !== 'object') return 'tu'
+    const big = (v: unknown): string => (typeof v === 'string' ? strShape(v) : '·')
+    const edits = Array.isArray((o as Record<string, unknown>)['edits'])
+      ? ((o as Record<string, unknown>)['edits'] as unknown[]).map((e) => {
+          const eo = (e ?? {}) as Record<string, unknown>
+          return `${big(eo['old_string'])}>${big(eo['new_string'])}`
+        }).join(';')
+      : '·'
+    const rec = o as Record<string, unknown>
+    return `tu:${big(rec['content'])}:${big(rec['old_string'])}:${big(rec['new_string'])}:${edits}`
+  }
+  if (t === 'tool_result') {
+    const c = (b as { content?: unknown }).content
+    if (typeof c === 'string') return `r:${strShape(c)}`
+    if (Array.isArray(c)) return `r:[${c.map(blockShape).join('|')}]`
+    return 'r'
+  }
+  return String(t ?? '?')
+}
+
+function contentShape(msg: SdkMessage): string {
+  const c = (msg.message as { content?: unknown } | undefined)?.content
+  if (c === undefined) return 'u'
+  if (c === null) return 'n'
+  if (typeof c === 'string') return `s:${strShape(c)}`
+  if (!Array.isArray(c)) return 'o'
+  return c.map(blockShape).join('|')
+}
+
+/** Replace cached copies whose content differs from the authoritative replay
+ *  copy under the same uuid.
+ *
+ *  The persist projection (project.ts) degrades cached messages on the promise
+ *  that "replay restores them within seconds" — image blocks are dropped and
+ *  long text is capped. The overlap bracket alone made that promise false: a
+ *  same-uuid replay frame was DROPPED as already-on-screen, so the degraded
+ *  cached copy won and pasted images vanished permanently after a reload
+ *  (text still rendered, so nothing but the missing image gave it away).
+ *
+ *  For each overlap frame whose uuid is in the cache, a content compare picks
+ *  between the two outcomes the overlap previously conflated:
+ *    - identical copies (the common full-overlap reconnect) → skipped, zero
+ *      cost, no churn (the "shows twice" guard stays intact — nothing is
+ *      re-applied or re-indexed);
+ *    - differing copies (cache degraded by the projection, or ring vs disk
+ *      image encodings) → the cached item + message are swapped for the
+ *      replay copy at their existing position, keeping the items/messages
+ *      index alignment. toTranscriptItem re-derives plainText / deliveryStatus
+ *      from the full copy; the lifecycle indexes are untouched — the
+ *      projection preserves everything they read (is_error, short needles).
+ *      Identical-sibling items keep their object identity. */
+function replaceStaleCachedMessages(state: SessionState, incoming: SdkMessage[]): SessionState {
+  if (incoming.length === 0) return state
+  const mirror = state.mirror
+  const indexByUuid = new Map<string, number>()
+  for (let i = 0; i < mirror.messages.length; i++) {
+    const u = mirror.messages[i]?.uuid
+    if (typeof u === 'string') indexByUuid.set(u, i)
+  }
+  let items = mirror.items
+  let messages = mirror.messages
+  for (const msg of incoming) {
+    const u = typeof msg.uuid === 'string' ? msg.uuid : null
+    if (u == null) continue
+    const idx = indexByUuid.get(u)
+    if (idx === undefined) continue
+    const cached = messages[idx]
+    if (cached === msg) continue
+    // Shape compare, not identity: the cache copy went through JSON
+    // round-trips (persist) and the projection, so reference equality never
+    // holds for a degraded copy and rarely for an intact one. Only runs for
+    // uuid matches (the overlap bracket).
+    if (contentShape(cached) === contentShape(msg)) continue
+    const item = toTranscriptItem(msg, items[idx - 1])
+    if (!item) continue
+    if (items === mirror.items) {
+      items = [...mirror.items]
+      messages = [...mirror.messages]
+    }
+    items[idx] = item
+    messages[idx] = msg
+  }
+  if (items === mirror.items) return state
+  return withMirror(state, { ...mirror, items, messages })
+}
+
 /** Overlap-anchor key: the message uuid, or null when the frame must NOT
  *  anchor the overlap bracket.
- *
  *  We anchor ONLY on disk-stable frames (assistant / system / tool_result-
  *  bearing user), whose uuids match between the in-memory ring and the on-disk
  *  transcript. Top-level user prompts are deliberately excluded (return null):
@@ -565,7 +686,11 @@ function overlapAnchorUuid(msg: SdkMessage): string | null {
 }
 
 /** Split a replay payload into the portion OLDER than the cached transcript
- *  and the portion NEWER than it, dropping anything that overlaps the cache.
+ *  and the portion NEWER than it. The middle (the overlap bracket) is
+ *  returned separately: the caller drops it by default (identical cached
+ *  copies must not be re-applied — see replayReplace) but may REPLACE
+ *  degraded cached copies whose content differs from the authoritative replay
+ *  copy (see replaceStaleCachedMessages — the image-restore path).
  *
  *  Both the replay payload and the cache are chronological slices of the same
  *  transcript. We bracket the overlap by disk-stable uuid (overlapAnchorUuid):
@@ -588,7 +713,7 @@ function overlapAnchorUuid(msg: SdkMessage): string | null {
 export function splitReplayAgainstCache(
   messages: SdkMessage[],
   items: ServerMirror['items'],
-): { older: SdkMessage[]; newer: SdkMessage[] } {
+): { older: SdkMessage[]; newer: SdkMessage[]; overlap: SdkMessage[] } {
   // cacheUuids holds the uuid of EVERY cache message — disk-stable frames
   // (assistant / system / tool_result-bearing user) AND top-level user prompts
   // — so the overlap bracket below can match a re-sent prompt by uuid too.
@@ -640,6 +765,7 @@ export function splitReplayAgainstCache(
     return {
       older: messages.slice(0, firstOverlap),
       newer: messages.slice(lastOverlap + 1),
+      overlap: messages.slice(firstOverlap, lastOverlap + 1),
     }
   }
   // No disk-stable anchor overlap. Degenerate case: a transcript with NO
@@ -670,11 +796,11 @@ export function splitReplayAgainstCache(
   // reply yet) — a single tab can't send while disconnected, so it can't
   // happen single-tab.
   if (!cacheHasAnchor && !replayHasAnchor && promptSequencesEqual(items, messages)) {
-    return { older: [], newer: [] }
+    return { older: [], newer: [], overlap: [] }
   }
   // No overlap → clean reconnect (or a disjoint older batch). Treat the whole
   // payload as newer; applyMessage append preserves the original behaviour.
-  return { older: [], newer: messages }
+  return { older: [], newer: messages, overlap: [] }
 }
 
 function promptSequencesEqual(
@@ -696,6 +822,17 @@ function promptSequencesEqual(
   }
   const nextMsgFp = (): string | null => {
     while (m < messages.length) {
+      // Deliberately NOT projected before fingerprinting: projecting an
+      // image-only prompt erases the image identity (every marker-substituted
+      // copy fingerprints identically), which would false-drop a genuinely
+      // different same-text prompt — the exact data loss promptContentFingerprint
+      // exists to prevent. The residual cost is a one-time cosmetic duplicate
+      // when an UN-BRIDGED prompt-only transcript's cached copy is degraded
+      // (marker) and a cursor-less full replay re-sends the prompt: the
+      // fingerprint mismatch appends the full copy once, after which its
+      // fingerprint exists on-screen and later replays dedup against it.
+      // Bridged sessions (the norm) never reach this fallback — their prompt
+      // uuids match and the overlap bracket handles them exactly.
       const fp = promptContentFingerprint(messages[m])
       if (fp != null) return fp
       m++

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { reduceSessionState, splitReplayAgainstCache, rebuildIndexesFromMessages, reapplyDismissed, settleStaleLiveSubagents, dedupeReplayPayload } from './reducer'
+import { projectMessage } from './project'
 import { createInitialSessionState, type SessionState, type ServerMirror } from './types'
 import { isTrimBoundary } from './normalize'
 import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
@@ -4791,5 +4792,121 @@ describe('REPLAY_REPLACE payload dedup (superseded-burst concatenation)', () => 
       asstMsg('a2', 'more'),
     ])
     expect(ids(state)).toEqual(['u1', 'a1', 'a2'])
+  })
+})
+
+// ─── replay restores projected (image-stripped) cached copies ────────────────
+// Regression: projectMessage drops image blocks from the persisted cache on
+// the promise that "replay restores them within seconds", but the merge path
+// bracketed same-uuid payload frames into the overlap and DROPPED them — so
+// the degraded cached copy won and pasted images never came back after a
+// reload. The replay copy is authoritative: a cached copy whose content
+// differs from the replay copy must be REPLACED, not kept.
+
+describe('reducer: replay restores projected cached copies', () => {
+  function richPromptMsg(uuid: string): SdkMessage {
+    return {
+      type: 'user',
+      uuid,
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: '给你原图片' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'A'.repeat(1000) } },
+        ],
+      },
+    } as unknown as SdkMessage
+  }
+
+  const itemContent = (state: ReturnType<typeof createInitialSessionState>, uuid: string) => {
+    const it = state.mirror.items.find((i) => i.id === uuid)
+    return it ? (it.msg as { message: { content: Array<{ type: string }> } }).message.content : null
+  }
+  const hasImage = (content: Array<{ type: string }> | null) =>
+    Array.isArray(content) && content.some((b) => b.type === 'image')
+
+  it('replaces a projected (image-stripped) cached prompt with the full replay copy', () => {
+    const full = richPromptMsg('u-img')
+    const cached = projectMessage(full) // persist path: image dropped
+    expect(hasImage(itemContent(seedCache([cached]), 'u-img'))).toBe(false)
+
+    // Cold load: the hydrated cache meets the server's full replay (restart
+    // re-seed, or a subscribe that skipped sinceUuid because the cache holds
+    // projected copies). Same uuid, degraded cache copy → must be replaced.
+    const after = replay(seedCache([cached, asstMsg('a1', 'ok')]), [full, asstMsg('a1', 'ok')])
+    expect(ids(after)).toEqual(['u-img', 'a1']) // no duplicate append
+    expect(hasImage(itemContent(after, 'u-img'))).toBe(true) // image restored
+  })
+
+  it('leaves identical overlap untouched (no duplicates, no churn)', () => {
+    const full = richPromptMsg('u-img')
+    const cache = seedCache([full, asstMsg('a1', 'ok')])
+    const before = cache.mirror.items
+    const after = replay(cache, [full, asstMsg('a1', 'ok')])
+    expect(ids(after)).toEqual(['u-img', 'a1'])
+    expect(after.mirror.items).toEqual(before)
+    expect(hasImage(itemContent(after, 'u-img'))).toBe(true)
+  })
+
+  it('replaces only the degraded copy; identical siblings stay untouched', () => {
+    const full = richPromptMsg('u-img')
+    const a1 = asstMsg('a1', 'ok')
+    const cache = seedCache([projectMessage(full), a1])
+    const after = replay(cache, [full, a1])
+    expect(ids(after)).toEqual(['u-img', 'a1'])
+    // The identical assistant frame's item object survives by reference.
+    expect(after.mirror.items.find((i) => i.id === 'a1')?.msg).toBe(a1)
+    expect(hasImage(itemContent(after, 'u-img'))).toBe(true)
+  })
+
+  it('restores an image-only prompt whose cache copy is the omission marker', () => {
+    const full = imageMsg('u-pic', 'B'.repeat(500))
+    const cached = projectMessage(full) // all blocks dropped → text marker
+    const cacheText = itemContent(seedCache([cached]), 'u-pic')
+    expect(cacheText?.length).toBe(1)
+    expect(cacheText?.[0].type).toBe('text')
+
+    const after = replay(seedCache([cached, asstMsg('a1', 'ok')]), [full, asstMsg('a1', 'ok')])
+    expect(ids(after)).toEqual(['u-pic', 'a1'])
+    expect(hasImage(itemContent(after, 'u-pic'))).toBe(true)
+  })
+})
+
+describe('reducer: no-anchor fallback with a degraded (marker) cached prompt', () => {
+  it('appends the full copy once — the accepted lesser evil — then dedups against it', () => {
+    // Prompt-only transcript: no assistant/system/result frame ever landed,
+    // so neither side has a disk-stable anchor and the fingerprint fallback
+    // runs. The cache copy is the persist projection (marker text, image
+    // identity erased); the replay copy is the full image prompt. Projecting
+    // the payload before fingerprinting would make these MATCH — but it would
+    // also collapse every marker copy onto one fingerprint and false-drop a
+    // genuinely different same-shape prompt (data loss promptContentFingerprint
+    // exists to prevent). So the mismatch stands and the full copy appends
+    // ONCE (cosmetic dup); the second replay dedups against the appended full
+    // copy because its fingerprint is now on-screen.
+    const full: SdkMessage = {
+      type: 'user',
+      uuid: 'u-pic-disk',
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'C'.repeat(400) } }],
+      },
+    } as unknown as SdkMessage
+    // The cache holds the projection under the SERVER-minted uuid; the replay
+    // carries the SDK uuid — a true un-bridged split, so uuid matching cannot
+    // connect them and the fingerprint fallback decides.
+    const cached = { ...projectMessage(full), uuid: 'u-pic-ring' } as unknown as SdkMessage
+    const cache = seedCache([cached])
+
+    const first = replay(cache, [full])
+    expect(ids(first)).toEqual(['u-pic-ring', 'u-pic-disk']) // one-time dup, image present
+    const dupContent = (first.mirror.items[1]!.msg as { message: { content: Array<{ type: string }> } }).message.content
+    expect(dupContent.some((b) => b.type === 'image')).toBe(true)
+
+    // Steady state: the re-sent prompt's uuid now matches the appended copy.
+    const second = replay(first, [full])
+    expect(ids(second)).toEqual(['u-pic-ring', 'u-pic-disk'])
   })
 })

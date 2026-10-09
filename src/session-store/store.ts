@@ -149,7 +149,23 @@ function msgUuid(msg: SdkMessage): string {
   return typeof u === 'string' ? u : ''
 }
 
-function persistToStorage(sessionId: string, state: SessionState): void {
+/** Cache schema version written by THIS build.
+ *
+ *  v5 (this build): persist runs the same projection as v4 but STAMPS every
+ *  message whose projection dropped an image block (`cacheDroppedMedia`), and
+ *  hydrate reads those stamps to decide whether an incremental replay can
+ *  refresh the cache (it can't when any copy is degraded — see
+ *  `cacheHasDroppedMedia`).
+ *
+ *  A cache may only claim v5 when it was written from a mirror whose stamps
+ *  are trustworthy. A mirror hydrated from a pre-stamp (v<5) cache cannot
+ *  vouch for its contents — its image-less copies are indistinguishable from
+ *  honest image-less messages — so until the first REPLAY_REPLACE has
+ *  refreshed it, writes keep the OLD version (see persistCacheVersion), which
+ *  re-flags the next hydrate and re-runs the one migratory full replay. */
+const CACHE_VERSION = 5
+
+function persistToStorage(sessionId: string, state: SessionState, cacheVersion: 2 | 3 | 4 | 5): void {
   // Only the server-authored mirror is persisted, as a per-field-capped
   // render projection (see project.ts). plainText / items / ClientIntent are
   // NOT persisted — re-derived on hydrate. Optimistic placeholders die with
@@ -203,7 +219,7 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   // Fast path: stringify once. The projection caps usually keep a session
   // well under the budget, so this single stringify is the common case.
   const fullPayload = JSON.stringify({
-    v: 4,
+    v: cacheVersion,
     savedAt: Date.now(),
     messages: projected,
     plainTexts,
@@ -232,7 +248,7 @@ function persistToStorage(sessionId: string, state: SessionState): void {
     const keptMessages = kept < projected.length ? projected.slice(projected.length - kept) : projected
     const keptPlainTexts = kept < plainTexts.length ? plainTexts.slice(plainTexts.length - kept) : plainTexts
     toWrite = JSON.stringify({
-      v: 4,
+      v: cacheVersion,
       savedAt: Date.now(),
       messages: keptMessages,
       plainTexts: keptPlainTexts,
@@ -264,13 +280,15 @@ function persistToStorage(sessionId: string, state: SessionState): void {
   }
 }
 
-function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMessages: unknown[]; lastMessageUuid: string | null; dismissedSubagents: string[]; cacheVersion: 2 | 3 | 4 } | null {
+function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMessages: unknown[]; lastMessageUuid: string | null; dismissedSubagents: string[]; cacheVersion: 2 | 3 | 4 | 5 } | null {
   try {
     const raw = localStorage.getItem(STORAGE_PREFIX + sessionId)
     if (!raw) return null
     const data = JSON.parse(raw)
     // v4 shape: { v:4, savedAt, messages: SdkMessage[], plainTexts,
-    //             lastMessageUuid }. v3 caches are the same shape — but their
+    //             lastMessageUuid }. v5 is the same shape plus per-message
+    //             `cacheDroppedMedia` stamps (see CACHE_VERSION) — read
+    //             identically. v3 caches are the same shape — but their
     // plainTexts were computed by the pre-v4 extractor, which DROPPED raw
     // html instead of rendering it as text (htmlAsTextHandlers), so they are
     // accepted for their messages while the plainTexts array is IGNORED: the
@@ -279,9 +297,9 @@ function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMe
     // the same. v1 caches (which stored a duplicated items[] array) are
     // discarded — the cache is a non-essential render hint and the WS replay
     // repopulates within seconds.
-    if (!data || (data.v !== 4 && data.v !== 3 && data.v !== 2) || !Array.isArray(data.messages)) return null
-    // Only a v4 cache's plainTexts are trustworthy (see the version note above).
-    const plainTexts = data.v === 4 && Array.isArray(data.plainTexts)
+    if (!data || (data.v !== 5 && data.v !== 4 && data.v !== 3 && data.v !== 2) || !Array.isArray(data.messages)) return null
+    // Only a v4+ cache's plainTexts are trustworthy (see the version note above).
+    const plainTexts = data.v >= 4 && Array.isArray(data.plainTexts)
       ? (data.plainTexts as (string | null | undefined)[])
       : null
     // Strip transient `api_retry` from old caches (pre-cutover caches stored
@@ -326,7 +344,7 @@ function loadFromStorage(sessionId: string): { messages: TranscriptItem[]; rawMe
         : [],
       // The version guard above narrowed data.v to one of these; JSON.parse
       // is `any`, so re-assert for the caller.
-      cacheVersion: data.v as 2 | 3 | 4,
+      cacheVersion: data.v as 2 | 3 | 4 | 5,
     }
   } catch {
     return null
@@ -376,6 +394,19 @@ export class SessionStore {
    *  (or been skipped for a cache-less session). Mirrored into SessionSnapshot
    *  as `hydrateReady` so React consumers can gate subscriptions on it. */
   private hydrateReady = false
+  /** Set during hydrateFromCache: the hydrated LS cache holds at least one
+   *  message stamped `cacheDroppedMedia` by the persist projection (an image
+   *  block had to be dropped). Mirrored into the snapshot as
+   *  `cacheHasDroppedMedia` so the subscribe path can skip the sinceUuid
+   *  cursor and request a full replay — an incremental replay never re-sends
+   *  older messages, so the image-less cached copies could never be
+   *  refreshed otherwise. Reset by wipe() (cache rewritten empty). */
+  private cacheHasDroppedMedia = false
+  /** The cache schema version the next write may claim. Starts at 5 (a fresh
+   *  or v5-hydrated mirror's stamps are trustworthy); a hydrate from a
+   *  pre-stamp version downgrades it to that version until the first
+   *  REPLAY_REPLACE refreshes the mirror — see the CACHE_VERSION doc. */
+  private persistCacheVersion: 2 | 3 | 4 | 5 = CACHE_VERSION
   /** Set once the async IDB open + scan + cold-load has settled (or was
    *  skipped). Mirrored into the snapshot as `idbReady` so React consumers can
    *  gate on it: a cold-load can PREPEND rows into an empty store, which flips
@@ -518,6 +549,22 @@ export class SessionStore {
     try {
       const cached = loadFromStorage(sessionId)
       if (cached && cached.messages.length > 0) {
+        // Flag degraded copies so the subscribe path knows an incremental
+        // replay cannot refresh them. Two sources: an explicit stamp from the
+        // persist projection, OR a pre-stamp cache version — a v<5 cache was
+        // written by a build that couldn't mark its drops, so it is
+        // conservatively treated as degraded (one migratory full replay;
+        // the post-replay persist rewrites it as an accurate v5).
+        this.cacheHasDroppedMedia =
+          cached.cacheVersion < 5 ||
+          cached.rawMessages.some(
+            (m) => (m as { cacheDroppedMedia?: unknown }).cacheDroppedMedia === true,
+          )
+        // Writes claim at least v4: the v2/v3 plainText upgrade below is a
+        // real one-time cost that must stick, and v4 plainTexts stay
+        // trustworthy regardless of the stamp question. Only the STAMP claim
+        // (v5) is held back until the first replay refreshes the mirror.
+        if (cached.cacheVersion < 5) this.persistCacheVersion = 4
         // Only `messages`/`items` are persisted — the lifecycle index
         // maps (toolStatus, planStatus, planContent, questionAnswers,
         // activeSubagents) are derived state and start empty after
@@ -568,7 +615,12 @@ export class SessionStore {
         // a dormant session whose replay fully dedups would re-pay it on every
         // mount. Synchronous (persistNow, not the debounce) so the upgrade is
         // deterministic and test-visible right after hydrateDone.
-        if (cached.cacheVersion !== 4) this.persistNow()
+        // v4 needs no upgrade (v5 only adds the dropped-media stamps, which
+        // this mirror can't produce accurately until a replay refreshes it —
+        // persistCacheVersion keeps the write at v4 so the conservative flag
+        // survives a tab close before that replay lands), and a v5 cache is
+        // already current.
+        if (cached.cacheVersion === 2 || cached.cacheVersion === 3) this.persistNow()
       }
       // No cache (or empty): leave the empty state as-is — replayReady stays
       // false so the skeleton shows until the WS replay lands.
@@ -666,6 +718,14 @@ export class SessionStore {
             // within seconds. Leave msgs null.
           }
           if (msgs && msgs.length > 0) {
+            // IDB records carry the same persist projection as LS, so a
+            // stamped (image-dropped) record here degrades the mirror the
+            // same way. The subscribe effect re-runs when idbReady flips, so
+            // flagging it NOW (before the settle below) makes that re-run
+            // drop the cursor and request the restoring full replay.
+            if (msgs.some((m) => (m as { cacheDroppedMedia?: unknown }).cacheDroppedMedia === true)) {
+              this.cacheHasDroppedMedia = true
+            }
             // PREPEND_MESSAGES dedups by uuid against the in-memory LS tail,
             // so any residual overlap doesn't duplicate. It deliberately does
             // NOT touch the cursor (prepends are OLDER than what's on screen)
@@ -727,6 +787,8 @@ export class SessionStore {
     if (action.type === 'CLEAR_TRANSCRIPT') {
       this.resetIdbTracking()
     }
+    // Coverage check reads the PRE-dispatch mirror — run it before the swap.
+    if (action.type === 'REPLAY_REPLACE') this.noteReplayCoverage(action.messages)
     this.state = next
     this.snapshot = this.buildSnapshot(next)
     this.scheduleFlush()
@@ -736,6 +798,43 @@ export class SessionStore {
     // is what hydrate reads; IDB write is chained async but fire-and-forget).
     if (action.type === 'DISMISS_SUBAGENT') this.persistNow()
     this.emit()
+  }
+
+  /** A REPLAY_REPLACE only makes the mirror's cached copies trustworthy when
+   *  the payload actually COVERED every restorable cached frame — i.e. every
+   *  top-level user / assistant frame the mirror held before the replay is
+   *  present in the payload by uuid. When it did, the migratory hold ends:
+   *  the persist version may claim the stamping schema again (see
+   *  CACHE_VERSION) and the subscribe path may resume the incremental cursor.
+   *
+   *  When it did not — an empty replay (trimmed/GC'd ring), a clean-reconnect
+   *  tail sliced by the hub's cursor, a disk-seeded ring missing live-captured
+   *  frames — the degraded copies (if any) were NOT refreshed, so both the
+   *  version hold and the dropped-media flag stay: the next hydrate re-flags
+   *  from the (still old-version) cache and re-runs the one migratory full
+   *  replay. Bumping on an uncovered replay would rewrite stamp-less v4
+   *  copies as "clean v5" and the lost images would never come back.
+   *
+   *  Frames a ring replay can never carry are excluded from the requirement —
+   *  `result` frames (not on disk), `system` frames (only error /
+   *  compact_boundary / api_retry persist), and sidechain frames
+   *  (parent_tool_use_id set, dropped as isSidechain) — none of them are
+   *  image-restorable via replay either. Uuid-less frames are skipped the same
+   *  way (they can never be matched, let alone restored, by uuid). */
+  private noteReplayCoverage(payload: readonly SdkMessage[]): void {
+    const payloadUuids = new Set<string>()
+    for (const m of payload) {
+      if (typeof m?.uuid === 'string') payloadUuids.add(m.uuid)
+    }
+    for (const m of this.state.mirror.messages) {
+      if (m.type !== 'user' && m.type !== 'assistant') continue
+      if (m.parent_tool_use_id != null) continue
+      const u = m.uuid
+      if (typeof u !== 'string') continue
+      if (!payloadUuids.has(u)) return // uncovered — keep the hold
+    }
+    this.persistCacheVersion = CACHE_VERSION
+    this.cacheHasDroppedMedia = false
   }
 
   dispatchMany(actions: SessionAction[]): void {
@@ -764,6 +863,9 @@ export class SessionStore {
       window.clearTimeout(this.flushTimer)
       this.flushTimer = null
     }
+    // The cache is about to be rewritten empty — a stale dropped-media flag
+    // would make the next subscribe request a pointless full replay.
+    this.cacheHasDroppedMedia = false
     this.dispatch({ type: 'CLEAR_TRANSCRIPT' })
   }
 
@@ -895,7 +997,7 @@ export class SessionStore {
 
   private save(): void {
     this.saveDirtySince = null
-    persistToStorage(this.state.sessionId, this.state)
+    persistToStorage(this.state.sessionId, this.state, this.persistCacheVersion)
     // CHAIN the IDB write onto any in-flight one. This makes flushIdb
     // (which awaits the tail) await EVERY queued write, so destroy/purge
     // can't return while an earlier write is still outstanding — closing the
@@ -1159,6 +1261,7 @@ export class SessionStore {
     return {
       replayReady: mirror.replayReady,
       hydrateReady: this.hydrateReady,
+      cacheHasDroppedMedia: this.cacheHasDroppedMedia,
       idbReady: this.idbSettled,
       items,
       messages,
