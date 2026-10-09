@@ -372,7 +372,6 @@ export const ChatPanel = memo(function ChatPanel({
     id: `panel-drop-${session.id}`,
     data: dndData({ kind: 'main-panel', id: session.id }),
   })
-  const dropActive = panelDrop.isOver
   // Stable combined node ref for the section (draggable + droppable). The
   // draggable NODE is the whole panel: dnd-kit aligns the drag ghost and
   // measures the drop animation's target from this node's rect, and the
@@ -812,7 +811,6 @@ export const ChatPanel = memo(function ChatPanel({
       className={cx(
         'chat-panel',
         focused ? 'focused' : '',
-        dropActive ? 'drop-target' : '',
         entering ? 'entering' : '',
         // The lifted ghost IS this panel's frozen clone — recede the source
         // into a quiet hole for the drag (same .dnd-source-dim language the

@@ -3811,15 +3811,15 @@ export function App() {
         const clone = panel.cloneNode(true) as HTMLElement
         // De-identify: the ghost must never answer [data-panel-id] lookups
         // meant for the live panel (panel-slot queries, re-entry of this very
-        // snapshot path). drop-target / entering are transient states, not
-        // at-rest look (entering would replay the panel entrance animation
-        // inside the ghost). ids are stripped too: useId-generated ids
+        // snapshot path). entering is a transient state, not at-rest look
+        // (it would replay the panel entrance animation inside the ghost).
+        // ids are stripped too: useId-generated ids
         // (FoldableBody, ToolGroupCard, MonitorBar, …) must not exist twice
         // in the document while the drag is airborne — the clone is inert +
         // aria-hidden, so the a11y wiring they serve is moot inside it.
         clone.removeAttribute('data-panel-id')
         clone.classList.add('chat-panel-ghost')
-        clone.classList.remove('drop-target', 'entering')
+        clone.classList.remove('entering')
         clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'))
         // Pin the measured box: the clone would otherwise size to CONTENT —
         // the virtualized list reports its FULL scroll height.

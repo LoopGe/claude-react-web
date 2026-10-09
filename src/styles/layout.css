@@ -284,10 +284,6 @@ body.resizing-col .app {
   --msg-user-pre-border: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 .chat-panel.focused { border-top-color: var(--accent); }
-.chat-panel.drop-target {
-  outline: 2px dashed var(--accent);
-  outline-offset: -4px;
-}
 /* Two-row panel header. Row 1 is the strong signal (slot, status dot,
    title, chips, close). Row 2 is muted supplementary metadata (cwd,
    message count, working label). An error band slots in between them
