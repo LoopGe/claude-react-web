@@ -820,6 +820,10 @@ export function App() {
     if (command === 'crw:menu-new-session') setNewSessionDialogOpen(true)
     else if (command === 'crw:menu-open-settings') setGlobalSettingsOpen(true)
   }, [])
+  /** Stable identity for the header's + affordances (memo'd consumers — a
+   *  fresh inline arrow would re-render them on every unrelated App-state
+   *  churn: drawer, palette, modifier hints, …). */
+  const openNewSessionDialog = useCallback(() => setNewSessionDialogOpen(true), [])
 
   useEffect(() => {
     const onMenu = window.__CRW_DESKTOP__?.onMenu
@@ -4537,6 +4541,7 @@ export function App() {
               unread={unread}
               onSelect={handleSelectFromSidebar}
               onActivateGroup={handleActivateGroup}
+              onNew={openNewSessionDialog}
             />
           )}
           {/* Open-panel tabs in the custom titlebar (desktop win/darwin).
@@ -4549,7 +4554,7 @@ export function App() {
               focusedId={focusedId}
               onSelect={(id) => void handleSelect(id)}
               onClose={closeSession}
-              onNew={() => setNewSessionDialogOpen(true)}
+              onNew={openNewSessionDialog}
               maxOpen={maxOpen}
             />
           )}

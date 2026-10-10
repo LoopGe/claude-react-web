@@ -114,10 +114,11 @@ body.resizing-col .app {
 }
 
 /* Full-session nav strip in the top header (desktop, sidebar collapsed —
-   see App.tsx render condition). Every session in sidebar order; groups
-   render as a clickable name chip before their member tabs. The strip
-   absorbs the free width between the left chrome cluster and the toolbar
-   and scrolls horizontally, scrollbar hidden.
+   see App.tsx render condition). Shell: [+ button][scrollable tab region].
+   The + sits OUTSIDE the scroll region so the edge-fade mask can never ghost
+   the primary new-session affordance. Groups render as a clickable name chip
+   before their member tabs. The strip absorbs the free width between the
+   left chrome cluster and the toolbar.
    Entrance: fades/slides in when the sidebar collapses (mount = each
    collapse, since the strip is conditionally rendered), timed to the
    sidebar's own 240ms grid transition. */
@@ -127,14 +128,33 @@ body.resizing-col .app {
   gap: var(--space-1);
   flex: 1 1 auto;
   min-width: 0;
+  --fade-width: 24px;
+  animation: session-nav-strip-in var(--motion-duration-moderate) var(--motion-ease-enter);
+}
+.session-nav-new {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  flex-shrink: 0;
+  font-size: var(--fs-lg);
+  line-height: 1;
+}
+/* The scrollable tab region — the mask lives here, not on the shell, so the
+   + stays fully opaque. Scroll-position-aware edge fade: --fade-start-w /
+   --fade-end-w come from the component as 0px (no hidden content on that
+   side) or var(--fade-width) (content hidden past that edge). At 0px the
+   gradient's stops coincide and the mask degrades to fully opaque. #000 is
+   the alpha carrier, not a theme colour (same convention as the fold-fade
+   in chat.css). */
+.session-nav-scroll {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
-  --fade-width: 24px;
-  /* Scroll-position-aware edge fade: --fade-start-w / --fade-end-w come from
-     the component as 0px (no hidden content on that side) or var(--fade-width)
-     (content hidden past that edge). At 0px the gradient's stops coincide and
-     the mask degrades to fully opaque. #000 is the alpha carrier, not a theme
-     colour (same convention as the fold-fade in chat.css). */
   -webkit-mask-image: linear-gradient(
     to right,
     transparent 0,
@@ -149,8 +169,11 @@ body.resizing-col .app {
     #000 calc(100% - var(--fade-end-w, 0px)),
     transparent 100%
   );
-  animation: session-nav-strip-in var(--motion-duration-moderate) var(--motion-ease-enter);
 }
+.session-nav-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 @keyframes session-nav-strip-in {
   from {
     opacity: 0;
@@ -165,9 +188,6 @@ body.resizing-col .app {
   .session-nav-strip {
     animation: none;
   }
-}
-.session-nav-strip::-webkit-scrollbar {
-  display: none;
 }
 /* One group's chip + member tabs, separated from the next section by a
    hairline so group boundaries read at a glance. */

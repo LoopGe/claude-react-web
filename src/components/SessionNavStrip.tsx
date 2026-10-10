@@ -11,6 +11,13 @@
 // activation + auto-resume + unread clear) — App owns that handler, this
 // component is purely presentational.
 //
+// The strip renders even with zero sessions: the leading + is the only
+// new-session entry point the header offers while the sidebar is hidden
+// (same reasoning as the titlebar tabs' empty state).
+//
+// Structure: [+][scroller]. The + lives OUTSIDE the scroll region so the
+// edge-fade mask can never ghost the primary new-session affordance.
+//
 // role="group" not "tablist": same call as .main-toolbar / titlebar tabs —
 // the ARIA tab pattern promises arrow-key roving we don't implement.
 
@@ -26,6 +33,7 @@ interface Props {
   unread: Record<string, boolean>
   onSelect: (id: string) => void
   onActivateGroup: (groupId: string) => void
+  onNew: () => void
 }
 
 /** Which horizontal edges of a scroller currently hide content. Pure so the
@@ -83,17 +91,13 @@ export const SessionNavStrip = memo(function SessionNavStrip({
   unread,
   onSelect,
   onActivateGroup,
+  onNew,
 }: Props) {
-  const stripRef = useRef<HTMLDivElement | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
   const [fade, setFade] = useState({ start: false, end: false })
-  // Computed BEFORE the hooks (not next to the early return) so the effects
-  // below can depend on it: the strip renders null while there are no
-  // sessions, and a null→div flip must re-run the wiring effects or their
-  // listeners would stay dead for the component's whole lifetime.
-  const hasSessions = sections.some((sec) => sec.sessions.length > 0)
 
   const syncFade = useCallback(() => {
-    const el = stripRef.current
+    const el = scrollRef.current
     if (!el) return
     const next = edgeFadeState({
       scrollLeft: el.scrollLeft,
@@ -104,19 +108,18 @@ export const SessionNavStrip = memo(function SessionNavStrip({
   }, [])
 
   // Content-driven re-measure: sections churn (session created/renamed/deleted)
-  // AND unread flips (a dot is ~10px of content width) change the strip's
-  // content width without any scroll or viewport event.
+  // AND unread flips (a dot is ~10px of content width) change the scroll
+  // region's content width without any scroll or viewport event.
   useEffect(() => {
     syncFade()
   }, [syncFade, sections, unread])
 
-  // Scroll + viewport-driven re-measure. Re-runs on the null→div flip
-  // (hasSessions dep) — a cold start with the sidebar collapsed renders null
-  // until the first WS snapshot, and this effect must attach to the div that
-  // mounts afterwards. ResizeObserver is absent in jsdom; there the scroll
+  // Scroll + viewport-driven re-measure. The scroller is always mounted (the
+  // strip renders even with zero sessions), so one attach covers the
+  // component's lifetime. ResizeObserver is absent in jsdom; there the scroll
   // listener + content effect cover what tests need.
   useEffect(() => {
-    const el = stripRef.current
+    const el = scrollRef.current
     if (!el) return
     el.addEventListener('scroll', syncFade, { passive: true })
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(syncFade) : null
@@ -125,24 +128,21 @@ export const SessionNavStrip = memo(function SessionNavStrip({
       el.removeEventListener('scroll', syncFade)
       ro?.disconnect()
     }
-  }, [syncFade, hasSessions])
+  }, [syncFade])
 
-  // The strip hides its scrollbar, so a programmatically-focused session
+  // The scroller hides its scrollbar, so a programmatically-focused session
   // (deep link, notification click, Alt+9 group activation) whose tab sits
   // off-screen would leave NO visible focus indicator. Pull the active tab
-  // back into view on focus change AND when the strip (re)appears while a
-  // session is already focused (hasSessions flip). focusedId is not persisted,
-  // so the mount run is a no-op on cold start — that path has nothing active.
+  // back into view on focus change. focusedId is not persisted, so a cold
+  // start never has an active tab to scroll to — dep-change paths only.
   useEffect(() => {
-    stripRef.current
+    scrollRef.current
       ?.querySelector<HTMLElement>('.session-nav-tab.active')
       ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-  }, [focusedId, hasSessions])
+  }, [focusedId])
 
-  if (!hasSessions) return null
-
-  // The CSS mask reads these two vars; 0px degrades the gradient to a
-  // hard stop, i.e. no fade on that edge.
+  // The CSS mask (on the scroller) reads these two vars; 0px degrades the
+  // gradient to a hard stop, i.e. no fade on that edge.
   const fadeStyle = {
     '--fade-start-w': fade.start ? 'var(--fade-width)' : '0px',
     '--fade-end-w': fade.end ? 'var(--fade-width)' : '0px',
@@ -150,27 +150,47 @@ export const SessionNavStrip = memo(function SessionNavStrip({
 
   return (
     <div
-      ref={stripRef}
       className="session-nav-strip"
       role="group"
       aria-label="All sessions"
       style={fadeStyle}
     >
-      {sections.map((sec) =>
-        sec.kind === 'group' ? (
-          <div key={`g-${sec.group.id}`} className="session-nav-section">
-            <button
-              type="button"
-              className={`session-nav-chip${activeGroupId === sec.group.id ? ' active' : ''}`}
-              aria-pressed={activeGroupId === sec.group.id}
-              title={sec.group.name}
-              onClick={() => onActivateGroup(sec.group.id)}
-            >
-              {/* Ellipsis must live on a block-ish child, not the flex
-                  container — text-overflow is inert on the button itself. */}
-              <span className="session-nav-label">{sec.group.name}</span>
-            </button>
-            {sec.sessions.map((s) => (
+      <button
+        type="button"
+        className="session-nav-new btn btn-icon"
+        aria-label="New session"
+        title="New session"
+        onClick={onNew}
+      >
+        +
+      </button>
+      <div ref={scrollRef} className="session-nav-scroll">
+        {sections.map((sec) =>
+          sec.kind === 'group' ? (
+            <div key={`g-${sec.group.id}`} className="session-nav-section">
+              <button
+                type="button"
+                className={`session-nav-chip${activeGroupId === sec.group.id ? ' active' : ''}`}
+                aria-pressed={activeGroupId === sec.group.id}
+                title={sec.group.name}
+                onClick={() => onActivateGroup(sec.group.id)}
+              >
+                {/* Ellipsis must live on a block-ish child, not the flex
+                    container — text-overflow is inert on the button itself. */}
+                <span className="session-nav-label">{sec.group.name}</span>
+              </button>
+              {sec.sessions.map((s) => (
+                <SessionNavTab
+                  key={s.id}
+                  session={s}
+                  focused={s.id === focusedId}
+                  unread={!!unread[s.id]}
+                  onSelect={onSelect}
+                />
+              ))}
+            </div>
+          ) : (
+            sec.sessions.map((s) => (
               <SessionNavTab
                 key={s.id}
                 session={s}
@@ -178,20 +198,10 @@ export const SessionNavStrip = memo(function SessionNavStrip({
                 unread={!!unread[s.id]}
                 onSelect={onSelect}
               />
-            ))}
-          </div>
-        ) : (
-          sec.sessions.map((s) => (
-            <SessionNavTab
-              key={s.id}
-              session={s}
-              focused={s.id === focusedId}
-              unread={!!unread[s.id]}
-              onSelect={onSelect}
-            />
-          ))
-        ),
-      )}
+            ))
+          ),
+        )}
+      </div>
     </div>
   )
 })

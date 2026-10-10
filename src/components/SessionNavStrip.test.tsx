@@ -32,8 +32,11 @@ function baseSections(): SidebarSection[] {
 }
 
 function renderStrip(sections: SidebarSection[], overrides: Partial<Parameters<typeof SessionNavStrip>[0]> = {}) {
-  const onSelect = vi.fn()
-  const onActivateGroup = vi.fn()
+  // Handler overrides are honored (the Partial<Props> type invites passing
+  // them); only the unwired ones fall back to local mocks.
+  const onSelect = overrides.onSelect ?? vi.fn()
+  const onActivateGroup = overrides.onActivateGroup ?? vi.fn()
+  const onNew = overrides.onNew ?? vi.fn()
   const utils = render(
     <SessionNavStrip
       sections={sections}
@@ -42,9 +45,10 @@ function renderStrip(sections: SidebarSection[], overrides: Partial<Parameters<t
       unread={overrides.unread ?? {}}
       onSelect={onSelect}
       onActivateGroup={onActivateGroup}
+      onNew={onNew}
     />,
   )
-  return { onSelect, onActivateGroup, ...utils }
+  return { onSelect, onActivateGroup, onNew, ...utils }
 }
 
 describe('edgeFadeState', () => {
@@ -148,6 +152,7 @@ describe('SessionNavStrip', () => {
           unread={{}}
           onSelect={vi.fn()}
           onActivateGroup={vi.fn()}
+          onNew={vi.fn()}
         />,
       )
       expect(scrollIntoView).toHaveBeenCalledTimes(1)
@@ -159,9 +164,32 @@ describe('SessionNavStrip', () => {
     }
   })
 
-  it('renders nothing when there are no sessions', () => {
-    const { container } = renderStrip([])
-    expect(container.firstElementChild).toBeNull()
+  it('still offers + when there are no sessions', () => {
+    // Collapsed sidebar + zero sessions must keep a visible new-session
+    // entry point — the strip renders the + alone.
+    const { container, onNew } = renderStrip([])
+    const plus = screen.getByLabelText('New session')
+    expect(plus).toBeTruthy()
+    expect(container.querySelectorAll('.session-nav-tab')).toHaveLength(0)
+    fireEvent.click(plus)
+    expect(onNew).toHaveBeenCalled()
+  })
+
+  it('renders + before the tabs, outside the scroll region', () => {
+    const { container } = renderStrip(baseSections())
+    const strip = container.querySelector<HTMLElement>('.session-nav-strip')!
+    expect(strip.firstElementChild!.classList.contains('session-nav-new')).toBe(true)
+    // The + must not live inside the masked scroller — the fade would ghost
+    // the primary new-session affordance once content overflows.
+    const scroller = container.querySelector<HTMLElement>('.session-nav-scroll')!
+    expect(scroller).toBeTruthy()
+    expect(scroller.querySelector('.session-nav-new')).toBeNull()
+  })
+
+  it('fires onNew from the + button', () => {
+    const { container, onNew } = renderStrip(baseSections())
+    fireEvent.click(container.querySelector<HTMLElement>('.session-nav-new')!)
+    expect(onNew).toHaveBeenCalledTimes(1)
   })
 
   it('falls back to the id prefix for an untitled session', () => {
@@ -177,35 +205,37 @@ describe('SessionNavStrip', () => {
       { kind: 'ungrouped', sessions: [makeSession({ id: 's1' }), makeSession({ id: 's2' }), makeSession({ id: 's3' })] },
     ]
     const { container } = renderStrip(sections)
+    const scroller = container.querySelector<HTMLElement>('.session-nav-scroll')!
     const strip = container.querySelector<HTMLElement>('.session-nav-strip')!
-    mockStripGeometry(strip, 0, 300, 200)
-    fireEvent.scroll(strip)
+    mockStripGeometry(scroller, 0, 300, 200)
+    fireEvent.scroll(scroller)
     // At the scroll origin: only the far edge hides content.
     expect(strip.style.getPropertyValue('--fade-start-w')).toBe('0px')
     expect(strip.style.getPropertyValue('--fade-end-w')).toBe('var(--fade-width)')
-    strip.scrollLeft = 100
-    fireEvent.scroll(strip)
+    scroller.scrollLeft = 100
+    fireEvent.scroll(scroller)
     // Scrolled to the far end: the ramp flips to the start edge.
     expect(strip.style.getPropertyValue('--fade-start-w')).toBe('var(--fade-width)')
     expect(strip.style.getPropertyValue('--fade-end-w')).toBe('0px')
   })
 
-  it('attaches the fade wiring even when the first render was empty', () => {
-    // Cold start: sessions=[] → the strip renders null; listeners must still
-    // attach once sessions arrive (regression for the dead-wiring bug).
+  it('keeps the fade wiring alive as content appears after an empty strip', () => {
+    // Cold start: sessions=[] → the strip renders just the +. When tabs
+    // appear (WS snapshot) the scroll wiring must measure and fire.
     const sections: SidebarSection[] = [
       { kind: 'ungrouped', sessions: [makeSession({ id: 's1' }), makeSession({ id: 's2' })] },
     ]
     const { container, rerender } = render(
-      <SessionNavStrip sections={[]} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} />,
+      <SessionNavStrip sections={[]} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNew={vi.fn()} />,
     )
-    expect(container.firstElementChild).toBeNull()
+    expect(container.querySelector<HTMLElement>('.session-nav-new')).toBeTruthy()
     rerender(
-      <SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} />,
+      <SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNew={vi.fn()} />,
     )
+    const scroller = container.querySelector<HTMLElement>('.session-nav-scroll')!
     const strip = container.querySelector<HTMLElement>('.session-nav-strip')!
-    mockStripGeometry(strip, 0, 300, 200)
-    fireEvent.scroll(strip)
+    mockStripGeometry(scroller, 0, 300, 200)
+    fireEvent.scroll(scroller)
     expect(strip.style.getPropertyValue('--fade-end-w')).toBe('var(--fade-width)')
   })
 })
