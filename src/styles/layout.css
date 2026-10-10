@@ -125,7 +125,7 @@ body.resizing-col .app {
 .session-nav-strip {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
   flex: 1 1 auto;
   min-width: 0;
   --fade-width: 24px;
@@ -158,7 +158,7 @@ body.resizing-col .app {
 .session-nav-scroll {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
   flex: 1 1 auto;
   min-width: 0;
   overflow-x: auto;
@@ -198,11 +198,14 @@ body.resizing-col .app {
   }
 }
 /* One group's chip + member tabs, separated from the next section by a
-   hairline so group boundaries read at a glance. */
+   hairline so group boundaries read at a glance. Padding matches the shell's
+   gap so EVERY separator (the + divider and each group border) keeps the
+   same 8px | line | 8px rhythm — a lone group reads symmetric, and the
+   strip's rhythm matches the header-level gap. */
 .session-nav-section {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
   flex-shrink: 0;
   padding-right: var(--space-2);
   border-right: 1px solid var(--border);
