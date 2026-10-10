@@ -42,7 +42,7 @@ spec 隐含但任务测试未直接覆盖、最容易咬到使用者的五类输
 
 **Interfaces:**
 - Consumes: `shared/user-frames.js` 的 `userMessageHasToolResult` / `isTaskNotificationUserMessage` / `UserFrameShape`(已存在)。
-- Produces(后续任务依赖,签名逐字):`TaskState { id: string; subject: string; status: 'pending'|'in_progress'|'completed'|'cancelled'; activeForm?: string; lastTouched: number; provisional?: boolean; stale?: boolean }`;`buildTaskStateMap(messages: readonly unknown[]): Map<string, TaskState> | null`;`buildTaskStateMapFromItems(items: readonly { msg: unknown }[]): Map<string, TaskState> | null`;`parseTaskId(text: string): string | null`;`resultText(content: unknown): string`;`normalizeStatus(s: string | undefined): 'pending'|'in_progress'|'completed'|'cancelled'|undefined`;`str(v: unknown): string | undefined`;`TASK_CREATE`/`TASK_UPDATE`(常量 `'TaskCreate'`/`'TaskUpdate'`);`countTaskEvents(messages: readonly unknown[]): number`;`isGenuineUserInputFrame(msg: UserFrameShape): boolean`;`TasklistSnapshotTask { id: string; subject: string; status: ...同上四态; activeForm?: string; stale: boolean }`;`TasklistSnapshotPayload { rev: number; tasks: TasklistSnapshotTask[] }`;`mergeTaskList(snapshot: TasklistSnapshotPayload | null | undefined, windowFold: Map<string, TaskState> | null): Map<string, TaskState>`。
+- Produces(后续任务依赖,签名逐字):`TaskState { id: string; subject: string; status: 'pending'|'in_progress'|'completed'|'cancelled'; activeForm?: string; lastTouched: number; provisional?: boolean; stale?: boolean; stub?: boolean }`;`buildTaskStateMap(messages: readonly unknown[]): Map<string, TaskState> | null`;`buildTaskStateMapFromItems(items: readonly { msg: unknown }[]): Map<string, TaskState> | null`;`parseTaskId(text: string): string | null`;`resultText(content: unknown): string`;`normalizeStatus(s: string | undefined): 'pending'|'in_progress'|'completed'|'cancelled'|undefined`;`str(v: unknown): string | undefined`;`TASK_CREATE`/`TASK_UPDATE`(常量 `'TaskCreate'`/`'TaskUpdate'`);`countTaskEvents(messages: readonly unknown[]): number`;`isGenuineUserInputFrame(msg: UserFrameShape): boolean`;`TasklistSnapshotTask { id: string; subject: string; status: ...同上四态; activeForm?: string; stale: boolean }`;`TasklistSnapshotPayload { rev: number; tasks: TasklistSnapshotTask[] }`;`mergeTaskList(snapshot: TasklistSnapshotPayload | null | undefined, windowFold: Map<string, TaskState> | null): Map<string, TaskState>`。
 
 - [ ] **Step 1: 迁移测试文件并改导入(先跑确认仍绿)**
 
@@ -71,7 +71,7 @@ Expected: FAIL(`Cannot find module './task-list'` 或等价解析错误)
 
 - [ ] **Step 3: 写 `shared/task-list.ts`(完整内容)**
 
-从 `src/utils/task-events.ts` **原样搬运**(`foldTaskEvents`/`hasTaskEvents`/`buildTaskStateMap`/`buildTaskStateMapFromItems`/`resultText`/`parseTaskId`/`str`/`normalizeStatus`/`TASK_CREATE`/`TASK_UPDATE`/`TaskState`,一行逻辑不改),仅做三处机械适配:`SdkMessage` 参数类型放宽为 `readonly unknown[]` / `readonly { msg: unknown }[]`(内部经 `as FoldableMessage` 收窄);`TaskState` 增加 `stale?: boolean`;注释里的 `src/utils/task-events.ts` 路径引用改成本文件。文件骨架:
+从 `src/utils/task-events.ts` **原样搬运**(`foldTaskEvents`/`hasTaskEvents`/`buildTaskStateMap`/`buildTaskStateMapFromItems`/`resultText`/`parseTaskId`/`str`/`normalizeStatus`/`TASK_CREATE`/`TASK_UPDATE`/`TaskState`,逻辑不改),仅做四处适配:`SdkMessage` 参数类型放宽为 `readonly unknown[]` / `readonly { msg: unknown }[]`(内部经 `as FoldableMessage` 收窄);`TaskState` 增加 `stale?: boolean` 与 `stub?: boolean`;**唯一逻辑偏离**——`foldTaskEvents` 的 TaskUpdate stub 物化分支(源文件 `:184-191` 的 `existing ?? {...}`)在物化对象上加一行 `stub: true`(窗口内无 create 时该条目是折叠器自造的占位,mergeTaskList 靠它识别"subject 需由快照治愈");注释里的 `src/utils/task-events.ts` 路径引用改成本文件。文件骨架:
 
 ```ts
 // TaskCreate/TaskUpdate event-stream fold — SHARED between the browser
@@ -106,6 +106,10 @@ export interface TaskState {
    *  undefined on window-folded entries: the client then applies its own
    *  window-relative rule (lastTouched vs lastUserInputIndex). */
   stale?: boolean
+  /** True when this window entry is a fold-materialized stub (its create
+   *  is outside the window) — the subject is `Task #N` filler, not author-
+   *  itative. mergeTaskList heals the subject from the snapshot for these. */
+  stub?: boolean
 }
 
 export const TASK_CREATE = 'TaskCreate'
@@ -193,10 +197,12 @@ export function isGenuineUserInputFrame(msg: UserFrameShape): boolean {
 }
 
 /** Merge the server snapshot (full-history base) under the client's window
- *  fold (freshest event order). Window entries WIN per id; the snapshot
- *  fills ids the window can't see (creates beyond the ring/memory cap).
- *  Snapshot entries flagged `stale && resolved` are dropped here — the
- *  client's window-relative staleness rule cannot see them.
+ *  fold (freshest event order). Per id: the window's status/provisional
+ *  always win (freshest events); the snapshot fills ids the window can't
+ *  see, AND heals the subject of window STUB entries (create outside the
+ *  window — the whole reason the snapshot exists). Snapshot-only entries
+ *  flagged `stale && resolved` are dropped here — the client's window-
+ *  relative staleness rule cannot see them.
  *  Pure; returns a fresh Map. */
 export function mergeTaskList(
   snapshot: TasklistSnapshotPayload | null | undefined,
@@ -204,22 +210,31 @@ export function mergeTaskList(
 ): Map<string, TaskState> {
   const merged = new Map<string, TaskState>()
   if (windowFold) {
-    for (const [id, t] of windowFold) merged.set(id, t)
+    for (const [id, t] of windowFold) merged.set(id, { ...t })
   }
   if (snapshot) {
     for (const t of snapshot.tasks) {
-      if (merged.has(t.id)) continue
-      if (t.stale && (t.status === 'completed' || t.status === 'cancelled')) continue
-      merged.set(t.id, {
-        id: t.id,
-        subject: t.subject,
-        status: t.status,
-        ...(t.activeForm !== undefined ? { activeForm: t.activeForm } : {}),
-        // Server line-index coordinate — meaningless client-side; the
-        // stale flag supersedes it for snapshot-only entries.
-        lastTouched: -1,
-        stale: t.stale,
-      })
+      const w = merged.get(t.id)
+      if (!w) {
+        if (t.stale && (t.status === 'completed' || t.status === 'cancelled')) continue
+        merged.set(t.id, {
+          id: t.id,
+          subject: t.subject,
+          status: t.status,
+          ...(t.activeForm !== undefined ? { activeForm: t.activeForm } : {}),
+          // Server line-index coordinate — meaningless client-side; the
+          // stale flag supersedes it for snapshot-only entries.
+          lastTouched: -1,
+          stale: t.stale,
+        })
+        continue
+      }
+      // Window entry exists: keep its fresher status. A stub subject is
+      // fold filler (`Task #N`) — the snapshot's subject is the real one.
+      if (w.stub) {
+        w.subject = t.subject
+        if (w.activeForm === undefined && t.activeForm !== undefined) w.activeForm = t.activeForm
+      }
     }
   }
   return merged
@@ -318,13 +333,21 @@ describe('mergeTaskList', () => {
     expect(merged.get('1')!.status).toBe('in_progress')
   })
 
-  it('snapshot fills ids the window cannot see', () => {
+  it('heals a window STUB subject from the snapshot (create out of window — the bug being fixed)', () => {
     const window = buildTaskStateMap([assistant([update('9', { status: 'in_progress' })])])!
-    expect(window.get('9')!.subject).toBe('Task #9') // stub — create out of window
+    expect(window.get('9')!.stub).toBe(true) // fold materialized it
+    expect(window.get('9')!.subject).toBe('Task #9')
     const merged = mergeTaskList(snap([{ id: '9', subject: 'real subject', status: 'in_progress', stale: false }]), window)
-    // window wins the id, so the stub subject stays — see the next test for
-    // the composition that actually heals it (window WITHOUT the id).
-    expect(merged.get('9')!.subject).toBe('Task #9')
+    // Status stays the window's (freshest); only the filler subject heals.
+    expect(merged.get('9')!.subject).toBe('real subject')
+    expect(merged.get('9')!.status).toBe('in_progress')
+  })
+
+  it('snapshot fills ids the window cannot see entirely', () => {
+    const window = buildTaskStateMap([assistant([update('4', { status: 'in_progress' })])])!
+    const merged = mergeTaskList(snap([{ id: '5', subject: 'only in snapshot', status: 'pending', stale: false }]), window)
+    expect(merged.get('4')!.subject).toBe('Task #4') // stub without snapshot backing stays filler
+    expect(merged.get('5')!.subject).toBe('only in snapshot')
   })
 
   it('snapshot-only entries keep server-precomputed subjects and carry stale', () => {
@@ -352,7 +375,7 @@ describe('mergeTaskList', () => {
 })
 ```
 
-注意第二个用例刻意钉住一个真实语义:**窗口里已有 stub 时快照不覆盖它**(窗口胜出)——真正的治愈路径是窗口里连 update 都看不到、快照唯一持有该 id;这条由 Task 7 的 TodoChecklist 集成测试覆盖。
+注意 stub 治愈用例钉住核心修复语义:**窗口里的 stub(自造占位)subject 由快照供给,status 仍归窗口**;窗口里根本没有的 id 由快照整体补入;stub 且无快照背书时保持 filler(转录里 create 真缺失时的诚实表现)。
 
 - [ ] **Step 6: 跑测试确认全绿**
 
