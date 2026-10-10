@@ -8,18 +8,25 @@
 // gets its own assertions here rather than being covered only incidentally.
 
 import { describe, it, expect } from 'vitest'
-import { buildTaskStateMap, buildTaskStateMapFromItems } from './task-events'
-import type { SdkMessage } from '../types'
+import {
+  buildTaskStateMap,
+  buildTaskStateMapFromItems,
+  countTaskEvents,
+  isGenuineUserInputFrame,
+  mergeTaskList,
+  type TasklistSnapshotPayload,
+} from './task-list'
 
-function assistant(blocks: unknown[]): SdkMessage {
-  return { type: 'assistant', message: { content: blocks } } as unknown as SdkMessage
+type Loose = Record<string, unknown>
+function assistant(blocks: unknown[]): Loose {
+  return { type: 'assistant', message: { content: blocks } }
 }
 
-function toolResult(toolUseId: string, text: string): SdkMessage {
+function toolResult(toolUseId: string, text: string): Loose {
   return {
     type: 'user',
     message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, content: text }] },
-  } as unknown as SdkMessage
+  }
 }
 
 const create = (id: string, subject: string, extra: Record<string, unknown> = {}) => ({
@@ -55,7 +62,7 @@ describe('buildTaskStateMap', () => {
     // mentioning the verb must not switch the fold on.
     const messages = [
       { type: 'user', message: { content: [{ type: 'text', text: 'run TaskCreate' }] } },
-    ] as unknown as SdkMessage[]
+    ] as unknown as Loose[]
     expect(buildTaskStateMap(messages)).toBeNull()
   })
 
@@ -98,7 +105,7 @@ describe('buildTaskStateMap', () => {
 
   it('materializes a stub for an update whose create predates the window', () => {
     const tasks = buildTaskStateMap([assistant([update('9', { status: 'in_progress' })])])
-    expect(tasks!.get('9')).toMatchObject({ id: '9', subject: 'Task #9', status: 'in_progress' })
+    expect(tasks!.get('9')).toMatchObject({ id: '9', subject: 'Task #9', status: 'in_progress', stub: true })
   })
 
   // Probe/fold verb parity. The dangerous drift is a probe that misses a verb
@@ -149,5 +156,94 @@ describe('buildTaskStateMapFromItems', () => {
   it('returns null for a task-free transcript', () => {
     const items = [{ msg: assistant([{ type: 'text', text: 'hi' }]) }]
     expect(buildTaskStateMapFromItems(items)).toBeNull()
+  })
+})
+
+describe('countTaskEvents', () => {
+  it('counts Task* tool_use blocks only', () => {
+    const lines = [
+      assistant([create('c1', 'a'), { type: 'tool_use', id: 'x', name: 'Bash', input: {} }]),
+      assistant([update('1', { status: 'in_progress' })]),
+    ]
+    expect(countTaskEvents(lines)).toBe(2)
+  })
+  it('is 0 for a transcript without Task* events', () => {
+    expect(countTaskEvents([assistant([{ type: 'text', text: 'hi' }])])).toBe(0)
+  })
+})
+
+describe('isGenuineUserInputFrame', () => {
+  it('true for a null-parent text-only user frame', () => {
+    expect(isGenuineUserInputFrame({ type: 'user', message: { content: [{ type: 'text', text: 'go' }] } })).toBe(true)
+  })
+  it('false for tool_result carriers (main-thread results are null-parent too)', () => {
+    expect(isGenuineUserInputFrame(toolResult('t1', 'ok'))).toBe(false)
+  })
+  it('false for sidechain frames (parent_tool_use_id set)', () => {
+    expect(isGenuineUserInputFrame({ type: 'user', parent_tool_use_id: 'p1', message: { content: [{ type: 'text', text: 'go' }] } })).toBe(false)
+  })
+  it('false for <task-notification> injections (closing tag required by the regex)', () => {
+    expect(isGenuineUserInputFrame({
+      type: 'user',
+      message: { content: [{ type: 'text', text: '<task-notification>done</task-notification>' }] },
+    })).toBe(false)
+  })
+  it('false for non-user frames', () => {
+    expect(isGenuineUserInputFrame({ type: 'assistant', message: { content: [] } })).toBe(false)
+  })
+})
+
+describe('mergeTaskList', () => {
+  const snap = (tasks: TasklistSnapshotPayload['tasks']): TasklistSnapshotPayload => ({ rev: 1, tasks })
+
+  it('window entries win per id (freshest event order)', () => {
+    const window = buildTaskStateMap([
+      assistant([create('c1', 'fresh subject')]),
+      toolResult('c1', 'Task #1 created successfully: fresh subject'),
+      assistant([update('1', { status: 'in_progress' })]),
+    ] as unknown as Loose[])!
+    const merged = mergeTaskList(snap([{ id: '1', subject: 'stale snapshot subject', status: 'completed', stale: false }]), window)
+    expect(merged.get('1')!.subject).toBe('fresh subject')
+    expect(merged.get('1')!.status).toBe('in_progress')
+  })
+
+  it('heals a window STUB subject from the snapshot (create out of window — the bug being fixed)', () => {
+    const window = buildTaskStateMap([assistant([update('9', { status: 'in_progress' })]) as unknown as Loose])!
+    expect(window.get('9')!.stub).toBe(true) // fold materialized it
+    expect(window.get('9')!.subject).toBe('Task #9')
+    const merged = mergeTaskList(snap([{ id: '9', subject: 'real subject', status: 'in_progress', stale: false }]), window)
+    // Status stays the window's (freshest); only the filler subject heals.
+    expect(merged.get('9')!.subject).toBe('real subject')
+    expect(merged.get('9')!.status).toBe('in_progress')
+  })
+
+  it('snapshot fills ids the window cannot see entirely', () => {
+    const window = buildTaskStateMap([assistant([update('4', { status: 'in_progress' })]) as unknown as Loose])!
+    const merged = mergeTaskList(snap([{ id: '5', subject: 'only in snapshot', status: 'pending', stale: false }]), window)
+    expect(merged.get('4')!.subject).toBe('Task #4') // stub without snapshot backing stays filler
+    expect(merged.get('5')!.subject).toBe('only in snapshot')
+  })
+
+  it('snapshot-only entries keep server-precomputed subjects and carry stale', () => {
+    const merged = mergeTaskList(
+      snap([
+        { id: '3', subject: 'old done task', status: 'completed', stale: true },
+        { id: '4', subject: 'old live task', status: 'in_progress', stale: false },
+      ]),
+      null,
+    )
+    expect(merged.has('3')).toBe(false) // stale+resolved dropped at merge
+    expect(merged.get('4')!.subject).toBe('old live task')
+    expect(merged.get('4')!.stale).toBe(false)
+    expect(merged.get('4')!.lastTouched).toBe(-1)
+  })
+
+  it('stale pending snapshot entries are kept (only resolved ones drop)', () => {
+    const merged = mergeTaskList(snap([{ id: '5', subject: 'pending old', status: 'pending', stale: true }]), null)
+    expect(merged.get('5')!.subject).toBe('pending old')
+  })
+
+  it('returns an empty map for null snapshot + null window', () => {
+    expect(mergeTaskList(null, null).size).toBe(0)
   })
 })
