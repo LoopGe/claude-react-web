@@ -192,6 +192,21 @@ describe('SessionNavStrip', () => {
     expect(onNew).toHaveBeenCalledTimes(1)
   })
 
+  it('renders a divider between + and the scroll region when sessions exist', () => {
+    const { container } = renderStrip(baseSections())
+    const children = Array.from(
+      container.querySelector<HTMLElement>('.session-nav-strip')!.children,
+    )
+    expect(children[0].classList.contains('session-nav-new')).toBe(true)
+    expect(children[1].classList.contains('session-nav-divider')).toBe(true)
+    expect(children[2].classList.contains('session-nav-scroll')).toBe(true)
+  })
+
+  it('omits the divider when there are no sessions', () => {
+    const { container } = renderStrip([])
+    expect(container.querySelector('.session-nav-divider')).toBeNull()
+  })
+
   it('falls back to the id prefix for an untitled session', () => {
     const sections: SidebarSection[] = [
       { kind: 'ungrouped', sessions: [makeSession({ id: 'deadbeef-1234', title: undefined })] },

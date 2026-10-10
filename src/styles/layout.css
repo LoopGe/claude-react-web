@@ -131,14 +131,22 @@ body.resizing-col .app {
   --fade-width: 24px;
   animation: session-nav-strip-in var(--motion-duration-moderate) var(--motion-ease-enter);
 }
+/* Plain .btn-icon box (34x30, same family as the sidebar toggle / bell /
+   settings buttons); only the glyph size (16px, like the other 16px icons)
+   and flex protection are added. */
 .session-nav-new {
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
-  padding: 0;
   flex-shrink: 0;
   font-size: var(--fs-lg);
   line-height: 1;
+}
+/* Divider between the + and the tab region — same hairline as the
+   inter-group separators. Rendered outside the scroller so the fade mask
+   can never ghost it. */
+.session-nav-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  flex-shrink: 0;
 }
 /* The scrollable tab region — the mask lives here, not on the shell, so the
    + stays fully opaque. Scroll-position-aware edge fade: --fade-start-w /

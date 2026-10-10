@@ -148,6 +148,8 @@ export const SessionNavStrip = memo(function SessionNavStrip({
     '--fade-end-w': fade.end ? 'var(--fade-width)' : '0px',
   } as CSSProperties
 
+  const hasContent = sections.some((sec) => sec.sessions.length > 0)
+
   return (
     <div
       className="session-nav-strip"
@@ -164,6 +166,11 @@ export const SessionNavStrip = memo(function SessionNavStrip({
       >
         +
       </button>
+      {/* Hairline between the + and the tab region — same border language as
+          the inter-group separators. Lives OUTSIDE the scroller so the fade
+          mask can never ghost it; omitted in the empty state (a lone line
+          next to a lone + reads as a glitch). */}
+      {hasContent && <div className="session-nav-divider" aria-hidden />}
       <div ref={scrollRef} className="session-nav-scroll">
         {sections.map((sec) =>
           sec.kind === 'group' ? (
