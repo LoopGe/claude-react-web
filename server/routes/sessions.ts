@@ -916,6 +916,13 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     return c.json(result)
   })
 
+  // Derived TaskCreate/TaskUpdate checklist state from the full transcript.
+  // Does NOT require a live Query — reads the (cached) transcript like
+  // file-snapshots does. Payload = TasklistSnapshotPayload (shared).
+  app.get('/sessions/:id/tasklist', async (c) => {
+    return c.json(await sm.tasklistSnapshot(c.req.param('id')))
+  })
+
   // Structured diff from a snapshot anchor to the current capture.
   // Query param `from` (required) is the user-message id the anchor was
   // recorded for. Returns the same diff shape as dryRun's `diffs` field.

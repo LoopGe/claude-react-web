@@ -5658,8 +5658,11 @@ export class SessionManager {
   }
 
   /** Full derived Task* checklist snapshot for one session (read side for
-   *  the tasklist HTTP route). Transcript-derived — no live Query required. */
-  tasklistSnapshot(id: string): Promise<import('../shared/task-list.js').TasklistSnapshotPayload> {
+   *  the tasklist HTTP route). Transcript-derived — no live Query required.
+   *  404 for unknown sessions (get throws); derive itself never throws
+   *  (empty payload on failure). */
+  async tasklistSnapshot(id: string): Promise<import('../shared/task-list.js').TasklistSnapshotPayload> {
+    this.get(id)
     return deriveTaskListForSession(id)
   }
 
