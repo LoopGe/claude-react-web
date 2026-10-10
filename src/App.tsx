@@ -58,7 +58,7 @@ import { AppearancePanel } from './components/AppearancePanel'
 import { ProfileSwitcher } from './components/ProfileSwitcher'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { BackgroundVideo } from './components/BackgroundVideo'
-import { IconSettings, IconBellToggle, IconMenu, IconSidebar, IconFolderSearch } from './components/icons/ToolIcons'
+import { IconSettings, IconBellToggle, IconMenu, IconSidebar, IconFolderSearch, IconChevronDown, IconChevronRight } from './components/icons/ToolIcons'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { useUpdateNag, nagDismissValueFor, writeNagDismiss } from './hooks/useUpdateNag'
 import type { UpdateDialogMode } from './components/UpdateDialog'
@@ -3794,9 +3794,10 @@ export function App() {
   const dndSensors = useAppDndSensors()
   const [dndActive, setDndActive] = useState<DragPayload | null>(null)
   /** Which surface the active drag started on (payload `origin` extra). The
-   *  strip lifts compact ghosts; the sidebar keeps its card/pill ones. State,
-   *  not a ref — renderDndGhost reads it during render. */
-  const [dndOrigin, setDndOrigin] = useState<'strip' | undefined>(undefined)
+   *  strip lifts compact tab/chip ghosts, a sidebar SECTION drag lifts a real
+   *  header+cards preview, and the sidebar's cards/pills keep their card/pill
+   *  ghosts. State, not a ref — renderDndGhost reads it during render. */
+  const [dndOrigin, setDndOrigin] = useState<'strip' | 'sidebar-section' | undefined>(undefined)
   /** Frozen whole-panel clone for the panel-drag ghost, captured at drag
    *  activation (see handleDndStart) so the lifted ghost IS the session —
    *  header, messages and composer included. The clone node mounts as-is
@@ -3922,7 +3923,7 @@ export function App() {
     const payload = dndPayloadOf(e.active.data.current)
     if (!payload) return
     dndLastMoveRef.current = null
-    setDndOrigin(dndExtraOf<'strip' | undefined>(e.active.data.current, 'origin'))
+    setDndOrigin(dndExtraOf<'strip' | 'sidebar-section' | undefined>(e.active.data.current, 'origin'))
     // Live drags commit state on drag-over, so Esc must be able to undo:
     // snapshot the pre-drag world (sidebar order + group membership + open
     // panels) at pickup; handleDndCancel restores it.
@@ -4095,6 +4096,42 @@ export function App() {
    *  driven by ChatPanel-local runtime state App cannot re-render. */
   const renderDndGhost = () => {
     if (!dndActive) return null
+    /** The at-rest card rendering shared by the single-card ghost and the
+     *  group-section ghost (both lift REAL cards). Handlers are required
+     *  props but inert here (.dnd-ghost is pointer-events: none); isDragging
+     *  stays false — the dimmed hole is the in-list source's job, the ghost
+     *  shows the at-rest card. runFirst/runLast replicate the list's
+     *  `.session-item-shell` corner rounding per run position. */
+    const ghostCard = (s: SessionInfo, runFirst: boolean, runLast: boolean) => {
+      const slotIdx = openIds.indexOf(s.id)
+      return (
+        <div
+          key={s.id}
+          className={`session-item-shell${runFirst ? ' list-first' : ''}${runLast ? ' list-last' : ''}${focusedId === s.id ? ' focused' : ''}`}
+        >
+          <SessionCard
+            session={s}
+            slotIdx={slotIdx}
+            isOpen={slotIdx >= 0}
+            isFocused={focusedId === s.id}
+            isResuming={resuming.has(s.id)}
+            hasUnread={!!unread[s.id]}
+            isDragging={false}
+            isDeleting={false}
+            isRenaming={false}
+            onSelect={dndNoop}
+            onDelete={dndNoop}
+            onSleep={dndNoop}
+            onContextMenu={dndNoop}
+            renameDraft=""
+            onRenameDraftChange={dndNoop}
+            onCommitRename={dndNoop}
+            onCancelRename={dndNoop}
+            onStartRename={dndNoop}
+          />
+        </div>
+      )
+    }
     if (dndActive.kind === 'sidebar-card') {
       const s = orderedSessions.find((x) => x.id === dndActive.id)
       if (!s) return null
@@ -4108,7 +4145,6 @@ export function App() {
           </DragGhost>
         )
       }
-      const slotIdx = openIds.indexOf(s.id)
       return (
         // Ghost width tracks the live sidebar (resizable) minus the
         // session-list's horizontal padding (--space-2-5 each side), so the
@@ -4117,34 +4153,7 @@ export function App() {
           className="dnd-ghost-session"
           style={{ width: `calc(${effectiveSidebarWidth}px - 2 * var(--space-2-5))` }}
         >
-          {/* The list wraps every card in `.session-item-shell`, which owns
-              the run's corner rounding (list-first/list-last) and the focus
-              ring — replicate both so the ghost matches the card it lifted.
-              isDragging stays false: the dimmed hole is the in-list source's
-              job, the ghost shows the at-rest card. Handlers are required
-              props but inert here (.dnd-ghost is pointer-events: none). */}
-          <div className={`session-item-shell list-first list-last${focusedId === s.id ? ' focused' : ''}`}>
-            <SessionCard
-              session={s}
-              slotIdx={slotIdx}
-              isOpen={slotIdx >= 0}
-              isFocused={focusedId === s.id}
-              isResuming={resuming.has(s.id)}
-              hasUnread={!!unread[s.id]}
-              isDragging={false}
-              isDeleting={false}
-              isRenaming={false}
-              onSelect={dndNoop}
-              onDelete={dndNoop}
-              onSleep={dndNoop}
-              onContextMenu={dndNoop}
-              renameDraft=""
-              onRenameDraftChange={dndNoop}
-              onCommitRename={dndNoop}
-              onCancelRename={dndNoop}
-              onStartRename={dndNoop}
-            />
-          </div>
+          {ghostCard(s, true, true)}
         </DragGhost>
       )
     }
@@ -4155,6 +4164,50 @@ export function App() {
         return (
           <DragGhost>
             <SessionNavChipGhost name={g.name} />
+          </DragGhost>
+        )
+      }
+      if (dndOrigin === 'sidebar-section') {
+        // A SECTION drag lifts the section itself: the real header row plus
+        // its real cards (unless collapsed — then only the header is visible
+        // at rest, so that's all the ghost shows). Members come from
+        // sidebarSections — the same derivation SessionList renders.
+        // Known limits, accepted for a fleeting overlay: the sidebar's search
+        // filter lives inside SessionList, so under an active filter the
+        // ghost shows the group's full membership while the at-rest header
+        // shows the filtered count; and transient collapsed-only badges
+        // (unread / pending) are not mirrored — mirroring them would
+        // duplicate SessionList's aggregation logic.
+        const sec = sidebarSections.find(
+          (x) => x.kind === 'group' && x.group.id === g.id,
+        )
+        const members = sec?.kind === 'group' ? sec.sessions : []
+        const collapsed = !!collapsedGroups[g.id]
+        const cards = collapsed ? [] : members
+        // SessionList.isGroupActive: the group's sessions occupy the panels.
+        const memberSet = new Set(members.map((s) => s.id))
+        const active = openIds.length > 0 && openIds.every((id) => memberSet.has(id))
+        return (
+          // Tall-surface ghost treatment (see .dnd-ghost-section in dnd.css):
+          // no velocity tilt, no per-frame drop-shadow/scale.
+          <DragGhost tilt={false} className="dnd-ghost-session dnd-ghost-section" style={{ width: `calc(${effectiveSidebarWidth}px - 2 * var(--space-2-5))` }}>
+            <div className={`session-section${active ? ' group-active' : ''}`}>
+              <div className={`session-group-header list-first${collapsed || cards.length === 0 ? ' list-last' : ''}`}>
+                <span className="group-collapse-arrow" aria-hidden>
+                  {collapsed ? <IconChevronRight size={12} /> : <IconChevronDown size={12} />}
+                </span>
+                <span className="group-header-name">{g.name}</span>
+                <span className="group-header-count">{members.length}</span>
+              </div>
+              {cards.length > 0 && (
+                // The header owns the run's top edge (list-first) — the first
+                // card must NOT take list-first rounding, matching the at-rest
+                // body (SessionList renders every body card isFirst=false).
+                <div className="group-sessions">
+                  {cards.map((s, i) => ghostCard(s, false, i === cards.length - 1))}
+                </div>
+              )}
+            </div>
           </DragGhost>
         )
       }

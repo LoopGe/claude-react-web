@@ -59,6 +59,18 @@
   filter: none;
 }
 
+/* The sidebar group-SECTION ghost (App renders the real header + cards for
+   `origin: 'sidebar-section'`) can be nearly viewport-tall with an expanded
+   group — same tall-surface rules as the panel ghost: no lift scale, no
+   velocity tilt (DragGhost tilt={false}), and no per-frame drop-shadow
+   filter (same repaint-pressure rationale as .dnd-ghost-panel above). The
+   row surfaces (header wash / card backgrounds) are already opaque, so the
+   lifted section reads correctly over the app beneath the portal. */
+.dnd-ghost-section {
+  scale: 1;
+  filter: none;
+}
+
 /* The clone is an OPAQUE solid surface, overriding .chat-panel's
    `background: var(--bg)`: the ghost is portaled to <body>, so anything
    translucent shows the APP UI beneath it, not the wallpaper the real panel
@@ -108,8 +120,10 @@ body.has-bg .chat-panel.chat-panel-ghost {
 
   /* The media block sits later in source order and would otherwise re-enable
      the per-frame filter on the near-fullscreen panel ghost (same
-     specificity as the base .dnd-ghost-panel rule). */
-  .dnd-ghost-panel {
+     specificity as the base .dnd-ghost-panel rule). The section ghost gets
+     the same opt-out for the same reason. */
+  .dnd-ghost-panel,
+  .dnd-ghost-section {
     filter: none;
   }
 

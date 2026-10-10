@@ -752,7 +752,12 @@ export const SessionList = memo(function SessionList({
                 <SortableNode
                   key={sec.group.id}
                   id={sec.group.id}
-                  data={dndData({ kind: 'group-card', id: sec.group.id }, { axis: 'y' })}
+                  data={dndData(
+                    { kind: 'group-card', id: sec.group.id },
+                    // origin drives App's renderDndGhost: a section drag lifts
+                    // a real header+cards preview, a pill drag keeps the pill.
+                    { axis: 'y', origin: 'sidebar-section' },
+                  )}
                   disabled={!onReorderGroups || isMobile || groups.length <= 1}
                   className={`session-section ${active ? 'group-active' : ''}`}
                   nodeAttrs={{ 'data-group-section-id': sec.group.id }}
