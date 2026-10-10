@@ -306,6 +306,7 @@ export class SessionEventBroadcaster {
     const s = this.sessions.get(id)
     if (!s) return null
     const cached = this.tasklistSnapshots.get(id)
+    this.pruneTasklistSnapshots()
     return this.subscribePushableSet<WsTasklistSnapshot>(
       s, s.tasklistSubscribers as Set<Pushable<WsTasklistSnapshot>>, 'tasklist', 5,
       () => (cached ? [cached] : []),

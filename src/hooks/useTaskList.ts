@@ -25,7 +25,10 @@ export function useTaskList(sessionId: string | undefined): TasklistSnapshotPayl
     const ctrl = new AbortController()
     api
       .get<TasklistSnapshotPayload>(`/sessions/${sessionId}/tasklist`, { signal: ctrl.signal })
-      .then((res) => { if (!ctrl.signal.aborted) setData(res) })
+      .then((res) => {
+        if (ctrl.signal.aborted) return
+        setData((prev) => (prev && res.rev < prev.rev ? prev : res))
+      })
       .catch(() => { /* degrade to window-only fold; the WS channel may still deliver */ })
     return () => ctrl.abort()
   }, [sessionId])
