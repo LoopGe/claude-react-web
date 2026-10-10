@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dndData, dndExtraOf, dndPayloadOf, tiltFromVelocity, type DragPayload } from './payload'
+import { collisionPayloadOf, dndData, dndExtraOf, dndPayloadOf, tiltFromVelocity, type DragPayload } from './payload'
 
 describe('dndData / dndPayloadOf', () => {
   it('round-trips a payload through the data channel', () => {
@@ -62,5 +62,46 @@ describe('tiltFromVelocity', () => {
 
   it('decayed velocity yields near-zero tilt', () => {
     expect(Math.abs(tiltFromVelocity(0.01))).toBeLessThan(0.5)
+  })
+})
+
+describe('collisionPayloadOf', () => {
+  /** The exact shape @dnd-kit/core's collision detectors emit (pointerWithin:
+   *  `collisions.push({ id, data: { droppableContainer, value } })`, where the
+   *  descriptor's `data` is the hook's mutable `{ current }` ref). */
+  function collisionOf(payload: DragPayload, extras?: Record<string, unknown>) {
+    return {
+      id: 'x',
+      data: {
+        droppableContainer: {
+          data: { current: dndData(payload, extras) },
+        },
+        value: 12.5,
+      },
+    }
+  }
+
+  it('unwraps the payload through dnd-kit\'s { droppableContainer, value } wrapper', () => {
+    const payload: DragPayload = { kind: 'group-card', id: 'g1' }
+    expect(collisionPayloadOf(collisionOf(payload, { axis: 'y' }))).toEqual(payload)
+  })
+
+  it('reads extras off the wrapped container data (the axis filter contract)', () => {
+    // appCollisionDetection's eligible() needs the axis extra off a collision —
+    // asserted through the same unwrap path so the two can't diverge.
+    const collision = collisionOf({ kind: 'group-card', id: 'g1' }, { axis: 'x' })
+    const container = (collision.data as {
+      droppableContainer: { data: { current: Record<string, unknown> } }
+    }).droppableContainer
+    expect(dndExtraOf<string>(container.data.current, 'axis')).toBe('x')
+  })
+
+  it('returns null for collision shapes without a crw payload', () => {
+    expect(collisionPayloadOf(undefined)).toBeNull()
+    expect(collisionPayloadOf({ data: undefined })).toBeNull()
+    // The bug this guards against: reading collision.data directly — dnd-kit's
+    // wrapper has no `crw` key at the top level.
+    expect(collisionPayloadOf({ data: { droppableContainer: undefined, value: 1 } })).toBeNull()
+    expect(collisionPayloadOf({ data: { crw: { kind: 'group-card', id: 'g' } } })).toBeNull()
   })
 })

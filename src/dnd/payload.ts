@@ -84,6 +84,23 @@ export function dndExtraOf<T>(data: Record<string, unknown> | undefined, key: st
   return data?.[key] as T | undefined
 }
 
+/** Unwrap a droppable's `data` record out of a dnd-kit COLLISION result.
+ *  Collision.data is NOT the droppable's `data` prop — dnd-kit wraps it as
+ *  `{ droppableContainer, value }` (see pointerWithin in @dnd-kit/core), and
+ *  the descriptor's own `data` is the mutable `{ current }` ref the hook
+ *  registered. Reading `collision.data` directly always yields null, which
+ *  silently killed every kind-based collision filter/ranking. */
+export function collisionDataOf(collision: { data?: unknown } | undefined | null): Record<string, unknown> | null {
+  const container = (collision?.data as
+    | { droppableContainer?: { data?: { current?: Record<string, unknown> } } }
+    | undefined)?.droppableContainer
+  return container?.data?.current ?? null
+}
+
+export function collisionPayloadOf(collision: { data?: unknown } | undefined | null): DragPayload | null {
+  return dndPayloadOf(collisionDataOf(collision) ?? undefined)
+}
+
 /** dnd-kit sensor listeners minus the KeyboardSensor activator. Surfaces that
  *  are already focusable controls with their own Enter/Space semantics
  *  (cards, pills, group headers, panel headers) must not have Space/Enter

@@ -22,7 +22,7 @@ import { prefersReducedMotion } from './utils/reduced-motion'
 import { DndContext, pointerWithin, rectIntersection, useDroppable, type Collision, type CollisionDetection, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent, type UniqueIdentifier } from '@dnd-kit/core'
 import { useAppDndSensors } from './dnd/sensors'
 import type { DragPayload, PanelGhostSnapshot } from './dnd/payload'
-import { dndData, dndExtraOf, dndPayloadOf } from './dnd/payload'
+import { collisionDataOf, collisionPayloadOf, dndData, dndExtraOf, dndPayloadOf } from './dnd/payload'
 import { DragGhost } from './dnd/DragGhost'
 import { DragOverlayPortal } from './dnd/DragOverlayPortal'
 import { useIsMobile } from './hooks/useIsMobile'
@@ -3850,18 +3850,22 @@ export function App() {
    *  main grid). */
   const appCollisionDetection: CollisionDetection = useCallback((args) => {
     const activeKind = dndPayloadOf(args.active.data.current)?.kind
-    const kindOf = (c: Collision) =>
-      dndPayloadOf(c.data as Record<string, unknown> | undefined)?.kind
+    // Collision.data is dnd-kit's { droppableContainer, value } wrapper — the
+    // droppable payload lives at data.droppableContainer.data.current. Reading
+    // collision.data directly always yields null, which silently disabled the
+    // axis filter and same-kind ranking below (group drags lost to whichever
+    // session card sat under the pointer).
+    const kindOf = (c: Collision) => collisionPayloadOf(c)?.kind
+    const axisOf = (c: Collision) => dndExtraOf<'x' | 'y'>(collisionDataOf(c) ?? undefined, 'axis')
     /** Group-card drags only collide with axis-bearing group droppables
      *  (pills / section nodes) — the group-body droppables share the kind
      *  and would otherwise shadow the section with a rect that has no
      *  before/after meaning. */
     const eligible = (c: Collision) => {
-      const kind = kindOf(c)
-      if (activeKind === 'group-card' && kind === 'group-card') {
-        return dndExtraOf<'x' | 'y'>(c.data as Record<string, unknown> | undefined, 'axis') != null
-      }
-      return true
+      // Early-out for the common drag kinds: their collisions all pass, and
+      // this filter runs per collision per pointer move.
+      if (activeKind !== 'group-card') return true
+      return kindOf(c) !== 'group-card' || axisOf(c) != null
     }
     // pointerWithin first (exact containment), then rectIntersection as the
     // fallback: the ghost overlapping a droppable is a far tighter contract
