@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
-import { SessionNavStrip, edgeFadeState } from './SessionNavStrip'
+import { render, screen, fireEvent, createEvent } from '@testing-library/react'
+import { DndContext } from '@dnd-kit/core'
+import { SessionNavStrip, edgeFadeState, stripDndPlan } from './SessionNavStrip'
 import type { SessionInfo, SidebarSection } from '../types'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -46,6 +47,8 @@ function renderStrip(sections: SidebarSection[], overrides: Partial<Parameters<t
       onSelect={onSelect}
       onActivateGroup={onActivateGroup}
       onNew={onNew}
+      onSessionContextMenu={overrides.onSessionContextMenu}
+      onGroupContextMenu={overrides.onGroupContextMenu}
     />,
   )
   return { onSelect, onActivateGroup, onNew, ...utils }
@@ -252,5 +255,219 @@ describe('SessionNavStrip', () => {
     mockStripGeometry(scroller, 0, 300, 200)
     fireEvent.scroll(scroller)
     expect(strip.style.getPropertyValue('--fade-end-w')).toBe('var(--fade-width)')
+  })
+})
+
+describe('SessionNavStrip drag', () => {
+  /** Real DndContext + sensors-free (App supplies sensors): the strip's own
+   *  contract is the registration (node id / payload / extras) and click
+   *  passthrough; drop routing lives in App's kind-based handlers and is
+   *  exercised by the sidebar drags that share those handlers. */
+  function renderDndStrip(sections: SidebarSection[], onDragStart: (e: unknown) => void) {
+    return render(
+      <DndContext onDragStart={onDragStart}>
+        <SessionNavStrip
+          sections={sections}
+          focusedId={null}
+          activeGroupId={null}
+          unread={{}}
+          onSelect={vi.fn()}
+          onActivateGroup={vi.fn()}
+          onNew={vi.fn()}
+        />
+      </DndContext>,
+    )
+  }
+
+  it('starts a tab drag with the namespaced node and the routed payload', async () => {
+    const onDragStart = vi.fn()
+    renderDndStrip(baseSections(), onDragStart)
+    const tab = screen.getByTitle('Alpha')
+    fireEvent.pointerDown(tab, { button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true, clientX: 10, clientY: 10 })
+    try {
+      fireEvent.pointerMove(document.body, { pointerId: 1, clientX: 60, clientY: 10 })
+      expect(onDragStart).toHaveBeenCalledTimes(1)
+      const active = (onDragStart.mock.calls[0][0] as { active: { data: { current: Record<string, unknown> } } }).active
+      expect(active.data.current.crw).toEqual({ kind: 'sidebar-card', id: 's1' })
+      expect(active.data.current.containerGroupId).toBe('g1')
+      expect(active.data.current.origin).toBe('strip')
+    } finally {
+      // Release the sensor and wait out dnd-kit's teardown: while a sensor
+      // was active it stopped propagation of document-level clicks (capture),
+      // and detach() only removes those listeners via a 50ms timer — without
+      // the wait, every subsequent test in this file loses its click events.
+      fireEvent.pointerUp(document.body, { pointerId: 1, clientX: 60, clientY: 10 })
+      await new Promise((resolve) => setTimeout(resolve, 60))
+    }
+  })
+
+  it('starts a chip drag with the group payload and x axis', async () => {
+    const onDragStart = vi.fn()
+    // Two groups: a lone group's chip is drag-disabled (same rule as the
+    // sidebar pills).
+    const twoGroups: SidebarSection[] = [
+      baseSections()[0],
+      {
+        kind: 'group',
+        group: { id: 'g2', name: 'G2', sessionIds: ['s3'] },
+        sessions: [makeSession({ id: 's3', title: 'Gamma' })],
+      },
+    ]
+    renderDndStrip(twoGroups, onDragStart)
+    const chip = screen.getByTitle('前端')
+    fireEvent.pointerDown(chip, { button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true, clientX: 10, clientY: 10 })
+    try {
+      fireEvent.pointerMove(document.body, { pointerId: 1, clientX: 90, clientY: 10 })
+      expect(onDragStart).toHaveBeenCalledTimes(1)
+      const active = (onDragStart.mock.calls[0][0] as { active: { data: { current: Record<string, unknown> } } }).active
+      expect(active.data.current.crw).toEqual({ kind: 'group-card', id: 'g1' })
+      expect(active.data.current.axis).toBe('x')
+    } finally {
+      fireEvent.pointerUp(document.body, { pointerId: 1, clientX: 90, clientY: 10 })
+      await new Promise((resolve) => setTimeout(resolve, 60))
+    }
+  })
+
+  it('keeps click working with drag listeners attached (5px activation)', () => {
+    const onSelect = vi.fn()
+    render(
+      <DndContext>
+        <SessionNavStrip
+          sections={baseSections()}
+          focusedId={null}
+          activeGroupId={null}
+          unread={{}}
+          onSelect={onSelect}
+          onActivateGroup={vi.fn()}
+          onNew={vi.fn()}
+        />
+      </DndContext>,
+    )
+    fireEvent.click(screen.getByTitle('Alpha'))
+    expect(onSelect).toHaveBeenCalledWith('s1')
+  })
+})
+
+describe('stripDndPlan', () => {
+  const dndSections: SidebarSection[] = [
+    {
+      kind: 'group',
+      group: { id: 'g1', name: 'G1', sessionIds: ['s1', 's2'] },
+      sessions: [makeSession({ id: 's1' }), makeSession({ id: 's2' })],
+    },
+    { kind: 'ungrouped', sessions: [makeSession({ id: 's3' })] },
+  ]
+
+  it('namespaces node ids (the collapsed sidebar stays mounted and shares the App DndContext) while payloads keep business ids', () => {
+    const plan = stripDndPlan(dndSections)
+    const g1 = plan.sections[0]
+    expect(g1.chip!.nodeId).toBe('strip-chip-g1')
+    expect(g1.tabs.map((t) => t.nodeId)).toEqual(['strip-s1', 'strip-s2'])
+    expect(g1.chip!.id).toBe('g1')
+    expect(g1.tabs.map((t) => t.id)).toEqual(['s1', 's2'])
+  })
+
+  it('partitions contexts: one outer chip list, one member list per section', () => {
+    const plan = stripDndPlan(dndSections)
+    expect(plan.chipItems).toEqual(['strip-chip-g1'])
+    expect(plan.sections[0].tabItems).toEqual(['strip-s1', 'strip-s2'])
+    expect(plan.sections[1].tabItems).toEqual(['strip-s3'])
+    // Ungrouped sections carry no chip.
+    expect(plan.sections[1].chip).toBeUndefined()
+  })
+
+  it('tags session payloads as sidebar-card with containerGroupId + strip origin, chips as group-card with x axis', () => {
+    const plan = stripDndPlan(dndSections)
+    const [t1] = plan.sections[0].tabs
+    expect(t1.data.crw).toEqual({ kind: 'sidebar-card', id: 's1' })
+    expect(t1.data.containerGroupId).toBe('g1')
+    expect(t1.data.origin).toBe('strip')
+    // Tabs carry axis:'x' too — App's positionFromOver reads it off the OVER
+    // node; a one-row strip's identical tops would otherwise always commit
+    // 'after' (leftward drags would silently no-op).
+    expect(t1.data.axis).toBe('x')
+    const ungrouped = plan.sections[1].tabs[0]
+    expect(ungrouped.data.containerGroupId).toBeUndefined()
+    expect(ungrouped.data.origin).toBe('strip')
+    expect(ungrouped.data.axis).toBe('x')
+    const chip = plan.sections[0].chip!
+    expect(chip.data.crw).toEqual({ kind: 'group-card', id: 'g1' })
+    expect(chip.data.axis).toBe('x')
+    expect(chip.data.origin).toBe('strip')
+  })
+
+  it('returns an empty plan for an empty strip', () => {
+    const plan = stripDndPlan([])
+    expect(plan.chipItems).toEqual([])
+    expect(plan.sections).toEqual([])
+  })
+})
+
+describe('SessionNavStrip context menus', () => {
+  it('reports a session tab right-click with the event and session id', () => {
+    const onSessionContextMenu = vi.fn()
+    renderStrip(baseSections(), { onSessionContextMenu })
+    const tab = screen.getByTitle('Alpha')
+    const ev = createEvent.contextMenu(tab, { clientX: 12, clientY: 34 })
+    fireEvent(tab, ev)
+    expect(onSessionContextMenu).toHaveBeenCalledTimes(1)
+    expect(onSessionContextMenu.mock.calls[0][1]).toBe('s1')
+  })
+
+  it('prevents the native menu only when the session callback is wired', () => {
+    const sections = baseSections()
+    const wired = render(<SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNew={vi.fn()} onSessionContextMenu={vi.fn()} />)
+    const wiredTab = wired.container.querySelector<HTMLElement>('.session-nav-tab')!
+    const wiredEv = createEvent.contextMenu(wiredTab)
+    fireEvent(wiredTab, wiredEv)
+    expect(wiredEv.defaultPrevented).toBe(true)
+
+    const unwired = renderStrip(sections)
+    const unwiredTab = unwired.container.querySelector<HTMLElement>('.session-nav-tab')!
+    const unwiredEv = createEvent.contextMenu(unwiredTab)
+    fireEvent(unwiredTab, unwiredEv)
+    // No handler → the browser's own menu must stay available.
+    expect(unwiredEv.defaultPrevented).toBe(false)
+  })
+
+  it('right-click does not select the session', () => {
+    const onSelect = vi.fn()
+    renderStrip(baseSections(), { onSelect, onSessionContextMenu: vi.fn() })
+    const ev = createEvent.contextMenu(screen.getByTitle('Alpha'))
+    fireEvent(screen.getByTitle('Alpha'), ev)
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('reports a group chip right-click with the event and group id', () => {
+    const onGroupContextMenu = vi.fn()
+    renderStrip(baseSections(), { onGroupContextMenu })
+    const chip = screen.getByTitle('前端')
+    const ev = createEvent.contextMenu(chip)
+    fireEvent(chip, ev)
+    expect(onGroupContextMenu).toHaveBeenCalledTimes(1)
+    expect(onGroupContextMenu.mock.calls[0][1]).toBe('g1')
+  })
+
+  it('right-click does not activate the group', () => {
+    const onActivateGroup = vi.fn()
+    renderStrip(baseSections(), { onActivateGroup, onGroupContextMenu: vi.fn() })
+    const chip = screen.getByTitle('前端')
+    fireEvent(chip, createEvent.contextMenu(chip))
+    expect(onActivateGroup).not.toHaveBeenCalled()
+  })
+
+  it('prevents the native menu only when the group callback is wired', () => {
+    const sections = baseSections()
+    const wired = render(<SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNew={vi.fn()} onGroupContextMenu={vi.fn()} />)
+    const wiredChip = wired.container.querySelector<HTMLElement>('.session-nav-chip')!
+    const wiredEv = createEvent.contextMenu(wiredChip)
+    fireEvent(wiredChip, wiredEv)
+    expect(wiredEv.defaultPrevented).toBe(true)
+
+    const unwired = renderStrip(sections)
+    const unwiredChip = unwired.container.querySelector<HTMLElement>('.session-nav-chip')!
+    const unwiredEv = createEvent.contextMenu(unwiredChip)
+    fireEvent(unwiredChip, unwiredEv)
+    expect(unwiredEv.defaultPrevented).toBe(false)
   })
 })

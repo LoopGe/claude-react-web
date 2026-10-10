@@ -2,13 +2,11 @@
 // The new-session form lives inside a modal (<NewSessionDialog />) so the
 // sidebar can dedicate its vertical space to listing sessions.
 
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { useDndContext, useDroppable } from '@dnd-kit/core'
-import { SortableContext, useSortable, horizontalListSortingStrategy, verticalListSortingStrategy } from '@dnd-kit/sortable'
-import { CSS as DndCSS } from '@dnd-kit/utilities'
-import { dndData, dndPayloadOf, pointerOnlyListeners } from '../dnd/payload'
-import type { SyntheticListenerMap } from '@dnd-kit/core/dist/hooks/utilities'
-import { SORTABLE_TRANSITION } from '../dnd/motion'
+import { SortableContext, horizontalListSortingStrategy, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { dndData, dndPayloadOf } from '../dnd/payload'
+import { SortableNode } from '../dnd/SortableNode'
 import { prepareFlip } from '../utils/flip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
@@ -16,20 +14,15 @@ import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '
 import type { ModelGroupConfig } from '../types/config'
 import { NewSessionDialog } from './session-list/NewSessionDialog'
 import { SessionContextMenu } from './session-list/SessionContextMenu'
+import { buildGroupContextMenuItems } from './session-list/groupMenuItems'
 import { SessionCard } from './session-list/SessionCard'
-import { ConfirmDialog } from './ConfirmDialog'
-// Lazy-loaded: PromptDialog is only used when the user renames a group.
-// Mirrors App.tsx's lazy declaration — keeping the static import here would
-// pull PromptDialog into the main bundle and defeat the code-split (Vite
-// emits a "dynamic import will not move module into another chunk" warning
-// if a static import coexists with the lazy one in App.tsx).
-const PromptDialog = lazy(() => import('./PromptDialog').then((m) => ({ default: m.PromptDialog })))
+import { DialogHosts } from './DialogHosts'
+import { useDialogHosts } from '../hooks/useDialogHosts'
 import { ContextMenu } from './ContextMenu'
-import { IconX, IconChevronUp, IconChevronRight, IconChevronDown, IconSquare, IconPencil, IconTrash, IconSearch } from './icons/ToolIcons'
+import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconSearch } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { Virtuoso } from 'react-virtuoso'
 import { useExitPresence } from '../hooks/useExitPresence'
-import { AnimatePresence } from 'motion/react'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { AnimatedCollapse } from './AnimatedCollapse'
 
@@ -45,65 +38,8 @@ function sessionMatchesFilter(s: SessionInfo, q: string): boolean {
 // ── dnd-kit building blocks ──────────────────────────────────────────────
 // One DndContext lives at App level (a session card can travel between the
 // sidebar and the main grid). The sidebar only mounts the sortable/droppable
-// nodes and delegates all event resolution upward.
-
-/** Generic sortable wrapper with a render-prop activator: the node carries
- *  the displacement transform, `listeners`/`setActivatorNodeRef` go wherever
- *  the drag handle is (a card's whole surface, a group header strip, a pill).
- *  Listeners only — dnd-kit's a11y attributes would add a second tab stop
- *  around controls that are already focusable, and keyboard reorder has
- *  context-menu / shortcut alternatives. */
-function SortableNode({ id, data, disabled, className, style, nodeAttrs, extraDrop, children }: {
-  id: string
-  data: Record<string, unknown>
-  disabled: boolean
-  className?: string
-  style?: CSSProperties
-  /** Static DOM attributes (e.g. the FLIP markers prepareGroupFlip matches). */
-  nodeAttrs?: Record<string, string>
-  /** An additional always-independent droppable registered on the same node —
-   *  the group section uses it so the header stays a "drop session into
-   *  group" target even when the sortable itself is disabled (single group)
-   *  and so the header can light its own drop ring. */
-  extraDrop?: { id: string; data: Record<string, unknown>; disabled: boolean }
-  children: (state: {
-    isDragging: boolean
-    /** True while the extraDrop droppable is the current collision winner. */
-    isOverDrop: boolean
-    setActivatorNodeRef: (el: HTMLElement | null) => void
-    listeners: SyntheticListenerMap | undefined
-  }) => ReactNode
-}) {
-  const { listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
-    useSortable({ id, data, disabled })
-  const extra = useDroppable({
-    id: extraDrop?.id ?? `idle-extra-${id}`,
-    disabled: !extraDrop || extraDrop.disabled,
-    data: extraDrop?.data,
-  })
-  // Strip the KeyboardSensor activator: none of these surfaces spread dnd-kit's
-  // a11y attributes (they're already focusable controls with their own
-  // Enter/Space semantics), so keyboard drag would only hijack activation.
-  // Keyboard reorder lives in the context menu / Alt shortcuts.
-  const activatorListeners = pointerOnlyListeners(listeners)
-  return (
-    <div
-      ref={setNodeRef}
-      {...nodeAttrs}
-      className={className}
-      style={{
-        ...style,
-        transform: DndCSS.Transform.toString(transform),
-        // Inline transition ONLY while the item is being displaced — a
-        // permanent inline transition would override the stylesheet
-        // transitions (.deleting exit, hover states) at rest.
-        transition: transform ? (transition ?? SORTABLE_TRANSITION) : undefined,
-      }}
-    >
-      {children({ isDragging, isOverDrop: extraDrop ? extra.isOver : false, setActivatorNodeRef, listeners: activatorListeners })}
-    </div>
-  )
-}
+// nodes and delegates all event resolution upward. The shared SortableNode
+// wrapper lives in src/dnd/SortableNode.tsx.
 
 /** A group's session body — also the "drop session here" target when the
  *  pointer is over the body rather than a specific card (the dashed ring).
@@ -320,26 +256,9 @@ export const SessionList = memo(function SessionList({
   /** Global toast hub. `showFolderDropError` becomes `toast.error(...)`
    *  and the previous inline `successMsg` banner becomes `toast.success(...)`. */
   const toast = useToast()
-  // --- Confirm / Prompt dialog state (replaces window.confirm / window.prompt) ---
-  type ConfirmState = {
-    title: string
-    message: React.ReactNode
-    confirmLabel: string
-    destructive?: boolean
-    onConfirm: () => void | Promise<void>
-  }
-  type PromptState = {
-    title: string
-    message: React.ReactNode
-    defaultValue: string
-    confirmLabel: string
-    placeholder?: string
-    onConfirm: (value: string) => void | Promise<void>
-  }
-  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null)
-  const [confirmBusy, setConfirmBusy] = useState(false)
-  const [promptState, setPromptState] = useState<PromptState | null>(null)
-  const [promptBusy, setPromptBusy] = useState(false)
+  // --- Confirm / Prompt dialog state (replaces window.confirm / window.prompt).
+  // Shared busy-wrapping host — see useDialogHosts; rendered by <DialogHosts>. ---
+  const dialogs = useDialogHosts()
   /** Pending group pill context menu target — the group id whose
    *  right-click context menu should open. Null when menu is closed. */
   const [groupMenuTarget, setGroupMenuTarget] = useState<string | null>(null)
@@ -514,31 +433,6 @@ export const SessionList = memo(function SessionList({
   const openIdSet = useMemo(() => new Set(openIds), [openIds])
   const openIdSlotMap = useMemo(() => new Map(openIds.map((id, i) => [id, i])), [openIds])
 
-  /** Stable callback for child components to request a confirmation dialog. */
-  const handleAskConfirm = useCallback((config: {
-    title: string
-    message: React.ReactNode
-    confirmLabel: string
-    destructive?: boolean
-    onConfirm: () => void | Promise<void>
-  }) => {
-    setConfirmState({
-      title: config.title,
-      message: config.message,
-      confirmLabel: config.confirmLabel,
-      destructive: config.destructive,
-      onConfirm: async () => {
-        setConfirmBusy(true)
-        try {
-          await config.onConfirm()
-        } finally {
-          setConfirmBusy(false)
-          setConfirmState(null)
-        }
-      },
-    })
-  }, [])
-
   /** Wrapped cross-section move (context-menu "Move to group" / "Remove from
    *  group"; the drag-drop path is resolved by App's DndContext). Without
    *  FLIP the row teleports to its new section the instant `groups` state
@@ -594,13 +488,13 @@ export const SessionList = memo(function SessionList({
               onCommitRename={commitRename}
               onCancelRename={cancelRename}
               onStartRename={startRename}
-              onAskConfirm={handleAskConfirm}
+              onAskConfirm={dialogs.askConfirm}
             />
           )}
         </SortableNode>
       )
     },
-    [isMobile, openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, renamingId, onSelect, onDelete, onSleep, handleCardContextMenu, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, handleAskConfirm],
+    [isMobile, openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, renamingId, onSelect, onDelete, onSleep, handleCardContextMenu, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, dialogs.askConfirm],
   )
 
   /** Resolve which ordered list a session belongs to and, when it lives in
@@ -1036,7 +930,7 @@ export const SessionList = memo(function SessionList({
         onAddToGroup={animatedAddToGroup}
         maxGroupSize={maxGroupSize}
         onShowSuccess={toast.success}
-        onAskConfirm={handleAskConfirm}
+        onAskConfirm={dialogs.askConfirm}
       />
       })()}
 
@@ -1075,108 +969,21 @@ export const SessionList = memo(function SessionList({
             x={groupMenuPos.x}
             y={groupMenuPos.y}
             onClose={() => setGroupMenuTarget(null)}
-            items={[
-              {
-                label: 'Move up',
-                icon: <IconChevronUp size={14} />,
-                disabled: !groupCanMoveUp,
-                onClick: () => onMoveGroup?.(g.id, 'up'),
-              },
-              {
-                label: 'Move down',
-                icon: <IconChevronDown size={14} />,
-                disabled: !groupCanMoveDown,
-                onClick: () => onMoveGroup?.(g.id, 'down'),
-              },
-              { label: '' }, // separator (ContextMenu trims/merges)
-              {
-                label: 'Rename group…',
-                icon: <IconPencil size={14} />,
-                onClick: () => {
-                  setPromptState({
-                    title: 'Rename group',
-                    message: <p>Rename &ldquo;{g.name}&rdquo; to a new name.</p>,
-                    defaultValue: g.name,
-                    confirmLabel: 'Rename',
-                    placeholder: 'Group name',
-                    onConfirm: async (value) => {
-                      onRenameGroup(g.id, value)
-                      setPromptState(null)
-                    },
-                  })
-                },
-              },
-              {
-                label: 'Delete group',
-                icon: <IconTrash size={14} />,
-                danger: true,
-                onClick: () => {
-                  setConfirmState({
-                    title: 'Delete group?',
-                    message: <p>Delete &ldquo;{g.name}&rdquo;? Sessions in this group will not be deleted.</p>,
-                    confirmLabel: 'Delete',
-                    destructive: true,
-                    onConfirm: async () => {
-                      setConfirmBusy(true)
-                      try {
-                        onDeleteGroup(g.id)
-                      } finally {
-                        setConfirmBusy(false)
-                        setConfirmState(null)
-                      }
-                    },
-                  })
-                },
-              },
-            ]}
+            items={buildGroupContextMenuItems({
+              group: g,
+              canMoveUp: groupCanMoveUp,
+              canMoveDown: groupCanMoveDown,
+              onMove: (id, dir) => onMoveGroup?.(id, dir),
+              onRename: onRenameGroup,
+              onDelete: onDeleteGroup,
+              dialogs: { askConfirm: dialogs.askConfirm, askPrompt: dialogs.askPrompt },
+            })}
           />
         )
       })()}
 
-      {/* Confirm dialog (replaces window.confirm) */}
-      <AnimatePresence>
-        {confirmState && (
-          <ConfirmDialog
-            key="confirm"
-            title={confirmState.title}
-            message={confirmState.message}
-            confirmLabel={confirmState.confirmLabel}
-            destructive={confirmState.destructive}
-            busy={confirmBusy}
-            onConfirm={confirmState.onConfirm}
-            onCancel={() => { if (!confirmBusy) setConfirmState(null) }}
-          />
-        )}
-      </AnimatePresence>
-
-      {/* Prompt dialog (replaces window.prompt for group rename) */}
-      <AnimatePresence>
-        {promptState && (
-          <Suspense fallback={null}>
-            <PromptDialog
-              key="prompt"
-              title={promptState.title}
-              message={promptState.message}
-              defaultValue={promptState.defaultValue}
-              confirmLabel={promptState.confirmLabel}
-              placeholder={promptState.placeholder}
-              busy={promptBusy}
-              onConfirm={(value) => {
-                void (async () => {
-                  setPromptBusy(true)
-                  try {
-                    await promptState.onConfirm(value)
-                  } finally {
-                    setPromptBusy(false)
-                    setPromptState(null)
-                  }
-                })()
-              }}
-              onCancel={() => { if (!promptBusy) setPromptState(null) }}
-            />
-          </Suspense>
-        )}
-      </AnimatePresence>
+      {/* Confirm + prompt dialog hosts (replaces window.confirm / window.prompt) */}
+      <DialogHosts hosts={dialogs} />
     </>
   )
 })

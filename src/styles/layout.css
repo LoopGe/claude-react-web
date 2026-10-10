@@ -318,6 +318,33 @@ body.resizing-col .app {
   background: var(--accent-bright);
   flex-shrink: 0;
 }
+/* SortableNode wrapper around a drag-enabled tab / chip. A plain div works as
+   a flex item (width = content, align-items:center centers it), but the
+   explicit box keeps the slot from growing if the button's intrinsic sizing
+   changes. */
+.session-nav-slot {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+/* Dragging tab/chip: dim the in-row source while the compact ghost carries
+   the item (same "dimmed hole" language as .session-item.dragging, without
+   the lift/shadow — a 24px chip reads noise at that size). */
+.session-nav-tab.dragging,
+.session-nav-chip.dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+.session-nav-tab.dragging:hover {
+  background: transparent;
+}
+/* Strip drag ghosts (rendered inside .dnd-ghost by App for strip-originated
+   drags): the item IS the tab/chip. No hover feedback — DragGhost's root is
+   pointer-events:none. The box shadow carries the "lifted" read. */
+.session-nav-tab-ghost,
+.session-nav-chip-ghost {
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--fg) 12%, transparent);
+}
 
 /* Profile quick-switcher in the top bar. */
 .profile-switcher {

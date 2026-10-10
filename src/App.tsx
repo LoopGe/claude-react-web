@@ -5,7 +5,13 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { SessionList } from './components/SessionList'
-import { SessionNavStrip } from './components/SessionNavStrip'
+import { SessionNavStrip, SessionNavTabGhost, SessionNavChipGhost } from './components/SessionNavStrip'
+import { SessionContextMenu } from './components/session-list/SessionContextMenu'
+import { buildGroupContextMenuItems, type GroupMenuDialogs } from './components/session-list/groupMenuItems'
+import { ContextMenu } from './components/ContextMenu'
+import { DialogHosts } from './components/DialogHosts'
+import { useDialogHosts } from './hooks/useDialogHosts'
+import { sidebarMoveTarget } from './utils/sidebar-move'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
 import { SessionCard } from './components/session-list/SessionCard'
@@ -185,6 +191,41 @@ function MainGridDropZone({ bodyRef, className, style, panelCount, children }: {
     <div ref={mergedRef} className={className} data-panel-count={panelCount} style={style}>
       {children}
     </div>
+  )
+}
+
+/** Group context menu behind the collapsed-sidebar nav strip's group chips.
+ *  Its own component (not inline JSX in App) so the ref-reading App handlers
+ *  (move/delete group) arrive as opaque JSX props — passing them straight
+ *  into a render-time buildGroupContextMenuItems call trips react-hooks/refs
+ *  ("may read its value during render"); JSX props don't (same reason
+ *  SessionList's identical menu is clean). */
+function StripGroupMenu({ anchor, group, groups, onMove, onRename, onDelete, dialogs, onClose }: {
+  anchor: { x: number; y: number }
+  group: SessionGroup
+  groups: SessionGroup[]
+  onMove: (groupId: string, direction: 'up' | 'down') => void
+  onRename: (groupId: string, name: string) => void
+  onDelete: (groupId: string) => void
+  dialogs: GroupMenuDialogs
+  onClose: () => void
+}) {
+  const idx = groups.findIndex((grp) => grp.id === group.id)
+  return (
+    <ContextMenu
+      x={anchor.x}
+      y={anchor.y}
+      onClose={onClose}
+      items={buildGroupContextMenuItems({
+        group,
+        canMoveUp: idx > 0,
+        canMoveDown: idx >= 0 && idx < groups.length - 1,
+        onMove,
+        onRename,
+        onDelete,
+        dialogs,
+      })}
+    />
   )
 }
 
@@ -2666,6 +2707,55 @@ export function App() {
   //     and preventDefault() can't reach them.
   //   - Esc closes whatever overlay is open, highest-priority last (so
   //     the dialog covers the drawer, etc.).
+
+  // ── Collapsed-sidebar nav strip context menus ────────────────────
+  // While the sidebar is hidden (desktop, no custom titlebar) the header's
+  // SessionNavStrip is the only surface listing every session/group. Right-
+  // clicks there forward raw events (the strip stays presentational) into
+  // the menu state below, which mirrors the sidebar's per-card / per-group
+  // menus: same SessionContextMenu component, same group-menu builder, same
+  // App-level handlers. Right-click does NOT select — same as the sidebar.
+  // Declared BEFORE the shortcut list below: mod+b toggles the sidebar
+  // through toggleSidebarCollapsed, which also drops any open strip menu
+  // (the strip unmounts on expand; a surviving menu would re-materialize on
+  // the next collapse — cleared at the source instead of an effect, which
+  // the compiler rejects for sync setState).
+  const [stripMenu, setStripMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  const [stripGroupMenu, setStripGroupMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  /** Shared busy-wrapping confirm/prompt hosts (same implementation the
+   *  sidebar's SessionList uses) — rendered by <DialogHosts> near the other
+   *  app-level dialogs. */
+  const stripDialogs = useDialogHosts()
+
+  const handleStripSessionContextMenu = useCallback((e: React.MouseEvent, id: string) => {
+    // Opening one strip menu closes the other: ContextMenu's outside-mousedown
+    // ignores non-primary presses, so a right-click would otherwise stack a
+    // second portal on top of the open one.
+    setStripGroupMenu(null)
+    setStripMenu({ x: e.clientX, y: e.clientY, id })
+  }, [setStripMenu, setStripGroupMenu])
+  const handleStripGroupContextMenu = useCallback((e: React.MouseEvent, id: string) => {
+    setStripMenu(null)
+    setStripGroupMenu({ x: e.clientX, y: e.clientY, id })
+  }, [setStripGroupMenu, setStripMenu])
+
+  // Menus outlive their surface if left alone: the strip unmounts on sidebar
+  // expand, and a surviving menu would re-materialize on the next collapse.
+  // Cleared at the toggle source (both entries — button + shortcut — route
+  // through here) instead of an effect, which the compiler rejects for sync
+  // setState. Known narrow gap: a viewport flip across the isMobile boundary
+  // unmounts the strip without this toggle — the JSX gates on stripMounted so
+  // the menu vanishes; its state lingers until the next toggle, which is a
+  // self-healing cosmetic edge.
+  const toggleSidebarCollapsed = useCallback(() => {
+    setStripMenu(null)
+    setStripGroupMenu(null)
+    setSidebarCollapsed((v) => !v)
+  }, [setSidebarCollapsed, setStripMenu, setStripGroupMenu])
+
+  /** The strip's mount condition (single source for the JSX below). */
+  const stripMounted = !isMobile && sidebarCollapsed && !hostCaps.customTitlebar
+
   const shortcuts = useMemo(
     () => [
       // Alt+1..Alt+9 activate the Nth group — keyboard equivalent of
@@ -2857,7 +2947,7 @@ export function App() {
         },
         {
           combo: 'mod+b',
-          handler: () => setSidebarCollapsed((v) => !v),
+          handler: toggleSidebarCollapsed,
           description: 'Toggle sidebar',
         },
         {
@@ -2996,7 +3086,7 @@ export function App() {
       // [handleCloseSettings, handleCloseGitPanel]), so the omission only
       // affects eslint's static analysis, not runtime behaviour.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, handleCloseWorktree, setSidebarCollapsed],
+      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, handleCloseWorktree, toggleSidebarCollapsed],
     )
   useKeyboardShortcuts(shortcuts)
 
@@ -3503,6 +3593,50 @@ export function App() {
     [setCollapsedGroups],
   )
 
+  // ── Collapsed-sidebar nav strip menus: move/rename ────────────────
+  // (Menu/dialog STATE lives above the keyboard-shortcut list, which toggles
+  // the sidebar through toggleSidebarCollapsed to clear the menus; this half
+  // only holds the handlers that need the reorder/section definitions below.)
+
+  /** Context-menu "Move up/down" for a strip tab: resolve the neighbour in
+   *  the session's own section (pure helper, same semantics as the sidebar's
+   *  keyboard reorder) and delegate to the same App handlers drag-and-drop
+   *  uses. Direction→position mapping matches SessionList.handleMove.
+   *  No FLIP wrapper: SessionList.handleMove animates the sidebar cards, but
+   *  the sidebar is hidden while the strip is up — the strip itself has no
+   *  FLIP markers, so the reorder lands instantly by design. */
+  const handleStripMove = useCallback(
+    (id: string, direction: 'up' | 'down') => {
+      const target = sidebarMoveTarget(sidebarSections, id, direction)
+      if (!target) return
+      const position = direction === 'up' ? 'before' : 'after'
+      if (target.groupId) handleReorderInGroup(id, target.targetId, position, target.groupId)
+      else handleReorderSidebar(id, target.targetId, position)
+    },
+    [sidebarSections, handleReorderInGroup, handleReorderSidebar],
+  )
+
+  /** Strip rename goes through a prompt (the sidebar's inline editor is
+   *  invisible while the sidebar is collapsed); commits via the same PATCH. */
+  const handleStripRename = useCallback((s: SessionInfo) => {
+    stripDialogs.askPrompt({
+      title: 'Rename session',
+      message: <p>Rename &ldquo;{sessionTitleOrFallback(s)}&rdquo;.</p>,
+      defaultValue: s.title ?? '',
+      confirmLabel: 'Rename',
+      placeholder: 'Session name',
+      onConfirm: async (value) => {
+        const title = value.trim()
+        if (!title) return
+        try {
+          await api.patch<{ session: SessionInfo }>(`/sessions/${s.id}`, { title })
+        } catch (err) {
+          toast.error(`Couldn't rename session: ${(err as Error).message}`)
+        }
+      },
+    })
+  }, [stripDialogs, toast])
+
   /** Swap two open panels' slots. If both panels belong to the same group,
    *  the group's `sessionIds` order is synced to match. NOTE: this is a true
    *  two-element swap, NOT a splice-move — splicing the dragged panel into
@@ -3659,6 +3793,10 @@ export function App() {
   //   main-grid     — drop a sidebar card on the empty grid to open it
   const dndSensors = useAppDndSensors()
   const [dndActive, setDndActive] = useState<DragPayload | null>(null)
+  /** Which surface the active drag started on (payload `origin` extra). The
+   *  strip lifts compact ghosts; the sidebar keeps its card/pill ones. State,
+   *  not a ref — renderDndGhost reads it during render. */
+  const [dndOrigin, setDndOrigin] = useState<'strip' | undefined>(undefined)
   /** Frozen whole-panel clone for the panel-drag ghost, captured at drag
    *  activation (see handleDndStart) so the lifted ghost IS the session —
    *  header, messages and composer included. The clone node mounts as-is
@@ -3780,6 +3918,7 @@ export function App() {
     const payload = dndPayloadOf(e.active.data.current)
     if (!payload) return
     dndLastMoveRef.current = null
+    setDndOrigin(dndExtraOf<'strip' | undefined>(e.active.data.current, 'origin'))
     // Live drags commit state on drag-over, so Esc must be able to undo:
     // snapshot the pre-drag world (sidebar order + group membership + open
     // panels) at pickup; handleDndCancel restores it.
@@ -3836,7 +3975,7 @@ export function App() {
       }
     }
     setDndActive(payload)
-  }, [orderedSessions])
+  }, [orderedSessions, setDndOrigin])
 
   /** dragOver AND dragMove both land here: dnd-kit dispatches dragOver only
    *  when the over target id changes, so crossing a card's midline without
@@ -3874,6 +4013,7 @@ export function App() {
 
   const handleDndEnd = useCallback((e: DragEndEvent) => {
     setDndActive(null)
+    setDndOrigin(undefined)
     // The ghost snapshot outlives this render only inside AnimationManager's
     // CLONE (the drop animation replays the last overlay subtree), so wiping
     // the state here can't cut the spring-back short.
@@ -3922,7 +4062,7 @@ export function App() {
       swapPanels(a.id, o.id)
     }
     // group-card end: the live path already reordered.
-  }, [handleAddToGroup, handleReorderInGroup, handleReorderSidebar, handleSelect, handleAcceptSidebarDrop, swapPanels, groupsRef, groupCapacityError, toast])
+  }, [handleAddToGroup, handleReorderInGroup, handleReorderSidebar, handleSelect, handleAcceptSidebarDrop, swapPanels, groupsRef, groupCapacityError, toast, setDndOrigin])
 
   const handleDndCancel = useCallback(() => {
     // Live drags commit state on drag-over, so a cancel (Esc) restores the
@@ -3936,9 +4076,10 @@ export function App() {
       dndSnapshotRef.current = null
     }
     setDndActive(null)
+    setDndOrigin(undefined)
     setPanelGhost(null)
     dndLastMoveRef.current = null
-  }, [setSidebarOrder, setGroups, setOpenIds])
+  }, [setSidebarOrder, setGroups, setOpenIds, setDndOrigin])
 
   /** Floating ghost for the active drag, rendered inside the portaled
    *  DragOverlay. The sidebar-card / group-pill branches re-render the REAL
@@ -3953,6 +4094,16 @@ export function App() {
     if (dndActive.kind === 'sidebar-card') {
       const s = orderedSessions.find((x) => x.id === dndActive.id)
       if (!s) return null
+      // Strip-originated drags lift the compact tab, not the sidebar card —
+      // the sidebar is hidden while the strip is up, so its ghost geometry
+      // (live sidebar width) would be meaningless.
+      if (dndOrigin === 'strip') {
+        return (
+          <DragGhost>
+            <SessionNavTabGhost session={s} unread={!!unread[s.id]} />
+          </DragGhost>
+        )
+      }
       const slotIdx = openIds.indexOf(s.id)
       return (
         // Ghost width tracks the live sidebar (resizable) minus the
@@ -3996,6 +4147,13 @@ export function App() {
     if (dndActive.kind === 'group-card') {
       const g = groups.find((x) => x.id === dndActive.id)
       if (!g) return null
+      if (dndOrigin === 'strip') {
+        return (
+          <DragGhost>
+            <SessionNavChipGhost name={g.name} />
+          </DragGhost>
+        )
+      }
       const pillIdx = groups.indexOf(g)
       return (
         <DragGhost>
@@ -4517,7 +4675,7 @@ export function App() {
           {!isMobile && (
             <button
               className="btn btn-icon"
-              onClick={() => setSidebarCollapsed((v) => !v)}
+              onClick={toggleSidebarCollapsed}
               aria-pressed={!sidebarCollapsed}
               aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
               title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
@@ -4533,7 +4691,7 @@ export function App() {
               Clicking routes through the same handler as a sidebar card
               click. Win/darwin Electron titlebars keep their own
               always-visible open-panel tabs instead (no double strip). */}
-          {!isMobile && sidebarCollapsed && !hostCaps.customTitlebar && (
+          {stripMounted && (
             <SessionNavStrip
               sections={sidebarSections}
               focusedId={focusedId}
@@ -4542,8 +4700,59 @@ export function App() {
               onSelect={handleSelectFromSidebar}
               onActivateGroup={handleActivateGroup}
               onNew={openNewSessionDialog}
+              onSessionContextMenu={handleStripSessionContextMenu}
+              onGroupContextMenu={handleStripGroupContextMenu}
+              resumingIds={resuming}
+              deletingIds={deletingSessionIds}
             />
           )}
+          {/* Strip context menus (state only fills while the strip is mounted;
+              the ContextMenu components portal to <body>). Gated on the strip's
+              mount condition — they belong to that surface and must not
+              outlive it (e.g. a viewport flip across the isMobile boundary). */}
+          {stripMounted && stripMenu && (() => {
+            const session = orderedSessions.find((s) => s.id === stripMenu.id)
+            if (!session) return null
+            return (
+              <SessionContextMenu
+                anchor={stripMenu}
+                session={session}
+                isOpen={openIds.includes(stripMenu.id)}
+                onClose={() => setStripMenu(null)}
+                onRename={handleStripRename}
+                onClosePanel={closeSession}
+                onDelete={handleDelete}
+                onSleep={sleepSession}
+                onMove={handleStripMove}
+                canMoveUp={sidebarMoveTarget(sidebarSections, stripMenu.id, 'up') !== null}
+                canMoveDown={sidebarMoveTarget(sidebarSections, stripMenu.id, 'down') !== null}
+                onFork={handleFork}
+                onNewLikeThis={handleNewLikeThis}
+                onRestart={handleRestart}
+                groups={groups}
+                onAddToGroup={handleAddToGroup}
+                maxGroupSize={maxGroupSize}
+                onShowSuccess={toast.success}
+                onAskConfirm={stripDialogs.askConfirm}
+              />
+            )
+          })()}
+          {stripMounted && stripGroupMenu && (() => {
+            const g = groups.find((grp) => grp.id === stripGroupMenu.id)
+            if (!g) return null
+            return (
+              <StripGroupMenu
+                anchor={stripGroupMenu}
+                group={g}
+                groups={groups}
+                onMove={handleMoveGroup}
+                onRename={handleRenameGroup}
+                onDelete={handleDeleteGroup}
+                dialogs={stripDialogs}
+                onClose={() => setStripGroupMenu(null)}
+              />
+            )
+          })()}
           {/* Open-panel tabs in the custom titlebar (desktop win/darwin).
               Mirror openSessions — click focuses, × closes, + starts new.
               Sits AFTER the left chrome cluster (☰ / sidebar / profile) so
@@ -4959,6 +5168,10 @@ export function App() {
           </Suspense>
         )}
       </AnimatePresence>
+
+      {/* Collapsed-sidebar strip menu dialogs (delete/restart confirm,
+          session & group rename prompt). Shared busy-wrapping hosts. */}
+      <DialogHosts hosts={stripDialogs} />
 
       {snippetsManagerPresence.shouldRender && (
         <Suspense fallback={null}>
