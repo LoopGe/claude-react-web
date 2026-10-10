@@ -65,6 +65,10 @@ type CacheEntry = {
 
 export type JsonlPageCache = {
   readPage(sessionId: string, opts: { before?: number; beforeUuid?: string; afterUuid?: string; limit: number }): Promise<HistoryPage>
+  /** Full renderable transcript (normalized frames) for whole-file folds
+   *  (tasklist derive). Same freshness machinery as readPage; same
+   *  error-swallowing contract — [] on any failure, never throws. */
+  readAll(sessionId: string): Promise<unknown[]>
   /** Drop the cache entry and any inflight parse for `sessionId`.
    *  Limitation: an inflight parse may re-insert its entry after invalidate
    *  completes. The /clear flow orders deleteTranscriptFile before invalidate,
@@ -256,6 +260,16 @@ export function createJsonlPageCache(deps: JsonlDeps, maxSessions = 4): JsonlPag
         startIndex: start,
         hasMore: start > 0,
       }
+    },
+    async readAll(sessionId) {
+      let entry: CacheEntry | null
+      try {
+        entry = await resolveEntry(sessionId)
+      } catch (err) {
+        log.warn(`[${sessionId}] jsonl-cache readAll failed: ${(err as Error).message}`)
+        return []
+      }
+      return entry ? entry.lines : []
     },
     invalidate(sessionId) {
       cache.delete(sessionId)
