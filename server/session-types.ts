@@ -587,6 +587,9 @@ export interface Session {
    *  Driven by session-pump on mutating tool_results and by git-write
    *  routes on user-initiated mutations. */
   gitStatusSubscribers: Set<Pushable<unknown>>
+  /** Per-subscriber pushables for `tasklist-snapshot` frames (full derived
+   *  TaskCreate/TaskUpdate fold). Mirrors gitStatusSubscribers. */
+  tasklistSubscribers: Set<Pushable<unknown>>
   /** Per-subscriber pushables for input-queue message-status signal frames.
    *  Carries either a full `message-consumed` frame each time the SDK reads
    *  a user turn off the input queue, or a full `messages-withdrawn` frame
@@ -761,6 +764,7 @@ export function endAllSubscribers(s: Session): void {
   endAndClear(s.promptSuggestionSubscribers)
   endAndClear(s.taskSubscribers)
   endAndClear(s.gitStatusSubscribers)
+  endAndClear(s.tasklistSubscribers)
   endAndClear(s.messageStatusSubscribers)
   endAndClear(s.commandSubscribers)
   endAndClear(s.hookRunSubscribers)

@@ -1978,6 +1978,7 @@ function makePumpSession(msgs: SDKMessage[]): {
     promptSuggestionSubscribers: new Set(),
     contextUsageSubscribers: new Set(),
     gitStatusSubscribers: new Map(),
+    tasklistSubscribers: new Set(),
     messageStatusSubscribers: new Map(),
     commandSubscribers: new Map(),
     hookRunSubscribers: new Map(),
@@ -3413,5 +3414,75 @@ describe('pump: broadcasts to plugin subscribers', () => {
     expect((broadcasts[0] as { subtype?: string }).subtype).toBe('success')
     expect(pluginBroadcasts).toHaveLength(1)
     expect((pluginBroadcasts[0] as { subtype?: string }).subtype).toBe('success')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pump: onTaskListChanged (tasklist snapshot re-derive triggers)
+//
+// The pump remembers TaskCreate/TaskUpdate tool_use ids off assistant frames
+// and fires onTaskListChanged when the matching tool_result lands (the fold
+// can only parse the server-assigned `#N` once the result text exists), plus
+// once per genuine top-level user message (the snapshot's precomputed stale
+// flags are relative to the last human input). tool_result frames that don't
+// answer a Task* call must NOT fire — a full re-derive per Bash result would
+// be pure waste.
+// ---------------------------------------------------------------------------
+
+describe('pump: onTaskListChanged', () => {
+  const taskToolUse = (id: string, name: 'TaskCreate' | 'TaskUpdate', input: Record<string, unknown>): SDKMessage =>
+    ({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      uuid: `a-${id}`,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] },
+    }) as unknown as SDKMessage
+  const create = (id: string, subject: string) => taskToolUse(id, 'TaskCreate', { subject })
+  const update = (toolUseId: string, input: Record<string, unknown>) => taskToolUse(toolUseId, 'TaskUpdate', input)
+  const toolResult = (toolUseId: string, content: string): SDKMessage =>
+    userMsg([{ type: 'tool_result', tool_use_id: toolUseId, content }])
+
+  it('fires onTaskListChanged when a Task* tool_result lands', async () => {
+    const onTaskListChanged = vi.fn()
+    const { session } = makePumpSession([
+      create('c1', 'x'),
+      toolResult('c1', 'Task #1 created successfully: x'),
+    ])
+    await pump(session, makePumpDeps({ onTaskListChanged }))
+
+    expect(onTaskListChanged).toHaveBeenCalledWith(session.id) // TaskCreate 结果落地
+  })
+
+  it('fires onTaskListChanged when a TaskUpdate(deleted) result lands (tombstone broadcast)', async () => {
+    const onTaskListChanged = vi.fn()
+    const { session } = makePumpSession([
+      update('u-1', { taskId: '1', status: 'deleted' }),
+      toolResult('u-1', 'Task #1 deleted'),
+    ])
+    await pump(session, makePumpDeps({ onTaskListChanged }))
+
+    expect(onTaskListChanged).toHaveBeenCalledWith(session.id)
+  })
+
+  it('fires onTaskListChanged when a genuine user echo lands (stale-boundary refresh)', async () => {
+    const onTaskListChanged = vi.fn()
+    const { session } = makePumpSession([
+      // Null-parent text-only user frame → the echo-drop branch (which is
+      // exactly the "genuine top-level user message landed" discriminator).
+      userMsg([{ type: 'text', text: 'hello' }]),
+    ])
+    await pump(session, makePumpDeps({ onTaskListChanged }))
+
+    expect(onTaskListChanged).toHaveBeenCalledWith(session.id)
+  })
+
+  it('does NOT fire for a tool_result-carrying user frame alone', async () => {
+    const onTaskListChanged = vi.fn()
+    const { session } = makePumpSession([
+      toolResult('t1', 'ok'), // no preceding Task* tool_use
+    ])
+    await pump(session, makePumpDeps({ onTaskListChanged }))
+
+    expect(onTaskListChanged).not.toHaveBeenCalled()
   })
 })

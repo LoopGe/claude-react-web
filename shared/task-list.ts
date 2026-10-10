@@ -39,6 +39,18 @@ export interface TaskState {
 export const TASK_CREATE = 'TaskCreate'
 export const TASK_UPDATE = 'TaskUpdate'
 
+/** The tool_use id when `block` is a TaskCreate/TaskUpdate call, else null.
+ *  Pump-side twin of git-broadcast's mutatingToolUseId: the pump remembers
+ *  these ids off assistant frames and fires the tasklist broadcast when the
+ *  matching tool_result lands. */
+export function taskToolUseId(block: unknown): string | null {
+  if (!block || typeof block !== 'object') return null
+  const b = block as { type?: unknown; name?: unknown; id?: unknown }
+  if (b.type !== 'tool_use') return null
+  if (b.name !== TASK_CREATE && b.name !== TASK_UPDATE) return null
+  return typeof b.id === 'string' ? b.id : null
+}
+
 /** Minimal structural slice the fold reads off a transcript frame. The
  *  server's normalized wire objects and the client's SdkMessage both
  *  satisfy it; callers pass `readonly unknown[]` and we narrow here. */

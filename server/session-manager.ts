@@ -2611,6 +2611,7 @@ export class SessionManager {
       tasks: new Map(),
       taskSubscribers: new Set(),
       gitStatusSubscribers: new Set(),
+      tasklistSubscribers: new Set(),
       messageStatusSubscribers: new Set(),
       withdrawnUuids: [],
       commandSubscribers: new Set(),

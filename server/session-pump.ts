@@ -29,6 +29,7 @@ import { isTerminalTaskStatus, normalizeTaskType, type TaskResourceLink } from '
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 import { isEmptyResultFrame } from '../shared/results.js'
 import { isTaskNotificationUserMessage, userMessageHasToolResult } from '../shared/user-frames.js'
+import { taskToolUseId } from '../shared/task-list.js'
 
 const MAX_HOOK_OUTPUT_CHARS = 20_000
 
@@ -691,6 +692,9 @@ export interface PumpDeps {
    *  the CLI doesn't reliably emit task_notification for Agent-launched
    *  background subagents. Optional so test fixtures can omit it. */
   onBackgroundSubagentLaunched?: (sessionId: string, toolUseId: string, agentId: string) => void
+  /** Task* tool_result landed / genuine user message landed — rederive and
+   *  broadcast the tasklist snapshot. Optional so test fixtures can omit it. */
+  onTaskListChanged?: (sessionId: string) => void
   /** Called when a REAL SDK task_notification frame arrives (as opposed to
    *  the watcher's synthesized one, which never passes through the pump).
    *  The SessionManager uses it to cancel the matching subagent watcher so
@@ -790,6 +794,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
   // actually have changed). Set rather than Map because we only need
   // membership — the name was already checked at insertion time.
   const pendingMutatingToolUses = new Set<string>()
+  // Pump-local twin: ids of TaskCreate/TaskUpdate tool_use blocks, drained
+  // when the matching tool_result lands (the fold needs the result text to
+  // parse the server-assigned `#N`).
+  const pendingTaskToolUses = new Set<string>()
   // The handle this pump owns. An in-place respawn (restart()) swaps
   // session.handle under a still-running pump; cleanupPump compares against
   // this to tell "my Query ended" apart from "I was superseded".
@@ -914,6 +922,9 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // (every loaded entry is already paired).
           const echoUuid = (msg as { uuid?: string }).uuid
           if (echoUuid) deps.onPromptEcho?.(session, echoUuid)
+          // A genuine top-level user message just landed — the stale
+          // boundary moved, so the snapshot's precomputed flags refresh.
+          deps.onTaskListChanged?.(session.id)
           log.debug(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid: string }).uuid}`)
           continue
         }
@@ -954,6 +965,8 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             for (const block of content) {
               const id = mutatingToolUseId(block)
               if (id) pendingMutatingToolUses.add(id)
+              const taskToolId = taskToolUseId(block)
+              if (taskToolId) pendingTaskToolUses.add(taskToolId)
             }
           }
           // Track the most recent assistant uuid so it can be promoted to
@@ -980,6 +993,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             if (pendingMutatingToolUses.has(id)) {
               pendingMutatingToolUses.delete(id)
               if (deps.broadcaster) scheduleGitBroadcast(deps.broadcaster, session.id)
+            }
+            if (pendingTaskToolUses.has(id)) {
+              pendingTaskToolUses.delete(id)
+              deps.onTaskListChanged?.(session.id)
             }
           }
           // Async/background subagent launch acks: hand the agentId to the
