@@ -10,10 +10,11 @@
 //
 // SessionEventBroadcaster owns:
 //   - subscribeContextUsage / subscribePromptSuggestion / subscribeTasks /
-//     subscribeGitStatus / subscribeMessageStatus / subscribeSessionRecap /
-//     subscribeCommandChanges / subscribeHookRuns / subscribeSessionCleared
+//     subscribeGitStatus / subscribeTaskList / subscribeMessageStatus /
+//     subscribeSessionRecap / subscribeCommandChanges / subscribeHookRuns /
+//     subscribeSessionCleared
 //   - recordHookRun / broadcastCommandsChanged / broadcastGitStatusChanged /
-//     broadcastSessionCleared
+//     broadcastTaskListChanged / broadcastSessionCleared
 //   - The shared subscribePushableSet helper backing all of the above
 //
 // SessionManager retains:
@@ -25,15 +26,18 @@
 
 import type { Session } from './session-types.js'
 import type { SessionRecap } from './session-types.js'
-import type { WsMessageConsumed, WsMessagesWithdrawn, WsGitSnapshot } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessagesWithdrawn, WsGitSnapshot, WsTasklistSnapshot } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
 import type { Pushable } from './pushable.js'
 import { createPushable } from './pushable.js'
 import { createLogger } from './log.js'
+import { metrics } from './metrics.js'
 import { getStatus, listBranches, listStashes } from './git.js'
+import { deriveTaskListForSession } from './tasklist-state.js'
 import type { GitStatusResponse, GitBranch, GitStashEntry } from '../shared/git-types.js'
 
 const log = createLogger('git-snapshot')
+const tlog = createLogger('tasklist')
 
 /** The three lists that make up one pushed git snapshot. */
 export interface GitSnapshotPayload {
@@ -289,6 +293,58 @@ export class SessionEventBroadcaster {
       if (other.id !== sessionId && gitGroupKey(other) === key) return other.id
     }
     return null
+  }
+
+  // --- tasklist snapshot channel (mirrors git-snapshot) ----------------
+
+  /** Most recent pushed snapshot per session id — seeds fresh subscribers.
+   *  Keyed by session id (no group fan-out: the fold is per-transcript).
+   *  Pruned like gitSnapshots. */
+  private tasklistSnapshots = new Map<string, WsTasklistSnapshot>()
+
+  subscribeTaskList(id: string): { iterable: AsyncIterable<WsTasklistSnapshot>; unsubscribe: () => void } | null {
+    const s = this.sessions.get(id)
+    if (!s) return null
+    const cached = this.tasklistSnapshots.get(id)
+    return this.subscribePushableSet<WsTasklistSnapshot>(
+      s, s.tasklistSubscribers as Set<Pushable<WsTasklistSnapshot>>, 'tasklist', 5,
+      () => (cached ? [cached] : []),
+    )
+  }
+
+  /** Fire-and-forget: derive from the transcript and push. Deliberately NO
+   *  rev-equality skip — a genuine user message moves the stale boundary
+   *  WITHOUT adding Task* events (equal rev, different flags). */
+  broadcastTaskListChanged(id: string): void {
+    void this.emitTasklistSnapshot(id).catch((err: unknown) => {
+      tlog.warn(`tasklist snapshot derive failed session=${id}: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
+
+  private async emitTasklistSnapshot(id: string): Promise<void> {
+    // Derive BEFORE the session lookup, not after: the fold is a pure
+    // function of the transcript (no live session required), and a
+    // broadcast whose session vanished mid-flight must still reach the
+    // prune below so no stale seed outlives its session. The lookup is
+    // re-done after the await so a session replaced under the same id
+    // (respawn) gets the frame pushed to its own subscribers.
+    const payload = await deriveTaskListForSession(id)
+    metrics.count('tasklist_broadcast_total')
+    const frame: WsTasklistSnapshot = { kind: 'tasklist-snapshot', sessionId: id, rev: payload.rev, tasks: payload.tasks }
+    const s = this.sessions.get(id)
+    if (s) this.tasklistSnapshots.set(id, frame)
+    this.pruneTasklistSnapshots()
+    if (!s) return
+    for (const sub of s.tasklistSubscribers) {
+      try { sub.push(frame) } catch { /* subscriber dead — skip */ }
+    }
+  }
+
+  private pruneTasklistSnapshots(): void {
+    if (this.tasklistSnapshots.size === 0) return
+    for (const k of this.tasklistSnapshots.keys()) {
+      if (!this.sessions.has(k)) this.tasklistSnapshots.delete(k)
+    }
   }
 
   /** Shared implementation for subscribeContextUsage / subscribeGitStatus.

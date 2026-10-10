@@ -934,6 +934,13 @@ export interface SessionBroadcaster {
   subscribePromptSuggestion(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null
   subscribeTasks(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null
   subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<import('./ws-protocol.js').WsGitSnapshot>; unsubscribe: () => void } | null
+  /** Per-session subscription for `tasklist-snapshot` frames (full derived
+   *  TaskCreate/TaskUpdate fold). A fresh subscriber is seeded with the
+   *  last pushed frame. Returns null when the session is unknown.
+   *  Mirrors subscribeGitStatus. */
+  subscribeTaskList(sessionId: string): { iterable: AsyncIterable<import('./ws-protocol.js').WsTasklistSnapshot>; unsubscribe: () => void } | null
+  /** Derive + push the tasklist snapshot (pump trigger + future call sites). */
+  broadcastTaskListChanged(sessionId: string): void
   /** Per-session subscription for `message-consumed` / `messages-withdrawn`
    *  signal frames (typed union — the channel carries full frames, not bare
    *  payloads). Returns null when the session is unknown (callers

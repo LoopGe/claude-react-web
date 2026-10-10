@@ -15,10 +15,16 @@ vi.mock('./git.js', () => ({
 }))
 import { getStatus, listBranches, listStashes } from './git.js'
 
+vi.mock('./tasklist-state.js', () => ({
+  deriveTaskListForSession: vi.fn(async () => ({ rev: 2, tasks: [{ id: '1', subject: 'S', status: 'in_progress', stale: false }] })),
+}))
+import { deriveTaskListForSession } from './tasklist-state.js'
+
 function makeSession(id: string, cwd: string, repoRoot?: string): Session {
   return {
     id, cwd, repoRoot,
     gitStatusSubscribers: new Set(),
+    tasklistSubscribers: new Set(),
     terminated: false,
   } as unknown as Session
 }
@@ -173,5 +179,70 @@ describe('SessionEventBroadcaster git-snapshot', () => {
     expect(frame.status.isRepo).toBe(false)
     expect(frame.branches).toEqual([])
     expect(frame.stashes).toEqual([])
+  })
+})
+
+describe('SessionEventBroadcaster tasklist-snapshot', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('broadcast derives once and pushes the frame to the session subscribers', async () => {
+    const s = makeSession('a', '/repo')
+    const bc = new SessionEventBroadcaster(new Map([['a', s]]))
+    const sub = bc.subscribeTaskList('a')!
+    const p = sub.iterable[Symbol.asyncIterator]().next()
+    bc.broadcastTaskListChanged('a')
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledWith('a'))
+    const frame = (await Promise.race([p, timeout(500)])) as { value: { kind: string; rev: number } }
+    expect(frame.value.kind).toBe('tasklist-snapshot')
+    expect(frame.value.rev).toBe(2)
+  })
+
+  it('seeds a fresh subscriber with the last frame (subscribe-after-broadcast)', async () => {
+    const s = makeSession('a', '/repo')
+    const bc = new SessionEventBroadcaster(new Map([['a', s]]))
+    bc.broadcastTaskListChanged('a')
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalled())
+    const sub = bc.subscribeTaskList('a')!
+    const first = await sub.iterable[Symbol.asyncIterator]().next()
+    expect((first.value as { kind: string }).kind).toBe('tasklist-snapshot')
+  })
+
+  it('returns null for an unknown session', () => {
+    const bc = new SessionEventBroadcaster(new Map())
+    expect(bc.subscribeTaskList('nope')).toBeNull()
+  })
+
+  it('prunes the seed map when the session is removed', async () => {
+    const s = makeSession('a', '/repo')
+    const sessions = new Map([['a', s]])
+    const bc = new SessionEventBroadcaster(sessions)
+    bc.broadcastTaskListChanged('a')
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalled())
+    sessions.delete('a')
+    bc.broadcastTaskListChanged('a') // prune runs inside emit
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledTimes(2))
+    // 无断言崩溃即通过(内部 Map 已剪枝;类型上私有,行为由下一用例钉)
+  })
+
+  it('re-seeding after prune derives fresh (no stale resurrection)', async () => {
+    const s = makeSession('a', '/repo')
+    const sessions = new Map([['a', s]])
+    const bc = new SessionEventBroadcaster(sessions)
+    bc.broadcastTaskListChanged('a')
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledTimes(1))
+    sessions.delete('a')
+    bc.broadcastTaskListChanged('a') // prune runs inside emit
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledTimes(2))
+    // Session returns as a NEW object under the same id; the subscribe-time
+    // seed must come from the CURRENT derive, not the frame cached before
+    // the prune (stale resurrection would replay the old rev).
+    vi.mocked(deriveTaskListForSession).mockResolvedValueOnce({ rev: 7, tasks: [] })
+    sessions.set('a', makeSession('a', '/repo'))
+    bc.broadcastTaskListChanged('a')
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledTimes(3))
+    const sub = bc.subscribeTaskList('a')!
+    const first = await sub.iterable[Symbol.asyncIterator]().next()
+    expect((first.value as { kind: string }).kind).toBe('tasklist-snapshot')
+    expect((first.value as { rev: number }).rev).toBe(7)
   })
 })

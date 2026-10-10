@@ -114,6 +114,7 @@ import { DialogBroker } from './user-dialog-broker.js'
 import { SessionHealthMonitor } from './session-health.js'
 import { SessionMcpManager } from './session-manager-mcp.js'
 import { SessionEventBroadcaster } from './session-broadcaster.js'
+import { deriveTaskListForSession } from './tasklist-state.js'
 import { BackgroundWatcherRegistry } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
@@ -5648,6 +5649,20 @@ export class SessionManager {
     return this.broadcaster.subscribeGitStatus(id)
   }
 
+  subscribeTaskList(id: string): { iterable: AsyncIterable<import('./ws-protocol.js').WsTasklistSnapshot>; unsubscribe: () => void } | null {
+    return this.broadcaster.subscribeTaskList(id)
+  }
+
+  broadcastTaskListChanged(id: string): void {
+    this.broadcaster.broadcastTaskListChanged(id)
+  }
+
+  /** Full derived Task* checklist snapshot for one session (read side for
+   *  the tasklist HTTP route). Transcript-derived — no live Query required. */
+  tasklistSnapshot(id: string): Promise<import('../shared/task-list.js').TasklistSnapshotPayload> {
+    return deriveTaskListForSession(id)
+  }
+
   subscribeMessageStatus(id: string): {
     iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn>
     unsubscribe: () => void
@@ -6660,6 +6675,9 @@ export class SessionManager {
         recordHookRun: (id, event) => this.recordHookRun(id, event),
         onBackgroundSubagentLaunched: (sessionId, toolUseId, agentId) =>
           this.startBackgroundSubagentWatcher(sessionId, toolUseId, agentId),
+        // Task* tool_result / genuine user echo → re-derive the tasklist
+        // snapshot and push it to the session's tasklist channel.
+        onTaskListChanged: (id) => this.broadcaster.broadcastTaskListChanged(id),
         onTaskNotification: (sessionId, toolUseId) =>
           this.cancelBackgroundWatcher(sessionId, toolUseId),
         // Mirror CLI notification frames onto the global WS channel so

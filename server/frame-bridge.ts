@@ -34,6 +34,7 @@ import type {
   WsReplay,
   WsServerFrame,
   WsSubscribeResultReason,
+  WsTasklistSnapshot,
 } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
 import type { TaskRecordUi } from '../shared/tasks.js'
@@ -545,6 +546,8 @@ export class SessionConnection {
     let psugIter: AsyncIterator<unknown> | null = null
     let taskSub: { iterable: AsyncIterable<unknown>; snapshot: unknown; unsubscribe: () => void } | null = null
     let taskIter: AsyncIterator<unknown> | null = null
+    let tasklistSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
+    let tasklistIter: AsyncIterator<unknown> | null = null
     let step = ''
     try {
       step = 'subscribe'
@@ -633,6 +636,9 @@ export class SessionConnection {
       step = 'subscribeTasks'
       taskSub = this.sm.subscribeTasks(sessionId)
       taskIter = taskSub?.iterable[Symbol.asyncIterator]() ?? null
+      step = 'subscribeTaskList'
+      tasklistSub = this.sm.subscribeTaskList(sessionId)
+      tasklistIter = tasklistSub?.iterable[Symbol.asyncIterator]() ?? null
 
       // 1) Send replay. If the client supplied `sinceUuid`, try to
       //    send only messages after that point (incremental sync).
@@ -696,12 +702,12 @@ export class SessionConnection {
       //    pattern as the SSE route — each iterator tagged so the loop
       //    knows which frame to emit.
       let stopped = false
-      const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter, hookIter, psugIter, taskIter]
+      const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter, hookIter, psugIter, taskIter, tasklistIter]
         .filter((it): it is AsyncIterator<unknown> => !!it)
       const stop = () => {
         if (stopped) return
         stopped = true
-        for (const sub of [msgSub, permSub, elicitSub, dialogSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub, hookSub, psugSub, taskSub]) sub?.unsubscribe()
+        for (const sub of [msgSub, permSub, elicitSub, dialogSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub, hookSub, psugSub, taskSub, tasklistSub]) sub?.unsubscribe()
         for (const iter of _iterCleanup) void iter.return?.()
       }
 
@@ -725,6 +731,7 @@ export class SessionConnection {
           | { kind: 'hook'; result: IteratorResult<unknown> }
           | { kind: 'psug'; result: IteratorResult<unknown> }
           | { kind: 'task'; result: IteratorResult<unknown> }
+          | { kind: 'tasklist'; result: IteratorResult<unknown> }
 
         const tag = async (kind: Tagged['kind'], it: AsyncIterator<unknown>): Promise<Tagged> =>
           ({ kind, result: await it.next() })
@@ -749,6 +756,7 @@ export class SessionConnection {
           ...(hookIter ? [{ kind: 'hook' as const, iter: hookIter, promise: tag('hook', hookIter) }] : []),
           ...(psugIter ? [{ kind: 'psug' as const, iter: psugIter, promise: tag('psug', psugIter) }] : []),
           ...(taskIter ? [{ kind: 'task' as const, iter: taskIter, promise: tag('task', taskIter) }] : []),
+          ...(tasklistIter ? [{ kind: 'tasklist' as const, iter: tasklistIter, promise: tag('tasklist', tasklistIter) }] : []),
         ]
 
         try {
@@ -865,6 +873,11 @@ export class SessionConnection {
                 break
               case 'task':
                 this.sink.send({ kind: 'tasks-snapshot', sessionId, tasks: winner.result.value as TaskRecordUi[] })
+                break
+              case 'tasklist':
+                // Complete frame from the broadcaster (seed frames ride the
+                // same path). Forward verbatim.
+                this.sink.send(winner.result.value as WsTasklistSnapshot)
                 break
             }
             ch.promise = tag(ch.kind, ch.iter)

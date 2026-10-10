@@ -241,12 +241,14 @@ class FakeBroadcaster implements SessionBroadcaster {
   subscribePromptSuggestion() { return null }
   subscribeTasks() { return null }
   subscribeGitStatus() { return null }
+  subscribeTaskList() { return null }
   subscribeMessageStatus() { return null }
   subscribeCommandChanges() { return null }
   subscribeHookRuns() { return null }
   subscribeSessionRecap() { return null }
   subscribeSessionCleared() { return null }
   broadcastGitStatusChanged() { /* noop */ }
+  broadcastTaskListChanged() { /* noop */ }
   gitGroupKeyOf() { return null }
   gitGroupLivePeer() { return null }
   broadcastSessionCleared() { /* noop */ }

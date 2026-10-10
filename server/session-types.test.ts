@@ -13,6 +13,7 @@ function fakeSession(): Session {
     hookRunSubscribers: new Map(), recapSubscribers: new Map(),
     sessionClearedSubscribers: new Map(),
     pluginSubscribers: new Map(), // the new field — must exist
+    tasklistSubscribers: new Set(), // endAllSubscribers clears it (Task* fold channel)
     pending: new Map(), elicitationPending: new Map(), dialogPending: new Map(),
     history: [], subagentHistory: [],
   } as unknown as Session

@@ -315,6 +315,19 @@ export interface WsGitSnapshot {
   stashes: GitStashEntry[]
 }
 
+/** Full derived TaskCreate/TaskUpdate checklist snapshot for one session,
+ *  pushed when a Task* tool_result lands or a genuine user message moves
+ *  the stale boundary. The payload IS the state (transcript-derived) —
+ *  idempotent and droppable; a lost frame self-heals on the next trigger.
+ *  `rev` counts folded Task* events (monotone per session); clients drop
+ *  regressing frames. Seeded to fresh subscribers. */
+export interface WsTasklistSnapshot {
+  kind: 'tasklist-snapshot'
+  sessionId: string
+  rev: number
+  tasks: import('./task-list.js').TasklistSnapshotTask[]
+}
+
 /** Signal frame: "the SDK just read this user message off the input
  *  queue". Fires the moment a queued turn is actually consumed (begins
  *  processing), as opposed to when it was accepted over HTTP. The client
@@ -551,6 +564,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsPromptSuggestion
   | WsTasksSnapshot
   | WsGitSnapshot
+  | WsTasklistSnapshot
   | WsMessageConsumed
   | WsMessagesWithdrawn
   | WsSessionRecapUpdate<Recap>
