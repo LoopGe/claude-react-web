@@ -52,6 +52,7 @@ export function useRecapSettle(
   }, [])
 
   const prevOpenRef = useRef(recapOpen)
+  /* eslint-disable react-hooks/set-state-in-effect -- settleActive mirrors the recapOpen transition (same shape as usePresenceValue): the synchronous cut on invalidate/reopen is the mechanism that stops a mid-flight settle immediately; deferring it a frame would let the class stack with the transcript's own movement */
   useEffect(() => {
     const was = prevOpenRef.current
     prevOpenRef.current = recapOpen
@@ -73,6 +74,7 @@ export function useRecapSettle(
       setSettleActive(false)
     }
   }, [recapOpen, hasRecap, clearing, trigger])
+  /* eslint-enable react-hooks/set-state-in-effect */
   // Cancel a pending restart frame on unmount.
   useEffect(() => () => cancelAnimationFrame(rafRef.current), [])
 

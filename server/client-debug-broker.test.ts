@@ -46,10 +46,14 @@ describe('ClientDebugBroker', () => {
 
     const promise = broker.request('dom_eval', { code: '1+1' })
     await vi.waitFor(() => expect(t.frames).toHaveLength(1))
+    // Attach the rejects assertion BEFORE advancing: the grace timer's
+    // reject() fires inside the advance, and a handler attached only after
+    // it leaves a one-tick unhandled window (vitest fails the run on it).
+    const assertion = expect(promise).rejects.toThrow('boom')
     broker.resolve(t.frames[0].id, { ok: false, error: 'boom' })
     await vi.advanceTimersByTimeAsync(20)
 
-    await expect(promise).rejects.toThrow('boom')
+    await assertion
   })
 
   it('lets a success answer beat an earlier failure answer within the grace window', async () => {
@@ -74,13 +78,17 @@ describe('ClientDebugBroker', () => {
 
     const promise = broker.request('dom_query', { selector: '.x' })
     await vi.waitFor(() => expect(t.frames).toHaveLength(1))
+    // Attach the rejects assertion BEFORE advancing (same unhandled-window
+    // reason as the ok:false test above): the grace timer's reject() fires
+    // inside the second advance.
+    const assertion = expect(promise).rejects.toThrow('no element matches ".x"')
     broker.resolve(t.frames[0].id, { ok: false, error: 'no element matches ".x"' })
     // Still pending during the grace window (the main timeout is far away).
     await vi.advanceTimersByTimeAsync(50)
     expect(broker.pendingCount).toBe(1)
     await vi.advanceTimersByTimeAsync(100)
 
-    await expect(promise).rejects.toThrow('no element matches ".x"')
+    await assertion
   })
 
   it('rejects immediately when no browser tab is connected', async () => {

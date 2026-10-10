@@ -60,7 +60,9 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
   // motion is mid-way through re-growing (animate carries height:'auto').
   // Mirror of MessageList's settlingRef render-time sync pattern.
   const isPresentRef = useRef(isPresent)
+  /* eslint-disable react-hooks/refs -- intentional render-time ref sync (MessageList settlingRef pattern): the content tween below is keyed on recap content only and must read the CURRENT presence without re-running on a presence flip; an effect-based sync would lag one render */
   if (isPresentRef.current !== isPresent) isPresentRef.current = isPresent
+  /* eslint-enable react-hooks/refs */
   // Exit start: motion takes ownership of height (per-frame collapse
   // writes). A content tween caught mid-flight must not double-interpolate
   // those writes — freeze the box at its CURRENT (mid-interpolation) height
