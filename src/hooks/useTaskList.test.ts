@@ -55,3 +55,16 @@ it('no-op when sessionId is undefined', () => {
   renderHook(() => useTaskList(undefined))
   expect(getMock).not.toHaveBeenCalled()
 })
+
+it('flushes the old payload on sessionId switch, then applies the new fetch', async () => {
+  getMock.mockResolvedValueOnce(payload(1))
+  getMock.mockResolvedValueOnce(payload(9))
+  const { result, rerender } = renderHook(
+    ({ sid }: { sid: string | undefined }) => useTaskList(sid),
+    { initialProps: { sid: 's1' as string | undefined } },
+  )
+  await waitFor(() => expect(result.current?.rev).toBe(1))
+  rerender({ sid: 's2' })
+  expect(result.current).toBeNull() // old session's data flushed on switch
+  await waitFor(() => expect(result.current?.rev).toBe(9))
+})

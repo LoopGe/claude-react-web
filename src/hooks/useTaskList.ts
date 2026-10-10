@@ -15,6 +15,12 @@ export function useTaskList(sessionId: string | undefined): TasklistSnapshotPayl
   const [data, setData] = useState<TasklistSnapshotPayload | null>(null)
 
   useEffect(() => {
+    // Flush the previous session's payload as soon as the input changes
+    // (including the no-session early return) so the UI never flashes stale
+    // cross-session data while the new fetch is in flight — same reset-on-
+    // input-change shape as useGitStatus.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
+    setData(null)
     if (!sessionId) return
     const ctrl = new AbortController()
     api
