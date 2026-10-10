@@ -16,7 +16,7 @@ import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { SessionCwdProvider } from '../hooks/useSessionCwd'
 import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
 import type { SdkMessage } from '../types'
-import { buildTaskStateMapFromItems } from '../utils/task-events'
+import { buildTaskStateMapFromItems, mergeTaskList, type TasklistSnapshotPayload } from '../utils/task-events'
 import { cx } from '../utils/cx'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
@@ -51,13 +51,8 @@ export type { ActiveSubagent } from '../session-store/types'
  *  render both keep a single import site. */
 export { WorkingBubble } from './message-list/WorkingBubble'
 
-/** Stable empty sentinel for the TaskInfoProvider value when the session
- *  has no TaskCreate/TaskUpdate events, so the provider value stays
- *  referential across renders (consumers' useContext equality check). */
-const EMPTY_TASK_MAP = new Map<string, never>()
-
 /** Stable empty sentinel for `itemToVirtIdx` while no search is live. Same
- *  reason as EMPTY_TASK_MAP: a fresh `new Map()` per streaming flush would
+ *  referential-stability rationale: a fresh `new Map()` per streaming flush would
  *  change identity and re-fire the seek effect (which then early-returns) many
  *  times per second for nothing. */
 const EMPTY_VIRT_IDX = new Map<number, number>()
@@ -305,6 +300,11 @@ interface Props {
    *  whenever no turn is active (Chat gates it on its turn-active signal so
    *  a card stuck on 'running' can't offer a dead action). */
   onBackgroundTool?: (toolUseId: string) => void
+  /** Server-derived full-transcript fold (useTaskList). Merged UNDER the
+   *  window fold — window entries win per id. null/undefined degrade to
+   *  window-only (pre-snapshot behavior). Lets TaskMutationView resolve
+   *  subjects for updates whose create is out of the retained window. */
+  tasklist?: TasklistSnapshotPayload | null
 }
 
 /** Stable empty-Map sentinels. Using `= new Map()` in the parameter
@@ -355,7 +355,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -1267,8 +1267,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // (set at create time, not repeated in the update input). `items[i].msg`
   // is lockstep-equal to the session's message log (reducer.applyMessage
   // appends both arrays in tandem), so folding from items mirrors what
-  // TodoChecklist does with stream.messages. Stable empty sentinel keeps
-  // the provider value referential when there are no task events.
+  // TodoChecklist does with stream.messages.
+  //
+  // Window fold ⊕ server snapshot: the snapshot supplies creates the window
+  // cannot see (beyond the ring/memory cap); window entries win per id.
+  // Referential stability via useMemo keyed on both inputs.
   //
   // `...FromItems` rather than `buildTaskStateMap(items.map(it => it.msg))`:
   // `items` gets a new identity on every streaming flush, so the `.map()` was
@@ -1277,8 +1280,8 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // now, so a session with no Task* events no longer indexes every
   // tool_result in the transcript per flush.
   const taskInfoMap = useMemo(
-    () => buildTaskStateMapFromItems(items) ?? EMPTY_TASK_MAP,
-    [items],
+    () => mergeTaskList(tasklist, buildTaskStateMapFromItems(items)),
+    [items, tasklist],
   )
 
   return (

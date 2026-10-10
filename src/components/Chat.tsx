@@ -67,6 +67,7 @@ import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { useRecapSettle } from '../hooks/useRecapSettle'
 import { useScheduledSends } from '../hooks/useScheduledSends'
+import { useTaskList } from '../hooks/useTaskList'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { useSessionTaskCounts } from '../session-store/selectors'
@@ -1425,6 +1426,8 @@ export const Chat = memo(function Chat({
 
   const scheduled = useScheduledSends(session.id)
 
+  const taskList = useTaskList(session.id)
+
   // Composer snippets are a single GLOBAL instance owned by App and passed
   // down via props (`snippets`, `onOpenSnippetsManager`,
   // `onSaveCurrentAsSnippet`). The manager + save dialogs render once at
@@ -1922,6 +1925,7 @@ export const Chat = memo(function Chat({
           skin={skin}
           clearing={effectiveClearing}
           sessionId={session.id}
+          serverTasks={taskList}
         />
         <MonitorBar messages={stream.messages} clearing={effectiveClearing} sessionId={session.id} />
         {/* Composer dock is last so it stays pinned to the panel bottom;
@@ -1930,7 +1934,7 @@ export const Chat = memo(function Chat({
         <div ref={setDockSlot} className="chat-dock-slot" />
       </>
     ),
-    [stream.messages, session.working, skin, effectiveClearing, session.id],
+    [stream.messages, session.working, skin, effectiveClearing, session.id, taskList],
   )
 
   // Empty-state environment section: the MCP servers / plugins this session
@@ -2206,6 +2210,7 @@ export const Chat = memo(function Chat({
           transcriptSettling={stream.transcriptSettling}
           cwd={session.cwd}
           onBackgroundTool={backgroundToolAction}
+          tasklist={taskList}
           toolGroupCards={effectiveToolGroupCards}
           autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
           showMessageHeaders={effectiveShowMessageHeaders}

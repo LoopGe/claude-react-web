@@ -4191,3 +4191,39 @@ describe('shouldArmEnterAnimation', () => {
     expect(shouldArmEnterAnimation(true, 50, 0, 4)).toBe(false)
   })
 })
+
+// ---------------------------------------------------------------------------
+// tasklist snapshot integration (TaskInfoProvider merge)
+// ---------------------------------------------------------------------------
+
+describe('MessageList — tasklist snapshot integration', () => {
+  it('TaskMutationView resolves the subject from the server snapshot while the create is out of window', () => {
+    // Items contain only a TaskUpdate tool_use — the matching TaskCreate is
+    // outside the retained window. Without the snapshot the heading would fall
+    // back to `Task #9`; with the snapshot the heading shows the real subject.
+    const msgs = [
+      makeMsg('assistant', {
+        message: {
+          content: [
+            { type: 'tool_use', id: 'tu-1', name: 'TaskUpdate', input: { taskId: '9', status: 'in_progress' } },
+          ],
+        },
+      }),
+      makeMsg('user', {
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'tu-1', content: 'Updated task #9 status' },
+          ],
+        },
+      }),
+    ] as SdkMessage[]
+    const items = toItems(msgs)
+    const tasklist = {
+      rev: 2,
+      tasks: [{ id: '9', subject: 'Snapshot subject', status: 'in_progress' as const, stale: false }],
+    }
+    const { container } = render(<MessageList items={items} tasklist={tasklist} />)
+    const title = container.querySelector('.tool-card-title')
+    expect(title?.textContent).toBe('Snapshot subject')
+  })
+})

@@ -724,3 +724,56 @@ describe('TodoChecklist — collapse + long-press hide', () => {
     fireEvent.pointerUp(item, { pointerId: 1 })
   })
 })
+
+// ---------------------------------------------------------------------------
+// serverTasks (snapshot) integration — mergeTaskList wiring
+// ---------------------------------------------------------------------------
+
+describe('TodoChecklist — serverTasks integration', () => {
+  it('shows real subjects for stub-window tasks via serverTasks (the bug fix)', () => {
+    // Window only has a TaskUpdate for id 9 — the create is outside the window,
+    // so the fold materialises a stub with subject "Task #9". The serverTasks
+    // snapshot carries the real subject; mergeTaskList must heal the stub.
+    const msgs = [
+      taskUseMsg('tu1', 'TaskUpdate', { taskId: '9', status: 'in_progress' }),
+      taskResultMsg('tu1', 'Updated task #9 status'),
+    ]
+    const serverTasks = {
+      rev: 2,
+      tasks: [{ id: '9', subject: 'Real subject', status: 'in_progress' as const, stale: false }],
+    }
+    const { container } = render(<TodoChecklist messages={msgs} serverTasks={serverTasks} working />)
+    expect(container.querySelector('.todo-text')?.textContent).toBe('Real subject')
+  })
+
+  it('window fold wins over serverTasks for ids present in the window', () => {
+    // The window has a full create+result for task #1 with subject "Window title".
+    // The serverTasks snapshot has a different subject for the same id.
+    // Window entries win the merge — the snapshot subject must NOT appear.
+    const msgs = [
+      ...created('tc1', 1, 'Window title'),
+    ]
+    const serverTasks = {
+      rev: 1,
+      tasks: [{ id: '1', subject: 'Snapshot title', status: 'pending' as const, stale: false }],
+    }
+    const { container } = render(<TodoChecklist messages={msgs} serverTasks={serverTasks} working />)
+    expect(container.querySelector('.todo-text')?.textContent).toBe('Window title')
+  })
+
+  it('drops stale+resolved snapshot-only entries', () => {
+    // Empty window — only serverTasks provides tasks. A stale+completed entry
+    // must be dropped; a non-stale in_progress entry must survive.
+    const serverTasks = {
+      rev: 3,
+      tasks: [
+        { id: '2', subject: 'Old done task', status: 'completed' as const, stale: true },
+        { id: '3', subject: 'Current task', status: 'in_progress' as const, stale: false },
+      ],
+    }
+    const { container } = render(<TodoChecklist messages={[]} serverTasks={serverTasks} working />)
+    const texts = [...container.querySelectorAll('.todo-text')].map((n) => n.textContent)
+    expect(texts).not.toContain('Old done task')
+    expect(texts).toContain('Current task')
+  })
+})

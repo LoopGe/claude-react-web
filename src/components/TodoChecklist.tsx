@@ -35,6 +35,8 @@ import { useLocalStorage } from '../hooks/useLocalStorage'
 import {
   buildTaskStateMap,
   lastUserInputIndex,
+  mergeTaskList,
+  type TasklistSnapshotPayload,
 } from '../utils/task-events'
 
 interface Todo {
@@ -67,6 +69,10 @@ interface Props {
    *  omitted both stay in memory only (no localStorage writes) — the tests
    *  rely on this. */
   sessionId?: string
+  /** Server-derived full-transcript fold (useTaskList). Base layer merged
+   *  UNDER the window fold — window entries win per id. null/undefined =
+   *  degrade to window-only (pre-snapshot behavior). */
+  serverTasks?: TasklistSnapshotPayload | null
 }
 
 // localStorage keys for per-session UI state. null → pure in-memory state.
@@ -87,8 +93,8 @@ const PRESS_MOVE_SLOP = 10
  *  STAY hidden; the "hide" is committed once the undo window closes. */
 const UNDO_DISMISS_MS = 5000
 
-export const TodoChecklist = memo(function TodoChecklist({ messages, working, skin, clearing, sessionId }: Props) {
-  const result = useMemo(() => extractTodos(messages, !!working), [messages, working])
+export const TodoChecklist = memo(function TodoChecklist({ messages, working, skin, clearing, sessionId, serverTasks }: Props) {
+  const result = useMemo(() => extractTodos(messages, !!working, serverTasks), [messages, working, serverTasks])
   const hc = skin === 'hc'
   // Cap the list height so a long checklist doesn't dominate the viewport
   // (the card is a bottom overlay; without a cap the stack outgrows the
@@ -372,9 +378,9 @@ interface ExtractResult {
  *  the last TaskCreate/TaskUpdate. This prevents a stale TodoWrite snapshot
  *  from an old turn from shadowing a live Task* stream (and vice versa).
  *  Returns null when neither source has any items. */
-function extractTodos(messages: SdkMessage[], working: boolean): ExtractResult | null {
+function extractTodos(messages: SdkMessage[], working: boolean, serverTasks: TasklistSnapshotPayload | null | undefined): ExtractResult | null {
   const tw = extractLatestTodos(messages, working)
-  const tkTodos = extractFromTaskEvents(messages)
+  const tkTodos = extractFromTaskEvents(messages, serverTasks)
   // Compare last-message-index: whichever source was used more recently wins.
   // Check tw directly (not a derived variable) so TypeScript narrows it.
   if (tw && tw.todos.length > 0 && (!tkTodos || tw.lastIndex > lastTaskEventIndex(messages))) {
@@ -480,9 +486,10 @@ function sanitizeTodos(raw: unknown[]): Todo[] {
  *  the visibility cleanup on top — stale-completed tasks (resolved AND last
  *  touched before the latest user-input turn) and stale provisional orphans
  *  are dropped. Returns null when no Task* events exist. */
-function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
-  const tasks = buildTaskStateMap(messages)
-  if (!tasks) return null
+function extractFromTaskEvents(messages: SdkMessage[], serverTasks: TasklistSnapshotPayload | null | undefined): Todo[] | null {
+  const windowTasks = buildTaskStateMap(messages)
+  const merged = mergeTaskList(serverTasks, windowTasks)
+  if (merged.size === 0) return null
 
   // Cleanup boundary: a completed task whose last create/update predates
   // this turn belongs to a previous request the user has moved on from, so
@@ -491,36 +498,18 @@ function extractFromTaskEvents(messages: SdkMessage[]): Todo[] | null {
   // task lingers with its ✔ until the user sends the next message).
   const lastUserInputIdx = lastUserInputIndex(messages)
 
-  // 3) Clean up stale-completed tasks. A task is dropped when it is BOTH
-  //    resolved (completed/cancelled) AND was last touched before the latest
-  //    user-input turn — i.e. it belongs to a previous request the user has
-  //    already moved past. Tasks that are still open (pending/in_progress),
-  //    or that were touched during/after the current turn, are kept. This
-  //    means a just-finished task stays on screen (with its ✔) until the
-  //    user sends their next message, instead of vanishing the instant it
-  //    completes.
   const out: Todo[] = []
-  for (const t of tasks.values()) {
+  for (const t of merged.values()) {
     const resolved = t.status === 'completed' || t.status === 'cancelled'
-    const stale = t.lastTouched < lastUserInputIdx
+    // Snapshot entries carry the server's precomputed flag (their
+    // lastTouched is a server-side line index — meaningless here);
+    // window entries use the window-relative rule as before.
+    const stale = t.stale ?? (t.lastTouched < lastUserInputIdx)
     if (resolved && stale) continue
-    // Drop stale provisional orphans: a TaskCreate whose result never arrived
-    // (history truncated), so we never learned its `#N`. The real task it
-    // represented was folded under its numeric id by a later TaskUpdate; this
-    // leftover would otherwise hang forever as a phantom `pending` item (it's
-    // never `completed`, so the rule above can't reach it) — the "stuck 0/1
-    // checklist" bug. Keep provisional entries that are still current, so an
-    // in-flight create whose result hasn't landed yet still shows this turn.
     if (t.provisional && stale) continue
     out.push({
-      // Server-assigned `#N` id — the stable identity for the hide-set. A
-      // provisional `pending:<toolUseId>` key resolves to `#N` once the
-      // TaskCreate result lands; the old key is pruned and the task shows
-      // again (it's genuinely in-flight).
       key: t.id,
       content: t.subject,
-      // 'cancelled' maps to 'completed' for the 3-state UI (it's resolved —
-      // won't be worked on); this also makes it count toward done/total.
       status: t.status === 'cancelled' ? 'completed' : t.status,
       activeForm: t.activeForm,
     })
