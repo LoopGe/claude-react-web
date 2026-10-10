@@ -11,7 +11,7 @@ import type { FastModeState, SDKMessage, SlashCommand } from '@anthropic-ai/clau
 import type { Session, SessionBroadcaster } from './session-types.js'
 import { endAllSubscribers } from './session-types.js'
 import type { ProviderSessionHandle } from './providers/types.js'
-import { isTranscriptMessage, pushBounded, stampReceivedAt, shouldBroadcastMessage, trimLargeToolResults, truncateMiddle } from './history-utils.js'
+import { getParentToolUseId, isTranscriptMessage, pushBounded, stampReceivedAt, shouldBroadcastMessage, trimLargeToolResults, truncateMiddle } from './history-utils.js'
 import { mutatingToolUseId, scheduleGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
 import { parseAckAgentId } from './subagent-watcher.js'
@@ -28,6 +28,7 @@ import type { CliNotification } from '../shared/ws-protocol.js'
 import { isTerminalTaskStatus, normalizeTaskType, type TaskResourceLink } from '../shared/tasks.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 import { isEmptyResultFrame } from '../shared/results.js'
+import { isTaskNotificationUserMessage, userMessageHasToolResult } from '../shared/user-frames.js'
 
 const MAX_HOOK_OUTPUT_CHARS = 20_000
 
@@ -38,62 +39,26 @@ function trimHookOutput(value: string): string {
   return truncateMiddle(value, 10_000, 8_000)
 }
 
-/** Extract `parent_tool_use_id` from an SDK message defensively.
- *  Returns the value for user/assistant messages; undefined for types
- *  that don't carry the field. Server-side SDKMessage is a discriminated
- *  union, so the cast is necessary — the field is only guaranteed on
- *  SDKUserMessage / SDKAssistantMessage variants. */
-export function getParentToolUseId(msg: SDKMessage): string | null | undefined {
-  return (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id
-}
-
 const log = createLogger('pump')
 
-/** True when an SDK `user` message carries at least one `tool_result`
- *  content block. Used to distinguish a genuine top-level user-input echo
- *  (text/image blocks only — drop it, we already broadcast our own copy)
- *  from a tool_result frame (forward it, the UI needs it to resolve the
- *  tool card's status). Defensive against string content and odd shapes. */
-export function userMessageHasToolResult(msg: SDKMessage): boolean {
-  const content = (msg as { message?: { content?: unknown } }).message?.content
-  if (!Array.isArray(content)) return false
-  for (const block of content) {
-    if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'tool_result') {
-      return true
-    }
-  }
-  return false
+/** Stamp an unaccounted CLI-driven turn start: pendingTurns 0→1 with a fresh
+ *  workingSince and turnActive, plus a sidebar refresh. Both detection sites
+ *  (the `<task-notification>` injection frame and the main-thread assistant
+ *  catch-all) must stamp IDENTICALLY — one helper makes drift impossible.
+ *  Callers gate on `session.pendingTurns === 0` (never double-fires, never
+ *  lowers the count). */
+function stampUnaccountedTurn(session: Session, deps: PumpDeps): void {
+  session.pendingTurns = 1
+  session.workingSince = Date.now()
+  session.turnActive = true
+  deps.broadcastInfo?.(session)
 }
 
-/** True when a top-level `user` message's leading text is a
- *  `<task-notification>` XML block — the harness's background-subagent
- *  result injection (delivered as user-role text for the model to consume
- *  on its next turn). The pump's echo drop-filter must NOT drop these:
- *  they aren't echoes of server-broadcast human input, so forwarding them
- *  lets the client render the result as a task-result card instead of
- *  silently losing it. Mirrors the client-side check in
- *  src/session-store/normalize.ts. */
-export function isTaskNotificationUserMessage(msg: SDKMessage): boolean {
-  if (msg.type !== 'user') return false
-  // Subagent-internal user frames (parent_tool_use_id set) are never a
-  // top-level task-notification injection; the pump's drop-filter only
-  // calls this on null-parent frames anyway, but keep the guard so the
-  // helper is correct standalone (mirrors the client check).
-  if (getParentToolUseId(msg) != null) return false
-  const content = (msg as { message?: { content?: unknown } }).message?.content
-  let text: string | undefined
-  if (typeof content === 'string') {
-    text = content
-  } else if (Array.isArray(content)) {
-    for (const block of content) {
-      if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text') {
-        const t = (block as { text?: unknown }).text
-        if (typeof t === 'string') { text = t; break }
-      }
-    }
-  }
-  return !!text && /^\s*<task-notification\b[\s\S]*<\/task-notification>/i.test(text)
-}
+// getParentToolUseId lives in history-utils.ts, and the user-frame content
+// predicates (userMessageHasToolResult / isTaskNotificationUserMessage) in
+// shared/user-frames.ts — the history readers and the client need the
+// identical classification (see trimLargeToolResults in history-utils for
+// the same cross-surface placement rationale). Both imported above.
 
 /** All `tool_use_id`s carried by a user message's tool_result blocks. The
  *  originating tool_use id lives on the block, not on the message's
@@ -926,6 +891,16 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           log.debug(`[session ${session.id}] dropping echoed top-level user message uuid=${(msg as { uuid: string }).uuid}`)
           continue
         }
+        // A <task-notification> injection arriving while no turn is accounted
+        // IS the CLI starting a continuation turn — the injection is the
+        // prompt. Stamp on the frame, not on the first assistant frame: the
+        // model's first token can lag the injection by tens of seconds
+        // (observed live: 83s between the streamed notification frame and the
+        // first assistant frame), and that whole lag is otherwise unaccounted
+        // turn time (live again, phase reads 'idle' mid-turn).
+        if (session.pendingTurns === 0 && isTaskNotificationUserMessage(msg)) {
+          stampUnaccountedTurn(session, deps)
+        }
         log.debug(
           `[session ${session.id}] msg #${msgCount + 1} received d` +
           `type=${msg.type}${msgSubtype ? `/${msgSubtype}` : ''} ` +
@@ -1213,6 +1188,28 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // "session A streams, session B hangs" hypothesis. (The early-continue
         // ephemeral frames above perform no fanout and are intentionally not
         // observed.)
+        // Unaccounted main-thread turn stamp (catch-all). `pendingTurns` is
+        // normally driven by send() (set in pushToSession) and the result
+        // handler (cleared below) — but turns the CLI starts ITSELF never
+        // pass through send(): the harness injects a `<task-notification>`
+        // user prompt internally and runs a full turn on it. The injection
+        // frame itself IS streamed and gets its own stamp above; this
+        // branch covers any other CLI-driven turn shape whose first
+        // main-thread assistant frame arrives with nothing accounted.
+        // Without a stamp the whole turn reads as idle (phase 'live'): the
+        // WorkingBubble stays hidden, phase-gated routes accept mid-turn
+        // calls, and the stuck-session GC never watches it — a silent tool
+        // call inside such a turn can zombie forever (observed: 20+ min with
+        // no message and no result). Subagent frames are excluded
+        // (background subagent activity surfaces as 'waiting', not
+        // 'working'); the result handler owns the clear, so back-to-back
+        // notification turns re-stamp per turn. Resume does not replay
+        // assistant frames over the stream (history is disk-seeded into the
+        // ring directly), so this cannot misfire on a freshly resumed idle
+        // session.
+        if (msg.type === 'assistant' && getParentToolUseId(msg) == null && session.pendingTurns === 0) {
+          stampUnaccountedTurn(session, deps)
+        }
         const fanoutStart = performance.now()
         if (isTranscriptMessage(msg)) {
           // Split by frame origin: subagent frames (parent_tool_use_id
@@ -1413,6 +1410,15 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             session.pendingTurns = 1
             if (!emptyResult) session.workingSince = Date.now()
           } else {
+            // Every queue-empty result clears the turn state — INCLUDING empty
+            // bookends. An empty bookend landing between the micro-turns of a
+            // CLI-driven continuation drops the unaccounted-turn stamp for a
+            // moment, but the next main-thread assistant frame re-stamps (the
+            // blip self-heals), whereas NOT clearing on a turn-final empty
+            // result would strand working=true forever (the GC would then
+            // auto-interrupt a finished session). The stamps cover the real
+            // hazard — long silent stretches mid-turn, where no result arrives
+            // at all and pendingTurns holds regardless.
             session.pendingTurns = 0
             session.workingSince = undefined
           }

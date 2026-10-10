@@ -418,8 +418,12 @@ export interface Session {
   workingSince?: number
   /** True while a dispatched turn has actually STARTED on the CLI side — set
    *  by onPromptEcho when the SDK echoes a sent prompt back (the echo is the
-   *  proof the CLI took the message), cleared on `result` (the turn is done;
-   *  with moreQueued the next turn hasn't started yet) and on every teardown
+   *  proof the CLI took the message), and by the pump's unaccounted-turn
+   *  stamp for CLI-driven turns (a `<task-notification>` prompt the CLI
+   *  injects internally never streams to the pump, so no echo lands — the
+   *  first main-thread assistant frame is the proof instead; see
+   *  session-pump.ts), cleared on `result` (the turn is done; with
+   *  moreQueued the next turn hasn't started yet) and on every teardown
    *  that zeroes pendingTurns. pendingTurns alone can't distinguish "queued,
    *  no turn running" from "turn in flight" — interrupt()'s cancelQueued
    *  clear (see session-manager) needs that discriminator to avoid clearing

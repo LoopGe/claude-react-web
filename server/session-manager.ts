@@ -57,7 +57,6 @@ import { isSdkForwardedMode } from './permission-modes.js'
 import { createAsyncSubscription } from './async-subscription.js'
 import {
   pump as pumpSession,
-  getParentToolUseId,
   applyTaskEvent,
   reconcileTasksFromStopHook as reconcileTaskMapFromStopHook,
   settleTasksOnProcessExit,
@@ -117,7 +116,7 @@ import { SessionMcpManager } from './session-manager-mcp.js'
 import { SessionEventBroadcaster } from './session-broadcaster.js'
 import { BackgroundWatcherRegistry } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
-import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory, countQueuedUserTurns } from './history-utils.js'
+import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -3227,8 +3226,10 @@ export class SessionManager {
       }
       // If the interrupt left the session in a DEAD working state — nothing
       // queued (no unpaired promptUuids, empty input queue) and no turn in
-      // flight (`turnActive` is only set by onPromptEcho when the CLI takes a
-      // message, cleared on `result`) — then NO `result` frame will ever
+      // flight (`turnActive` is set by onPromptEcho when the CLI takes a sent
+      // message, and by the pump's unaccounted-turn stamp for CLI-driven turns
+      // whose prompt never streams — no echo lands for those; cleared on
+      // `result`) — then NO `result` frame will ever
       // arrive: the pending turns were cancelled before the CLI started them
       // (their echoes never landed). pendingTurns was set at dispatch
       // (pushToSession) and its only normal clear path is the pump's result

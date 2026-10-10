@@ -1850,8 +1850,13 @@ describe('SessionManager', () => {
     vi.mocked(summarizeForCompact).mockResolvedValueOnce('HAND-OFF')
     const info = sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    // A main-thread assistant frame while no turn is accounted now stamps the
+    // session working (CLI-driven continuation detection); a real turn ALWAYS
+    // ends with a result frame, so emit one to make the stream realistic and
+    // the session idle again.
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
-    expect(sm.getHistory(info.id)!).toHaveLength(1)
+    expect(sm.getHistory(info.id)!).toHaveLength(2)
 
     const next = await sm.compact(info.id)
 
@@ -1874,6 +1879,8 @@ describe('SessionManager', () => {
     vi.mocked(summarizeForCompact).mockResolvedValueOnce('')
     const info = sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    // Turn ran to completion — see the unaccounted-turn stamp note above.
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
 
     const next = await sm.compact(info.id)
@@ -1887,10 +1894,11 @@ describe('SessionManager', () => {
     vi.mocked(summarizeForCompact).mockResolvedValue('HAND-OFF')
     const info = sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    // Turn ran to completion — see the unaccounted-turn stamp note above.
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
 
     const results = await Promise.allSettled([sm.compact(info.id), sm.compact(info.id)])
-
     // The `s.clearing` guard in clear() lets exactly ONE clear spawn Y; the
     // loser either sees clearing=true and returns X's (stale) info, or lands
     // after X was unloaded and rejects. Either way, no second subprocess.

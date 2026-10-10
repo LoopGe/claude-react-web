@@ -424,6 +424,23 @@ describe('countQueuedUserTurns', () => {
   it('returns 0 for an empty transcript', () => {
     expect(countQueuedUserTurns([])).toBe(0)
   })
+
+  it('does not count tool_result or task-notification user frames even when parent is null', () => {
+    // SDK 0.3.143 delivers MAIN-THREAD tool_results with parent_tool_use_id
+    // null, and harness task-notification injections are null-parent text
+    // frames — neither ever sits in the input queue. Regression for the
+    // phantom "queuedInputs=90" miscount (all 90 were tool_results).
+    expect(countQueuedUserTurns([
+      {
+        type: 'user', uuid: 't1', parent_tool_use_id: null, receivedAt: 100,
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }] },
+      } as unknown as SdkMessage,
+      {
+        type: 'user', uuid: 'n1', parent_tool_use_id: null, receivedAt: 100,
+        message: { role: 'user', content: [{ type: 'text', text: '<task-notification><task-id>t</task-id><status>completed</status></task-notification>' }] },
+      } as unknown as SdkMessage,
+    ])).toBe(0)
+  })
 })
 
 describe('getActiveWorktree', () => {

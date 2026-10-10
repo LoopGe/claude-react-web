@@ -1,4 +1,5 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { isTaskNotificationUserMessage, userMessageHasToolResult } from '../shared/user-frames.js'
 
 /**
  * Push an item into a bounded array, evicting the oldest entry when the
@@ -82,6 +83,18 @@ export function stampConsumedAt(msg: unknown, at?: number): number {
   return (m as { consumedAt?: number }).consumedAt ?? at ?? Date.now()
 }
 
+/** Extract `parent_tool_use_id` from an SDK message defensively.
+ *  Returns the value for user/assistant messages; undefined for types
+ *  that don't carry the field. Server-side SDKMessage is a discriminated
+ *  union, so the cast is necessary — the field is only guaranteed on
+ *  SDKUserMessage / SDKAssistantMessage variants. Lives here (not in
+ *  session-pump.ts) because history readers need it too. (The two
+ *  user-frame content predicates live in shared/user-frames.ts — the
+ *  client needs the identical classification.) */
+export function getParentToolUseId(msg: SDKMessage): string | null | undefined {
+  return (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id
+}
+
 /** Number of top-level user turns in `history` that have been received
  *  (receivedAt set) but not yet consumed by the SDK (consumedAt absent).
  *  Mirrors the client's `countQueuedUserTurns` in
@@ -89,16 +102,23 @@ export function stampConsumedAt(msg: unknown, at?: number): number {
  *  (type === 'user' && parent_tool_use_id == null); consumedAt set → not
  *  queued; else receivedAt set → queued; else neither.
  *
- *  Non-user frames (assistant, system, tool_result) and subagent user
- *  frames (parent_tool_use_id != null) are skipped — they are never in
- *  the input queue and `stampReceivedAt` stamps every ring frame, so a
- *  bare `receivedAt` predicate would count them as "queued" (the bug
- *  this guards against). */
+ *  Content exclusions (both mirroring the pump's echo drop-filter):
+ *    - user frames carrying a tool_result block — SDK 0.3.143 delivers
+ *      MAIN-THREAD tool_results with a NULL parent, so the parent check
+ *      alone miscounts every tool_result in the ring as a queued prompt
+ *      (observed: queuedInputs=90 where all 90 were tool_results);
+ *    - `<task-notification>` user-role injections — null-parent text
+ *      frames the harness feeds the model, never host input.
+ *  These frames enter the ring via the pump with `receivedAt` stamped and
+ *  `consumedAt` never set (they don't ride the input queue), so without
+ *  the content checks they count as queued forever. */
 export function countQueuedUserTurns(history: readonly SDKMessage[]): number {
   let n = 0
   for (const m of history) {
     if (m.type !== 'user') continue
-    if ((m as { parent_tool_use_id?: string | null }).parent_tool_use_id != null) continue
+    if (getParentToolUseId(m) != null) continue
+    if (userMessageHasToolResult(m)) continue
+    if (isTaskNotificationUserMessage(m)) continue
     if (typeof (m as { consumedAt?: number }).consumedAt === 'number') continue
     if (typeof (m as { receivedAt?: number }).receivedAt === 'number') n++
   }

@@ -9,7 +9,6 @@ import {
   compactingOf,
   fastModeStateOf,
   hookLifecycleMessage,
-  isTaskNotificationUserMessage,
   liteContextUsageFromAssistant,
   liteContextUsageFromResult,
   liteContextUsageFromSdkUsage,
@@ -20,12 +19,12 @@ import {
   parseSdkAutoCompactFacts,
   reapplyAutoCompactWindow,
   toolResultIds,
-  userMessageHasToolResult,
   type PumpDeps,
 } from './session-pump.js'
 import type { LiteContextUsage, SdkAutoCompactFacts } from './session-pump.js'
 import type { Session } from './session-types.js'
 import type { TaskRecordUi } from '../shared/tasks.js'
+import { isTaskNotificationUserMessage, userMessageHasToolResult } from '../shared/user-frames.js'
 import { isTranscriptMessage, shouldBroadcastMessage, trimLargeToolResults } from './history-utils.js'
 
 // ---------------------------------------------------------------------------
@@ -42,6 +41,130 @@ import { isTranscriptMessage, shouldBroadcastMessage, trimLargeToolResults } fro
 function userMsg(content: unknown): SDKMessage {
   return { type: 'user', message: { role: 'user', content } } as unknown as SDKMessage
 }
+
+// ---------------------------------------------------------------------------
+// Unaccounted main-thread turn stamping
+//
+// pendingTurns is normally driven by send() (set) and the result handler
+// (cleared) — but turns the CLI starts ITSELF never pass through send():
+// the harness injects a <task-notification> user prompt internally (written
+// straight to the transcript, never streamed to the pump) and runs a full
+// turn on it. A main-thread (null-parent) assistant frame while
+// pendingTurns === 0 is the stream-level proof such a turn is running; the
+// pump must stamp working exactly like pushToSession would, or the whole
+// turn reads as 'live' (no WorkingBubble, no stuck-GC watch, phase-gated
+// routes accept mid-turn calls).
+// ---------------------------------------------------------------------------
+describe('pump: unaccounted main-thread turn stamping', () => {
+  const asstFrame = (parent: string | null = null, uuid = 'a1'): SDKMessage =>
+    ({ type: 'assistant', parent_tool_use_id: parent, uuid, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } } as unknown as SDKMessage)
+
+  // The pump's teardown tail (clean stream end → terminate) zeroes
+  // pendingTurns/turnActive, so the stamp can only be observed AT STAMP
+  // TIME — capture the session state inside the broadcastInfo mock, which
+  // the stamp calls synchronously on the 0→1 transition.
+  function captureStampingBroadcasts(session: Session) {
+    const seen: Array<{ pendingTurns: number; workingSince?: number; turnActive?: boolean }> = []
+    const broadcastInfo = vi.fn(() => {
+      seen.push({ pendingTurns: session.pendingTurns, workingSince: session.workingSince, turnActive: session.turnActive })
+    })
+    return { broadcastInfo, seen }
+  }
+
+  it('stamps working on a main-thread assistant frame while pendingTurns is 0', async () => {
+    const { session } = makePumpSession([asstFrame()])
+    const { broadcastInfo, seen } = captureStampingBroadcasts(session)
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]!.pendingTurns).toBe(1)
+    expect(seen[0]!.turnActive).toBe(true)
+    expect(seen[0]!.workingSince).toBeGreaterThan(0)
+  })
+
+  it('does not stamp a subagent assistant frame (parent set) — that is waiting, not working', async () => {
+    const { session } = makePumpSession([asstFrame('toolu_1')])
+    const { broadcastInfo, seen } = captureStampingBroadcasts(session)
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    expect(seen).toEqual([])
+    expect(broadcastInfo).not.toHaveBeenCalled()
+  })
+
+  it('does not stamp when the turn is already accounted (pendingTurns > 0)', async () => {
+    const { session } = makePumpSession([asstFrame()])
+    session.pendingTurns = 1
+    const { broadcastInfo, seen } = captureStampingBroadcasts(session)
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    expect(seen).toEqual([])
+    expect(broadcastInfo).not.toHaveBeenCalled()
+  })
+
+  it('result clears the stamp; a following notification-driven turn re-stamps', async () => {
+    const { session } = makePumpSession([
+      asstFrame(null, 'a1'),
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+      asstFrame(null, 'a2'),
+    ])
+    const { broadcastInfo, seen } = captureStampingBroadcasts(session)
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    // The result handler saw an empty host queue and zeroed pendingTurns
+    // (no broadcast — a clear is not a stamp); the second unaccounted
+    // assistant frame re-stamped it. Exactly two stamps, both reading 1.
+    expect(broadcastInfo).toHaveBeenCalledTimes(2)
+    expect(seen).toEqual([
+      { pendingTurns: 1, turnActive: true, workingSince: expect.any(Number) },
+      { pendingTurns: 1, turnActive: true, workingSince: expect.any(Number) },
+    ])
+  })
+
+  it('an EMPTY result (background-task bookend) clears like any result; the next frame re-stamps', async () => {
+    // Every queue-empty result clears the turn state — INCLUDING empty
+    // bookends (a turn-final empty result must never strand working=true).
+    // The blip self-heals at the next main-thread assistant frame.
+    const { session } = makePumpSession([
+      asstFrame(null, 'a1'),
+      { type: 'result', subtype: 'success', num_turns: 0, result: '', uuid: 'r0' } as unknown as SDKMessage,
+      asstFrame(null, 'a2'),
+    ])
+    const { broadcastInfo, seen } = captureStampingBroadcasts(session)
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    // a1 stamped, the bookend cleared, a2 re-stamped — two stamps.
+    expect(broadcastInfo).toHaveBeenCalledTimes(2)
+    expect(seen).toEqual([
+      { pendingTurns: 1, turnActive: true, workingSince: expect.any(Number) },
+      { pendingTurns: 1, turnActive: true, workingSince: expect.any(Number) },
+    ])
+  })
+
+  it('stamps working on a <task-notification> injection frame while pendingTurns is 0', async () => {
+    // The injection IS the continuation prompt; stamping on the frame (not
+    // the first assistant frame) covers the injection→first-token latency
+    // (observed live: 83s).
+    const notif = userMsg('<task-notification><task-id>t1</task-id><status>completed</status><summary>done</summary></task-notification>')
+    const { session } = makePumpSession([notif])
+    const { broadcastInfo, seen } = captureStampingBroadcasts(session)
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]!.pendingTurns).toBe(1)
+    expect(seen[0]!.turnActive).toBe(true)
+  })
+
+  it('does not stamp a <task-notification> injection while a turn is already accounted', async () => {
+    const notif = userMsg('<task-notification><task-id>t1</task-id><status>completed</status><summary>done</summary></task-notification>')
+    const { session } = makePumpSession([notif])
+    session.pendingTurns = 1
+    const { broadcastInfo, seen } = captureStampingBroadcasts(session)
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    expect(seen).toEqual([])
+    expect(broadcastInfo).not.toHaveBeenCalled()
+  })
+})
 
 // ---------------------------------------------------------------------------
 // shouldBroadcastMessage — which system frames reach the client.

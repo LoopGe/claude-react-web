@@ -15,6 +15,11 @@ import { extractMessagePlainText } from '../search'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 import { isEmptyResultFrame } from '../../shared/results.js'
 import { isTerminalTaskStatus } from '../../shared/tasks.js'
+import { isTaskNotificationUserMessage, userMessageHasToolResult } from '../../shared/user-frames.js'
+
+// Re-exported: message-list consumers classify user frames through this
+// module. The single implementation lives in shared/user-frames.ts.
+export { isTaskNotificationUserMessage, userMessageHasToolResult }
 /** Strings the SDK / canUseTool deny path uses to mean "user said no".
  *  Matched against tool_result.content text — case-insensitive substring
  *  match. Both Anthropic CLI and our own deny path land here.
@@ -171,14 +176,22 @@ export function toTranscriptItem(
 /** Classify a top-level user message's queue-delivery state from its
  *  server timestamps. See TranscriptItem.deliveryStatus for the contract.
  *
- *  Only top-level user turns (parent_tool_use_id == null) are classified —
- *  tool_result and sub-agent user frames never sit in the input queue, so
- *  they get undefined. A user message with no `receivedAt` (disk-restored
- *  history, or an optimistic local insert that hasn't been server-echoed)
- *  also returns undefined: we have no server-side queue signal to show. */
+ *  Only top-level user turns (parent_tool_use_id == null) are classified.
+ *  Content exclusions (mirroring the server's countQueuedUserTurns and the
+ *  pump's echo drop-filter): user frames carrying a tool_result block —
+ *  SDK 0.3.143 delivers MAIN-THREAD tool_results with a NULL parent, so
+ *  the parent check alone miscounts every tool_result as a queued prompt —
+ *  and `<task-notification>` harness injections (null-parent text frames
+ *  fed to the model, never host input). Neither ever sits in the input
+ *  queue, so both get undefined. A user message with no `receivedAt`
+ *  (disk-restored history, or an optimistic local insert that hasn't been
+ *  server-echoed) also returns undefined: we have no server-side queue
+ *  signal to show. */
 function deriveDeliveryStatus(msg: SdkMessage): 'queued' | 'consumed' | undefined {
   if (msg.type !== 'user') return undefined
   if (msg.parent_tool_use_id != null) return undefined
+  if (userMessageHasToolResult(msg)) return undefined
+  if (isTaskNotificationUserMessage(msg)) return undefined
   if (typeof msg.consumedAt === 'number') return 'consumed'
   // Only call it "queued" once the server has acknowledged it (receivedAt).
   // Without that, an optimistic placeholder would flash a "queued" badge
@@ -231,17 +244,10 @@ export function topLevelUserPromptSignature(
   return extractMessagePlainText(msg) ?? ''
 }
 
-/** Client-side mirror of server/session-pump.ts:`userMessageHasToolResult`.
- *  True when a `user` message carries at least one `tool_result` content
- *  block — i.e. it's the SDK feeding tool output back to the model, NOT a
- *  human-typed turn. Used by the "is this real user input?" discriminator. */
-export function userMessageHasToolResult(msg: SdkMessage): boolean {
-  if (msg.type !== 'user') return false
-  for (const block of getBlocks(msg)) {
-    if (block.type === 'tool_result') return true
-  }
-  return false
-}
+// userMessageHasToolResult / isTaskNotificationUserMessage moved to
+// shared/user-frames.ts — the server's history readers and pump classify
+// user frames identically, and the mirrors had already drifted once (the
+// missing tool_result guard fed the phantom queuedInputs miscount).
 
 /** The first text a `user` message carries (string content, or the first
  *  `text` block). Used to sniff synthetic injections by their leading
@@ -258,11 +264,9 @@ function leadingUserText(msg: SdkMessage): string | null {
   return null
 }
 
-// Requires a closing </task-notification> so a HUMAN message that merely
-// starts with "<task-notification" (e.g. asking about the format) isn't
-// mistaken for a harness injection. Genuine injections are well-formed XML
-// with the closing tag in the leading text block.
-const TASK_NOTIFICATION_RE = /^\s*<task-notification\b[\s\S]*<\/task-notification>/i
+// The <task-notification> injection predicate and its regex live in
+// shared/user-frames.ts alongside userMessageHasToolResult — one
+// classification for both wire directions.
 
 /** Matches the CLI's local-command log markup: the leading text block of a
  *  user-role message that is NOT human input but a recorded slash-command
@@ -275,20 +279,6 @@ const TASK_NOTIFICATION_RE = /^\s*<task-notification\b[\s\S]*<\/task-notificatio
  *  model may reference them), so they survive disk replay and would otherwise
  *  render as "you" bubbles. */
 const LOCAL_COMMAND_LOG_RE = /^\s*<(command-name|local-command-stdout|local-command-caveat)\b/i
-
-/** True when a top-level `user` message's leading text is a
- *  `<task-notification>` XML block — the harness's background-subagent
- *  result injection. The SDK's own task completion is a `system` /
- *  `task_notification` frame (already hidden by shouldHideByDefault); this
- *  catches the *user-role* injection path some harnesses use, so it is
- *  never misrendered as a human-typed "you" bubble. */
-export function isTaskNotificationUserMessage(msg: SdkMessage): boolean {
-  if (msg.type !== 'user') return false
-  if (msg.parent_tool_use_id != null) return false
-  if (userMessageHasToolResult(msg)) return false
-  const text = leadingUserText(msg)
-  return !!text && TASK_NOTIFICATION_RE.test(text)
-}
 
 /** True when a top-level `user` message is a CLI local-command log entry
  *  (e.g. the `/model` slash command that `setModel` triggers), not real human
