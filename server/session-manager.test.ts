@@ -4211,15 +4211,22 @@ describe('SessionManager', () => {
     expect(sm.get(info.id).permissionMode).toBe('bypassPermissions')
   })
 
-  it('spawn forwards only SDK-forwarded modes (plan/auto) to the SDK options; other modes map to undefined', () => {
+  // The spawn fallback must pin 'default', not omit — SDK 0.3.286 redefined
+  // omission as "leave it to Claude Code" (see SDK_FORWARDED_PERMISSION_MODES
+  // in server/permission-modes.ts); the broker's enforcement depends on the
+  // CLI actually being in default mode.
+  it('spawn forwards only SDK-forwarded modes (plan/auto) to the SDK options; other modes pin default', () => {
     sm.create({ permissionMode: 'acceptEdits' })
-    expect(mockHandles[0].options.permissionMode).toBeUndefined()
+    expect(mockHandles[0].options.permissionMode).toBe('default')
+
+    sm.create({})
+    expect(mockHandles[1].options.permissionMode).toBe('default')
 
     sm.create({ permissionMode: 'plan' })
-    expect(mockHandles[1].options.permissionMode).toBe('plan')
+    expect(mockHandles[2].options.permissionMode).toBe('plan')
 
     sm.create({ permissionMode: 'auto' })
-    expect(mockHandles[2].options.permissionMode).toBe('auto')
+    expect(mockHandles[3].options.permissionMode).toBe('auto')
   })
 
   it('fork() spawns a new session with resume=sourceId + forkSession=true', async () => {

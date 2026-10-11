@@ -622,13 +622,47 @@ const RATE_LIMIT_TYPE_LABELS: Record<string, string> = {
   seven_day: '7-day limit',
   seven_day_opus: 'Opus 7-day',
   seven_day_sonnet: 'Sonnet 7-day',
+  seven_day_overage_included: '7-day overage-included',
   overage: 'Overage',
+}
+
+/** Display names for `rate_limit_event.overageDisabledReason` (why extra
+ *  usage is unavailable). Same house pattern as RATE_LIMIT_TYPE_LABELS:
+ *  known enum → prose, unknown → raw string. */
+const OVERAGE_DISABLED_REASON_LABELS: Record<string, string> = {
+  overage_not_provisioned: 'not provisioned',
+  org_level_disabled: 'disabled by org',
+  org_level_disabled_until: 'disabled by org (temporary)',
+  out_of_credits: 'out of credits',
+  seat_tier_level_disabled: 'disabled for seat tier',
+  member_level_disabled: 'disabled by member setting',
+  seat_tier_zero_credit_limit: 'zero credit limit (seat tier)',
+  group_zero_credit_limit: 'zero credit limit (group)',
+  member_zero_credit_limit: 'zero credit limit (member)',
+  org_service_level_disabled: 'disabled by service',
+  no_limits_configured: 'no limits configured',
+  fetch_error: 'status unknown (fetch error)',
+  unknown: 'unknown reason',
+}
+
+/** `resetsAt`-style unit sniff shared by `resetsAt` and `overageResetsAt`:
+ *  epoch seconds is the Anthropic convention (experimental API, unit
+ *  undocumented), but ≥1e12 reads as milliseconds so a unit change degrades
+ *  to a still-sane clock time instead of year 55000+. Returns epoch ms. */
+function rateLimitResetMs(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value >= 1e12
+      ? value
+      : value * 1000
+    : null
 }
 
 /** Inline card for `rate_limit_event` frames — a plan rate-limit state
  *  transition (`allowed` → `allowed_warning` → `rejected`). Static by
  *  design (unlike ApiRetryView): these windows reset on hour scales, so
- *  there is nothing meaningful to tick. `resetsAt` is Unix seconds. */
+ *  there is nothing meaningful to tick. `resetsAt` / `overageResetsAt`
+ *  units are undocumented — pass them through rateLimitResetMs, never
+ *  multiply by hand. */
 export function RateLimitView({ msg }: { msg: SdkMessage }) {
   const info = msg.rate_limit_info ?? {}
   const status = info.status ?? 'allowed'
@@ -637,17 +671,10 @@ export function RateLimitView({ msg }: { msg: SdkMessage }) {
     typeof info.utilization === 'number' && Number.isFinite(info.utilization)
       ? Math.round(info.utilization)
       : undefined
-  // `resetsAt` unit isn't documented (experimental API). Epoch seconds is
-  // the Anthropic convention for rate-limit resets, but sniffs for ms
-  // (≥1e12) too so a unit change degrades to a still-sane clock time
-  // instead of year 55000+.
-  const resetsMs =
-    typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt) && info.resetsAt > 0
-      ? info.resetsAt >= 1e12
-        ? info.resetsAt
-        : info.resetsAt * 1000
-      : undefined
+  const resetsMs = rateLimitResetMs(info.resetsAt)
   const resets = resetsMs != null ? formatClockTime(resetsMs) : undefined
+  const overageResetsMs = rateLimitResetMs(info.overageResetsAt)
+  const overageResets = overageResetsMs != null ? formatClockTime(overageResetsMs) : undefined
 
   const tone = status === 'rejected' ? 'danger' : status === 'allowed_warning' ? 'warn' : 'ok'
   const mark = status === 'rejected' ? '⛔ rate limited' : status === 'allowed_warning' ? '⚠ near limit' : '✓ within limit'
@@ -657,6 +684,14 @@ export function RateLimitView({ msg }: { msg: SdkMessage }) {
   if (resets) parts.push(status === 'rejected' ? `blocked until ${resets}` : `resets ${resets}`)
   if (info.isUsingOverage || info.overageInUse) parts.push('using extra usage')
   if (info.overageStatus) parts.push(String(info.overageStatus))
+  // overageEnabled requires isUsingOverage on frames where credits burn, so
+  // suppress the duplicate state fragment when 'using extra usage' fired.
+  if (info.overageEnabled && !(info.isUsingOverage || info.overageInUse)) parts.push('extra usage on')
+  if (info.overageDisabledReason) {
+    const reason = OVERAGE_DISABLED_REASON_LABELS[info.overageDisabledReason] ?? info.overageDisabledReason
+    parts.push(`extra usage unavailable (${reason})`)
+  }
+  if (overageResets) parts.push(`extra usage resets ${overageResets}`)
 
   return (
     <div className={`msg result rate-limit-card rate-limit-card--${tone}`} aria-label="rate limit status">

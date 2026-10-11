@@ -127,6 +127,28 @@ function isTaskRecordStatus(v: unknown): v is import('../shared/tasks.js').TaskS
     || v === 'killed' || v === 'stopped' || v === 'paused'
 }
 
+/** Narrow an SDK string field: present and non-empty, else undefined. Shared
+ *  by the task_* frame writers and the background_tasks_changed snapshot
+ *  fold so an empty string never lands on a record (the UI's ?? fallback
+ *  chain treats '' as a real value). */
+function frameStr(v: unknown): string | undefined {
+  return typeof v === 'string' && v !== '' ? v : undefined
+}
+
+/** Narrow `subagent_type` (SDK 0.3.293): the agent type (Explore / Plan /
+ *  general-purpose / …) for local_agent tasks — but 'main-session' for a
+ *  backgrounded MAIN session, which is not an agent type and would surface
+ *  as one (TasksPanel's row label prefers subagentType over taskType).
+ *  Dropped here at the single point every task writer funnels through.
+ *  NOTE this does NOT gate the subagent bot icon / transcript drill-in —
+ *  those key on taskType === 'subagent' (a backgrounded main session is
+ *  task_type local_agent → 'subagent'), a pre-existing UI affordance issue
+ *  outside this fold's control. */
+function subagentTypeOf(v: unknown): string | undefined {
+  const s = frameStr(v)
+  return s === 'main-session' ? undefined : s
+}
+
 /** Fold one SDK task_* system frame into `session.tasks` and push a full
  *  snapshot to the session's taskSubscribers. Upsert semantics: a
  *  task_updated / task_progress / task_notification may arrive without a
@@ -163,7 +185,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
     && raw.subtype !== 'task_progress' && raw.subtype !== 'task_notification') return
   if (typeof raw.task_id !== 'string' || raw.task_id === '') return
 
-  const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
+  const str = frameStr
   const now = Date.now()
   const frameTime = typeof raw.receivedAt === 'number' ? raw.receivedAt : undefined
 
@@ -182,7 +204,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
       taskId: raw.task_id,
       toolUseId: str(raw.tool_use_id) ?? existing?.toolUseId,
       description: str(raw.description) ?? existing?.description ?? '',
-      subagentType: str(raw.subagent_type) ?? existing?.subagentType,
+      subagentType: subagentTypeOf(raw.subagent_type) ?? existing?.subagentType,
       // Frames carry the internal discriminant (local_bash / local_agent /
       // local_workflow); the record always holds the friendly label the UI
       // matches on. See normalizeTaskType.
@@ -222,7 +244,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
     session.tasks.set(raw.task_id, {
       ...rec,
       description: str(raw.description) ?? rec.description,
-      subagentType: str(raw.subagent_type) ?? rec.subagentType,
+      subagentType: subagentTypeOf(raw.subagent_type) ?? rec.subagentType,
       progressSummary: str(raw.summary) ?? rec.progressSummary,
       lastToolName: str(raw.last_tool_name) ?? rec.lastToolName,
       updatedAt: now,
@@ -332,6 +354,9 @@ export function applyBackgroundTasksChanged(session: Session, msg: SDKMessage): 
       const next = { ...existing }
       if (!next.description && typeof t.description === 'string') next.description = t.description
       if (!next.taskType && typeof t.task_type === 'string') next.taskType = normalizeTaskType(t.task_type)
+      // SDK 0.3.293: snapshot entries carry an optional subagent_type, so a
+      // host can name each subagent's type without pairing with task_started.
+      if (!next.subagentType) next.subagentType = subagentTypeOf(t.subagent_type)
       if (t.ambient === true) next.ambient = true
       next.updatedAt = now
       session.tasks.set(taskId, next)
@@ -340,6 +365,7 @@ export function applyBackgroundTasksChanged(session: Session, msg: SDKMessage): 
         taskId,
         description: typeof t.description === 'string' ? t.description : '',
         taskType: typeof t.task_type === 'string' ? normalizeTaskType(t.task_type) : undefined,
+        subagentType: subagentTypeOf(t.subagent_type),
         ambient: t.ambient === true,
         isBackgrounded: true,
         status: 'running',

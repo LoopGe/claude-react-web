@@ -151,4 +151,16 @@ describe('ClaudeProvider.runStructured', () => {
     const res = await promise
     expect(res.ok).toBe(false)
   })
+
+  // An absent mode must pin 'default', not omit — SDK 0.3.286 redefined
+  // omission as "leave it to Claude Code" (see SDK_FORWARDED_PERMISSION_MODES
+  // in server/permission-modes.ts). A one-shot structured run has no UI and
+  // no broker — its denial surface is permissionPrompts:'none', which only
+  // bites in 'default' mode.
+  it("pins 'default' when permissionMode is absent", async () => {
+    queryMock.mockImplementation(makeGenerator([resultSuccess()]))
+    await makeProvider().runStructured(REQ)
+    const [call] = queryMock.mock.calls[0]
+    expect(call.options.permissionMode).toBe('default')
+  })
 })

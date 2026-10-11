@@ -312,13 +312,21 @@ export interface SdkMessage {
    *  triggered the event. Loosely typed — the SDK may add/remove fields. */
   rate_limit_info?: {
     status?: 'allowed' | 'allowed_warning' | 'rejected'
-    /** Unix seconds. */
+    /** Reset time — unit undocumented (epoch seconds or ms; sniffed at
+     *  render by RateLimitView's rateLimitResetMs). */
     resetsAt?: number
     rateLimitType?: string
     utilization?: number
     overageStatus?: string
     isUsingOverage?: boolean
     overageInUse?: boolean
+    /** SDK 0.3.295: whether the account has extra usage turned on (reported
+     *  on usage-limit warnings). */
+    overageEnabled?: boolean
+    /** The overage window's own reset time — same unit caveat as resetsAt. */
+    overageResetsAt?: number
+    /** Why extra usage is unavailable (SDK enum, loosely typed here). */
+    overageDisabledReason?: string
   }
   /** `system/memory_recall` frames: how memories were surfaced. 'select'
    *  returns full file bodies chosen by a parallel selector; 'synthesize'

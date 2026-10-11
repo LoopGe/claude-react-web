@@ -1722,6 +1722,45 @@ describe('applyBackgroundTasksChanged', () => {
     expect(session.tasks.get('has-none')?.taskType).toBe('subagent')
   })
 
+  it('seeds and back-fills subagent_type from the snapshot entries (SDK 0.3.293), never overwriting', () => {
+    const { session } = makeTaskSession()
+    // A record created by the task_started edge stream already knows its type.
+    session.tasks.set('has-type', { taskId: 'has-type', description: 'x', status: 'running', subagentType: 'Plan', updatedAt: 1 })
+    session.tasks.set('no-type', { taskId: 'no-type', description: 'y', status: 'running', updatedAt: 1 })
+    applyBackgroundTasksChanged(session, sysFrame('background_tasks_changed', {
+      tasks: [
+        { task_id: 'seeded', task_type: 'subagent', subagent_type: 'Explore', description: 'research' },
+        { task_id: 'has-type', task_type: 'subagent', subagent_type: 'general-purpose' },
+        { task_id: 'no-type', task_type: 'subagent', subagent_type: 'Explore' },
+        { task_id: 'bare', task_type: 'shell', description: 'build' },
+      ],
+    }))
+    // Seed path adopts subagent_type.
+    expect(session.tasks.get('seeded')?.subagentType).toBe('Explore')
+    // Back-fill adopts it only when the record lacked one (forward-only).
+    expect(session.tasks.get('no-type')?.subagentType).toBe('Explore')
+    expect(session.tasks.get('has-type')?.subagentType).toBe('Plan')
+    // Entries without subagent_type leave the field untouched.
+    expect(session.tasks.get('bare')?.subagentType).toBeUndefined()
+  })
+
+  it("rejects 'main-session' and empty-string subagent_type values", () => {
+    // sdk.d.ts (0.3.293): subagent_type is the agent type for local_agent
+    // tasks, but 'main-session' for a backgrounded MAIN session — adopting
+    // that value would surface it as an agent type (TasksPanel's row label
+    // prefers subagentType over taskType). An empty string must stay
+    // undefined so the UI's ?? fallback chain survives.
+    const { session } = makeTaskSession()
+    applyBackgroundTasksChanged(session, sysFrame('background_tasks_changed', {
+      tasks: [
+        { task_id: 'main', task_type: 'local_bash', subagent_type: 'main-session', description: 'watcher' },
+        { task_id: 'empty', task_type: 'local_agent', subagent_type: '' },
+      ],
+    }))
+    expect(session.tasks.get('main')?.subagentType).toBeUndefined()
+    expect(session.tasks.get('empty')?.subagentType).toBeUndefined()
+  })
+
   it('ignores non-system frames, other subtypes, and malformed tasks arrays', () => {
     const { session } = makeTaskSession()
     applyBackgroundTasksChanged(session, { type: 'assistant' } as unknown as SDKMessage)

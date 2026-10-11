@@ -579,8 +579,11 @@ export class ClaudeProvider implements AgentProvider {
     if (maxBudgetUsd !== undefined) sdkOptions.maxBudgetUsd = maxBudgetUsd
     // Forward the permission mode verbatim (same enum as sessions). A one-shot
     // run has no app-level mode translation layer, but the value space is the
-    // same SDK PermissionMode. Default = SDK default when absent.
-    if (permissionMode) sdkOptions.permissionMode = permissionMode
+    // same SDK PermissionMode. Absent must pin 'default', not omit — see
+    // SDK_FORWARDED_PERMISSION_MODES in permission-modes.ts for the rationale
+    // (an omitted mode would let the CLI's auto classifier allow tools past
+    // the permissionPrompts:'none' denial surface below).
+    sdkOptions.permissionMode = permissionMode ?? 'default'
     if (permissionMode === 'bypassPermissions') {
       // bypass requires the SDK's explicit guard — the enum alone is not
       // enough or the spawn fails.
@@ -714,11 +717,12 @@ export class ClaudeProvider implements AgentProvider {
     }
   }
 
-  /** Spawn-time permission-mode filter: the only modes forwarded to the SDK's
-   *  Options.permissionMode (see SDK_FORWARDED_PERMISSION_MODES in
-   *  permission-modes.ts for the set and both forward sites). Everything else
-   *  resolves to undefined (no SDK-side mode) and is enforced by our
-   *  canUseTool broker instead — see permission-broker.ts.
+  /** Spawn-time permission-mode resolution: the only modes forwarded to the
+   *  SDK's Options.permissionMode are the CLI-side ones (see
+   *  SDK_FORWARDED_PERMISSION_MODES in permission-modes.ts for the set, both
+   *  forward sites, and the canonical rationale for the 'default' fallback);
+   *  everything else resolves to 'default' and is enforced by our canUseTool
+   *  broker instead — see permission-broker.ts.
    *   - 'plan' → the SDK's read-only plan steering, which canUseTool cannot
    *     replicate (the model must not emit mutating tools at all).
    *   - 'auto' → the CLI's native auto-mode classifier. Best-effort: verified
@@ -733,8 +737,8 @@ export class ClaudeProvider implements AgentProvider {
    *  callback present the SDK routes every tool through us, so forwarding
    *  them would be dead weight (and bypass is unreliable mid-session — see
    *  permission-broker.ts). */
-  private sdkForwardMode(mode?: PermissionMode): PermissionMode | undefined {
-    return mode && isSdkForwardedMode(mode) ? mode : undefined
+  private sdkForwardMode(mode?: PermissionMode): PermissionMode {
+    return mode && isSdkForwardedMode(mode) ? mode : 'default'
   }
 
   private applyStandardQueryOpts(

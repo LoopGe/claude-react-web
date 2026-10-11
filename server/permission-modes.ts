@@ -30,12 +30,21 @@ export function isPlanApprovalTargetMode(value: unknown): value is PermissionMod
  * The permission modes forwarded to the SDK's Options.permissionMode /
  * Query.setPermissionMode instead of being enforced by our own canUseTool
  * broker. Single source of truth for BOTH forward sites:
- *   - spawn (claude-provider's sdkForwardMode) — forwards the mode, or
- *     `undefined` for anything else (no SDK-side mode)
+ *   - spawn (claude-provider's sdkForwardMode) — forwards the mode, or pins
+ *     'default' for anything else
  *   - mid-session (SessionManager.setPermissionMode) — forwards the mode, or
  *     'default' for anything else (explicitly releases the CLI-side mode)
  * Adding a mode here must consider both sites; see sdkForwardMode for why
  * only these two are forwarded.
+ *
+ * Why the spawn fallback is 'default' and NOT omission: SDK 0.3.286
+ * redefined an omitted Options.permissionMode as "leave it to Claude Code" —
+ * a settings.json `defaultMode` now applies, and on third-party providers /
+ * with telemetry off the CLI starts in auto mode, whose classifier decides
+ * BEFORE the host's canUseTool. Before 0.3.286 omission meant the CLI's
+ * plain 'default' mode, where every tool escalates to our broker. This is
+ * the canonical statement of that rationale; the forward sites and tests
+ * reference it rather than repeating it.
  */
 export const SDK_FORWARDED_PERMISSION_MODES = ['plan', 'auto'] as const satisfies readonly PermissionMode[]
 
