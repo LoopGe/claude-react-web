@@ -64,10 +64,13 @@ const ASSISTANT_ERROR_LABELS: Record<string, string> = {
  *  "error_during_execution". */
 const STARTUP_FAILURE_LABELS: Record<string, string> = {
   org_pin_api_key_conflict: 'an API key conflicts with the organization sign-in policy',
+  provider_not_allowed: 'the API provider is not allowed by managed settings',
   org_verify_failed: 'the sign-in organization could not be verified',
   org_pin_mismatch: 'the sign-in belongs to a disallowed organization',
   managed_settings_invalid: 'managed policy settings could not be read',
   remote_settings_required_unavailable: 'required managed settings were unavailable',
+  org_config_required_unavailable: 'required organization policy settings could not be loaded',
+  org_config_refused: 'organization policy settings were refused for this sign-in',
   gateway_signin_required: 'the gateway requires sign-in',
   gateway_access_denied: 'the gateway denied access',
   proxy_invalid: 'a proxy setting is not a valid URL',
