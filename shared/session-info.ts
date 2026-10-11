@@ -65,8 +65,14 @@ export interface SessionMemorySettings {
 
 /** Runtime display mode for extended thinking (SDK ThinkingConfig.display /
  *  setMaxThinkingTokens `thinkingDisplay`). `undefined` = default: omit the
- *  field so the SDK/model default applies. */
-export type ThinkingDisplay = 'summarized' | 'omitted'
+ *  field so the SDK/model default applies.
+ *
+ *  `'highlights'` (SDK 0.3.295: one short title per thinking stretch) is
+ *  accepted by the setMaxThinkingTokens LIVE control only — the spawn-time
+ *  Options.thinking.display union still narrows to 'summarized' | 'omitted'.
+ *  The claude provider therefore strips it from the spawn options and
+ *  re-applies it post-spawn via setMaxThinkingTokens (see claude-provider.ts). */
+export type ThinkingDisplay = 'summarized' | 'omitted' | 'highlights'
 
 /** Per-session extended-thinking setting (mirrors the SDK's ThinkingConfig
  *  shape, JSON-serializable). `display` is only meaningful while thinking is
@@ -86,11 +92,14 @@ export type ThinkingSetting =
 export function coerceThinkingSetting(v: unknown): ThinkingSetting | undefined {
   if (typeof v !== 'object' || v === null) return undefined
   const t = v as { type?: unknown; budgetTokens?: unknown; display?: unknown }
-  // `display` absent → fine; 'summarized' | 'omitted' → fine; anything else
-  // (numbers, booleans, null, unknown strings) → strip the key, keep the
-  // setting. Hoisted once so every variant shares the "omit when absent" rule.
+  // `display` absent → fine; 'summarized' | 'omitted' | 'highlights' → fine;
+  // anything else (numbers, booleans, null, unknown strings) → strip the key,
+  // keep the setting. Hoisted once so every variant shares the "omit when
+  // absent" rule.
   const extra: { display?: ThinkingDisplay } =
-    t.display === 'summarized' || t.display === 'omitted' ? { display: t.display } : {}
+    t.display === 'summarized' || t.display === 'omitted' || t.display === 'highlights'
+      ? { display: t.display }
+      : {}
   if (t.type === 'adaptive') return { type: 'adaptive', ...extra }
   if (t.type === 'disabled') return { type: 'disabled' }
   if (t.type === 'enabled') {
@@ -105,6 +114,23 @@ export function coerceThinkingSetting(v: unknown): ThinkingSetting | undefined {
       : undefined
   }
   return undefined
+}
+
+/** One plugin that failed to load at CLI startup (SDK `system/init`
+ *  `plugin_errors` entry, SDK 0.3.295). Shape mirrors the SDK fields; the
+ *  client renders `plugin` / `type` / `message` defensively. */
+export interface PluginLoadError {
+  /** `name@marketplace`, or the positional `inline[N]` / `synced[N]` tag
+   *  for a directory entry that failed before it had a name. */
+  plugin: string
+  /** Failure category from an open set — unknown values render as generic
+   *  failures. */
+  type: string
+  /** CLI-authored display text. */
+  message: string
+  /** Source path of the entry, present only when it did not load at all
+   *  (--plugin-dir / SDK `plugins` / synced directory / .zip). */
+  path?: string
 }
 
 export interface SessionInfoBase<PM = string> {
@@ -162,6 +188,18 @@ export interface SessionInfoBase<PM = string> {
    *  context window is being compressed mid-turn. Not persisted; the SDK
    *  re-reports it via `system/status` after respawn. */
   compacting?: boolean
+  /** One plugin load failure reported by the CLI on `system/init`
+   *  (SDK 0.3.295 `plugin_errors`). `plugin` is `name@marketplace` or the
+   *  positional `inline[N]` / `synced[N]` tag for an entry that failed before
+   *  it had a name; `type` is a category from an open set (path-not-found,
+   *  dependency-unsatisfied, …) — treat unknown values as generic failures;
+   *  `message` is CLI-authored display text; `path` is present only when the
+   *  entry failed to load at all. A plugin that did not load is ABSENT from
+   *  the SDK's `plugins[]`, so this list is the only signal that something
+   *  was requested but never arrived. Not persisted — the CLI re-reports it
+   *  on every init frame; the server keeps the latest frame's value
+   *  (absent key → empty) so a respawn self-heals. */
+  pluginErrors?: PluginLoadError[]
   /** User intent: reasoning effort level. Undefined means no explicit
    *  level was set (the SDK default is 'high'). Persisted. */
   effortLevel?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'

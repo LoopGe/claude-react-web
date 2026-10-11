@@ -41,6 +41,13 @@ describe('coerceThinkingSetting', () => {
     // Bare enabled can carry a display too.
     expect(coerceThinkingSetting({ type: 'enabled', display: 'summarized' }))
       .toEqual({ type: 'enabled', display: 'summarized' })
+    // 'highlights' (SDK 0.3.295 setMaxThinkingTokens-only display mode) is a
+    // valid persisted intent — the provider strips it from spawn options and
+    // re-applies it post-spawn.
+    expect(coerceThinkingSetting({ type: 'adaptive', display: 'highlights' }))
+      .toEqual({ type: 'adaptive', display: 'highlights' })
+    expect(coerceThinkingSetting({ type: 'enabled', budgetTokens: 1024, display: 'highlights' }))
+      .toEqual({ type: 'enabled', budgetTokens: 1024, display: 'highlights' })
   })
 
   it('drops display on disabled (SDK ThinkingDisabled omits the field)', () => {

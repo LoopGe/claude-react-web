@@ -19,7 +19,7 @@ import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { MpStore } from './mp-store.js'
 import type { AgentDefinitionStore } from './agent-definition-store.js'
-import type { SessionInfoBase, SessionMemorySettings, ThinkingSetting } from '../shared/session-info.js'
+import type { PluginLoadError, SessionInfoBase, SessionMemorySettings, ThinkingSetting } from '../shared/session-info.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import type { ProviderRegistry } from './providers/registry.js'
 import type { ProviderSessionHandle } from './providers/types.js'
@@ -338,6 +338,13 @@ export interface Session {
    *  re-reports it via a later status frame after respawn. Cleared at turn
    *  end as a lifecycle bound (compaction is a mid-turn phenomenon). */
   compacting?: boolean
+  /** Plugin load failures reported by the CLI on `system/init` (SDK 0.3.295
+   *  `plugin_errors`). Latest-wins per init frame — the key is omitted when
+   *  the load was clean, so an init frame without it CLEARS the list. Not
+   *  persisted; a respawn starts from a fresh Session object (undefined) and
+   *  the next init frame repopulates. See PluginLoadError in
+   *  shared/session-info.ts for the shape. */
+  pluginErrors?: PluginLoadError[]
   /** User intent: reasoning effort level ('low'|'medium'|'high'|'xhigh'|
    *  'max'). Controls how many tokens the model spends. Persisted, re-applied
    *  on respawn. Undefined means no explicit level (SDK default 'high'). */

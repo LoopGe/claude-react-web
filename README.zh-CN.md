@@ -204,8 +204,6 @@ Options:
                        (pinned to the lockfile version); falls back to
                        CLAUDE_CODE_BINARY env or `which claude`. Use this
                        if you need a specific native build.
-                       the SDK's auto-detection picks a wrong native build
-                       (e.g. musl binary on a glibc host).
       --dev            Register the dev-only `appdebug` introspection tools
                        (logs, metrics, session internals). Default: auto —
                        on when the server runs from TypeScript source

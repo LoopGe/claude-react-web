@@ -172,10 +172,12 @@ export interface ProviderSessionHandle {
    *  ONLY runtime path; the SDK has no Settings key for this). Token
    *  mapping is the caller's job: null = adaptive (model-decides),
    *  0 = disabled, N = enabled with an N-token budget. `display` follows
-   *  the SDK's thinkingDisplay param: 'summarized' | 'omitted' replaces the
-   *  session display mode, null clears it back to the API default, and
-   *  undefined keeps the session-start mode. */
-  setMaxThinkingTokens?(tokens: number | null, display?: 'summarized' | 'omitted' | null): Promise<void>
+   *  the SDK's thinkingDisplay param: 'summarized' | 'omitted' | 'highlights'
+   *  replaces the session display mode, null clears it back to the API
+   *  default, and undefined keeps the session-start mode. ('highlights' is
+   *  SDK 0.3.295+; the CLI errors when the API rejects it — non-first-party
+   *  providers, experimental betas off, Claude 3.) */
+  setMaxThinkingTokens?(tokens: number | null, display?: 'summarized' | 'omitted' | 'highlights' | null): Promise<void>
   setModel?(model?: string): Promise<void>
   setPermissionMode?(mode: string): Promise<void>
   applyFlagSettings?(settings: Record<string, unknown>): Promise<void>

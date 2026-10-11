@@ -373,7 +373,22 @@ export class ClaudeProvider implements AgentProvider {
     if (opts.effortLevel !== undefined) sdkOptions.effort = opts.effortLevel as Options['effort']
     // Extended thinking is a first-class spawn-time option (unlike fastMode /
     // effortLevel, which need a post-spawn applyFlagSettings round-trip).
-    if (opts.thinking !== undefined) sdkOptions.thinking = opts.thinking as Options['thinking']
+    // EXCEPT display:'highlights' (SDK 0.3.295): the spawn-time
+    // Options.thinking.display union only accepts 'summarized' | 'omitted' —
+    // 'highlights' is a setMaxThinkingTokens-only value — so it is stripped
+    // here and re-applied post-spawn, exactly like the flag-settings intents
+    // below. The stored intent keeps it (survives respawn via re-spawn →
+    // strip → re-apply each time).
+    if (opts.thinking !== undefined) {
+      const t = opts.thinking as { display?: string }
+      if (t.display === 'highlights') {
+        const { display: _stripped, ...rest } = opts.thinking as Record<string, unknown>
+        void _stripped
+        sdkOptions.thinking = rest as Options['thinking']
+      } else {
+        sdkOptions.thinking = opts.thinking as Options['thinking']
+      }
+    }
     // Enable prompt suggestions by default — nearly free (piggybacks on
     // prompt cache) and provides a useful UX affordance.
     sdkOptions.promptSuggestions = opts.promptSuggestions ?? true
@@ -523,6 +538,29 @@ export class ClaudeProvider implements AgentProvider {
       void q.applyFlagSettings({ sandbox: opts.sandbox }).catch((err) => {
         log.warn(`[${opts.id}] applying sandbox on spawn failed:`, err)
       })
+    }
+    // thinking display:'highlights' — stripped from the spawn options above
+    // (Options.thinking.display only accepts 'summarized' | 'omitted'), so it
+    // is re-applied here through the setMaxThinkingTokens control. The token
+    // argument RE-STATES the spawn-time budget explicitly (same mapping as
+    // SessionManager.setThinking) rather than relying on null's "reset to the
+    // spawn-time budget" semantics: the budget the CLI is left with must be
+    // exactly the one the spawn options carried, whatever null's defaulting
+    // rules say. adaptive / bare-enabled have no budget to restate — null is
+    // their only representation (model-decides / spawn default). Failure is
+    // downgraded to a warn: the API rejects 'highlights' for non-first-party
+    // providers / experimental betas off / Claude 3 models, and a degraded
+    // display must never fail the spawn.
+    {
+      const t = opts.thinking as { display?: string; type?: string; budgetTokens?: number } | undefined
+      if (t?.display === 'highlights') {
+        const tokens = t.type === 'enabled' && typeof t.budgetTokens === 'number' && t.budgetTokens > 0
+          ? t.budgetTokens
+          : null
+        void q.setMaxThinkingTokens(tokens, 'highlights').catch((err) => {
+          log.warn(`[${opts.id}] re-applying thinking display 'highlights' on spawn failed:`, err)
+        })
+      }
     }
 
     // Fallback degradation chain for group sessions: tier aliases below the

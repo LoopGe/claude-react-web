@@ -151,9 +151,10 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
   /** Runtime extended-thinking change. The token + display mapping lives in
    *  the session-manager (ThinkingSetting → number|null + display|null); this
    *  just forwards. `display` follows the SDK's runtime param semantics:
-   *  'summarized' | 'omitted' replaces the session display mode, null clears
-   *  back to the API default, and undefined keeps the session-start mode. */
-  setMaxThinkingTokens(tokens: number | null, display?: 'summarized' | 'omitted' | null): Promise<void> {
+   *  'summarized' | 'omitted' | 'highlights' replaces the session display
+   *  mode, null clears back to the API default, and undefined keeps the
+   *  session-start mode. */
+  setMaxThinkingTokens(tokens: number | null, display?: 'summarized' | 'omitted' | 'highlights' | null): Promise<void> {
     return this.query.setMaxThinkingTokens(tokens, display)
   }
 

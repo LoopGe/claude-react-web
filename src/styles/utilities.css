@@ -1624,6 +1624,42 @@ button.tool-group-failed-jump:focus-visible {
   font-size: var(--fs-base);
   margin-top: var(--space-1-5);
 }
+/* Plugin load failures reported by the CLI on system/init (SDK 0.3.295
+   plugin_errors), rendered in the SettingsPanel plugins tab. Danger-tinted
+   card — same mix recipe as the tool-result error tint — sitting above the
+   loaded-plugins list so a plugin that failed to load entirely (absent from
+   that list) is still explained. */
+.plugin-errors-note {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1-5);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+.plugin-error-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  font-size: var(--fs-base);
+}
+.plugin-error-name {
+  color: var(--danger-text);
+  font-weight: 600;
+}
+.plugin-error-type {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+.plugin-error-message {
+  color: var(--fg);
+}
+.plugin-error-path {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  font-family: var(--mono);
+}
 .settings-detail { margin-top: var(--space-1-5); }
 /* Inside a .settings-group-body the flex gap already spaces siblings — the
    margins above were tuned for the old flat .settings-section flow and

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest'
+import type { Options } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import * as nodeFs from 'node:fs/promises'
@@ -3578,6 +3579,38 @@ describe('SessionManager', () => {
     await sm.setThinking(info.id, { type: 'enabled', budgetTokens: 8192, display: 'summarized' })
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(8192, 'summarized')
     expect(sm.get(info.id).thinking).toEqual({ type: 'enabled', budgetTokens: 8192, display: 'summarized' })
+  })
+
+  it("setThinking() forwards display 'highlights' (SDK 0.3.295) as the 2nd param", async () => {
+    const info = sm.create({})
+    const updated = await sm.setThinking(info.id, { type: 'adaptive', display: 'highlights' })
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null, 'highlights')
+    expect(updated.thinking).toEqual({ type: 'adaptive', display: 'highlights' })
+  })
+
+  it("spawn strips display:'highlights' from Options.thinking (spawn union is summarized|omitted only) and re-applies it post-spawn", () => {
+    // Cast: 'highlights' is deliberately NOT in the SDK spawn-time
+    // ThinkingConfig union — it arrives here from the persisted intent, and
+    // the strip under test is what keeps the spawn options type-honest.
+    sm.create({ thinking: { type: 'enabled', budgetTokens: 8192, display: 'highlights' } as unknown as Options['thinking'] })
+    // Spawn options carry the budget intent but NOT the highlights display.
+    expect(mockHandles[0].options.thinking).toEqual({ type: 'enabled', budgetTokens: 8192 })
+    // Post-spawn re-apply RE-STATES the spawn-time budget explicitly (the
+    // same N the spawn options carry) rather than relying on null's
+    // "reset to the spawn-time budget" defaulting.
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(8192, 'highlights')
+  })
+
+  it("spawn re-applies highlights with tokens null for adaptive (no budget to restate)", () => {
+    sm.create({ thinking: { type: 'adaptive', display: 'highlights' } as unknown as Options['thinking'] })
+    expect(mockHandles[0].options.thinking).toEqual({ type: 'adaptive' })
+    expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null, 'highlights')
+  })
+
+  it("spawn forwards non-highlights thinking displays verbatim (no strip, no post-spawn re-apply)", () => {
+    sm.create({ thinking: { type: 'adaptive', display: 'summarized' } })
+    expect(mockHandles[0].options.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(mockHandles[0].setMaxThinkingTokens).not.toHaveBeenCalled()
   })
 
   it('setCwd() relocates the workspace and clears a stale spawn_failed error', async () => {

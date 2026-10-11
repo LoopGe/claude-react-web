@@ -8,6 +8,7 @@ import {
   backgroundSubagentLaunches,
   compactingOf,
   fastModeStateOf,
+  pluginErrorsOf,
   hookLifecycleMessage,
   liteContextUsageFromAssistant,
   liteContextUsageFromResult,
@@ -1016,6 +1017,41 @@ describe('compactingOf', () => {
     expect(compactingOf({ type: 'system', subtype: 'init' } as never)).toBeUndefined()
     expect(compactingOf({ type: 'assistant' } as never)).toBeUndefined()
     expect(compactingOf({ type: 'result', subtype: 'success' } as never)).toBeUndefined()
+  })
+
+  it('narrows plugin load errors off system/init frames', () => {
+    expect(pluginErrorsOf(sysFrame('init', {
+      plugin_errors: [
+        { plugin: 'translator@crw-official', type: 'path-not-found', message: 'no such directory', path: '/plugins/translator' },
+        { plugin: 'broken@mp', type: 'manifest-validation-error', message: 'invalid manifest' },
+      ],
+    }))).toEqual([
+      { plugin: 'translator@crw-official', type: 'path-not-found', message: 'no such directory', path: '/plugins/translator' },
+      { plugin: 'broken@mp', type: 'manifest-validation-error', message: 'invalid manifest' },
+    ])
+  })
+
+  it('returns [] when the key is absent on a real init frame (clean load / older CLI)', () => {
+    expect(pluginErrorsOf(sysFrame('init'))).toEqual([])
+    expect(pluginErrorsOf(sysFrame('init', { plugin_errors: [] }))).toEqual([])
+  })
+
+  it('drops malformed entries and defaults a missing type', () => {
+    expect(pluginErrorsOf(sysFrame('init', {
+      plugin_errors: [
+        null,
+        42,
+        { plugin: 'x' },
+        { message: 'no plugin name' },
+        { plugin: 'y', message: 'm', type: 7 },
+      ],
+    }))).toEqual([{ plugin: 'y', type: 'generic-error', message: 'm' }])
+  })
+
+  it('returns undefined for anything that is not a system/init frame', () => {
+    expect(pluginErrorsOf({ type: 'system', subtype: 'status' } as never)).toBeUndefined()
+    expect(pluginErrorsOf({ type: 'assistant' } as never)).toBeUndefined()
+    expect(pluginErrorsOf({ type: 'result', subtype: 'success' } as never)).toBeUndefined()
   })
 
   it('treats a status frame with an absent/unrecognized status as not compacting', () => {
@@ -2076,6 +2112,56 @@ describe('pump: compacting state tracking', () => {
 
     expect(broadcastInfo).not.toHaveBeenCalled()
     expect(session.compacting).toBeUndefined()
+  })
+})
+
+describe('pump: plugin load error tracking (init plugin_errors, SDK 0.3.295)', () => {
+  it('stores the latest init frame\'s errors and broadcasts a session-update', async () => {
+    const { session } = makePumpSession([
+      sysFrame('init', { plugin_errors: [{ plugin: 'a@mp', type: 'path-not-found', message: 'gone' }] }),
+    ])
+    const broadcastInfo = vi.fn()
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    expect(session.pluginErrors).toEqual([{ plugin: 'a@mp', type: 'path-not-found', message: 'gone' }])
+    expect(broadcastInfo).toHaveBeenCalledWith(session)
+  })
+
+  it('re-emitting the same list on a later init frame is a no-op (no re-broadcast)', async () => {
+    const errs = [{ plugin: 'a@mp', type: 'generic-error', message: 'boom' }]
+    const { session } = makePumpSession([
+      sysFrame('init', { plugin_errors: errs }),
+      sysFrame('init', { plugin_errors: [{ ...errs[0] }] }), // fresh array, same content
+    ])
+    const broadcastInfo = vi.fn()
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    expect(broadcastInfo).toHaveBeenCalledTimes(1)
+    expect(session.pluginErrors).toEqual(errs)
+  })
+
+  it('a clean init frame (absent key) clears the list and broadcasts the transition', async () => {
+    const { session } = makePumpSession([
+      sysFrame('init', { plugin_errors: [{ plugin: 'a@mp', type: 'generic-error', message: 'boom' }] }),
+      sysFrame('init'),
+    ])
+    const broadcastInfo = vi.fn()
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    // Latest-wins: the SDK omits the key on a clean load.
+    expect(session.pluginErrors).toEqual([])
+    expect(broadcastInfo).toHaveBeenCalledTimes(2)
+  })
+
+  it('leaves pluginErrors untouched when no init frame is seen', async () => {
+    const { session } = makePumpSession([
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const broadcastInfo = vi.fn()
+    await pump(session, makePumpDeps({ broadcastInfo }))
+
+    expect(session.pluginErrors).toBeUndefined()
+    expect(broadcastInfo).not.toHaveBeenCalled()
   })
 })
 

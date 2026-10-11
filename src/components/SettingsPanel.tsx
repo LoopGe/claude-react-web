@@ -1858,6 +1858,23 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           <span className="settings-group-desc">Skills and agents bundled by the plugins connected to this session.</span>
         </div>
         <div className="settings-group-body settings-carded-group-body">
+          {/* Plugin load failures the CLI reported on this session's latest
+              system/init frame (SDK 0.3.295 `plugin_errors`). A plugin that
+              did not load at all is absent from the loaded-plugins list
+              below, so this card is the only place its absence is explained.
+              Empty list = clean load — render nothing. */}
+          {(session.pluginErrors?.length ?? 0) > 0 && (
+            <div className="plugin-errors-note" role="alert">
+              {session.pluginErrors!.map((e, i) => (
+                <div key={`${e.plugin}-${i}`} className="plugin-error-row">
+                  <span className="plugin-error-name">{e.plugin}</span>
+                  <span className="plugin-error-type">{e.type}</span>
+                  <span className="plugin-error-message">{e.message}</span>
+                  {e.path && <span className="plugin-error-path">{e.path}</span>}
+                </div>
+              ))}
+            </div>
+          )}
           {pluginGroups.length === 0 && !commands.length && (
             <div className="settings-note">No plugins loaded</div>
           )}

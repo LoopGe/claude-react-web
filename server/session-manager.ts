@@ -242,6 +242,18 @@ function firstAssistantModel(seed: SDKMessage[] | undefined): string | undefined
   return undefined
 }
 
+/** A persisted ThinkingSetting is NOT directly assignable to the SDK's
+ *  spawn-time Options.thinking (ThinkingConfig): display 'highlights'
+ *  (SDK 0.3.295) is a setMaxThinkingTokens-only value the spawn union
+ *  rejects. The cast is type-honest at runtime because the claude provider
+ *  strips it from the spawn options and re-applies it post-spawn via
+ *  setMaxThinkingTokens (see claude-provider.ts) — centralized here so the
+ *  three spawn-opts builders (snapshotMeta consumer, fork, buildResumeOpts)
+ *  can't drift when the SDK spawn union eventually widens. */
+function thinkingForSpawn(t: ThinkingSetting | undefined): Options['thinking'] {
+  return t as Options['thinking']
+}
+
 /** Resolve a model id to one the gateway actually accepts.
  *
  *  The on-disk transcript's `message.model` is the CLI's SHORT internal name
@@ -2523,7 +2535,7 @@ export class SessionManager {
       permissionMode: meta.permissionMode,
       title,
       effort: meta.effortLevel,
-      thinking: meta.thinking,
+      thinking: thinkingForSpawn(meta.thinking),
       autoCompactWindow: meta.autoCompactWindow,
       betas: meta.betas as Options['betas'],
       enabledPlugins: meta.enabledPlugins,
@@ -4801,14 +4813,27 @@ export class SessionManager {
    *      (session.thinking is re-applied at spawn), so the deprecated path is
    *      only needed for the LIVE switch.
    *  `display` (the SDK's thinkingDisplay param) is forwarded alongside the
-   *  tokens: 'summarized' | 'omitted' replaces the display mode, null clears
-   *  back to the API default, and an ABSENT display maps to undefined — the
-   *  SDK's "keep the session-start mode" — so a type/budget change (or an
-   *  off→on re-enable, where the disabled variant has already dropped the
-   *  display) never silently resets the spawn-time display choice. Clearing
-   *  is therefore EXPLICIT: `opts.clearDisplay` (sent by the client's
-   *  "reasoning: default" item). `disabled` carries no display either way
-   *  (SDK ThinkingDisabled omits the field). */
+   *  tokens: 'summarized' | 'omitted' | 'highlights' replaces the display
+   *  mode, null clears back to the API default, and an ABSENT display maps
+   *  to undefined — the SDK's "keep the session-start mode" — so a
+   *  type/budget change (or an off→on re-enable, where the disabled variant
+   *  has already dropped the display) never silently resets the spawn-time
+   *  display choice. Clearing is therefore EXPLICIT: `opts.clearDisplay`
+   *  (sent by the client's "reasoning: default" item). `disabled` carries no
+   *  display either way (SDK ThinkingDisabled omits the field). 'highlights'
+   *  is SDK 0.3.295+ — the CLI errors when the API rejects it (non-
+   *  first-party providers, experimental betas off, Claude 3), which
+   *  surfaces to the caller as a rejected promise / 4xx.
+   *
+   *  Known partial-apply edge (documented SDK semantics, not guarded): when a
+   *  request combines a budget with display 'highlights' and the API rejects
+   *  the display, the SDK still applies maxThinkingTokens ("maxThinkingTokens
+   *  still applies when the request has it") — so the awaited rejection here
+   *  leaves the CLI at the NEW budget while this method throws before
+   *  persisting, and the client's rollback shows the OLD setting. The
+   *  divergence self-heals on the user's next thinking change or respawn
+   *  (spawn re-applies from meta); reconciling it automatically would require
+   *  distinguishing display rejections from other errors by message text. */
   async setThinking(id: string, setting: ThinkingSetting, opts?: { clearDisplay?: boolean }): Promise<SessionInfo> {
     const s = this.requireLive(id)
     if (setting.type === 'enabled' && (setting.budgetTokens == null || setting.budgetTokens <= 0)) {
@@ -4820,7 +4845,7 @@ export class SessionManager {
     const display = setting.type === 'disabled'
       ? undefined
       : opts?.clearDisplay ? null : setting.display
-    await this.requireHandleMethod<(tokens: number | null, display?: 'summarized' | 'omitted' | null) => Promise<void>>(
+    await this.requireHandleMethod<(tokens: number | null, display?: 'summarized' | 'omitted' | 'highlights' | null) => Promise<void>>(
       s,
       'setMaxThinkingTokens',
       'thinking config',
@@ -6671,6 +6696,7 @@ export class SessionManager {
       sandbox: s.sandbox,
       fastModeState: s.fastModeState,
       compacting: s.compacting,
+      pluginErrors: s.pluginErrors,
       effortLevels: s.effortLevels,
       thinkingSupported: s.thinkingSupported,
       running: s.running,
@@ -7094,7 +7120,7 @@ export class SessionManager {
       permissionMode: source.permissionMode,
       title: source.title,
       effort: source.effortLevel,
-      thinking: source.thinking,
+      thinking: thinkingForSpawn(source.thinking),
       autoCompactWindow: source.autoCompactWindow,
       betas: source.betas as Options['betas'],
       settings: source.hooks ? ({ hooks: toSdkHooksSettings(source.hooks) } as Settings) : undefined,
@@ -7116,7 +7142,7 @@ export class SessionManager {
       permissionMode: session.permissionMode,
       title: session.title,
       effort: session.effortLevel,
-      thinking: session.thinking,
+      thinking: thinkingForSpawn(session.thinking),
       betas: session.betas as Options['betas'],
       settings: session.hooks ? ({ hooks: toSdkHooksSettings(session.hooks) } as Settings) : undefined,
     }

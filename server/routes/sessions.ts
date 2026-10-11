@@ -759,7 +759,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     const body = await safeJson<{ thinking?: unknown; clearDisplay?: unknown }>(c.req)
     const setting = coerceThinkingSetting(body.thinking)
     if (!setting) {
-      return c.json({ error: "thinking must be {type:'adaptive'} | {type:'disabled'} | {type:'enabled', budgetTokens?: number, display?: 'summarized'|'omitted'}" }, 400)
+      return c.json({ error: "thinking must be {type:'adaptive'} | {type:'disabled'} | {type:'enabled', budgetTokens?: number, display?: 'summarized'|'omitted'|'highlights'}" }, 400)
     }
     const info = await sm.setThinking(c.req.param('id'), setting, { clearDisplay: body.clearDisplay === true })
     return c.json({ session: info })

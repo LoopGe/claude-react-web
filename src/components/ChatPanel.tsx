@@ -32,7 +32,7 @@ import { gitChipText } from '../utils/git-chip'
 import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff, IconMask } from './icons/ToolIcons'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
 import { PermissionModeIcon, permissionModeLabel, permissionModeShortLabel } from './permission-mode-display'
-import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingSetting } from '../types'
+import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingDisplay, ThinkingSetting } from '../types'
 import type { Skin } from '../utils/theme'
 import type { SettingsTabName } from '../local-commands'
 import { PERMISSION_MODES, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../types'
@@ -627,13 +627,13 @@ export const ChatPanel = memo(function ChatPanel({
 
   const effortLevel = session.effortLevel ?? DEFAULT_EFFORT_LEVEL
   /** Current thinking display mode, or undefined when unset / thinking off. */
-  const displayOf = (t: ThinkingSetting | undefined): 'summarized' | 'omitted' | undefined =>
+  const displayOf = (t: ThinkingSetting | undefined): ThinkingDisplay | undefined =>
     t && t.type !== 'disabled' ? t.display : undefined
   const currentDisplay = displayOf(session.thinking)
 
   /** Attach a display mode (no-op when thinking is off — the disabled variant
    *  carries no display, matching SDK ThinkingDisabled). */
-  const withDisplay = (t: ThinkingSetting, display: 'summarized' | 'omitted'): ThinkingSetting =>
+  const withDisplay = (t: ThinkingSetting, display: ThinkingDisplay): ThinkingSetting =>
     t.type === 'disabled' ? t
       : t.type === 'adaptive' ? { type: 'adaptive', display }
       : { type: 'enabled', budgetTokens: t.budgetTokens, display }
@@ -1119,6 +1119,16 @@ export const ChatPanel = memo(function ChatPanel({
                     label: 'reasoning: summarized',
                     icon: currentDisplay === 'summarized' ? <IconCheck size={14} /> : ' ',
                     onClick: () => { setThinkingMenu(null); commitThinking(withDisplay(session.thinking ?? { type: 'adaptive' }, 'summarized')) },
+                  },
+                  {
+                    // SDK 0.3.295: one short title per thinking stretch
+                    // instead of the prose summary. Rejected by the API for
+                    // non-first-party providers / experimental betas off /
+                    // Claude 3 — the error surfaces via the commit path's
+                    // toast and the display stays as it was.
+                    label: 'reasoning: highlights',
+                    icon: currentDisplay === 'highlights' ? <IconCheck size={14} /> : ' ',
+                    onClick: () => { setThinkingMenu(null); commitThinking(withDisplay(session.thinking ?? { type: 'adaptive' }, 'highlights')) },
                   },
                   {
                     label: 'reasoning: hidden',

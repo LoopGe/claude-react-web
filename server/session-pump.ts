@@ -24,6 +24,7 @@ import { parseAckAgentId } from './subagent-watcher.js'
 const LAUNCH_ACK_RE = /^async agent launched successfully/i
 import { createLogger } from './log.js'
 import type { HookRunRecord, HookRuntimeEvent, HookRunStatus } from '../shared/hooks.js'
+import type { PluginLoadError } from '../shared/session-info.js'
 import type { CliNotification } from '../shared/ws-protocol.js'
 import { isTerminalTaskStatus, normalizeTaskType, type TaskResourceLink } from '../shared/tasks.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
@@ -544,6 +545,45 @@ export function fastModeStateOf(msg: SDKMessage): FastModeState | undefined {
   return fms === 'off' || fms === 'cooldown' || fms === 'on' ? fms : undefined
 }
 
+/** Narrow the plugin load errors off a `system/init` frame (SDK 0.3.295
+ *  `plugin_errors`). Returns undefined for any non-init frame so callers can
+ *  detect a no-op; returns an EMPTY ARRAY when the key is absent on a real
+ *  init frame — the SDK omits the key on a clean load (and from CLIs that
+ *  predate it), which the pump folds as "no known errors". Entries are
+ *  narrowed defensively: plugin/type/message must be strings; path passes
+ *  through only when well-typed; malformed entries are dropped rather than
+ *  poisoning the list. Pure — exported for tests. */
+export function pluginErrorsOf(msg: SDKMessage): PluginLoadError[] | undefined {
+  const raw = msg as { type?: unknown; subtype?: unknown; plugin_errors?: unknown }
+  if (raw.type !== 'system' || raw.subtype !== 'init') return undefined
+  if (!Array.isArray(raw.plugin_errors)) return []
+  const errs: PluginLoadError[] = []
+  for (const e of raw.plugin_errors) {
+    if (typeof e !== 'object' || e === null) continue
+    const p = e as { plugin?: unknown; type?: unknown; message?: unknown; path?: unknown }
+    if (typeof p.plugin !== 'string' || typeof p.message !== 'string') continue
+    errs.push({
+      plugin: p.plugin,
+      type: typeof p.type === 'string' ? p.type : 'generic-error',
+      message: p.message,
+      ...(typeof p.path === 'string' ? { path: p.path } : {}),
+    })
+  }
+  return errs
+}
+
+/** Structural equality for the pluginErrors latest-wins fold — an init frame
+ *  re-emitting the same list (fresh arrays each frame) must not spam a
+ *  session-update broadcast per turn. */
+function pluginErrorsEqual(a: PluginLoadError[] | undefined, b: PluginLoadError[]): boolean {
+  if (a === undefined) return b.length === 0
+  if (a.length !== b.length) return false
+  return a.every((x, i) =>
+    x.plugin === b[i].plugin && x.type === b[i].type
+    && x.message === b[i].message && x.path === b[i].path,
+  )
+}
+
 /** Extract the CLI's authoritative session state from a
  *  `system/session_state_changed` frame ('idle' | 'running' |
  *  'requires_action'). Returns undefined for any other frame so callers can
@@ -1039,6 +1079,24 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             } catch (err) {
               log.warn(`[${session.id}] seedContextUsage threw:`, err)
             }
+          }
+        }
+        // Plugin load failures (SDK 0.3.295 `plugin_errors`, on EVERY
+        // system/init frame — init re-emits each turn). Latest-wins: the key
+        // is omitted on a clean load, so a frame without it clears the list.
+        // Session-update broadcast mirrors fastModeState/compacting above so
+        // the SettingsPanel plugins tab reflects reality without polling.
+        // Not part of the gated first-init block — reloadPlugins() can fix a
+        // broken load mid-session and the NEXT turn's init must be able to
+        // report the cleaner state.
+        {
+          const errs = pluginErrorsOf(msg)
+          if (errs !== undefined && !pluginErrorsEqual(session.pluginErrors, errs)) {
+            if (errs.length > 0) {
+              log.warn(`[${session.id}] plugin load errors: ${errs.map((e) => `${e.plugin} (${e.type}): ${e.message}`).join('; ')}`)
+            }
+            session.pluginErrors = errs
+            deps.broadcastInfo?.(session)
           }
         }
         // Track the SDK-reported fast-mode runtime state. It rides on
