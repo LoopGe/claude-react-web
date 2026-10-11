@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 
-import { resolveClaudeBinary } from './claude-binary.js'
+import { bundledBinaryCandidates, detectMusl, resolveClaudeBinary } from './claude-binary.js'
 
 // `where claude` / `which claude` must not see the real machine's claude
 // install — every test controls the PATH-lookup result through this mock.
@@ -84,6 +86,17 @@ function writePkgCliJs(dir: string): string {
 const shimTarget = (_dir: string, file: string) =>
   ['node_modules', '@anthropic-ai', 'claude-code', file].join(TARGET_SEP)
 
+/** Resolver simulating "no platform package installed". The pre-existing
+ *  Windows/PATH tests below exercise the shim/APPDATA/PATH strategies and
+ *  must not be short-circuited by the bundled step — on a Windows dev machine
+ *  (where npm installs the matching win32 optional dep) the default resolver
+ *  WOULD resolve the real bundled exe before those strategies ever run. */
+const noBundledResolve = (): string => {
+  const err = new Error('Cannot find module') as NodeJS.ErrnoException
+  err.code = 'ERR_MODULE_NOT_FOUND'
+  throw err
+}
+
 describe('resolveClaudeBinary — Windows never returns an unspawnable path', () => {
   it('resolves a standard npm cmd-shim (APPDATA fallback) to the underlying cli.js', () => {
     // The APPDATA probe finds %APPDATA%\npm\claude.cmd and resolves the shim
@@ -98,7 +111,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
     process.env.APPDATA = dir
     writeCmdShim(npmDir, 'claude.cmd', shimTarget(npmDir, 'cli.js'))
 
-    expect(resolveClaudeBinary(undefined, 'win32')).toBe(npmCliJs)
+    expect(resolveClaudeBinary(undefined, 'win32', { resolve: noBundledResolve })).toBe(npmCliJs)
   })
 
   it('returns undefined — never the .cmd — when the shim target is missing (APPDATA fallback)', () => {
@@ -108,7 +121,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
     writeCmdShim(npmDir, 'claude.cmd', shimTarget(npmDir, 'missing.js'))
 
     process.env.APPDATA = dir
-    expect(resolveClaudeBinary(undefined, 'win32')).toBeUndefined()
+    expect(resolveClaudeBinary(undefined, 'win32', { resolve: noBundledResolve })).toBeUndefined()
   })
 
   it('ignores --claude-binary pointing at an unresolvable .cmd', () => {
@@ -118,7 +131,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
     const badShim = writeCmdShim(npmDir, 'claude.cmd', shimTarget(npmDir, 'missing.js'))
 
     process.env.APPDATA = dir
-    expect(resolveClaudeBinary(badShim, 'win32')).toBeUndefined()
+    expect(resolveClaudeBinary(badShim, 'win32', { resolve: noBundledResolve })).toBeUndefined()
   })
 
   it('ignores CLAUDE_CODE_BINARY pointing at an unresolvable .cmd, with a single warning', () => {
@@ -129,7 +142,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
 
     process.env.CLAUDE_CODE_BINARY = badShim
     process.env.APPDATA = dir
-    expect(resolveClaudeBinary(undefined, 'win32')).toBeUndefined()
+    expect(resolveClaudeBinary(undefined, 'win32', { resolve: noBundledResolve })).toBeUndefined()
   })
 
   it('resolves an explicit .cmd shim to its underlying script', () => {
@@ -137,7 +150,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
     const cliJs = writePkgCliJs(dir)
     const shim = writeCmdShim(dir, 'claude.cmd', shimTarget(dir, 'cli.js'))
 
-    expect(resolveClaudeBinary(shim, 'win32')).toBe(cliJs)
+    expect(resolveClaudeBinary(shim, 'win32', { resolve: noBundledResolve })).toBe(cliJs)
   })
 
   it('resolves a shim whose exec line targets an .exe', () => {
@@ -147,7 +160,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
     writeFileSync(exe, 'MZ fake exe')
     const shim = writeCmdShim(dir, 'claude.cmd', shimTarget(dir, 'claude.exe'))
 
-    expect(resolveClaudeBinary(shim, 'win32')).toBe(exe)
+    expect(resolveClaudeBinary(shim, 'win32', { resolve: noBundledResolve })).toBe(exe)
   })
 
   it('never resolves a shim to node.exe (the IF EXIST boilerplate must not win)', () => {
@@ -157,7 +170,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
     // either — result must be null, not node.exe (bare interactive node) or the .cjs.
     writeCmdShim(dir, 'claude.cmd', shimTarget(dir, 'cli.cjs'))
 
-    expect(resolveClaudeBinary(join(dir, 'claude.cmd'), 'win32')).toBeUndefined()
+    expect(resolveClaudeBinary(join(dir, 'claude.cmd'), 'win32', { resolve: noBundledResolve })).toBeUndefined()
   })
 
   it('rejects uppercase-extension script paths (the SDK routes scripts case-sensitively)', () => {
@@ -168,7 +181,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
     mkdirSync(dir, { recursive: true })
     writeFileSync(upper, '// fake cli')
 
-    expect(resolveClaudeBinary(upper, 'win32')).toBeUndefined()
+    expect(resolveClaudeBinary(upper, 'win32', { resolve: noBundledResolve })).toBeUndefined()
   })
 
   describe('PATH-lookup branch (mocked `where claude`)', () => {
@@ -181,7 +194,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
       writeFileSync(exe, 'MZ fake exe')
 
       mockedExecSync.mockReturnValue(`${shim}\r\n${exe}`)
-      expect(resolveClaudeBinary(undefined, 'win32')).toBe(cliJs)
+      expect(resolveClaudeBinary(undefined, 'win32', { resolve: noBundledResolve })).toBe(cliJs)
     })
 
     it('respects PATH order: exe first → exe wins over a later .cmd shim', () => {
@@ -193,7 +206,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
       writeFileSync(exe, 'MZ fake exe')
 
       mockedExecSync.mockReturnValue(`${exe}\r\n${shim}`)
-      expect(resolveClaudeBinary(undefined, 'win32')).toBe(exe)
+      expect(resolveClaudeBinary(undefined, 'win32', { resolve: noBundledResolve })).toBe(exe)
       void cliJs
     })
 
@@ -205,7 +218,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
       writeFileSync(exe, 'MZ fake exe')
 
       mockedExecSync.mockReturnValue(`${badShim}\r\n${exe}`)
-      expect(resolveClaudeBinary(undefined, 'win32')).toBe(exe)
+      expect(resolveClaudeBinary(undefined, 'win32', { resolve: noBundledResolve })).toBe(exe)
     })
 
     it('returns undefined when PATH only holds the extensionless sh shim', () => {
@@ -214,7 +227,7 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
       writeFileSync(shShim, '#!/bin/sh — npm sh shim, not spawnable on Windows')
 
       mockedExecSync.mockReturnValue(shShim)
-      expect(resolveClaudeBinary(undefined, 'win32')).toBeUndefined()
+      expect(resolveClaudeBinary(undefined, 'win32', { resolve: noBundledResolve })).toBeUndefined()
     })
   })
 
@@ -227,6 +240,187 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
 
     // linux: whatever exists is returned verbatim (the CVE-2024-27980 EINVAL
     // behavior and npm sh-shim layout are Windows concerns).
-    expect(resolveClaudeBinary(shim, 'linux')).toBe(shim)
+    expect(resolveClaudeBinary(shim, 'linux', { resolve: noBundledResolve })).toBe(shim)
+  })
+})
+
+describe('resolveClaudeBinary — SDK-bundled binary (forced version pinning)', () => {
+  // Injected `resolve` stands in for createRequire(import.meta.url).resolve.
+  // Unknown specs throw ERR_MODULE_NOT_FOUND, exactly like an uninstalled
+  // optional platform dependency would.
+  const fakeResolve = (map: Record<string, string>) => (spec: string) => {
+    if (spec in map) return map[spec]
+    const err = new Error(`Cannot find module '${spec}'`) as NodeJS.ErrnoException
+    err.code = 'ERR_MODULE_NOT_FOUND'
+    throw err
+  }
+
+  it('resolves the bundled platform binary and prefers it over a PATH claude', () => {
+    const dir = makeTmpDir()
+    const bundled = join(dir, 'pkg', 'claude')
+    mkdirSync(join(bundled, '..'), { recursive: true })
+    writeFileSync(bundled, '#!/bin/sh\n')
+    const onPath = join(dir, 'path-claude')
+    writeFileSync(onPath, '#!/bin/sh\n')
+    mockedExecSync.mockReturnValue(onPath)
+
+    expect(
+      resolveClaudeBinary(undefined, 'darwin', {
+        resolve: fakeResolve({ '@anthropic-ai/claude-agent-sdk-darwin-arm64/claude': bundled }),
+        arch: 'arm64',
+      }),
+    ).toBe(bundled)
+  })
+
+  it('explicit --claude-binary still wins over the bundled binary', () => {
+    const dir = makeTmpDir()
+    const explicit = join(dir, 'explicit-claude')
+    writeFileSync(explicit, '#!/bin/sh\n')
+
+    expect(
+      resolveClaudeBinary(explicit, 'darwin', {
+        resolve: fakeResolve({ '@anthropic-ai/claude-agent-sdk-darwin-arm64/claude': join(dir, 'bundled') }),
+        arch: 'arm64',
+      }),
+    ).toBe(explicit)
+  })
+
+  it('CLAUDE_CODE_BINARY still wins over the bundled binary', () => {
+    const dir = makeTmpDir()
+    const fromEnv = join(dir, 'env-claude')
+    writeFileSync(fromEnv, '#!/bin/sh\n')
+
+    process.env.CLAUDE_CODE_BINARY = fromEnv
+    expect(
+      resolveClaudeBinary(undefined, 'darwin', {
+        resolve: fakeResolve({ '@anthropic-ai/claude-agent-sdk-darwin-arm64/claude': join(dir, 'bundled') }),
+        arch: 'arm64',
+      }),
+    ).toBe(fromEnv)
+  })
+
+  it('on glibc linux tries the glibc triple before the musl triple', () => {
+    const dir = makeTmpDir()
+    const glibc = join(dir, 'glibc-claude')
+    const musl = join(dir, 'musl-claude')
+    writeFileSync(glibc, 'ELF fake')
+    writeFileSync(musl, 'ELF fake')
+    const tried: string[] = []
+    const resolve = (spec: string) => {
+      tried.push(spec)
+      return spec.endsWith('-musl/claude') ? musl : glibc
+    }
+
+    expect(resolveClaudeBinary(undefined, 'linux', { resolve, arch: 'x64', preferMusl: false })).toBe(glibc)
+    expect(tried[0]).toBe('@anthropic-ai/claude-agent-sdk-linux-x64/claude')
+  })
+
+  it('on musl linux (preferMusl) tries the musl triple first', () => {
+    const dir = makeTmpDir()
+    const glibc = join(dir, 'glibc-claude')
+    const musl = join(dir, 'musl-claude')
+    writeFileSync(glibc, 'ELF fake')
+    writeFileSync(musl, 'ELF fake')
+    const tried: string[] = []
+    const resolve = (spec: string) => {
+      tried.push(spec)
+      return spec.endsWith('-musl/claude') ? musl : glibc
+    }
+
+    expect(resolveClaudeBinary(undefined, 'linux', { resolve, arch: 'x64', preferMusl: true })).toBe(musl)
+    expect(tried[0]).toBe('@anthropic-ai/claude-agent-sdk-linux-x64-musl/claude')
+  })
+
+  it('on win32 the bundled candidate is the .exe sibling', () => {
+    const dir = makeTmpDir()
+    const exe = join(dir, 'pkg', 'claude.exe')
+    mkdirSync(join(exe, '..'), { recursive: true })
+    writeFileSync(exe, 'MZ fake exe')
+
+    expect(
+      resolveClaudeBinary(undefined, 'win32', {
+        resolve: fakeResolve({ '@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe': exe }),
+        arch: 'x64',
+      }),
+    ).toBe(exe)
+  })
+
+  it('falls through to the PATH lookup when no platform package resolves', () => {
+    const dir = makeTmpDir()
+    const onPath = join(dir, 'claude')
+    writeFileSync(onPath, '#!/bin/sh\n')
+    mockedExecSync.mockReturnValue(onPath)
+
+    expect(
+      resolveClaudeBinary(undefined, 'darwin', {
+        resolve: fakeResolve({}),
+        arch: 'arm64',
+      }),
+    ).toBe(onPath)
+  })
+})
+
+describe('bundled-binary drift guard', () => {
+  it('detectMusl mirrors the SDK probe: an unavailable process report counts as glibc', () => {
+    // The SDK's own probe (core.mjs `qi`) guards with `report != null` — a
+    // null report must NOT read as musl, or a glibc host would be handed the
+    // musl binary, which cannot exec.
+    expect(detectMusl('linux', null)).toBe(false)
+    expect(detectMusl('linux', { header: {} })).toBe(true)
+    expect(detectMusl('linux', { header: { glibcVersionRuntime: '2.31' } })).toBe(false)
+    expect(detectMusl('darwin')).toBe(false)
+  })
+
+  it('candidate triples cover every platform package the installed SDK declares', () => {
+    // detectMusl/bundledBinaryCandidates hand-mirror the SDK's private,
+    // minified resolution (core.mjs `qi`/`Jr`). If an SDK upgrade renames the
+    // platform packages or the binary subpath, the bundled step would
+    // silently start missing and degrade to PATH. Anchor the mirror to the
+    // installed SDK's own optionalDependencies so CI catches the drift.
+    const hostRequire = createRequire(import.meta.url)
+    const sdkMain = hostRequire.resolve('@anthropic-ai/claude-agent-sdk')
+    const sdkPkg = JSON.parse(
+      readFileSync(join(dirname(sdkMain), 'package.json'), 'utf8'),
+    ) as { optionalDependencies?: Record<string, string> }
+    const declared = Object.keys(sdkPkg.optionalDependencies ?? {})
+
+    const generated = new Set<string>()
+    // Candidates are `<scope>/<pkg>/claude[.exe]` subpaths — strip the binary
+    // suffix, NOT split('/')[0] (scoped package names contain a '/').
+    const pkgOf = (name: string) => name.replace(/\/claude(\.exe)?$/, '')
+    for (const platform of ['darwin', 'linux', 'win32'] as const)
+      for (const arch of ['x64', 'arm64']) {
+        for (const name of bundledBinaryCandidates(platform, arch, true)) generated.add(pkgOf(name))
+        for (const name of bundledBinaryCandidates(platform, arch, false)) generated.add(pkgOf(name))
+      }
+    // android maps onto the linux-android triple
+    for (const arch of ['x64', 'arm64'])
+      for (const name of bundledBinaryCandidates('android', arch, false)) generated.add(pkgOf(name))
+
+    expect(declared.length).toBeGreaterThan(0)
+    for (const pkg of declared) {
+      expect(generated.has(pkg), `candidate list misses declared platform package ${pkg}`).toBe(true)
+    }
+  })
+
+  it('the /claude[.exe] subpath convention actually resolves against the installed platform package', () => {
+    // The name-coverage test above pins the package names; this pins the
+    // binary subpath (and, on this machine's platform, the whole candidate
+    // triple) by resolving for real. A subpath rename in an SDK upgrade
+    // would otherwise silently degrade the pin to PATH with zero failures.
+    const hostRequire = createRequire(import.meta.url)
+    let resolved: string | undefined
+    for (const spec of bundledBinaryCandidates(process.platform, process.arch, detectMusl())) {
+      try {
+        resolved = hostRequire.resolve(spec)
+        break
+      } catch {
+        /* try the next candidate */
+      }
+    }
+    expect(
+      resolved,
+      `no bundled candidate resolves on ${process.platform}-${process.arch} — subpath convention drifted?`,
+    ).toBeTruthy()
   })
 })

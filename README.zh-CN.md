@@ -51,7 +51,7 @@
 ## 环境要求
 
 - **Node.js ≥ 20**
-- **`claude` CLI** 需在 `PATH` 中 —— SDK 会将它作为子进程拉起。若自动探测选错了原生构建，用 `--claude-binary` 或 `CLAUDE_CODE_BINARY` 覆盖。
+- **`claude` CLI** —— 默认拉起 `@anthropic-ai/claude-agent-sdk` 自带的原生二进制，把实际运行的 Claude Code 钉在 `package-lock.json` 锁定的版本上。`CLAUDE_CODE_BINARY` / `--claude-binary` 可覆盖；最终兜底才是 `PATH` 里的 `which claude`。
 - 一份 **Anthropic 凭证**（`authToken`，以及可选的 `baseUrl`）。见[快速开始](#快速开始)。
 
 ## 快速开始
@@ -167,7 +167,7 @@ npm run start
 | `--cwd <path>`                 | 向新会话通告的默认工作目录（仅提示性质）                                                                                                      |
 | `--model <name>`               | 向新会话通告的默认模型（仅提示性质）                                                                                                          |
 | `--state-dir <path>`           | 存放会话元数据与 `config.json` 的目录（默认 `~/.claude-react-web`）                                                                           |
-| `--claude-binary <path>`       | `claude` CLI 可执行文件路径，优先于 `CLAUDE_CODE_BINARY` 与 `PATH` 自动探测 —— 当 SDK 选错原生构建时使用（例如在 glibc 环境误选 musl 二进制） |
+| `--claude-binary <path>`       | `claude` CLI 可执行文件路径，优先于 SDK 捆绑二进制、`CLAUDE_CODE_BINARY` 与 `PATH` 自动探测 —— 需要指定原生构建时使用（例如比 SDK 捆绑版本更新的 CLI） |
 | `--dev` / `--no-dev`           | 注册仅供开发使用的 `appdebug` 内省工具（日志、指标、会话内部状态）。默认：从 TypeScript 源码运行时开启，`dist/cli.mjs` 下关闭                 |
 | `--disable-app-plugins`        | 整体关闭 App Plugins（Mods）子系统                                                                                                            |
 | `--safe-mode`                  | 以安全模式加载 App Plugins —— 仅静态界面贡献，不启动后台子进程                                                                                |
@@ -199,8 +199,11 @@ Options:
       --state-dir <p>  Where to keep session metadata and config.json
                        (default: ~/.claude-react-web)
       --claude-binary <path>
-                       Path to the claude CLI binary. Default: resolved from
-                       CLAUDE_CODE_BINARY env or `which claude`. Use this if
+                       Path to the claude CLI binary. Default: the native
+                       binary bundled with @anthropic-ai/claude-agent-sdk
+                       (pinned to the lockfile version); falls back to
+                       CLAUDE_CODE_BINARY env or `which claude`. Use this
+                       if you need a specific native build.
                        the SDK's auto-detection picks a wrong native build
                        (e.g. musl binary on a glibc host).
       --dev            Register the dev-only `appdebug` introspection tools
@@ -243,7 +246,7 @@ Anthropic 凭证放在 `config.json`（`authToken` / `baseUrl`）而非环境变
 
 | 变量                        | 作用                                                                                                     | 默认值               |
 | --------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------- |
-| `CLAUDE_CODE_BINARY`        | `claude` CLI 可执行文件路径（等同于 `--claude-binary`）                                                  | 在 `PATH` 中自动探测 |
+| `CLAUDE_CODE_BINARY`        | `claude` CLI 可执行文件路径（等同于 `--claude-binary`）                                                  | 优先使用 SDK 捆绑二进制 |
 | `CLAUDE_CONFIG_DIR`         | 迁移 CLI 的整个配置目录。会话记录、`settings.json` 与用户级技能都从该目录解析，且该值会转发给 SDK 子进程 | `~/.claude`          |
 | `LOG_LEVEL`                 | 日志级别（`error` / `warn` / `info` / `debug` / `trace`）                                                | `info`               |
 | `LOG_SCOPES`                | 按作用域过滤日志，逗号分隔（`*` 匹配全部）                                                               | 全部作用域           |

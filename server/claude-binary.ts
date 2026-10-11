@@ -3,18 +3,24 @@
 // Priority:
 //   1. Explicit CLI flag (--claude-binary)
 //   2. CLAUDE_CODE_BINARY env var
-//   3. `which claude` (Unix) / `where claude` (Windows) lookup on PATH
-//   4. Windows .cmd shim parsing — extracts the real script path from
+//   3. SDK-bundled native binary (@anthropic-ai/claude-agent-sdk-<platform>-
+//      <arch>[/musl]/claude) — pins the running Claude Code to the version
+//      locked in package-lock.json instead of whatever `claude` is on PATH
+//   4. `which claude` (Unix) / `where claude` (Windows) lookup on PATH
+//   5. Windows .cmd shim parsing — extracts the real script path from
 //      npm's cmd-shim wrapper (handles pnpm/yarn global installs)
-//   5. undefined → let the SDK fall back to its own resolution
+//   6. undefined → let the SDK fall back to its own resolution
 //
-// Why this matters: `@anthropic-ai/claude-agent-sdk` bundles platform-
-// specific native binary packages (e.g. -linux-x64-musl, -linux-x64).
-// npm ought to install only the matching one, but on at least some
-// glibc hosts npm installs both AND the SDK picks the musl path first,
-// which then fails to exec (no musl linker on glibc systems). Passing
-// a real path via Options.pathToClaudeCodeExecutable side-steps the
-// whole detection path.
+// Why this matters: version pinning. The SDK bundles platform-specific
+// native binary packages as optionalDependencies that are exactly versioned
+// alongside the SDK itself, so the bundled-resolution step (3) binds the
+// running Claude Code to the version in package-lock.json instead of
+// whatever `claude` happens to be on PATH. It also keeps a fallback the SDK
+// lacks: when no platform package is installed the SDK throws "Claude Code
+// native binary not found", while we degrade to the PATH lookup. And on
+// linux, npm may install BOTH the glibc and musl packages — our candidate
+// order (detectMusl mirrors the SDK's own libc probe) decides which is
+// tried first, since execing the wrong-libc binary fails outright.
 //
 // Windows invariant: we NEVER return a path the SDK cannot spawn. The SDK
 // bare-spawns `pathToClaudeCodeExecutable` via child_process.spawn (no shell)
@@ -33,14 +39,111 @@
 import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { createRequire } from 'node:module'
 import { createLogger } from './log.js'
 import { isSdkSpawnable, resolveCmdShim } from './cmd-shim.js'
 
 const log = createLogger('cli')
 
+const SDK_PKG = '@anthropic-ai/claude-agent-sdk'
+
+/** Options for the SDK-bundled-binary step, injectable for tests. */
+export interface BundledBinaryOptions {
+  /**
+   * Module resolver (require.resolve). Defaults to a require anchored at the
+   * resolved SDK package itself (createRequire(hostRequire.resolve(SDK_PKG)))
+   * — NOT at this module — so nested optional dependencies resolve under
+   * package managers that don't hoist them (pnpm isolated node_modules, yarn
+   * PnP). See resolveBundledBinary.
+   */
+  resolve?: (spec: string) => string
+  /** CPU arch for the platform package triple. Defaults to process.arch. */
+  arch?: string
+  /** Prefer the -musl triple on linux. Defaults to the SDK's own detection. */
+  preferMusl?: boolean
+}
+
+/**
+ * Mirror of the SDK's own libc probe (core.mjs `qi`): on linux, a missing
+ * `glibcVersionRuntime` in the process report means musl. An unavailable
+ * process report counts as glibc (the SDK's `report != null` guard) — a
+ * mis-detection here would prefer the musl binary on a glibc host, which
+ * cannot exec.
+ */
+export function detectMusl(
+  platform: NodeJS.Platform = process.platform,
+  report: { header?: { glibcVersionRuntime?: string } } | null = (typeof process.report
+    ?.getReport === 'function'
+    ? // @types/node types getReport()'s return as a bare `object`.
+      (process.report.getReport() as { header?: { glibcVersionRuntime?: string } } | null)
+    : null),
+): boolean {
+  if (platform !== 'linux') return false
+  return report != null && report.header?.glibcVersionRuntime === undefined
+}
+
+/**
+ * Candidate `<pkg>/claude[.exe]` subpaths in preference order, mirroring the
+ * SDK's own candidate list. On linux both musl and glibc packages may be
+ * installed (the npm bug described above), so the non-preferred triple is
+ * kept as a second candidate.
+ */
+export function bundledBinaryCandidates(
+  platform: NodeJS.Platform,
+  arch: string,
+  preferMusl: boolean,
+): string[] {
+  if (platform === 'android') return [`${SDK_PKG}-linux-${arch}-android/claude`]
+  if (platform === 'linux') {
+    const glibc = `${SDK_PKG}-linux-${arch}/claude`
+    const musl = `${SDK_PKG}-linux-${arch}-musl/claude`
+    return preferMusl ? [musl, glibc] : [glibc, musl]
+  }
+  const ext = platform === 'win32' ? '.exe' : ''
+  return [`${SDK_PKG}-${platform}-${arch}/claude${ext}`]
+}
+
+/**
+ * Resolve the native binary bundled with the installed SDK version. Returns
+ * undefined when no platform package resolves (e.g. --no-optional installs,
+ * exotic platforms) — the caller falls through to the PATH lookup.
+ */
+function resolveBundledBinary(
+  platform: NodeJS.Platform,
+  opts: BundledBinaryOptions | undefined,
+): string | undefined {
+  const hostRequire = createRequire(import.meta.url)
+  // Anchor the module resolution at the SDK package itself, mirroring how the
+  // SDK's own resolution resolves from inside its package: package managers
+  // that don't hoist optional dependencies to the top level (pnpm isolated
+  // node_modules, yarn PnP) nest `claude-agent-sdk-<platform>` under the
+  // SDK's own node_modules, where a dist-anchored require would never find
+  // them.
+  const requireResolve =
+    opts?.resolve ??
+    ((spec: string) => createRequire(hostRequire.resolve(SDK_PKG)).resolve(spec))
+  const arch = opts?.arch ?? process.arch
+  const preferMusl = opts?.preferMusl ?? detectMusl(platform)
+  for (const spec of bundledBinaryCandidates(platform, arch, preferMusl)) {
+    try {
+      return requireResolve(spec)
+    } catch {
+      /* platform package not installed — try the next candidate */
+    }
+  }
+  log.warn(
+    `no SDK-bundled claude binary found for ${platform}-${arch}` +
+      ` (expected ${bundledBinaryCandidates(platform, arch, preferMusl).join(' or ')});` +
+      ' falling back to PATH lookup — the running version will NOT be pinned' +
+      ' to package-lock.json (reinstall without --omit=optional / --no-optional to restore the pin)',
+  )
+  return undefined
+}
+
 export function resolveClaudeBinary(
   explicit: string | undefined,
   platform: NodeJS.Platform = process.platform,
+  bundledOpts?: BundledBinaryOptions,
 ): string | undefined {
   const isWin = platform === 'win32'
   // Shim paths we already rejected once during this resolution — used to keep
@@ -87,6 +190,20 @@ export function resolveClaudeBinary(
   if (fromEnv) {
     const accepted = acceptCandidate(fromEnv, 'CLAUDE_CODE_BINARY')
     if (accepted) return accepted
+  }
+
+  // SDK-bundled native binary — the forced version pin. The platform package
+  // version is exactly pinned by the main SDK's optionalDependencies, so this
+  // binds the running Claude Code to the version in package-lock.json.
+  // Routed through acceptCandidate like every other source so the
+  // Windows never-return-unspawnable invariant stays structural.
+  const bundled = resolveBundledBinary(platform, bundledOpts)
+  if (bundled) {
+    const accepted = acceptCandidate(bundled, 'sdk-bundled')
+    if (accepted) {
+      log.info(`using SDK-bundled claude binary: ${accepted}`)
+      return accepted
+    }
   }
 
   // PATH lookup — `which` on Unix, `where` on Windows

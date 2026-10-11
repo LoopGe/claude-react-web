@@ -809,8 +809,11 @@ export class ClaudeProvider implements AgentProvider {
     // The updater runs inside the subprocess, so it isn't logged here; it
     // only surfaces as a burst of spawn_failed (observed: a 2.1.201 ->
     // 2.1.212 auto-update took down all sessions at once). Asserted AFTER
-    // customEnv so even a per-session `env` can't re-enable it; operators
-    // update the binary manually (npm i -g) and restart.
+    // customEnv so even a per-session `env` can't re-enable it; the spawned
+    // binary is the one bundled with @anthropic-ai/claude-agent-sdk (pinned
+    // to the lockfile version) — operators upgrade it by bumping that npm
+    // dependency, not via `npm i -g claude` (PATH is only a last-resort
+    // fallback).
     opts.env = { ...opts.env, DISABLE_AUTOUPDATER: '1' }
     if (this.opts.mpStore) {
       // `enabledPlugins` undefined = all enabled (default). Present (incl. [])

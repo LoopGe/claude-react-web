@@ -51,7 +51,7 @@ Each chat session holds its own stateful SDK `Query` on the server, so multi-tur
 ## Requirements
 
 - **Node.js ≥ 20**
-- The **`claude` CLI** available on `PATH` — the SDK spawns it as a subprocess. Override with `--claude-binary` or `CLAUDE_CODE_BINARY` if auto-detection picks the wrong native build.
+- The **`claude` CLI** — by default the native binary bundled with `@anthropic-ai/claude-agent-sdk` is spawned, pinning the running Claude Code to the version locked in `package-lock.json`. `CLAUDE_CODE_BINARY` / `--claude-binary` override it; as a last resort it falls back to `which claude` on `PATH`.
 - An **Anthropic credential** (`authToken`, plus an optional `baseUrl`). See [Quick start](#quick-start).
 
 ## Quick start
@@ -168,7 +168,7 @@ On first run a starter `~/.claude-react-web/config.json` is scaffolded. Set your
 | `--model <name>`               | Default model advertised to new sessions (informational)                                                                                                                          |
 | `--state-dir <path>`           | Where session metadata and `config.json` live (default: `~/.claude-react-web`)                                                                                                    |
 | `--config <path>`              | Read/write `config.json` at an explicit path instead of `<state-dir>/config.json` (a leading `~` expands to the home dir). Handy to share one config across worktrees or dev/prod runs |
-| `--claude-binary <path>`       | Path to the `claude` CLI binary. Overrides `CLAUDE_CODE_BINARY` and `PATH` auto-detection — useful when the SDK picks the wrong native build (e.g. a musl binary on a glibc host) |
+| `--claude-binary <path>`       | Path to the `claude` CLI binary. Overrides the SDK-bundled binary, `CLAUDE_CODE_BINARY`, and `PATH` auto-detection — useful when you need a specific native build (e.g. a newer CLI than the pinned SDK bundle) |
 | `--dev` / `--no-dev`           | Register the dev-only `appdebug` introspection tools (logs, metrics, session internals). Default: on when running from TypeScript source, off for `dist/cli.mjs`                  |
 | `--disable-app-plugins`        | Disable the App Plugins (Mods) subsystem entirely                                                                                                                                 |
 | `--safe-mode`                  | Load App Plugins without background subprocesses — static UI contributions only                                                                                                   |
@@ -200,10 +200,11 @@ Options:
       --state-dir <p>  Where to keep session metadata and config.json
                        (default: ~/.claude-react-web)
       --claude-binary <path>
-                       Path to the claude CLI binary. Default: resolved from
-                       CLAUDE_CODE_BINARY env or `which claude`. Use this if
-                       the SDK's auto-detection picks a wrong native build
-                       (e.g. musl binary on a glibc host).
+                       Path to the claude CLI binary. Default: the native
+                       binary bundled with @anthropic-ai/claude-agent-sdk
+                       (pinned to the lockfile version); falls back to
+                       CLAUDE_CODE_BINARY env or `which claude`. Use this
+                       if you need a specific native build.
       --dev            Register the dev-only `appdebug` introspection tools
                        (logs, metrics, session internals). Default: auto —
                        on when the server runs from TypeScript source
@@ -244,7 +245,7 @@ Anthropic credentials live in `config.json` (`authToken` / `baseUrl`), not in en
 
 | Variable                    | What it does                                                                                                                                                          | Default                 |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
-| `CLAUDE_CODE_BINARY`        | Path to the `claude` CLI binary (same as `--claude-binary`)                                                                                                           | auto-detected on `PATH` |
+| `CLAUDE_CODE_BINARY`        | Path to the `claude` CLI binary (same as `--claude-binary`)                                                                                                           | SDK-bundled binary is used first |
 | `CLAUDE_CONFIG_DIR`         | Relocates the CLI's entire config directory. Transcripts, `settings.json`, and user-scope skills all resolve under it, and the value is relayed to the SDK subprocess | `~/.claude`             |
 | `LOG_LEVEL`                 | Log verbosity (`error` / `warn` / `info` / `debug` / `trace`)                                                                                                         | `info`                  |
 | `LOG_SCOPES`                | Comma-separated scope filter for logs (`*` matches all)                                                                                                               | all scopes              |
