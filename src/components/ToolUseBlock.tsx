@@ -31,7 +31,7 @@
 // New tools: add the view under ./tool-views/, then add an entry to
 // TOOL_VIEWS below.
 
-import { memo, type ComponentType } from 'react'
+import { memo, useContext, useState, type ComponentType, type ReactNode } from 'react'
 import { SubagentCard } from './SubagentCard'
 import { WorkflowCard } from './WorkflowCard'
 import { FindingsCard } from './FindingsCard'
@@ -42,6 +42,8 @@ import { SUBAGENT_TOOL_NAMES, PLAN_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME, ENTER_
 import { QUESTION_TOOL_NAME } from '../utils/question-answers'
 import { truncate } from '../utils/text'
 import { extractToolUseId } from '../session-store/normalize'
+import { McpAppFrame } from './McpAppFrame'
+import { McpAppsContext, useMcpAppTool } from '../hooks/useMcpApps'
 import type { Block } from '../types'
 
 import type { ToolViewProps } from './tool-views/shared'
@@ -97,6 +99,9 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, act
   const name = block.name
   const input = block.input as Record<string, unknown> | undefined
   const id = extractToolUseId(block)
+  // Unconditional — rules of hooks. Undefined unless the transcript provider
+  // knows this exact `mcp__<server>__<tool>` name as an MCP Apps tool.
+  const mcpApp = useMcpAppTool(name ?? '')
 
   // EnterPlanMode → lightweight inline marker. It only signals "the model is
   // about to start planning" (empty input, no plan to show) — NOT a plan
@@ -167,7 +172,10 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, act
   // Unknown tool — fall back to raw JSON inside a generic ToolCard so the
   // status badge is still visible and the row aligns with the rest of the
   // transcript. Title is the tool name itself; nothing better to show.
-  return (
+  // MCP Apps (SEP-1865) tools land here too (`mcp__<server>__<tool>` names
+  // never match TOOL_VIEWS); when the server declares a UI resource, a
+  // read-only sandboxed render appends below the card.
+  const card = (
     <ToolCard
       icon={<IconShield />}
       title={name ? <code className="tool-card-title-code">{name}</code> : 'tool'}
@@ -181,4 +189,34 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, act
       <pre className="tool-input">{formatJson(input)}</pre>
     </ToolCard>
   )
+  if (mcpApp) {
+    return (
+      <McpAppSection toolName={name ?? ''} app={mcpApp}>{card}</McpAppSection>
+    )
+  }
+  return card
 })
+
+/** Collapsible MCP Apps UI section under a tool card. Open state is local —
+ *  closed (the default) never mounts McpAppFrame, so the resource fetch is
+ *  lazy by construction. */
+function McpAppSection({ toolName, app, children }: {
+  toolName: string
+  app: { server: string; uri: string }
+  children: ReactNode
+}) {
+  const apps = useContext(McpAppsContext)
+  const [open, setOpen] = useState(false)
+  if (!apps) return <>{children}</>
+  return (
+    <div className="mcp-app-block">
+      {children}
+      <details className="mcp-app-details" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+        <summary className="mcp-app-summary">App UI</summary>
+        {open && (
+          <McpAppFrame sessionId={apps.sessionId} server={app.server} resourceUri={app.uri} toolName={toolName} />
+        )}
+      </details>
+    </div>
+  )
+}

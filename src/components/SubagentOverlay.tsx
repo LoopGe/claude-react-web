@@ -6,6 +6,7 @@
 
 import { memo, useEffect, useRef } from 'react'
 import { MessageList } from './MessageList'
+import { McpAppsProvider } from '../hooks/useMcpApps'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { ElapsedTimer } from './ElapsedTimer'
@@ -18,6 +19,9 @@ interface Props {
   /** Stack of toolUseIds: stack[0] is the outermost subagent the user
    *  drilled into, stack[length-1] is the one currently shown. */
   stack: string[]
+  /** Owning session id — feeds the MCP Apps provider below (a subagent can
+   *  call the session's mcp tools; its cards need the same resource map). */
+  sessionId: string
   /** Full session transcript — we filter it to messages whose
    *  parent_tool_use_id matches the current frame. */
   items: TranscriptItem[]
@@ -84,6 +88,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   toolGroupCards,
   autoExpandRunningGroups,
   showMessageHeaders,
+  sessionId,
 }: Props) {
   const currentId = stack[stack.length - 1]
   const current = currentId ? index.get(currentId) : undefined
@@ -256,6 +261,11 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             transitionDirection ? `subagent-overlay-body-${transitionDirection}` : '',
           )}
         >
+          {/* Same-session MCP Apps context: a subagent can call the session's
+              mcp tools too, and its transcript renders through the same
+              ToolUseBlock. Lazy-demand keyed on mcp__ tool names — an
+              mcp-free subagent transcript costs nothing. */}
+          <McpAppsProvider sessionId={sessionId}>
           <MessageList
             items={items}
             parentToolUseIdFilter={currentId}
@@ -287,6 +297,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
               </div>
             )}
           />
+          </McpAppsProvider>
         </div>
       </div>
     </div>

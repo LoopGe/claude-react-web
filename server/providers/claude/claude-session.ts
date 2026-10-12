@@ -186,6 +186,10 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.mcpServerStatus()
   }
 
+  readMcpResource(serverName: string, uri: string): Promise<unknown> {
+    return this.query.readMcpResource(serverName, uri)
+  }
+
   reconnectMcpServer(name: string): Promise<void> {
     return this.query.reconnectMcpServer(name)
   }

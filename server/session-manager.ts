@@ -4982,6 +4982,10 @@ export class SessionManager {
     return this.mcp.mcpServerStatus(id)
   }
 
+  async readMcpAppResource(id: string, serverName: string, uri: string): Promise<unknown> {
+    return this.mcp.readMcpAppResource(id, serverName, uri)
+  }
+
   async reconnectMcpServer(id: string, serverName: string): Promise<void> {
     return this.mcp.reconnectMcpServer(id, serverName)
   }

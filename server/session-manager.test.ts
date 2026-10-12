@@ -43,6 +43,7 @@ interface MockQueryHandle {
   supportedCommands: ReturnType<typeof vi.fn>
   supportedAgents: ReturnType<typeof vi.fn>
   mcpServerStatus: ReturnType<typeof vi.fn>
+  readMcpResource: ReturnType<typeof vi.fn>
   toggleMcpServer: ReturnType<typeof vi.fn>
   reconnectMcpServer: ReturnType<typeof vi.fn>
   setMcpServers: ReturnType<typeof vi.fn>
@@ -207,6 +208,9 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         supportedCommands: vi.fn(async () => []),
         supportedAgents: vi.fn(async () => []),
         mcpServerStatus: vi.fn(async () => ({})),
+        readMcpResource: vi.fn(async (_serverName: string, uri: string) => ({
+          contents: [{ uri, mimeType: 'text/html;profile=mcp-app', text: '<html>app</html>' }],
+        })),
         toggleMcpServer: vi.fn(async () => {}),
         reconnectMcpServer: vi.fn(async () => {}),
         setMcpServers: vi.fn(async (servers: Record<string, unknown>) => ({
@@ -257,6 +261,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         supportedCommands: handle.supportedCommands,
         supportedAgents: handle.supportedAgents,
         mcpServerStatus: handle.mcpServerStatus,
+        readMcpResource: handle.readMcpResource,
         toggleMcpServer: handle.toggleMcpServer,
         reconnectMcpServer: handle.reconnectMcpServer,
         setMcpServers: handle.setMcpServers,
@@ -3605,6 +3610,15 @@ describe('SessionManager', () => {
     sm.create({ thinking: { type: 'adaptive', display: 'highlights' } as unknown as Options['thinking'] })
     expect(mockHandles[0].options.thinking).toEqual({ type: 'adaptive' })
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null, 'highlights')
+  })
+
+  it('readMcpAppResource() delegates to the handle readMcpResource (MCP Apps ui:// read)', async () => {
+    const info = sm.create({})
+    const r = await sm.readMcpAppResource(info.id, 'basic', 'ui://get-time/mcp-app.html') as {
+      contents?: Array<{ uri?: string; mimeType?: string }>
+    }
+    expect(mockHandles[0].readMcpResource).toHaveBeenCalledWith('basic', 'ui://get-time/mcp-app.html')
+    expect(r.contents?.[0]).toMatchObject({ uri: 'ui://get-time/mcp-app.html', mimeType: 'text/html;profile=mcp-app' })
   })
 
   it("spawn forwards non-highlights thinking displays verbatim (no strip, no post-spawn re-apply)", () => {

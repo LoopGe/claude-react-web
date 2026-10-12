@@ -85,6 +85,20 @@ export class SessionMcpManager {
     return this.deps.timeSdkControl(id, 'mcpServerStatus', fn)
   }
 
+  /** Read one MCP Apps (SEP-1865) `ui://` resource through the CLI's MCP
+   *  connection (SDK Query.readMcpResource). HTTP-shape validation lives in
+   *  the route; this is the thin capability-gated delegation, mirroring
+   *  mcpServerStatus above (same no-classify reasoning: a failure here means
+   *  the subprocess/connection, not a server-process taxonomy case —
+   *  per-server errors arrive inside the SDK rejection). */
+  async readMcpAppResource(id: string, serverName: string, uri: string): Promise<unknown> {
+    const s = this.deps.requireLive(id)
+    const fn = this.deps.requireHandleMethod<
+      (serverName: string, uri: string) => Promise<unknown>
+    >(s, 'readMcpResource', 'MCP resource read', 'supportsMcp')
+    return this.deps.timeSdkControl(id, 'readMcpResource', fn.bind(null, serverName, uri))
+  }
+
   async reconnectMcpServer(id: string, serverName: string): Promise<void> {
     // Mutations keep { classify: true } despite an irreducible ambiguity: a
     // 'Connection closed' here can mean the MCP server died OR the session's

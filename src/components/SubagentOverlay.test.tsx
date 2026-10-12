@@ -43,6 +43,7 @@ function renderSubagent(opts: {
   render(
     <SubagentOverlay
       stack={stack}
+      sessionId="s-test"
       items={[]}
       index={index}
       onClose={onClose}
@@ -57,6 +58,7 @@ describe('SubagentOverlay escape stack', () => {
   it('registers in the escape stack while mounted and unregisters on unmount', () => {
     const { unmount } = render(<SubagentOverlay
       stack={['a']}
+      sessionId="s-test"
       items={[]}
       index={new Map([['a', subagent('a')]])}
       onClose={vi.fn()}
@@ -117,6 +119,7 @@ describe('SubagentOverlay scrim', () => {
     const { container } = render(
       <SubagentOverlay
         stack={['a']}
+        sessionId="s-test"
         items={[]}
         index={new Map([['a', subagent('a')]])}
         onClose={vi.fn()}
@@ -136,6 +139,7 @@ describe('SubagentOverlay scrim', () => {
     const { container } = render(
       <SubagentOverlay
         stack={['a']}
+        sessionId="s-test"
         items={[]}
         index={new Map([['a', subagent('a')]])}
         onClose={onClose}
@@ -151,6 +155,7 @@ describe('SubagentOverlay scrim', () => {
     const { container } = render(
       <SubagentOverlay
         stack={['a']}
+        sessionId="s-test"
         items={[]}
         index={new Map([['a', subagent('a')]])}
         onClose={onClose}
@@ -186,6 +191,7 @@ describe('SubagentOverlay → MessageList wiring', () => {
     render(
       <SubagentOverlay
         stack={['a', 'b']}
+        sessionId="s-test"
         items={[]}
         index={index}
         onClose={vi.fn()}

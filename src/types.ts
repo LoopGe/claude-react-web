@@ -462,6 +462,12 @@ export interface McpServerTool {
   name: string
   description?: string
   annotations?: { readOnly?: boolean; destructive?: boolean; openWorld?: boolean }
+  /** MCP Apps (SEP-1865) members of the tool's `_meta`, as validated and
+   *  size-bounded by the CLI (SDK 0.3.295): `ui` (an object with
+   *  `resourceUri`, a `ui://` string) and/or the deprecated flat
+   *  `ui/resourceUri`. Only present on tools that declare one. Treated as
+   *  opaque here — extractMcpAppResourceUri does the narrowing. */
+  _meta?: Record<string, unknown>
 }
 
 export interface McpServerStatus {

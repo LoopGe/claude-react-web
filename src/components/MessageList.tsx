@@ -12,6 +12,7 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
 import { TaskInfoProvider } from '../hooks/useTaskInfo'
+import { McpAppsProvider } from '../hooks/useMcpApps'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { SessionCwdProvider } from '../hooks/useSessionCwd'
 import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
@@ -1306,6 +1307,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     <ToolStatusProvider value={toolStatus}>
     <ToolResultProvider value={toolResults}>
     <TaskInfoProvider value={taskInfoMap}>
+    <McpAppsProvider sessionId={sessionId}>
     <ResultConsumedCtx.Provider value={isResultConsumed}>
     {/* data-following mirrors the follow gate for the test suite's
         FOLLOWING/AWAY assertions (see useTranscriptScroll's setFollowing) —
@@ -1389,6 +1391,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       </div>
     </div>
     </ResultConsumedCtx.Provider>
+    </McpAppsProvider>
     </TaskInfoProvider>
     </ToolResultProvider>
     </ToolStatusProvider>

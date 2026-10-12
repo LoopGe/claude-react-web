@@ -1064,6 +1064,39 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     return c.json({ mcp })
   })
 
+  // Read one MCP Apps (SEP-1865) UI resource — a `ui://` URI a tool's
+  // `_meta.ui.resourceUri` declares — through the CLI's MCP connection, for
+  // the client's sandboxed-iframe renderer. The response is UNTRUSTED
+  // third-party HTML: this route only validates and forwards; the client
+  // renders it in an iframe sandboxed WITHOUT allow-same-origin (opaque
+  // origin — the content can run scripts but can never reach this app's DOM,
+  // cookies or storage). Live-session only (a control request). MIME guard:
+  // only text/html passes — the renderer has no use for anything else, and
+  // the SDK already size-bounds the payload (2 MB re-checked here).
+  app.get('/sessions/:id/mcp-app-resource', async (c) => {
+    const serverName = c.req.query('server') ?? ''
+    const uri = c.req.query('uri') ?? ''
+    if (!serverName || !/^[A-Za-z0-9._-]+$/.test(serverName)) {
+      return c.json({ error: 'server must be a non-empty MCP server name' }, 400)
+    }
+    if (!uri.startsWith('ui://')) {
+      return c.json({ error: 'uri must be a ui:// resource URI' }, 400)
+    }
+    const result = await sm.readMcpAppResource(c.req.param('id'), serverName, uri) as {
+      contents?: Array<{ uri?: unknown; mimeType?: unknown; text?: unknown }>
+    } | undefined
+    const content = result?.contents?.[0]
+    const mimeType = typeof content?.mimeType === 'string' ? content.mimeType : ''
+    const html = typeof content?.text === 'string' ? content.text : ''
+    if (!content || !html || !mimeType.includes('text/html')) {
+      return c.json({ error: 'resource is not an MCP Apps HTML document' }, 415)
+    }
+    if (Buffer.byteLength(html, 'utf8') > 2 * 1024 * 1024) {
+      return c.json({ error: 'resource exceeds the 2 MB limit' }, 413)
+    }
+    return c.json({ mimeType, html })
+  })
+
   // Reconnect a failed/disconnected MCP server
   app.post('/sessions/:id/mcp/:name/reconnect', async (c) => {
     await sm.reconnectMcpServer(c.req.param('id'), c.req.param('name'))

@@ -781,6 +781,45 @@
 
 /* Unknown-tool fallback — keep the raw JSON readable but clearly
  * differentiated from the structured cards. */
+/* MCP Apps (SEP-1865) read-only render: an "App UI" collapsible under the
+   tool card of an `mcp__<server>__<tool>` call whose server declares a
+   `ui://` resource. The iframe is sandboxed without allow-same-origin (see
+   McpAppFrame) — the fixed height is the trade for not trusting the
+   document's own layout reports. */
+.mcp-app-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.mcp-app-details > .mcp-app-summary {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  user-select: none;
+  padding: var(--space-0-5) var(--space-1);
+  border-radius: var(--radius-md);
+}
+.mcp-app-details > .mcp-app-summary:hover {
+  color: var(--fg);
+  background: var(--btn-hover-bg);
+}
+.mcp-app-frame {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev-2);
+}
+.mcp-app-note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-1-5);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+.mcp-app-error {
+  color: var(--danger-text);
+}
 .tool-card-unknown .tool-card-body {
   padding: 0;
 }

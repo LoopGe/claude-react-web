@@ -2754,6 +2754,7 @@ export const Chat = memo(function Chat({
         <SkillProvider value={skillCtxValue}>
           <SubagentOverlay
             stack={subagentStack}
+            sessionId={session.id}
             items={stream.items}
             index={overlayIndex}
             onClose={closeSubagent}

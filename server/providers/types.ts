@@ -185,6 +185,13 @@ export interface ProviderSessionHandle {
   supportedCommands?(): Promise<unknown>
   supportedAgents?(): Promise<unknown>
   mcpServerStatus?(): Promise<unknown>
+  /** Read one MCP Apps (SEP-1865) UI resource — a `ui://` URI a tool's
+   *  `_meta.ui.resourceUri` declares — from a connected MCP server the CLI
+   *  dialed, via SDK Query.readMcpResource. Read-only, no model turn. The
+   *  response is UNTRUSTED third-party content (HTML): the route layer
+   *  validates the uri scheme / mimeType and the client must render it in a
+   *  sandboxed iframe (no allow-same-origin). Requires `supportsMcp`. */
+  readMcpResource?(serverName: string, uri: string): Promise<unknown>
   reconnectMcpServer?(name: string): Promise<void>
   toggleMcpServer?(name: string, enabled: boolean): Promise<void>
   setMcpServers?(servers: Record<string, unknown>): Promise<unknown>
