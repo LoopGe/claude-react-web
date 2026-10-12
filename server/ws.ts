@@ -18,7 +18,7 @@ import type { IncomingMessage, Server as HttpServer } from 'node:http'
 import type { Socket } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { authorizeUpgrade } from './auth.js'
-import { checkUpgradeRequest, createRequestGuard, type BindAddress } from './request-guard.js'
+import { checkUpgradeRequest, createRequestGuard, devOrigins, type BindAddress } from './request-guard.js'
 import { SessionConnection } from './frame-bridge.js'
 import { WsFrameSink } from './ws-sink.js'
 import type { SessionBroadcaster } from './session-types.js'
@@ -46,11 +46,13 @@ export function attachWebSocket(
   httpServer: HttpServer,
   sm: SessionBroadcaster,
   appPlugins?: AppPluginBroadcaster,
-  opts?: { bind?: BindAddress },
+  opts?: { bind?: BindAddress; trustDevOrigins?: boolean },
 ): () => Promise<void> {
   // Same Host/Origin policy as the HTTP middleware (server/request-guard.ts).
   // Only with a real bind, mirroring buildApp.
-  const guard = opts?.bind ? createRequestGuard({ bind: opts.bind }) : undefined
+  const guard = opts?.bind
+    ? createRequestGuard({ bind: opts.bind, extraOrigins: opts.trustDevOrigins ? devOrigins() : [] })
+    : undefined
   // `noServer: true` means the WSS doesn't listen on its own port; it
   // only handles connections handed to it via `handleUpgrade()`. That's
   // how we share a port with Hono.

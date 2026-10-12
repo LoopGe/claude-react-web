@@ -71,6 +71,9 @@ export interface ServerContext {
     appPluginMarketplace: AppPluginMarketplaceStore
   }
   claudeBinary?: string
+  /** True in a dev runtime (isDevRuntime): the Vite dev origins are trusted
+   *  by the request guard. Hosts pass it to attachWebSocket too. */
+  trustDevOrigins: boolean
   /** Flush every store + tear down plugins and sessions. */
   shutdown(): Promise<void>
 }
@@ -136,7 +139,11 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
     crashRecovery: true,
   })
 
-  if (opts.dev ?? isDevRuntime(process.argv[1], process.env)) {
+  // The runtime signal alone (not the --dev/--no-dev tool override) decides
+  // whether the Vite dev origins are trusted: `npm run dev` always proxies
+  // through Vite, and a published dist/cli.mjs never should trust :5174.
+  const trustDevOrigins = isDevRuntime(process.argv[1], process.env)
+  if (opts.dev ?? trustDevOrigins) {
     enableDevMode({ registry: firstPartyRegistry, sm: sessionManager })
   }
 
@@ -190,6 +197,7 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
     defaults: { model: opts.model, claudeBinary },
     configDir: stateDir,
     bind: opts.bind,
+    trustDevOrigins,
   })
 
   const stores = {
@@ -241,6 +249,7 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
     appPluginEnabled: appPluginsEnabled,
     stores,
     claudeBinary,
+    trustDevOrigins,
     shutdown,
   }
 }

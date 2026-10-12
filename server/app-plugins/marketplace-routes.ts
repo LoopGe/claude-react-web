@@ -7,7 +7,7 @@
 
 import { Hono } from 'hono'
 import { HttpError, createErrorHandler } from '../errors.js'
-import { safeJson } from '../routes/index.js'
+import { safeJson, safeJsonOptional } from '../routes/index.js'
 import { gitPull } from '../git-clone.js'
 import { parseAppPluginMarketplaceAuto } from './marketplace-parser.js'
 import { addAppPluginMarketplaceByUrl } from './marketplace-ops.js'
@@ -108,7 +108,7 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
   app.delete('/:id', async (c) => {
     const id = c.req.param('id')
     if (!SAFE_NAME.test(id)) throw new HttpError(400, 'invalid marketplace id')
-    const body = await safeJson<{ confirm?: boolean }>(c.req).catch(() => ({}) as { confirm?: boolean })
+    const body = await safeJsonOptional<{ confirm?: boolean }>(c.req, {})
     if (!body.confirm) throw new HttpError(400, 'removal requires { confirm: true }')
     const record = store.get(id)
     if (!record) throw new HttpError(404, 'marketplace not found')

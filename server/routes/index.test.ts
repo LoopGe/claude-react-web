@@ -4,7 +4,7 @@
 // TypeError → opaque 500 from the first handler that read `body.field`.
 
 import { describe, expect, it } from 'vitest'
-import { safeJson, safeJsonValue, type JsonBodyReader } from './index.js'
+import { safeJson, safeJsonOptional, safeJsonValue, type JsonBodyReader } from './index.js'
 
 /** The shape safeJson takes: a request whose `.json()` casts to T without
  *  checking anything — which is exactly the gap under test. */
@@ -90,5 +90,29 @@ describe('JSON Content-Type requirement (CSRF choke point)', () => {
 
   it('accepts application/json with a charset parameter', async () => {
     expect(await safeJson(body({ a: 1 }, 'application/json; charset=utf-8'))).toEqual({ a: 1 })
+  })
+})
+
+describe('safeJsonOptional — all-optional bodies (resume / fork / uninstall)', () => {
+  const fallback = { confirm: undefined as boolean | undefined }
+
+  it('returns the fallback for a body-less request (no Content-Type)', async () => {
+    // An untyped body is ignored too, so it can't set a flag cross-site.
+    expect(await safeJsonOptional(body({ confirm: true }, null), fallback)).toBe(fallback)
+  })
+
+  it('415s on a declared text/plain body instead of reading it as "no body"', async () => {
+    await expect(safeJsonOptional(body({ confirm: true }, 'text/plain;charset=UTF-8'), fallback))
+      .rejects.toMatchObject({ status: 415 })
+  })
+
+  it('parses a JSON object body', async () => {
+    expect(await safeJsonOptional(body({ confirm: true }), fallback)).toEqual({ confirm: true })
+  })
+
+  it('keeps the historical fallback for malformed or non-object JSON', async () => {
+    expect(await safeJsonOptional(malformed, fallback)).toBe(fallback)
+    expect(await safeJsonOptional(body(null), fallback)).toBe(fallback)
+    expect(await safeJsonOptional(body([1]), fallback)).toBe(fallback)
   })
 })

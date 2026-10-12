@@ -39,7 +39,10 @@ export const DEFAULT_VITE_PORT = 5174
 
 /** Origins of the Vite dev server. Its `/api` proxy uses `changeOrigin`, which
  *  rewrites Host to the API target but leaves Origin as the dev page origin,
- *  so these must be trusted for dev-mode writes and the proxied WS. */
+ *  so these must be trusted for dev-mode writes and the proxied WS. Trusted
+ *  ONLY in a dev runtime (`trustDevOrigins`, see server/dev-mode.ts
+ *  isDevRuntime): 5174 is also Vite's fallback port for any other local
+ *  project, which must not drive a production instance. */
 export function devOrigins(vitePort = Number(process.env.VITE_PORT) || DEFAULT_VITE_PORT): string[] {
   return [
     `http://localhost:${vitePort}`,
@@ -108,13 +111,15 @@ export interface RequestGuard {
 
 export interface RequestGuardOptions {
   bind: BindAddress
+  /** Exact origins trusted in addition to the bound ones. Default none;
+   *  callers pass `devOrigins()` only in a dev runtime. */
   extraOrigins?: string[]
   lanAddresses?: () => string[]
 }
 
 export function createRequestGuard({
   bind,
-  extraOrigins = devOrigins(),
+  extraOrigins = [],
   lanAddresses = lanIPv4Addresses,
 }: RequestGuardOptions): RequestGuard {
   const boundHost = normalizeBindHost(bind.host)

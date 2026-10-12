@@ -91,6 +91,13 @@ describe('createRequestGuard — Origin', () => {
     expect(loopbackGuard().isAllowedRequestOrigin(undefined)).toBe(true)
   })
 
+  it('does NOT trust the Vite dev origins by default (production runtime)', () => {
+    const g = createRequestGuard({ bind: { host: '127.0.0.1', port: 3499 }, lanAddresses: lan })
+    expect(g.isTrustedOrigin('http://localhost:5174')).toBe(false)
+    expect(g.isAllowedRequestOrigin('http://127.0.0.1:5174')).toBe(false)
+    expect(g.isTrustedOrigin('http://127.0.0.1:3499')).toBe(true)
+  })
+
   it('LAN-bound trusts the LAN interface origin', () => {
     const g = createRequestGuard({ bind: { host: '0.0.0.0', port: 3499 }, lanAddresses: lan })
     expect(g.isTrustedOrigin('http://192.168.1.5:3499')).toBe(true)

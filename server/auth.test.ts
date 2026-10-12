@@ -142,6 +142,23 @@ describe('auth middleware', () => {
     }
     expect((await login(app, TOKEN, { addr: '192.168.1.70' })).status).toBe(200)
   })
+
+  it('counts failed ?token= guesses, then 429 even for the right token', async () => {
+    const visit = (token: string, path = '/') =>
+      app.request(`${BASE}${path}?token=${encodeURIComponent(token)}`, {}, peer('192.168.1.90'))
+    for (let i = 0; i < 5; i++) expect((await visit(`guess${i}`)).status).toBe(401)
+    expect((await visit(TOKEN)).status).toBe(429)
+    expect((await visit(TOKEN, '/api/ping')).status).toBe(429)
+    // A cookie-carried request from the same peer is not gated by the limit.
+    const res = await app.request(`${BASE}/api/ping`, { headers: { cookie: `${ACCESS_COOKIE}=${TOKEN}` } }, peer('192.168.1.90'))
+    expect(res.status).toBe(200)
+  })
+
+  it('a valid ?token= first visit still redirects to the clean path', async () => {
+    const res = await app.request(`${BASE}/?token=${TOKEN}`, {}, peer('192.168.1.91'))
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toBe('/')
+  })
 })
 
 describe('authorizeUpgrade', () => {
@@ -170,6 +187,13 @@ describe('authorizeUpgrade', () => {
     expect(authorizeUpgrade(req({ authorization: `Bearer ${TOKEN}` }))).toBe('rate-limited')
     // A different peer is unaffected.
     expect(authorizeUpgrade(req({ authorization: `Bearer ${TOKEN}` }, '192.168.1.81'))).toBe('ok')
+  })
+
+  it('counts failed ?token= upgrades too', () => {
+    const q = (token: string) =>
+      ({ headers: {}, url: `/api/ws?token=${encodeURIComponent(token)}`, socket: { remoteAddress: '192.168.1.82' } }) as unknown as IncomingMessage
+    for (let i = 0; i < 5; i++) expect(authorizeUpgrade(q('wrong'))).toBe('unauthorized')
+    expect(authorizeUpgrade(q(TOKEN))).toBe('rate-limited')
   })
 
   it('ok when auth is disabled', () => {

@@ -250,6 +250,9 @@ describe('session create body validation (narrowCreateBody)', () => {
       includeHookEvents: false,
       autoCompactWindow: 100000,
       cliDebug: true,
+      sandbox: { enabled: true, network: { allowedDomains: ['example.com'] } },
+      toolAliases: { Grep: 'Search' },
+      toolConfig: { Bash: { timeout: 1000 } },
     }
     const res = await app.request('/sessions', {
       method: 'POST',
@@ -263,6 +266,23 @@ describe('session create body validation (narrowCreateBody)', () => {
     expect(arg).toMatchObject({ ...expected, mcpServers: { srv: { type: 'stdio', command: 'x' } } })
     expect(sm.create.mock.calls[0]?.[2]).toBe('old')
     expect(sm.create.mock.calls[0]?.[3]).toBe(true)
+  })
+
+  it.each([
+    [{ provider: 1 }, 'provider must be a string'],
+    [{ fallbackModel: false }, 'fallbackModel must be a string'],
+    [{ effort: 3 }, 'effort must be a string'],
+    [{ maxBudgetUsd: '5' }, 'maxBudgetUsd must be a finite number'],
+    [{ autoCompactWindow: 0 }, 'autoCompactWindow must be a finite number > 0'],
+    [{ autoCompactWindow: -5 }, 'autoCompactWindow must be a finite number > 0'],
+    [{ autoCompactWindow: '100000' }, 'autoCompactWindow must be a finite number > 0'],
+    [{ cliDebug: 'yes' }, 'cliDebug must be a boolean'],
+  ])('400s on a bad create-body shape %j', async (body, error) => {
+    const { app, sm } = makeApp()
+    const res = await post(app, body)
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error })
+    expect(sm.create).not.toHaveBeenCalled()
   })
 
   it('rejects a non-boolean firstPartyTools value', async () => {

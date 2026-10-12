@@ -102,6 +102,9 @@ export interface AppOptions {
    *  build the LAN URLs + QR codes shown in the "open on phone" dialog.
    *  When omitted, access-info reports no LAN reachability. */
   bind?: { host: string; port: number }
+  /** Trust the Vite dev-server origins (`devOrigins()`) for writes, WS and
+   *  CORS. Set only in a dev runtime (bootstrap passes isDevRuntime). */
+  trustDevOrigins?: boolean
 }
 
 /**
@@ -155,7 +158,9 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   // app has a real TCP bind — the desktop host serves crw://app through
   // in-process app.fetch with no listener. First app.use so OPTIONS
   // preflights and static assets are Host-checked too.
-  const guard = opts.bind ? createRequestGuard({ bind: opts.bind }) : undefined
+  const guard = opts.bind
+    ? createRequestGuard({ bind: opts.bind, extraOrigins: opts.trustDevOrigins ? devOrigins() : [] })
+    : undefined
   if (guard) app.use('*', buildRequestGuardMiddleware(guard))
 
   app.use('*', cors({

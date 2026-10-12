@@ -14,10 +14,12 @@
 // request and on the same-origin WebSocket upgrade — the client needs no
 // changes.
 //
-// Brute-force limiting: failed login attempts and failed `Authorization:
-// Bearer` attempts (HTTP and WS upgrade) are counted per TCP peer address
-// (never X-Forwarded-For — there is no trust-proxy setting). After 5
-// failures in a minute, further login / Bearer attempts get 429.
+// Brute-force limiting: failed login attempts and failed explicitly
+// presented tokens (`Authorization: Bearer` or `?token=`, HTTP and WS
+// upgrade) are counted per TCP peer address (never X-Forwarded-For — there
+// is no trust-proxy setting). After 5 failures in a minute, further login /
+// Bearer / ?token= attempts get 429. Cookie failures are not counted (a
+// stale cookie after a token rotation must not lock the user out).
 //
 // IMPORTANT: web-auth state lives in this module's `webAuth` holder, NOT
 // in the frozen `config` object. `applyParsedConfig` rebuilds and
@@ -356,17 +358,21 @@ export function buildAuthMiddleware(): MiddlewareHandler {
       return c.json({ ok: true })
     }
 
-    // Only a Bearer header is rate-limited/counted here. Cookie and ?token=
-    // failures are NOT counted: the auto-generated LAN token changes on every
-    // restart, so a phone's stale cookie fails on every asset of a page load
-    // and would 429 the user's next login.
-    const bearerToken = bearer(c.req.header('authorization'))
-    if (bearerToken && isLimited(key)) {
-      return c.json({ error: 'too many failed attempts' }, 429)
+    // Explicitly presented tokens (Bearer header or ?token=) are
+    // rate-limited/counted. Cookie failures are NOT counted: the
+    // auto-generated LAN token changes on every restart, so a phone's stale
+    // cookie fails on every asset of a page load and would 429 the user's
+    // next login. ?token= is safe to count — the app never sends it itself;
+    // only a first-visit document URL carries it, so a stale QR link costs
+    // one failure.
+    const presented = bearer(c.req.header('authorization')) !== undefined || c.req.query('token') !== undefined
+    if (presented && isLimited(key)) {
+      if (c.req.path.startsWith('/api/')) return c.json({ error: 'too many failed attempts' }, 429)
+      return c.text('Too many failed attempts. Try again in a minute.', 429)
     }
     const token = extractTokenFromHono(c)
     const ok = !!token && tokensMatch(token, accessToken)
-    if (!ok && bearerToken) recordFailure(key)
+    if (!ok && presented) recordFailure(key)
 
     if (ok) {
       // Refresh / set the cookie on every authorized request so it stays
@@ -402,9 +408,9 @@ export function buildAuthMiddleware(): MiddlewareHandler {
 
 /** Authorize a raw WebSocket upgrade request. `'ok'` when auth is disabled
  *  or the request carries a valid token (cookie / query / bearer). A Bearer
- *  header presented while the peer is over the failure limit is
- *  `'rate-limited'`; a failed Bearer is counted (cookie/query failures are
- *  not — same rule as the HTTP middleware). */
+ *  header or `?token=` presented while the peer is over the failure limit is
+ *  `'rate-limited'`; a failed Bearer / `?token=` is counted (cookie
+ *  failures are not — same rule as the HTTP middleware). */
 export function authorizeUpgrade(req: IncomingMessage): 'ok' | 'unauthorized' | 'rate-limited' {
   const { accessToken, authEnabled } = webAuth
   if (!authEnabled) return 'ok'
@@ -414,9 +420,12 @@ export function authorizeUpgrade(req: IncomingMessage): 'ok' | 'unauthorized' | 
       ? req.headers.authorization[0]
       : req.headers.authorization,
   )
-  if (bearerToken && isLimited(key)) return 'rate-limited'
+  let queryToken: string | null = null
+  try { queryToken = new URL(req.url ?? '/', 'http://localhost').searchParams.get('token') } catch { /* malformed */ }
+  const presented = bearerToken !== undefined || queryToken !== null
+  if (presented && isLimited(key)) return 'rate-limited'
   const token = extractTokenFromReq(req)
   if (!!token && tokensMatch(token, accessToken)) return 'ok'
-  if (bearerToken) recordFailure(key)
+  if (presented) recordFailure(key)
   return 'unauthorized'
 }

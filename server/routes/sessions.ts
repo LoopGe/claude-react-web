@@ -5,7 +5,7 @@ import { serverDefaultCwd, withDefaultCwd } from '../default-cwd.js'
 import { isAbsolute } from 'node:path'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
 import { SessionManager, cwdMissing, workingDirMissingMsg } from '../session-manager.js'
-import { safeJson, safeJsonValue } from './index.js'
+import { safeJson, safeJsonOptional, safeJsonValue } from './index.js'
 import type { MpStore } from '../mp-store.js'
 import { agentUnusableReason, normalizeAgentName, type AgentDefinitionStore } from '../agent-definition-store.js'
 import { isUserSelectablePermissionMode, permissionModeList } from '../permission-modes.js'
@@ -420,7 +420,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
   // the caller pass "the mode I'm currently in" so resume doesn't drop the
   // user back to default.
   app.post('/sessions/:id/resume', async (c) => {
-    const body = await safeJson<{ permissionMode?: string }>(c.req).catch(() => ({ permissionMode: undefined }))
+    const body = await safeJsonOptional<{ permissionMode?: string }>(c.req, { permissionMode: undefined })
     const mode = typeof body.permissionMode === 'string' && isUserSelectablePermissionMode(body.permissionMode)
       ? body.permissionMode as PermissionMode
       : undefined
@@ -445,8 +445,8 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
   //   - replacesSource?: broadcast the created frame with replacesSource so
   //     the client REPLACES the dead source's sidebar slot instead of appending
   app.post('/sessions/:id/fork', async (c) => {
-    const body = await safeJson<{ resumeSessionAt?: unknown; forkFromLastSafe?: unknown; replacesSource?: unknown }>(c.req)
-      .catch(() => ({ resumeSessionAt: undefined, forkFromLastSafe: undefined, replacesSource: undefined }))
+    const body = await safeJsonOptional<{ resumeSessionAt?: unknown; forkFromLastSafe?: unknown; replacesSource?: unknown }>(c.req,
+      { resumeSessionAt: undefined, forkFromLastSafe: undefined, replacesSource: undefined })
     const info = await sm.fork(c.req.param('id'), {
       ...(typeof body.resumeSessionAt === 'string' && body.resumeSessionAt ? { resumeSessionAt: body.resumeSessionAt } : {}),
       ...(body.forkFromLastSafe === true ? { forkFromLastSafe: true } : {}),

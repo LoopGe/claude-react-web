@@ -79,6 +79,23 @@ export async function safeJson<T>(req: JsonBodyReader): Promise<T> {
   return value as T
 }
 
+/** Optional JSON-object body for routes whose body is all-optional flags
+ *  (resume, fork, uninstall, marketplace remove). Callers used to wrap
+ *  safeJson in `.catch(() => fallback)`, which also swallowed the 415 — a
+ *  declared text/plain body was silently read as "no body".
+ *
+ *  - No Content-Type → `fallback` (a body-less POST/DELETE; any body bytes are
+ *    ignored, so an untyped cross-site body can't set a flag either).
+ *  - Declared non-JSON Content-Type → 415, same as safeJson.
+ *  - Malformed JSON / non-object → `fallback` (the historical lenience). */
+export async function safeJsonOptional<T>(req: JsonBodyReader, fallback: T): Promise<T> {
+  if (!req.header('content-type')) return fallback
+  return safeJson<T>(req).catch((err: unknown) => {
+    if (err instanceof HttpError && err.status === 415) throw err
+    return fallback
+  })
+}
+
 export function buildApiRouter(
   sm: SessionManager,
   configDir?: string,

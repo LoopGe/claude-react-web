@@ -245,7 +245,7 @@ async function runServer(args: CliArgs): Promise<void> {
     sessionManager,
     ctx.appPluginEnabled ? appPluginManager : undefined,
     // Same bind buildApp got, so the WS upgrade enforces the same Host/Origin policy.
-    { bind: { host: args.host, port: args.port } },
+    { bind: { host: args.host, port: args.port }, trustDevOrigins: ctx.trustDevOrigins },
   )
 
   // Diagnostic: sample event-loop delay so a synchronous stall (which makes

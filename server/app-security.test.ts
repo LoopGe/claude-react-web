@@ -8,8 +8,26 @@ import { buildApp } from './app.js'
 const BIND = { host: '127.0.0.1', port: 3499 }
 const BASE = `http://127.0.0.1:${BIND.port}`
 
-describe('buildApp security boundary (bound to 127.0.0.1:3499)', () => {
+describe('production runtime (no trustDevOrigins)', () => {
   const { app } = buildApp({ bind: BIND })
+
+  it('403s a write from the Vite dev origin and does not CORS-reflect it', async () => {
+    const res = await app.request(`${BASE}/api/sessions/does-not-exist/model`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5174' },
+      body: JSON.stringify({ model: 'x' }),
+    })
+    expect(res.status).toBe(403)
+    const pre = await app.request(`${BASE}/api/sessions`, {
+      method: 'OPTIONS',
+      headers: { origin: 'http://localhost:5174', 'access-control-request-method': 'POST' },
+    })
+    expect(pre.headers.get('access-control-allow-origin')).toBeFalsy()
+  })
+})
+
+describe('buildApp security boundary (bound to 127.0.0.1:3499, dev runtime)', () => {
+  const { app } = buildApp({ bind: BIND, trustDevOrigins: true })
 
   const writeModel = (headers: Record<string, string>, body = JSON.stringify({ model: 'x' })) =>
     app.request(`${BASE}/api/sessions/does-not-exist/model`, {

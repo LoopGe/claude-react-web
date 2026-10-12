@@ -9,7 +9,7 @@ import { Hono } from 'hono'
 import { promises as fs } from 'node:fs'
 import { resolve as resolvePath, extname } from 'node:path'
 import { HttpError, createErrorHandler } from '../errors.js'
-import { safeJson } from '../routes/index.js'
+import { safeJson, safeJsonOptional } from '../routes/index.js'
 import { validateRelativePath, isPathInside } from '../../shared/app-plugins/path-security.js'
 import type { AppPluginManager } from './app-plugin-manager.js'
 import type { InstallSource } from './app-plugin-manager.js'
@@ -53,7 +53,7 @@ export function buildAppPluginRouter(manager: AppPluginManager): Hono {
   })
 
   app.delete('/:id', async (c) => {
-    const body = await safeJson<{ confirm?: boolean; deleteData?: boolean }>(c.req).catch(() => ({}) as { confirm?: boolean; deleteData?: boolean })
+    const body = await safeJsonOptional<{ confirm?: boolean; deleteData?: boolean }>(c.req, {})
     if (!body.confirm) throw new HttpError(400, 'uninstall requires { confirm: true }')
     await manager.uninstall(c.req.param('id'), { deleteData: !!body.deleteData })
     return c.json({ ok: true })

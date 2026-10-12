@@ -774,7 +774,7 @@ describe('WebSocket upgrade guard', () => {
     })
     const addr = server.address()
     port = typeof addr === 'object' && addr ? addr.port : 0
-    shutdownWs = attachWebSocket(server, sm, undefined, { bind: { host: '127.0.0.1', port } })
+    shutdownWs = attachWebSocket(server, sm, undefined, { bind: { host: '127.0.0.1', port }, trustDevOrigins: true })
   })
 
   afterEach(async () => {
