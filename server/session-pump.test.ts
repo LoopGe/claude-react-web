@@ -1435,6 +1435,44 @@ function sysFrame(subtype: string, extra: Record<string, unknown> = {}): SDKMess
 }
 
 describe('applyTaskEvent', () => {
+  it('carries run_id (SDK 0.3.295) onto the record and advances it on a newer run', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1', description: 'd', run_id: 'run-b' }))
+    expect(session.tasks.get('t1')?.runId).toBe('run-b')
+
+    // A frame from a run sorting AFTER the record's run opened later —
+    // accept and advance.
+    applyTaskEvent(session, sysFrame('task_updated', { task_id: 't1', patch: { status: 'completed' }, run_id: 'run-c' }))
+    expect(session.tasks.get('t1')?.runId).toBe('run-c')
+    expect(session.tasks.get('t1')?.status).toBe('completed')
+  })
+
+  it('drops a late frame from a superseded run (run_id sorts before the record)', () => {
+    const { session, snapshots } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1', description: 'd', run_id: 'run-b' }))
+    applyTaskEvent(session, sysFrame('task_updated', { task_id: 't1', patch: { status: 'completed' }, run_id: 'run-b' }))
+    const before = snapshots.length
+
+    // run-a opened before run-b: a task_updated (or terminal) from it is a
+    // late event from the dead run and must flip nothing.
+    applyTaskEvent(session, sysFrame('task_updated', { task_id: 't1', patch: { status: 'running' }, run_id: 'run-a' }))
+    applyTaskEvent(session, sysFrame('task_notification', { task_id: 't1', status: 'failed', run_id: 'run-a' }))
+
+    expect(snapshots.length).toBe(before)
+    expect(session.tasks.get('t1')?.status).toBe('completed')
+    expect(session.tasks.get('t1')?.runId).toBe('run-b')
+  })
+
+  it('passes frames without run_id through (older CLIs, watcher-synthesized notifications)', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1', description: 'd', run_id: 'run-b' }))
+    applyTaskEvent(session, sysFrame('task_notification', { task_id: 't1', status: 'completed' }))
+
+    expect(session.tasks.get('t1')?.status).toBe('completed')
+    // The record keeps its known run — an untagged frame says nothing about runs.
+    expect(session.tasks.get('t1')?.runId).toBe('run-b')
+  })
+
   it('task_started creates a running record with the frame fields narrowed', () => {
     const { session } = makeTaskSession()
     applyTaskEvent(session, sysFrame('task_started', {
@@ -1693,6 +1731,55 @@ describe('applyTaskEvent', () => {
 // ---------------------------------------------------------------------------
 
 describe('applyBackgroundTasksChanged', () => {
+  it('seeds run_id (SDK 0.3.295) on new records and back-fills only when the record lacks one', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'a0', description: 'seeded', run_id: 'run-b' }))
+    applyBackgroundTasksChanged(session, sysFrame('background_tasks_changed', {
+      tasks: [
+        { task_id: 'a0', description: 'seeded', run_id: 'run-b' },
+        { task_id: 'a1', description: 'fresh', run_id: 'run-z' },
+      ],
+    }))
+
+    // Forward-only: the record's known run is never overwritten; the fresh
+    // seed takes the entry's run.
+    expect(session.tasks.get('a0')?.runId).toBe('run-b')
+    expect(session.tasks.get('a1')?.runId).toBe('run-z')
+  })
+
+  it('advances runId to a LATER snapshot run (reconnect reconciliation for a missed new-run start)', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'a0', description: 'v1', run_id: 'run-b' }))
+    applyTaskEvent(session, sysFrame('task_updated', { task_id: 'a0', patch: { status: 'completed' }, run_id: 'run-b' }))
+
+    // The task resumes as run-c while disconnected: run-c's task_started is
+    // lost, so the background_tasks_changed snapshot is the only signal.
+    applyBackgroundTasksChanged(session, sysFrame('background_tasks_changed', {
+      tasks: [{ task_id: 'a0', description: 'v1', run_id: 'run-c' }],
+    }))
+    expect(session.tasks.get('a0')?.runId).toBe('run-c')
+
+    // Now a late frame from the dead run-b must trip the stale guard —
+    // without the runId advance above, it would pass by equality.
+    applyTaskEvent(session, sysFrame('task_updated', { task_id: 'a0', patch: { status: 'running' }, run_id: 'run-b' }))
+    expect(session.tasks.get('a0')?.status).toBe('completed')
+  })
+
+  it('skips a snapshot entry naming a run older than the record (stale-run guard)', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 'a0', description: 'seeded', run_id: 'run-b' }))
+
+    applyBackgroundTasksChanged(session, sysFrame('background_tasks_changed', {
+      tasks: [{ task_id: 'a0', description: 'stale run', run_id: 'run-a' }],
+    }))
+
+    // The snapshot push itself is unconditional (pre-existing behavior) —
+    // the guard must keep the RECORD untouched: no back-fill from the
+    // superseded run.
+    expect(session.tasks.get('a0')?.description).toBe('seeded')
+    expect(session.tasks.get('a0')?.runId).toBe('run-b')
+  })
+
   it('seeds missing records as running + backgrounded and pushes a snapshot', () => {
     const { session, snapshots } = makeTaskSession()
     applyBackgroundTasksChanged(session, sysFrame('background_tasks_changed', {

@@ -226,7 +226,17 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
       PreToolUse: [
         {
           matcher: 'Bash',
-          hooks: [{ type: 'command', command: 'echo "PreToolUse: $CLAUDE_TOOL_NAME"', timeout: 10 }],
+          hooks: [{
+            type: 'command',
+            command: 'echo "PreToolUse: $CLAUDE_TOOL_NAME"',
+            timeout: 10,
+            // Optional per-hook field: onFailure: 'continue' | 'block' —
+            // what a failure (non-0/2 exit, timeout, invalid JSON output)
+            // does. 'continue' (default) reports and proceeds; 'block'
+            // counts as exit code 2 and stops the guarded action. Ignored
+            // for async hooks and on Stop/SubagentStop/TaskCompleted/
+            // TeammateIdle.
+          }],
         },
       ],
     }))

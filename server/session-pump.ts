@@ -151,6 +151,17 @@ function subagentTypeOf(v: unknown): string | undefined {
   return s === 'main-session' ? undefined : s
 }
 
+/** Stale-run guard (SDK 0.3.295 run_id): run ids of one task sort, by plain
+ *  string comparison, in the order the runs opened — a frame naming a run
+ *  strictly BEFORE the record's current run is a late event from a
+ *  superseded run. Untagged frames (older CLIs, watcher-synthesized
+ *  notifications) and records without a known run never trip the guard.
+ *  Shared by applyTaskEvent and applyBackgroundTasksChanged so the rule
+ *  lives in exactly one place. */
+function isStaleRun(recordRunId: string | undefined, frameRunId: string | undefined): boolean {
+  return recordRunId !== undefined && frameRunId !== undefined && frameRunId < recordRunId
+}
+
 /** Fold one SDK task_* system frame into `session.tasks` and push a full
  *  snapshot to the session's taskSubscribers. Upsert semantics: a
  *  task_updated / task_progress / task_notification may arrive without a
@@ -182,6 +193,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
     reason?: unknown
     resource_links?: unknown
     receivedAt?: unknown
+    run_id?: unknown
   }
   if (raw.subtype !== 'task_started' && raw.subtype !== 'task_updated'
     && raw.subtype !== 'task_progress' && raw.subtype !== 'task_notification') return
@@ -190,8 +202,20 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
   const str = frameStr
   const now = Date.now()
   const frameTime = typeof raw.receivedAt === 'number' ? raw.receivedAt : undefined
+  const runId = str(raw.run_id)
 
   const existing = session.tasks.get(raw.task_id)
+  // Stale-run guard (SDK 0.3.295 run_id): a resumed task keeps its task_id
+  // and opens a new run, and run ids of one task sort, by plain string
+  // comparison, in the order the runs opened. A frame naming a run strictly
+  // BEFORE the record's current run is a late event from a superseded run —
+  // accept it and a 'task_updated' from the dead run would flip the record
+  // back to 'running', or a late terminal would overwrite the new run's
+  // state. Frames WITHOUT run_id pass through (older CLIs, the watcher's
+  // synthesized notifications); a frame naming the SAME or a LATER run
+  // proceeds and advances the record's runId.
+  if (isStaleRun(existing?.runId, runId)) return
+  const nextRunId = runId ?? existing?.runId
   if (raw.subtype === 'task_started') {
     // Spread the existing record first (upsert, not replace): a duplicate /
     // out-of-order task_started — e.g. a real frame arriving AFTER the
@@ -212,6 +236,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
       // matches on. See normalizeTaskType.
       taskType: normalizeTaskType(str(raw.task_type)) ?? existing?.taskType,
       workflowName: str(raw.workflow_name) ?? existing?.workflowName,
+      runId: nextRunId,
       status: 'running',
       skipTranscript: raw.skip_transcript === true ? true : existing?.skipTranscript,
       ambient: raw.ambient === true ? true : existing?.ambient,
@@ -234,6 +259,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
       ...rec,
       toolUseId: str(raw.tool_use_id) ?? rec.toolUseId,
       description: str(patch.description) ?? str(raw.description) ?? rec.description,
+      runId: nextRunId,
       status: isTaskRecordStatus(patch.status) ? patch.status : rec.status,
       isBackgrounded: typeof patch.is_backgrounded === 'boolean' ? patch.is_backgrounded : rec.isBackgrounded,
       endedAt: typeof patch.end_time === 'number' ? patch.end_time : rec.endedAt,
@@ -247,6 +273,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
       ...rec,
       description: str(raw.description) ?? rec.description,
       subagentType: subagentTypeOf(raw.subagent_type) ?? rec.subagentType,
+      runId: nextRunId,
       progressSummary: str(raw.summary) ?? rec.progressSummary,
       lastToolName: str(raw.last_tool_name) ?? rec.lastToolName,
       updatedAt: now,
@@ -263,6 +290,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
       ...rec,
       toolUseId: str(raw.tool_use_id) ?? rec.toolUseId,
       description: str(raw.description) ?? rec.description,
+      runId: nextRunId,
       status,
       progressSummary: str(raw.summary) ?? rec.progressSummary,
       // SDK 0.3.273: present only when the task did not end through an
@@ -352,6 +380,12 @@ export function applyBackgroundTasksChanged(session: Session, msg: SDKMessage): 
     const taskId = typeof t.task_id === 'string' && t.task_id !== '' ? t.task_id : ''
     if (!taskId) continue
     const existing = session.tasks.get(taskId)
+    // Stale-run guard, same rule as applyTaskEvent: a snapshot entry naming
+    // a run strictly before the record's current run describes a superseded
+    // run of the same task — forward-only reconciliation must not
+    // back-fill from it.
+    const entryRunId = frameStr(t.run_id)
+    if (isStaleRun(existing?.runId, entryRunId)) continue
     if (existing) {
       const next = { ...existing }
       if (!next.description && typeof t.description === 'string') next.description = t.description
@@ -359,6 +393,11 @@ export function applyBackgroundTasksChanged(session: Session, msg: SDKMessage): 
       // SDK 0.3.293: snapshot entries carry an optional subagent_type, so a
       // host can name each subagent's type without pairing with task_started.
       if (!next.subagentType) next.subagentType = subagentTypeOf(t.subagent_type)
+      // SDK 0.3.295: a LATER entry run is the reconciliation channel for a
+      // new run whose task_started was missed during a disconnect — advance
+      // to it, or the stale guard would keep accepting the dead run's late
+      // frames by equality. (Same-run re-emissions are equal: no-op.)
+      if (entryRunId !== undefined && (next.runId === undefined || entryRunId > next.runId)) next.runId = entryRunId
       if (t.ambient === true) next.ambient = true
       next.updatedAt = now
       session.tasks.set(taskId, next)
@@ -368,6 +407,7 @@ export function applyBackgroundTasksChanged(session: Session, msg: SDKMessage): 
         description: typeof t.description === 'string' ? t.description : '',
         taskType: typeof t.task_type === 'string' ? normalizeTaskType(t.task_type) : undefined,
         subagentType: subagentTypeOf(t.subagent_type),
+        runId: entryRunId,
         ambient: t.ambient === true,
         isBackgrounded: true,
         status: 'running',

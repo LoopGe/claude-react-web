@@ -42,6 +42,15 @@ export interface BaseHookConfig {
   timeout?: number
   statusMessage?: string
   once?: boolean
+  /** What a failure of this hook does (SDK Settings hook field, 0.3.295):
+   *  could not start (missing script/plugin dir), timed out, exited with a
+   *  code other than 0/2, or printed JSON that is invalid or fails
+   *  validation. 'continue' (default): the failure is reported and the
+   *  action goes ahead. 'block': the failure counts as exit code 2, so the
+   *  action the event guards (a tool call, a permission request, a prompt)
+   *  is blocked. Ignored by the CLI for async hooks and on Stop,
+   *  SubagentStop, TaskCompleted and TeammateIdle. */
+  onFailure?: 'continue' | 'block'
 }
 
 export interface CommandHookConfig extends BaseHookConfig {
@@ -181,15 +190,25 @@ function optionalStringArray(value: unknown, path: string, errors: HooksValidati
   return out
 }
 
+const ON_FAILURE_SET = new Set<string>(['continue', 'block'])
+
 function assignBase(target: HookConfig, raw: Record<string, unknown>, path: string, errors: HooksValidationError[]): HookConfig {
   const condition = optionalString(raw.if, `${path}.if`, errors)
   const timeout = optionalPositiveNumber(raw.timeout, `${path}.timeout`, errors)
   const statusMessage = optionalString(raw.statusMessage, `${path}.statusMessage`, errors)
   const once = optionalBoolean(raw.once, `${path}.once`, errors)
+  const onFailure = optionalString(raw.onFailure, `${path}.onFailure`, errors)
   if (condition !== undefined) target.if = condition
   if (timeout !== undefined) target.timeout = timeout
   if (statusMessage !== undefined) target.statusMessage = statusMessage
   if (once !== undefined) target.once = once
+  if (onFailure !== undefined) {
+    // Present but unknown → error (not strip): 'block' vs 'continue' is a
+    // enforcement-semantics choice, and silently dropping a typo'd 'blok'
+    // would flip the user's intent to the laxer default.
+    if (!ON_FAILURE_SET.has(onFailure)) errors.push({ path: `${path}.onFailure`, message: 'must be "continue" or "block"' })
+    else target.onFailure = onFailure as 'continue' | 'block'
+  }
   return target
 }
 

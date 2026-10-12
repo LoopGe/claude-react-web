@@ -113,6 +113,15 @@ export interface TaskRecordUi {
   /** Files a backgrounded MCP task returned by reference (SDK 0.3.257
    *  `task_notification.resource_links`). */
   resourceLinks?: TaskResourceLink[]
+  /** Id of the run the record currently reflects (SDK 0.3.295 `run_id`):
+   *  equal on every task_* event / background_tasks_changed entry of that
+   *  run; a resumed task keeps its task_id and opens a new run. Run ids of
+   *  one task sort, by plain string comparison, in the order the runs
+   *  opened — applyTaskEvent drops frames naming a run that sorts BEFORE the
+   *  record's runId (late events from a superseded run). Absent on records
+   *  written from frames without the field (older CLIs, the watcher's
+   *  synthesized notifications). */
+  runId?: string
   /** Server receive time of the task_started frame (stampReceivedAt). */
   startedAt?: number
   endedAt?: number

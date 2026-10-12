@@ -56,6 +56,38 @@ describe('hooks config validation', () => {
     expect(result.errors.map((e) => e.path)).toEqual(['UnknownEvent', 'PreToolUse[0].hooks[0].type'])
   })
 
+  it('normalizes onFailure (SDK 0.3.295) on every hook type and forwards it verbatim to SDK settings', () => {
+    const result = validateSessionHooksConfig({
+      PreToolUse: [{
+        hooks: [
+          { type: 'command', command: 'strict', onFailure: 'block' },
+          { type: 'http', url: 'https://example.com/h', onFailure: 'continue' },
+        ],
+      }],
+      UserPromptSubmit: [{ hooks: [{ type: 'prompt', prompt: 'check', onFailure: 'block' }] }],
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.PreToolUse?.[0]?.hooks[0]).toMatchObject({ type: 'command', onFailure: 'block' })
+    expect(result.value.PreToolUse?.[0]?.hooks[1]).toMatchObject({ type: 'http', onFailure: 'continue' })
+    expect(result.value.UserPromptSubmit?.[0]?.hooks[0]).toMatchObject({ type: 'prompt', onFailure: 'block' })
+    // toSdkHooksSettings spreads the whole hook — onFailure must survive.
+    expect(toSdkHooksSettings(result.value).PreToolUse).toEqual(result.value.PreToolUse)
+  })
+
+  it('rejects an unknown onFailure value', () => {
+    const result = validateSessionHooksConfig({
+      PreToolUse: [{ hooks: [{ type: 'command', command: 'x', onFailure: 'maybe' }] }],
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.errors).toEqual([
+      { path: 'PreToolUse[0].hooks[0].onFailure', message: 'must be "continue" or "block"' },
+    ])
+  })
+
   it('normalizes prompt and agent hooks for Claude Code parity', () => {
     const result = validateSessionHooksConfig({
       Stop: [{ hooks: [{ type: 'prompt', prompt: 'Summarize $ARGUMENTS', model: 'claude-haiku' }] }],
