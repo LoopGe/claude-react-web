@@ -31,7 +31,7 @@ describe('ReplayBurstRegistry', () => {
 
     const t2 = createReplayBurstToken('s1')
     const freed = reg.register(t2, entry('c'.repeat(5), 'replay', t2))
-    expect(freed).toEqual({ frames: 2, chars: 30 })
+    expect(freed).toEqual({ frames: 2, chars: 30, burstId: 0 })
     expect(e1.dropped).toBe(true)
     expect(e2.dropped).toBe(true)
   })
@@ -47,7 +47,7 @@ describe('ReplayBurstRegistry', () => {
 
     const t2 = createReplayBurstToken('s1')
     const freed = reg.register(t2, entry('c', 'replay', t2))
-    expect(freed).toEqual({ frames: 1, chars: 20 })
+    expect(freed).toEqual({ frames: 1, chars: 20, burstId: 0 })
     expect(e1.dropped).toBeUndefined()
     expect(e2.dropped).toBe(true)
   })
@@ -63,7 +63,7 @@ describe('ReplayBurstRegistry', () => {
 
     const t2 = createReplayBurstToken('s1')
     const freed = reg.register(t2, entry('c', 'replay', t2))
-    expect(freed).toEqual({ frames: 1, chars: 20 })
+    expect(freed).toEqual({ frames: 1, chars: 20, burstId: 0 })
   })
 
   it('consuming the replay-done deactivates the burst, so a later register frees nothing', () => {
@@ -94,7 +94,7 @@ describe('ReplayBurstRegistry', () => {
 
     const t2 = createReplayBurstToken('s1')
     const freed = reg.register(t2, entry('c', 'replay', t2))
-    expect(freed).toEqual({ frames: 1, chars: 20 })
+    expect(freed).toEqual({ frames: 1, chars: 20, burstId: 0 })
   })
 
   it('bursts of different sessions never supersede each other', () => {
@@ -116,7 +116,7 @@ describe('ReplayBurstRegistry', () => {
     reg.register(t1, entry('b'.repeat(20), 'replay', t1))
 
     const t2 = createReplayBurstToken('s1')
-    expect(reg.register(t2, entry('c', 'replay', t2))).toEqual({ frames: 2, chars: 30 })
+    expect(reg.register(t2, entry('c', 'replay', t2))).toEqual({ frames: 2, chars: 30, burstId: 0 })
     expect(reg.register(t2, entry('d', 'replay-done', t2))).toEqual({ frames: 0, chars: 0 })
   })
 
@@ -128,7 +128,7 @@ describe('ReplayBurstRegistry', () => {
     reg.register(t1, e1)
     reg.register(t1, done1)
 
-    expect(reg.dropSession('s1')).toEqual({ frames: 2, chars: 30 })
+    expect(reg.dropSession('s1')).toEqual({ frames: 2, chars: 30, burstId: 0 })
     expect(e1.dropped).toBe(true)
     expect(done1.dropped).toBe(true)
 
@@ -145,7 +145,7 @@ describe('ReplayBurstRegistry', () => {
     reg.register(t1, done1)
     reg.onConsumed(e1)
 
-    expect(reg.dropSession('s1')).toEqual({ frames: 1, chars: 20 })
+    expect(reg.dropSession('s1')).toEqual({ frames: 1, chars: 20, burstId: 0 })
     expect(e1.dropped).toBeUndefined()
 
     const t2 = createReplayBurstToken('s1')

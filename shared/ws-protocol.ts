@@ -177,10 +177,16 @@ export interface WsReplay<Msg, Perm> {
   /** Tail-first replay: this frame is a backfill chunk, strictly older
    *  than everything already on screen. Absent on ordinary frames. */
   backfill?: boolean
+  /** TEMPORARY (reorder investigation): id of the replay burst this frame
+   *  belongs to — one id per sendReplay call, monotonic per server process.
+   *  Lets the client trace which buffered frames came from which burst. */
+  burstId?: number
 }
 export interface WsReplayDone<Perm> {
   kind: 'replay-done'
   sessionId: string
+  /** TEMPORARY (reorder investigation): see WsReplay.burstId. */
+  burstId?: number
   /** When the server uses chunked replay (>50 messages), permissions
    *  ride on the final replay-done frame instead of the first replay
    *  chunk. Older clients ignore unknown fields, so this is safe. */

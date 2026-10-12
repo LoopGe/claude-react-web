@@ -119,7 +119,7 @@ describe('WsWriteQueue replay-burst supersede', () => {
     queue.enqueueRaw(REPLAY_DONE_JSON, 'replay-done', t1) // queued
 
     const freed = queue.dropSessionReplays('s1')
-    expect(freed).toEqual({ frames: 1, chars: REPLAY_DONE_JSON.length })
+    expect(freed).toEqual({ frames: 1, chars: REPLAY_DONE_JSON.length, burstId: 0 })
 
     await ws.releaseAll()
     expect(ws.sent).toEqual(['B1-CHUNK-1'])

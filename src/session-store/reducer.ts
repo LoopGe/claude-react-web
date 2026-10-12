@@ -1,5 +1,7 @@
 import { isTerminalTaskStatus } from '../../shared/tasks.js'
 import type { PermissionRequest, SdkMessage } from '../types'
+// TEMPORARY (reorder investigation) — remove with the trace points below.
+import { msgTag, msgTime, replayTrace } from './replay-trace'
 import {
   createInitialClientIntent,
   createInitialServerMirror,
@@ -44,6 +46,7 @@ import { toolDebug, toolDebugEnabled } from './debug'
 import { parseWorkflowOutput } from './workflow-meta'
 import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
 import { isEmptyResultFrame } from '../../shared/results.js'
+import { isCursorAnchorable } from './normalize'
 
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -452,7 +455,19 @@ function replayReplace(
   // newer, drop the overlap). This makes the merge correct regardless of how
   // the server happened to slice — no reliance on sinceUuid landing cleanly.
   if (payload.length > 0 && prevMirror.items.length > 0) {
-    const { older, newer, overlap } = splitReplayAgainstCache(payload, prevMirror.items)
+    const { older, mid, newer, overlap } = splitReplayAgainstCache(payload, prevMirror.items)
+    // TEMPORARY (reorder investigation): split outcome trace.
+    replayTrace(prevState.sessionId, 0, 'split', {
+      payload: payload.length,
+      older: older.length,
+      mid: mid.length,
+      newer: newer.length,
+      overlap: overlap.length,
+      payloadFirst: msgTag(payload[0]),
+      payloadLast: msgTag(payload[payload.length - 1]),
+      cacheLen: prevMirror.items.length,
+      cacheLast: msgTag(prevMirror.items[prevMirror.items.length - 1]?.msg),
+    })
     // Preserve an in-progress turn's accumulated text across a benign
     // reconnect / panel-switch-back replay. The live turn's partial text lives
     // ONLY in `liveTurn` — stream_event deltas never enter the history ring
@@ -481,19 +496,54 @@ function replayReplace(
     for (const message of newer) {
       state = applyMessage(state, message)
     }
-    // Full-overlap drop: the split treated the whole payload as already on
-    // screen (older=[], newer=[]), so applyMessage never ran and
-    // lastMessageUuid stays at the stale cached value (a server-minted prompt
-    // uuid the post-restart ring doesn't carry). Advance it to the replay's
-    // last message uuid — that is the newest the server has, and (after a
-    // restart re-seed) the uuid the server's ring actually recognizes. Without
-    // this, the next reconnect's sinceUuid misses the ring and the server
-    // re-sends the same full replay on every reconnect until a live message
-    // happens to land.
-    if (older.length === 0 && newer.length === 0 && payload.length > 0) {
-      const lastUuid = typeof payload[payload.length - 1].uuid === 'string'
-        ? (payload[payload.length - 1].uuid as string)
-        : null
+    // Mid slice: no-uuid-overlap payload frames inside the cache's time span
+    // — holes to fill + uuid-mismatched prompt twins to skip. Applied at the
+    // tail (applyMessage machinery), then repositioned by the repair pass.
+    state = applyMidSlice(state, mid, payload)
+    // Chronology repair: repositions anything the merge (or a historical
+    // bug) left out of time order. No-op on healthy state.
+    state = repairChronology(state)
+    // Cursor advance. Two regimes:
+    //
+    //  - Fully-dropped payload (everything matched or the degenerate
+    //    prompt-equal branch): applyMessage never ran, so lastMessageUuid
+    //    stays at the cached value — which after a restart re-seed is a
+    //    server-minted prompt uuid the rebuilt ring does not carry. Advance
+    //    to the payload's last uuid (the newest the server's ring actually
+    //    recognizes) so the next reconnect doesn't miss and re-send the full
+    //    replay forever.
+    //  - Anything applied or merged: the mirror's own last uuid-bearing
+    //    message is the newest content the mirror holds — which is what the
+    //    cursor must track (applyMessage already does this for the append
+    //    path; the scan also covers prepend-only merges, mid fills whose
+    //    frames were repositioned away from the tail by the repair pass, and
+    //    a displaced tail the repair moved — each of which would otherwise
+    //    anchor the cursor on a mid-transcript uuid).
+    const fullyDropped = older.length === 0 && newer.length === 0 && mid.length === 0
+    if (fullyDropped) {
+      // The payload was fully dropped — anchor on its newest DURABLE uuid
+      // (the uuid the rebuilt ring will recognize). A backward scan: the
+      // payload's literal last frame may be broadcast-only (command_lifecycle,
+      // init) and would miss the rebuilt ring (94330c21).
+      let lastUuid: string | null = null
+      for (let i = payload.length - 1; i >= 0; i--) {
+        const u = payload[i]?.uuid
+        if (typeof u === 'string' && isCursorAnchorable(payload[i])) { lastUuid = u; break }
+      }
+      if (lastUuid && state.mirror.lastMessageUuid !== lastUuid) {
+        state = withMirror(state, { ...state.mirror, lastMessageUuid: lastUuid })
+      }
+    } else {
+      // Anchor on the mirror's newest DURABLE uuid — the mid fill appends
+      // (then repositions) hole frames and the repair pass moves displaced
+      // tails, so the literal last message is not necessarily the right
+      // anchor.
+      const msgs = state.mirror.messages
+      let lastUuid: string | null = null
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const u = msgs[i]?.uuid
+        if (typeof u === 'string' && isCursorAnchorable(msgs[i])) { lastUuid = u; break }
+      }
       if (lastUuid && state.mirror.lastMessageUuid !== lastUuid) {
         state = withMirror(state, { ...state.mirror, lastMessageUuid: lastUuid })
       }
@@ -503,7 +553,7 @@ function replayReplace(
     if (finalLen < prevLen) {
       console.warn(
         `[replayReplace] MERGE: items shrunk ${prevLen} → ${finalLen} ` +
-        `(replay=${payload.length}, older=${older.length}, newer=${newer.length})`,
+        `(replay=${payload.length}, older=${older.length}, mid=${mid.length}, newer=${newer.length})`,
       )
     }
     // Never synthesize a turn end while merging a replay into an existing
@@ -661,6 +711,174 @@ function replaceStaleCachedMessages(state: SessionState, incoming: SdkMessage[])
   return withMirror(state, { ...mirror, items, messages })
 }
 
+/** Apply the `mid` slice of a no-overlap time partition — payload frames that
+ *  fall inside the cache's time span without matching any cached uuid.
+ *
+ *  Two populations live here, and they need opposite handling:
+ *
+ *    - HOLES: frames the cache genuinely lost (a truncated burst that was
+ *      applied out of order, a merge that dropped them, a corrupt remnant
+ *      state). Filling them is the point — the server ring is the transcript
+ *      authority, and a frame the cache lacks belongs in the transcript.
+ *    - TWINS: uuid-mismatched copies of frames the cache already holds. The
+ *      only uuid-mismatch class is top-level prompts (server-minted broadcast
+ *      uuid vs on-disk SDK uuid); they are detected by content fingerprint
+ *      within {@link TWIN_TIME_WINDOW_MS} and skipped — applying one would
+ *      paint a duplicate prompt bubble next to its cached twin.
+ *
+ *  Null-time mid frames are stamped with their payload predecessor's time
+ *  before applying: the payload is a contiguous chronological slice, so the
+ *  predecessor's time is a true lower bound, and repairChronology can only
+ *  reposition frames it can time-compare. (receivedAt is a client-side
+ *  placement field for live frames anyway; the display change is limited to
+ *  previously-timeless hole frames.)
+ *
+ *  Mid frames apply through applyMessage (append at the tail, full index
+ *  machinery) — out of position by construction. repairChronology runs right
+ *  after in replayReplace and moves them to their time-correct position; the
+ *  decouple is what keeps this helper trivial and the repair generic. */
+function applyMidSlice(state: SessionState, mid: SdkMessage[], payload: SdkMessage[]): SessionState {
+  if (mid.length === 0) return state
+  // Identity by reference: the partition returns the same message objects the
+  // payload holds, so a reference set is exhaustive — no uuid fallback needed.
+  const midRefs = new Set<SdkMessage>(mid)
+  // Cached top-level prompts by content fingerprint → their times. Built
+  // lazily-ish: only when a mid slice exists (rare — no-overlap partitions
+  // with an in-span component).
+  const mirror = state.mirror
+  const promptTwinTimes = new Map<string, number[]>()
+  for (const it of mirror.items) {
+    const m = it.msg
+    if (m.type === 'user' && m.parent_tool_use_id == null) {
+      const fp = promptContentFingerprint(m)
+      if (fp == null) continue
+      const t = msgTime(m)
+      if (t == null) continue
+      const list = promptTwinTimes.get(fp)
+      if (list) list.push(t)
+      else promptTwinTimes.set(fp, [t])
+    }
+  }
+  let working = state
+  let lastTime: number | null = null
+  let applied = 0
+  let skippedTwins = 0
+  for (const m of payload) {
+    const inMid = midRefs.has(m)
+    const t = msgTime(m)
+    if (t != null) lastTime = t
+    if (!inMid) continue
+    if (m.type === 'user' && m.parent_tool_use_id == null) {
+      const fp = promptContentFingerprint(m)
+      const placeTime = t ?? lastTime
+      if (fp != null && placeTime != null) {
+        const times = promptTwinTimes.get(fp)
+        if (times != null && times.some((ct) => Math.abs(ct - placeTime) <= TWIN_TIME_WINDOW_MS)) {
+          skippedTwins++
+          continue
+        }
+      }
+    }
+    const stamped = t == null && lastTime != null ? { ...m, receivedAt: lastTime } : m
+    working = applyMessage(working, stamped)
+    applied++
+  }
+  // TEMPORARY (reorder investigation): mid-fill telemetry.
+  replayTrace(state.sessionId, 0, 'mid-applied', { mid: mid.length, applied, skippedTwins })
+  return working
+}
+
+/** Upper bound on reposition moves in one repair pass — a pathological input
+ *  (thousands of inversions) aborts the pass atomically instead of churning
+ *  O(n²) splices on the render path. The 96b4eaaa corruption needed ~150. */
+const REPAIR_MOVES_CAP = 2000
+
+/** Re-order the mirror chronologically. A no-op on healthy state: the pass
+ *  only touches elements whose time is MORE than {@link REPAIR_TIME_TOLERANCE_MS}
+ *  out of order relative to their nearest timed predecessor — healthy
+ *  transcripts are ordered to within the CLI's per-line millisecond jitter.
+ *
+ *  This is what makes out-of-position application safe (mid slices append at
+ *  the tail and are moved into place here), and what heals caches already
+ *  damaged by the historical merge bugs: displaced runs (e.g. the disk-seed
+ *  head sitting after live messages in the 96b4eaaa store) are detected as
+ *  time inversions and re-inserted at their chronological position.
+ *
+ *  Mechanics: a forward scan; element i is displaced when its time precedes
+ *  its nearest timed predecessor's by more than the tolerance. The displaced
+ *  RUN extends backwards over contiguous null-time members (they were emitted
+ *  between the same neighbours and must travel with the cluster), is spliced
+ *  out, and re-inserted after the last timed element whose time ≤ the run's
+ *  time. Frames without any comparable time never move. Bounded by
+ *  {@link REPAIR_MOVES_CAP} — exceeding it aborts the whole pass atomically
+ *  (the original mirror is returned) so a pathological transcript can never
+ *  half-repair. */
+function repairChronology(state: SessionState): SessionState {
+  const mirror = state.mirror
+  const n = mirror.items.length
+  if (n < 2) return state
+  const times: (number | null)[] = new Array(n)
+  for (let i = 0; i < n; i++) times[i] = msgTime(mirror.messages[i])
+  let items = mirror.items
+  let messages = mirror.messages
+  let copied = false
+  let moves = 0
+  let i = 1
+  while (i < n) {
+    const t = times[i]
+    if (t == null) { i++; continue }
+    let p = i - 1
+    while (p >= 0 && times[p] == null) p--
+    if (p < 0) { i++; continue }
+    if (times[p]! - t <= REPAIR_TIME_TOLERANCE_MS) { i++; continue }
+    // Displaced: extend the run over contiguous null-time members on BOTH
+    // sides — backward between p and i, and forward past i. Null-time frames
+    // (results, command_lifecycle) are emitted adjacent to their cluster's
+    // timed frames; a move that leaves trailing nulls behind would split the
+    // cluster across the transcript (the exact displacement this pass fixes).
+    let s = i
+    while (s - 1 > p && times[s - 1] == null) s--
+    let e = i
+    while (e + 1 < n && times[e + 1] == null) e++
+    // Insertion point: after the last timed element with time ≤ t, scanning
+    // backward from p (null-time entries are transparent). q lands ≤ p < s,
+    // so the later splice never needs index adjustment.
+    let q = p
+    while (q >= 0 && (times[q] == null || times[q]! > t)) q--
+    const insertAt = q + 1
+    const runLen = e - s + 1
+    if (!copied) {
+      items = [...items]
+      messages = [...messages]
+      copied = true
+    }
+    const runItems = items.splice(s, runLen)
+    const runMsgs = messages.splice(s, runLen)
+    const runTimes = times.splice(s, runLen)
+    items.splice(insertAt, 0, ...runItems)
+    messages.splice(insertAt, 0, ...runMsgs)
+    times.splice(insertAt, 0, ...runTimes)
+    moves++
+    if (moves > REPAIR_MOVES_CAP) {
+      // Atomic abort — the partial edits live only in the copies.
+      console.warn(
+        `[repairChronology] aborted after ${moves} moves (cap ${REPAIR_MOVES_CAP}) — ` +
+        `leaving the mirror untouched`,
+      )
+      return state
+    }
+    // Continue scanning after the re-inserted run.
+    i = insertAt + runLen
+  }
+  if (moves > 0) {
+    // TEMPORARY (reorder investigation): repair telemetry.
+    replayTrace(state.sessionId, 0, 'repair', { moves, len: n })
+    console.warn(`[repairChronology] moved ${moves} displaced item(s) into chronological order`)
+  }
+  if (!copied) return state
+  return withMirror(state, { ...mirror, items, messages })
+}
+
 /** Overlap-anchor key: the message uuid, or null when the frame must NOT
  *  anchor the overlap bracket.
  *  We anchor ONLY on disk-stable frames (assistant / system / tool_result-
@@ -685,12 +903,23 @@ function overlapAnchorUuid(msg: SdkMessage): string | null {
   return typeof msg.uuid === 'string' ? msg.uuid : null
 }
 
-/** Split a replay payload into the portion OLDER than the cached transcript
- *  and the portion NEWER than it. The middle (the overlap bracket) is
- *  returned separately: the caller drops it by default (identical cached
- *  copies must not be re-applied — see replayReplace) but may REPLACE
- *  degraded cached copies whose content differs from the authoritative replay
- *  copy (see replaceStaleCachedMessages — the image-restore path).
+/** Split a replay payload into the portion OLDER than the cached transcript,
+ *  the NEWER portion, and the middle. The middle comes in two flavours:
+ *
+ *    - `overlap` — payload frames whose uuid is already cached (the bracket
+ *      between the first and last uuid match). The caller drops them by
+ *      default (identical cached copies must not be re-applied) but may
+ *      REPLACE degraded cached copies whose content differs from the
+ *      authoritative replay copy (replaceStaleCachedMessages — the
+ *      image-restore path).
+ *    - `mid` — no-uuid-overlap payload frames that fall INSIDE the cache's
+ *      time span. These are either holes the cache lost (fill them —
+ *      applyMidSlice) or uuid-mismatched twins of cached frames (skipped by
+ *      fingerprint+time twin check there). Only produced by the no-overlap
+ *      time partition; the uuid-bracket path keeps its historic
+ *      drop-the-bracket semantics (mid: []) — holes inside a matched bracket
+ *      are the rarer shape and the repair pass covers them only via a later
+ *      broad replay.
  *
  *  Both the replay payload and the cache are chronological slices of the same
  *  transcript. We bracket the overlap by disk-stable uuid (overlapAnchorUuid):
@@ -701,10 +930,13 @@ function overlapAnchorUuid(msg: SdkMessage): string | null {
  *  applyMessage append); the overlap itself is dropped.
  *
  *  The clean-reconnect case (server already sliced to strictly-newer messages)
- *  has zero overlap, so `firstOverlap` stays -1 and the entire payload falls
- *  into `newer` — byte-identical to the original blind append. The resume-seed
- *  / full-replay case overlaps the cache tail, so that overlap is dropped
- *  instead of double-appended.
+ *  has zero overlap, so `firstOverlap` stays -1 and the entire payload is
+ *  partitioned by time (partitionNoOverlapByTime): predates the cache head →
+ *  `older`; postdates the cache tail → `newer` (byte-identical to the original
+ *  blind append for a genuine incremental reconnect); inside the cache's time
+ *  span without a uuid match → `mid`. The resume-seed / full-replay case
+ *  overlaps the cache tail, so that overlap is dropped instead of
+ *  double-appended.
  *
  *  We use the first/last anchor bracket rather than per-message membership: a
  *  payload is a contiguous transcript slice, so a uuid that appears mid-payload
@@ -713,7 +945,7 @@ function overlapAnchorUuid(msg: SdkMessage): string | null {
 export function splitReplayAgainstCache(
   messages: SdkMessage[],
   items: ServerMirror['items'],
-): { older: SdkMessage[]; newer: SdkMessage[]; overlap: SdkMessage[] } {
+): { older: SdkMessage[]; mid: SdkMessage[]; newer: SdkMessage[]; overlap: SdkMessage[] } {
   // cacheUuids holds the uuid of EVERY cache message — disk-stable frames
   // (assistant / system / tool_result-bearing user) AND top-level user prompts
   // — so the overlap bracket below can match a re-sent prompt by uuid too.
@@ -764,6 +996,7 @@ export function splitReplayAgainstCache(
   if (firstOverlap !== -1) {
     return {
       older: messages.slice(0, firstOverlap),
+      mid: [],
       newer: messages.slice(lastOverlap + 1),
       overlap: messages.slice(firstOverlap, lastOverlap + 1),
     }
@@ -796,11 +1029,113 @@ export function splitReplayAgainstCache(
   // reply yet) — a single tab can't send while disconnected, so it can't
   // happen single-tab.
   if (!cacheHasAnchor && !replayHasAnchor && promptSequencesEqual(items, messages)) {
-    return { older: [], newer: [], overlap: [] }
+    return { older: [], mid: [], newer: [], overlap: [] }
   }
-  // No overlap → clean reconnect (or a disjoint older batch). Treat the whole
-  // payload as newer; applyMessage append preserves the original behaviour.
-  return { older: [], newer: messages, overlap: [] }
+  // No uuid overlap. The legacy behaviour treated the whole payload as
+  // `newer` — correct for a genuine incremental reconnect slice, but a
+  // blind append of a payload that is chronologically OLDER than the cache
+  // is the mechanism that landed the disk-seed head after live messages in
+  // the 96b4eaaa reorder (and the `!!STALE-BUFFER` trace proved the mixed
+  // payloads that produce such disjoint no-overlap batches happen in the
+  // wild). Partition the payload by TIME against the cache's span instead:
+  //
+  //   older — predates the cache head (prepended; uuid + prompt-signature
+  //           dedup applies there)
+  //   mid   — inside the cache's time span without matching any uuid: either
+  //           a HOLE the cache lost (fill it — see applyMidSlice) or a
+  //           uuid-mismatched twin of a cached frame (server-minted prompt
+  //           uuid vs disk uuid — skipped by fingerprint+time twin check)
+  //   newer — postdates the cache tail (appended; the original behaviour)
+  //
+  // Frames without a comparable time ride their payload predecessor's run
+  // (the payload is a contiguous chronological slice, so a null-time frame
+  // belongs to the run of the timed neighbour before it); a leading
+  // null-time run defaults to `newer` — the legacy append.
+  return partitionNoOverlapByTime(messages, items)
+}
+
+/** Time tolerance for partition/repair decisions. Healthy transcripts are
+ *  ordered to within milliseconds (the CLI's own per-line jitter); genuine
+ *  displacement (the reorder bug) moves content by minutes-to-days. Anything
+ *  below this threshold is treated as ordered. */
+const REPAIR_TIME_TOLERANCE_MS = 5_000
+
+/** How far from a cached prompt (by time) a same-fingerprint payload copy is
+ *  considered its twin rather than a distinct turn. Prompt copies of the same
+ *  logical message (server broadcast → SDK transcript write) land within
+ *  milliseconds of each other; a genuinely repeated prompt ("continue",
+ *  "ok") is a separate send whose wall-clock distance is user-scale. The
+ *  window is deliberately tight: a false twin-drop silently deletes a real
+ *  turn's prompt bubble, while a missed twin only risks a duplicate bubble
+ *  in the rare un-bridged-restart path this check exists for. */
+const TWIN_TIME_WINDOW_MS = 2_000
+
+function partitionNoOverlapByTime(
+  messages: SdkMessage[],
+  items: ServerMirror['items'],
+): { older: SdkMessage[]; mid: SdkMessage[]; newer: SdkMessage[]; overlap: SdkMessage[] } {
+  const older: SdkMessage[] = []
+  const mid: SdkMessage[] = []
+  const newer: SdkMessage[] = []
+  if (messages.length === 0) return { older, mid, newer, overlap: [] }
+  const cacheHeadTime = msgTime(items[0]?.msg)
+  const cacheTailTime = msgTime(items[items.length - 1]?.msg)
+  if (cacheHeadTime == null || cacheTailTime == null) {
+    // No comparable cache times — preserve the legacy append behaviour.
+    // TEMPORARY (reorder investigation): the old !!OLD-AS-NEWER detector.
+    const pT = msgTime(messages[0])
+    if (pT != null) {
+      replayTrace('', 0, 'partition-no-cache-time', { payloadLen: messages.length, payloadFirstT: pT })
+    }
+    return { older, mid, newer: messages, overlap: [] }
+  }
+  // Leading null-time frames have no timed predecessor to ride — they belong
+  // with the payload's FIRST timed frame (they precede it in payload order,
+  // and the payload is a chronological slice, so that frame's run is their
+  // run). Defaulting them to 'newer' would split the cluster across the
+  // transcript: the timed frame prepends/appends while its leading null-time
+  // members land at the opposite end.
+  let firstTimedRun: 'older' | 'mid' | 'newer' | null = null
+  for (const m of messages) {
+    const t = msgTime(m)
+    if (t == null) continue
+    firstTimedRun =
+      t < cacheHeadTime - REPAIR_TIME_TOLERANCE_MS
+        ? 'older'
+        : t > cacheTailTime + REPAIR_TIME_TOLERANCE_MS
+          ? 'newer'
+          : 'mid'
+    break
+  }
+  let run: 'older' | 'mid' | 'newer' = firstTimedRun ?? 'newer'
+  for (const m of messages) {
+    const t = msgTime(m)
+    if (t == null) {
+      // Ride the predecessor's run (payload order is chronological).
+      if (run === 'older') older.push(m)
+      else if (run === 'mid') mid.push(m)
+      else newer.push(m)
+      continue
+    }
+    if (t < cacheHeadTime - REPAIR_TIME_TOLERANCE_MS) run = 'older'
+    else if (t > cacheTailTime + REPAIR_TIME_TOLERANCE_MS) run = 'newer'
+    else run = 'mid'
+    if (run === 'older') older.push(m)
+    else if (run === 'mid') mid.push(m)
+    else newer.push(m)
+  }
+  if (older.length > 0) {
+    // TEMPORARY (reorder investigation): this is the exact branch that used
+    // to blind-append (the !!OLD-AS-NEWER smoking gun) — now routed to the
+    // prepend path instead.
+    replayTrace('', 0, 'partition-older', {
+      older: older.length,
+      mid: mid.length,
+      newer: newer.length,
+      payloadLen: messages.length,
+    })
+  }
+  return { older, mid, newer, overlap: [] }
 }
 
 function promptSequencesEqual(
@@ -951,6 +1286,16 @@ function prependMessages(
   }
 
   if (newItems.length === 0) return state
+
+  // TEMPORARY (reorder investigation): prepend trace — how many of the
+  // incoming batch survived uuid/prompt-signature dedup.
+  replayTrace(state.sessionId, 0, 'prepend', {
+    batchIn: older.length,
+    applied: newItems.length,
+    trustUuidDedup: opts?.trustUuidDedup === true,
+    first: msgTag(newItems[0]?.msg),
+    last: msgTag(newItems[newItems.length - 1]?.msg),
+  })
 
   let next: SessionState = withMirror(state, {
     ...mirror,
@@ -1716,7 +2061,13 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   const workingMirror: ServerMirror = {
     ...mirror,
     eventCount: mirror.eventCount + 1,
-    ...(messageUuid && !isApiRetry && !isThinkingTokens && !isStreamEvent && !isToolProgress && !isEmptyResult ? { lastMessageUuid: messageUuid } : {}),
+    // The cursor anchors ONLY on frames a rebuilt ring will still resolve
+    // (isCursorAnchorable) — a restart drops broadcast-only frames
+    // (command_lifecycle, init, …), and a cursor parked on one then misses
+    // every reconnect until a durable frame lands (the 94330c21 full-replay
+    // loop). The per-type transient exclusions below are subsumed by the
+    // durability check except where a frame type needs call-site context.
+    ...(messageUuid && !isApiRetry && !isThinkingTokens && !isStreamEvent && !isToolProgress && !isEmptyResult && isCursorAnchorable(incomingMessage) ? { lastMessageUuid: messageUuid } : {}),
     apiRetry: isApiRetry ? incomingMessage : null,
     thinkingTokens,
   }

@@ -29,10 +29,14 @@
  *  per serve; object identity is the key, sessionId drives supersede scope. */
 export interface ReplayBurstToken {
   readonly sessionId: string
+  /** TEMPORARY (reorder investigation): numeric id stamped on the wire frames
+   *  and in supersede logs so client-side buffer composition can be traced
+   *  back to the exact server burst. */
+  readonly id: number
 }
 
-export function createReplayBurstToken(sessionId: string): ReplayBurstToken {
-  return { sessionId }
+export function createReplayBurstToken(sessionId: string, id?: number): ReplayBurstToken {
+  return { sessionId, id: id ?? 0 }
 }
 
 /** Minimal shape a sink's queue entry must expose for the registry. The sink
@@ -52,6 +56,9 @@ export interface BurstQueueEntry {
 export interface SupersededFrames {
   frames: number
   chars: number
+  /** TEMPORARY (reorder investigation): id of the burst whose queued frames
+   *  were dropped, for correlating supersede logs with client traces. */
+  burstId?: number
 }
 
 interface BurstState {
@@ -134,6 +141,8 @@ export class ReplayBurstRegistry {
       frames += 1
       chars += e.data.length
     }
-    return { frames, chars }
+    // TEMPORARY (reorder investigation): surface the dropped burst's id so
+    // supersede logs correlate with the client's burstId traces.
+    return { frames, chars, burstId: prev.token.id }
   }
 }

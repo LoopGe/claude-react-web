@@ -23,6 +23,10 @@ import type { SessionBroadcaster } from './session-types.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
 import { shouldBroadcastMessage } from './history-utils.js'
 import { planTailBackfillReplay } from './replay-plan.js'
+
+// TEMPORARY (reorder investigation): monotonic burst id source. Process-wide
+// so ids in the server log are unique even across connections.
+let burstIdCounter = 0
 import { createReplayBurstToken, type ReplayBurstToken } from './replay-bursts.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
@@ -363,12 +367,16 @@ export class SessionConnection {
       (m) => shouldBroadcastMessage(m as { type?: string; subtype?: string }),
     )
     const REPLAY_CHUNK_SIZE = 50
+    // TEMPORARY (reorder investigation): one id per sendReplay, stamped on
+    // every frame of the burst so the client trace can attribute its buffer
+    // composition to the exact server burst.
+    const burstId = ++burstIdCounter
     // Key diagnostic: pairs with the client's replay-done handling. If the
     // server logs a non-zero count here but the client renders blank, the
     // loss is client-side (effect re-run discarded the buffer, or
     // REPLAY_REPLACE merge dropped everything).
     log.info(
-      `replay for ${sessionId}: sending ${replayHistory.length} msgs ` +
+      `replay for ${sessionId}: burst=${burstId} sending ${replayHistory.length} msgs ` +
       `(ring=${history.length}, sinceUuid=${sinceUuid ?? 'none'})`,
     )
     // Tail-first replay plan (no-cache cold start): the newest chunk is a
@@ -391,10 +399,10 @@ export class SessionConnection {
     // burst's queued frames when this token's first frame lands, so a
     // StrictMode/multi-holder storm of re-serves collapses to ~one burst's
     // bytes per session on the wire (see server/replay-bursts.ts).
-    const burst = createReplayBurstToken(sessionId)
+    const burst = createReplayBurstToken(sessionId, burstId)
     if (tailPlan) {
       log.info(
-        `tail-first replay for ${sessionId}: tail=${tailPlan.tail.length} ` +
+        `tail-first replay for ${sessionId}: burst=${burstId} tail=${tailPlan.tail.length} ` +
         `+ ${tailPlan.backfill.length} backfill chunks (${replayHistory.length} total)`,
       )
       // The pending-request snapshots ride the TAIL frame (same shape as the
@@ -410,6 +418,7 @@ export class SessionConnection {
         ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
         ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),
         tail: true,
+        burstId,
       }, burst)
       for (const chunk of tailPlan.backfill) {
         this.sink.send({
@@ -418,9 +427,10 @@ export class SessionConnection {
           messages: chunk,
           permissions: [],
           backfill: true,
+          burstId,
         }, burst)
       }
-      this.sink.send({ kind: 'replay-done', sessionId }, burst)
+      this.sink.send({ kind: 'replay-done', sessionId, burstId }, burst)
     } else if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
       this.sink.send({
         kind: 'replay',
@@ -429,8 +439,9 @@ export class SessionConnection {
         permissions: pending?.permissions ?? [],
         ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
         ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),
+        burstId,
       }, burst)
-      this.sink.send({ kind: 'replay-done', sessionId }, burst)
+      this.sink.send({ kind: 'replay-done', sessionId, burstId }, burst)
     } else {
       for (let i = 0; i < replayHistory.length; i += REPLAY_CHUNK_SIZE) {
         this.sink.send({
@@ -438,6 +449,7 @@ export class SessionConnection {
           sessionId,
           messages: replayHistory.slice(i, i + REPLAY_CHUNK_SIZE),
           permissions: [],
+          burstId,
         }, burst)
       }
       // Permissions arrive with the final replay-done frame. The
@@ -445,6 +457,7 @@ export class SessionConnection {
       this.sink.send({
         kind: 'replay-done',
         sessionId,
+        burstId,
         permissions: pending?.permissions ?? [],
         ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
         ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),

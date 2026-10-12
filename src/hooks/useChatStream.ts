@@ -10,6 +10,9 @@ import { randomId } from '../utils/uuid'
 import type { WsServerFrame } from '../ws-types'
 import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter, TaskRecordUi, UserDialogRequestUi, DialogResolved } from '../types'
 import { extractMessagePlainText } from '../../shared/search/extract'
+// TEMPORARY (reorder investigation) — remove with the rest of the trace points.
+import { msgTag, nextListenerId, replayTrace } from '../session-store/replay-trace'
+import { replayAssembler } from '../session-store/replay-assembly'
 
 /** The disk-stable uuid of a message, or null. A message whose uuid matches
  *  between the in-memory ring and the on-disk transcript can anchor the first
@@ -322,6 +325,8 @@ export function useChatStream(
     // (sinceUuid) replay be used when a cache exists. hydrateReady is always
     // set (cache or not), so this never deadlocks.
     if (!hydrateReady) return
+    // TEMPORARY (reorder investigation): per-listener trace id.
+    const lst = nextListenerId()
     // Hold the channel, and require a replay for THIS listener. The hold is
     // ref-counted and deduped (the same panel's header subscribes too); the
     // force is what makes the transcript independent of subscription order —
@@ -331,9 +336,18 @@ export function useChatStream(
     // was unservable, the hub counted the holder anyway, and this hook mounts
     // only after the resume lands — by then its subscribe looked like a
     // duplicate.
-    let replayMessages: SdkMessage[] = []
-    let replayPermissions: PermissionRequest[] = []
-    let replaying = false
+    // Replay buffering lives in the session-scoped ReplayAssembler (keyed by
+    // the server's burstId), NOT in this closure. The closure buffer was the
+    // root cause of the 96b4eaaa transcript reorder: a burst superseded
+    // server-side never delivers its replay-done, so `replaying` stayed true
+    // with a dirty buffer, and the NEXT burst's done flushed the MIXED
+    // payload [truncated older burst][newer burst] — a non-chronological
+    // payload the reducer's contiguous-slice merge mis-brackets. The
+    // assembler supersedes on burstId change (mirroring the server one-for-
+    // one) and flushes only the burst its terminator names, so every
+    // REPLAY_REPLACE carries exactly one contiguous server burst. Being
+    // session-scoped, it also survives panel effect re-runs (the old
+    // teardown discarded the in-flight buffer and forced a replay rebuild).
     // True between a `tail: true` replay frame and its replay-done — the
     // tail-first burst. Messages were applied on arrival (tail frame) or
     // prepended per chunk (backfill frames), and the pending-request
@@ -388,6 +402,12 @@ export function useChatStream(
             // older prompt whose text repeats ("continue") across a chunk
             // boundary.
             if (!clearedRef.current && frame.messages.length > 0) {
+              replayTrace(sessionId, lst, 'backfill-prepend', {
+                burstId: (frame as { burstId?: number }).burstId,
+                n: frame.messages.length,
+                first: msgTag(frame.messages[0] as SdkMessage),
+                last: msgTag(frame.messages[frame.messages.length - 1] as SdkMessage),
+              })
               store.dispatch({
                 type: 'PREPEND_MESSAGES',
                 messages: frame.messages as SdkMessage[],
@@ -413,9 +433,10 @@ export function useChatStream(
             // Open the transcriptSettling drain window: backfill chunks will
             // prepend until replay-done closes it.
             setBurstDraining(true)
-            replaying = false
-            replayMessages = []
-            replayPermissions = []
+            // A tail frame ends any ordinary burst this session had open (the
+            // server superseded it to serve this tail-first burst) — its
+            // partial assembly can never be flushed, drop it.
+            replayAssembler.discard(sessionId)
             // Same /clear race guard as the backfill branch above: a tail
             // frame that was in flight when an SDK in-band /clear landed
             // carries PRE-clear messages — applying it would resurrect the
@@ -423,6 +444,12 @@ export function useChatStream(
             // replay-done's empty REPLAY_REPLACE, but a connection drop
             // before that replay-done would leave the resurrection up).
             if (!clearedRef.current) {
+              replayTrace(sessionId, lst, 'tail-apply', {
+                burstId: (frame as { burstId?: number }).burstId,
+                n: frame.messages.length,
+                first: msgTag(frame.messages[0] as SdkMessage),
+                last: msgTag(frame.messages[frame.messages.length - 1] as SdkMessage),
+              })
               if (frame.permissions?.length) {
                 for (const req of frame.permissions) permsRef.current.onRequest(req)
               }
@@ -456,21 +483,33 @@ export function useChatStream(
             // rule for live messages while the burst is open.
             break
           }
-          if (!replaying) {
-            replaying = true
-            replayMessages = []
-            replayPermissions = []
-            // An ordinary (unmarked) burst opening means any earlier
-            // tail-first burst is over — most commonly a reconnect that
-            // re-subscribed with a sinceUuid, so the server serves the
-            // ordinary incremental path. Leaving tailMode latched here
-            // would make the pending replay-done take the tailMode
-            // branch and silently drop this burst's buffered messages.
-            tailMode = false
+          // Ordinary replay frame: hand it to the session assembler. A burstId
+          // change supersedes any open assembly inside the assembler (the
+          // mirrored server-side supersede rule); re-delivery to a second
+          // listener of the same session is folded once there.
+          // An ordinary (unmarked) frame also means any earlier tail-first
+          // burst is over — most commonly a reconnect that re-subscribed with
+          // a sinceUuid, so the server serves the ordinary incremental path.
+          // Leaving tailMode latched here would make the pending replay-done
+          // take the tailMode branch and silently drop this burst's payload.
+          tailMode = false
+          replayAssembler.add(
+            sessionId,
+            (frame as { burstId?: number }).burstId,
+            frame.messages as SdkMessage[],
+            (frame.permissions ?? []) as PermissionRequest[],
+          )
+          // TEMPORARY (reorder investigation): per-frame buffer growth trace.
+          {
+            const bId = (frame as { burstId?: number }).burstId
+            replayTrace(sessionId, lst, 'replay-frame', {
+              burstId: bId,
+              n: frame.messages.length,
+              first: msgTag(frame.messages[0] as SdkMessage),
+              last: msgTag(frame.messages[frame.messages.length - 1] as SdkMessage),
+            })
           }
-          replayMessages.push(...(frame.messages as SdkMessage[]))
           if (frame.permissions?.length) {
-            replayPermissions.push(...frame.permissions)
             for (const req of frame.permissions) permsRef.current.onRequest(req)
           }
           // Pending elicitations ride the same replay burst — this is the
@@ -489,37 +528,23 @@ export function useChatStream(
           // regardless of which replay mode served the burst (a no-op after
           // an ordinary buffered replay, which never opened it).
           setBurstDraining(false)
-          // Key diagnostic: on the success path the server ALWAYS sends ≥1
-          // replay frame before replay-done (even an empty one — ws.ts
-          // enqueues `replay` with messages:[] before `replay-done`). The
-          // startSession ERROR path is the exception: it enqueues `error` +
-          // `replay-done` with no replay frame, and `errored` tracks that so
-          // we don't misattribute it to the race. Otherwise, reaching
-          // replay-done with replaying===false means THIS listener instance
-          // never saw the replay frames — they landed on a previous effect
-          // instance that was torn down mid-replay (deps: running /
-          // hydrateReady / store), discarding the buffer.
-          //
-          // No longer a blank-transcript report on its own: the replacement
-          // instance forces its own replay (`subscribe(..., { force: true })`),
-          // and the server re-serves one for a channel it already holds. It is
-          // still worth a line — it says an effect re-ran mid-burst, which
-          // costs a replay rebuild. A tail-first burst is the OTHER legitimate
-          // exception: it applies its frames on arrival, so an empty buffer at
-          // replay-done is the expected steady state there. (When the
-          // terminator lands on a closure that never saw the tail frame, this
-          // fires once — the burst's own frames were applied by the previous
-          // instance, and the hub's burst latch, not this closure, is what
-          // kept the resume anchor honest.)
-          if (!replaying && !tailMode && replayMessages.length === 0 && !errored) {
+          // Flush ONLY the burst this terminator names. A null flush means a
+          // stale done (its burst was superseded and its partial assembly
+          // discarded) or a done that raced a newer burst — the assembler
+          // traced which. The old closure-buffer code flushed the MIXED
+          // buffer here, which is exactly the reorder bug; the assembler
+          // makes that state unreachable.
+          const flushed = tailMode
+            ? null
+            : replayAssembler.finalize(sessionId, (frame as { burstId?: number }).burstId)
+          if (!tailMode && flushed == null && !errored) {
             console.warn(
-              `[useChatStream] replay-done for ${sessionId} arrived with NO preceding ` +
-              `replay frame on this listener — an effect re-run (running=${running}) ` +
-              `discarded the in-flight burst; the replacement instance re-requests it`,
+              `[useChatStream] replay-done for ${sessionId} (burst=${(frame as { burstId?: number }).burstId}) ` +
+              `flushed nothing — stale terminator for a superseded burst, or a burst whose ` +
+              `frames never landed; the open assembly (if any) is unaffected`,
             )
           }
           if (frame.permissions?.length) {
-            replayPermissions.push(...frame.permissions)
             for (const req of frame.permissions) permsRef.current.onRequest(req)
           }
           if (frame.elicitations?.length) {
@@ -536,8 +561,24 @@ export function useChatStream(
             // also the point where the burst is complete, so the reconnect
             // anchor may finally advance (see the tail-frame NOTE above).
             tailMode = false
-          } else {
-            store.dispatch({ type: 'REPLAY_REPLACE', messages: replayMessages, permissions: replayPermissions })
+            replayTrace(sessionId, lst, 'replay-done(tail)', {
+              burstId: (frame as { burstId?: number }).burstId,
+            })
+          } else if (flushed != null) {
+            // TEMPORARY (reorder investigation): what this replay-done flushed.
+            replayTrace(sessionId, lst, 'replay-done', {
+              burstId: flushed.burstId,
+              bufLen: flushed.messages.length,
+              bufFirst: msgTag(flushed.messages[0]),
+              bufLast: msgTag(flushed.messages[flushed.messages.length - 1]),
+            })
+            // Chunked bursts carry their pending-request snapshots on this
+            // terminator — fold them into the flushed payload's dispatch.
+            store.dispatch({
+              type: 'REPLAY_REPLACE',
+              messages: flushed.messages,
+              permissions: [...flushed.permissions, ...((frame.permissions ?? []) as PermissionRequest[])],
+            })
           }
           // One settle point for every terminator. It is dispatched
           // unconditionally and gated INSIDE the reducer on the store's
@@ -548,9 +589,6 @@ export function useChatStream(
           store.dispatch({ type: 'SETTLE_RESULT_INDEXES' })
           const lastUuid = getSessionLastMessageUuid(sessionId)
           if (lastUuid) hub.setLastMessageUuid(sessionId, lastUuid)
-          replayMessages = []
-          replayPermissions = []
-          replaying = false
           break
         }
         case 'message': {
@@ -569,8 +607,12 @@ export function useChatStream(
           store.dispatch({ type: 'MESSAGE', message })
           // The hub ignores this while a tail-first burst is open — a live
           // message landing mid-backfill must not advance the resume anchor
-          // either (same rationale as the tail-frame NOTE above).
-          if (!replaying) {
+          // either (same rationale as the tail-frame NOTE above). An open
+          // ordinary burst suppresses it the same way: the replay's own
+          // replay-done advance is the authoritative one, and a live message
+          // mid-burst would anchor the resume cursor past content the burst
+          // has buffered but not yet applied.
+          if (!replayAssembler.isOpen(sessionId)) {
             const lastUuid = getSessionLastMessageUuid(sessionId)
             if (lastUuid) hub.setLastMessageUuid(sessionId, lastUuid)
           }
@@ -684,7 +726,7 @@ export function useChatStream(
           // the session was already torn down), replayReady is still false
           // and the MessageList shows an infinite loading skeleton. Force
           // replayReady=true so the skeleton clears and the error becomes
-          // visible. Clear all replay buffers so a stale replay-done that
+          // visible. Clear the replay assembly so a stale replay-done that
           // arrives later can't overwrite the error with error:null.
           errored = true
           // An error frame ends any in-flight burst for this listener (the
@@ -692,10 +734,8 @@ export function useChatStream(
           // mid-backfill error with no trailing replay-done would stick
           // transcriptSettling on forever.
           setBurstDraining(false)
+          replayAssembler.discard(sessionId)
           if (!store.getSnapshot().replayReady) {
-            replayMessages = []
-            replayPermissions = []
-            replaying = false
             tailMode = false
             store.dispatch({ type: 'REPLAY_REPLACE', messages: [], permissions: [] })
           }
@@ -713,6 +753,12 @@ export function useChatStream(
           if (frame.ok === true && store.getSnapshot().error != null) {
             store.dispatch({ type: 'ERROR', message: null })
           }
+          // A refused/closed subscribe is one of the hub's burst terminators
+          // (it clears its own latch) — the assembly must follow or it would
+          // linger open: the isOpen gate would suppress live-message anchor
+          // advances (forcing full replays on the next reconnect) and pin the
+          // buffered chunks in the singleton.
+          if (frame.ok !== true) replayAssembler.discard(sessionId)
           break
         }
         case 'session-cleared': {
@@ -725,16 +771,14 @@ export function useChatStream(
           // keep the pre-clear rows from resurrecting on scroll-up.
           //
           // Mid-replay guard: if a reconnect's replay raced ahead of this
-          // frame, the buffers below hold PRE-clear messages (the server's
+          // frame, the open assembly holds PRE-clear messages (the server's
           // ring wasn't truncated yet when it built that replay). Were we
-          // to leave them, the pending replay-done's REPLAY_REPLACE would
+          // to leave it, the pending replay-done's REPLAY_REPLACE would
           // re-apply them on top of the freshly-reset store and resurrect
-          // the cleared transcript. So drop every buffered replay frame
-          // and force replay-mode off — the next subscribe (or the
-          // post-clear live stream) repaints from the truncated ring.
-          replayMessages = []
-          replayPermissions = []
-          replaying = false
+          // the cleared transcript. So drop the assembly and force
+          // replay-mode off — the next subscribe (or the post-clear live
+          // stream) repaints from the truncated ring.
+          replayAssembler.discard(sessionId)
           tailMode = false
           // The burst is dead along with its buffer — release the pin freeze
           // so the post-clear (empty) transcript re-evaluates the header.
@@ -767,6 +811,14 @@ export function useChatStream(
     // is older and prepending stays correct.
     const burstOpen = hub.isReplayBurstOpen(sessionId)
     const hasCachedTranscript = !burstOpen && (cursor != null || store.getSnapshot().items.length > 0)
+    // TEMPORARY (reorder investigation): what this listener asked the server for.
+    replayTrace(sessionId, lst, 'subscribe', {
+      sinceUuid: typeof cursor === 'string' ? cursor.slice(0, 8) : null,
+      hasCachedTranscript,
+      burstOpen,
+      items: store.getSnapshot().items.length,
+      cacheHasDroppedMedia: store.getSnapshot().cacheHasDroppedMedia,
+    })
     const release = hub.subscribe(
       sessionId,
       // A cache whose persist projection dropped image blocks (see
@@ -786,18 +838,11 @@ export function useChatStream(
         : { force: true, replayMode: 'tail-backfill' },
     )
     return () => {
-      // Key diagnostic: tearing down mid-replay discards the buffered
-      // chunks (they live in this closure). The replacement effect forces a
-      // fresh replay for itself, so this is no longer a blank-transcript
-      // report — it says an effect re-ran mid-burst (deps: running /
-      // hydrateReady / store), i.e. a replay rebuild was paid for nothing.
-      if (replaying && replayMessages.length > 0) {
-        console.warn(
-          `[useChatStream] effect re-run for ${sessionId} DISCARDED in-flight replay ` +
-          `buffer (${replayMessages.length} msgs, replaying=${replaying}) — ` +
-          `deps changed mid-replay; the replacement instance re-requests it`,
-        )
-      }
+      // The replay assembly is session-scoped and SURVIVES this teardown —
+      // that is the point of the assembler (the old closure buffer was
+      // discarded here mid-burst, forcing the replacement effect to pay for
+      // a full replay rebuild and opening the stale-mix window). Nothing to
+      // clean up beyond the listener + hold.
       off()
       release()
     }

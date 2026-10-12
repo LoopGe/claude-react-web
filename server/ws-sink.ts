@@ -96,9 +96,10 @@ export class WsWriteQueue {
       const freed = this.bursts.register(burst, entry)
       if (freed.frames > 0) {
         this.totalChars -= freed.chars
+        // TEMPORARY (reorder investigation): include both burst ids.
         log.info(
-          `superseded ${freed.frames} queued replay frames (${freed.chars} chars) — ` +
-          `a newer replay burst for the session took over`,
+          `superseded burst=${freed.burstId ?? '?'} queued frames=${freed.frames} ` +
+          `(${freed.chars} chars) — replaced by burst=${burst.id}`,
         )
         metrics.count('ws_replay_frames_superseded', { reason: 'superseded' }, freed.frames)
         metrics.count('ws_replay_chars_superseded', { reason: 'superseded' }, freed.chars)

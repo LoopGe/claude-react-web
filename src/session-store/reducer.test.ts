@@ -3417,6 +3417,173 @@ describe('splitReplayAgainstCache (pure)', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// Time-aware ordering — the 96b4eaaa transcript-reorder regression suite.
+//
+// Live-verified failure chain (2026-10-12): a no-uuid-overlap payload whose
+// content was chronologically OLDER than the cache was blind-appended at the
+// transcript tail (splitReplayAgainstCache's "no overlap ⟹ newer" rule), and
+// out-of-position application had no way to heal. These tests pin the fixes:
+// the time partition (older/mid/newer), the prompt-twin skip, mid-hole fill,
+// and the repairChronology pass.
+// ---------------------------------------------------------------------------
+
+describe('replay merge: time-aware ordering (96b4eaaa reorder regression)', () => {
+  const T = (iso: string) => Date.parse(iso)
+  function timedAsst(uuid: string, text: string, receivedAt: number): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid,
+      receivedAt,
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+      parent_tool_use_id: null,
+    } as unknown as SdkMessage
+  }
+  function timedUser(uuid: string, text: string, receivedAt: number): SdkMessage {
+    return {
+      type: 'user',
+      uuid,
+      receivedAt,
+      message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+    } as unknown as SdkMessage
+  }
+
+  it('a no-overlap payload OLDER than the cache is prepended, never appended', () => {
+    // The smoking gun: the disk-seed head (07:40, two days old) used to land
+    // AFTER the 02:05 live message because "no uuid overlap" meant "newer".
+    const cache = seedCache([
+      timedAsst('x1', 'newer', T('2026-10-12T02:00:00Z')),
+      timedAsst('x2', 'newest', T('2026-10-12T02:01:00Z')),
+    ])
+    const incoming = [
+      timedAsst('old1', 'old', T('2026-10-10T07:40:00Z')),
+      timedAsst('old2', 'old2', T('2026-10-10T07:41:00Z')),
+    ]
+    const after = replay(cache, incoming)
+    expect(ids(after)).toEqual(['old1', 'old2', 'x1', 'x2'])
+  })
+
+  it('a no-overlap payload inside the cache span fills the hole at its time position', () => {
+    const cache = seedCache([
+      timedAsst('x1', 'a', T('2026-10-12T01:00:00Z')),
+      timedAsst('x2', 'c', T('2026-10-12T03:00:00Z')),
+    ])
+    const incoming = [
+      timedAsst('h0', 'before', T('2026-10-12T00:00:00Z')),
+      timedAsst('h1', 'hole', T('2026-10-12T02:00:00Z')),
+    ]
+    const after = replay(cache, incoming)
+    expect(ids(after)).toEqual(['h0', 'x1', 'h1', 'x2'])
+  })
+
+  it('a uuid-mismatched prompt twin inside the cache span is skipped, not duplicated', () => {
+    // Server-minted broadcast uuid ('pu') vs the on-disk SDK uuid
+    // ('du-disk') for the same logical prompt — the twin must not paint a
+    // second bubble.
+    const cache = seedCache([
+      timedUser('pu', '拉最新代码并push', T('2026-10-12T02:05:24Z')),
+      timedAsst('x1', 'reply', T('2026-10-12T02:06:00Z')),
+    ])
+    const incoming = [
+      timedUser('du-disk', '拉最新代码并push', T('2026-10-12T02:05:24.500Z')),
+      timedAsst('n1', 'newer', T('2026-10-12T04:00:00Z')),
+    ]
+    const after = replay(cache, incoming)
+    expect(ids(after)).toEqual(['pu', 'x1', 'n1'])
+  })
+
+  it('the repair pass heals a displaced tail (the corrupt-store shape) even from an incremental replay', () => {
+    // The 96b4eaaa shape: chronologically-old content stuck at the mirror
+    // tail. A full replay would replace it, but an incremental slice (the
+    // corrupt tail's uuid still hits the ring) used to keep it there forever.
+    const cache = seedCache([
+      timedAsst('x1', 'a', T('2026-10-12T01:00:00Z')),
+      timedAsst('x2', 'b', T('2026-10-12T02:00:00Z')),
+      timedAsst('stale1', 'old', T('2026-10-10T07:40:00Z')),
+      timedAsst('stale2', 'old2', T('2026-10-10T07:55:00Z')),
+    ])
+    const incoming = [timedAsst('n1', 'newer', T('2026-10-12T03:00:00Z'))]
+    const after = replay(cache, incoming)
+    expect(ids(after)).toEqual(['stale1', 'stale2', 'x1', 'x2', 'n1'])
+  })
+
+  it('a null-time mid frame is stamped with its payload predecessor time and repaired into place', () => {
+    const cache = seedCache([
+      timedAsst('x1', 'a', T('2026-10-12T01:00:00Z')),
+      timedAsst('x2', 'c', T('2026-10-12T03:00:00Z')),
+    ])
+    const incoming = [
+      timedAsst('m1', 'mid', T('2026-10-12T02:00:00Z')),
+      { ...asstMsg('h1', 'hole') }, // no receivedAt — rides m1's run and time
+    ]
+    const after = replay(cache, incoming)
+    expect(ids(after)).toEqual(['x1', 'm1', 'h1', 'x2'])
+  })
+
+  it('a null-time frame riding an older run is prepended with its cluster', () => {
+    const cache = seedCache([
+      timedAsst('x1', 'a', T('2026-10-12T01:00:00Z')),
+      timedAsst('x2', 'b', T('2026-10-12T02:00:00Z')),
+    ])
+    const incoming = [
+      timedAsst('h0', 'before', T('2026-10-10T07:40:00Z')),
+      { ...asstMsg('h1', 'old-hole') }, // no receivedAt — rides h0's 'older' run
+    ]
+    const after = replay(cache, incoming)
+    expect(ids(after)).toEqual(['h0', 'h1', 'x1', 'x2'])
+  })
+
+  it('a LEADING null-time run rides the payload first timed run, not the tail', () => {
+    // History-reader omits receivedAt for lines without a timestamp — a
+    // leading timeless frame must not default to 'newer' and split from the
+    // cluster it was emitted with.
+    const cache = seedCache([
+      timedAsst('x1', 'a', T('2026-10-12T02:00:00Z')),
+      timedAsst('x2', 'b', T('2026-10-12T03:00:00Z')),
+    ])
+    const incoming = [
+      { ...asstMsg('h1', 'timeless') }, // leading null — rides h0's run
+      timedAsst('h0', 'before', T('2026-10-10T07:40:00Z')),
+    ]
+    const after = replay(cache, incoming)
+    expect(ids(after)).toEqual(['h1', 'h0', 'x1', 'x2'])
+  })
+
+  it('the repair pass keeps a displaced frame with its TRAILING null-time cluster', () => {
+    // [A(10:00), B(09:00), b1(null)]: B is displaced; b1 was emitted right
+    // after B and must travel with it — not be left behind after A.
+    const cache = seedCache([
+      timedAsst('A', 'later', T('2026-10-12T10:00:00Z')),
+      timedAsst('B', 'earlier', T('2026-10-12T09:00:00Z')),
+      { ...asstMsg('b1', 'cluster') },
+    ])
+    const after = replay(cache, [timedAsst('n1', 'newer', T('2026-10-12T11:00:00Z'))])
+    expect(ids(after)).toEqual(['B', 'b1', 'A', 'n1'])
+  })
+
+  it('millisecond-level line jitter is not repaired (tolerance)', () => {
+    const base = T('2026-10-12T02:00:00.000Z')
+    const cache = seedCache([
+      timedAsst('a', 'x', base),
+      timedAsst('b', 'y', base + 3),
+      timedAsst('c', 'z', base + 1), // 2ms inversion — healthy CLI jitter
+    ])
+    const after = replay(cache, [timedAsst('n1', 'newer', base + 60_000)])
+    expect(ids(after)).toEqual(['a', 'b', 'c', 'n1'])
+  })
+
+  it('the merge cursor tracks the mirror tail after a mid fill (not the hole uuid)', () => {
+    const cache = seedCache([
+      timedAsst('x1', 'a', T('2026-10-12T01:00:00Z')),
+      timedAsst('x2', 'c', T('2026-10-12T03:00:00Z')),
+    ])
+    const incoming = [timedAsst('h1', 'hole', T('2026-10-12T02:00:00Z'))]
+    const after = replay(cache, incoming)
+    expect(after.mirror.lastMessageUuid).toBe('x2')
+  })
+})
+
 describe('reducer: REPLAY_REPLACE on top of a cache', () => {
   it('empty replay keeps the cache (no blank screen)', () => {
     const cache = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
