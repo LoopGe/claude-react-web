@@ -56,6 +56,7 @@
 // the record can never strand.
 
 import { readFileSync } from 'node:fs'
+import { cp, mkdir, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { claudeConfigDir } from './claude-config-dir.js'
@@ -111,6 +112,48 @@ export interface SubagentCompletion {
   summary: string
 }
 
+/** The shared "no completion evidence" outcome: the subagent died with its
+ *  host process (or its sidecar transcript is missing/unreadable), so it can
+ *  never produce a terminal frame. One home for the semantic decision
+ *  "missing evidence settles STOPPED, never completed" — the watcher's
+ *  process-exit path, the in-flight-list sweep, and the resume seed's
+ *  completion backfill all mean exactly this when they reach for it. */
+export const STOPPED_SUBAGENT_COMPLETION: SubagentCompletion = Object.freeze({
+  status: 'stopped',
+  summary: '',
+}) as SubagentCompletion
+
+/** Build the `system`/`task_notification` frame announcing one settled
+ *  background subagent. The SINGLE shape both delivery paths use — the
+ *  registry's live broadcast (BackgroundWatcherRegistry) and the resume
+ *  seed's backfill (SessionManager.backfillSubagentCompletions) — so the two
+ *  can never drift on the wire shape the client reducer's completion branch
+ *  matches against (`tool_use_id` + `status` + `summary`). */
+export function buildTaskNotificationFrame(opts: {
+  sessionId: string
+  toolUseId: string
+  agentId: string
+  completion: SubagentCompletion
+}): SDKMessage {
+  const msg: SDKMessage = {
+    type: 'system',
+    subtype: 'task_notification',
+    task_id: opts.agentId,
+    tool_use_id: opts.toolUseId,
+    status: opts.completion.status,
+    summary: opts.completion.summary,
+    output_file: '',
+    uuid: randomUUID(),
+    session_id: opts.sessionId,
+  } as unknown as SDKMessage
+  // receivedAt is left ABSENT here on purpose: stampReceivedAt is
+  // set-only-if-absent AND monotonic — a hand-set Date.now() would defeat the
+  // monotonic half and could sort a synthesized frame BEFORE same-ms frames
+  // that arrived earlier (mergedHistory's total-order contract).
+  stampReceivedAt(msg)
+  return msg
+}
+
 /** Flatten a message `content` payload (string | array of blocks) to its
  *  joined text. Local to the watcher. */
 function extractTextBlocks(content: unknown): string {
@@ -162,6 +205,14 @@ export function readSubagentCompletion(filePath: string): SubagentCompletion | n
   } catch {
     return null
   }
+  return parseSubagentCompletion(text)
+}
+
+/** Parse a subagent transcript's raw JSONL text for its completion — the
+ *  pure half of {@link readSubagentCompletion}, split out so non-polling
+ *  callers (the resume seed's backfill reads the same files async, off the
+ *  hot path) reuse the exact same terminal-frame grammar. */
+export function parseSubagentCompletion(text: string): SubagentCompletion | null {
   let lastStopReason: string | null = null
   let lastText = ''
   for (const line of text.split('\n')) {
@@ -203,6 +254,43 @@ export function readSubagentCompletion(filePath: string): SubagentCompletion | n
   return {
     status: 'completed',
     summary: lastText,
+  }
+}
+
+/** Copy a session's subagent sidecar transcripts to another session's
+ *  sidecar dir (same project cwd). Used by discard(): the fork's seed
+ *  backfills agent completions from the SOURCE session's sidecars, but the
+ *  sidecars stay keyed under the source session id — without the copy, the
+ *  fork's own next resume would find no transcripts and degrade every healed
+ *  outcome to 'stopped' (the turn-anchor / result-frame sidecars already
+ *  follow the fork; this one was missing).
+ *
+ *  Best-effort: a missing source dir or a copy failure logs a warning and
+ *  returns 0 — the fork then behaves exactly as before this feature, never
+ *  failing the fork itself. Agent ids are globally unique, so the copy can
+ *  never collide with the destination session's own agents. */
+export async function copySubagentTranscripts(
+  cwd: string,
+  fromSessionId: string,
+  toSessionId: string,
+): Promise<number> {
+  const srcDir = path.dirname(subagentTranscriptPath(cwd, fromSessionId, 'probe'))
+  const dstDir = path.dirname(subagentTranscriptPath(cwd, toSessionId, 'probe'))
+  try {
+    const entries = await readdir(srcDir)
+    if (entries.length === 0) return 0
+    await mkdir(dstDir, { recursive: true })
+    await cp(srcDir, dstDir, { recursive: true })
+    log.info(
+      `[${fromSessionId} → ${toSessionId}] copied ${entries.length} subagent sidecar transcript(s) to the fork`,
+    )
+    return entries.length
+  } catch (err) {
+    log.warn(
+      `[${fromSessionId} → ${toSessionId}] subagent sidecar copy failed (fork resumes without healed completions):`,
+      err,
+    )
+    return 0
   }
 }
 
@@ -580,19 +668,12 @@ export class BackgroundWatcherRegistry {
     // completion — no subscribers to push to, and persisting would race
     // unload's terminal write.
     if (!this.deps.isLive(session.id)) return
-    const msg: SDKMessage = {
-      type: 'system',
-      subtype: 'task_notification',
-      task_id: agentId,
-      tool_use_id: toolUseId,
-      status: completion.status,
-      summary: completion.summary,
-      output_file: '',
-      uuid: randomUUID(),
-      session_id: session.id,
-      receivedAt: Date.now(),
-    } as unknown as SDKMessage
-    stampReceivedAt(msg)
+    const msg = buildTaskNotificationFrame({
+      sessionId: session.id,
+      toolUseId,
+      agentId,
+      completion,
+    })
     pushBounded(session.history, msg, this.deps.historyCap)
     for (const sub of session.subscribers.values()) {
       try { sub.push(msg) } catch { /* subscriber dead — skip */ }
@@ -747,7 +828,7 @@ export class BackgroundWatcherRegistry {
       perSession.delete(toolUseId)
       const completion: SubagentCompletion = (session.cwd
         ? readSubagentCompletion(subagentTranscriptPath(session.cwd, session.id, entry.agentId))
-        : null) ?? { status: 'stopped', summary: '' }
+        : null) ?? STOPPED_SUBAGENT_COMPLETION
       log.info(
         `[${session.id}] background subagent agentId=${entry.agentId} toolUseId=${toolUseId} ` +
         `left the CLI's in-flight list (status=${completion.status})`,
@@ -800,7 +881,7 @@ export class BackgroundWatcherRegistry {
       // gone the subagent can never resume to produce a real one.
       const completion: SubagentCompletion = (!entry.settleGate.paused && session.cwd
         ? readSubagentCompletion(subagentTranscriptPath(session.cwd, session.id, entry.agentId))
-        : null) ?? { status: 'stopped', summary: '' }
+        : null) ?? STOPPED_SUBAGENT_COMPLETION
       log.info(
         `[${session.id}] settling background subagent agentId=${entry.agentId} ` +
         `toolUseId=${toolUseId} on process exit (status=${completion.status})`,

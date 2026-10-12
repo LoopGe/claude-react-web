@@ -62,17 +62,43 @@ export function isTaskNotificationUserMessage(msg: UserFrameShape): boolean {
   if (msg.type !== 'user') return false
   if (msg.parent_tool_use_id != null) return false
   if (userMessageHasToolResult(msg)) return false
-  const content = frameContent(msg)
-  let text: string | undefined
-  if (typeof content === 'string') {
-    text = content
-  } else if (Array.isArray(content)) {
-    for (const block of content) {
-      if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text') {
-        const t = (block as { text?: unknown }).text
-        if (typeof t === 'string') { text = t; break }
-      }
-    }
-  }
+  const text = taskNotificationText(msg)
   return !!text && TASK_NOTIFICATION_RE.test(text)
 }
+
+/** The leading text block of a `<task-notification>` injection (the block
+ *  the TASK_NOTIFICATION_RE matches on). Empty string when the frame carries
+ *  no text. Shared by the predicate above and the tool-use-id extractor
+ *  below so the two can never read different blocks. */
+function taskNotificationText(msg: UserFrameShape): string {
+  const content = frameContent(msg)
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  for (const block of content) {
+    if (block && typeof block === 'object' && (block as { type?: unknown }).type === 'text') {
+      const t = (block as { text?: unknown }).text
+      if (typeof t === 'string') return t
+    }
+  }
+  return ''
+}
+
+/** The originating tool_use id carried by a `<task-notification>` injection —
+ *  the XML path always includes a `<tool-use-id>` child element. Null for
+ *  non-notification frames and malformed ones (no usable id).
+ *
+ *  Server-side, the resume seed's completion backfill joins this against
+ *  launch acks so an agent whose completion ALREADY reached the persisted
+ *  transcript via this path is never re-synthesized; the client's
+ *  parseTaskNotification is the render-side counterpart of the same grammar. */
+export function taskNotificationToolUseId(msg: UserFrameShape): string | null {
+  if (!isTaskNotificationUserMessage(msg)) return null
+  const m = TASK_NOTIFICATION_TOOL_USE_ID_RE.exec(taskNotificationText(msg))
+  const id = m?.[1]?.trim()
+  return id || null
+}
+
+/** First `<tool-use-id>…</tool-use-id>` child of the injection. Ids are
+ *  opaque hex/uuid-ish tokens — no entity decoding needed (matching the
+ *  client's parser, which unescapes but ids never carry entities). */
+const TASK_NOTIFICATION_TOOL_USE_ID_RE = /<tool-use-id>([\s\S]*?)<\/tool-use-id>/

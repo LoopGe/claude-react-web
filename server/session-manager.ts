@@ -26,7 +26,7 @@ import type { AuxLlmTarget } from './anthropic-api.js'
 import { sameCwd } from './cwd-equality.js'
 import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
@@ -44,6 +44,7 @@ import {
   extractToolProfile,
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
+import { taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
 import { tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
@@ -58,6 +59,7 @@ import { createAsyncSubscription } from './async-subscription.js'
 import {
   pump as pumpSession,
   applyTaskEvent,
+  backgroundSubagentLaunches,
   reconcileTasksFromStopHook as reconcileTaskMapFromStopHook,
   settleTasksOnProcessExit,
   type StopHookTaskSummary,
@@ -115,7 +117,14 @@ import { SessionHealthMonitor } from './session-health.js'
 import { SessionMcpManager } from './session-manager-mcp.js'
 import { SessionEventBroadcaster } from './session-broadcaster.js'
 import { deriveTaskListForSession } from './tasklist-state.js'
-import { BackgroundWatcherRegistry } from './subagent-watcher.js'
+import {
+  BackgroundWatcherRegistry,
+  buildTaskNotificationFrame,
+  copySubagentTranscripts,
+  parseSubagentCompletion,
+  STOPPED_SUBAGENT_COMPLETION,
+  subagentTranscriptPath,
+} from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
@@ -313,6 +322,110 @@ function mergeResultFrames(
   // If nothing was inserted (no assistant matched), return the original
   // array to avoid an unnecessary copy.
   return inserted > 0 ? merged : seed
+}
+
+/** Scan a resume/disk seed for background Agent launches whose completion
+ *  signal is missing, and synthesize it from the durable sidecar transcript.
+ *
+ *  WHY: the CLI does not persist task_notification frames to its on-disk
+ *  transcript (nor result frames — mergeResultFrames above covers that
+ *  sibling gap). A completion that no client consumed live survives only in
+ *  the in-memory history ring, which is capped and volatile across restarts,
+ *  and the client's own mirror trims frames it cannot re-fetch. Once lost,
+ *  every reload re-seeds the Agent tool_use as 'running' (the launch ack is
+ *  skipped by design) and the WorkingBubble pill strands on a multi-hour-old
+ *  timer — observed as 7 'Starting…' subagents frozen at ~45h in session
+ *  96b4eaaa while the watcher log showed all 18 dispatches really completed.
+ *
+ *  The durable data to reconstruct the REAL outcome exists: the subagent's
+ *  own transcript (subagents/agent-<agentId>.jsonl) carries a terminal
+ *  stop_reason plus the final text, and the persisted launch ack carries the
+ *  agentId. This walk joins the two and rebuilds what the pump would have
+ *  broadcast — one terminal task_notification per un-notified ack. Appending
+ *  the frames to the seeded ring makes completion state a function of the
+ *  durable transcript instead of delivery luck: every replay/reload settles
+ *  the records with their real outcomes, no client-side heuristic involved.
+ *
+ *  A sidecar transcript without a terminal frame (or missing entirely) means
+ *  the subagent died with the previous subprocess — it can never produce
+ *  another line. Semantics mirror the watcher's process-exit path
+ *  (settleAllOnProcessExit): synthesize 'stopped' rather than leave a
+ *  forever-live record. Two honest limitations, both inherent to what
+ *  survives a restart: (1) the watcher's pause-hold latch is in-memory only,
+ *  so a subagent that paused-with-in-flight-work and then died with the
+ *  process has a terminal-SHAPED pause line as its last transcript line —
+ *  the seed backfill cannot distinguish it from a real end_turn (the live
+ *  path suppresses exactly this read while latched; post-restart the
+ *  information does not exist); (2) a plain fork() that seeds no history
+ *  (Y pages X's transcript from disk) is not covered — the fork's launch
+ *  acks re-strand exactly as before, since disk paging can never carry
+ *  task_notification frames. resume() and discard() (dormant source) are
+ *  the covered paths.
+ *
+ *  Async because the sidecar reads go through fs/promises: a session with
+ *  many un-notified dispatches must not stall the shared event loop on the
+ *  sum of their transcript reads inside doResume (the reads are independent
+ *  and run concurrently; frames are built in ack order afterwards so the
+ *  monotonic receivedAt stamps stay deterministic).
+ *
+ *  Non-mutating: returns the frames to APPEND to the seed (newest-positioned
+ *  by receivedAt, so they survive the ring's tail slice and the client's
+ *  reducer processes them after the tool_use they settle). Exported for
+ *  tests; called from resume() and discard() where a disk seed is finalized
+ *  (discard passes the SOURCE session id — the sidecars live under the
+ *  session that ran the agents, not the fork's new id). */
+export async function backfillSubagentCompletions(
+  seed: readonly SDKMessage[],
+  opts: { cwd: string | undefined; sessionId: string },
+): Promise<SDKMessage[]> {
+  if (!opts.cwd || seed.length === 0) return []
+  const cwd: string = opts.cwd
+  const acked = new Map<string, string>()
+  for (const m of seed) {
+    for (const { toolUseId, agentId } of backgroundSubagentLaunches(m)) {
+      // Duplicate acks (replay re-delivery) must not re-map an id.
+      if (!acked.has(toolUseId)) acked.set(toolUseId, agentId)
+    }
+  }
+  if (acked.size === 0) return []
+  // Completions the seed ALREADY carries, in either documented wire shape:
+  // the SDK system frame, and the harness <task-notification> user-role XML
+  // injection (which IS persisted by harnesses that deliver results that
+  // way — synthesizing over it would clobber the XML-captured result on the
+  // client every resume).
+  const notified = new Set<string>()
+  for (const m of seed) {
+    if (m.type === 'system' && (m as { subtype?: unknown }).subtype === 'task_notification') {
+      const tid = (m as { tool_use_id?: unknown }).tool_use_id
+      if (typeof tid === 'string') notified.add(tid)
+    } else {
+      const xmlId = taskNotificationToolUseId(m)
+      if (xmlId) notified.add(xmlId)
+    }
+  }
+  const pending = [...acked.entries()].filter(([toolUseId]) => !notified.has(toolUseId))
+  if (pending.length === 0) return []
+  // Independent files — read concurrently, then build in ack order so the
+  // monotonic stampReceivedAt assignment order is deterministic.
+  const texts = await Promise.all(
+    pending.map(([, agentId]) =>
+      readFile(subagentTranscriptPath(cwd, opts.sessionId, agentId), 'utf8').then(
+        (t) => t,
+        () => null, // missing/unreadable sidecar — same as "no terminal frame"
+      ),
+    ),
+  )
+  return pending.map(([toolUseId, agentId], i) => {
+    const completion = (texts[i] !== null ? parseSubagentCompletion(texts[i]!) : null) ?? STOPPED_SUBAGENT_COMPLETION
+    const frame = buildTaskNotificationFrame({ sessionId: opts.sessionId, toolUseId, agentId, completion })
+    // Seed provenance: these frames exist only as part of a disk-derived
+    // seed, so they carry the same restoredFromDisk marker history-reader
+    // stamps on disk frames — without it a backfilled seed flips the client's
+    // isDiskReplay classification off and skips the fresh-replay turn-end
+    // sweep (the only settle path for a sync agent orphaned by a crash).
+    ;(frame as { restoredFromDisk?: boolean }).restoredFromDisk = true
+    return frame
+  })
 }
 
 /** Short preview of an assistant message for the discard-anchors listing.
@@ -1605,6 +1718,19 @@ export class SessionManager {
       const resultFrames = await this.resultFrameStore.load(id)
       historySeed = mergeResultFrames(historySeed, resultFrames)
       historySeed = rewriteSeedPromptUuids(historySeed, promptUuids)
+      // Backfill background-subagent completions the seed lacks — the CLI
+      // doesn't persist task_notification frames either, and a completion no
+      // client consumed live is otherwise unrecoverable (the WorkingBubble
+      // pill would strand on 'running' after every reload). See the helper.
+      // discard() finalizes its seed through the same step (source id there).
+      const extra = await backfillSubagentCompletions(historySeed, { cwd: meta.cwd, sessionId: id })
+      if (extra.length > 0) {
+        log.info(
+          `[session ${id}] backfilled ${extra.length} background-subagent completion(s) ` +
+          `missing from the disk seed (from sidecar transcripts)`,
+        )
+        historySeed = [...historySeed, ...extra]
+      }
     }
     return this.spawn(id, resumeOpts, undefined, historySeed, undefined, undefined, undefined, undefined, promptUuids ?? [])
   }
@@ -2092,6 +2218,25 @@ export class SessionManager {
         historySeed = mergeResultFrames(historySeed, resultFrames)
       }
       historySeed = rewriteSeedPromptUuids(historySeed, promptUuids)
+      // Same completion backfill resume() does, so a discard of a DORMANT
+      // session heals its stranded background subagents too. The sidecar
+      // transcripts live under X (the session that ran the agents) — pass
+      // X's id, not the fork's. Gated on !liveX: when X's subprocess is
+      // still alive, an un-notified ack means the agent may be IN FLIGHT —
+      // synthesizing 'stopped' would mark live work dead in the fork, a lie
+      // the fork can never retract (the real completion lands in X's world
+      // only). A dormant X's subprocess is provably gone: every agent it
+      // launched is terminal-or-dead, so 'stopped' is honest there.
+      if (!liveX) {
+        const extra = await backfillSubagentCompletions(historySeed, { cwd: metaX?.cwd, sessionId: id })
+        if (extra.length > 0) {
+          log.info(
+            `[session ${id}] backfilled ${extra.length} background-subagent completion(s) ` +
+            `missing from the discard seed (from sidecar transcripts)`,
+          )
+          historySeed = [...historySeed, ...extra]
+        }
+      }
     }
     const forkInfo = await this.fork(id, { resumeSessionAt: fromAssistantUuid, historySeed, inheritIdentity: true })
 
@@ -2115,6 +2260,16 @@ export class SessionManager {
       if (inheritedResults.length > 0) {
         await this.resultFrameStore.merge(forkInfo.id, inheritedResults)
       }
+    }
+
+    // Copy X's subagent sidecar transcripts to Y (whole dir — agent ids are
+    // globally unique, so there is nothing to truncate). Without this, Y's
+    // own next resume finds no transcripts for the acks Y inherited from X's
+    // history and degrades every backfilled completion to 'stopped' — the
+    // turn-anchor / result-frame / snapshot sidecars all follow the fork;
+    // this one was the missing sibling. Best-effort (see the helper).
+    if (metaX?.cwd) {
+      await copySubagentTranscripts(metaX.cwd, id, forkInfo.id)
     }
 
     // Copy X's snapshot sidecar to Y, truncated to the cut point. Mirrors

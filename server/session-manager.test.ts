@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import * as nodeFs from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -317,7 +317,7 @@ vi.mock('./compact-summary.js', () => ({
 const tick = () => new Promise((r) => setImmediate(r))
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
-import { SessionManager, resolveConfiguredModel } from './session-manager.js'
+import { SessionManager, resolveConfiguredModel, backfillSubagentCompletions } from './session-manager.js'
 import type { Session } from './session-types.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
@@ -333,6 +333,41 @@ import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
+}
+
+/** A minimal seed pair: an Agent tool_use plus its async launch ack — the
+ *  durable transcript shape the seed-time completion backfill scans for
+ *  (shared by the SessionManager and discard describe blocks). */
+function ackSeed(toolUseId: string, agentId: string): unknown[] {
+  return [
+    {
+      type: 'assistant',
+      uuid: `a-${toolUseId}`,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: 'Agent', input: { description: 'work' } }] },
+    },
+    {
+      type: 'user',
+      uuid: `u-${toolUseId}`,
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: toolUseId,
+          content: `Async agent launched successfully.\nagentId: ${agentId}\n`,
+        }],
+      },
+    },
+  ]
+}
+
+/** Write a subagent sidecar transcript with one terminal assistant frame. */
+function writeSidecar(cwd: string, sessionId: string, agentId: string, stopReason: string, text: string): void {
+  const p = subagentTranscriptPath(cwd, sessionId, agentId)
+  mkdirSync(dirname(p), { recursive: true })
+  writeFileSync(
+    p,
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }], stop_reason: stopReason } }) + '\n',
+  )
 }
 
 describe('SessionManager', () => {
@@ -991,6 +1026,189 @@ describe('SessionManager', () => {
       else process.env.CLAUDE_CONFIG_DIR = realConfigDir
     }
     await sm.delete(info.id)
+  })
+
+  // -------------------------------------------------------------------------
+  // Seed-time backfill of missing background-subagent completions.
+  //
+  // The CLI does not persist task_notification frames (or result frames) to
+  // its JSONL, so a completion that no client consumed live is unrecoverable
+  // by replay: every reload re-seeds the Agent tool_use as 'running' (the
+  // launch ack is skipped by design) and the WorkingBubble pill strands on a
+  // multi-hour-old timer. The durable data to reconstruct the REAL outcome
+  // exists — the subagent's own sidecar transcript — so the resume seed
+  // synthesizes the missing notification instead of relying on delivery luck.
+  // (ackSeed / writeSidecar are module-scope helpers shared with the
+  // discard-describe tests below.)
+  // -------------------------------------------------------------------------
+
+  describe('backfillSubagentCompletions', () => {
+    let realConfigDir: string | undefined
+    beforeEach(() => {
+      realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+    })
+    afterEach(() => {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    })
+
+    it('synthesizes a terminal notification from the durable sidecar transcript', async () => {
+      writeSidecar('/tmp/workspace', 'sess-1', 'agent-1', 'end_turn', 'DONE — commit 90762696')
+      const seed = ackSeed('tu_1', 'agent-1') as never[]
+      const out = await backfillSubagentCompletions(seed, { cwd: '/tmp/workspace', sessionId: 'sess-1' })
+      expect(out).toHaveLength(1)
+      expect(out[0]).toMatchObject({
+        type: 'system',
+        subtype: 'task_notification',
+        tool_use_id: 'tu_1',
+        task_id: 'agent-1',
+        session_id: 'sess-1',
+        status: 'completed',
+        summary: 'DONE — commit 90762696',
+      })
+      // receivedAt comes from stampReceivedAt (monotonic), never a raw
+      // Date.now() — same-ms ordering against pump-stamped frames.
+      expect(typeof (out[0] as { receivedAt?: unknown }).receivedAt).toBe('number')
+      expect(typeof (out[0] as { uuid?: unknown }).uuid).toBe('string')
+    })
+
+    it('synthesizes stopped when the sidecar transcript has no terminal frame', async () => {
+      // The subagent ran inside the PREVIOUS subprocess — once that process
+      // is gone it can never produce another transcript line, so no terminal
+      // frame means the work died with it. Same semantics as the watcher's
+      // process-exit path.
+      const seed = ackSeed('tu_2', 'agent-2') as never[]
+      const out = await backfillSubagentCompletions(seed, { cwd: '/tmp/workspace', sessionId: 'sess-1' })
+      expect(out).toHaveLength(1)
+      expect(out[0]).toMatchObject({
+        type: 'system',
+        subtype: 'task_notification',
+        tool_use_id: 'tu_2',
+        status: 'stopped',
+        summary: '',
+      })
+    })
+
+    it('does not synthesize for a launch ack whose notification already exists', async () => {
+      writeSidecar('/tmp/workspace', 'sess-1', 'agent-3', 'end_turn', 'done')
+      const seed = [
+        ...ackSeed('tu_3', 'agent-3'),
+        {
+          type: 'system',
+          subtype: 'task_notification',
+          task_id: 'agent-3',
+          tool_use_id: 'tu_3',
+          status: 'completed',
+          summary: 'real frame survived in the client cache',
+        },
+      ] as never[]
+      expect(await backfillSubagentCompletions(seed, { cwd: '/tmp/workspace', sessionId: 'sess-1' })).toHaveLength(0)
+    })
+
+    it('does not synthesize when the completion reached the transcript via the XML injection path', async () => {
+      // Harnesses that deliver background-subagent results as user-role
+      // <task-notification> XML have that frame PERSISTED in the jsonl. The
+      // notified-scan must recognize it (not just system frames), or every
+      // resume would re-synthesize a duplicate that clobbers the XML-captured
+      // <result> on the client.
+      const seed = [
+        ...ackSeed('tu_xml', 'agent-xml'),
+        {
+          type: 'user',
+          parent_tool_use_id: null,
+          message: {
+            role: 'user',
+            content: [{
+              type: 'text',
+              text: '<task-notification>\n<tool-use-id>tu_xml</tool-use-id>\n<status>completed</status>\n<summary>xml delivery</summary>\n<result>the real result body</result>\n</task-notification>',
+            }],
+          },
+        },
+      ] as never[]
+      expect(await backfillSubagentCompletions(seed, { cwd: '/tmp/workspace', sessionId: 'sess-1' })).toHaveLength(0)
+    })
+
+    it('returns empty for a seed with no launch acks', async () => {
+      const seed = [
+        { type: 'assistant', uuid: 'a', message: { content: 'plain text' } },
+        { type: 'user', uuid: 'u', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_bash', content: 'ok' }] } },
+      ] as never[]
+      expect(await backfillSubagentCompletions(seed, { cwd: '/tmp/workspace', sessionId: 'sess-1' })).toHaveLength(0)
+    })
+
+    it('synthesizes only for the acks missing a notification (mixed seed)', async () => {
+      writeSidecar('/tmp/workspace', 'sess-1', 'agent-5', 'end_turn', 'five done')
+      const seed = [
+        ...ackSeed('tu_4', 'agent-4'), // no notification, no sidecar → stopped
+        ...ackSeed('tu_5', 'agent-5'), // no notification, sidecar terminal → completed
+        {
+          type: 'system',
+          subtype: 'task_notification',
+          task_id: 'agent-6',
+          tool_use_id: 'tu_6',
+          status: 'completed',
+          summary: 'already notified',
+        },
+        ...ackSeed('tu_6', 'agent-6'), // ack present AND notification present → skip
+      ] as never[]
+      const out = await backfillSubagentCompletions(seed, { cwd: '/tmp/workspace', sessionId: 'sess-1' })
+      expect(out).toHaveLength(2)
+      expect(out.map((m) => (m as { tool_use_id?: string }).tool_use_id).sort()).toEqual(['tu_4', 'tu_5'])
+      const byId = new Map(out.map((m) => [(m as { tool_use_id?: string }).tool_use_id, m]))
+      expect(byId.get('tu_4')).toMatchObject({ status: 'stopped' })
+      expect(byId.get('tu_5')).toMatchObject({ status: 'completed', summary: 'five done' })
+    })
+  })
+
+  it('resume() backfills missing background-subagent completions into the seeded ring', async () => {
+    // A REAL workspace directory — resume() validates the cwd exists.
+    const workspace = makeTmpDir()
+    const info = sm.create({ cwd: workspace })
+    // The durable sidecar transcript: the agent really finished (end_turn).
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const readPage = vi.spyOn(
+      sm as unknown as { readProviderHistoryPage: (provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => Promise<unknown> },
+      'readProviderHistoryPage',
+    )
+    try {
+      writeSidecar(workspace, info.id, 'agent-bf', 'end_turn', 'DONE — all gates green')
+
+      // Drive the live session to a settled state, then unload.
+      mockHandles[0].emit({ type: 'result' })
+      await tick()
+      await sm.unload(info.id)
+
+      // The disk page (what a restart's resume actually seeds from) carries
+      // the Agent tool_use + launch ack but NO task_notification — the CLI
+      // never persists one.
+      readPage.mockResolvedValue({
+        messages: ackSeed('tu_bf', 'agent-bf'),
+        totalCount: 2,
+        startIndex: 0,
+        hasMore: false,
+      })
+
+      const resumed = await sm.resume(info.id)
+
+      const hist = sm.getHistory(resumed.id) ?? []
+      const notifications = hist.filter((m) => (m as { subtype?: string }).subtype === 'task_notification')
+      expect(notifications).toHaveLength(1)
+      expect(notifications[0]).toMatchObject({
+        type: 'system',
+        subtype: 'task_notification',
+        tool_use_id: 'tu_bf',
+        status: 'completed',
+        summary: 'DONE — all gates green',
+      })
+    } finally {
+      readPage.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+    await sm.delete(info.id)
+    rmRf(workspace)
   })
 
   it('the watcher\'s synthesized notification settles the seeded TaskRecord to terminal', async () => {
@@ -7146,6 +7364,96 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(forkHandle.options.resumeSessionAt).toBe('asst-1')
       // X is gone from the live map + store (unload + removeFromStore).
       expect(() => sm.get(info.id)).toThrow(/not found/i)
+    })
+
+    it('discard() of a LIVE session does not mark in-flight background agents stopped', async () => {
+      // Launch a background agent whose sidecar has no terminal frame (still
+      // in flight — the watcher holds it), then fork. The un-notified ack is
+      // in the ring-seed, but X's subprocess is ALIVE: synthesizing
+      // 'stopped' would be a lie the fork can never retract (the real
+      // completion lands in X's world only).
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        const info = sm.create({ cwd: dir })
+        const h0 = mockHandles.at(-1)!
+        h0.emit({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: 'tu_live',
+              content: 'Async agent launched successfully.\nagentId: agent-inflight\n',
+            }],
+          },
+        })
+        sm.send(info.id, 'hi')
+        completeTurn(h0, info.id, 'asst-1')
+        await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+        await waitFor(async () => (await anchorsOf(info.id)).length > 0)
+
+        const y = await sm.discard(info.id, 'asst-1')
+        const notifications = (sm.getHistory(y.id) ?? []).filter(
+          (m) => (m as { subtype?: string }).subtype === 'task_notification',
+        )
+        expect(notifications).toHaveLength(0)
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+    })
+
+    it('discard() of a DORMANT session backfills completions and copies the sidecars to the fork', async () => {
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      const readPage = vi.spyOn(
+        sm as unknown as { readProviderHistoryPage: (provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => Promise<unknown> },
+        'readProviderHistoryPage',
+      )
+      try {
+        const info = sm.create({ cwd: dir })
+        // The agent really finished — its sidecar transcript is durable.
+        writeSidecar(dir, info.id, 'agent-dormant', 'end_turn', 'DONE — committed')
+        // Anchor sidecar seeded directly (bypasses the pump's async append).
+        const smAnchors = sm as unknown as { turnAnchorStore: { save: (id: string, entries: Array<{ assistantUuid: string; completedAt: number }>) => Promise<void> } }
+        await smAnchors.turnAnchorStore.save(info.id, [{ assistantUuid: 'asst-1', completedAt: 1000 }])
+        // X goes dormant: its subprocess is gone, so every agent it launched
+        // is terminal-or-dead and the backfill's 'stopped' fallback is honest.
+        mockHandles[0].emit({ type: 'result' })
+        await tick()
+        await sm.unload(info.id)
+
+        // The disk page a dormant discard seeds from: the ack, no
+        // task_notification (the CLI never persists one), plus the anchor.
+        readPage.mockResolvedValue({
+          messages: [
+            ...ackSeed('tu_dormant', 'agent-dormant'),
+            { type: 'assistant', uuid: 'asst-1', message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } },
+          ],
+          totalCount: 3,
+          startIndex: 0,
+          hasMore: false,
+        })
+
+        const y = await sm.discard(info.id, 'asst-1')
+        const notifications = (sm.getHistory(y.id) ?? []).filter(
+          (m) => (m as { subtype?: string }).subtype === 'task_notification',
+        )
+        expect(notifications).toHaveLength(1)
+        expect(notifications[0]).toMatchObject({
+          tool_use_id: 'tu_dormant',
+          status: 'completed',
+          summary: 'DONE — committed',
+        })
+        // The sidecar transcript followed the fork, so Y's OWN next resume
+        // heals from the real outcome instead of degrading to 'stopped'.
+        expect(existsSync(subagentTranscriptPath(dir, y.id, 'agent-dormant'))).toBe(true)
+      } finally {
+        readPage.mockRestore()
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
     })
 
     it('discard() refuses a non-anchor uuid (400)', async () => {
