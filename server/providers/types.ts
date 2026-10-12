@@ -203,11 +203,6 @@ export interface ProviderSessionHandle {
    *  organization / subscriptionType / tokenSource / apiKeySource /
    *  apiProvider. Read-only control request; needs a live session. */
   accountInfo?(): Promise<unknown>
-  /** Auto-generate a session title (SDK Query.generateSessionTitle —
-   *  `generate_session_title` control request). `description` is a short
-   *  text the CLI uses to synthesize a title. `persist: true` is passed to
-   *  the SDK so the title also survives resume via the CLI transcript. */
-  generateTitle?(description: string): Promise<unknown>
   /** Read a file's content (SDK Query.readFile) — gated by the session's
    *  Read-permission rules inside the SDK. `path` is relative to cwd or
    *  absolute; resolves to `{ contents }` or null (denied / missing). */
@@ -246,7 +241,6 @@ export interface ProviderCapabilities {
   supportsContextUsage: boolean
   supportsUsage: boolean
   supportsAccountInfo: boolean
-  supportsSessionTitle: boolean
   supportsTaskControl: boolean
   supportsStructuredOutput: boolean
   supportsReadFile: boolean

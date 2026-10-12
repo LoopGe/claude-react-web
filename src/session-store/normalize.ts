@@ -521,55 +521,6 @@ export function getEnterPlanToolUseIds(msg: SdkMessage): string[] {
   return ids
 }
 
-/** Pick the description used to auto-generate a session title: prefer the
- *  user's typed text, fall back to the composed (preamble + text) message
- *  (image-only first turns have empty typed text), then trim and truncate
- *  so the title-generation LLM call stays cheap. */
-export function autoTitleDescription(text: string, full: string): string {
-  const src = text.trim() || full
-  return src.trim().slice(0, 300)
-}
-
-/** Build the description for RE-generating a session title (click-to-rename):
- *  the plain text of the most recent human-typed user turns, joined
- *  chronologically and truncated, so the title-generation LLM sees the tail of
- *  the conversation (its current concern) rather than the opening message.
- *  Candidate turns are filtered through the canonical `isHumanUserMessage`, so
- *  slash-command logs, synthetic injections, and SDK tool-feedbacks never skew
- *  the title. Returns '' when there are no human-typed turns yet, OR when the
- *  most recent `maxMessages` human turns are all textless (image-only) — the
- *  server then warns and leaves the session untitled. `autoTitleDescription`
- *  handles the initial one-shot naming; this is the regenerate path. */
-export function recentMessagesDescription(
-  messages: readonly SdkMessage[],
-  maxChars = 600,
-  maxMessages = 5,
-): string {
-  const parts: string[] = []
-  // Walk the transcript BACKWARD from the tail, collecting the most recent
-  // human-typed turns. The walk is bounded by the NUMBER of human turns seen,
-  // not a fixed raw-message window: a single CLI turn expands into many
-  // assistant / tool_result / thinking frames, so the latest human prompt is
-  // routinely dozens (or hundreds) of raw messages behind the mirror tail — a
-  // small fixed window (the old `maxScanWindow = 8`) found nothing and sent an
-  // empty description, so click-to-regenerate could never re-title a session.
-  // Textless human turns (image-only prompts) still count toward the cap so a
-  // recent image-only stretch can't drag the scan all the way back to stale
-  // opening context.
-  let humanSeen = 0
-  for (let i = messages.length - 1; i >= 0 && humanSeen < maxMessages; i--) {
-    const msg = messages[i]
-    if (!isHumanUserMessage(msg)) continue
-    humanSeen++
-    // For a human message topLevelUserPromptSignature is non-null and IS the
-    // extracted plain text — reuse it instead of re-extracting.
-    const text = topLevelUserPromptSignature(msg)?.trim()
-    if (text) parts.unshift(text) // keep chronological order
-  }
-  const joined = parts.join(' ').trim()
-  return joined.length > maxChars ? joined.slice(0, maxChars) : joined
-}
-
 /** True when the WorkingBubble should stay mounted in its "Waiting..." state:
  *  the parent turn has ended but work is still in flight. `runningCount` is the
  *  authoritative task-store count of running background tasks (already filtered

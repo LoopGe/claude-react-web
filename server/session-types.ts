@@ -240,8 +240,15 @@ export type SessionInfo = SessionInfoBase<PermissionMode>
 export interface ResumableSession {
   provider?: string
   sessionId: string
-  /** Best display title: customTitle — summary — firstPrompt. */
+  /** Best display title: customTitle (folds in the CLI's own aiTitle) —
+   *  firstPrompt. Deliberately NOT the SDK's `summary` when a firstPrompt
+   *  exists: the SDK's display title prefers the LAST user prompt, which
+   *  made the /resume picker label sessions with their latest question. */
   title?: string
+  /** On-disk custom title (SDK customTitle, folding in the CLI's aiTitle).
+   *  Carried separately from `title` so listResumable can let a CLI-side
+   *  /rename win over this app's stored title. */
+  customTitle?: string
   /** First meaningful user prompt — shown as a preview/secondary line. */
   firstPrompt?: string
   cwd?: string

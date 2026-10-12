@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, computeTurnActive, countTaskActivity, autoTitleDescription, recentMessagesDescription, countQueuedUserTurns, getActiveWorktree, subagentChildArgSummary, getSubagentChildStarts, toTranscriptItem } from './normalize'
+import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, computeTurnActive, countTaskActivity, countQueuedUserTurns, getActiveWorktree, subagentChildArgSummary, getSubagentChildStarts, toTranscriptItem } from './normalize'
 import type { SdkMessage, TaskRecordUi } from '../types'
 import { TERMINAL_TASK_STATUSES } from '../../shared/tasks.js'
 
@@ -166,78 +166,6 @@ describe('countTaskActivity', () => {
     for (const status of ['pending', 'running', 'paused'] as const) {
       expect(countTaskActivity([task({ status })])).toEqual({ all: 1, indicator: 1 })
     }
-  })
-})
-
-describe('autoTitleDescription', () => {
-  it('prefers the typed text over the composed message', () => {
-    expect(autoTitleDescription('fix the bug', 'Attached: src/a.ts\n\nfix the bug')).toBe('fix the bug')
-  })
-  it('falls back to the composed message for image-only sends', () => {
-    expect(autoTitleDescription('', 'Draft: ship it')).toBe('Draft: ship it')
-  })
-  it('truncates to 300 chars', () => {
-    const long = 'x'.repeat(400)
-    expect(autoTitleDescription(long, long).length).toBe(300)
-  })
-})
-
-describe('recentMessagesDescription', () => {
-  it('joins the most recent human-typed user turns, most recent last', () => {
-    const messages = [
-      userMsg('first thing'),
-      userMsg('second thing'),
-      userMsg('latest thing'),
-    ]
-    expect(recentMessagesDescription(messages)).toBe('first thing second thing latest thing')
-  })
-  it('excludes tool_result/user messages fed back by the SDK (parent_tool_use_id set)', () => {
-    const toolResult = {
-      type: 'user',
-      uuid: 'tr1',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'the output' }] },
-      parent_tool_use_id: 't1',
-    } as unknown as SdkMessage
-    expect(recentMessagesDescription([userMsg('real input'), toolResult])).toBe('real input')
-  })
-  it('handles array-form text blocks (multimodal) from the user', () => {
-    expect(recentMessagesDescription([userMsgBlocks('an image caption')])).toBe('an image caption')
-  })
-  it('returns empty string when there are no human-typed turns', () => {
-    expect(recentMessagesDescription([])).toBe('')
-  })
-  it('caps at maxMessages and truncates to maxChars', () => {
-    const many = Array.from({ length: 10 }, (_, i) => userMsg(`turn ${i}`))
-    const within = recentMessagesDescription(many)
-    // only the last 5 chronological turns survive
-    expect(within).toBe('turn 5 turn 6 turn 7 turn 8 turn 9')
-    const long = 'x'.repeat(2000)
-    expect(recentMessagesDescription([userMsg(long)]).length).toBe(600)
-  })
-  it('finds the most recent human text even when a long SDK tail buries it', () => {
-    // A single CLI turn expands to many assistant / tool_result / thinking
-    // frames, so the latest human prompt is routinely dozens (here: 40) of raw
-    // messages before the mirror tail. The description must still surface it —
-    // a fixed small raw-message window returns '' and the title never changes.
-    const noise: SdkMessage[] = []
-    for (let i = 0; i < 40; i++) {
-      noise.push(asstTools([{ type: 'tool_use', id: `t${i}`, name: 'Read', input: { file_path: `/f${i}` } }], `a${i}`))
-      noise.push({
-        type: 'user',
-        uuid: `tr${i}`,
-        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: 'ok' }] },
-        parent_tool_use_id: `t${i}`,
-      } as unknown as SdkMessage)
-    }
-    const messages = [userMsg('refactor the auth flow', 'u0'), ...noise]
-    expect(recentMessagesDescription(messages)).toBe('refactor the auth flow')
-  })
-  it('does not walk past an image-only tail back into stale opening context', () => {
-    const imgOnly = Array.from({ length: 11 }, (_, i) => userMsg('', `img${i}`))
-    const messages = [userMsg('the opener', 'first'), ...imgOnly]
-    // The 5 most recent human turns are all textless (image-only) and consume
-    // the human-turn cap, so the scan stops without reaching the older opener.
-    expect(recentMessagesDescription(messages)).toBe('')
   })
 })
 

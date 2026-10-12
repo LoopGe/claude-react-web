@@ -50,7 +50,6 @@ interface MockQueryHandle {
   accountInfo: ReturnType<typeof vi.fn>
   readFile: ReturnType<typeof vi.fn>
   seedReadState: ReturnType<typeof vi.fn>
-  generateSessionTitle: ReturnType<typeof vi.fn>
 }
 
 const mockHandles: MockQueryHandle[] = []
@@ -219,7 +218,6 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         accountInfo: vi.fn(async () => ({})),
         readFile: vi.fn(async () => ({ available: false })),
         seedReadState: vi.fn(async () => {}),
-        generateSessionTitle: vi.fn(async (_desc: string, _opts?: { persist?: boolean }) => 'Mock auto title'),
       }
       mockHandles.push(handle)
 
@@ -266,7 +264,6 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         accountInfo: handle.accountInfo,
         readFile: handle.readFile,
         seedReadState: handle.seedReadState,
-        generateSessionTitle: handle.generateSessionTitle,
       }
       return q
     },
@@ -4136,34 +4133,6 @@ describe('SessionManager', () => {
     await expect(sm.setToolProfile('nope', { tools: ['Bash'] })).rejects.toThrow('not found')
   })
 
-  it('autoGenerateTitle persists a generated title on an untitled session, exactly once', async () => {
-    const info = sm.create({ cwd: '/tmp' })
-    const handle = mockHandles[mockHandles.length - 1]
-    const titled = await sm.autoGenerateTitle(info.id, 'Refactor the checkout flow')
-    expect(titled.title).toBe('Mock auto title')
-    expect(handle.generateSessionTitle).toHaveBeenCalledWith('Refactor the checkout flow', { persist: true })
-    // Second call is a no-op: the title is already set.
-    const again = await sm.autoGenerateTitle(info.id, 'whatever')
-    expect(again.title).toBe('Mock auto title')
-    expect(handle.generateSessionTitle).toHaveBeenCalledTimes(1)
-  })
-
-  it('autoGenerateTitle never overwrites a user-named session', async () => {
-    const info = sm.create({ cwd: '/tmp', title: 'My session' })
-    const handle = mockHandles[mockHandles.length - 1]
-    const titled = await sm.autoGenerateTitle(info.id, 'should be ignored')
-    expect(titled.title).toBe('My session')
-    expect(handle.generateSessionTitle).not.toHaveBeenCalled()
-  })
-
-  it('autoGenerateTitle with force:true overwrites an existing title (click-to-regenerate)', async () => {
-    const info = sm.create({ cwd: '/tmp', title: 'My session' })
-    const handle = mockHandles[mockHandles.length - 1]
-    const titled = await sm.autoGenerateTitle(info.id, 'A now-more-accurate description', { force: true })
-    expect(titled.title).toBe('Mock auto title')
-    expect(handle.generateSessionTitle).toHaveBeenCalledWith('A now-more-accurate description', { persist: true })
-  })
-
   it('setMemorySettings() forwards only present keys and records them on the session', async () => {
     const info = sm.create({})
     expect(info.memory).toBeUndefined()
@@ -5028,17 +4997,26 @@ describe('SessionManager', () => {
         { sessionId: 'cli-xyz', firstPrompt: 'Hello from CLI', cwd: '/tmp/cli', lastModified: 500 },
         // customTitle wins over summary/firstPrompt for the display title
         { sessionId: 'title', customTitle: 'My Title', summary: 'ignored', lastModified: 400, gitBranch: 'main' },
+        // firstPrompt beats the SDK display title: the SDK's `summary`
+        // prefers the LAST user prompt, which would label the picker row
+        // with the session's latest question instead of a stable name
+        { sessionId: 'both', summary: 'Latest question text', firstPrompt: 'First question', lastModified: 600 },
       ])
 
       const list = await sm.listResumable()
 
-      // Sorted newest-first by lastModified: cli-xyz(500) > title(400) > live(300)
-      expect(list.map((s) => s.sessionId)).toEqual(['cli-xyz', 'title', live.id])
+      // Sorted newest-first by lastModified: both(600) > cli-xyz(500) > title(400) > live(300)
+      expect(list.map((s) => s.sessionId)).toEqual(['both', 'cli-xyz', 'title', live.id])
 
       const cli = list.find((s) => s.sessionId === 'cli-xyz')!
       expect(cli.known).toBe(false)
       expect(cli.running).toBe(false)
       expect(cli.title).toBe('Hello from CLI')
+
+      // Unknown session with both fields: FIRST prompt wins over summary.
+      const both = list.find((s) => s.sessionId === 'both')!
+      expect(both.known).toBe(false)
+      expect(both.title).toBe('First question')
 
       const liveRow = list.find((s) => s.sessionId === live.id)!
       expect(liveRow.known).toBe(true)
@@ -5048,6 +5026,42 @@ describe('SessionManager', () => {
       const title = list.find((s) => s.sessionId === 'title')!
       expect(title.title).toBe('My Title')
       expect(title.gitBranch).toBe('main')
+    })
+
+    it('prefers the app-known title over the SDK display title for known sessions', async () => {
+      const live = sm.create({ cwd: '/tmp/live2' })
+      await sm.rename(live.id, 'App-side title')
+      mockListSessions.mockResolvedValueOnce([
+        // The SDK's display title prefers the LAST user prompt — the manager
+        // must override it with the app's own title for known sessions.
+        { sessionId: live.id, summary: 'Latest question text', cwd: '/tmp/live2', lastModified: 900 },
+      ])
+      const list = await sm.listResumable()
+      expect(list).toHaveLength(1)
+      expect(list[0].known).toBe(true)
+      expect(list[0].title).toBe('App-side title')
+
+      // Dormant half — the picker's most common shape: the same override
+      // must run off the persisted meta alone (rename → unload → the store
+      // keeps the title; there is no live holder to read it from).
+      await sm.unload(live.id)
+      mockListSessions.mockResolvedValueOnce([
+        { sessionId: live.id, summary: 'Latest question text', cwd: '/tmp/live2', lastModified: 901 },
+      ])
+      const dormant = await sm.listResumable()
+      expect(dormant).toHaveLength(1)
+      expect(dormant[0].known).toBe(true)
+      expect(dormant[0].running).toBe(false)
+      expect(dormant[0].title).toBe('App-side title')
+
+      // A CLI-side /rename lands as the on-disk customTitle — it wins over
+      // the app-known title so the picker reflects the freshest name.
+      mockListSessions.mockResolvedValueOnce([
+        { sessionId: live.id, customTitle: 'CLI rename', summary: 'Latest question text', cwd: '/tmp/live2', lastModified: 902 },
+      ])
+      const cliRenamed = await sm.listResumable()
+      expect(cliRenamed).toHaveLength(1)
+      expect(cliRenamed[0].title).toBe('CLI rename')
     })
 
     it('forwards the dir scope to the SDK', async () => {

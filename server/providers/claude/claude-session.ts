@@ -241,20 +241,6 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.seedReadState(path, mtime)
   }
 
-  /** Auto-generated session title (SDK `generate_session_title` control
-   *  request). `persist: true` writes the title into the CLI transcript so
-   *  it survives `--resume`. The SDK resolves to the title STRING (it
-   *  returns `response.title`), not a `{ title }` wrapper. */
-  generateTitle(description: string): Promise<unknown> {
-    const q = this.query as typeof this.query & {
-      generateSessionTitle(
-        description: string,
-        options: { persist: boolean },
-      ): Promise<string>
-    }
-    return q.generateSessionTitle(description, { persist: true })
-  }
-
   /** Structured /usage data (session cost/usage totals + claude.ai plan
    *  rate-limit windows). The SDK method is EXPERIMENTAL and its name will
    *  change when stabilized — this wrapper is the single call site, so the

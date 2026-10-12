@@ -325,7 +325,6 @@ export class ClaudeProvider implements AgentProvider {
     supportsContextUsage: true,
     supportsUsage: true,
     supportsAccountInfo: true,
-    supportsSessionTitle: true,
     supportsTaskControl: true,
     supportsStructuredOutput: true,
     supportsReadFile: true,
@@ -705,8 +704,14 @@ export class ClaudeProvider implements AgentProvider {
     return {
       provider: this.name,
       sessionId: info.sessionId,
-      title: info.customTitle ?? info.summary ?? info.firstPrompt,
+      // customTitle already folds in the CLI's own aiTitle (SDK-side).
+      // firstPrompt deliberately comes BEFORE info.summary: the SDK's
+      // display-title computation prefers `lastPrompt` (the newest user
+      // question), which made the /resume picker label every untitled
+      // session with its latest question instead of a stable name.
+      title: info.customTitle ?? info.firstPrompt ?? info.summary,
       firstPrompt: info.firstPrompt,
+      customTitle: info.customTitle,
       cwd: info.cwd,
       createdAt: info.createdAt,
       lastModified: info.lastModified,

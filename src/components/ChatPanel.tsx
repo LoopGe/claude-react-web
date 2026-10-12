@@ -12,8 +12,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
-import { useSessionActiveWorktree, getSessionState } from '../session-store/selectors'
-import { recentMessagesDescription } from '../session-store/normalize'
+import { useSessionActiveWorktree } from '../session-store/selectors'
 import { useDraggable, useDroppable } from '@dnd-kit/core'
 import { dndData, pointerOnlyListeners } from '../dnd/payload'
 import { useGitStatus } from '../hooks/useGitStatus'
@@ -471,46 +470,6 @@ export const ChatPanel = memo(function ChatPanel({
   // still shows the chip so the user can see (and clear) what it's running as.
   const personaVisible = enabledAgentDefs.length > 0 || !!session.agent
   const chipsDisabled = !session.running || session.terminated
-  // Click-to-regenerate the session title. Mirrors chipsDisabled so the
-  // affordance only exists on a live session — the server's autoGenerateTitle
-  // requireLive would 404 a dormant one anyway. `regenerating` just drives a
-  // dimmed/pressed style for feedback; the real result lands via the server's
-  // session-update broadcast.
-  const canRegenerateTitle = !chipsDisabled
-  const [regenerating, setRegenerating] = useState(false)
-  // Ref guard for the in-flight window: `regenerating` state lags a re-render,
-  // so a rapid second click/Enter reads the stale closure and would double-fire.
-  const regeneratingRef = useRef(false)
-  const regenerateTitle = useCallback(() => {
-    if (!canRegenerateTitle || regeneratingRef.current) return
-    const messages = getSessionState(session.id).mirror.messages
-    const description = recentMessagesDescription(messages)
-    const previousTitle = session.title
-    regeneratingRef.current = true
-    setRegenerating(true)
-    // Generous timeout: the server runs an LLM call for the title, and the
-    // session-update broadcast will still rename the header even if this
-    // request times out — so a short timeout would show a false error.
-    void api
-      .post<{ session: { title?: string } }>(`/sessions/${session.id}/title`, { force: true, description }, { timeoutMs: 60_000 })
-      .then((res) => {
-        regeneratingRef.current = false
-        setRegenerating(false)
-        // Only claim success when a NEW title actually appeared: an empty LLM
-        // result leaves the title unchanged (server returns 200), and so does a
-        // regenerated-but-identical title — reporting "regenerated" for either
-        // would be a false success.
-        const newTitle = res.session?.title
-        if (newTitle && newTitle !== previousTitle) toast.success(`Title regenerated: ${newTitle}`)
-      })
-      .catch(() => {
-        regeneratingRef.current = false
-        setRegenerating(false)
-        toast.error("Couldn't regenerate title")
-      })
-    // `session.title` is in the deps so `previousTitle` reflects the current
-    // header on each render (the session prop is not otherwise a dependency).
-  }, [canRegenerateTitle, session.id, session.title, toast])
   // Git status powers BOTH the header chip (always-visible summary) and
   // the GitPanel overlay (mounted inside <Chat>). Hoisting the hook here
   // means a single fetch satisfies both consumers; the panel receives
@@ -856,39 +815,17 @@ export const ChatPanel = memo(function ChatPanel({
           </Tooltip>
         )}
         <Tooltip
-          label={canRegenerateTitle
-            ? `Click title to regenerate${session.cwd ? ` · ${session.cwd}` : ''}`
-            : (session.cwd ?? '')}
+          // Full session title first: the header truncates long titles, so
+          // hover is the only way to read the whole name. The cwd follows.
+          // The bubble wraps within max-width, so a long title stays inside.
+          label={
+            sessionTitleOrFallback(session)
+            + (session.cwd ? ` · ${session.cwd}` : '')
+          }
           placement="bottom"
           align="start"
-          disabled={!session.cwd && !canRegenerateTitle}
         >
-          <span
-            className={`chat-panel-title${canRegenerateTitle ? ' clickable' : ''}${regenerating ? ' regenerating' : ''}`}
-            role={canRegenerateTitle ? 'button' : undefined}
-            tabIndex={canRegenerateTitle ? 0 : undefined}
-            // Mirror the mode-badge pattern: the header is the panel-swap drag
-            // handle, so a child control blocks the drag at pointerdown — else
-            // a drag started on the title could co-fire a click on release.
-            onMouseDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              if (!canRegenerateTitle) return
-              e.stopPropagation()
-              regenerateTitle()
-            }}
-            onKeyDown={(e) => {
-              // Activate like a native button: Enter or Space.
-              if (!canRegenerateTitle || (e.key !== 'Enter' && e.key !== ' ')) return
-              e.preventDefault()
-              e.stopPropagation()
-              regenerateTitle()
-            }}
-          >
-            {regenerating && <span className="chat-panel-title-spinner" aria-label="regenerating title" />}
-            {/* Keep the title text rendered while regenerating so the header's
-                width doesn't collapse and nudge sibling controls. */}
-            {sessionTitleOrFallback(session)}
-          </span>
+          <span className="chat-panel-title">{sessionTitleOrFallback(session)}</span>
         </Tooltip>
         {/* Permission-mode control. Doubles as the at-a-glance cue (the
             user's eye lands on the title first) and the switch control —
