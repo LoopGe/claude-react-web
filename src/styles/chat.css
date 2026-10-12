@@ -1250,6 +1250,22 @@ button.chat-empty-env-chip:hover {
   padding: 0;
   flex: none;
 }
+/* Tasks button — always-mounted entry to the Tasks overlay (moved from the
+   working bar, whose pill vanished with the bar itself). Accent-lit icon +
+   tabular digit whenever tasks exist; .composer-tasks-idle dims to muted at
+   zero tasks but keeps the button reachable (the panel also lists terminal
+   history). Color only — the chrome (bg/border/hover) comes from .btn-icon. */
+.composer-tasks {
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.composer-tasks-idle {
+  color: var(--fg-muted);
+}
 
 /* ── Context orb (pure ring) + hover panel ─────────────────────────────
    Circular trigger sitting left of Send. JUST the SVG ring — no button
@@ -2580,41 +2596,9 @@ button.chat-empty-env-chip:hover {
   border-radius: var(--radius-pill);
   white-space: nowrap;
 }
-/* Background-task count pill — clickable entry to the Tasks overlay.
-   Accent-tinted like the timer (an interactive affordance, not a passive
-   readout), with a hover state to signal clickability. */
-.working-tasks {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  color: var(--accent-text);
-  font-family: var(--mono);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  font-variant-numeric: tabular-nums;
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  padding: 1px 7px;
-  border-radius: var(--radius-pill);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.working-tasks:hover {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-}
-/* Ambient-only: the panel entry is still there, but there is no user work to
-   report — drop the accent tint to a muted, digit-less marker so housekeeping
-   never reads as activity. */
-.working-tasks-ambient {
-  color: var(--fg-muted);
-  background: transparent;
-  border-color: var(--border);
-  padding: 1px 5px;
-}
-.working-tasks-ambient:hover {
-  background: var(--btn-hover-bg);
-}
+/* The background-task pill that used to live on the working bar moved into
+   the composer bar (.composer-tasks in chat.css) — the bar only mounts
+   mid-turn, so the Tasks overlay had no entry point while idle. */
 
 .working-dots {
   display: inline-flex;

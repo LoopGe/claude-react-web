@@ -1,17 +1,20 @@
 // The "working" bubble (L4).
 //
 // Rendered by the panel BELOW the transcript, not as a row inside it: it is
-// turn-scoped chrome (elapsed timer, subagent swarm pill, background task
-// pill), so it must not participate in virtualization.
+// turn-scoped chrome (elapsed timer, subagent swarm pill), so it must not
+// participate in virtualization.
 //
 // Split out of MessageList so the container is readable; no logic changed.
+// (The background-task count pill that used to live here moved into the
+// composer bar — the bar only mounts mid-turn, so the Tasks overlay had no
+// entry point while idle.)
 
 import { memo } from 'react'
 import type { ActiveSubagent } from '../../session-store/types'
 import { formatTokens } from '../../utils/format'
 import { ElapsedTimer } from '../ElapsedTimer'
 import { useCountUp } from '../../hooks/useCountUp'
-import { IconListTodo, IconZap } from '../icons/ToolIcons'
+import { IconZap } from '../icons/ToolIcons'
 import { SubagentSwarmPill } from './SubagentSwarm'
 
 /** Stable empty fallback so the `activeSubagents ?? …` default doesn't hand a
@@ -26,9 +29,6 @@ export const WorkingBubble = memo(function WorkingBubble({
   activePhase,
   recapping,
   waiting,
-  runningTaskCount,
-  totalTaskCount,
-  onOpenTasks,
   onOpenSubagent,
   active: _active,
 }: {
@@ -53,19 +53,6 @@ export const WorkingBubble = memo(function WorkingBubble({
    *  with calmed visuals instead of unmounting — surfacing that background
    *  work is ongoing after the turn. */
   waiting?: boolean
-  /** The single indicator count — non-terminal tasks minus ambient /
-   *  skipTranscript housekeeping (`useSessionTaskCounts().indicator`). This is
-   *  the number the pill renders, and the TasksPanel header renders the same
-   *  selector value, so the two surfaces cannot disagree. */
-  runningTaskCount?: number
-  /** Every non-terminal task, ambient included (`useSessionTaskCounts().all`).
-   *  Only decides whether the pill stays visible as the TasksPanel entry point:
-   *  while ambient housekeeping is the only thing running, the pill renders
-   *  icon-only (no digit) rather than claiming work the SDK says hosts should
-   *  keep out of activity indicators. */
-  totalTaskCount?: number
-  /** Opens the Tasks overlay. Wired by the host (Chat) to open TasksPanel. */
-  onOpenTasks?: () => void
   /** When provided, each row of the pill's popover becomes a button that calls
    *  this with that subagent's toolUseId — the host (Chat) opens the overlay
    *  pointed at that subagent. */
@@ -73,18 +60,13 @@ export const WorkingBubble = memo(function WorkingBubble({
   /** Whether a turn is currently running in this panel. Defaults to true
    *  (callers that only mount the bubble around live work — SideChatDrawer —
    *  never hit the idle state). When false AND not waiting, the bubble is
-   *  "idle": the turn ended and only a task-count remnant remains, so it
-   *  collapses to a quiet pill with no "Working" label or animated dots. */
+   *  "idle": the turn ended, and with the tasks entry in the composer the
+   *  bubble has nothing to show unless subagents are still listed — it
+   *  renders null rather than an empty bar shell. */
   active?: boolean
 }) {
   const subagents = activeSubagents ?? EMPTY_SUBAGENTS
   const hasSubagents = subagents.length > 0
-  const taskCount = runningTaskCount ?? 0
-  // Ambient-only work: nothing to report as activity, but the panel entry must
-  // stay reachable. Falls back to taskCount when the host doesn't pass a total
-  // (SideChatDrawer), so the pill keeps its old all-or-nothing behaviour there.
-  const totalTasks = Math.max(totalTaskCount ?? taskCount, taskCount)
-  const ambientOnly = taskCount === 0 && totalTasks > 0
   const active = _active ?? true
   const idle = !active && !waiting
 
@@ -130,9 +112,16 @@ export const WorkingBubble = memo(function WorkingBubble({
             : 'Working'
 
   // Live counters ease toward their targets (see useCountUp) so the
-  // token-rate and task-count readouts glide instead of jumping.
+  // token-rate readout glides instead of jumping.
   const countRate = Math.round(useCountUp(tokenRate ?? 0, 250))
-  const countTasks = Math.round(useCountUp(taskCount, 300))
+
+  // The idle collapse (turn ended, not waiting) used to keep the tasks pill
+  // alive as the TasksPanel entry; that entry now lives in the composer bar,
+  // so an idle bubble with no subagents has nothing left to render. Return
+  // null rather than an empty bar shell (the BottomCardMotion wrapper around
+  // it paints nothing at zero height). All other render branches below are
+  // gated on `!idle` or `hasSubagents`, so this is the complete empty case.
+  if (idle && !hasSubagents) return null
 
   return (
     <div
@@ -174,33 +163,9 @@ export const WorkingBubble = memo(function WorkingBubble({
           <IconZap size={12} aria-hidden /> ~{formatTokens(thinkingTokens)} tok
         </span>
       )}
-      {/* Background-task count pill — the clickable entry to the Tasks
-          overlay. The digit is the shared indicator count (not just
-          transcript-tracked subagents, and not ambient housekeeping); visible
-          in both the active and Waiting states so a background task outliving
-          its turn stays surfaced. Ambient-only work keeps the pill (the panel
-          has to stay reachable) but drops the digit — counting housekeeping as
-          activity is what made this number disagree with the TasksPanel. */}
-      {totalTasks > 0 && onOpenTasks && (
-        <button
-          type="button"
-          className={`working-tasks${ambientOnly ? ' working-tasks-ambient' : ''}`}
-          onClick={onOpenTasks}
-          title={
-            ambientOnly
-              ? `${totalTasks} background housekeeping task${totalTasks === 1 ? '' : 's'} — click to open Tasks`
-              : `${taskCount} background task${taskCount === 1 ? '' : 's'} running — click to open Tasks`
-          }
-          aria-label={
-            ambientOnly
-              ? `${totalTasks} background housekeeping task${totalTasks === 1 ? '' : 's'}`
-              : `${taskCount} background task${taskCount === 1 ? '' : 's'} running`
-          }
-        >
-          <IconListTodo size={12} aria-hidden />
-          {!ambientOnly && countTasks}
-        </button>
-      )}
+      {/* Divider between the status chrome (dots/label/timer/rate) and the
+          subagent group — it belongs to the swarm side (pinned by the
+          SubagentSwarm tests: drains with the fan-out, never dangles). */}
       {hasSubagents && (
         <span className="working-bar-sep" aria-hidden />
       )}

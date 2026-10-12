@@ -325,62 +325,19 @@ function followingOf(container: HTMLElement) {
 }
 
 describe('WorkingBubble', () => {
-  it('renders a background-task count pill when runningTaskCount > 0', () => {
-    const { container } = render(
-      <WorkingBubble runningTaskCount={2} onOpenTasks={() => {}} waiting />,
-    )
-    const pill = container.querySelector('.working-tasks')
-    expect(pill).toBeTruthy()
-    expect(pill?.textContent).toContain('2')
-  })
-
-  it('hides the pill when runningTaskCount is 0', () => {
-    const { container } = render(
-      <WorkingBubble runningTaskCount={0} onOpenTasks={() => {}} waiting />,
-    )
+  it('no longer renders a tasks entry — the TasksPanel entry moved to the composer bar', () => {
+    // The bubble no longer knows about task counts or the overlay at all;
+    // the composer bar owns that entry now.
+    const { container } = render(<WorkingBubble waiting />)
     expect(container.querySelector('.working-tasks')).toBeNull()
   })
 
-  it('keeps a digit-less pill when only ambient housekeeping is running', () => {
-    // indicator 0 + total 2 = ambient-only. The SDK says hosts should keep
-    // housekeeping out of activity indicators, so the number goes away — but
-    // the pill must survive, since it is the only entry to the TasksPanel.
-    const { container } = render(
-      <WorkingBubble runningTaskCount={0} totalTaskCount={2} onOpenTasks={() => {}} waiting />,
-    )
-    const pill = container.querySelector('.working-tasks')
-    expect(pill).toBeTruthy()
-    expect(pill!.classList.contains('working-tasks-ambient')).toBe(true)
-    expect(pill!.textContent).not.toContain('2')
-    expect(pill!.getAttribute('aria-label')).toContain('housekeeping')
-  })
-
-  it('renders the indicator count (not the ambient-inclusive total)', () => {
-    const { container } = render(
-      <WorkingBubble runningTaskCount={1} totalTaskCount={4} onOpenTasks={() => {}} waiting />,
-    )
-    const pill = container.querySelector('.working-tasks')
-    expect(pill!.textContent).toContain('1')
-    expect(pill!.textContent).not.toContain('4')
-    expect(pill!.classList.contains('working-tasks-ambient')).toBe(false)
-  })
-
-  it('does not render the pill without an onOpenTasks handler', () => {
-    const { container } = render(
-      <WorkingBubble runningTaskCount={2} waiting />,
-    )
-    expect(container.querySelector('.working-tasks')).toBeNull()
-  })
-
-  it('clicks the pill call onOpenTasks', () => {
-    const onOpenTasks = vi.fn()
-    const { container } = render(
-      <WorkingBubble runningTaskCount={1} onOpenTasks={onOpenTasks} waiting />,
-    )
-    const pill = container.querySelector('.working-tasks')
-    expect(pill).toBeTruthy()
-    fireEvent.click(pill!)
-    expect(onOpenTasks).toHaveBeenCalledTimes(1)
+  it('idle bubble with no subagents renders nothing (no empty shell)', () => {
+    // The idle collapse used to keep the tasks pill alive as the TasksPanel
+    // entry; with that entry in the composer, an idle bubble has nothing to
+    // show and must not leave an empty bar behind.
+    const { container } = render(<WorkingBubble active={false} waiting={false} />)
+    expect(container.querySelector('.working-bar')).toBeNull()
   })
 
   it('renders the label + dots while a turn is active (default)', () => {
@@ -389,30 +346,18 @@ describe('WorkingBubble', () => {
     expect(container.querySelector('.working-bar-label')).not.toBeNull()
   })
 
-  it('shows only the task pill in the idle-with-tasks state (no label, no dots)', () => {
-    // The turn ended and nothing is genuinely "working", but a task record
-    // is still live (e.g. all ambient/skipTranscript tasks). The bubble
-    // collapses to a quiet pill so the TasksPanel entry survives without a
-    // fake "Working" label.
-    const { container } = render(
-      <WorkingBubble active={false} waiting={false} runningTaskCount={3} onOpenTasks={() => {}} />,
-    )
-    expect(container.querySelector('.working-dots')).toBeNull()
-    expect(container.querySelector('.working-bar-label')).toBeNull()
-    const pill = container.querySelector('.working-tasks')
-    expect(pill).not.toBeNull()
-    expect(pill?.textContent).toContain('3')
-  })
-
   it('renders its props directly (the exit freeze is AnimatePresence now)', () => {
     // The bubble no longer snapshots its own last frame: it is wrapped in a
     // motion.div under AnimatePresence, which keeps the LAST element mounted
     // through the exit (props frozen). So a live render just reflects props.
+    // The rerender target must stay in a RENDERING state — an idle
+    // subagent-less target now hits the null return and would pass even if
+    // props froze.
     const { container, rerender } = render(<WorkingBubble active />)
     expect(container.querySelector('.working-bar-label')?.textContent).toBe('Working')
 
-    rerender(<WorkingBubble active={false} waiting={false} />)
-    expect(container.querySelector('.working-bar-label')).toBeNull()
+    rerender(<WorkingBubble waiting />)
+    expect(container.querySelector('.working-bar-label')?.textContent).toBe('Waiting...')
   })
 })
 

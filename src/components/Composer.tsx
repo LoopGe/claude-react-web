@@ -23,7 +23,8 @@ import { CommandPicker, pickerFlatCommands } from './CommandPicker'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
-import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader, IconFileText, IconClock, IconAlertTriangle } from './icons/ToolIcons'
+import { useCountUp } from '../hooks/useCountUp'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo } from './icons/ToolIcons'
 import type { ScheduledSendsApi } from '../hooks/useScheduledSends'
 import { SchedulePicker } from './SchedulePicker'
 
@@ -131,6 +132,24 @@ interface Props {
    *  identity every WS tick — keeping the orb outside Composer's props is
    *  what lets React.memo skip re-rendering the rich editor on each one. */
   contextOrbSlotRef?: (el: HTMLSpanElement | null) => void
+
+  /** Opens the Tasks overlay. Wiring this also mounts the tasks button in
+   *  the composer bar; leave it undefined and the button stays hidden (for
+   *  hosts that don't own a Tasks overlay — today every Composer host does,
+   *  but the prop stays optional so a future host isn't forced to). */
+  onOpenTasks?: () => void
+  /** The single indicator count — non-terminal tasks minus ambient /
+   *  skipTranscript housekeeping (`useSessionTaskCounts().indicator`). Drives
+   *  the digit; the TasksPanel header renders the same selector value, so the
+   *  two surfaces cannot disagree. */
+  taskCount?: number
+  /** Every non-terminal task, ambient included (`useSessionTaskCounts().all`).
+   *  Decides lit vs dim: 0 total dims the icon (panel still reachable — it
+   *  also lists terminal history); ambient-only lights the icon without a
+   *  digit. Deliberately NOT the old pill's muted treatment: the pill sat in
+   *  the working bar where a lit marker claimed ACTIVITY, while this button
+   *  is a panel entry — "lit" only means the panel has live rows to show. */
+  totalTaskCount?: number
 }
 
 export const Composer = memo(function Composer({
@@ -173,6 +192,9 @@ export const Composer = memo(function Composer({
   scheduled,
   onSendScheduled,
   contextOrbSlotRef,
+  onOpenTasks,
+  taskCount,
+  totalTaskCount,
 }: Props) {
   // RichPromptInput monkey-patches the RichPromptHandle methods onto this
   // div in a useLayoutEffect (deps: [value, ref, onChange]).  The ref's
@@ -197,6 +219,35 @@ export const Composer = memo(function Composer({
   const queueNote = queuedCount
     ? ` and remove ${queuedCount} queued message${queuedCount === 1 ? '' : 's'}`
     : ''
+
+  // ── Tasks button (TasksPanel entry) ─────────────────────────────
+  //
+  // Moved here from WorkingBubble, whose pill was the only entry to the
+  // Tasks overlay but vanished with the working bar. The composer button is
+  // always mounted (when wired), so the panel is reachable while idle too.
+  // Digit semantics match the old pill: the count is the indicator count,
+  // never ambient housekeeping. Visuals deliberately differ on ambient-only
+  // (lit here, muted on the pill): the pill sat in the working bar where a
+  // lit marker claimed ACTIVITY; this button is a panel entry — lit only
+  // means the panel has live rows. Zero tasks dims the icon without hiding
+  // the button.
+  const tasksIndicator = taskCount ?? 0
+  const tasksTotal = Math.max(totalTaskCount ?? tasksIndicator, tasksIndicator)
+  const tasksIdle = tasksTotal === 0
+  const tasksAmbientOnly = tasksIndicator === 0 && tasksTotal > 0
+  // Glide the digit so a burst of task starts/ends reads as a count ticking
+  // rather than strobing — same treatment the working-bar pill had.
+  const countTasks = Math.round(useCountUp(tasksIndicator, 300))
+  const tasksLabel = tasksIdle
+    ? 'Background tasks'
+    : tasksAmbientOnly
+      ? `${tasksTotal} background housekeeping task${tasksTotal === 1 ? '' : 's'}`
+      : `${tasksIndicator} background task${tasksIndicator === 1 ? '' : 's'} running`
+  const tasksTitle = tasksIdle
+    ? 'Open Tasks'
+    : tasksAmbientOnly
+      ? `${tasksTotal} background housekeeping task${tasksTotal === 1 ? '' : 's'} — click to open Tasks`
+      : `${tasksIndicator} background task${tasksIndicator === 1 ? '' : 's'} running — click to open Tasks`
 
   // ── Right-click context menu state ─────────────────────────────
   //
@@ -924,6 +975,18 @@ export const Composer = memo(function Composer({
         >
           <IconPaperclip size={18} />
         </button>
+        {onOpenTasks && (
+          <button
+            type="button"
+            className={'btn btn-icon composer-tasks' + (tasksIdle ? ' composer-tasks-idle' : '')}
+            onClick={onOpenTasks}
+            title={tasksTitle}
+            aria-label={tasksLabel}
+          >
+            <IconListTodo size={18} aria-hidden />
+            {tasksIndicator > 0 && countTasks}
+          </button>
+        )}
         {SCHEDULE_SEND_ENABLED && onSendScheduled && scheduled && (
           <button
             className="btn btn-icon"

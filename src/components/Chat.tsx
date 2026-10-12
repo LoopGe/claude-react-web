@@ -281,8 +281,8 @@ interface Props {
    *  TasksPanel subscribes itself, no prop drilling of the list. */
   tasksPanelOpen?: boolean
   onCloseTasksPanel?: () => void
-  /** Open the Tasks overlay for this session. The WorkingBubble count pill
-   *  is the only trigger now that the header chip is gone. */
+  /** Open the Tasks overlay for this session. The composer bar's tasks
+   *  button is the only trigger now that the header chip is gone. */
   onOpenTasksPanel?: (sessionId: string) => void
   /** When true, render the floating Recap window at the top of the chat
    *  area. Owned by ChatPanel (which also renders the reopen button in the
@@ -876,12 +876,12 @@ export const Chat = memo(function Chat({
   // mirror (same data TasksPanel reads). Read via a primitive-count selector
   // so unrelated task-list identity changes don't re-render Chat.
   //   `indicatorTaskCount` — the single indicator count (non-terminal, minus
-  //     ambient/skipTranscript housekeeping). Drives BOTH the WorkingBubble
-  //     count pill and the Waiting gate, and the TasksPanel header reads the
-  //     same selector, so the two surfaces can't disagree.
-  //   `taskCount` — every non-terminal task, ambient included. Only used to
-  //     decide whether the bubble/pill stays mounted as the TasksPanel entry
-  //     point while ambient housekeeping runs; never rendered as a count.
+  //     ambient/skipTranscript housekeeping). Drives BOTH the composer tasks
+  //     button's digit and the Waiting gate, and the TasksPanel header reads
+  //     the same selector, so the two surfaces can't disagree.
+  //   `taskCount` — every non-terminal task, ambient included. Drives the
+  //     composer button's lit-vs-dim state and the WorkingBubble mount gate
+  //     (see shouldMountWorkingBubble); never rendered as a digit.
   const { all: taskCount, indicator: indicatorTaskCount } = useSessionTaskCounts(session.id)
   /** A background (async) subagent still in flight after the parent turn ended
    *  — see hasTranscriptBackground for which statuses count. The WorkingBubble
@@ -902,7 +902,8 @@ export const Chat = memo(function Chat({
     hasTranscriptBackground: transcriptBackground,
   })
   /** Open this panel's Tasks overlay. Stable callback so the memoized
-   *  WorkingBubble count pill doesn't re-render on every Chat render. */
+   *  Composer (which carries the tasks button now) doesn't re-render on
+   *  every Chat render. */
   const openTasksPanel = useCallback(() => onOpenTasksPanel?.(session.id), [onOpenTasksPanel, session.id])
 
   // 鈹€鈹€ Subagent overlay state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -2397,6 +2398,9 @@ export const Chat = memo(function Chat({
               }}
               onSendScheduled={handleSendScheduled}
               contextOrbSlotRef={setOrbSlot}
+              onOpenTasks={openTasksPanel}
+              taskCount={indicatorTaskCount}
+              totalTaskCount={taskCount}
             />
           </div>,
           dockSlot,
@@ -2433,9 +2437,6 @@ export const Chat = memo(function Chat({
                   activePhase={displayPhase}
                   recapping={session.compacting ?? false}
                   waiting={waiting}
-                  runningTaskCount={indicatorTaskCount}
-                  totalTaskCount={taskCount}
-                  onOpenTasks={openTasksPanel}
                   onOpenSubagent={openSubagent}
                 />
               </BottomCardMotion>

@@ -844,3 +844,63 @@ describe('Composer context-menu Cut/Copy/Paste/Select-all', () => {
     expect(written).toEqual(['ell'])
   })
 })
+
+// ── Tasks button (composer-bar entry to the TasksPanel) ─────────────
+//
+// Moved here from WorkingBubble: the pill lived on the working bar, which
+// only mounts mid-turn, so the Tasks overlay had no entry point while idle.
+// The composer button is always mounted (when the host wires onOpenTasks),
+// so the panel is reachable at any time.
+
+describe('Composer tasks button', () => {
+  it('renders when onOpenTasks is provided, even with no tasks', () => {
+    const { container } = render(<Composer {...defaultProps} onOpenTasks={noop} />)
+    expect(container.querySelector('.composer-tasks')).not.toBeNull()
+  })
+
+  it('hides when onOpenTasks is absent (host owns the Tasks overlay)', () => {
+    const { container } = render(<Composer {...defaultProps} />)
+    expect(container.querySelector('.composer-tasks')).toBeNull()
+  })
+
+  it('dims to the idle modifier with no digit when no tasks exist', () => {
+    const { container } = render(
+      <Composer {...defaultProps} onOpenTasks={noop} taskCount={0} totalTaskCount={0} />,
+    )
+    const btn = container.querySelector('.composer-tasks')!
+    expect(btn.classList.contains('composer-tasks-idle')).toBe(true)
+    expect(btn.textContent).not.toMatch(/\d/)
+  })
+
+  it('stays lit without a digit for ambient-only housekeeping', () => {
+    // indicator 0 + total 2 = ambient-only. The digit must not claim
+    // housekeeping as activity — same invariant the WorkingBubble pill had:
+    // this number and the TasksPanel header cannot disagree.
+    const { container } = render(
+      <Composer {...defaultProps} onOpenTasks={noop} taskCount={0} totalTaskCount={2} />,
+    )
+    const btn = container.querySelector('.composer-tasks')!
+    expect(btn.classList.contains('composer-tasks-idle')).toBe(false)
+    expect(btn.textContent).not.toMatch(/\d/)
+    expect(btn.getAttribute('aria-label')).toContain('housekeeping')
+  })
+
+  it('shows the indicator count (not the ambient-inclusive total)', () => {
+    const { container } = render(
+      <Composer {...defaultProps} onOpenTasks={noop} taskCount={1} totalTaskCount={4} />,
+    )
+    const btn = container.querySelector('.composer-tasks')!
+    expect(btn.textContent).toContain('1')
+    expect(btn.textContent).not.toContain('4')
+  })
+
+  it('calls onOpenTasks on click', () => {
+    const onOpenTasks = vi.fn()
+    const { container } = render(
+      <Composer {...defaultProps} onOpenTasks={onOpenTasks} taskCount={1} totalTaskCount={1} />,
+    )
+    fireEvent.click(container.querySelector('.composer-tasks')!)
+    expect(onOpenTasks).toHaveBeenCalledTimes(1)
+  })
+})
+
