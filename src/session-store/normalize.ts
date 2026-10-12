@@ -107,6 +107,22 @@ const PERSISTED_SYSTEM_SUBTYPES = new Set(['error', 'compact_boundary', 'api_ret
  *  leading-prompt run stays empty → no duplicate-prompt resurfacing). Every
  *  real turn ends with a main-thread assistant frame, so a boundary always
  *  exists within the recent tail. */
+/** Best-effort wall-clock time of a message for ordering comparisons:
+ *  `receivedAt` (stamped by the live pump on ring frames and by the
+ *  history-reader on disk-restored frames) else the ISO `timestamp` else
+ *  null. Frames without any comparable time are transparent to the merge's
+ *  time partition and to repairChronology — they ride their neighbours. */
+export function msgTime(m: unknown): number | null {
+  const o = m as { receivedAt?: unknown; timestamp?: unknown } | null | undefined
+  if (!o) return null
+  if (typeof o.receivedAt === 'number' && Number.isFinite(o.receivedAt)) return o.receivedAt
+  if (typeof o.timestamp === 'string') {
+    const t = Date.parse(o.timestamp)
+    if (Number.isFinite(t)) return t
+  }
+  return null
+}
+
 export function isTrimBoundary(msg: SdkMessage): boolean {
   if (msg.type === 'assistant' && msg.parent_tool_use_id == null) return true
   if (msg.type === 'system' && PERSISTED_SYSTEM_SUBTYPES.has(msg.subtype as string)) return true

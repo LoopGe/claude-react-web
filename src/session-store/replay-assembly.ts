@@ -21,8 +21,9 @@
 // which assumes a contiguous slice — mis-brackets it. That is exactly how the
 // disk-seed head landed AFTER live messages in the 96b4eaaa transcript.
 //
-// Live-verified on 2026-10-12 (replay-trace `!!STALE-BUFFER`, carried=150):
-// burst 8's three already-sent chunks sat in the buffer when burst 11 landed.
+// Live-verified on 2026-10-12: burst 8's three already-sent chunks (150
+// messages) sat in a listener buffer when burst 11 landed on the same
+// listener — the mixed payload flushed at burst 11's replay-done.
 //
 // THE FIX
 //
@@ -42,7 +43,6 @@
 // simply keeps feeding the same assembly).
 
 import type { PermissionRequest, SdkMessage } from '../types'
-import { msgTag, replayTrace } from './replay-trace'
 
 export interface FlushedBurst {
   burstId: number
@@ -60,8 +60,6 @@ interface OpenAssembly {
    *  reference set is the exact frame-level dedup (distinct frames are
    *  distinct parses; a re-delivered frame is the same reference). */
   seen: Set<SdkMessage[]>
-  /** Epoch ms when the first frame of this burst landed. Diagnostics only. */
-  openedAt: number
 }
 
 export class ReplayAssembler {
@@ -87,13 +85,6 @@ export class ReplayAssembler {
         // (burstId === undefined with an attributed open assembly means an
         // older-server frame racing a newer server's stream — never merge.)
         this.open.delete(sessionId)
-        replayTrace(sessionId, 0, 'assembly-superseded', {
-          prevBurst: prev.burstId,
-          newBurst: burstId ?? 'none',
-          carried: prev.messages.length,
-          carriedFirst: msgTag(prev.messages[0]),
-          carriedLast: msgTag(prev.messages[prev.messages.length - 1]),
-        })
       } else {
         if (prev.seen.has(messages)) return // re-delivered to another listener
         prev.seen.add(messages)
@@ -107,7 +98,6 @@ export class ReplayAssembler {
       messages: [...messages],
       permissions: [...permissions],
       seen: new Set([messages]),
-      openedAt: Date.now(),
     })
   }
 
@@ -118,22 +108,8 @@ export class ReplayAssembler {
    *  no-op (multiple listeners share this assembler and each sees the frame). */
   finalize(sessionId: string, burstId: number | undefined): FlushedBurst | null {
     const current = this.open.get(sessionId)
-    if (!current) {
-      replayTrace(sessionId, 0, 'assembly-finalize-miss', {
-        doneBurst: burstId,
-        reason: 'no-open-assembly',
-      })
-      return null
-    }
-    if (burstId !== undefined && current.burstId !== -1 && current.burstId !== burstId) {
-      replayTrace(sessionId, 0, 'assembly-finalize-miss', {
-        doneBurst: burstId,
-        openBurst: current.burstId,
-        carried: current.messages.length,
-        reason: 'stale-done',
-      })
-      return null
-    }
+    if (!current) return null
+    if (burstId !== undefined && current.burstId !== -1 && current.burstId !== burstId) return null
     this.open.delete(sessionId)
     return {
       burstId: current.burstId,
@@ -146,15 +122,7 @@ export class ReplayAssembler {
    *  burst without delivering its payload: an `error` frame, a session
    *  /clear, channel teardown. */
   discard(sessionId: string): void {
-    const current = this.open.get(sessionId)
-    if (current) {
-      this.open.delete(sessionId)
-      replayTrace(sessionId, 0, 'assembly-discarded', {
-        burstId: current.burstId,
-        carried: current.messages.length,
-        first: msgTag(current.messages[0]),
-      })
-    }
+    this.open.delete(sessionId)
   }
 
   /** True while a burst is being assembled for the session. Same semantic as

@@ -29,9 +29,9 @@
  *  per serve; object identity is the key, sessionId drives supersede scope. */
 export interface ReplayBurstToken {
   readonly sessionId: string
-  /** TEMPORARY (reorder investigation): numeric id stamped on the wire frames
-   *  and in supersede logs so client-side buffer composition can be traced
-   *  back to the exact server burst. */
+  /** Numeric id stamped on the wire frames (shared/ws-protocol.ts burstId)
+   *  and in supersede logs — the client's ReplayAssembler keys burst assembly
+   *  and supersede on it. 0 = unspecified (tests / legacy callers). */
   readonly id: number
 }
 
@@ -56,8 +56,8 @@ export interface BurstQueueEntry {
 export interface SupersededFrames {
   frames: number
   chars: number
-  /** TEMPORARY (reorder investigation): id of the burst whose queued frames
-   *  were dropped, for correlating supersede logs with client traces. */
+  /** Id of the burst whose queued frames were dropped (0 when the dropped
+   *  token carried no id). */
   burstId?: number
 }
 
@@ -141,8 +141,6 @@ export class ReplayBurstRegistry {
       frames += 1
       chars += e.data.length
     }
-    // TEMPORARY (reorder investigation): surface the dropped burst's id so
-    // supersede logs correlate with the client's burstId traces.
     return { frames, chars, burstId: prev.token.id }
   }
 }

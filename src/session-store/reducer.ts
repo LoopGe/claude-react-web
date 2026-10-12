@@ -1,7 +1,5 @@
 import { isTerminalTaskStatus } from '../../shared/tasks.js'
 import type { PermissionRequest, SdkMessage } from '../types'
-// TEMPORARY (reorder investigation) — remove with the trace points below.
-import { msgTag, msgTime, replayTrace } from './replay-trace'
 import {
   createInitialClientIntent,
   createInitialServerMirror,
@@ -31,8 +29,10 @@ import {
   getToolUseStarts,
   getWorkflowChildStarts,
   getWorkflowStarts,
+  isCursorAnchorable,
   isDiskStableMsg,
   isTrimBoundary,
+  msgTime,
   parseTaskNotification,
   toTranscriptItem,
   topLevelUserPromptSignature,
@@ -46,7 +46,6 @@ import { toolDebug, toolDebugEnabled } from './debug'
 import { parseWorkflowOutput } from './workflow-meta'
 import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
 import { isEmptyResultFrame } from '../../shared/results.js'
-import { isCursorAnchorable } from './normalize'
 
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -456,18 +455,6 @@ function replayReplace(
   // the server happened to slice — no reliance on sinceUuid landing cleanly.
   if (payload.length > 0 && prevMirror.items.length > 0) {
     const { older, mid, newer, overlap } = splitReplayAgainstCache(payload, prevMirror.items)
-    // TEMPORARY (reorder investigation): split outcome trace.
-    replayTrace(prevState.sessionId, 0, 'split', {
-      payload: payload.length,
-      older: older.length,
-      mid: mid.length,
-      newer: newer.length,
-      overlap: overlap.length,
-      payloadFirst: msgTag(payload[0]),
-      payloadLast: msgTag(payload[payload.length - 1]),
-      cacheLen: prevMirror.items.length,
-      cacheLast: msgTag(prevMirror.items[prevMirror.items.length - 1]?.msg),
-    })
     // Preserve an in-progress turn's accumulated text across a benign
     // reconnect / panel-switch-back replay. The live turn's partial text lives
     // ONLY in `liveTurn` — stream_event deltas never enter the history ring
@@ -761,8 +748,6 @@ function applyMidSlice(state: SessionState, mid: SdkMessage[], payload: SdkMessa
   }
   let working = state
   let lastTime: number | null = null
-  let applied = 0
-  let skippedTwins = 0
   for (const m of payload) {
     const inMid = midRefs.has(m)
     const t = msgTime(m)
@@ -774,17 +759,13 @@ function applyMidSlice(state: SessionState, mid: SdkMessage[], payload: SdkMessa
       if (fp != null && placeTime != null) {
         const times = promptTwinTimes.get(fp)
         if (times != null && times.some((ct) => Math.abs(ct - placeTime) <= TWIN_TIME_WINDOW_MS)) {
-          skippedTwins++
           continue
         }
       }
     }
     const stamped = t == null && lastTime != null ? { ...m, receivedAt: lastTime } : m
     working = applyMessage(working, stamped)
-    applied++
   }
-  // TEMPORARY (reorder investigation): mid-fill telemetry.
-  replayTrace(state.sessionId, 0, 'mid-applied', { mid: mid.length, applied, skippedTwins })
   return working
 }
 
@@ -871,8 +852,8 @@ function repairChronology(state: SessionState): SessionState {
     i = insertAt + runLen
   }
   if (moves > 0) {
-    // TEMPORARY (reorder investigation): repair telemetry.
-    replayTrace(state.sessionId, 0, 'repair', { moves, len: n })
+    // Rare by design (only fires on displaced/healing state) — surface it so
+    // a recurring warn is visible instead of silently absorbed.
     console.warn(`[repairChronology] moved ${moves} displaced item(s) into chronological order`)
   }
   if (!copied) return state
@@ -1082,11 +1063,6 @@ function partitionNoOverlapByTime(
   const cacheTailTime = msgTime(items[items.length - 1]?.msg)
   if (cacheHeadTime == null || cacheTailTime == null) {
     // No comparable cache times — preserve the legacy append behaviour.
-    // TEMPORARY (reorder investigation): the old !!OLD-AS-NEWER detector.
-    const pT = msgTime(messages[0])
-    if (pT != null) {
-      replayTrace('', 0, 'partition-no-cache-time', { payloadLen: messages.length, payloadFirstT: pT })
-    }
     return { older, mid, newer: messages, overlap: [] }
   }
   // Leading null-time frames have no timed predecessor to ride — they belong
@@ -1123,17 +1099,6 @@ function partitionNoOverlapByTime(
     if (run === 'older') older.push(m)
     else if (run === 'mid') mid.push(m)
     else newer.push(m)
-  }
-  if (older.length > 0) {
-    // TEMPORARY (reorder investigation): this is the exact branch that used
-    // to blind-append (the !!OLD-AS-NEWER smoking gun) — now routed to the
-    // prepend path instead.
-    replayTrace('', 0, 'partition-older', {
-      older: older.length,
-      mid: mid.length,
-      newer: newer.length,
-      payloadLen: messages.length,
-    })
   }
   return { older, mid, newer, overlap: [] }
 }
@@ -1286,16 +1251,6 @@ function prependMessages(
   }
 
   if (newItems.length === 0) return state
-
-  // TEMPORARY (reorder investigation): prepend trace — how many of the
-  // incoming batch survived uuid/prompt-signature dedup.
-  replayTrace(state.sessionId, 0, 'prepend', {
-    batchIn: older.length,
-    applied: newItems.length,
-    trustUuidDedup: opts?.trustUuidDedup === true,
-    first: msgTag(newItems[0]?.msg),
-    last: msgTag(newItems[newItems.length - 1]?.msg),
-  })
 
   let next: SessionState = withMirror(state, {
     ...mirror,

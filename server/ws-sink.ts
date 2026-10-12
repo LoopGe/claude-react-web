@@ -96,7 +96,6 @@ export class WsWriteQueue {
       const freed = this.bursts.register(burst, entry)
       if (freed.frames > 0) {
         this.totalChars -= freed.chars
-        // TEMPORARY (reorder investigation): include both burst ids.
         log.info(
           `superseded burst=${freed.burstId ?? '?'} queued frames=${freed.frames} ` +
           `(${freed.chars} chars) — replaced by burst=${burst.id}`,

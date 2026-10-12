@@ -23,10 +23,6 @@ import type { SessionBroadcaster } from './session-types.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
 import { shouldBroadcastMessage } from './history-utils.js'
 import { planTailBackfillReplay } from './replay-plan.js'
-
-// TEMPORARY (reorder investigation): monotonic burst id source. Process-wide
-// so ids in the server log are unique even across connections.
-let burstIdCounter = 0
 import { createReplayBurstToken, type ReplayBurstToken } from './replay-bursts.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
@@ -45,6 +41,12 @@ import type { TaskRecordUi } from '../shared/tasks.js'
 
 // Same scope as the old ws.ts logger so log output is unchanged.
 const log = createLogger('ws')
+
+// Monotonic burst id source for sendReplay — stamped on every replay /
+// replay-done frame (shared/ws-protocol.ts burstId) and consumed by the
+// client's ReplayAssembler. Process-wide so ids are unique across
+// connections.
+let burstIdCounter = 0
 
 /** Write endpoint for one client connection.
  *
@@ -367,9 +369,7 @@ export class SessionConnection {
       (m) => shouldBroadcastMessage(m as { type?: string; subtype?: string }),
     )
     const REPLAY_CHUNK_SIZE = 50
-    // TEMPORARY (reorder investigation): one id per sendReplay, stamped on
-    // every frame of the burst so the client trace can attribute its buffer
-    // composition to the exact server burst.
+    // One id per sendReplay, stamped on every frame of the burst.
     const burstId = ++burstIdCounter
     // Key diagnostic: pairs with the client's replay-done handling. If the
     // server logs a non-zero count here but the client renders blank, the

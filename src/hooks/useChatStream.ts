@@ -10,8 +10,6 @@ import { randomId } from '../utils/uuid'
 import type { WsServerFrame } from '../ws-types'
 import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter, TaskRecordUi, UserDialogRequestUi, DialogResolved } from '../types'
 import { extractMessagePlainText } from '../../shared/search/extract'
-// TEMPORARY (reorder investigation) — remove with the rest of the trace points.
-import { msgTag, nextListenerId, replayTrace } from '../session-store/replay-trace'
 import { replayAssembler } from '../session-store/replay-assembly'
 
 /** The disk-stable uuid of a message, or null. A message whose uuid matches
@@ -325,8 +323,6 @@ export function useChatStream(
     // (sinceUuid) replay be used when a cache exists. hydrateReady is always
     // set (cache or not), so this never deadlocks.
     if (!hydrateReady) return
-    // TEMPORARY (reorder investigation): per-listener trace id.
-    const lst = nextListenerId()
     // Hold the channel, and require a replay for THIS listener. The hold is
     // ref-counted and deduped (the same panel's header subscribes too); the
     // force is what makes the transcript independent of subscription order —
@@ -355,12 +351,6 @@ export function useChatStream(
     // buffered REPLAY_REPLACE — it only closes the burst (and finally
     // allows the replay cursor to advance; see replayCursor).
     let tailMode = false
-    // True once the server's `error` frame has landed on this listener.
-    // The startSession error path on the server enqueues `error` +
-    // `replay-done` with NO replay frame between them, so this flag keeps
-    // the replay-done diagnostic below from misattributing that expected
-    // sequence to the discarded-buffer race.
-    let errored = false
     // Cursor for this listener's forced replay (see the `subscribe` call at the
     // bottom of the effect). While a tail-first burst is open the store's
     // newest uuid is the TAIL's — not a valid resume anchor — and the hub
@@ -402,12 +392,6 @@ export function useChatStream(
             // older prompt whose text repeats ("continue") across a chunk
             // boundary.
             if (!clearedRef.current && frame.messages.length > 0) {
-              replayTrace(sessionId, lst, 'backfill-prepend', {
-                burstId: (frame as { burstId?: number }).burstId,
-                n: frame.messages.length,
-                first: msgTag(frame.messages[0] as SdkMessage),
-                last: msgTag(frame.messages[frame.messages.length - 1] as SdkMessage),
-              })
               store.dispatch({
                 type: 'PREPEND_MESSAGES',
                 messages: frame.messages as SdkMessage[],
@@ -444,12 +428,6 @@ export function useChatStream(
             // replay-done's empty REPLAY_REPLACE, but a connection drop
             // before that replay-done would leave the resurrection up).
             if (!clearedRef.current) {
-              replayTrace(sessionId, lst, 'tail-apply', {
-                burstId: (frame as { burstId?: number }).burstId,
-                n: frame.messages.length,
-                first: msgTag(frame.messages[0] as SdkMessage),
-                last: msgTag(frame.messages[frame.messages.length - 1] as SdkMessage),
-              })
               if (frame.permissions?.length) {
                 for (const req of frame.permissions) permsRef.current.onRequest(req)
               }
@@ -499,16 +477,6 @@ export function useChatStream(
             frame.messages as SdkMessage[],
             (frame.permissions ?? []) as PermissionRequest[],
           )
-          // TEMPORARY (reorder investigation): per-frame buffer growth trace.
-          {
-            const bId = (frame as { burstId?: number }).burstId
-            replayTrace(sessionId, lst, 'replay-frame', {
-              burstId: bId,
-              n: frame.messages.length,
-              first: msgTag(frame.messages[0] as SdkMessage),
-              last: msgTag(frame.messages[frame.messages.length - 1] as SdkMessage),
-            })
-          }
           if (frame.permissions?.length) {
             for (const req of frame.permissions) permsRef.current.onRequest(req)
           }
@@ -530,20 +498,13 @@ export function useChatStream(
           setBurstDraining(false)
           // Flush ONLY the burst this terminator names. A null flush means a
           // stale done (its burst was superseded and its partial assembly
-          // discarded) or a done that raced a newer burst — the assembler
-          // traced which. The old closure-buffer code flushed the MIXED
-          // buffer here, which is exactly the reorder bug; the assembler
-          // makes that state unreachable.
+          // discarded) or a done that raced a newer burst — expected and
+          // handled inside the assembler. The old closure-buffer code
+          // flushed the MIXED buffer here, which is exactly the reorder
+          // bug; the assembler makes that state unreachable.
           const flushed = tailMode
             ? null
             : replayAssembler.finalize(sessionId, (frame as { burstId?: number }).burstId)
-          if (!tailMode && flushed == null && !errored) {
-            console.warn(
-              `[useChatStream] replay-done for ${sessionId} (burst=${(frame as { burstId?: number }).burstId}) ` +
-              `flushed nothing — stale terminator for a superseded burst, or a burst whose ` +
-              `frames never landed; the open assembly (if any) is unaffected`,
-            )
-          }
           if (frame.permissions?.length) {
             for (const req of frame.permissions) permsRef.current.onRequest(req)
           }
@@ -561,17 +522,7 @@ export function useChatStream(
             // also the point where the burst is complete, so the reconnect
             // anchor may finally advance (see the tail-frame NOTE above).
             tailMode = false
-            replayTrace(sessionId, lst, 'replay-done(tail)', {
-              burstId: (frame as { burstId?: number }).burstId,
-            })
           } else if (flushed != null) {
-            // TEMPORARY (reorder investigation): what this replay-done flushed.
-            replayTrace(sessionId, lst, 'replay-done', {
-              burstId: flushed.burstId,
-              bufLen: flushed.messages.length,
-              bufFirst: msgTag(flushed.messages[0]),
-              bufLast: msgTag(flushed.messages[flushed.messages.length - 1]),
-            })
             // Chunked bursts carry their pending-request snapshots on this
             // terminator — fold them into the flushed payload's dispatch.
             store.dispatch({
@@ -728,7 +679,6 @@ export function useChatStream(
           // replayReady=true so the skeleton clears and the error becomes
           // visible. Clear the replay assembly so a stale replay-done that
           // arrives later can't overwrite the error with error:null.
-          errored = true
           // An error frame ends any in-flight burst for this listener (the
           // hub drops its latch here too) — release the pin freeze, or a
           // mid-backfill error with no trailing replay-done would stick
@@ -811,14 +761,6 @@ export function useChatStream(
     // is older and prepending stays correct.
     const burstOpen = hub.isReplayBurstOpen(sessionId)
     const hasCachedTranscript = !burstOpen && (cursor != null || store.getSnapshot().items.length > 0)
-    // TEMPORARY (reorder investigation): what this listener asked the server for.
-    replayTrace(sessionId, lst, 'subscribe', {
-      sinceUuid: typeof cursor === 'string' ? cursor.slice(0, 8) : null,
-      hasCachedTranscript,
-      burstOpen,
-      items: store.getSnapshot().items.length,
-      cacheHasDroppedMedia: store.getSnapshot().cacheHasDroppedMedia,
-    })
     const release = hub.subscribe(
       sessionId,
       // A cache whose persist projection dropped image blocks (see
