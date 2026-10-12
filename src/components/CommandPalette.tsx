@@ -236,8 +236,8 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
                   onClick={() => { item.action(); onClose() }}
                 >
                   <span className="palette-item-main">
-                    <span className="palette-item-label">{item.label}</span>
-                    {item.detail && <span className="palette-item-detail">{item.detail}</span>}
+                    <span className="palette-item-label truncate">{item.label}</span>
+                    {item.detail && <span className="palette-item-detail truncate">{item.detail}</span>}
                   </span>
                   {item.hint && <span className="palette-item-hint">{item.hint}</span>}
                 </button>

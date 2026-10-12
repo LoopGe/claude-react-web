@@ -28,6 +28,7 @@ import { ContextComposition } from './ContextComposition'
 import { IconChevronUp, IconChevronDown, IconLoader, IconSparkles, IconTerminal } from './icons/ToolIcons'
 import { EmptyState } from './EmptyState'
 import { Skeleton } from './Skeleton'
+import { ErrorBoundary } from './ErrorBoundary'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { HooksPanel } from './HooksPanel'
@@ -1152,6 +1153,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           the global settings modal (where only .global-settings-body scrolls). */}
       <div ref={panelBodyRefMerged} className="settings-panel-body">
         <div ref={panelContentRef} className="settings-panel-content" data-animate={tab}>
+        {/* Contain a crashed tab inside the panel body — header + tab nav stay
+            alive so the user can switch away. resetKey per tab gives a clean
+            retry on tab change. */}
+        <ErrorBoundary resetKey={tab}>
       {tab === 'general' && (
       <div className="settings-stack">
       <section className="settings-group">
@@ -2075,6 +2080,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       {tab === 'performance' && (
         <PerformancePanel />
       )}
+        </ErrorBoundary>
         </div>
       </div>
 
@@ -2094,7 +2100,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           <button className="btn btn-sm" onClick={() => setShowMarketplace(false)}>Close</button>
         </div>
         <div style={{ overflowY: 'auto', padding: 16 }}>
-          <Suspense fallback={<div className="lazy-tab-loading">Loading marketplace…</div>}>
+          <Suspense fallback={<Skeleton className="lazy-tab-loading" />}>
             <MarketplaceTab onPluginToggled={() => { onPluginsReloaded?.() }} />
           </Suspense>
         </div>

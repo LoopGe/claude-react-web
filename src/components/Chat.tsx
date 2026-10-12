@@ -90,6 +90,7 @@ import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useToast } from '../hooks/useToast'
 import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
 import { Overlay } from './Overlay'
+import { ErrorBoundary } from './ErrorBoundary'
 import { useWsHub } from '../hooks/useWsHub'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
@@ -2230,7 +2231,7 @@ export const Chat = memo(function Chat({
           expectHistory={session.messageCount > 0}
           clearing={effectiveClearing}
           transcriptRevealKey={session.id}
-          streamingContent={stream.streamingContent}
+          sessionId={session.id}
           apiRetry={stream.apiRetry}
           planStatus={stream.planStatus}
           planContent={stream.planContent}
@@ -2587,6 +2588,10 @@ export const Chat = memo(function Chat({
       >
         {settingsEverOpened && (
           <Suspense fallback={null}>
+            {/* Contain a crashed settings tab inside the overlay; resetKey
+                (not the legacy children heuristic) so a chat re-render can't
+                retry the crashed subtree. */}
+            <ErrorBoundary resetKey={session.id}>
             <SettingsPanel
               key={session.id}
               session={session}
@@ -2600,6 +2605,7 @@ export const Chat = memo(function Chat({
               onPluginsReloaded={() => { refreshCommands(); refreshAgents() }}
               onSkillsReloaded={() => { refreshCommands() }}
             />
+            </ErrorBoundary>
           </Suspense>
         )}
       </Overlay>
@@ -2614,6 +2620,7 @@ export const Chat = memo(function Chat({
         focusEscapeSelector=".chat-panel"
       >
         <Suspense fallback={null}>
+          <ErrorBoundary resetKey={session.id}>
           <GitPanel
             key={session.id}
             sessionId={session.id}
@@ -2624,6 +2631,7 @@ export const Chat = memo(function Chat({
             onRefresh={() => onGitRefresh?.()}
             onClose={() => onCloseGitPanel?.()}
           />
+          </ErrorBoundary>
         </Suspense>
       </Overlay>
 
@@ -2654,11 +2662,13 @@ export const Chat = memo(function Chat({
         focusEscapeSelector=".chat-panel"
       >
         <Suspense fallback={null}>
+          <ErrorBoundary resetKey={session.id}>
           <TasksPanel
             key={session.id}
             sessionId={session.id}
             onClose={() => onCloseTasksPanel?.()}
           />
+          </ErrorBoundary>
         </Suspense>
       </Overlay>
 

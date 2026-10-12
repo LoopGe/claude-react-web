@@ -377,7 +377,7 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
                         hc ? <IconCheckbox size={12} /> : <IconCircle size={12} />
                       )}
                     </span>
-                    <span className="todo-text">
+                    <span className="todo-text truncate">
                       <span className="todo-text-shimmer">
                         {t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content}
                       </span>

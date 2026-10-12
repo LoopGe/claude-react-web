@@ -164,7 +164,8 @@
 .tasks-icon-ok { color: var(--ok); }
 .tasks-icon-err { color: var(--danger); }
 .tasks-icon-muted { color: var(--fg-muted); }
-.tasks-row-spin { animation: spin 1s linear infinite; }
+/* .tasks-row-spin animation comes from the shared loading-indicator group
+   in utilities.css. */
 
 .tasks-row-icon {
   display: inline-flex;
@@ -378,7 +379,8 @@
   font-size: var(--fs-sm);
   color: var(--fg-muted);
 }
-.subagent-transcript-spin { animation: spin 1s linear infinite; }
+/* .subagent-transcript-spin animation comes from the shared loading-indicator
+   group in utilities.css. */
 .subagent-transcript-error {
   font-size: var(--fs-sm);
   color: var(--danger-text);

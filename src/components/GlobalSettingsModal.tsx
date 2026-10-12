@@ -8,6 +8,8 @@ import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { IconX, IconCheck, IconChevronDown, IconFolder, IconRefresh, IconFileText, IconSparkles, IconTerminal } from './icons/ToolIcons'
 import { EmptyState } from './EmptyState'
+import { ErrorBoundary } from './ErrorBoundary'
+import { Skeleton } from './Skeleton'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
 import type { RowGapPreset } from '../../shared/row-gap'
@@ -441,6 +443,10 @@ export function GlobalSettingsModal({
 
         <div ref={settingsBodyRefMerged} className="global-settings-body">
           <div ref={settingsContentRef} className="global-settings-body-content" data-animate={tab}>
+          {/* Contain a crashed tab inside the modal body — the header and the
+              tab nav stay alive so the user can simply switch away. resetKey
+              per tab gives a clean retry on tab change. */}
+          <ErrorBoundary resetKey={tab}>
           {loading ? (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--fg-muted)' }}>Loading...</div>
           ) : (
@@ -506,17 +512,17 @@ export function GlobalSettingsModal({
                 />
               )}
               {tab === 'marketplace' && (
-                <Suspense fallback={<div className="lazy-tab-loading">Loading marketplace...</div>}>
+                <Suspense fallback={<Skeleton className="lazy-tab-loading" />}>
                   <MarketplaceTab />
                 </Suspense>
               )}
               {tab === 'app-plugins' && (
-                <Suspense fallback={<div className="lazy-tab-loading">Loading app plugins...</div>}>
+                <Suspense fallback={<Skeleton className="lazy-tab-loading" />}>
                   <AppPluginsTab saveAllRef={appPluginsSaveAllRef} />
                 </Suspense>
               )}
               {tab === 'share' && (
-                <Suspense fallback={<div className="lazy-tab-loading">Loading...</div>}>
+                <Suspense fallback={<Skeleton className="lazy-tab-loading" />}>
                   <ShareTab />
                 </Suspense>
               )}
@@ -542,6 +548,7 @@ export function GlobalSettingsModal({
               )}
             </>
           )}
+          </ErrorBoundary>
           </div>
         </div>
 

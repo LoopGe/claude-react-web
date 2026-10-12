@@ -827,8 +827,10 @@ button.chat-empty-env-chip:hover {
 .ctx-bar-model {
   margin-left: var(--space-1-5);
   font-size: var(--fs-xs);
+  /* No opacity stacking on top of --fg-muted: at fs-xs (11px) the composite
+     falls below WCAG AA 4.5:1 in light mode (~3.0:1). The muted token alone
+     passes in both themes (6.2:1 dark / 5.7:1 light); size already de-emphasizes. */
   color: var(--fg-muted);
-  opacity: 0.7;
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1382,13 +1384,11 @@ button.chat-empty-env-chip:hover {
   flex: none;
 }
 /* Spin the loader glyph during the brief optimistic-send window (before the
-   server flips `working` true and the button swaps to Interrupt). Plays the
-   shared spin keyframes ?a load-bearing progress indicator, so it
-   deliberately keeps animating under prefers-reduced-motion (see the
-   reduced-motion block's note). */
-.composer-send-spinner {
-  animation: spin 0.8s linear infinite;
-}
+   server flips `working` true and the button swaps to Interrupt). Animation
+   comes from the shared loading-indicator group in utilities.css (load-bearing
+   progress indicator, so it deliberately keeps animating under
+   prefers-reduced-motion — see that block's note). Generic glyph spinners
+   outside this button use the shared `.glyph-spin` class instead. */
 /* (#5) Send ?Interrupt swap. The two buttons occupy one slot and are
    mutually exclusive, so React remounts the glyph whenever canInterrupt
    flips ?the icon fades + scales in (no rotate) so the change reads as a
@@ -1444,11 +1444,11 @@ button.chat-empty-env-chip:hover {
   max-width: 320px;
   animation: chip-enter var(--motion-duration-base) var(--motion-ease-enter) both;
 }
-.attachment-chip-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* .attachment-chip-name carries the `.truncate` utility. NOTE: the chip's
+   flex-wrap row (.attachments) leaves chips content-sized, so the ellipsis
+   does NOT engage today — a very long filename still overflows (pre-existing
+   behavior, kept). The utility is correct if the chip is ever given a width
+   constraint (e.g. max-width + min-width: 0). */
 .attachment-chip-size {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
@@ -1502,11 +1502,9 @@ button.chat-empty-env-chip:hover {
 .scheduled-chip-cancel:hover {
   color: var(--danger-text);
 }
-.scheduled-chip-failed-reason {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* .scheduled-chip-failed-reason carries the `.truncate` utility; same caveat
+   as .attachment-chip-name — its wrap row leaves the chip content-sized, so
+   the ellipsis engages only under a future width constraint. */
 
 /* Schedule-time popover: fixed-position panel + full-screen transparent
    backdrop, so it floats above the chat area without being clipped. */
@@ -1650,11 +1648,7 @@ button.chat-empty-env-chip:hover {
   letter-spacing: 0.04em;
   white-space: nowrap;
 }
-.enter-plan-marker-sub {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+/* .enter-plan-marker-sub truncation comes from the `.truncate` utility. */
 
 /* Worktree enter/exit marker — same silhouette as .enter-plan-marker but
    uses the ok (green) accent to read as a session/workspace transition
@@ -1678,11 +1672,7 @@ button.chat-empty-env-chip:hover {
   letter-spacing: 0.04em;
   white-space: nowrap;
 }
-.worktree-marker-sub {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+/* .worktree-marker-sub truncation comes from the `.truncate` utility. */
 .worktree-marker-sub code {
   font-family: var(--mono);
   color: var(--fg);
@@ -1876,9 +1866,9 @@ button.chat-empty-env-chip:hover {
   width: var(--size-10px);
   height: var(--size-10px);
   border: 1.5px solid var(--border);
+  /* Re-affirmed: the border shorthand above would otherwise stomp the
+     shared rule's accent top arc (zero-specificity :where group). */
   border-top-color: var(--accent);
-  border-radius: var(--radius-circle);
-  animation: spin 0.8s linear infinite;
 }
 .msg-sending-label {
   font-family: var(--mono);
@@ -3376,9 +3366,7 @@ button.chat-empty-env-chip:hover {
 .subagent-overlay-breadcrumb {
   font-size: var(--fs-sm);
   color: var(--fg-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* truncation comes from the `.truncate` utility */
 }
 .subagent-overlay-current-label {
   font-size: var(--fs-base);

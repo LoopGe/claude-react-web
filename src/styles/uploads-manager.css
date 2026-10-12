@@ -106,9 +106,7 @@
 .uploads-meta {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* truncation comes from the `.truncate` utility */
 }
 
 .uploads-row-actions {

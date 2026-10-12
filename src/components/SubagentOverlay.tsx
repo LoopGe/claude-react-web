@@ -211,7 +211,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
           </button>
           <div className="subagent-overlay-title">
             {stack.length > 1 && (
-              <span className="subagent-overlay-breadcrumb">
+              <span className="subagent-overlay-breadcrumb truncate">
                 {stack.slice(0, -1).map((id) => {
                   const r = index.get(id)
                   return (r?.label ?? 'subagent') + ' › '

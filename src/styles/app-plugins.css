@@ -231,13 +231,10 @@
 }
 .plugin-popover[data-loading] .plugin-content-text::after {
   content: '';
-  width: var(--size-14px);
-  height: var(--size-14px);
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
-  border-radius: var(--radius-circle);
-  animation: spin 0.7s linear infinite;
   flex-shrink: 0;
+  /* Ring shape + animation come from the shared loading-indicator group in
+     utilities.css (pseudo-elements can't carry a class, so the selector
+     joins the :where group there). */
 }
 
 /* ── Command result dialog ──────────────────────────────────────── */

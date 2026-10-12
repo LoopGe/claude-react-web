@@ -421,11 +421,7 @@ body.resizing-col .app {
 .profile-switcher__item:hover {
   background: var(--btn-hover-bg);
 }
-.profile-switcher__item-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* .profile-switcher__item-name truncation comes from the `.truncate` utility. */
 .profile-switcher__check {
   color: var(--accent-text);
   font-size: var(--fs-sm);
@@ -1763,9 +1759,9 @@ body.resizing-col .app {
   width: 22px;
   height: 22px;
   border: 2px solid var(--border);
+  /* Re-affirmed: the border shorthand above would otherwise stomp the
+     shared rule's accent top arc (zero-specificity :where group). */
   border-top-color: var(--accent);
-  border-radius: var(--radius-circle);
-  animation: spin 0.8s linear infinite;
 }
 @keyframes app-loading-card-in {
   from { opacity: 0; transform: translateY(var(--motion-distance-md)) scale(var(--motion-scale-enter)); }
@@ -1785,9 +1781,9 @@ body.resizing-col .app {
 }
 
 /* Inline fallback for lazy-loaded tab/panel content (e.g. Marketplace
-   inside global settings). Quiet by design: a single loading line
-   without a spinner so the existing modal frame stays calm while the
-   chunk hydrates. */
+   inside global settings). Applied to a <Skeleton> so the chunk load shows
+   shimmering placeholder rows — quiet by design, no spinner, so the modal
+   frame stays calm while the chunk hydrates. */
 .lazy-tab-loading {
   padding: var(--space-6) var(--space-4);
   color: var(--fg-muted);

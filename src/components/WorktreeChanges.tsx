@@ -14,7 +14,7 @@
 // CSS classes so the rows / diffs read identically to the main Git panel.
 
 import { cx } from '../utils/cx'
-import { useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
 import { FileViewer } from './FileViewer'
 import { Tooltip } from './Tooltip'
@@ -71,6 +71,30 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
   const [tab, setTab] = useState<Tab>('uncommitted')
   const [openFile, setOpenFile] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const tablistRef = useRef<HTMLDivElement>(null)
+  // Unique-per-instance tab ids: up to 3 panels can hold this overlay open at
+  // once, and duplicate DOM ids would make aria-controls/aria-labelledby
+  // resolve to the first instance (review finding).
+  const tabIdBase = useId()
+  const tabpanelId = `${tabIdBase}-tabpanel`
+  const tabIdOf = (id: Tab) => `${tabIdBase}-tab-${id}`
+
+  // Roving-tabindex arrow navigation (selection follows focus).
+  const handleTablistKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+    e.preventDefault()
+    const idx = TABS.findIndex((t) => t.id === tab)
+    const next = e.key === 'ArrowRight'
+      ? (idx + 1) % TABS.length
+      : (idx - 1 + TABS.length) % TABS.length
+    const nextId = TABS[next].id
+    setTab(nextId)
+    requestAnimationFrame(() => {
+      tablistRef.current
+        ?.querySelector<HTMLElement>(`#${CSS.escape(tabIdOf(nextId))}`)
+        ?.focus()
+    })
+  }
 
   // Uncommitted tab uses the shared status surface pointed at the worktree path.
   const status = useGitStatus(cwd ?? undefined, sessionId, { enabled: !!cwd && tab === 'uncommitted' })
@@ -101,12 +125,21 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
             <IconGitFork size={14} />
             {cwd ? branchName ?? displayName : `${displayName} (unconfirmed)`}
           </span>
-          <div className="git-panel-tabs" role="tablist" aria-label="Change scope">
+          <div
+            className="git-panel-tabs"
+            role="tablist"
+            aria-label="Change scope"
+            ref={tablistRef}
+            onKeyDown={handleTablistKeyDown}
+          >
             {TABS.map((t) => (
               <button
                 key={t.id}
                 role="tab"
+                id={tabIdOf(t.id)}
                 aria-selected={tab === t.id}
+                aria-controls={tabpanelId}
+                tabIndex={tab === t.id ? 0 : -1}
                 className={cx('git-tab', tab === t.id ? 'active' : '')}
                 onClick={() => setTab(t.id)}
               >
@@ -141,7 +174,16 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
           </Tooltip>
         </header>
 
-        <div className="git-panel-scroll">
+        {/* Single tabpanel container: the active tab's content renders
+            conditionally inside, so the labelled-by points at the active
+            tab and tabIndex lets keyboard users reach the pane. */}
+        <div
+          className="git-panel-scroll"
+          role="tabpanel"
+          id={tabpanelId}
+          aria-labelledby={tabIdOf(tab)}
+          tabIndex={0}
+        >
           {!cwd || !branchName ? (
             <div className="git-panel-empty">
               No matching worktree confirmed in git yet (a timing gap right after EnterWorktree, or the claim is stale).

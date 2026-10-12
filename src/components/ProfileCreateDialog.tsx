@@ -80,7 +80,7 @@ export function ProfileCreateDialog({ profiles, busy = false, error, onConfirm, 
                 <span className="profile-create-option-title">
                   <span className="profile-create-option-name">Blank</span>
                 </span>
-                <span className="profile-create-option-hint">Built-in defaults — official API + stock model list</span>
+                <span className="profile-create-option-hint truncate">Built-in defaults — official API + stock model list</span>
               </span>
             </label>
           </li>
@@ -110,7 +110,7 @@ export function ProfileCreateDialog({ profiles, busy = false, error, onConfirm, 
                       <span className="profile-create-option-name">{p.name}</span>
                       {p.isActive && <StatusBadge tone="accent">Active</StatusBadge>}
                     </span>
-                    <span className="profile-create-option-hint">{p.baseUrl}</span>
+                    <span className="profile-create-option-hint truncate">{p.baseUrl}</span>
                   </span>
                 </label>
               </li>

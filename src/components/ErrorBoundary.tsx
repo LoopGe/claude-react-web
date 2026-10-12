@@ -12,6 +12,14 @@ interface Props {
   fallback?: ReactNode
   /** Called after a render error is caught — useful for logging. */
   onError?: (error: Error, info: ErrorInfo) => void
+  /** Explicit reset signal: when provided, error state clears only when
+   *  this value changes (e.g. session id, active tab). Use it at mount
+   *  points whose parent re-renders frequently — without it, this
+   *  component falls back to the legacy "children identity changed"
+   *  heuristic, which would retry a crashed subtree on EVERY parent
+   *  render (a 12.5 Hz chat panel would crash-loop instead of showing
+   *  the recoverable screen). */
+  resetKey?: unknown
 }
 
 interface State {
@@ -30,7 +38,14 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidUpdate(prevProps: Props) {
-    // Reset on children identity change — same key-change-on-error
+    // resetKey mode: deterministic reset (session switch, tab switch).
+    if (this.props.resetKey !== undefined) {
+      if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
+        this.setState({ error: null })
+      }
+      return
+    }
+    // Legacy reset on children identity change — same key-change-on-error
     // heuristic React uses for <Suspense>.
     if (prevProps.children !== this.props.children && this.state.error) {
       this.setState({ error: null })

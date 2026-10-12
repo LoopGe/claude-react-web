@@ -242,6 +242,10 @@ export function useTranscriptScroll({
   onVisibleTopChange,
   onUserScrollIntent,
 }: UseTranscriptScrollOptions): TranscriptScrollApi {
+  // Boolean form of rowCount for effect deps: the scroll/gesture listeners
+  // only need to (re-)attach when the scroller comes into existence, not on
+  // every appended row. See the listener effect's closing comment.
+  const hasRows = rowCount > 0
   // Virtuoso's underlying scroll element. Captured through scrollerRefCb.
   const scrollerRef = useRef<HTMLElement | null>(null)
   // At-bottom mirror, read by callbacks (notably the viewport-shrink backstop)
@@ -1068,7 +1072,14 @@ export function useTranscriptScroll({
     // times per fold. The geometry re-sync now lives in its own effect below;
     // the listener lifetime is keyed only on things that actually replace the
     // scroller or its content shape.
-  }, [rowCount, syncBottomGeometry, emitVisibleTop, transcriptRevealKey])
+    //
+    // Same reasoning for `rowCount` → `hasRows`: every handler above reads its
+    // state through refs and dependency-free callbacks (getVisibleTopIndex is
+    // []-deps; syncBottomGeometry's own identity is stable), so an appended
+    // message needs NO re-bind. `rowCount` was the dep only so the effect
+    // re-ran once the scroller actually exists (Virtuoso mounts it after the
+    // first row) — the 0→1 transition, not every append.
+  }, [hasRows, syncBottomGeometry, emitVisibleTop, transcriptRevealKey])
 
   // Re-read the spacer-aware geometry when the spacer COMMITS a new height.
   //

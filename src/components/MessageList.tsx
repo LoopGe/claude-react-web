@@ -21,6 +21,7 @@ import { cx } from '../utils/cx'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/normalize'
+import { useOptionalSessionField } from '../session-store/selectors'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
 import { OlderHistoryHeader, StreamingFooter, type StreamingFooterVariant } from './message-list/transcript-chrome'
@@ -160,8 +161,15 @@ interface Props {
   /** Stable key for the owning transcript (session id in the main chat).
    *  When provided, a ready transcript gets one subtle reveal on mount/load. */
   transcriptRevealKey?: string
-  /** Accumulated text from streaming deltas. When non-null, a live
-   *  "typing" bubble is rendered at the bottom of the transcript. */
+  /** Owning session id. When provided, the live streaming text is subscribed
+   *  HERE (useOptionalSessionField) instead of flowing down as a prop — the
+   *  12.5 Hz LIVE_TURN_FLUSH then re-renders only this subtree, not the
+   *  whole Chat body above it. When omitted (tests, static transcripts) the
+   *  `streamingContent` prop below is used directly. */
+  sessionId?: string
+  /** Accumulated text from streaming deltas. Only read when `sessionId` is
+   *  NOT provided (prop-fed mode). When non-null, a live "typing" bubble is
+   *  rendered at the bottom of the transcript. */
   streamingContent?: string | null
   /** Which streaming render mode this transcript uses. Defaults to the
    *  module constant (currently 'overlay'). Exists as a prop so tests can
@@ -355,7 +363,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, sessionId, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -439,7 +447,12 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // logic below still works: at turn end `liveTurn` is cleared to null
   // (reducer sets `liveTurn: null`), which triggers the exit branch and
   // keeps the last non-empty content visible during the fade-out.
-  const liveStreamingContent = streamingContent && streamingContent.length > 0 ? streamingContent : null
+  // Live source: subscribed here when `sessionId` is provided (the hot
+  // 12.5 Hz field re-renders only this subtree); the prop is the fallback
+  // for prop-fed callers (tests, static transcripts).
+  const storeStreamingContent = useOptionalSessionField(sessionId, 'streamingContent')
+  const effectiveStreamingContent = sessionId != null ? storeStreamingContent : streamingContent
+  const liveStreamingContent = effectiveStreamingContent && effectiveStreamingContent.length > 0 ? effectiveStreamingContent : null
   // Which streaming render mode this transcript uses. Defaults to the module
   // constant (currently 'overlay') so production behavior is unchanged; the
   // prop exists for tests and a future UI setting.

@@ -26,6 +26,7 @@ import { useMergedRef } from '../utils/mergedRef'
 import { AnimatePresence } from 'motion/react'
 import { BottomCardMotion } from './BottomCardMotion'
 import { shouldMountWorkingBubble } from '../utils/task-actions'
+import { useOptionalSessionField } from '../session-store/selectors'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { buildOutgoingBody } from '../utils/message-body'
 import { prefersReducedMotion } from '../utils/reduced-motion'
@@ -56,6 +57,24 @@ interface Props {
   onClose: () => void
   /** Collapse — hides the drawer but keeps the session alive. */
   onCollapse: () => void
+}
+
+/** Owns the 12.5 Hz streamingContent subscription that drives the drawer's
+ *  auto-scroll. Renders null — a flush re-renders ONLY this component, never
+ *  the drawer body (editor/footer would otherwise re-render every
+ *  LIVE_TURN_FLUSH). Semantics match the original drawer-level effect:
+ *  scroll on items-length change OR streaming-content change. */
+function SideChatAutoScroll({ sessionId, bodyRef, itemsLength }: {
+  sessionId: string
+  bodyRef: React.RefObject<HTMLDivElement | null>
+  itemsLength: number
+}) {
+  const streamingContent = useOptionalSessionField(sessionId, 'streamingContent')
+  useEffect(() => {
+    const el = bodyRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [bodyRef, itemsLength, streamingContent])
+  return null
 }
 
 export const SideChatDrawer = memo(function SideChatDrawer({
@@ -173,11 +192,10 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     return () => window.removeEventListener('keydown', onKey, true)
   }, [isExiting, isCollapsing])
 
-  // Auto-scroll on new messages and streaming content.
-  useEffect(() => {
-    const el = bodyRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [stream.items.length, stream.streamingContent])
+  // Auto-scroll on new messages and streaming content lives in the
+  // SideChatAutoScroll child below — the 12.5 Hz subscription must not sit on
+  // the drawer root, or the whole drawer (editor, footer, buttons) re-renders
+  // on every LIVE_TURN_FLUSH (review finding).
 
   // Auto-focus the editor on mount.
   useEffect(() => { editorRef.current?.focus() }, [])
@@ -208,6 +226,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         else if (isCollapsing) handleCollapsed()
       }}
     >
+      <SideChatAutoScroll sessionId={session.id} bodyRef={bodyRef} itemsLength={stream.items.length} />
       <div className="side-chat-drawer-header">
         <Tooltip label={`Back to ${sessionTitleOrFallback(parentSession)}`} placement="bottom">
           <button
@@ -241,7 +260,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           working={session.working}
           replayReady={stream.replayReady}
           transcriptRevealKey={session.id}
-          streamingContent={stream.streamingContent}
+          sessionId={session.id}
           planStatus={stream.planStatus}
           planContent={stream.planContent}
           questionAnswers={stream.questionAnswers}
@@ -350,7 +369,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
               aria-label={session.working ? 'Interrupt' : 'Send message'}
             >
               {sending && !session.working ? (
-                <IconLoader size={16} className="composer-send-spinner" />
+                <IconLoader size={16} className="glyph-spin" />
               ) : (
                 <IconSendInterruptToggle
                   size={session.working ? 14 : 16}

@@ -481,9 +481,9 @@
   width: var(--size-10px);
   height: var(--size-10px);
   border: 1.5px solid var(--fg-muted);
+  /* Re-affirmed: the border shorthand above would otherwise stomp the
+     shared rule's accent top arc (zero-specificity :where group). */
   border-top-color: var(--accent);
-  border-radius: var(--radius-circle);
-  animation: spin 0.8s linear infinite;
   vertical-align: middle;
   margin-right: var(--space-1);
 }

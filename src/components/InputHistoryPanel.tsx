@@ -114,7 +114,7 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
       onMouseEnter={() => setSelectedIndex(flatIndex)}
       onClick={() => { onSelect(entry); onClose() }}
     >
-      <span className="palette-item-label">{entry.text || '(image)'}</span>
+      <span className="palette-item-label truncate">{entry.text || '(image)'}</span>
     </button>
   )
 

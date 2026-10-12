@@ -169,6 +169,12 @@
   border-color: var(--accent);
 }
 
+/* Ring shape comes from the shared `.spinner` class (utilities.css); only the
+   flex-context guard lives here — the spinner must not shrink inside the row. */
+.setup-spinner {
+  flex-shrink: 0;
+}
+
 .setup-health-row-fail {
   border-color: var(--danger);
 }

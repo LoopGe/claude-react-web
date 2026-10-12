@@ -2131,9 +2131,7 @@
 .dock-rotor-text {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* truncation comes from the `.truncate` utility */
 }
 /* One keyed span per slide — keyed by the ITEM's identity, so a list change
    that lands a DIFFERENT item on the same slot remounts and replays the
@@ -2284,9 +2282,7 @@
 .todo-text {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* truncation comes from the `.truncate` utility */
 }
 /* Status colours */
 .todo-completed { color: var(--fg-muted); }
@@ -2564,9 +2560,7 @@
 .monitor-text {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* truncation comes from the `.truncate` utility */
 }
 .monitor-text-shimmer {
   display: inline-block;

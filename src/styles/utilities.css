@@ -380,9 +380,9 @@
 /* Scoped to .icon-loader (a class IconLoader always carries), NOT to `svg`.
    The old `.tool-status-running svg` selector spun whatever glyph happened to
    sit in the badge, so reusing the running colors for another state silently
-   rotated a non-symmetric icon — which visibly wobbles. Only the loader spins. */
+   rotated a non-symmetric icon — which visibly wobbles. Only the loader spins
+   (its animation now lives in the shared loading-indicator group below). */
 .tool-status-running .icon-loader {
-  animation: spin 0.9s linear infinite;
   /* Rotate about the box center. Both declarations below are belt-and-braces:
      on an OUTERMOST <svg> (which has a CSS layout box) `fill-box` resolves to
      content-box per spec, so the computed origin is the box center — 6px 6px
@@ -1178,6 +1178,65 @@ button.tool-group-failed-jump:focus-visible {
   animation: tool-group-member-flash 1400ms var(--motion-ease-standard) both;
 }
 
+/* ── Shared loading indicators ─────────────────────────────────────
+ * ONE ring-spinner shape and ONE canonical spin duration (0.8s —
+ * previously re-declared per site with 0.7–1.0s across 11 call sites).
+ *
+ * .spinner                14px ring, 2px --border track, accent top arc.
+ *                         Glyph spinners (rotating an existing icon such as
+ *                         IconLoader) are grouped alongside it — they only
+ *                         need the animation, the icon provides the shape.
+ *
+ * The whole group is wrapped in :where() so it carries ZERO specificity:
+ * call-site rules (size, track color, margins) always win regardless of
+ * stylesheet import order, and the reduced-motion block above can never
+ * be out-ranked by accident. New ring spinners should use class
+ * `spinner` + a size override; new glyph spinners should use `glyph-spin`
+ * (it joins the animation group below) rather than re-declaring
+ * `animation` — do not reuse another surface's glyph class for that.
+ */
+:where(.spinner,
+       .app-loading-spinner,
+       .msg-sending-spinner,
+       .session-resuming-spinner,
+       .plugin-popover[data-loading] .plugin-content-text::after,
+       .composer-send-spinner,
+       .glyph-spin,
+       .git-panel-icon-btn .git-panel-spin,
+       .tasks-row-spin,
+       .subagent-transcript-spin,
+       .settings-card-spin,
+       .tool-status-running .icon-loader) {
+  animation: spin 0.8s linear infinite;
+}
+/* Ring SHAPE: also grouped by legacy class name so the named ring spinners
+   (which don't carry .spinner in the DOM) keep their circle — their own
+   rules override size/track but historically relied on a border-radius
+   declaration that now lives only here (review finding: without this group
+   they render as rotating squares). */
+:where(.spinner,
+       .app-loading-spinner,
+       .msg-sending-spinner,
+       .session-resuming-spinner,
+       .plugin-popover[data-loading] .plugin-content-text::after) {
+  width: var(--size-14px);
+  height: var(--size-14px);
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: var(--radius-circle);
+}
+
+/* ── Truncation utility ────────────────────────────────────────────
+ * Single-line ellipsis truncation. Combine with the element's layout
+ * props in its own class (flex/min-width, colors, sizes). Requires a
+ * constraining width from the parent — on flex children pair it with
+ * `min-width: 0` on the same element. */
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── A11y: prefers-reduced-motion ──────────────────────────────────
  *
  * Vestibular-sensitive users need motion-on-state-change kept short
@@ -1788,7 +1847,7 @@ button.tool-group-failed-jump:focus-visible {
   color: var(--accent-text);
 }
 .settings-card-spin {
-  animation: spin 0.9s linear infinite;
+  /* Animation comes from the shared loading-indicator group (above). */
   transform-box: fill-box;
   transform-origin: center;
 }
@@ -3014,21 +3073,7 @@ button.tool-group-failed-jump:focus-visible {
 .settings-skill-check input[type="checkbox"]:hover {
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
 }
-.settings-skill-check input[type="checkbox"]:checked {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-.settings-skill-check input[type="checkbox"]:checked::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%) rotate(45deg);
-  width: var(--size-4px);
-  height: var(--size-8px);
-  border: solid var(--bg);
-  border-width: 0 2px 2px 0;
-}
+/* :checked and :checked::after come from the global checkbox rules below. */
 
 /* Global checkbox styling — applies to all checkboxes in the app */
 input[type="checkbox"] {

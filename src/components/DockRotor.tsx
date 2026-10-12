@@ -40,7 +40,7 @@ export const DockRotor = memo(function DockRotor({
           {index + 1}/{total}
         </span>
       )}
-      <span className="dock-rotor-text">
+      <span className="dock-rotor-text truncate">
         <span key={slideKey} className="dock-rotor-slide" title={label}>
           <span className={shimmerClass}>{label}</span>
         </span>

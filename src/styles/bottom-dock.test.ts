@@ -27,6 +27,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const css = readFileSync(join(process.cwd(), 'src/styles', 'messages.css'), 'utf8')
+const utilitiesCss = readFileSync(join(process.cwd(), 'src/styles', 'utilities.css'), 'utf8')
 
 /** Bodies of EVERY standalone rule whose head is exactly `selector` (at any
  *  indent), captured to the next line-start `}`. Same extraction contract as
@@ -69,10 +70,16 @@ describe('TaskList collapsed dock (prototype variant B)', () => {
   })
 
   it('rotor text ellipsizes instead of wrapping the docked header bar', () => {
+    // Ellipsis truncation lives in the shared `.truncate` utility in
+    // utilities.css (the element carries `className="dock-rotor-text
+    // truncate"`); the rule here owns only the flex context the utility
+    // requires.
     const body = declarations('.dock-rotor-text')
-    expect(body).toContain('white-space: nowrap')
-    expect(body).toContain('text-overflow: ellipsis')
     expect(body).toContain('min-width: 0')
+    const truncateRule = utilitiesCss.match(/(?:^|\n)\.truncate \{([\s\S]*?)\n\}/)
+    expect(truncateRule, 'standalone ".truncate { … }" rule in utilities.css').not.toBeNull()
+    expect(truncateRule![1]).toContain('white-space: nowrap')
+    expect(truncateRule![1]).toContain('text-overflow: ellipsis')
   })
 
   it("the rotor slide text joins the in_progress rows' shimmer while working", () => {

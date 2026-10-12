@@ -99,7 +99,13 @@ export interface ChatStream {
    *  Drives the WorkingBubble's token hint. */
   thinkingTokens: number | null
   tokenRate: number | null
-  streamingContent: string | null
+  // NOTE: `streamingContent` is deliberately NOT exposed here. It is the
+  // 12.5 Hz hot field (LIVE_TURN_FLUSH cadence); subscribing to it at hook
+  // level re-rendered the entire Chat body (and every SideChatDrawer) on
+  // every 80ms flush. The live turn's text is consumed at exactly two
+  // leaves — MessageList (via the optional `sessionId` prop + its own
+  // useOptionalSessionField subscription) — which keeps the flush render
+  // bounded to the transcript subtree.
   activePhase: ActivePhase
   permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
@@ -234,7 +240,6 @@ export function useChatStream(
   // other fields keep their references stable.
   const items = useSessionField(sessionId, 'items')
   const messages = useSessionField(sessionId, 'messages')
-  const streamingContent = useSessionField(sessionId, 'streamingContent')
   const activePhase = useSessionField(sessionId, 'activePhase')
   const tokenRate = useSessionField(sessionId, 'tokenRate')
   const contextUsage = useSessionField(sessionId, 'contextUsage')
@@ -955,7 +960,6 @@ export function useChatStream(
       apiRetry,
       thinkingTokens,
       tokenRate,
-      streamingContent,
       activePhase,
       permissionDecisions,
       planStatus,
@@ -979,6 +983,6 @@ export function useChatStream(
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, streamingContent, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
   )
 }

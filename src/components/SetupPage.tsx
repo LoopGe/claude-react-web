@@ -655,11 +655,7 @@ export function SetupPage({ onConfigured }: Props) {
 
               {healthChecking && (
                 <div className="setup-health-row setup-health-row-checking">
-                  <span
-                    className="setup-spinner"
-                    style={{ ...styles.spinner, borderTopColor: 'var(--accent)' }}
-                    aria-hidden="true"
-                  />
+                  <span className="setup-spinner spinner" aria-hidden="true" />
                   <span className="setup-hint">Probing local Claude CLI…</span>
                 </div>
               )}
@@ -961,11 +957,7 @@ export function SetupPage({ onConfigured }: Props) {
               {/* Probing */}
               {claudeMcp === undefined && !claudeMcpError && (
                 <div className="setup-health-row setup-health-row-checking">
-                  <span
-                    className="setup-spinner"
-                    style={{ ...styles.spinner, borderTopColor: 'var(--accent)' }}
-                    aria-hidden="true"
-                  />
+                  <span className="setup-spinner spinner" aria-hidden="true" />
                   <span className="setup-hint">Reading your Claude CLI config…</span>
                 </div>
               )}
@@ -1315,8 +1307,8 @@ export function SetupPage({ onConfigured }: Props) {
                   >
                     {submitting && (
                       <span
-                        className="setup-spinner"
-                        style={styles.spinner}
+                        className="setup-spinner spinner"
+                        style={styles.spinnerOnAccent}
                         aria-hidden="true"
                       />
                     )}
@@ -1464,13 +1456,10 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 'var(--radius-xs)',
     color: 'var(--fg)',
   },
-  spinner: {
-    width: 14,
-    height: 14,
-    borderRadius: 'var(--radius-circle)',
-    border: '2px solid color-mix(in srgb, var(--on-accent) 35%, transparent)',
+  spinnerOnAccent: {
+    /* Shape (14px ring / accent top arc / spin) comes from the shared
+       `.spinner` class; only the on-accent track colors are overridden here. */
+    borderColor: 'color-mix(in srgb, var(--on-accent) 35%, transparent)',
     borderTopColor: 'var(--on-accent)',
-    animation: 'spin 0.8s linear infinite',
-    flexShrink: 0,
   },
 }

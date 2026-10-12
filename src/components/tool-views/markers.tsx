@@ -25,7 +25,7 @@ export function EnterPlanModeMarker() {
         <IconClipboardList size={13} />
       </span>
       <span className="enter-plan-marker-label">Entered plan mode</span>
-      <span className="enter-plan-marker-sub">Claude is planning before acting</span>
+      <span className="enter-plan-marker-sub truncate">Claude is planning before acting</span>
     </div>
   )
 }
@@ -49,7 +49,7 @@ export function WorktreeMarker({ input, action }: { input?: Record<string, unkno
         </span>
         <span className="worktree-marker-label">{label}</span>
         {detail && (
-          <span className="worktree-marker-sub">
+          <span className="worktree-marker-sub truncate">
             <code>{detail}</code>
           </span>
         )}
@@ -67,7 +67,7 @@ export function WorktreeMarker({ input, action }: { input?: Record<string, unkno
         <IconGitBranch size={13} />
       </span>
       <span className="worktree-marker-label">Exited worktree</span>
-      <span className="worktree-marker-sub">{act}</span>
+      <span className="worktree-marker-sub truncate">{act}</span>
     </div>
   )
 }

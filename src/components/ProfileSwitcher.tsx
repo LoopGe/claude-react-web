@@ -97,7 +97,7 @@ export function ProfileSwitcher({ onManageProfiles }: { onManageProfiles?: () =>
               className="profile-switcher__item"
               onClick={() => { void handleSelect(p) }}
             >
-              <span className="profile-switcher__item-name">{p.name}</span>
+              <span className="profile-switcher__item-name truncate">{p.name}</span>
               {p.id === activeProfileId && <span className="profile-switcher__check" aria-hidden>{'✓'}</span>}
             </button>
           ))}
@@ -110,7 +110,7 @@ export function ProfileSwitcher({ onManageProfiles }: { onManageProfiles?: () =>
             className="profile-switcher__item"
             onClick={() => { setOpen(false); onManageProfiles?.() }}
           >
-            <span className="profile-switcher__item-name">Manage profiles…</span>
+            <span className="profile-switcher__item-name truncate">Manage profiles…</span>
           </button>
           {profiles.length === 0 && <div className="profile-switcher__empty">No profiles</div>}
         </div>

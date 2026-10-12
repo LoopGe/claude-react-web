@@ -76,7 +76,7 @@ export function ProfileActivateDialog({ profileName, sessions, busy = false, onC
                     disabled={busy}
                   />
                   <span className="profile-activate-session-meta">
-                    <span className="profile-activate-session-title">{s.title || s.id}</span>
+                    <span className="profile-activate-session-title truncate">{s.title || s.id}</span>
                     {s.model ? <span className="profile-activate-session-model">{s.model}</span> : null}
                   </span>
                 </label>

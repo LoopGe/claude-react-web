@@ -1333,9 +1333,10 @@ button { cursor: pointer; }
 /* ── Shared keyframes ─────────────────────────────────────────────
    One global 360° spin (six byte-identical per-module copies used to
    live in git-panel/app-plugins/setup-page/utilities/chat/tasks-panel
-   css; each call site keeps its own duration on the animation
-   property). Naming note: .git-panel-spin / .tasks-row-spin are CLASS
-   names — the keyframes below is what their animation properties play. */
+   css). All spinner call sites play it at the shared canonical duration
+   via the loading-indicator group in utilities.css. Naming note:
+   .git-panel-spin / .tasks-row-spin are CLASS names — the keyframes
+   below is what their animation properties play. */
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

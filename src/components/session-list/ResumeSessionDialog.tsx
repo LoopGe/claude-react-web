@@ -212,7 +212,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
                   }}
                 >
                   <span
-                    className="palette-item-label"
+                    className="palette-item-label truncate"
                     style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%' }}
                   >
                     <span

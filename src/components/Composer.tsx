@@ -726,7 +726,7 @@ export const Composer = memo(function Composer({
       <div className="attachments" key="attachments">
         {attachments.map((a) => (
           <span key={a.path} className="attachment-chip" title={a.path}>
-            <span className="attachment-chip-name">
+            <span className="attachment-chip-name truncate">
               <IconPaperclip size={12} aria-hidden /> {a.name}
             </span>
             <span className="attachment-chip-size">{formatBytes(a.size)}</span>
@@ -764,7 +764,7 @@ export const Composer = memo(function Composer({
         {failedScheduled.map((s) => (
           <span key={s.id} className="scheduled-chip scheduled-chip-failed" title={s.error}>
             <IconAlertTriangle size={12} aria-hidden />
-            <span className="scheduled-chip-failed-reason">{s.error ?? 'Scheduled send failed'}</span>
+            <span className="scheduled-chip-failed-reason truncate">{s.error ?? 'Scheduled send failed'}</span>
             <button
               type="button"
               className="scheduled-chip-dismiss"

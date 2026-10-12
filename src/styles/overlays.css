@@ -95,9 +95,7 @@
 .palette-item-label {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* truncation comes from the `.truncate` utility */
 }
 
 .palette-item-hint {
@@ -1133,11 +1131,9 @@ mark.search-hl.search-hl-active {
 }
 
 .palette-item-detail {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg-muted);
   font-size: var(--fs-sm);
+  /* truncation comes from the `.truncate` utility */
 }
 
 .palette-item-message {

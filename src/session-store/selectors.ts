@@ -35,6 +35,27 @@ export function useSessionField<K extends keyof SessionSnapshot>(
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
+/** `useSessionField` for call sites that may not have a session id (tests,
+ *  static transcripts): without one the subscription is inert and returns
+ *  null. Same re-render contract as useSessionField when a id IS provided.
+ *  The hook pair must stay unconditional (rules of hooks) — hence the
+ *  nullable store rather than an early return. */
+export function useOptionalSessionField<K extends keyof SessionSnapshot>(
+  sessionId: string | undefined,
+  field: K,
+): SessionSnapshot[K] | null {
+  const store = sessionId ? sessionStoreRegistry.getOrCreate(sessionId) : null
+  const subscribe = useCallback(
+    (listener: () => void) => (store ? store.subscribe(listener) : () => {}),
+    [store],
+  )
+  const getSnapshot = useCallback(
+    () => (store ? store.getSnapshot()[field] : null),
+    [store, field],
+  )
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
 /** Subscribe to the background-task counts for a session, derived from the
  *  `tasks` mirror. Returns a stable `{ all, indicator }` object — identity
  *  only changes when a count actually changes — so consumers don't re-render

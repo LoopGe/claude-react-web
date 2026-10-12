@@ -118,7 +118,7 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
 
       {uploads === null && error === null && (
         <div className="modal-section uploads-state">
-          <IconLoader size={16} className="composer-send-spinner" /> Loading…
+          <IconLoader size={16} className="glyph-spin" /> Loading…
         </div>
       )}
 
@@ -164,7 +164,7 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
                     {u.name}
                     {!u.exists && <span className="uploads-missing-badge">missing</span>}
                   </span>
-                  <span className="uploads-meta" title={u.path}>
+                  <span className="uploads-meta truncate" title={u.path}>
                     {formatBytes(u.size)} · {cwdTail(u.cwd)}
                     {u.sessionTitle ? ` · ${u.sessionTitle}` : ''} ·{' '}
                     {formatRelativeTime(new Date(u.uploadedAt).toISOString())}
