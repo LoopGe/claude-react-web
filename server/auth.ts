@@ -20,6 +20,11 @@
 // is no trust-proxy setting). After 5 failures in a minute, further login /
 // Bearer / ?token= attempts get 429. Cookie failures are not counted (a
 // stale cookie after a token rotation must not lock the user out).
+// A `?token=` attempt carrying `Sec-Fetch-Site: cross-site` (and no Bearer)
+// is counted in a separate per-peer bucket, so a hostile page firing
+// `<img src="…?token=x">` can't 429 a LAN user's next sign-in. Any client
+// can forge that header, so the separate bucket has the same 5/min limit:
+// a forging client gets at most one extra bucket, never an unlimited one.
 //
 // IMPORTANT: web-auth state lives in this module's `webAuth` holder, NOT
 // in the frozen `config` object. `applyParsedConfig` rebuilds and
@@ -309,6 +314,28 @@ function recordFailure(key: string): void {
   entry.count++
 }
 
+/** True only for `Sec-Fetch-Site: cross-site`; `same-site`, `same-origin`,
+ *  `none` and a missing header are false. */
+function isCrossSiteFetch(value: string | string[] | undefined): boolean {
+  const v = Array.isArray(value) ? value[0] : value
+  return v?.trim().toLowerCase() === 'cross-site'
+}
+
+/** Failure bucket for an explicitly presented token (see the header
+ *  comment). A cross-site `?token=` with no Bearer header goes to its own
+ *  `|xs` bucket, so a hostile page's `<img src="…?token=x">` can't 429 the
+ *  user's own sign-in. The header is client-controlled, so that bucket is
+ *  still limited: a client forging it is capped like any other. Bearer
+ *  always uses the peer bucket — a cross-site page can't attach
+ *  `Authorization` without a CORS preflight the request guard rejects. */
+function failureBucket(
+  key: string,
+  hasBearer: boolean,
+  secFetchSite: string | string[] | undefined,
+): string {
+  return !hasBearer && isCrossSiteFetch(secFetchSite) ? `${key}|xs` : key
+}
+
 /** Test hook: clear every failure bucket. */
 export function __resetAuthRateLimitForTest(): void {
   authFailures.clear()
@@ -365,14 +392,16 @@ export function buildAuthMiddleware(): MiddlewareHandler {
     // next login. ?token= is safe to count — the app never sends it itself;
     // only a first-visit document URL carries it, so a stale QR link costs
     // one failure.
-    const presented = bearer(c.req.header('authorization')) !== undefined || c.req.query('token') !== undefined
-    if (presented && isLimited(key)) {
+    const hasBearer = bearer(c.req.header('authorization')) !== undefined
+    const presented = hasBearer || c.req.query('token') !== undefined
+    const bucket = failureBucket(key, hasBearer, c.req.header('sec-fetch-site'))
+    if (presented && isLimited(bucket)) {
       if (c.req.path.startsWith('/api/')) return c.json({ error: 'too many failed attempts' }, 429)
       return c.text('Too many failed attempts. Try again in a minute.', 429)
     }
     const token = extractTokenFromHono(c)
     const ok = !!token && tokensMatch(token, accessToken)
-    if (!ok && presented) recordFailure(key)
+    if (!ok && presented) recordFailure(bucket)
 
     if (ok) {
       // Refresh / set the cookie on every authorized request so it stays
@@ -422,10 +451,12 @@ export function authorizeUpgrade(req: IncomingMessage): 'ok' | 'unauthorized' | 
   )
   let queryToken: string | null = null
   try { queryToken = new URL(req.url ?? '/', 'http://localhost').searchParams.get('token') } catch { /* malformed */ }
-  const presented = bearerToken !== undefined || queryToken !== null
-  if (presented && isLimited(key)) return 'rate-limited'
+  const hasBearer = bearerToken !== undefined
+  const presented = hasBearer || queryToken !== null
+  const bucket = failureBucket(key, hasBearer, req.headers['sec-fetch-site'])
+  if (presented && isLimited(bucket)) return 'rate-limited'
   const token = extractTokenFromReq(req)
   if (!!token && tokensMatch(token, accessToken)) return 'ok'
-  if (presented) recordFailure(key)
+  if (presented) recordFailure(bucket)
   return 'unauthorized'
 }

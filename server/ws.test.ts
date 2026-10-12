@@ -859,3 +859,58 @@ describe('WebSocket upgrade guard', () => {
     expect(code).toBe(1009)
   })
 })
+
+describe('WebSocket upgrade guard (production)', () => {
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+  let server: Server
+  let port: number
+  let shutdownWs: () => Promise<void>
+
+  beforeEach(async () => {
+    mockHandles.length = 0
+    dir = mkdtempSync(join(tmpdir(), 'claude-rw-ws-guard-prod-'))
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    sm = new SessionManager({ store })
+    server = createServer()
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve())
+    })
+    const addr = server.address()
+    port = typeof addr === 'object' && addr ? addr.port : 0
+    shutdownWs = attachWebSocket(server, sm, undefined, { bind: { host: '127.0.0.1', port }, trustDevOrigins: false })
+  })
+
+  afterEach(async () => {
+    await shutdownWs()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await sm.shutdown()
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  })
+
+  function attempt(origin?: string): Promise<{ status: 'open'; ws: WebSocket } | { status: number }> {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/ws`, origin ? { origin } : {})
+    return new Promise((resolve, reject) => {
+      ws.once('open', () => resolve({ status: 'open', ws }))
+      ws.once('unexpected-response', (_req, res) => {
+        resolve({ status: res.statusCode ?? 0 })
+        ws.terminate()
+      })
+      // `on`, not `once`: terminate() during CONNECTING emits a second error.
+      ws.on('error', (err) => reject(err))
+    })
+  }
+
+  it('403s the Vite dev origin when dev origins are not trusted', async () => {
+    const r = await attempt('http://localhost:5174')
+    expect(r.status).toBe(403)
+  })
+
+  it('still accepts the bound origin', async () => {
+    const r = await attempt(`http://127.0.0.1:${port}`)
+    if (r.status !== 'open') throw new Error(`expected open, got ${r.status}`)
+    r.ws.close()
+  })
+})
