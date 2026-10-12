@@ -17,7 +17,7 @@
 // unattributed entries.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useInputHistoryPanel } from '../hooks/useInputHistoryPanel'
+import { useInputHistoryPanel, type HistoryPanelEntry } from '../hooks/useInputHistoryPanel'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import { PanelOverlay } from './PanelOverlay'
@@ -25,7 +25,9 @@ import { PanelOverlay } from './PanelOverlay'
 interface Props {
   open: boolean
   onClose: () => void
-  onSelect: (text: string) => void
+  /** A selected entry: text for the composer, id to load its images from
+   *  (null = text-only entry — recall clears the composer's images). */
+  onSelect: (entry: HistoryPanelEntry) => void
   /** Session whose history sorts to the top; null shows only the global list. */
   currentSessionId: string | null
 }
@@ -101,9 +103,9 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
   }
 
   // Render one selectable entry button. `flatIndex` is its position in `flat`.
-  const renderItem = (entry: string, flatIndex: number) => (
+  const renderItem = (entry: HistoryPanelEntry, flatIndex: number) => (
     <button
-      key={`${flatIndex}:${entry}`}
+      key={`${flatIndex}:${entry.text}`}
       id={`history-item-${flatIndex}`}
       data-entry-index={flatIndex}
       className={`palette-item${flatIndex === safeIndex ? ' selected' : ''}`}
@@ -112,7 +114,7 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
       onMouseEnter={() => setSelectedIndex(flatIndex)}
       onClick={() => { onSelect(entry); onClose() }}
     >
-      <span className="palette-item-label">{entry}</span>
+      <span className="palette-item-label">{entry.text || '(image)'}</span>
     </button>
   )
 

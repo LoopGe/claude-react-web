@@ -13,16 +13,20 @@
 
 import { useCallback } from 'react'
 import { inputHistoryStore, type InputHistoryStore } from '../state/inputHistoryStore'
-import { useHistoryCursor } from './useHistoryCursor'
+import type { PersistedImage } from '../state/inputHistoryImages'
+import { useHistoryCursor, type HistoryRecall } from './useHistoryCursor'
 
 export interface InputHistoryApi {
-  /** Record a newly sent message. Consecutive same-session duplicates collapse. */
-  add: (text: string) => void
-  /** Step to an older entry (within the current session). Returns the string
-   *  to put in the textarea, or `null` if there is nothing older to show. */
-  prev: (currentInput: string) => string | null
-  /** Step toward the live draft. Returns the string to restore. */
-  next: () => string | null
+  /** Record a newly sent message. Consecutive same-session text-only
+   *  duplicates collapse; a resend with images moves to front so the images
+   *  are recorded. */
+  add: (text: string, images?: PersistedImage[]) => void
+  /** Step to an older entry (within the current session). Returns the recall
+   *  (text + image-record id) to apply to the composer, or `null` if there is
+   *  nothing older to show. */
+  prev: (currentInput: string) => HistoryRecall | null
+  /** Step toward the live draft. The draft restore carries `id: null`. */
+  next: () => HistoryRecall | null
   /** Forget that we're in history navigation (on user edit). */
   reset: () => void
   /** Whether the user is currently browsing history (vs. editing draft). */
@@ -43,8 +47,8 @@ export function useInputHistory(
   const { prev, next, reset, isBrowsing } = useHistoryCursor(sessionId, filter, store)
 
   const add = useCallback(
-    (text: string) => {
-      store.add(text, sessionId)
+    (text: string, images?: PersistedImage[]) => {
+      store.add(text, sessionId, images)
       // Reset cursor after a successful send.
       reset()
     },

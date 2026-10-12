@@ -1,14 +1,22 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import 'fake-indexeddb/auto'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   createInputHistoryStore,
   normalizeEntries,
   INPUT_HISTORY_KEY,
   inputHistoryStore,
 } from './inputHistoryStore'
+import { getImages } from './inputHistoryImages'
+import { resetInputHistoryIdb, untilIdb, makeImg as img } from '../test-utils/inputHistoryIdb'
 
 beforeEach(() => {
   localStorage.clear()
   inputHistoryStore.reset()
+  resetInputHistoryIdb()
+})
+
+afterEach(() => {
+  resetInputHistoryIdb()
 })
 
 describe('normalizeEntries', () => {
@@ -178,5 +186,96 @@ describe('default singleton', () => {
     inputHistoryStore.add('singleton-test', 's1')
     const raw = JSON.parse(localStorage.getItem(INPUT_HISTORY_KEY)!)
     expect(raw).toEqual([{ text: 'singleton-test', sessionId: 's1' }])
+  })
+})
+
+describe('inputHistoryStore image persistence', () => {
+  it('text-only adds carry no id (unchanged shape)', () => {
+    const store = createInputHistoryStore('test-img-none')
+    store.add('hi', 's1')
+    expect(store.getAll()).toEqual([{ text: 'hi', sessionId: 's1' }])
+  })
+
+  it('add() with images mints an entry id and writes the IDB record', async () => {
+    const store = createInputHistoryStore('test-img-add')
+    store.add('look', 's1', [img()])
+    const entry = store.getAll()[0]
+    expect(entry.text).toBe('look')
+    expect(typeof entry.id).toBe('string')
+    await untilIdb(async () => (await getImages(entry.id!)).length === 1)
+  })
+
+  it('normalizeEntries passes entry ids through', () => {
+    expect(normalizeEntries([{ text: 'y', sessionId: 's1', id: 'abc' }])).toEqual([
+      { text: 'y', sessionId: 's1', id: 'abc' },
+    ])
+  })
+
+  it('per-session cap eviction deletes the orphaned IDB record', async () => {
+    const store = createInputHistoryStore('test-img-cap')
+    const ids: string[] = []
+    for (let i = 0; i < 21; i++) {
+      store.add(`m${i}`, 's1', [img()])
+      ids.push(store.getAll()[0].id!)
+    }
+    const evicted = ids[0]
+    // The evicted entry is gone from the ring…
+    expect(store.getAll().some((e) => e.id === evicted)).toBe(false)
+    // …and its IDB record is deleted.
+    await untilIdb(async () => (await getImages(evicted)).length === 0)
+    // The newest entry's record survives.
+    await untilIdb(async () => (await getImages(ids[ids.length - 1])).length === 1)
+  })
+
+  it('move-to-front evicts the old record and records the new images', async () => {
+    const store = createInputHistoryStore('test-img-mtf')
+    store.add('dup', 's1', [img()])
+    const firstId = store.getAll()[0].id!
+    store.add('other', 's1')
+    store.add('dup', 's1', [img('BBBB', 'image/jpeg')])
+    const secondId = store.getAll()[0].id!
+    expect(secondId).not.toBe(firstId)
+    expect(store.getSession('s1')).toEqual(['dup', 'other'])
+    await untilIdb(async () => (await getImages(firstId)).length === 0)
+    await untilIdb(async () => (await getImages(secondId))[0]?.data === 'BBBB')
+  })
+
+  it('re-sending the same text WITH images is not swallowed by dedup', async () => {
+    const store = createInputHistoryStore('test-img-dedup')
+    store.add('dup', 's1')
+    store.add('dup', 's1', [img()])
+    expect(store.getSession('s1')).toEqual(['dup'])
+    const entry = store.getAll()[0]
+    expect(typeof entry.id).toBe('string')
+    await untilIdb(async () => (await getImages(entry.id!)).length === 1)
+  })
+
+  it('clear() wipes both the ring and the IDB records', async () => {
+    const store = createInputHistoryStore('test-img-clear')
+    store.add('a', 's1', [img()])
+    const id = store.getAll()[0].id!
+    await untilIdb(async () => (await getImages(id)).length === 1)
+    store.clear()
+    expect(store.getAll()).toEqual([])
+    await untilIdb(async () => {
+      const all = await getImages(id)
+      return all.length === 0
+    })
+  })
+
+  it('records an images-only send (empty text) as a recallable entry', async () => {
+    const store = createInputHistoryStore('test-img-only-send')
+    store.add('', 's1', [img()])
+    const entry = store.getAll()[0]
+    expect(entry.text).toBe('')
+    expect(typeof entry.id).toBe('string')
+    await untilIdb(async () => (await getImages(entry.id!)).length === 1)
+  })
+
+  it('still ignores empty text-only input', () => {
+    const store = createInputHistoryStore('test-empty-text-only')
+    store.add('', 's1')
+    store.add('   ', 's1', [])
+    expect(store.getAll()).toEqual([])
   })
 })

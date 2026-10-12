@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createInputHistoryStore, normalizeEntries } from '../state/inputHistoryStore'
+import { getImages } from '../state/inputHistoryImages'
 import { useInputHistory } from './useInputHistory'
+import 'fake-indexeddb/auto'
+import { resetInputHistoryIdb, untilIdb, makeImg as img } from '../test-utils/inputHistoryIdb'
 
 beforeEach(() => {
   localStorage.clear()
+  resetInputHistoryIdb()
 })
 
 describe('useInputHistory (facade)', () => {
@@ -12,7 +16,17 @@ describe('useInputHistory (facade)', () => {
     const store = createInputHistoryStore('facade-1')
     const { result } = renderHook(() => useInputHistory('s1', null, store))
     act(() => result.current.add('hello'))
-    expect(result.current.prev('draft')).toBe('hello')
+    expect(result.current.prev('draft')).toEqual({ text: 'hello', id: null, isDraft: false })
+  })
+
+  it('add() forwards images to the store (entry id + IDB record)', async () => {
+    const store = createInputHistoryStore('facade-img')
+    const { result } = renderHook(() => useInputHistory('s1', null, store))
+    act(() => result.current.add('look', [img()]))
+    const recall = result.current.prev('draft')
+    expect(recall?.text).toBe('look')
+    expect(typeof recall?.id).toBe('string')
+    await untilIdb(async () => (await getImages(recall!.id!)).length === 1)
   })
 
   it('resets the cursor after add (prev starts at the new most-recent)', () => {
@@ -21,7 +35,7 @@ describe('useInputHistory (facade)', () => {
     act(() => result.current.add('first'))
     act(() => result.current.add('second'))
     // After add, cursor is reset — prev() returns the new most-recent entry.
-    expect(result.current.prev('draft')).toBe('second')
+    expect(result.current.prev('draft')).toEqual({ text: 'second', id: null, isDraft: false })
     expect(result.current.isBrowsing()).toBe(true)
   })
 
@@ -30,7 +44,7 @@ describe('useInputHistory (facade)', () => {
     const { result } = renderHook(() => useInputHistory('s1', null, store))
     act(() => result.current.add('hello'))
     act(() => result.current.add('hello'))
-    expect(result.current.prev('draft')).toBe('hello')
+    expect(result.current.prev('draft')).toEqual({ text: 'hello', id: null, isDraft: false })
     expect(result.current.prev('draft')).toBeNull()
   })
 
@@ -47,7 +61,7 @@ describe('useInputHistory (facade)', () => {
     const { result } = renderHook(() => useInputHistory('s1', null, store))
     act(() => result.current.add('persistent'))
     const { result: result2 } = renderHook(() => useInputHistory('s1', null, store))
-    expect(result2.current.prev('draft')).toBe('persistent')
+    expect(result2.current.prev('draft')).toEqual({ text: 'persistent', id: null, isDraft: false })
   })
 
   it('tags added entries with the current session id', () => {
@@ -66,10 +80,10 @@ describe('useInputHistory (facade)', () => {
     const b = renderHook(() => useInputHistory('sb', null, store))
     act(() => b.result.current.add('from-b'))
     const a2 = renderHook(() => useInputHistory('sa', null, store))
-    expect(a2.result.current.prev('draft')).toBe('from-a')
+    expect(a2.result.current.prev('draft')).toEqual({ text: 'from-a', id: null, isDraft: false })
     expect(a2.result.current.prev('draft')).toBeNull()
     const b2 = renderHook(() => useInputHistory('sb', null, store))
-    expect(b2.result.current.prev('draft')).toBe('from-b')
+    expect(b2.result.current.prev('draft')).toEqual({ text: 'from-b', id: null, isDraft: false })
     expect(b2.result.current.prev('draft')).toBeNull()
   })
 
@@ -82,8 +96,8 @@ describe('useInputHistory (facade)', () => {
     act(() => seed.result.current.add('!pwd'))
 
     const bash = renderHook(() => useInputHistory('s1', (s) => s.startsWith('!'), store))
-    expect(bash.result.current.prev('draft')).toBe('!pwd')
-    expect(bash.result.current.prev('!pwd')).toBe('!ls')
+    expect(bash.result.current.prev('draft')).toEqual({ text: '!pwd', id: null, isDraft: false })
+    expect(bash.result.current.prev('!pwd')).toEqual({ text: '!ls', id: null, isDraft: false })
     expect(bash.result.current.prev('!ls')).toBeNull()
 
     // Full ring untouched in the store.
@@ -94,7 +108,7 @@ describe('useInputHistory (facade)', () => {
     localStorage.setItem('facade-9', JSON.stringify(['old-a', 'old-b']))
     const store = createInputHistoryStore('facade-9')
     const { result } = renderHook(() => useInputHistory(null, null, store))
-    expect(result.current.prev('draft')).toBe('old-a')
-    expect(result.current.prev('draft')).toBe('old-b')
+    expect(result.current.prev('draft')).toEqual({ text: 'old-a', id: null, isDraft: false })
+    expect(result.current.prev('draft')).toEqual({ text: 'old-b', id: null, isDraft: false })
   })
 })

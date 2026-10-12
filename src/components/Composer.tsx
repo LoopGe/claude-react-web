@@ -10,6 +10,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import { formatBytes } from '../utils/format'
 import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
+import { toPersistedImage, type PersistedImage } from '../state/inputHistoryImages'
+import type { HistoryImageRecallApi } from '../hooks/useHistoryImageRecall'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useToast } from '../hooks/useToast'
 import { writeClipboard } from '../hooks/useCopy'
@@ -76,6 +78,12 @@ interface Props {
   onDrop: (e: React.DragEvent) => void
 
   history: InputHistoryApi
+  /** History-recall image hand-off. Called on every history step:
+   *  `recallEntry(id)` — a history entry is shown (null id = text-only entry,
+   *  clears); `restoreDraft(stash)` — the live draft is shown again, restore
+   *  the images stashed on browse entry. Optional so hosts/tests without the
+   *  wiring skip it. */
+  onRecallImages?: HistoryImageRecallApi
   /** Slash commands from the SDK, fetched by the parent. */
   commands?: SlashCommand[]
   /** Pending pasted images to send inline. */
@@ -173,6 +181,7 @@ export const Composer = memo(function Composer({
   onDragLeave,
   onDrop,
   history,
+  onRecallImages,
   commands,
   pastedImages,
   onPasteImage,
@@ -329,6 +338,41 @@ export const Composer = memo(function Composer({
     [setInput],
   )
 
+  // The live draft's pending images, captured (persisted shape — no
+  // previewUrl/id, so the stash never references blob URLs that a later
+  // restore() revokes) when history browsing starts and handed back when ↓
+  // returns to the draft. Overwritten on every browse entry; safe to leave
+  // stale after a send (the next entry re-stashes).
+  const draftImagesStashRef = useRef<PersistedImage[]>([])
+
+  // One history step (↑/↓/Ctrl+P/N/wheel). Returns false when there is
+  // nowhere to go (empty history / at the ends) so callers can keep native
+  // behaviour (e.g. let the wheel scroll the box).
+  const recallHistory = useCallback(
+    (dir: 'prev' | 'next'): boolean => {
+      // isBrowsing must be read BEFORE prev/next — prev flips it on the
+      // entering step, which is exactly the stash point.
+      const wasBrowsing = history.isBrowsing()
+      const next = dir === 'prev' ? history.prev(input) : history.next()
+      if (next == null) return false
+      if (next.isDraft) {
+        // Back to the live draft — hand back what we stashed on entering.
+        onRecallImages?.restoreDraft(draftImagesStashRef.current)
+        draftImagesStashRef.current = []
+      } else {
+        // Entry recall. Entering browse stashes the current pending images
+        // (persisted shape) before the entry's images replace them; a null
+        // id = text-only entry → recallEntry clears what the previous step
+        // showed.
+        if (!wasBrowsing) draftImagesStashRef.current = pastedImages.map(toPersistedImage)
+        onRecallImages?.recallEntry(next.id)
+      }
+      recall(next.text)
+      return true
+    },
+    [history, input, pastedImages, onRecallImages, recall],
+  )
+
   // Focus the editor when the composer (re)mounts for a new session.
   useEffect(() => {
     editorRef.current?.focus()
@@ -355,12 +399,12 @@ export const Composer = memo(function Composer({
   const wheelAccumRef = useRef(0) // |deltaY| accumulated toward a step
   const wheelAtRef = useRef(-Infinity) // Date.now() of the last wheel event
 
-  // `history` (a new object literal each render) / `input` / `recall` change
-  // every keystroke, and `pickerOpen` / `disabled` flip on interaction; read
-  // them through refs so the native listener stays attached instead of
-  // rebinding per render.
-  const latestRef = useRef({ history, input, recall })
-  latestRef.current = { history, input, recall }
+  // `recallHistory` (fresh identity per render — it closes over history /
+  // input / pastedImages / onRecallImages) changes every keystroke, and
+  // `pickerOpen` / `disabled` flip on interaction; read them through refs so
+  // the native listener stays attached instead of rebinding per render.
+  const latestRef = useRef({ recallHistory })
+  latestRef.current = { recallHistory }
   const pickerOpenRef = useRef(pickerOpen)
   pickerOpenRef.current = pickerOpen
   const disabledRef = useRef(disabled)
@@ -433,13 +477,14 @@ export const Composer = memo(function Composer({
       if (now - wheelLockRef.current < WHEEL_STEP_MS) return
 
       // Navigate exactly like Ctrl+P/N / bare arrows.
-      const { history, input, recall } = latestRef.current
-      const next = dy < 0 ? history.prev(input) : history.next()
-      if (next == null) { wheelAccumRef.current = 0; return } // at ends / empty history → keep native scroll
+      const { recallHistory } = latestRef.current
+      if (!recallHistory(dy < 0 ? 'prev' : 'next')) {
+        wheelAccumRef.current = 0
+        return // at ends / empty history → keep native scroll
+      }
       wheelAccumRef.current = 0
       wheelLockRef.current = now
       e.preventDefault()
-      recall(next)
     }
     el.addEventListener('wheel', onWheel as EventListener, { passive: false })
     return () => el.removeEventListener('wheel', onWheel as EventListener)
@@ -916,8 +961,7 @@ export const Composer = memo(function Composer({
               // Ctrl/Cmd+P / Ctrl/Cmd+N — unconditional history nav.
               if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'n')) {
                 e.preventDefault()
-                const next = e.key === 'p' ? history.prev(input) : history.next()
-                if (next != null) recall(next)
+                recallHistory(e.key === 'p' ? 'prev' : 'next')
                 return
               }
               // Bare ↑ / ↓ recall history at line edges.
@@ -925,11 +969,7 @@ export const Composer = memo(function Composer({
               if (!h) return
               if (e.key === 'ArrowUp' && !e.shiftKey && !e.altKey) {
                 if (h.caretOnFirstLine()) {
-                  const next = history.prev(input)
-                  if (next != null) {
-                    e.preventDefault()
-                    recall(next)
-                  }
+                  if (recallHistory('prev')) e.preventDefault()
                 }
               } else if (e.key === 'ArrowDown' && !e.shiftKey && !e.altKey) {
                 const offsets = h.selectionOffsets()
@@ -937,11 +977,7 @@ export const Composer = memo(function Composer({
                   ? (offsets.end === input.length || !input.slice(offsets.end).includes('\n'))
                   : true
                 if (caretAtBottom && history.isBrowsing()) {
-                  const next = history.next()
-                  if (next != null) {
-                    e.preventDefault()
-                    recall(next)
-                  }
+                  if (recallHistory('next')) e.preventDefault()
                 }
               }
             }}

@@ -4,8 +4,9 @@ import { useState } from 'react'
 import { render as rtlRender, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { Composer } from './Composer'
 import { ToastProvider } from './ToastProvider'
-import type { SlashCommand } from '../types'
+import type { PastedImage, SlashCommand } from '../types'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
+import type { InputHistoryApi } from '../hooks/useInputHistory'
 
 // ── Rich-editor test helpers ────────────────────────────────────────
 // The composer renders a contenteditable <div> (RichPromptInput) rather
@@ -91,7 +92,7 @@ const defaultProps = {
   onDragOver: noop,
   onDragLeave: noop,
   onDrop: noop,
-  history: { add: noop, prev: () => '', next: () => '', isBrowsing: () => false, reset: () => {} },
+  history: { add: noop, prev: () => null, next: () => null, isBrowsing: () => false, reset: () => {} },
   commands: [] as SlashCommand[],
   pastedImages: [] as never[],
   onPasteImage: noopAsync,
@@ -373,11 +374,11 @@ describe('Composer', () => {
       return e
     }
 
-    function historyStub(overrides: Partial<{ prev: () => string | null; next: () => string | null; isBrowsing: () => boolean }>) {
+    function historyStub(overrides: Partial<InputHistoryApi>) {
       return {
         add: noop,
-        prev: () => '',
-        next: () => '',
+        prev: () => null,
+        next: () => null,
         isBrowsing: () => false,
         reset: () => {},
         ...overrides,
@@ -386,7 +387,7 @@ describe('Composer', () => {
 
     it('does not navigate when the editor is not focused', () => {
       const setInput = vi.fn()
-      const prev = vi.fn(() => 'older prompt')
+      const prev = vi.fn(() => ({ text: 'older prompt', id: null, isDraft: false }))
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
@@ -401,7 +402,7 @@ describe('Composer', () => {
 
     it('recalls an older history entry on wheel up', () => {
       const setInput = vi.fn()
-      const prev = vi.fn(() => 'older prompt')
+      const prev = vi.fn(() => ({ text: 'older prompt', id: null, isDraft: false }))
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
@@ -415,7 +416,7 @@ describe('Composer', () => {
 
     it('recalls a newer history entry on wheel down while browsing', () => {
       const setInput = vi.fn()
-      const next = vi.fn(() => 'newer prompt')
+      const next = vi.fn(() => ({ text: 'newer prompt', id: null, isDraft: false }))
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ next, isBrowsing: () => true })} />,
       )
@@ -432,7 +433,7 @@ describe('Composer', () => {
       // and swallow the wheel-down. The box's target is style.height (set by
       // syncEditorHeight), which is where it will settle.
       const setInput = vi.fn()
-      const next = vi.fn(() => 'newer prompt')
+      const next = vi.fn(() => ({ text: 'newer prompt', id: null, isDraft: false }))
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ next, isBrowsing: () => true })} />,
       )
@@ -464,7 +465,7 @@ describe('Composer', () => {
 
     it('does not navigate when a wheel stays under the step threshold', () => {
       const setInput = vi.fn()
-      const prev = vi.fn(() => 'older prompt')
+      const prev = vi.fn(() => ({ text: 'older prompt', id: null, isDraft: false }))
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
@@ -477,7 +478,7 @@ describe('Composer', () => {
 
     it('accumulates small deltas across events and steps once at threshold', () => {
       const setInput = vi.fn()
-      const prev = vi.fn(() => 'older prompt')
+      const prev = vi.fn(() => ({ text: 'older prompt', id: null, isDraft: false }))
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
@@ -493,7 +494,7 @@ describe('Composer', () => {
 
     it('clamps fast consecutive steps to one per time window', async () => {
       const setInput = vi.fn()
-      const prev = vi.fn(() => 'older prompt')
+      const prev = vi.fn(() => ({ text: 'older prompt', id: null, isDraft: false }))
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
@@ -511,7 +512,7 @@ describe('Composer', () => {
       vi.useFakeTimers()
       try {
         const setInput = vi.fn()
-        const prev = vi.fn(() => 'older prompt')
+        const prev = vi.fn(() => ({ text: 'older prompt', id: null, isDraft: false }))
         const { container } = render(
           <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
         )
@@ -538,7 +539,7 @@ describe('Composer', () => {
 
     it('lets a scrollable editor scroll internally instead of navigating', () => {
       const setInput = vi.fn()
-      const prev = vi.fn(() => 'older prompt')
+      const prev = vi.fn(() => ({ text: 'older prompt', id: null, isDraft: false }))
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
@@ -553,7 +554,7 @@ describe('Composer', () => {
 
     it('navigates when a scrollable editor is at the top scroll edge', () => {
       const setInput = vi.fn()
-      const prev = vi.fn(() => 'older prompt')
+      const prev = vi.fn(() => ({ text: 'older prompt', id: null, isDraft: false }))
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
@@ -568,7 +569,7 @@ describe('Composer', () => {
 
     it('ignores wheel while an IME composition is active', () => {
       const setInput = vi.fn()
-      const prev = vi.fn(() => 'older prompt')
+      const prev = vi.fn(() => ({ text: 'older prompt', id: null, isDraft: false }))
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
@@ -584,7 +585,7 @@ describe('Composer', () => {
 
     it('resets the IME guard on blur so wheel history works again', () => {
       const setInput = vi.fn()
-      const prev = vi.fn(() => 'older prompt')
+      const prev = vi.fn(() => ({ text: 'older prompt', id: null, isDraft: false }))
       const { container } = render(
         <Composer {...defaultProps} setInput={setInput} history={historyStub({ prev })} />,
       )
@@ -904,3 +905,125 @@ describe('Composer tasks button', () => {
   })
 })
 
+describe('Composer history image recall', () => {
+  function img(): PastedImage {
+    return {
+      id: 'img-1', data: 'AAAA', mediaType: 'image/png',
+      width: 1, height: 2, size: 3, previewUrl: 'blob:live',
+    }
+  }
+
+  function recallApiStub() {
+    return { recallEntry: vi.fn(), restoreDraft: vi.fn(), invalidate: vi.fn() }
+  }
+
+  function historyStub(overrides: Partial<InputHistoryApi> = {}) {
+    return {
+      add: noop, prev: () => null, next: () => null,
+      isBrowsing: () => false, reset: () => {},
+      ...overrides,
+    }
+  }
+
+  function wheel(el: Element, deltaY: number) {
+    const e = new Event('wheel', { bubbles: true, cancelable: true })
+    Object.defineProperty(e, 'deltaY', { value: deltaY })
+    Object.defineProperty(e, 'deltaMode', { value: 0 })
+    el.dispatchEvent(e)
+  }
+
+  it('forwards an entry recall to onRecallImages with the entry id', () => {
+    const onRecallImages = recallApiStub()
+    const setInput = vi.fn()
+    const prev = vi.fn(() => ({ text: 'old', id: 'entry-1', isDraft: false }))
+    const { container } = render(
+      <Composer
+        {...defaultProps}
+        setInput={setInput}
+        pastedImages={[img()]}
+        onRecallImages={onRecallImages}
+        history={historyStub({ prev })}
+      />,
+    )
+    const editor = getEditor(container)
+    editor.focus()
+    wheel(editor, -120)
+    expect(prev).toHaveBeenCalledWith('')
+    expect(onRecallImages.recallEntry).toHaveBeenCalledWith('entry-1')
+    expect(setInput).toHaveBeenCalledWith('old')
+  })
+
+  it('a text-only entry recall hands a null id (images cleared)', () => {
+    const onRecallImages = recallApiStub()
+    const prev = vi.fn(() => ({ text: 'old', id: null, isDraft: false }))
+    const { container } = render(
+      <Composer
+        {...defaultProps}
+        pastedImages={[img()]}
+        onRecallImages={onRecallImages}
+        history={historyStub({ prev })}
+      />,
+    )
+    const editor = getEditor(container)
+    editor.focus()
+    wheel(editor, -120)
+    expect(onRecallImages.recallEntry).toHaveBeenCalledWith(null)
+  })
+
+  it('stashes pending images on entering browse, restores them on draft return', () => {
+    const onRecallImages = recallApiStub()
+    let browsing = false
+    const history = {
+      add: noop,
+      reset: () => {},
+      isBrowsing: () => browsing,
+      prev: vi.fn(() => {
+        browsing = true
+        return { text: 'entry', id: 'entry-1', isDraft: false }
+      }),
+      next: vi.fn(() => {
+        browsing = false
+        return { text: 'my draft', id: null, isDraft: true }
+      }),
+    }
+    const { container } = render(
+      <Composer
+        {...defaultProps}
+        pastedImages={[img()]}
+        onRecallImages={onRecallImages}
+        history={history as unknown as InputHistoryApi}
+      />,
+    )
+    const editor = getEditor(container)
+    editor.focus()
+    vi.useFakeTimers()
+    try {
+      wheel(editor, -120) // enter browse — stash + load entry images
+      expect(onRecallImages.recallEntry).toHaveBeenLastCalledWith('entry-1')
+      // The wheel handler gates one step per WHEEL_STEP_MS — cross the gate.
+      vi.advanceTimersByTime(1000)
+      wheel(editor, 120) // back to the draft — restore the stash
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(onRecallImages.restoreDraft).toHaveBeenLastCalledWith([
+      { data: 'AAAA', mediaType: 'image/png', width: 1, height: 2, size: 3 },
+    ])
+  })
+
+  it('Ctrl+P routes through the same recall path', () => {
+    const onRecallImages = recallApiStub()
+    const prev = vi.fn(() => ({ text: 'old', id: 'entry-2', isDraft: false }))
+    const { container } = render(
+      <Composer
+        {...defaultProps}
+        onRecallImages={onRecallImages}
+        history={historyStub({ prev })}
+      />,
+    )
+    const editor = getEditor(container)
+    editor.focus()
+    fireEvent.keyDown(editor, { key: 'p', ctrlKey: true })
+    expect(onRecallImages.recallEntry).toHaveBeenCalledWith('entry-2')
+  })
+})

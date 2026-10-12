@@ -26,17 +26,31 @@ import {
   type InputHistoryStore,
 } from '../state/inputHistoryStore'
 
+export interface HistoryRecall {
+  /** The text to put in the composer. */
+  text: string
+  /** The entry's image-record id (key into the `inputHistoryImages` IDB side
+   *  store) when this recall IS a history entry; null for a text-only /
+   *  legacy entry. */
+  id: string | null
+  /** True when this recall is the stashed live draft being restored
+   *  (next() past index 0) — the caller restores the images it stashed on
+   *  entering browse rather than loading an entry's from IDB. A text-only
+   *  ENTRY is isDraft:false with id:null, so the two cases never collide. */
+  isDraft: boolean
+}
+
 export interface HistoryCursor {
   /**
    * Step to an older entry.
    *  - `currentInput` is what the textarea shows right now; captured on
    *    first step so we can restore it with next() from beyond index 0.
-   *  - returns the string to put in the textarea, or `null` if there is
-   *    nothing older to show.
+   *  - returns the recall (`text` + image-record `id`), or `null` if there
+   *    is nothing older to show.
    */
-  prev: (currentInput: string) => string | null
-  /** Step toward the live draft. Returns the string to restore. */
-  next: () => string | null
+  prev: (currentInput: string) => HistoryRecall | null
+  /** Step toward the live draft. The draft restore carries `id: null`. */
+  next: () => HistoryRecall | null
   /** Forget that we're in history navigation (on user edit / after send). */
   reset: () => void
   /** Whether the user is currently browsing history (vs. editing draft). */
@@ -50,12 +64,11 @@ export function useHistoryCursor(
 ): HistoryCursor {
   const all = useHistoryEntries(store)
 
-  // Derive the current-session slice, then narrow by the optional filter.
+  // Derive the current-session slice (full entries — recall carries the entry
+  // id for image loading), then narrow by the optional text filter.
   const entries = useMemo(() => {
-    const sessionTexts = all
-      .filter((e) => e.sessionId === sessionId)
-      .map((e) => e.text)
-    return filter ? sessionTexts.filter(filter) : sessionTexts
+    const sessionEntries = all.filter((e) => e.sessionId === sessionId)
+    return filter ? sessionEntries.filter((e) => filter(e.text)) : sessionEntries
   }, [all, sessionId, filter])
 
   const indexRef = useRef<number | null>(null)
@@ -69,13 +82,13 @@ export function useHistoryCursor(
   // identity) so a cross-panel store write that churns `entries` identity
   // without changing THIS session's slice content doesn't null the cursor
   // and lose the stashed draft.
-  const entriesKey = entries.join('')
+  const entriesKey = entries.map((e) => e.text).join('')
   useEffect(() => {
     indexRef.current = null
   }, [entriesKey])
 
   const prev = useCallback(
-    (currentInput: string): string | null => {
+    (currentInput: string): HistoryRecall | null => {
       if (entries.length === 0) return null
       if (indexRef.current === null) {
         // Entering history — stash the live draft so next() can put it back.
@@ -87,24 +100,27 @@ export function useHistoryCursor(
         return null // already at oldest
       }
       tick((x) => x + 1)
-      return entries[indexRef.current]
+      const e = entries[indexRef.current]
+      return { text: e.text, id: e.id ?? null, isDraft: false }
     },
     [entries],
   )
 
-  const next = useCallback((): string | null => {
+  const next = useCallback((): HistoryRecall | null => {
     if (indexRef.current === null) return null
     if (indexRef.current === 0) {
-      // Stepped back past the newest entry → restore the draft.
+      // Stepped back past the newest entry → restore the draft (id null —
+      // the caller restores whatever it stashed for the draft).
       indexRef.current = null
       const draft = draftRef.current
       draftRef.current = ''
       tick((x) => x + 1)
-      return draft
+      return { text: draft, id: null, isDraft: true }
     }
     indexRef.current -= 1
     tick((x) => x + 1)
-    return entries[indexRef.current]
+    const e = entries[indexRef.current]
+    return { text: e.text, id: e.id ?? null, isDraft: false }
   }, [entries])
 
   const reset = useCallback(() => {

@@ -20,6 +20,13 @@
 // `inputHistoryStore`, bound to INPUT_HISTORY_KEY.
 
 import { useSyncExternalStore } from 'react'
+import { randomId } from '../utils/uuid'
+import {
+  clearImages,
+  deleteImages,
+  putImages,
+  type PersistedImage,
+} from './inputHistoryImages'
 
 // localStorage key. The single source; no caller reads this key directly anymore.
 export const INPUT_HISTORY_KEY = 'claude-react-web:input-history'
@@ -33,6 +40,10 @@ export interface HistoryEntry {
   text: string
   /** Session the entry was sent from; null for legacy/unattributed entries. */
   sessionId: string | null
+  /** Present IFF the entry has an image record in the IDB side store
+   *  (`inputHistoryImages`). Minted at add() time; absent on text-only and
+   *  legacy entries, so restoring falls back to text-only. */
+  id?: string
 }
 
 /** Coerce a raw persisted value (which may be the legacy `string[]` shape or
@@ -51,7 +62,11 @@ export function normalizeEntries(raw: unknown): HistoryEntry[] {
       typeof (item as HistoryEntry).text === 'string'
     ) {
       const e = item as HistoryEntry
-      out.push({ text: e.text, sessionId: e.sessionId ?? null })
+      out.push({
+        text: e.text,
+        sessionId: e.sessionId ?? null,
+        ...(typeof e.id === 'string' ? { id: e.id } : {}),
+      })
     }
   }
   return out
@@ -60,8 +75,13 @@ export function normalizeEntries(raw: unknown): HistoryEntry[] {
 export interface InputHistoryStore {
   /** Record a newly sent message. Consecutive same-session duplicates collapse;
    *  same-session identical earlier entry moves to front. Enforces per-session
-   *  (20) and global (100) caps. No-op for empty/whitespace input. */
-  add: (text: string, sessionId: string | null) => void
+   *  (20) and global (100) caps. No-op for empty/whitespace input.
+   *
+   *  With `images`, the entry also gains an `id` and its images persist to the
+   *  IDB side store (fire-and-forget); entries evicted by this write get their
+   *  orphaned image records deleted. A same-text resend WITH images is treated
+   *  as move-to-front (not swallowed by dedup) so the new images are kept. */
+  add: (text: string, sessionId: string | null, images?: PersistedImage[]) => void
   /** The full ring (most-recent first). Referentially stable between writes. */
   getAll: () => HistoryEntry[]
   /** Texts belonging to one session, most-recent first. */
@@ -144,19 +164,28 @@ export function createInputHistoryStore(key: string): InputHistoryStore {
   }
 
   return {
-    add(text, sessionId) {
+    add(text, sessionId, images) {
       const trimmed = text.trim()
-      if (!trimmed) return
+      const hasImages = !!images && images.length > 0
+      // Whitespace-only text is ignored UNLESS images ride along — an
+      // images-only send is a legal, recallable send shape (the composer's
+      // send guard allows it explicitly).
+      if (!trimmed && !hasImages) return
       const entries = read()
-      // Collapse only against this session's most-recent entry.
+      // Collapse only against this session's most-recent entry — and only for
+      // text-only resends; a resend WITH images moves to front so the new
+      // images are recorded instead of being swallowed by the dedup.
       const lastForSession = entries.find((e) => e.sessionId === sessionId)
-      if (lastForSession?.text === trimmed) return
+      if (!hasImages && lastForSession?.text === trimmed) return
       // Drop an earlier identical entry from the same session (move-to-front),
       // leaving other sessions' identical prompts untouched.
       const filtered = entries.filter(
         (e) => !(e.sessionId === sessionId && e.text === trimmed),
       )
-      const merged: HistoryEntry[] = [{ text: trimmed, sessionId }, ...filtered]
+      const entry: HistoryEntry = hasImages
+        ? { text: trimmed, sessionId, id: randomId() }
+        : { text: trimmed, sessionId }
+      const merged: HistoryEntry[] = [entry, ...filtered]
       // Per-session cap: keep only this session's 20 most recent entries
       // (they appear front-to-back in recency order), passing every other
       // session's entries through untouched.
@@ -166,8 +195,18 @@ export function createInputHistoryStore(key: string): InputHistoryStore {
         kept += 1
         return kept <= SESSION_HISTORY_CAP
       })
-      // Then the global cap across all sessions.
-      commit(capped.slice(0, HISTORY_CAP))
+      const committed = capped.slice(0, HISTORY_CAP)
+      commit(committed)
+      // Image side store (fire-and-forget): record the new entry's images and
+      // delete records orphaned by this write (dedup move-to-front / cap /
+      // global-cap eviction). Both are best-effort — a failed write only
+      // degrades that entry's recall to text-only.
+      if (entry.id) void putImages(entry.id, images!)
+      const surviving = new Set<string>()
+      for (const e of committed) if (e.id) surviving.add(e.id)
+      const evicted = new Set<string>()
+      for (const e of entries) if (e.id && !surviving.has(e.id)) evicted.add(e.id)
+      if (evicted.size > 0) void deleteImages([...evicted])
     },
     getAll() {
       return read()
@@ -192,6 +231,8 @@ export function createInputHistoryStore(key: string): InputHistoryStore {
     },
     clear() {
       commit([])
+      // The IDB image records belong to the ring's entries — wipe them too.
+      void clearImages()
     },
   }
 }

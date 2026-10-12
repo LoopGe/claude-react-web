@@ -41,6 +41,9 @@ import { writeClipboard, COPY_FAILED_MESSAGE } from '../hooks/useCopy'
 import { usePastedImages } from '../hooks/usePastedImages'
 import { usePastedTexts } from '../hooks/usePastedTexts'
 import { useInputHistory } from '../hooks/useInputHistory'
+import { useHistoryImageRecall } from '../hooks/useHistoryImageRecall'
+import type { HistoryPanelEntry } from '../hooks/useInputHistoryPanel'
+import { toPersistedImage } from '../state/inputHistoryImages'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useElicitationChannel } from '../hooks/useElicitationChannel'
 import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
@@ -850,6 +853,50 @@ export const Chat = memo(function Chat({
 
   const attachments = useAttachments(session.id, session.cwd)
   const pastedImages = usePastedImages()
+  // History-recall image hand-off: the Composer decides when (entry vs draft
+  // restore), this loads the entry's images from the IDB side store and
+  // restores them into the composer (seq-guarded against slow loads).
+  // Destructured so the stable useCallback identities flow into the wrapped
+  // handlers below — the hook's returned OBJECT is fresh every render and
+  // would defeat Composer's React.memo.
+  const { recallEntry: recallHistoryEntryImages, restoreDraft: restoreHistoryDraftImages, invalidate: invalidateHistoryImages } =
+    useHistoryImageRecall(pastedImages.restore)
+  // Stable api object for the Composer prop — the three members are
+  // useCallback-stable, so this memo never invalidates and Composer's
+  // React.memo keeps skipping per-tick re-renders.
+  const historyImageRecallApi = useMemo(
+    () => ({
+      recallEntry: recallHistoryEntryImages,
+      restoreDraft: restoreHistoryDraftImages,
+      invalidate: invalidateHistoryImages,
+    }),
+    [recallHistoryEntryImages, restoreHistoryDraftImages, invalidateHistoryImages],
+  )
+  // User-driven image mutations must invalidate any in-flight recall load —
+  // the seq guard only orders recall STEPS against each other, so without
+  // this a slow IDB load landing after a paste/remove would silently
+  // overwrite the user's edit.
+  const onPasteImage = useCallback(
+    (file: File) => {
+      invalidateHistoryImages()
+      return pastedImages.addImage(file)
+    },
+    [invalidateHistoryImages, pastedImages],
+  )
+  const onRemovePastedImage = useCallback(
+    (id: string) => {
+      invalidateHistoryImages()
+      pastedImages.removeImage(id)
+    },
+    [invalidateHistoryImages, pastedImages],
+  )
+  /** clear() + invalidate — used where the composer's images are consumed
+   *  (send / scheduled send) so a stale recall load can't repopulate the
+   *  emptied composer with phantom images. */
+  const clearPastedImages = useCallback(() => {
+    invalidateHistoryImages()
+    pastedImages.clear()
+  }, [invalidateHistoryImages, pastedImages])
   // Turn is "active" for layout purposes the instant the user sends, even
   // before `session.working` arrives — this is what keeps the WorkingBubble in
   // the same commit as the optimistic message (see pendingTurnSince comment).
@@ -1648,10 +1695,15 @@ export const Chat = memo(function Chat({
       if (pendingId && typeof res.message?.uuid === 'string') {
         ackUserMessage(pendingId, res.message.uuid, res.message.receivedAt)
       }
-      if (text) history.add(text)
+      // Record the sent text + images in the input history (images persist to
+      // the IDB side store keyed by the new entry's id). Unconditional: an
+      // images-only send (empty text) is a legal shape and must be recallable
+      // — the store ignores empty text-only adds itself. Read from
+      // pastedImages BEFORE the clear() below wipes them.
+      history.add(text, pastedImages.images.map(toPersistedImage))
       setInput('')
       clearAttachments()
-      pastedImages.clear()
+      clearPastedImages()
       // Put focus back on the textarea so the user can keep typing. If
       // they used Enter-to-send the focus is already there; if they
       // clicked the Send button it's currently on the button and the
@@ -1676,7 +1728,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, requestCompactSession, runBashCommand])
+  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, requestCompactSession, runBashCommand])
 
   // The Overlay primitive owns the focus traps and presence for the settings
   // + git overlays; its `mounted && open` active gate reproduces the old
@@ -1785,12 +1837,16 @@ export const Chat = memo(function Chat({
   // Inject a selected history entry into this panel's composer. Now that the
   // history panel is rendered in-panel (not at App root), this is a direct
   // local call — no registry indirection. setInput also write-throughs to the
-  // per-session draft, so the recalled text persists.
-  const handleHistorySelect = useCallback((text: string) => {
-    setInput(text)
+  // per-session draft, so the recalled text persists. Images follow the entry
+  // (loaded from the IDB side store); a text-only entry clears them — same
+  // replace semantics as the ↑/↓ walk (the panel has no "back" path, so the
+  // replaced draft is not stashed, matching the pre-existing text behaviour).
+  const handleHistorySelect = useCallback((entry: HistoryPanelEntry) => {
+    setInput(entry.text)
+    recallHistoryEntryImages(entry.id)
     history.reset()
     setComposerFocusSignal((n) => n + 1)
-  }, [setInput, history, setComposerFocusSignal])
+  }, [setInput, recallHistoryEntryImages, history, setComposerFocusSignal])
 
   // MessageList registers its prev/next-user-message navigator here so the
   // chat-area right-click menu ("Scroll to previous/next user message") can
@@ -1829,12 +1885,12 @@ export const Chat = memo(function Chat({
       await scheduled.schedule(fireAtMs, built)
       setInput('')
       clearAttachments()
-      pastedImages.clear()
+      clearPastedImages()
       setComposerFocusSignal((n) => n + 1)
     } catch (e) {
       setLocalError((e as Error).message)
     }
-  }, [input, attachmentList, scheduled, setInput, clearAttachments, pastedImages, expandPastedText, setComposerFocusSignal, setLocalError])
+  }, [input, attachmentList, scheduled, setInput, clearAttachments, clearPastedImages, pastedImages, expandPastedText, setComposerFocusSignal, setLocalError])
   /** Snippets are persisted server-side and re-inserted in later sessions, so
    *  a `[Pasted text #N]` reference saved as-is would outlive the body backing
    *  it and resolve to nothing (or to a different paste). Store the text. */
@@ -2375,10 +2431,11 @@ export const Chat = memo(function Chat({
               onDragLeave={onDragLeave}
               onDrop={onDrop}
               history={history}
+              onRecallImages={historyImageRecallApi}
               commands={mergedCommands}
               pastedImages={pastedImages.images}
-              onPasteImage={pastedImages.addImage}
-              onRemovePastedImage={pastedImages.removeImage}
+              onPasteImage={onPasteImage}
+              onRemovePastedImage={onRemovePastedImage}
               onAddPastedText={addPastedText}
               onSend={handleSend}
               onInterrupt={handleInterrupt}

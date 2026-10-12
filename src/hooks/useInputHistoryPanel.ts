@@ -13,30 +13,40 @@ import { useMemo } from 'react'
 import {
   inputHistoryStore,
   useHistoryEntries,
+  type HistoryEntry,
   type InputHistoryStore,
 } from '../state/inputHistoryStore'
+
+/** One selectable history entry: the text plus the image-record id of the
+ *  NEWEST ring entry carrying that text (null when text-only / legacy) —
+ *  the id is what recall loads images from. */
+export interface HistoryPanelEntry {
+  text: string
+  id: string | null
+}
 
 export interface InputHistoryPanelSlice {
   /** This session's entries (deduped, filtered), most-recent first. Empty when
    *  no session is focused. */
-  sessionItems: string[]
+  sessionItems: HistoryPanelEntry[]
   /** All other sessions' entries (deduped, filtered). */
-  otherItems: string[]
+  otherItems: HistoryPanelEntry[]
   /** Session entries first, then the rest — the selectable list. */
-  flat: string[]
+  flat: HistoryPanelEntry[]
   /** Total entries in the store (ignores the search filter — used for the
    *  "No matches" vs "No history yet" empty-state copy). */
   totalCount: number
 }
 
-/** Dedup texts preserving first-seen order. */
-function dedup(texts: string[]): string[] {
+/** Dedup entries by text preserving first-seen (most-recent) order; each
+ *  survivor keeps the newest entry's image-record id. */
+function dedupEntries(entries: HistoryEntry[]): HistoryPanelEntry[] {
   const seen = new Set<string>()
-  const out: string[] = []
-  for (const t of texts) {
-    if (seen.has(t)) continue
-    seen.add(t)
-    out.push(t)
+  const out: HistoryPanelEntry[] = []
+  for (const e of entries) {
+    if (seen.has(e.text)) continue
+    seen.add(e.text)
+    out.push({ text: e.text, id: e.id ?? null })
   }
   return out
 }
@@ -51,26 +61,25 @@ export function useInputHistoryPanel(
   return useMemo(() => {
     const q = query.trim().toLowerCase()
     const match = (t: string) => !q || t.toLowerCase().includes(q)
+    const filterText = (items: HistoryPanelEntry[]) => items.filter((e) => match(e.text))
 
     // With no focused session, there's nothing to promote — show one flat
     // "All sessions" list rather than floating legacy (null-session) entries
     // to the top under no header.
-    const sessionTexts =
+    const sessionEntries =
       currentSessionId == null
         ? []
-        : dedup(
-            entries.filter((e) => e.sessionId === currentSessionId).map((e) => e.text),
-          ).filter(match)
-    const otherTexts = dedup(
-      entries
-        .filter((e) => currentSessionId == null || e.sessionId !== currentSessionId)
-        .map((e) => e.text),
-    ).filter(match)
+        : dedupEntries(entries.filter((e) => e.sessionId === currentSessionId))
+    const otherEntries = dedupEntries(
+      entries.filter((e) => currentSessionId == null || e.sessionId !== currentSessionId),
+    )
+    const sessionItems = filterText(sessionEntries)
+    const otherItems = filterText(otherEntries)
 
     return {
-      sessionItems: sessionTexts,
-      otherItems: otherTexts,
-      flat: [...sessionTexts, ...otherTexts],
+      sessionItems,
+      otherItems,
+      flat: [...sessionItems, ...otherItems],
       totalCount: entries.length,
     }
   }, [entries, currentSessionId, query])
