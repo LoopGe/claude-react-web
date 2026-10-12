@@ -858,7 +858,7 @@ export const Chat = memo(function Chat({
   // handlers below — the hook's returned OBJECT is fresh every render and
   // would defeat Composer's React.memo.
   const { recallEntry: recallHistoryEntryImages, restoreDraft: restoreHistoryDraftImages, invalidate: invalidateHistoryImages } =
-    useHistoryImageRecall(pastedImages.restore)
+    useHistoryImageRecall(pastedImages.applyImages)
   // Stable api object for the Composer prop — the three members are
   // useCallback-stable, so this memo never invalidates and Composer's
   // React.memo keeps skipping per-tick re-renders.

@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { api } from './useApi'
 import { inputHistoryStore } from '../state/inputHistoryStore'
+import { clearImageDecodeCache } from '../utils/imageDecodeCache'
 import { clearAllSessionStorage } from '../session-store/store'
 import { sessionStoreRegistry } from '../session-store/registry'
 import { DRAFT_KEY_PREFIX, SIDEBAR_WIDTH_KEY, SIDEBAR_MIN_KEY, SIDEBAR_MAX_KEY, PANEL_RATIOS_KEY, PANEL_MIN_RATIO_KEY, LAST_SEEN_TURN_KEY } from '../constants/storageKeys'
@@ -26,8 +27,12 @@ const APPEARANCE_KEYS = [
 ]
 
 function clearBrowserItem(item: BrowserDataItem): void {
-  if (item === 'input-history') inputHistoryStore.clear()
-  else if (item === 'drafts') {
+  if (item === 'input-history') {
+    inputHistoryStore.clear()
+    // The decode cache holds in-memory decoded copies of the history images
+    // (with blob URLs) — a data reset must not leave them behind.
+    void clearImageDecodeCache()
+  } else if (item === 'drafts') {
     // Drafts live in SESSION storage (Chat.tsx writes DRAFT_KEY_PREFIX /
     // DRAFT_BODIES_KEY_PREFIX there), so the scan must too — scanning
     // localStorage (the pre-fix behaviour) silently cleared nothing.

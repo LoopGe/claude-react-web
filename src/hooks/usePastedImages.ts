@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatBytes } from '../utils/format'
 import { randomId } from '../utils/uuid'
 import { getMaxPastedImageBytes } from './config-store'
-import type { PersistedImage } from '../state/inputHistoryImages'
 import type { PastedImage } from '../types'
 
 const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
@@ -14,11 +13,12 @@ export interface UsePastedImages {
   addImage: (file: File) => Promise<void>
   removeImage: (id: string) => void
   clear: () => void
-  /** Replace the pending images with rebuilt copies of a persisted set
-   *  (history recall). Fresh ids and blob URLs are minted; replaced images'
-   *  URLs are revoked. An in-flight addImage is NOT discarded — it lands on
-   *  the restored set. Empty array = clear (text-only recall). */
-  restore: (persisted: readonly PersistedImage[]) => void
+  /** Replace the pending images with a PREBUILT set (history recall — the
+   *  images come from the decode cache with cache-owned URLs, `fromCache`).
+   *  Replaced composer-owned URLs are revoked; cache-owned ones survive (the
+   *  cache owns their lifecycle). An in-flight addImage is NOT discarded —
+   *  it lands on the applied set. Empty array = clear (text-only recall). */
+  applyImages: (prebuilt: readonly PastedImage[]) => void
 }
 
 export function usePastedImages(): UsePastedImages {
@@ -59,30 +59,18 @@ export function usePastedImages(): UsePastedImages {
     setError(null)
   }, [revokeUrl])
 
-  // History-recall path: rebuild PastedImage objects from the persisted
-  // (base64) shape. Runs synchronously — no awaits — so no generation guard
-  // is needed here, and deliberately does NOT bump clearGenerationRef: an
-  // addImage still decoding when the user steps ↑ then ↓ back to the draft
-  // must LAND on the restored set (its blob URL is untouched by restore),
-  // not be silently dropped. clear() keeps the bump — after a send a stale
+  // History-recall path: apply a PREBUILT set built by the image decode
+  // cache. The URLs are minted fresh per build and composer-owned (the cache
+  // is a pure Blob memo — it never owns URLs, never revokes), so the normal
+  // revoke-on-replace lifecycle applies unchanged. Runs synchronously — no
+  // awaits — so no generation guard is needed here, and deliberately does
+  // NOT bump clearGenerationRef: an addImage still decoding when the user
+  // steps ↑ then ↓ back to the draft must LAND on the applied set, not be
+  // silently dropped. clear() keeps the bump — after a send a stale
   // in-flight paste must not repopulate the emptied composer.
-  // URL creation happens OUTSIDE the state updater so a StrictMode
-  // double-invoke can't mint orphaned blob URLs.
-  const restore = useCallback(
-    (persisted: readonly PersistedImage[]) => {
-      const next: PastedImage[] = persisted.map((p) => {
-        const previewUrl = URL.createObjectURL(base64ToBlob(p.data, p.mediaType))
-        allUrlsRef.current.add(previewUrl)
-        return {
-          id: randomId(),
-          data: p.data,
-          mediaType: p.mediaType,
-          width: p.width,
-          height: p.height,
-          size: p.size,
-          previewUrl,
-        }
-      })
+  const applyImages = useCallback(
+    (prebuilt: readonly PastedImage[]) => {
+      const next: PastedImage[] = [...prebuilt]
       setImages((prev) => {
         for (const img of prev) revokeUrl(img.previewUrl)
         return next
@@ -164,18 +152,9 @@ export function usePastedImages(): UsePastedImages {
   // callbacks are `useCallback([])`-stable — so the memo returns the
   // same reference until the user pastes / removes / clears.
   return useMemo(
-    () => ({ images, error, addImage, removeImage, clear, restore }),
-    [images, error, addImage, removeImage, clear, restore],
+    () => ({ images, error, addImage, removeImage, clear, applyImages }),
+    [images, error, addImage, removeImage, clear, applyImages],
   )
-}
-
-/** Decode base64 (no data-URL prefix) into a Blob. Pure JS — no fetch(data:),
- *  so it works in jsdom too. */
-function base64ToBlob(data: string, mediaType: string): Blob {
-  const binary = atob(data)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-  return new Blob([bytes], { type: mediaType })
 }
 
 function getImageDimensions(url: string): Promise<{ width: number; height: number }> {
