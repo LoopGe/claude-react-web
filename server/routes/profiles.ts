@@ -5,6 +5,7 @@
 import { Hono } from 'hono'
 import { HttpError } from '../errors.js'
 import { safeJson } from './index.js'
+import { isJsonContentType } from '../request-guard.js'
 import { PROFILE_TEMPLATE_ACTIVE, PROFILE_TEMPLATE_BLANK } from '../../shared/profile-templates.js'
 import {
   config as serverConfig, DEFAULT_PROFILE, loadConfig, queueConfigWrite,
@@ -246,17 +247,26 @@ export function buildProfilesRouter(configDir?: string, sm?: SessionManager): Ho
     // input that was never tested — the same false-success
     // POST /config/test-connection rejects.
     let body: { authToken?: unknown; baseUrl?: unknown; model?: unknown } = {}
-    try {
-      const parsed: unknown = await c.req.json()
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new HttpError(400, 'Body must be a JSON object')
+    // A declared non-JSON body is refused (415) — otherwise a cross-site
+    // text/plain POST could aim the probe at an attacker baseUrl. No
+    // Content-Type keeps the "absent body = probe saved credentials" meaning.
+    // (An untyped body is never parsed, so a CT-less Blob body cannot smuggle
+    // overrides either.)
+    const ct = c.req.header('content-type')
+    if (ct && !isJsonContentType(ct)) throw new HttpError(415, 'Content-Type must be application/json')
+    if (ct) {
+      try {
+        const parsed: unknown = await c.req.json()
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new HttpError(400, 'Body must be a JSON object')
+        }
+        body = parsed as typeof body
+      } catch (err) {
+        // Absent or unparseable body has always been fine here ("probe the saved
+        // credentials"); `body` keeps its {} default. A non-object body was
+        // already reported above.
+        if (err instanceof HttpError) throw err
       }
-      body = parsed as typeof body
-    } catch (err) {
-      // Absent or unparseable body has always been fine here ("probe the saved
-      // credentials"); `body` keeps its {} default. A non-object body was
-      // already reported above.
-      if (err instanceof HttpError) throw err
     }
     if (body.authToken !== undefined && typeof body.authToken !== 'string') {
       throw new HttpError(400, 'authToken must be a string')

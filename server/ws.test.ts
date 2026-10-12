@@ -750,3 +750,112 @@ describe('WebSocket multiplexer', () => {
     await b.close()
   })
 })
+
+// --- Upgrade guard (Host / Origin) + inbound frame cap ---------------------
+
+describe('WebSocket upgrade guard', () => {
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+  let server: Server
+  let port: number
+  let shutdownWs: () => Promise<void>
+
+  beforeEach(async () => {
+    mockHandles.length = 0
+    dir = mkdtempSync(join(tmpdir(), 'claude-rw-ws-guard-'))
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    sm = new SessionManager({ store })
+    server = createServer()
+    // Listen FIRST: the guard needs the real bound port.
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve())
+    })
+    const addr = server.address()
+    port = typeof addr === 'object' && addr ? addr.port : 0
+    shutdownWs = attachWebSocket(server, sm, undefined, { bind: { host: '127.0.0.1', port } })
+  })
+
+  afterEach(async () => {
+    await shutdownWs()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await sm.shutdown()
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  })
+
+  /** Resolve 'open' (with the first frame) or the HTTP status of a refused upgrade. */
+  function attempt(origin?: string): Promise<{ status: 'open'; ws: WebSocket; first: Promise<WsServerFrame> } | { status: number }> {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/ws`, origin ? { origin } : {})
+    const first = new Promise<WsServerFrame>((resolve) => {
+      ws.once('message', (raw) => resolve(JSON.parse(raw.toString()) as WsServerFrame))
+    })
+    return new Promise((resolve, reject) => {
+      ws.once('open', () => resolve({ status: 'open', ws, first }))
+      ws.once('unexpected-response', (_req, res) => {
+        resolve({ status: res.statusCode ?? 0 })
+        ws.terminate()
+      })
+      // `on`, not `once`: terminate() during CONNECTING emits a second error.
+      ws.on('error', (err) => reject(err))
+    })
+  }
+
+  it('accepts a client with no Origin and with the bound origin', async () => {
+    for (const origin of [undefined, `http://127.0.0.1:${port}`]) {
+      const r = await attempt(origin)
+      if (r.status !== 'open') throw new Error(`expected open, got ${r.status}`)
+      expect((await r.first).kind).toBe('sessions-snapshot')
+      r.ws.close()
+    }
+  })
+
+  it('accepts the Vite dev origin (proxied WS keeps the page Origin)', async () => {
+    const r = await attempt('http://localhost:5174')
+    if (r.status !== 'open') throw new Error(`expected open, got ${r.status}`)
+    r.ws.close()
+  })
+
+  it('403s an evil Origin before the handshake', async () => {
+    const r = await attempt('https://evil.example')
+    expect(r.status).toBe(403)
+  })
+
+  it('403s a bad Host header (DNS rebinding)', async () => {
+    const { request } = await import('node:http')
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request({
+        host: '127.0.0.1',
+        port,
+        path: '/api/ws',
+        headers: {
+          Host: `evil.example:${port}`,
+          Connection: 'Upgrade',
+          Upgrade: 'websocket',
+          'Sec-WebSocket-Version': '13',
+          'Sec-WebSocket-Key': Buffer.from('0123456789abcdef').toString('base64'),
+        },
+      })
+      req.on('upgrade', () => reject(new Error('upgrade should have been refused')))
+      req.on('response', (res) => { resolve(res.statusCode ?? 0); res.resume() })
+      req.on('error', reject)
+      req.end()
+    })
+    expect(status).toBe(403)
+  })
+
+  it('closes an oversized inbound frame with 1009 while normal frames work', async () => {
+    const r = await attempt()
+    if (r.status !== 'open') throw new Error(`expected open, got ${r.status}`)
+    const frames: WsServerFrame[] = []
+    r.ws.on('message', (raw) => frames.push(JSON.parse(raw.toString()) as WsServerFrame))
+    await r.first
+    r.ws.send(JSON.stringify({ kind: 'ping' }))
+    await waitForFrame(frames, (f) => f.kind === 'pong')
+    const code = await new Promise<number>((resolve) => {
+      r.ws.once('close', (c) => resolve(c))
+      r.ws.send('x'.repeat(70 * 1024))
+    })
+    expect(code).toBe(1009)
+  })
+})

@@ -6,6 +6,7 @@
 import { Hono } from 'hono'
 import { SessionManager } from '../session-manager.js'
 import { HttpError, createErrorHandler } from '../errors.js'
+import { isJsonContentType } from '../request-guard.js'
 import type { MpStore } from '../mp-store.js'
 import type { UploadStore } from '../upload-store.js'
 import type { AgentDefinitionStore } from '../agent-definition-store.js'
@@ -32,10 +33,25 @@ import { ScheduledSendManager } from '../scheduled-send-manager.js'
 import { buildScheduledSendRouter } from './scheduled-sends.js'
 import { buildMetricsRouter } from './metrics.js'
 
+/** Minimal request surface the JSON helpers need. Hono's `c.req` satisfies it. */
+export interface JsonBodyReader {
+  json<T>(): Promise<T>
+  header(name: string): string | undefined
+}
+
 /** Parse a JSON body of ANY shape and return it as T. Malformed input is a 400
  *  rather than a silent fallback to `{}`; nothing else is validated — use
- *  safeJson when the handler needs an object. */
-export async function safeJsonValue<T>(req: { json<T>(): Promise<T> }): Promise<T> {
+ *  safeJson when the handler needs an object.
+ *
+ *  The body MUST be declared `Content-Type: application/json` (charset
+ *  optional), else 415. This is the CSRF choke point for JSON writes: a
+ *  cross-site page can only send text/plain / form bodies without a CORS
+ *  preflight, so refusing them here covers every JSON-body route at once.
+ *  Multipart upload routes never call this helper. */
+export async function safeJsonValue<T>(req: JsonBodyReader): Promise<T> {
+  if (!isJsonContentType(req.header('content-type'))) {
+    throw new HttpError(415, 'Content-Type must be application/json')
+  }
   try {
     return await req.json<T>()
   } catch {
@@ -53,8 +69,9 @@ export async function safeJsonValue<T>(req: { json<T>(): Promise<T> }): Promise<
  *  grown to 14 in 4 different spellings, one omitting the array check).
  *
  *  Use safeJsonValue for a body that may legitimately be a non-object —
- *  POST /sessions/:id/sandbox takes a literal `null` to clear the setting. */
-export async function safeJson<T>(req: { json<T>(): Promise<T> }): Promise<T> {
+ *  POST /sessions/:id/sandbox takes a literal `null` to clear the setting.
+ *  Same Content-Type rule as safeJsonValue (415 when not application/json). */
+export async function safeJson<T>(req: JsonBodyReader): Promise<T> {
   const value = await safeJsonValue<unknown>(req)
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new HttpError(400, 'Body must be a JSON object')

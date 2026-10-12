@@ -15,7 +15,8 @@
 // follows the same local-same-user trust model as the read paths.
 
 import { Hono, type Context } from 'hono'
-import { createErrorHandler } from './errors.js'
+import { HttpError, createErrorHandler } from './errors.js'
+import { safeJson } from './routes/index.js'
 import { serverDefaultCwd } from './default-cwd.js'
 import { readdir, stat, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -130,7 +131,12 @@ export function buildFsRouter(): Hono {
   // chars). Existence is pre-checked so we return 409 rather than relying
   // on EEXIST errno. Same local-same-user trust model as the read routes.
   app.post('/mkdir', async (c) => {
-    const body = await c.req.json().catch(() => null)
+    // safeJson enforces the JSON Content-Type (415). Any other parse failure
+    // keeps this route's historical 400 'parent and name are required'.
+    const body = await safeJson<{ parent?: unknown; name?: unknown }>(c.req).catch((err: unknown) => {
+      if (err instanceof HttpError && err.status === 415) throw err
+      return null
+    })
     if (!body || typeof body.parent !== 'string' || typeof body.name !== 'string') {
       return c.json({ error: 'parent and name are required' }, 400)
     }

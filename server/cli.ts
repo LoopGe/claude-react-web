@@ -240,7 +240,13 @@ async function runServer(args: CliArgs): Promise<void> {
   // returned shutdown fn closes every live socket during SIGINT.
   // @hono/node-server returns a Node http.Server (same shape), so cast
   // is safe.
-  const wsShutdown = attachWebSocket(server as unknown as Server, sessionManager, ctx.appPluginEnabled ? appPluginManager : undefined)
+  const wsShutdown = attachWebSocket(
+    server as unknown as Server,
+    sessionManager,
+    ctx.appPluginEnabled ? appPluginManager : undefined,
+    // Same bind buildApp got, so the WS upgrade enforces the same Host/Origin policy.
+    { bind: { host: args.host, port: args.port } },
+  )
 
   // Diagnostic: sample event-loop delay so a synchronous stall (which makes
   // unrelated sessions appear to hang) shows up in the logs as a max spike.

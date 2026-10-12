@@ -1,4 +1,5 @@
-// Compose the Hono app: CORS for dev, REST + WebSocket on /api, static client on /.
+// Compose the Hono app: request guard (Host/Origin, when TCP-bound), CORS for
+// dev, REST + WebSocket on /api, static client on /.
 
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
@@ -37,30 +38,14 @@ import { buildAppPluginRouter } from './app-plugins/routes.js'
 import type { AppPluginMarketplaceStore } from './app-plugins/marketplace-store.js'
 import { buildAppPluginMarketplaceRouter } from './app-plugins/marketplace-routes.js'
 import { isStreamingUploadPath } from './stream-upload.js'
+import { buildRequestGuardMiddleware, createRequestGuard, devOrigins } from './request-guard.js'
 
 const appLog = createLogger('app')
 
-/** Check if an Origin header value is a trusted address for CORS.
- *  Always allows localhost/loopback. When `allowLan` is true (server bound
- *  to a non-loopback host), also allows private/LAN IP ranges. */
-function isTrustedOrigin(origin: string, allowLan: boolean): boolean {
-  try {
-    const { hostname } = new URL(origin)
-    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1') return true
-    if (!allowLan) return false
-    // Allow private IPv4 ranges (10.x, 172.16-31.x, 192.168.x) and link-local (169.254.x).
-    const parts = hostname.split('.').map(Number)
-    if (parts.length === 4 && parts.every((n) => !Number.isNaN(n))) {
-      return parts[0] === 10
-        || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31)
-        || (parts[0] === 192 && parts[1] === 168)
-        || (parts[0] === 169 && parts[1] === 254)
-    }
-    return false
-  } catch {
-    return false
-  }
-}
+/** CORS fallback for an app with no TCP bind (desktop / tests): only the
+ *  Vite dev origins are reflected. With a bind, the request guard's exact
+ *  origin allowlist (bound origins + dev origins) is the authority. */
+const DEV_ORIGINS = new Set(devOrigins())
 
 export interface AppOptions {
   /** Directory containing the built frontend (dist/client). */
@@ -165,13 +150,26 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     return c.text('Not found', 404)
   })
 
-  const allowLan = !!opts.bind && !isLoopbackHost(opts.bind.host)
+  // Request guard (server/request-guard.ts): Host allowlist on every request
+  // (DNS rebinding) + Origin rule on writes (CSRF). Installed only when the
+  // app has a real TCP bind — the desktop host serves crw://app through
+  // in-process app.fetch with no listener. First app.use so OPTIONS
+  // preflights and static assets are Host-checked too.
+  const guard = opts.bind ? createRequestGuard({ bind: opts.bind }) : undefined
+  if (guard) app.use('*', buildRequestGuardMiddleware(guard))
+
   app.use('*', cors({
     origin: (origin) => {
       // No Origin header (same-origin, curl, non-browser clients) — allow.
       if (!origin) return '*'
-      // Reflect only trusted origins. Remote pages cannot call this API.
-      return isTrustedOrigin(origin, allowLan) ? origin : ''
+      // Reflect only the exact trusted origins (scheme + host + port).
+      // Remote pages and other local ports cannot read this API.
+      if (guard) return guard.isTrustedOrigin(origin) ? origin : ''
+      try {
+        return DEV_ORIGINS.has(new URL(origin).origin) ? origin : ''
+      } catch {
+        return ''
+      }
     },
     credentials: false,
   }))
@@ -203,7 +201,8 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
 
   // Web access gate. No-op unless auth is enabled (set by cli.ts when
   // bound to a non-loopback host or when an access token is configured).
-  // Runs after CORS + body-limit, before logging + routes + static, so an
+  // Runs after the request guard + CORS + body-limit, before logging +
+  // routes + static, so an
   // unauthenticated request never reaches the API, the WS, or the client
   // bundle.
   app.use('*', buildAuthMiddleware())

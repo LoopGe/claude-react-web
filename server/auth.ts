@@ -14,6 +14,11 @@
 // request and on the same-origin WebSocket upgrade — the client needs no
 // changes.
 //
+// Brute-force limiting: failed login attempts and failed `Authorization:
+// Bearer` attempts (HTTP and WS upgrade) are counted per TCP peer address
+// (never X-Forwarded-For — there is no trust-proxy setting). After 5
+// failures in a minute, further login / Bearer attempts get 429.
+//
 // IMPORTANT: web-auth state lives in this module's `webAuth` holder, NOT
 // in the frozen `config` object. `applyParsedConfig` rebuilds and
 // re-freezes `config` from DEFAULTS on every `PUT /api/config`, which
@@ -23,6 +28,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage } from 'node:http'
 import type { Context, MiddlewareHandler } from 'hono'
 import { getCookie, setCookie } from 'hono/cookie'
+import { isJsonContentType } from './request-guard.js'
 
 export const ACCESS_COOKIE = 'crw_token'
 
@@ -248,35 +254,69 @@ const LOGIN_PAGE_HTML = `<!doctype html>
 </body>
 </html>`
 
-// --- Rate limiting (login endpoint) ------------------------------------
+// --- Rate limiting (failed auth attempts) ------------------------------
+//
+// Keyed on the TCP peer address, never on X-Forwarded-For / X-Real-IP:
+// there is no trust-proxy setting, so those headers are attacker-chosen and
+// would let every attempt land in a fresh bucket. Only FAILURES count.
 
-const LOGIN_RATE_LIMIT = 5          // max attempts per window
-const LOGIN_RATE_WINDOW = 60_000    // 1 minute
+const AUTH_FAIL_LIMIT = 5          // max failures per window
+const AUTH_FAIL_WINDOW = 60_000    // 1 minute
 
-/** Per-IP login attempt tracker. Entries are lazily pruned on access. */
-const loginAttempts = new Map<string, { count: number; resetAt: number }>()
+/** Per-address failure tracker. Stale entries are pruned periodically. */
+const authFailures = new Map<string, { count: number; resetAt: number }>()
 
-function checkLoginRate(c: Context): boolean {
-  const ip =
-    c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ||
-    c.req.header('x-real-ip') ||
-    ''
-  if (!ip) return false // no IP → allow (local / Unix socket)
-  const now = Date.now()
-  const entry = loginAttempts.get(ip)
-  if (!entry || now > entry.resetAt) {
-    loginAttempts.set(ip, { count: 1, resetAt: now + LOGIN_RATE_WINDOW })
+/** `::ffff:1.2.3.4` and `1.2.3.4` are the same peer; a missing address
+ *  (in-process request, Unix socket) shares one `'unknown'` bucket — it is
+ *  still limited, not exempt. */
+function normalizeAddress(addr: string | undefined): string {
+  if (!addr) return 'unknown'
+  return addr.startsWith('::ffff:') ? addr.slice(7) : addr
+}
+
+/** Peer address of a Hono request served by @hono/node-server (`c.env.incoming`
+ *  is the Node IncomingMessage — the same field its getConnInfo reads).
+ *  Optional-chained because getConnInfo throws when `c.env` is absent
+ *  (desktop in-process app.fetch, app.request in tests). */
+function remoteKeyFromContext(c: Context): string {
+  const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined
+  return normalizeAddress(env?.incoming?.socket?.remoteAddress)
+}
+
+function remoteKeyFromReq(req: IncomingMessage): string {
+  return normalizeAddress(req.socket?.remoteAddress)
+}
+
+function isLimited(key: string): boolean {
+  const entry = authFailures.get(key)
+  if (!entry) return false
+  if (Date.now() > entry.resetAt) {
+    authFailures.delete(key)
     return false
   }
+  return entry.count >= AUTH_FAIL_LIMIT
+}
+
+function recordFailure(key: string): void {
+  const now = Date.now()
+  const entry = authFailures.get(key)
+  if (!entry || now > entry.resetAt) {
+    authFailures.set(key, { count: 1, resetAt: now + AUTH_FAIL_WINDOW })
+    return
+  }
   entry.count++
-  return entry.count > LOGIN_RATE_LIMIT
+}
+
+/** Test hook: clear every failure bucket. */
+export function __resetAuthRateLimitForTest(): void {
+  authFailures.clear()
 }
 
 // Prune stale entries every 5 min so the map doesn't grow unbounded.
 setInterval(() => {
   const now = Date.now()
-  for (const [ip, entry] of loginAttempts) {
-    if (now > entry.resetAt) loginAttempts.delete(ip)
+  for (const [key, entry] of authFailures) {
+    if (now > entry.resetAt) authFailures.delete(key)
   }
 }, 300_000).unref()
 
@@ -293,23 +333,40 @@ export function buildAuthMiddleware(): MiddlewareHandler {
     if (!authEnabled) return next()
 
     // --- Login endpoint (no token required) ---
+    const key = remoteKeyFromContext(c)
+
     if (c.req.method === 'POST' && c.req.path === '/api/auth/login') {
-      if (checkLoginRate(c)) {
+      if (isLimited(key)) {
         return c.json({ ok: false, error: 'Too many attempts. Try again in a minute.' }, 429)
+      }
+      // Same JSON-only rule as safeJsonValue: a cross-site text/plain POST
+      // must not reach the token check.
+      if (!isJsonContentType(c.req.header('content-type'))) {
+        return c.json({ ok: false, error: 'Content-Type must be application/json.' }, 415)
       }
       let body: { token?: string } | null = null
       try { body = await c.req.json() } catch { /* ignore */ }
       const provided = body?.token?.trim()
       if (!provided) return c.json({ ok: false, error: 'Missing token.' }, 400)
       if (!tokensMatch(provided, accessToken)) {
+        recordFailure(key)
         return c.json({ ok: false, error: 'Invalid token.' }, 401)
       }
       setCookie(c, ACCESS_COOKIE, accessToken, COOKIE_OPTS)
       return c.json({ ok: true })
     }
 
+    // Only a Bearer header is rate-limited/counted here. Cookie and ?token=
+    // failures are NOT counted: the auto-generated LAN token changes on every
+    // restart, so a phone's stale cookie fails on every asset of a page load
+    // and would 429 the user's next login.
+    const bearerToken = bearer(c.req.header('authorization'))
+    if (bearerToken && isLimited(key)) {
+      return c.json({ error: 'too many failed attempts' }, 429)
+    }
     const token = extractTokenFromHono(c)
     const ok = !!token && tokensMatch(token, accessToken)
+    if (!ok && bearerToken) recordFailure(key)
 
     if (ok) {
       // Refresh / set the cookie on every authorized request so it stays
@@ -343,11 +400,23 @@ export function buildAuthMiddleware(): MiddlewareHandler {
 
 // --- WebSocket upgrade gate ---------------------------------------------
 
-/** Authorize a raw WebSocket upgrade request. Returns true when auth is
- *  disabled or the request carries a valid token (cookie / query / bearer). */
-export function isUpgradeAuthorized(req: IncomingMessage): boolean {
+/** Authorize a raw WebSocket upgrade request. `'ok'` when auth is disabled
+ *  or the request carries a valid token (cookie / query / bearer). A Bearer
+ *  header presented while the peer is over the failure limit is
+ *  `'rate-limited'`; a failed Bearer is counted (cookie/query failures are
+ *  not — same rule as the HTTP middleware). */
+export function authorizeUpgrade(req: IncomingMessage): 'ok' | 'unauthorized' | 'rate-limited' {
   const { accessToken, authEnabled } = webAuth
-  if (!authEnabled) return true
+  if (!authEnabled) return 'ok'
+  const key = remoteKeyFromReq(req)
+  const bearerToken = bearer(
+    Array.isArray(req.headers.authorization)
+      ? req.headers.authorization[0]
+      : req.headers.authorization,
+  )
+  if (bearerToken && isLimited(key)) return 'rate-limited'
   const token = extractTokenFromReq(req)
-  return !!token && tokensMatch(token, accessToken)
+  if (!!token && tokensMatch(token, accessToken)) return 'ok'
+  if (bearerToken) recordFailure(key)
+  return 'unauthorized'
 }

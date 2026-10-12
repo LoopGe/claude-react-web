@@ -70,16 +70,50 @@ function validateEnv(value: unknown): string | null {
  *  in-app effort picker exposes. */
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 
-/** Validate the shape-sensitive fields that flow from POST /sessions into the
- *  SDK spawn (server/providers/claude/claude-provider.ts createSession copies
- *  them into sdkOptions, which the SDK forwards to the CLI subprocess). The
- *  manager historically accepted the whole body via a blind `as Options` cast,
- *  so a malformed value (e.g. `maxTurns: "abc"`) leaked into the subprocess and
- *  surfaced as a confusing spawn/runtime error. This narrows the known fields
- *  to the SDK's documented shapes; unknown fields pass through untouched for
- *  forward compatibility with newer SDK Options. */
-function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
-  const stringFields = ['cwd', 'model', 'title', 'pathToClaudeCodeExecutable', 'modelGroupId', 'profileId']
+/** Every POST /sessions body field that may reach `sm.create` — i.e. every
+ *  field the app's own client sends (NewSessionForm / NewSessionDialog,
+ *  the restart flow in App.tsx, new-like-this), or that the route itself
+ *  injects onto `rest` before narrowing (mcpServers / enabledMcpServers /
+ *  enabledPlugins). `env`, `joinGroupOf` and `evictingSource` are
+ *  destructured out by the route before narrowing and never reach here.
+ *
+ *  Anything else is DROPPED (not a 400): a stale tab or older client still
+ *  sending a removed key keeps working, while SDK Options the UI never sets
+ *  (`pathToClaudeCodeExecutable`, `executable`, `extraArgs`, `spawnClaudeCodeProcess`,
+ *  …) can no longer be injected from a request body. A NEW create-time field
+ *  must be added here or it is silently dropped — including the per-session
+ *  UI prefs, which must stay on all three carry paths (see AGENTS.md). */
+const CREATE_BODY_FIELDS = new Set([
+  'provider', 'cwd', 'model', 'modelGroupId', 'profileId', 'agent', 'title',
+  'permissionMode', 'systemPrompt',
+  'betas', 'additionalDirectories', 'effort', 'effortLevel', 'thinking',
+  'fallbackModel', 'maxTurns', 'maxBudgetUsd',
+  'tools', 'allowedTools', 'disallowedTools', 'toolAliases', 'toolConfig',
+  'includePartialMessages', 'includeHookEvents', 'settings', 'memory', 'sandbox',
+  'autoCompactWindow', 'cliDebug', 'firstPartyTools',
+  'showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups',
+  'showMessageHeaders',
+  'mcpServers', 'enabledMcpServers', 'enabledPlugins',
+])
+
+/** Whitelist + validate the fields that flow from POST /sessions into the SDK
+ *  spawn (server/providers/claude/claude-provider.ts createSession copies them
+ *  into sdkOptions, which the SDK forwards to the CLI subprocess). The manager
+ *  historically accepted the whole body via a blind `as Options` cast, so a
+ *  malformed value (e.g. `maxTurns: "abc"`) leaked into the subprocess, and any
+ *  SDK Option — including the executable path — was settable by the caller.
+ *  Only CREATE_BODY_FIELDS survive (unknown keys are dropped and reported in
+ *  `dropped`); the known fields are narrowed to the SDK's documented shapes. */
+function narrowCreateBody(body: Record<string, unknown>): { ok: true; value: Record<string, unknown>; dropped: string[] } | { ok: false; error: string } {
+  // `rest` is a fresh object holding ONLY whitelisted keys; every check below
+  // (and the sandbox normalization) operates on it, never on the caller's body.
+  const rest: Record<string, unknown> = {}
+  const dropped: string[] = []
+  for (const [key, value] of Object.entries(body)) {
+    if (CREATE_BODY_FIELDS.has(key)) rest[key] = value
+    else dropped.push(key)
+  }
+  const stringFields = ['cwd', 'model', 'title', 'modelGroupId', 'profileId', 'provider', 'fallbackModel']
   for (const name of stringFields) {
     const v = rest[name]
     if (v !== undefined && typeof v !== 'string') {
@@ -150,6 +184,23 @@ function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Rec
   if (effort !== undefined && (typeof effort !== 'string' || !EFFORT_LEVELS.has(effort))) {
     return { ok: false, error: 'effortLevel must be one of low, medium, high, xhigh, max' }
   }
+  // `effort` (SDK Options.effort) is only type-checked, not enum-checked: the
+  // New Session dialog prefills it from an agent definition, whose effort may
+  // legitimately be a numeric level (sent as its string form).
+  if (rest.effort !== undefined && rest.effort !== null && typeof rest.effort !== 'string') {
+    return { ok: false, error: 'effort must be a string' }
+  }
+  const maxBudgetUsd = rest.maxBudgetUsd
+  if (maxBudgetUsd !== undefined && (typeof maxBudgetUsd !== 'number' || !Number.isFinite(maxBudgetUsd))) {
+    return { ok: false, error: 'maxBudgetUsd must be a finite number' }
+  }
+  const acw = rest.autoCompactWindow
+  if (acw !== undefined && acw !== null && (typeof acw !== 'number' || !Number.isFinite(acw) || acw <= 0)) {
+    return { ok: false, error: 'autoCompactWindow must be a finite number > 0' }
+  }
+  if (rest.cliDebug !== undefined && typeof rest.cliDebug !== 'boolean') {
+    return { ok: false, error: 'cliDebug must be a boolean' }
+  }
   // App-level `thinking` field (SDK ThinkingConfig shape, forwarded verbatim
   // to Options.thinking at spawn). coerceThinkingSetting accepts the three
   // documented variants; anything else is a 400 instead of reaching the CLI.
@@ -217,7 +268,7 @@ function narrowCreateBody(rest: Record<string, unknown>): { ok: true; value: Rec
       return { ok: false, error: `${name} must be a boolean` }
     }
   }
-  return { ok: true, value: rest }
+  return { ok: true, value: rest, dropped }
 }
 
 export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentDefinitionStore?: AgentDefinitionStore): Hono {
@@ -293,6 +344,10 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     if (enabledPlugins !== undefined) (rest as { enabledPlugins?: string[] }).enabledPlugins = enabledPlugins
     const narrowed = narrowCreateBody(rest)
     if (!narrowed.ok) return c.json({ error: narrowed.error }, 400)
+    if (narrowed.dropped.length > 0) {
+      // Names only — values may be paths or secrets.
+      log.warn(`POST /sessions dropped unsupported fields: ${narrowed.dropped.join(', ')}`)
+    }
     // The default workspace is advertised by GET /api/config; applying it here
     // is what makes "advertised" and "actual" the same thing. Without it a
     // create that omitted cwd reached the SDK with no cwd at all, leaving the

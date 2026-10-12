@@ -6279,6 +6279,24 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(mockHandles[0].setMcpServers).not.toHaveBeenCalled()
   })
 
+  // Mass-assignment guard: SDK Options the client never sets must not ride a
+  // request body all the way into the spawned Query.
+  it('create route drops pathToClaudeCodeExecutable / executable / unknown fields before spawn', async () => {
+    const res = await post('/sessions', {
+      cwd: '/tmp',
+      pathToClaudeCodeExecutable: 'C:/evil.exe',
+      executable: 'node',
+      someFutureOption: true,
+    })
+    expect(res.status).toBe(201)
+    expect(mockHandles).toHaveLength(1)
+    const opts = mockHandles[0].options as Record<string, unknown>
+    expect(opts.pathToClaudeCodeExecutable).not.toBe('C:/evil.exe')
+    expect(opts).not.toHaveProperty('executable')
+    expect(opts).not.toHaveProperty('someFutureOption')
+    expect(opts.cwd).toBe('/tmp')
+  })
+
   // The create route shares the same validator.
   it('create route 400s when enabledMcpServers is a string', async () => {
     const res = await app().request('/sessions', {

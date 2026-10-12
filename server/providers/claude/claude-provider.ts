@@ -749,9 +749,12 @@ export class ClaudeProvider implements AgentProvider {
     profile: ProviderProfile = resolveActiveProfile(defaultConfig.profiles, defaultConfig.activeProfileId, DEFAULT_PROFILE),
   ): void {
     if (opts.includePartialMessages === undefined) opts.includePartialMessages = true
-    if (!opts.pathToClaudeCodeExecutable && this.opts.claudeBinary) {
-      opts.pathToClaudeCodeExecutable = this.opts.claudeBinary
-    }
+    // Server config is the only authority for the executable the SDK spawns
+    // (see app.ts AppOptions.defaults.claudeBinary). Never honor a value that
+    // rode in on caller options — that would be arbitrary code execution
+    // from a request body.
+    if (this.opts.claudeBinary) opts.pathToClaudeCodeExecutable = this.opts.claudeBinary
+    else delete opts.pathToClaudeCodeExecutable
     const effectiveModel = opts.model || profileDefaultModel(profile)
     if (group) {
       // Real three-tier routing: each slot maps to its own model so the CLI

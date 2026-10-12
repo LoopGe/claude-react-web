@@ -5,7 +5,7 @@ import type { SessionManager } from '../session-manager.js'
 function makeApp() {
   const sm = {
     list: vi.fn(() => []),
-    create: vi.fn(() => ({ id: 's1' })),
+    create: vi.fn((..._args: unknown[]) => ({ id: 's1' })),
     mergeMcpServersAsync: vi.fn(async () => undefined),
     setPermissionMode: vi.fn(async () => ({ id: 's1', permissionMode: 'default' })),
   }
@@ -108,8 +108,8 @@ describe('session create body validation (narrowCreateBody)', () => {
     )
   })
 
-  it('rejects non-string cwd / title / pathToClaudeCodeExecutable', async () => {
-    for (const [field, bad] of [['cwd', 42], ['title', false], ['pathToClaudeCodeExecutable', ['/x']]] as const) {
+  it('rejects non-string cwd / title', async () => {
+    for (const [field, bad] of [['cwd', 42], ['title', false]] as const) {
       const { app, sm } = makeApp()
       const res = await post(app, { [field]: bad })
       expect(res.status).toBe(400)
@@ -185,16 +185,84 @@ describe('session create body validation (narrowCreateBody)', () => {
     expect(sm.create).not.toHaveBeenCalled()
   })
 
-  it('passes unknown fields through untouched (forward compatibility)', async () => {
+  it('drops unknown fields and pathToClaudeCodeExecutable (whitelist, not pass-through)', async () => {
     const { app, sm } = makeApp()
-    const res = await post(app, { someFutureOption: true, model: 'claude-sonnet-4-6' })
+    const res = await post(app, {
+      model: 'claude-sonnet-4-6',
+      someFutureOption: true,
+      pathToClaudeCodeExecutable: 'C:/evil.exe',
+      executable: 'node',
+      extraArgs: { x: null },
+    })
     expect(res.status).toBe(201)
-    expect(sm.create).toHaveBeenCalledWith(
-      expect.objectContaining({ someFutureOption: true, model: 'claude-sonnet-4-6' }),
-      undefined,
-      undefined,
-      false,
-    )
+    const arg = sm.create.mock.calls[0]?.[0] as Record<string, unknown> | undefined
+    expect(arg).toBeDefined()
+    expect(arg).toHaveProperty('model', 'claude-sonnet-4-6')
+    for (const key of ['someFutureOption', 'pathToClaudeCodeExecutable', 'executable', 'extraArgs']) {
+      expect(arg).not.toHaveProperty(key)
+    }
+  })
+
+  it('forwards every field the real client flows send (New Session dialog, restart, new-like-this)', async () => {
+    const sm = {
+      list: vi.fn(() => []),
+      create: vi.fn((..._args: unknown[]) => ({ id: 's1' })),
+      mergeMcpServersAsync: vi.fn(async () => ({ srv: { type: 'stdio', command: 'x' } })),
+    }
+    const agentStore = { get: () => ({ enabled: true }), has: () => true }
+    const app = buildSessionRouter(sm as unknown as SessionManager, undefined, agentStore as never)
+    const full = {
+      // NewSessionDialog.submit
+      provider: 'claude',
+      cwd: '/tmp/x',
+      model: 'claude-sonnet-4-6',
+      modelGroupId: 'g1',
+      agent: 'reviewer',
+      permissionMode: 'default',
+      systemPrompt: 'be brief',
+      title: 'T',
+      betas: ['context-1m-2025-08-07'],
+      effort: 'high',
+      thinking: { type: 'enabled', budgetTokens: 1000 },
+      additionalDirectories: ['/a'],
+      fallbackModel: 'claude-haiku-4-5',
+      maxTurns: 5,
+      maxBudgetUsd: 1.5,
+      allowedTools: ['Read'],
+      disallowedTools: ['Bash'],
+      tools: ['Read', 'Edit'],
+      enabledMcpServers: ['srv'],
+      enabledPlugins: ['p@m'],
+      firstPartyTools: { 'git-tools': false },
+      mcpServers: { inline: { type: 'stdio', command: 'y' } },
+      // restart flow (App.tsx handleRestart) — the five UI prefs
+      showPinnedUserMessage: false,
+      autoRecap: false,
+      toolGroupCards: false,
+      autoExpandRunningGroups: false,
+      showMessageHeaders: false,
+      // other whitelisted create-time fields
+      profileId: 'default',
+      effortLevel: 'medium',
+      memory: { autoMemoryEnabled: true },
+      settings: { model: 'x' },
+      includePartialMessages: true,
+      includeHookEvents: false,
+      autoCompactWindow: 100000,
+      cliDebug: true,
+    }
+    const res = await app.request('/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...full, joinGroupOf: 'old', evictingSource: true }),
+    })
+    expect(res.status).toBe(201)
+    const arg = sm.create.mock.calls[0]?.[0] as Record<string, unknown> | undefined
+    const { mcpServers: _inline, ...expected } = full
+    // mcpServers is replaced by the merged map the route resolves.
+    expect(arg).toMatchObject({ ...expected, mcpServers: { srv: { type: 'stdio', command: 'x' } } })
+    expect(sm.create.mock.calls[0]?.[2]).toBe('old')
+    expect(sm.create.mock.calls[0]?.[3]).toBe(true)
   })
 
   it('rejects a non-boolean firstPartyTools value', async () => {

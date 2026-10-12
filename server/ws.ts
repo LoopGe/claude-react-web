@@ -4,7 +4,9 @@
 // replay, subscribe/unsubscribe, teardown) lives in server/frame-bridge.ts.
 // This file owns only what is socket-specific:
 //   - attaching a `WebSocketServer` to the shared Node http.Server
-//   - the /api/ws upgrade + auth gate
+//   - the /api/ws upgrade gates: Host/Origin (request-guard, when bound),
+//     then auth (with Bearer-failure rate limiting)
+//   - the inbound frame size cap (WS_MAX_INBOUND_BYTES)
 //   - parsing inbound frames to strings and feeding SessionConnection
 //   - a WsFrameSink (server/ws-sink.ts) for outbound frames
 //   - tracking live sockets so shutdown() can close them
@@ -15,7 +17,8 @@
 import type { IncomingMessage, Server as HttpServer } from 'node:http'
 import type { Socket } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
-import { isUpgradeAuthorized } from './auth.js'
+import { authorizeUpgrade } from './auth.js'
+import { checkUpgradeRequest, createRequestGuard, type BindAddress } from './request-guard.js'
 import { SessionConnection } from './frame-bridge.js'
 import { WsFrameSink } from './ws-sink.js'
 import type { SessionBroadcaster } from './session-types.js'
@@ -25,6 +28,12 @@ import { metrics } from './metrics.js'
 import { WS_PATH } from './ws-protocol.js'
 
 const log = createLogger('ws')
+
+/** Inbound frame cap. The only client → server frames are
+ *  `subscribe | unsubscribe | ping` (shared/ws-protocol.ts WsClientFrame):
+ *  a session id, an optional uuid, a mode literal and a boolean — well under
+ *  1 KiB. Anything larger is closed with 1009 before it is buffered. */
+export const WS_MAX_INBOUND_BYTES = 64 * 1024
 
 /** Attach a WebSocket endpoint to an existing Node HTTP server. Returns
  *  a `shutdown()` function that closes every live socket — callers pass
@@ -37,11 +46,15 @@ export function attachWebSocket(
   httpServer: HttpServer,
   sm: SessionBroadcaster,
   appPlugins?: AppPluginBroadcaster,
+  opts?: { bind?: BindAddress },
 ): () => Promise<void> {
+  // Same Host/Origin policy as the HTTP middleware (server/request-guard.ts).
+  // Only with a real bind, mirroring buildApp.
+  const guard = opts?.bind ? createRequestGuard({ bind: opts.bind }) : undefined
   // `noServer: true` means the WSS doesn't listen on its own port; it
   // only handles connections handed to it via `handleUpgrade()`. That's
   // how we share a port with Hono.
-  const wss = new WebSocketServer({ noServer: true, path: WS_PATH })
+  const wss = new WebSocketServer({ noServer: true, path: WS_PATH, maxPayload: WS_MAX_INBOUND_BYTES })
 
   // All live sockets, so shutdown() can close them. A Set is enough —
   // per-connection state lives in the SessionConnection closures.
@@ -52,11 +65,28 @@ export function attachWebSocket(
     // different prefix, if reverse-proxied) can continue.
     const url = req.url ?? ''
     if (!url.startsWith(WS_PATH)) return
+    // Host + Origin gate (DNS rebinding / cross-site WS hijack). WS upgrades
+    // are not covered by CORS, so a foreign page could otherwise open one.
+    if (guard) {
+      const check = checkUpgradeRequest(guard, req)
+      if (!check.ok) {
+        log.warn(`rejected upgrade: ${check.reason} not allowed (host=${JSON.stringify(req.headers.host ?? '')} origin=${JSON.stringify(req.headers.origin ?? '')})`)
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+        socket.destroy()
+        return
+      }
+    }
     // Web access gate: reject the upgrade before the handshake when the
     // request lacks a valid token. The browser WS carries the crw_token
     // cookie automatically (same-origin), so an authenticated page just
     // works; a direct connection without the token is refused.
-    if (!isUpgradeAuthorized(req)) {
+    const auth = authorizeUpgrade(req)
+    if (auth === 'rate-limited') {
+      socket.write('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+      socket.destroy()
+      return
+    }
+    if (auth === 'unauthorized') {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
       socket.destroy()
       return

@@ -4,15 +4,16 @@
 // TypeError → opaque 500 from the first handler that read `body.field`.
 
 import { describe, expect, it } from 'vitest'
-import { safeJson, safeJsonValue } from './index.js'
+import { safeJson, safeJsonValue, type JsonBodyReader } from './index.js'
 
 /** The shape safeJson takes: a request whose `.json()` casts to T without
  *  checking anything — which is exactly the gap under test. */
-type BodyReader = { json<T>(): Promise<T> }
+type BodyReader = JsonBodyReader
 
 /** Stand-in for Hono's request that parses a fixed value. */
-const body = (value: unknown): BodyReader => ({
+const body = (value: unknown, contentType: string | null = 'application/json'): BodyReader => ({
   json<T>(): Promise<T> { return Promise.resolve(value as T) },
+  header: (name: string) => (name.toLowerCase() === 'content-type' ? contentType ?? undefined : undefined),
 })
 
 /** Stand-in for a request whose body is not valid JSON at all. */
@@ -20,6 +21,7 @@ const malformed: BodyReader = {
   json<T>(): Promise<T> {
     return Promise.reject(new SyntaxError('Unexpected end of JSON input'))
   },
+  header: () => 'application/json',
 }
 
 describe('safeJson — requires an object body', () => {
@@ -70,5 +72,23 @@ describe('safeJsonValue — accepts any JSON body', () => {
       status: 400,
       message: 'Malformed JSON body',
     })
+  })
+})
+
+describe('JSON Content-Type requirement (CSRF choke point)', () => {
+  it('415s on a missing Content-Type (not 400)', async () => {
+    await expect(safeJson(body({ a: 1 }, null))).rejects.toMatchObject({ status: 415 })
+    await expect(safeJsonValue(body({ a: 1 }, null))).rejects.toMatchObject({ status: 415 })
+  })
+
+  it('415s on text/plain even when the body is valid JSON', async () => {
+    await expect(safeJson(body({ a: 1 }, 'text/plain;charset=UTF-8'))).rejects.toMatchObject({
+      status: 415,
+      message: 'Content-Type must be application/json',
+    })
+  })
+
+  it('accepts application/json with a charset parameter', async () => {
+    expect(await safeJson(body({ a: 1 }, 'application/json; charset=utf-8'))).toEqual({ a: 1 })
   })
 })
