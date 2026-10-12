@@ -40,7 +40,7 @@ There is no idle GC: a session stays loaded until it is deleted, slept, or clear
 
 ### WebSocket + REST wire protocol
 
-The server uses a single WebSocket connection per browser tab (`server/ws.ts` + `server/ws-protocol.ts`) that multiplexes all channels. The client connects via `useWsHub` (`src/hooks/useWsHub.ts`) which provides exponential backoff, ping heartbeat, and ref-counted subscriptions.
+The server uses a single WebSocket connection per browser tab (`server/ws.ts` + `server/ws-protocol.ts`) that multiplexes all channels. The client connects via `useWsHub` (`src/hooks/useWsHub.ts`) which provides exponential backoff, ping heartbeat, and ref-counted subscriptions. On the server, `server/frame-bridge.ts` drives each per-session channel (message, permission, elicitation, dialog and every side channel) with its own pull loop into the connection's sink — no `Promise.race` over long-pending `next()` promises, which leaked one reaction per frame on every idle channel — and the message channel's end (e.g. queue overflow) or any loop throwing tears the whole session channel down with one `subscribe-result { ok: false, reason: 'closed' }`; a side channel ending on its own stops only its loop.
 
 **WebSocket frame kinds** (server → client):
 - `sessions-snapshot` / `session-created` / `session-update` / `session-removed` — global session list mutations

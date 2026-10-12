@@ -70,6 +70,76 @@ function chan<T>(): Chan<T> {
   }
 }
 
+/** A test-controlled per-session side channel (handed out by
+ *  FakeBroadcaster.subscribeSessionCleared / subscribeCommandChanges) that
+ *  counts how the bridge drives it: `next()` pulls, `return()` calls and
+ *  `unsubscribe()` calls. */
+interface CountedSub<T> {
+  sub: { iterable: AsyncIterable<T>; unsubscribe: () => void }
+  nextCalls: number
+  returnCalls: number
+  unsubscribes: number
+}
+
+/** Wrap a live chan so the bridge's pulls / teardown on it are counted. */
+function countedSub<T>(c: Chan<T>): CountedSub<T> {
+  const state: CountedSub<T> = {
+    nextCalls: 0,
+    returnCalls: 0,
+    unsubscribes: 0,
+    sub: {
+      iterable: {
+        [Symbol.asyncIterator]() {
+          const inner = c.iterable[Symbol.asyncIterator]()
+          return {
+            next() { state.nextCalls++; return inner.next() },
+            return() { state.returnCalls++; return inner.return!() },
+          }
+        },
+      },
+      unsubscribe: () => { state.unsubscribes++ },
+    },
+  }
+  return state
+}
+
+/** An idle side channel whose `next()` hands back ONE never-settling native
+ *  promise with an instrumented own `then`. `await` on a native promise
+ *  never looks `then` up (PromiseResolve returns it as-is), while
+ *  `Promise.race` invokes `then` on every input on every call — so
+ *  `thenCalls` counts the reactions anything other than one awaiting loop
+ *  attaches to the idle channel's pending pull. */
+function idleSub(): CountedSub<never> & { thenCalls: number } {
+  const pending = new Promise<IteratorResult<never>>(() => { /* never settles */ })
+  const origThen = pending.then.bind(pending)
+  const state: CountedSub<never> & { thenCalls: number } = {
+    thenCalls: 0,
+    nextCalls: 0,
+    returnCalls: 0,
+    unsubscribes: 0,
+    sub: {
+      iterable: {
+        [Symbol.asyncIterator]() {
+          return {
+            next() { state.nextCalls++; return pending },
+            return() {
+              state.returnCalls++
+              return Promise.resolve({ value: undefined as never, done: true as const })
+            },
+          }
+        },
+      },
+      unsubscribe: () => { state.unsubscribes++ },
+    },
+  }
+  Object.defineProperty(pending, 'then', {
+    configurable: true,
+    writable: true,
+    value: (...args: Parameters<typeof origThen>) => { state.thenCalls++; return origThen(...args) },
+  })
+  return state
+}
+
 /** In-memory FrameSink: records frames, counts the shared-JSON hot path,
  *  and mirrors close() so the bridge's teardown is observable. Also records
  *  the burst token each frame was tagged with (index-aligned with `frames`)
@@ -124,6 +194,8 @@ interface FakeSession {
   perms: Chan<PermissionEvent>
   elicits: Chan<ElicitationEvent>
   dialogs: Chan<DialogEvent>
+  /** unsubscribe() calls per core channel, so teardown is observable. */
+  unsubs: { msg: number; perm: number; elicit: number; dialog: number }
 }
 
 /** Hand-rolled SessionBroadcaster. Only the channels the bridge actually
@@ -157,6 +229,7 @@ class FakeBroadcaster implements SessionBroadcaster {
       perms: chan<PermissionEvent>(),
       elicits: chan<ElicitationEvent>(),
       dialogs: chan<DialogEvent>(),
+      unsubs: { msg: 0, perm: 0, elicit: 0, dialog: 0 },
     }
     this.sessions.set(id, s)
     return s
@@ -206,22 +279,22 @@ class FakeBroadcaster implements SessionBroadcaster {
   subscribe(sessionId: string) {
     const s = this.require(sessionId)
     if (!s.running) throw new Error(`session ${sessionId} not found`)
-    return { iterable: s.messages.iterable, history: s.history, unsubscribe: () => s.messages.end() }
+    return { iterable: s.messages.iterable, history: s.history, unsubscribe: () => { s.unsubs.msg++; s.messages.end() } }
   }
 
   subscribePermissions(sessionId: string) {
     const s = this.require(sessionId)
-    return { iterable: s.perms.iterable, snapshot: [] as PermissionRequestSnapshot[], unsubscribe: () => s.perms.end() }
+    return { iterable: s.perms.iterable, snapshot: [] as PermissionRequestSnapshot[], unsubscribe: () => { s.unsubs.perm++; s.perms.end() } }
   }
 
   subscribeElicitation(sessionId: string) {
     const s = this.require(sessionId)
-    return { iterable: s.elicits.iterable, snapshot: [] as ElicitationRequestUi[], unsubscribe: () => s.elicits.end() }
+    return { iterable: s.elicits.iterable, snapshot: [] as ElicitationRequestUi[], unsubscribe: () => { s.unsubs.elicit++; s.elicits.end() } }
   }
 
   subscribeDialog(sessionId: string) {
     const s = this.require(sessionId)
-    return { iterable: s.dialogs.iterable, snapshot: [] as UserDialogRequestUi[], unsubscribe: () => s.dialogs.end() }
+    return { iterable: s.dialogs.iterable, snapshot: [] as UserDialogRequestUi[], unsubscribe: () => { s.unsubs.dialog++; s.dialogs.end() } }
   }
 
   listPending() { return [] }
@@ -241,12 +314,18 @@ class FakeBroadcaster implements SessionBroadcaster {
   subscribePromptSuggestion() { return null }
   subscribeTasks() { return null }
   subscribeGitStatus() { return null }
-  subscribeTaskList() { return null }
+  /** When non-null, handed out as the session's tasklist channel. */
+  tasklistSub: CountedSub<never> | null = null
+  subscribeTaskList() { return this.tasklistSub?.sub ?? null }
   subscribeMessageStatus() { return null }
-  subscribeCommandChanges() { return null }
+  /** When non-null, handed out as the session's command-changes channel. */
+  cmdSub: CountedSub<unknown> | null = null
+  subscribeCommandChanges() { return this.cmdSub?.sub ?? null }
   subscribeHookRuns() { return null }
   subscribeSessionRecap() { return null }
-  subscribeSessionCleared() { return null }
+  /** When non-null, handed out as the session's session-cleared channel. */
+  clearedSub: CountedSub<unknown> | null = null
+  subscribeSessionCleared() { return this.clearedSub?.sub ?? null }
   broadcastGitStatusChanged() { /* noop */ }
   broadcastTaskListChanged() { /* noop */ }
   gitGroupKeyOf() { return null }
@@ -513,6 +592,243 @@ describe('SessionConnection (in-memory sink)', () => {
     // Second close is a no-op — no double unsubscribe.
     conn.close()
     expect(sm.globalUnsubs).toBe(1)
+  })
+})
+
+describe('per-session channel drivers', () => {
+  /** Wait until `pred()` holds, failing after `timeoutMs`. */
+  async function until(pred: () => boolean, what: string, timeoutMs = 5000): Promise<void> {
+    const start = Date.now()
+    while (!pred()) {
+      if (Date.now() - start > timeoutMs) throw new Error(`timed out waiting for ${what}`)
+      await tick()
+    }
+  }
+
+  it('does not accumulate reactions on an idle channel across 10_000 message frames', async () => {
+    const N = 10_000
+    const sm = new FakeBroadcaster()
+    const sess = sm.addSession('s1', { running: true })
+    const idle = idleSub()
+    sm.cmdSub = idle
+    sm.clearedSub = countedSub(chan<unknown>())
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    // Count `then` calls per receiver promise. A Promise.race over the
+    // channels' pending pulls calls `then` on each idle pull once per
+    // iteration (one reaction retained per message frame); an awaiting loop
+    // never calls it. Restored in `finally` so nothing outside this test sees
+    // the patch.
+    const perReceiver = new WeakMap<object, number>()
+    let maxPerReceiver = 0
+    const origThen = Promise.prototype.then
+    Promise.prototype.then = function patchedThen(this: Promise<unknown>, ...args: unknown[]) {
+      const n = (perReceiver.get(this) ?? 0) + 1
+      perReceiver.set(this, n)
+      if (n > maxPerReceiver) maxPerReceiver = n
+      return (origThen as (...a: unknown[]) => Promise<unknown>).apply(this, args)
+    } as typeof Promise.prototype.then
+    try {
+      send(conn, { kind: 'subscribe', sessionId: 's1' })
+      await tick()
+      for (let i = 0; i < N; i++) sess.messages.push(assistant(`m${i}`, `u${i}`))
+      await until(() => sink.kinds('message').length >= N, `${N} message frames`)
+    } finally {
+      Promise.prototype.then = origThen
+    }
+
+    expect(sink.kinds('message')).toHaveLength(N)
+    expect(idle.nextCalls).toBe(1)
+    expect(idle.thenCalls).toBeLessThanOrEqual(2)
+    // Old Promise.race driver: ~N here (every idle channel's pull promise is
+    // raced once per message frame).
+    expect(maxPerReceiver).toBeLessThanOrEqual(2)
+    conn.close()
+  })
+
+  it('keeps per-channel order when message and permission pushes interleave', async () => {
+    const sm = new FakeBroadcaster()
+    const sess = sm.addSession('s1', { running: true })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+
+    for (let i = 0; i < 20; i++) {
+      sess.messages.push(assistant(`m${i}`, `u${i}`))
+      sess.perms.push({ kind: 'resolved', pid: `p${i}`, decision: { behavior: 'allow' } } as unknown as PermissionEvent)
+      if (i % 3 === 0) await tick()
+    }
+    await until(
+      () => sink.kinds('message').length === 20 && sink.kinds('permission-resolved').length === 20,
+      'all interleaved frames',
+    )
+
+    expect(sink.kinds('message').map((f) => (f as { message: { uuid?: string } }).message.uuid))
+      .toEqual(Array.from({ length: 20 }, (_, i) => `u${i}`))
+    expect(sink.kinds('permission-resolved').map((f) => (f as { id: string }).id))
+      .toEqual(Array.from({ length: 20 }, (_, i) => `p${i}`))
+    conn.close()
+  })
+
+  /** Subscribe s1 with one live + two idle side channels (cmd, tasklist)
+   *  wired. */
+  async function subscribeWithSideChannels() {
+    const sm = new FakeBroadcaster()
+    const sess = sm.addSession('s1', { running: true })
+    const clearedChan = chan<unknown>()
+    const cleared = countedSub(clearedChan)
+    const idle = idleSub()
+    const tasklist = idleSub()
+    sm.clearedSub = cleared
+    sm.cmdSub = idle
+    sm.tasklistSub = tasklist
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    // Every side loop is parked on its first pull.
+    expect(cleared.nextCalls).toBe(1)
+    expect(idle.nextCalls).toBe(1)
+    expect(tasklist.nextCalls).toBe(1)
+    return { sm, sess, clearedChan, cleared, idle, tasklist, sink, conn }
+  }
+
+  function expectFullyTornDown(
+    sess: FakeSession,
+    cleared: CountedSub<unknown>,
+    idle: CountedSub<never>,
+    tasklist: CountedSub<never>,
+  ): void {
+    expect(sess.unsubs).toEqual({ msg: 1, perm: 1, elicit: 1, dialog: 1 })
+    expect(cleared.unsubscribes).toBe(1)
+    expect(idle.unsubscribes).toBe(1)
+    expect(tasklist.unsubscribes).toBe(1)
+    expect(cleared.returnCalls).toBe(1)
+    expect(idle.returnCalls).toBe(1)
+    expect(tasklist.returnCalls).toBe(1)
+  }
+
+  it('client unsubscribe tears every channel down, emits nothing afterwards, and sends no closed ack', async () => {
+    const { sess, clearedChan, cleared, idle, tasklist, sink, conn } = await subscribeWithSideChannels()
+    sink.reset()
+
+    send(conn, { kind: 'unsubscribe', sessionId: 's1' })
+    await tick()
+    expectFullyTornDown(sess, cleared, idle, tasklist)
+
+    sess.messages.push(assistant('after', 'u-after'))
+    sess.perms.push({ kind: 'resolved', pid: 'p-after', decision: { behavior: 'allow' } } as unknown as PermissionEvent)
+    // Wakes the cleared loop's parked pull: it must see the stop and exit.
+    clearedChan.push({})
+    for (let i = 0; i < 5; i++) await tick()
+
+    expect(sink.frames).toEqual([])
+    // The woken loop exited instead of pulling again.
+    expect(cleared.nextCalls).toBe(1)
+  })
+
+  it('conn.close() tears every channel down and emits nothing afterwards', async () => {
+    const { sess, clearedChan, cleared, idle, tasklist, sink, conn } = await subscribeWithSideChannels()
+    sink.reset()
+
+    conn.close()
+    await tick()
+    expectFullyTornDown(sess, cleared, idle, tasklist)
+
+    clearedChan.push({})
+    for (let i = 0; i < 5; i++) await tick()
+    expect(sink.frames).toEqual([])
+    expect(cleared.nextCalls).toBe(1)
+  })
+
+  it('a side channel ending on its own leaves the session channel live', async () => {
+    const { sess, clearedChan, cleared, sink } = await subscribeWithSideChannels()
+    sink.reset()
+
+    clearedChan.end()
+    for (let i = 0; i < 3; i++) await tick()
+    expect(cleared.unsubscribes).toBe(0)
+    expect(sess.unsubs.msg).toBe(0)
+
+    sess.messages.push(assistant('still-live', 'u-live'))
+    await waitForFrame(sink, (f) => f.kind === 'message')
+    expect(sink.kinds('subscribe-result')).toHaveLength(0)
+  })
+
+  it('the message channel ending tears everything down with exactly one closed ack', async () => {
+    const { sess, cleared, idle, tasklist, sink } = await subscribeWithSideChannels()
+    sink.reset()
+
+    // The overflow path: async-subscription ends the subscriber's queue.
+    sess.messages.end()
+    await until(() => sink.kinds('subscribe-result').length > 0, 'closed ack')
+    for (let i = 0; i < 5; i++) await tick()
+
+    expectFullyTornDown(sess, cleared, idle, tasklist)
+    expect(sink.kinds('subscribe-result')).toEqual([
+      { kind: 'subscribe-result', sessionId: 's1', ok: false, reason: 'closed' },
+    ])
+  })
+
+  it('a throwing side channel sends one subscription error and tears the session down', async () => {
+    const sm = new FakeBroadcaster()
+    const sess = sm.addSession('s1', { running: true })
+    let fail: (err: Error) => void = () => {}
+    sm.cmdSub = {
+      nextCalls: 0,
+      returnCalls: 0,
+      unsubscribes: 0,
+      sub: {
+        iterable: {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => new Promise<IteratorResult<unknown>>((_, reject) => { fail = reject }),
+              return: () => Promise.resolve({ value: undefined, done: true as const }),
+            }
+          },
+        },
+        unsubscribe: () => {},
+      },
+    }
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    sink.reset()
+
+    fail(new Error('boom'))
+    await until(() => sink.kinds('subscribe-result').length > 0, 'closed ack')
+    for (let i = 0; i < 3; i++) await tick()
+
+    expect(sink.kinds('error')).toEqual([{ kind: 'error', sessionId: 's1', message: 'subscription: boom' }])
+    expect(sink.kinds('subscribe-result')).toEqual([
+      { kind: 'subscribe-result', sessionId: 's1', ok: false, reason: 'closed' },
+    ])
+    expect(sess.unsubs).toEqual({ msg: 1, perm: 1, elicit: 1, dialog: 1 })
+  })
+
+  it('a subscribe that fails after the tasklist channel is wired unsubscribes it', async () => {
+    const sm = new FakeBroadcaster()
+    const sess = sm.addSession('s1', { running: true })
+    const tasklist = idleSub()
+    sm.tasklistSub = tasklist
+    // Throws after every channel (tasklist last) has been subscribed, but
+    // before the loops start.
+    sm.ensureContextUsageSeed = () => { throw new Error('seed boom') }
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+
+    expect(tasklist.unsubscribes).toBe(1)
+    expect(tasklist.nextCalls).toBe(0)
+    expect(sess.unsubs).toEqual({ msg: 1, perm: 1, elicit: 1, dialog: 1 })
+    expect(sink.kinds('error')).toEqual([{ kind: 'error', sessionId: 's1', message: 'seed boom' }])
+    expect(sink.kinds('subscribe-result')).toEqual([
+      { kind: 'subscribe-result', sessionId: 's1', ok: false, reason: 'refused' },
+    ])
   })
 })
 

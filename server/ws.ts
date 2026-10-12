@@ -11,7 +11,6 @@
 //   - a WsFrameSink (server/ws-sink.ts) for outbound frames
 //   - tracking live sockets so shutdown() can close them
 //
-// The existing SSE routes in server/routes.ts are preserved as a fallback.
 // This file is additive: it leaves all REST routes untouched.
 
 import type { IncomingMessage, Server as HttpServer } from 'node:http'

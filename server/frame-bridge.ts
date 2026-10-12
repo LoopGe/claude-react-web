@@ -711,10 +711,15 @@ export class SessionConnection {
         this.sink.send({ kind: 'hook-run', sessionId, event: hookSnapshotEvent(run as HookRunRecord) as never })
       }
 
-      // 2) Drive the live iterables concurrently. Same Promise.race
-      //    pattern as the SSE route — each iterator tagged so the loop
-      //    knows which frame to emit.
+      // 2) Drive the live iterables: one independent pull loop per channel,
+      //    all writing into this connection's sink. A single race (the old
+      //    driver) over every channel's pending next() re-attached a reaction to
+      //    each idle channel's long-pending promise once per frame (an
+      //    unbounded leak on a busy session); a loop that awaits its own
+      //    pull attaches exactly one. Each loop emits synchronously after
+      //    its own await, so per-channel order is preserved.
       let stopped = false
+      const isStopped = () => stopped
       const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter, hookIter, psugIter, taskIter, tasklistIter]
         .filter((it): it is AsyncIterator<unknown> => !!it)
       const stop = () => {
@@ -724,213 +729,156 @@ export class SessionConnection {
         for (const iter of _iterCleanup) void iter.return?.()
       }
 
-      void (async () => {
-        const msgIter = msg.iterable[Symbol.asyncIterator]()
-        const permIter = perms.iterable[Symbol.asyncIterator]()
-        const elicitIter = elicits.iterable[Symbol.asyncIterator]()
-        const dialogIter = dialogs.iterable[Symbol.asyncIterator]()
-
-        type Tagged =
-          | { kind: 'msg'; result: IteratorResult<unknown> }
-          | { kind: 'perm'; result: IteratorResult<unknown> }
-          | { kind: 'elicit'; result: IteratorResult<unknown> }
-          | { kind: 'dialog'; result: IteratorResult<unknown> }
-          | { kind: 'ctx'; result: IteratorResult<unknown> }
-          | { kind: 'git'; result: IteratorResult<unknown> }
-          | { kind: 'msgstat'; result: IteratorResult<unknown> }
-          | { kind: 'recap'; result: IteratorResult<unknown> }
-          | { kind: 'cleared'; result: IteratorResult<unknown> }
-          | { kind: 'cmd'; result: IteratorResult<unknown> }
-          | { kind: 'hook'; result: IteratorResult<unknown> }
-          | { kind: 'psug'; result: IteratorResult<unknown> }
-          | { kind: 'task'; result: IteratorResult<unknown> }
-          | { kind: 'tasklist'; result: IteratorResult<unknown> }
-
-        const tag = async (kind: Tagged['kind'], it: AsyncIterator<unknown>): Promise<Tagged> =>
-          ({ kind, result: await it.next() })
-
-        interface Channel {
-          kind: Tagged['kind']
-          iter: AsyncIterator<unknown>
-          promise: Promise<Tagged> | null
+      // Session-channel teardown. Runs once: when the MESSAGE loop ends
+      // (done or throw) or when any loop throws.
+      let finished = false
+      const finish = () => {
+        if (finished) return
+        finished = true
+        stop()
+        // Natural teardown (e.g. the session was unloaded / went
+        // dormant, or the message channel ended from queue overflow):
+        // the subscriber queues ended and this channel is done, but the
+        // `subs` entry set below is still present. Leaving it means the
+        // NEXT subscribe to this session is swallowed by the subs.has()
+        // idempotency guard and never re-wires a fresh channel — so a
+        // resume after dormancy keeps no live stream (and no replay) on
+        // this connection. Delete the entry only if it is still OUR
+        // cleanup (a newer subscribe that re-wired the channel replaced
+        // it — that channel must survive).
+        const entry = this.subs.get(sessionId)
+        if (entry?.cleanup === stop) {
+          this.subs.delete(sessionId)
+          // Tell the client this connection's channel is gone: nothing
+          // else on the per-connection wire says so (the global
+          // session-update / session-removed frames are broadcast to
+          // every tab and some teardowns send neither).
+          //
+          // A client-initiated `unsubscribe` never reaches here:
+          // stopSession removes the entry before tearing the driver down,
+          // so `entry` is undefined (a channel the client closed itself
+          // needs no announcement).
+          this.ackSubscribe(sessionId, false, 'closed')
         }
-
-        const channels: Channel[] = [
-          { kind: 'msg', iter: msgIter, promise: tag('msg', msgIter) },
-          { kind: 'perm', iter: permIter, promise: tag('perm', permIter) },
-          { kind: 'elicit', iter: elicitIter, promise: tag('elicit', elicitIter) },
-          { kind: 'dialog', iter: dialogIter, promise: tag('dialog', dialogIter) },
-          ...(ctxIter ? [{ kind: 'ctx' as const, iter: ctxIter, promise: tag('ctx', ctxIter) }] : []),
-          ...(gitIter ? [{ kind: 'git' as const, iter: gitIter, promise: tag('git', gitIter) }] : []),
-          ...(msgStatIter ? [{ kind: 'msgstat' as const, iter: msgStatIter, promise: tag('msgstat', msgStatIter) }] : []),
-          ...(recapIter ? [{ kind: 'recap' as const, iter: recapIter, promise: tag('recap', recapIter) }] : []),
-          ...(clearedIter ? [{ kind: 'cleared' as const, iter: clearedIter, promise: tag('cleared', clearedIter) }] : []),
-          ...(cmdIter ? [{ kind: 'cmd' as const, iter: cmdIter, promise: tag('cmd', cmdIter) }] : []),
-          ...(hookIter ? [{ kind: 'hook' as const, iter: hookIter, promise: tag('hook', hookIter) }] : []),
-          ...(psugIter ? [{ kind: 'psug' as const, iter: psugIter, promise: tag('psug', psugIter) }] : []),
-          ...(taskIter ? [{ kind: 'task' as const, iter: taskIter, promise: tag('task', taskIter) }] : []),
-          ...(tasklistIter ? [{ kind: 'tasklist' as const, iter: tasklistIter, promise: tag('tasklist', tasklistIter) }] : []),
-        ]
-
-        try {
-          while (!stopped && channels.some((c) => c.promise)) {
-            const winner = await Promise.race(
-              channels.filter((c): c is Channel & { promise: Promise<Tagged> } => c.promise != null)
-                .map((c) => c.promise),
-            )
-            const ch = channels.find((c) => c.kind === winner.kind)!
-            if (winner.result.done) {
-              ch.promise = null
-              // When the primary message channel ends (e.g. subscriber
-              // queue overflow → end()), stop the entire session driver
-              // so the write loop drains and closes — the client
-              // detects the close and reconnects with a fresh replay.
-              if (ch.kind === 'msg') stop()
-              continue
-            }
-            // Dispatch per channel kind. Each branch maps the channel's value
-            // to one or more frames; the retag happens once at the bottom.
-            switch (winner.kind) {
-              case 'msg':
-                            // The same message object reference is delivered to every
-                // connection subscribed to this session, so serialize the
-                // frame once and reuse across all of them (see
-                // messageFrameJson). Falls back to send() if the value
-                // isn't an object (defensive — it always is in practice).
-                this.sink.sendRaw(
-                  typeof winner.result.value === 'object' && winner.result.value !== null
-                    ? messageFrameJson(sessionId, winner.result.value as object)
-                    : JSON.stringify({ kind: 'message', sessionId, message: winner.result.value as never }),
-                  'message',
-                )
-                break
-              case 'perm': {
-                const ev = winner.result.value as
-                  | { kind: 'request'; payload: never }
-                  | { kind: 'resolved'; pid: string; decision: never }
-                if (ev.kind === 'request')
-                  this.sink.send({ kind: 'permission-request', sessionId, payload: ev.payload })
-                else
-                  this.sink.send({ kind: 'permission-resolved', sessionId, id: ev.pid, decision: ev.decision })
-                break
-              }
-              case 'elicit': {
-                const ev = winner.result.value as
-                  | { kind: 'request'; payload: never }
-                  | { kind: 'resolved'; eid: string; decision: never }
-                if (ev.kind === 'request')
-                  this.sink.send({ kind: 'elicitation-request', sessionId, payload: ev.payload })
-                else
-                  this.sink.send({ kind: 'elicitation-resolved', sessionId, id: ev.eid, decision: ev.decision })
-                break
-              }
-              case 'dialog': {
-                const ev = winner.result.value as
-                  | { kind: 'request'; payload: never }
-                  | { kind: 'resolved'; did: string; decision: never; retractedMessageUuids?: string[] }
-                if (ev.kind === 'request')
-                  this.sink.send({ kind: 'dialog-request', sessionId, payload: ev.payload })
-                else
-                  this.sink.send({
-                    kind: 'dialog-resolved',
-                    sessionId,
-                    id: ev.did,
-                    decision: ev.decision,
-                    ...(ev.retractedMessageUuids ? { retractedMessageUuids: ev.retractedMessageUuids } : {}),
-                  })
-                break
-              }
-              case 'ctx':
-                this.sink.send({ kind: 'context-usage', sessionId, usage: winner.result.value })
-                break
-              case 'git':
-                // The pushable carries the complete frame (broadcaster
-                // constructed it with kind/cwd/repoRoot/payload); forward
-                // verbatim. Seed frames for fresh subscribers ride the
-                // same path.
-                this.sink.send(winner.result.value as WsGitSnapshot)
-                break
-              case 'msgstat': {
-                // Input-queue message status: either a consumed stamp
-                // (queued → consumed flip) or a withdrawal batch (queued
-                // messages removed by an interrupt with cancelQueued).
-                // The channel is typed at the source (see
-                // SessionManager.subscribeMessageStatus), so this is a
-                // plain discriminated-union switch, not a defensive parse.
-                const v = winner.result.value as WsMessageConsumed | WsMessagesWithdrawn
-                if (v.kind === 'messages-withdrawn') {
-                  this.sink.send({ kind: 'messages-withdrawn', sessionId, uuids: v.uuids })
-                } else {
-                  this.sink.send({ kind: 'message-consumed', sessionId, uuid: v.uuid, consumedAt: v.consumedAt })
-                }
-                break
-              }
-              case 'recap': {
-                const v = winner.result.value as { recap?: unknown }
-                this.sink.send({ kind: 'session-recap-update', sessionId, recap: v.recap as never })
-                break
-              }
-              case 'cleared':
-                this.sink.send({ kind: 'session-cleared', sessionId })
-                break
-              case 'cmd': {
-                const v = winner.result.value as { commands: never[] }
-                this.sink.send({ kind: 'commands-changed', sessionId, commands: Array.isArray(v.commands) ? v.commands : [] })
-                break
-              }
-              case 'hook':
-                this.sink.send({ kind: 'hook-run', sessionId, event: winner.result.value as never })
-                break
-              case 'psug':
-                this.sink.send({ kind: 'prompt-suggestion', sessionId, suggestion: winner.result.value as string })
-                break
-              case 'task':
-                this.sink.send({ kind: 'tasks-snapshot', sessionId, tasks: winner.result.value as TaskRecordUi[] })
-                break
-              case 'tasklist':
-                // Complete frame from the broadcaster (seed frames ride the
-                // same path). Forward verbatim.
-                this.sink.send(winner.result.value as WsTasklistSnapshot)
-                break
-            }
-            ch.promise = tag(ch.kind, ch.iter)
-          }
-        } catch (err) {
-          if (!this.closed && !stopped) {
-            this.sink.send({
-              kind: 'error',
-              sessionId,
-              message: `subscription: ${(err as Error).message}`,
-            })
-          }
-        } finally {
-          stop()
-          // Natural teardown (e.g. the session was unloaded / went
-          // dormant, or the message channel ended from queue overflow):
-          // the subscriber queues ended and this channel is done, but the
-          // `subs` entry set below is still present. Leaving it means the
-          // NEXT subscribe to this session is swallowed by the subs.has()
-          // idempotency guard and never re-wires a fresh channel — so a
-          // resume after dormancy keeps no live stream (and no replay) on
-          // this connection. Delete the entry only if it is still OUR
-          // cleanup (a newer subscribe that re-wired the channel replaced
-          // it — that channel must survive).
-          const entry = this.subs.get(sessionId)
-          if (entry?.cleanup === stop) {
-            this.subs.delete(sessionId)
-            // Tell the client this connection's channel is gone: nothing
-            // else on the per-connection wire says so (the global
-            // session-update / session-removed frames are broadcast to
-            // every tab and some teardowns send neither).
-            //
-            // A client-initiated `unsubscribe` never reaches here:
-            // stopSession removes the entry before tearing the driver down,
-            // so `entry` is undefined (a channel the client closed itself
-            // needs no announcement).
-            this.ackSubscribe(sessionId, false, 'closed')
-          }
+      }
+      const onLoopError = (err: unknown) => {
+        // The first failing loop reports; stop() below silences the rest.
+        if (!this.closed && !stopped) {
+          this.sink.send({
+            kind: 'error',
+            sessionId,
+            message: `subscription: ${(err as Error).message}`,
+          })
         }
-      })()
+        finish()
+      }
+      /** Launch one channel's loop. Only the message channel's end tears
+       *  the session channel down (e.g. subscriber queue overflow → end():
+       *  the client sees `closed` and re-subscribes for a fresh replay); a
+       *  side channel ending alone just stops that loop. */
+      const drive = <T>(iter: AsyncIterator<T> | null, emit: (v: T) => void, primary = false) => {
+        if (!iter) return
+        void this.driveChannel(iter, emit, isStopped).then(
+          () => { if (primary) finish() },
+          onLoopError,
+        )
+      }
+
+      drive(msg.iterable[Symbol.asyncIterator](), (value: unknown) => {
+        // The same message object reference is delivered to every
+        // connection subscribed to this session, so serialize the
+        // frame once and reuse across all of them (see
+        // messageFrameJson). Falls back to send() if the value
+        // isn't an object (defensive — it always is in practice).
+        this.sink.sendRaw(
+          typeof value === 'object' && value !== null
+            ? messageFrameJson(sessionId, value as object)
+            : JSON.stringify({ kind: 'message', sessionId, message: value as never }),
+          'message',
+        )
+      }, true)
+      drive(perms.iterable[Symbol.asyncIterator](), (value: unknown) => {
+        const ev = value as
+          | { kind: 'request'; payload: never }
+          | { kind: 'resolved'; pid: string; decision: never }
+        if (ev.kind === 'request')
+          this.sink.send({ kind: 'permission-request', sessionId, payload: ev.payload })
+        else
+          this.sink.send({ kind: 'permission-resolved', sessionId, id: ev.pid, decision: ev.decision })
+      })
+      drive(elicits.iterable[Symbol.asyncIterator](), (value: unknown) => {
+        const ev = value as
+          | { kind: 'request'; payload: never }
+          | { kind: 'resolved'; eid: string; decision: never }
+        if (ev.kind === 'request')
+          this.sink.send({ kind: 'elicitation-request', sessionId, payload: ev.payload })
+        else
+          this.sink.send({ kind: 'elicitation-resolved', sessionId, id: ev.eid, decision: ev.decision })
+      })
+      drive(dialogs.iterable[Symbol.asyncIterator](), (value: unknown) => {
+        const ev = value as
+          | { kind: 'request'; payload: never }
+          | { kind: 'resolved'; did: string; decision: never; retractedMessageUuids?: string[] }
+        if (ev.kind === 'request')
+          this.sink.send({ kind: 'dialog-request', sessionId, payload: ev.payload })
+        else
+          this.sink.send({
+            kind: 'dialog-resolved',
+            sessionId,
+            id: ev.did,
+            decision: ev.decision,
+            ...(ev.retractedMessageUuids ? { retractedMessageUuids: ev.retractedMessageUuids } : {}),
+          })
+      })
+      drive(ctxIter, (value) => {
+        this.sink.send({ kind: 'context-usage', sessionId, usage: value })
+      })
+      drive(gitIter, (value) => {
+        // The pushable carries the complete frame (broadcaster
+        // constructed it with kind/cwd/repoRoot/payload); forward
+        // verbatim. Seed frames for fresh subscribers ride the
+        // same path.
+        this.sink.send(value as WsGitSnapshot)
+      })
+      drive(msgStatIter, (value) => {
+        // Input-queue message status: either a consumed stamp
+        // (queued → consumed flip) or a withdrawal batch (queued
+        // messages removed by an interrupt with cancelQueued).
+        // The channel is typed at the source (see
+        // SessionManager.subscribeMessageStatus), so this is a
+        // plain discriminated-union switch, not a defensive parse.
+        const v = value as WsMessageConsumed | WsMessagesWithdrawn
+        if (v.kind === 'messages-withdrawn') {
+          this.sink.send({ kind: 'messages-withdrawn', sessionId, uuids: v.uuids })
+        } else {
+          this.sink.send({ kind: 'message-consumed', sessionId, uuid: v.uuid, consumedAt: v.consumedAt })
+        }
+      })
+      drive(recapIter, (value) => {
+        const v = value as { recap?: unknown }
+        this.sink.send({ kind: 'session-recap-update', sessionId, recap: v.recap as never })
+      })
+      drive(clearedIter, () => {
+        this.sink.send({ kind: 'session-cleared', sessionId })
+      })
+      drive(cmdIter, (value) => {
+        const v = value as { commands: never[] }
+        this.sink.send({ kind: 'commands-changed', sessionId, commands: Array.isArray(v.commands) ? v.commands : [] })
+      })
+      drive(hookIter, (value) => {
+        this.sink.send({ kind: 'hook-run', sessionId, event: value as never })
+      })
+      drive(psugIter, (value) => {
+        this.sink.send({ kind: 'prompt-suggestion', sessionId, suggestion: value as string })
+      })
+      drive(taskIter, (value) => {
+        this.sink.send({ kind: 'tasks-snapshot', sessionId, tasks: value as TaskRecordUi[] })
+      })
+      drive(tasklistIter, (value) => {
+        // Complete frame from the broadcaster (seed frames ride the
+        // same path). Forward verbatim.
+        this.sink.send(value as WsTasklistSnapshot)
+      })
 
       this.subs.set(sessionId, { sessionId, cleanup: stop, replayMode })
       this.ackSubscribe(sessionId, true, 'served')
@@ -953,6 +901,7 @@ export class SessionConnection {
       hookSub?.unsubscribe()
       psugSub?.unsubscribe()
       taskSub?.unsubscribe()
+      tasklistSub?.unsubscribe()
       this.sink.send({ kind: 'error', sessionId, message: (err as Error).message })
       // Always send replay-done so the client's replay state machine
       // terminates — without this, replayReady stays false forever and
@@ -964,6 +913,23 @@ export class SessionConnection {
       this.ackSubscribe(sessionId, false, 'refused')
     } finally {
       this.starting.delete(sessionId)
+    }
+  }
+
+  /** Pull one channel until it ends or its session channel stops, handing
+   *  each value to `emit`. Awaiting its own `next()` keeps exactly one
+   *  reaction on the pending pull however long the channel stays idle.
+   *  `isStopped` is re-checked after every await so a loop woken after
+   *  teardown never emits. Rejects if `next()` or `emit` throws. */
+  private async driveChannel<T>(
+    iter: AsyncIterator<T>,
+    emit: (v: T) => void,
+    isStopped: () => boolean,
+  ): Promise<void> {
+    while (!isStopped()) {
+      const r = await iter.next()
+      if (r.done || isStopped()) return
+      emit(r.value)
     }
   }
 
