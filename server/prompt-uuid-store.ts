@@ -19,13 +19,9 @@
 // same-text prompts (which defeated the earlier positional+hash scheme) can no
 // longer cause a shifted uuid assignment.
 
-import { readFile, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { createLogger } from './log.js'
-import { writeAtomic } from './json-file-store.js'
+import { PerSessionSidecar } from './per-session-sidecar.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-
-const log = createLogger('prompt-uuids')
 
 /** One entry per top-level user prompt, in send order:
  *  - `u`: the server-minted uuid (minted at send(), used in the ring + client
@@ -53,58 +49,46 @@ export function retainPromptUuidEntries(entries: PromptUuidEntry[], cap: number)
 }
 
 export class PromptUuidStore {
-  private readonly dir: string | null
   private readonly cap: number
+  /** Per-session write chain + remove tombstone + cache: back-to-back echo
+   *  saves can't race on writeAtomic's tmp+rename, and a save fired after
+   *  delete can't recreate the file. */
+  private readonly sidecar: PerSessionSidecar<PromptUuidEntry>
   constructor(stateDir: string | undefined, historyCap: number) {
     // Tolerate an absent state dir (standalone buildApp / unit tests that
     // don't exercise resume-seed bridging): the store no-ops load/save/remove
     // rather than crashing path.join on `undefined`.
-    this.dir = stateDir ? join(stateDir, 'prompt-uuids') : null
+    this.sidecar = new PerSessionSidecar({
+      dir: stateDir ? join(stateDir, 'prompt-uuids') : null,
+      label: 'prompt-uuids',
+    })
     this.cap = historyCap
   }
 
-  private file(sessionId: string): string | null {
-    return this.dir ? join(this.dir, `${sessionId}.json`) : null
+  load(sessionId: string): Promise<PromptUuidEntry[] | null> {
+    return this.sidecar.load(sessionId)
   }
 
-  async load(sessionId: string): Promise<PromptUuidEntry[] | null> {
-    const file = this.file(sessionId)
-    if (!file) return null
-    try {
-      const raw = await readFile(file, 'utf8')
-      const parsed = JSON.parse(raw)
-      return Array.isArray(parsed) ? (parsed as PromptUuidEntry[]) : null
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') return null
-      log.warn(`load failed for ${sessionId}: ${(err as Error).message ?? err}`)
-      return null
-    }
-  }
-
+  /** Persist the session's list. Never throws (a failed write is logged).
+   *  The persisted window is computed NOW, not when the chain reaches this
+   *  write: callers pass their live list, which keeps mutating. */
   async save(sessionId: string, entries: PromptUuidEntry[]): Promise<void> {
-    const file = this.file(sessionId)
-    if (!file || !this.dir) return
-    try {
-      // Persist only the newest completed mappings. In-flight entries have no
-      // SDK uuid yet and therefore cannot participate in resume rewriting; do
-      // not persist them or let them affect the bounded sidecar window.
-      const capped = retainPromptUuidEntries(entries, this.cap).filter((entry) => entry.v != null)
-      await writeAtomic(this.dir, file, capped)
-    } catch (err) {
-      log.warn(`save failed for ${sessionId}: ${(err as Error).message ?? err}`)
-    }
+    // Persist only the newest completed mappings. In-flight entries have no
+    // SDK uuid yet and therefore cannot participate in resume rewriting; do
+    // not persist them or let them affect the bounded sidecar window.
+    const capped = retainPromptUuidEntries(entries, this.cap).filter((entry) => entry.v != null)
+    await this.sidecar.update(sessionId, () => capped)
   }
 
-  async remove(sessionId: string): Promise<void> {
-    const file = this.file(sessionId)
-    if (!file) return
-    try {
-      await unlink(file)
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code !== 'ENOENT') log.warn(`remove failed for ${sessionId}: ${(err as Error).message ?? err}`)
-    }
+  /** Delete the sidecar. Tombstones the id first, so a save still in
+   *  flight (or fired after this) can't recreate the file. */
+  remove(sessionId: string): Promise<void> {
+    return this.sidecar.remove(sessionId)
+  }
+
+  /** Clear the remove() tombstone for a new session reusing `sessionId`. */
+  revive(sessionId: string): void {
+    this.sidecar.revive(sessionId)
   }
 }
 

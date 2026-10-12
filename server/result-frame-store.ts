@@ -11,13 +11,9 @@
 // store: sessions.json is rewritten on every send and shipped to the
 // frontend). Sidecar is small, per-session, server-only.
 
-import { readFile, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { createLogger } from './log.js'
-import { writeAtomic } from './json-file-store.js'
+import { PerSessionSidecar } from './per-session-sidecar.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-
-const log = createLogger('result-frames')
 
 /** One entry per result frame, in completion order.
  *  - `resultUuid`: the result frame's own uuid (dedup key).
@@ -39,54 +35,37 @@ export function retainResultFrameEntries(entries: ResultFrameEntry[], cap: numbe
 }
 
 export class ResultFrameStore {
-  private readonly dir: string | null
   private readonly cap: number
-  /** Serialises concurrent writes so two appends (or append + merge) for the
-   *  same session can't race on writeAtomic's tmp+rename — mirrors
-   *  TurnAnchorStore / JsonFileStore's `writing` chain. */
-  private writing: Promise<void> = Promise.resolve()
+  /** Per-session write chain + remove tombstone + cache, so two appends (or
+   *  append + merge) for the same session can't race on writeAtomic's
+   *  tmp+rename, and a delete can't be undone by a late append. */
+  private readonly sidecar: PerSessionSidecar<ResultFrameEntry>
   constructor(stateDir: string | undefined, historyCap: number) {
-    this.dir = stateDir ? join(stateDir, 'result-frames') : null
+    this.sidecar = new PerSessionSidecar({
+      dir: stateDir ? join(stateDir, 'result-frames') : null,
+      label: 'result-frames',
+    })
     this.cap = historyCap
   }
 
-  private file(sessionId: string): string | null {
-    return this.dir ? join(this.dir, `${sessionId}.json`) : null
-  }
-
-  async load(sessionId: string): Promise<ResultFrameEntry[] | null> {
-    const file = this.file(sessionId)
-    if (!file) return null
-    try {
-      const raw = await readFile(file, 'utf8')
-      const parsed = JSON.parse(raw)
-      return Array.isArray(parsed) ? (parsed as ResultFrameEntry[]) : null
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') return null
-      log.warn(`load failed for ${sessionId}: ${(err as Error).message ?? err}`)
-      return null
-    }
+  load(sessionId: string): Promise<ResultFrameEntry[] | null> {
+    return this.sidecar.load(sessionId)
   }
 
   /** Append a result frame, dedup by resultUuid (a replayed result updates
    *  in place rather than duplicating), cap to the newest `cap` entries,
    *  and persist atomically. Fire-and-forget safe on the turn path. */
   async append(sessionId: string, entry: ResultFrameEntry): Promise<void> {
-    this.writing = this.writing.then(async () => {
-      const existing = (await this.load(sessionId)) ?? []
+    await this.sidecar.update(sessionId, (prev) => {
+      const existing = prev ?? []
       const idx = existing.findIndex((e) => e.resultUuid === entry.resultUuid)
       if (idx >= 0) {
         existing[idx] = entry
       } else {
         existing.push(entry)
       }
-      const capped = retainResultFrameEntries(existing, this.cap)
-      await this.writeRaw(sessionId, capped)
-    }).catch((err) => {
-      log.warn(`append chain error for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`)
+      return retainResultFrameEntries(existing, this.cap)
     })
-    await this.writing
   }
 
   /** Merge `entries` into the current sidecar (dedup by resultUuid), capped,
@@ -94,12 +73,12 @@ export class ResultFrameStore {
    *  (truncated to the cut point). Preserves any frames a concurrent pump
    *  append wrote between the caller's load and this write. */
   async merge(sessionId: string, entries: ResultFrameEntry[]): Promise<void> {
-    this.writing = this.writing.then(async () => {
-      const existing = (await this.load(sessionId)) ?? []
+    await this.sidecar.update(sessionId, (prev) => {
+      const existing = prev ?? []
       const byUuid = new Map<string, ResultFrameEntry>()
       for (const e of existing) byUuid.set(e.resultUuid, e)
       for (const e of entries) byUuid.set(e.resultUuid, e)
-      const merged = retainResultFrameEntries(
+      return retainResultFrameEntries(
         [...byUuid.values()].sort((a, b) => {
           // Sort by the result frame's timestamp if available, otherwise
           // keep insertion order (Map preserves it).
@@ -111,35 +90,22 @@ export class ResultFrameStore {
         }),
         this.cap,
       )
-      await this.writeRaw(sessionId, merged)
-    }).catch((err) => {
-      log.warn(`merge chain error for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`)
     })
-    await this.writing
   }
 
   async save(sessionId: string, entries: ResultFrameEntry[]): Promise<void> {
     const capped = retainResultFrameEntries(entries, this.cap)
-    this.writing = this.writing.then(() => this.writeRaw(sessionId, capped)).catch((err) => {
-      log.warn(`save chain error for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`)
-    })
-    await this.writing
+    await this.sidecar.update(sessionId, () => capped)
   }
 
-  async remove(sessionId: string): Promise<void> {
-    const file = this.file(sessionId)
-    if (!file) return
-    try {
-      await unlink(file)
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code !== 'ENOENT') log.warn(`remove failed for ${sessionId}: ${(err as Error).message ?? err}`)
-    }
+  /** Delete the sidecar. Tombstones the id first, so an append still in
+   *  flight (or fired after this) can't recreate the file. */
+  remove(sessionId: string): Promise<void> {
+    return this.sidecar.remove(sessionId)
   }
 
-  private async writeRaw(sessionId: string, entries: ResultFrameEntry[]): Promise<void> {
-    const file = this.file(sessionId)
-    if (!file || !this.dir) return
-    await writeAtomic(this.dir, file, entries)
+  /** Clear the remove() tombstone for a new session reusing `sessionId`. */
+  revive(sessionId: string): void {
+    this.sidecar.revive(sessionId)
   }
 }
