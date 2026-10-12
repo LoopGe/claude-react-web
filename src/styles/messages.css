@@ -1938,6 +1938,20 @@
   margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
   padding: var(--space-2-5) var(--space-3-5);
   font-size: var(--fs-base);
+  /* Dock-fold transition: the collapsed card docks behind the composer by
+     closing the row gap, tucking its lower edge under the composer, and
+     squaring the bottom corners (see `.todo-panel-collapsed` below). The
+     transition lives on the BASE rule so BOTH directions animate — on the
+     collapsed rule alone the expand would snap. Layout properties only,
+     never a composited property on this backdrop-filter box (same Chromium
+     rule as the composer-card note in chat.css). 240ms matches
+     AnimatedCollapse's fold, so the list fold and the dock sink read as one
+     motion. */
+  transition:
+    margin-bottom var(--motion-duration-moderate) var(--motion-ease-standard),
+    padding-bottom var(--motion-duration-moderate) var(--motion-ease-standard),
+    border-bottom-left-radius var(--motion-duration-moderate) var(--motion-ease-standard),
+    border-bottom-right-radius var(--motion-duration-moderate) var(--motion-ease-standard);
   /* Entrance / exit come from the shared `.bottom-card-motion` wrapper (below),
      which AnimatePresence renders around this card. */
 }
@@ -2071,6 +2085,78 @@
 /* Collapsed: the header doubles as the whole bar — drop its bottom gap. */
 .todo-panel.todo-panel-collapsed .todo-panel-header {
   margin-bottom: 0;
+}
+/* Collapsed dock (prototype variant B "深停靠", tuned after real-app
+   feedback): the card sinks behind the composer. 30px approach = the 12px row
+   gap closed + an 18px negative margin that pulls the composer up over the
+   card's lower edge; the composer paints ABOVE the card (both are stacking
+   contexts inside .chat-bottom-stack — the dock's backdrop-filter subtree is
+   later in tree order), and the covered band shows through the glass blurred.
+   The overlap zone is pure padding (+18px on the base 10px), so after the
+   18px overlap ~10px of quiet glass remains between the header text and the
+   glass line (the first cut's 26px band read as "too much exposed").
+   Squared bottom corners finish the tucked look. The numbers are pinned by
+   styles/bottom-dock.test.ts (which pins the MonitorBar's identical copy as
+   a lockstep contract); retune there, here, and the monitor rule together. */
+.todo-panel.todo-panel-collapsed {
+  margin-bottom: calc(var(--chat-row-gap) - 30px);
+  padding-bottom: calc(var(--space-2-5) + 18px);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+/* Collapsed-header rotor — SHARED by both docked cards (TodoChecklist +
+   MonitorBar, rendered by src/components/DockRotor.tsx): joins the card's
+   (always-present) static title while docked — position chip + the current
+   item's label, one at a time (cadence/reset live in the useRotor hook).
+   flex:1 + min-width:0 so a long label ellipsizes instead of pushing the
+   count / chevron off the docked bar; the left margin is its breathing room
+   from the title. The label's shimmer is the CARD's own class
+   (.todo-text-shimmer / .monitor-text-shimmer) — the sweep accent differs
+   per card, so those recipes stay with each card's list rows. */
+.dock-rotor {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  flex: 1;
+  min-width: 0;
+  margin-left: var(--space-2);
+  font-size: var(--fs-base);
+}
+.dock-rotor-index {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+.dock-rotor-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* One keyed span per slide — keyed by the ITEM's identity, so a list change
+   that lands a DIFFERENT item on the same slot remounts and replays the
+   rise-in (a reset that keeps the same item correctly does not). The shimmer
+   lives on the inner card-specific span; under reduced motion BOTH animations
+   are silenced by the stylesheet's a11y block further down (the sweep falls
+   back to a solid accent label, same as the list rows). */
+.dock-rotor-slide {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  animation: rotor-in var(--motion-duration-moderate) var(--motion-ease-standard);
+}
+@keyframes rotor-in {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dock-rotor-slide {
+    animation: none;
+  }
 }
 /* Undo row for locally-hidden items — sits OUTSIDE the <ul> so it's
    reachable even when every item is hidden or the panel is collapsed. */
@@ -2265,7 +2351,14 @@
      the two read as one synchronized "working" rhythm. */
   animation: todo-icon-pulse 2s ease-in-out infinite;
 }
-.todo-panel-working .todo-in_progress .todo-text-shimmer {
+/* Second selector: the collapsed-header rotor slide text joins the rows'
+   shimmer while working — the identical recipe (the "original loading
+   animation"), gated on `.todo-panel-working` exactly like the rows', so an
+   idle stale in_progress label stays static there too. The class renders
+   unconditionally on the rotor's inner span; only this rule's gate decides
+   whether the sweep runs. */
+.todo-panel-working .todo-in_progress .todo-text-shimmer,
+.todo-panel-working .dock-rotor .todo-text-shimmer {
   display: inline-block;
   /* An inline-block with overflow:hidden uses its BOTTOM EDGE as the
      baseline (per CSS 2.1 §10.8.1), so with default vertical-align it sits
@@ -2313,6 +2406,16 @@
   margin: 0 var(--chat-reading-inset) var(--chat-row-gap);
   padding: var(--space-2-5) var(--space-3-5);
   font-size: var(--fs-base);
+  /* Dock-fold transition — identical to .todo-panel's (see that rule): the
+     collapsed bar docks behind the composer, and the transition lives on the
+     BASE rule so both directions animate. Layout properties only, never a
+     composited property on this backdrop-filter box. 240ms matches
+     AnimatedCollapse's fold. */
+  transition:
+    margin-bottom var(--motion-duration-moderate) var(--motion-ease-standard),
+    padding-bottom var(--motion-duration-moderate) var(--motion-ease-standard),
+    border-bottom-left-radius var(--motion-duration-moderate) var(--motion-ease-standard),
+    border-bottom-right-radius var(--motion-duration-moderate) var(--motion-ease-standard);
   /* Entrance / exit come from the shared `.bottom-card-motion` wrapper below.
      The /clear `-clearing` rule below still swaps in the blur-fade when a clear
      is in flight; AnimatePresence re-renders the exiting card with its last
@@ -2322,7 +2425,9 @@
   display: flex;
   align-items: center;
   /* space-between pins the title left and the chevron+count group right —
-     same header shape as .todo-panel-header. */
+     same header shape as .todo-panel-header. The collapsed rotor joins the
+     title as a flex:1 middle child, absorbing free space so a long label
+     ellipsizes before the right group is pushed anywhere. */
   justify-content: space-between;
   margin-bottom: var(--space-1-5);
 }
@@ -2383,6 +2488,22 @@
 .monitor-bar.monitor-bar-collapsed .monitor-bar-header {
   margin-bottom: 0;
 }
+/* Collapsed dock — the SAME recipe as the TaskList card's
+   `.todo-panel-collapsed` below (styles/bottom-dock.test.ts pins both as a
+   lockstep contract): 18px overlap under the composer, empty-padding overlap
+   zone keeping the header text above the glass line, squared bottom corners.
+   The transition lives on the BASE rule (`.monitor-bar`, same block as the
+   todo card) so both directions animate. */
+.monitor-bar.monitor-bar-collapsed {
+  margin-bottom: calc(var(--chat-row-gap) - 30px);
+  padding-bottom: calc(var(--space-2-5) + 18px);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+/* The collapsed-header rotor's STRUCTURE is the shared .dock-rotor* block in
+   the TaskList section above (rendered by src/components/DockRotor.tsx) —
+   only the shimmer class differs here, and it is already this card's own
+   `.monitor-text-shimmer`. */
 .monitor-bar-list {
   list-style: none;
   margin: 0;
@@ -2573,6 +2694,9 @@
     transform: translateY(-0.5px);
   }
   .todo-panel-working .todo-in_progress .todo-text-shimmer,
+  /* The TaskList's docked-rotor label joins the rows' kill: same sweep recipe
+     (via the shared .dock-rotor block), same solid-accent fallback. */
+  .todo-panel-working .dock-rotor .todo-text-shimmer,
   .inline-todo-in_progress .inline-todo-text-shimmer {
     animation: none;
     background: none;

@@ -30,9 +30,11 @@ import type { SdkMessage } from '../types'
 import { AnimatePresence } from 'motion/react'
 import { BottomCardMotion } from './BottomCardMotion'
 import { AnimatedCollapse } from './AnimatedCollapse'
+import { DockRotor } from './DockRotor'
 import { IconChevronDown, IconCircleDot } from './icons/ToolIcons'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { useRotor } from '../hooks/useRotor'
 
 interface MonitorInfo {
   /** tool_use id of the Monitor call — stable key. */
@@ -114,6 +116,24 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing, session
   // so the exiting bar keeps its content and its `-clearing` class. Snaps
   // under reduced motion.
 
+  // --- collapsed-header rotor -------------------------------------------
+  // While the bar is collapsed (docked behind the composer) the header's left
+  // slot rotates through the running monitors' descriptions — one every 3s,
+  // wrapping, paused while the pointer rests on the header (so the expand
+  // target stays put under the cursor). The expanded header keeps the static
+  // title alone. Same shared useRotor hook as the TodoChecklist card; the sig
+  // is the running monitors' key-join — a PRIMITIVE, since renderList is a
+  // fresh array identity whenever `messages` or the 5s `now` tick re-renders
+  // the bar. Every item in renderList IS running by construction (that is the
+  // bar's whole point), so the rotator's item set is the list itself. The
+  // running signal is the label's own shimmer (the same class the list rows
+  // carry) — no spinner glyph.
+  const rotorSig = renderList.map((m) => m.key).join('\u0000')
+  const rotorActive = collapsed && renderList.length > 0
+  const rotor = useRotor({ sig: rotorSig, count: renderList.length, active: rotorActive })
+  const rotorItem = rotorActive ? renderList[rotor.index] : null
+  const rotorLabel = rotorItem ? rotorItem.description : ''
+
   return (
     <AnimatePresence initial={false}>
       {renderList.length > 0 && (
@@ -123,8 +143,21 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing, session
             role="status"
             aria-label="Running monitors"
           >
-            <div className="monitor-bar-header">
+            <div
+              className="monitor-bar-header"
+              onMouseEnter={rotor.hoverStart}
+              onMouseLeave={rotor.hoverEnd}
+            >
               <span className="monitor-bar-title">Monitors</span>
+              {rotorActive && (
+                <DockRotor
+                  slideKey={rotorItem?.key ?? ''}
+                  index={rotor.index}
+                  total={renderList.length}
+                  label={rotorLabel}
+                  shimmerClass="monitor-text-shimmer"
+                />
+              )}
               <div className="monitor-bar-header-right">
                 <button
                   type="button"

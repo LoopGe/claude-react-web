@@ -777,3 +777,135 @@ describe('TodoChecklist — serverTasks integration', () => {
     expect(texts).toContain('Current task')
   })
 })
+
+// ---------------------------------------------------------------------------
+// collapsed dock + header rotor — the collapsed card docks behind the composer
+// and its header rotates through the in_progress tasks
+// ---------------------------------------------------------------------------
+
+describe('TodoChecklist — collapsed dock + header rotor', () => {
+  const msgs = [
+    multiTodoMsg([
+      { content: 'done', status: 'completed' },
+      { content: 'run A', status: 'in_progress', activeForm: 'Running A' },
+      { content: 'run B', status: 'in_progress', activeForm: 'Running B' },
+      { content: 'later', status: 'pending' },
+    ]),
+  ]
+
+  /** Collapse via the chevron and settle the fold (AnimatedCollapse unmounts
+   *  the list after ~240 ms). Requires vi.useFakeTimers() active. */
+  function collapse(container: HTMLElement): void {
+    fireEvent.click(container.querySelector('.todo-panel-collapse')!)
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+  }
+
+  function rotorText(container: HTMLElement): string {
+    return container.querySelector('.dock-rotor-text')?.textContent ?? ''
+  }
+
+  it('keeps the static title beside the rotor when collapsed while tasks are running', () => {
+    vi.useFakeTimers()
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    collapse(container)
+    // The docked bar KEEPS the source title ("TodoList" for a TodoWrite
+    // source) — the rotor joins it rather than replacing it, showing the
+    // first running task's activeForm with the position chip. No spinner
+    // glyph — the shimmer on the label is the running signal.
+    expect(container.querySelector('.todo-panel-title')?.textContent).toBe('TodoList')
+    expect(rotorText(container)).toBe('Running A')
+    expect(container.querySelector('.dock-rotor-index')?.textContent).toBe('1/2')
+    expect(container.querySelector('.dock-rotor-spin')).toBeNull()
+    // The slide text carries the same `todo-text-shimmer` class as the
+    // in_progress list rows — the CSS gates the sweep on `.todo-panel-working`
+    // exactly like the rows' (pinned by styles/todo-dock.test.ts).
+    expect(container.querySelector('.dock-rotor-slide .todo-text-shimmer')).not.toBeNull()
+  })
+
+  it('advances the rotor every 3s and wraps around', () => {
+    vi.useFakeTimers()
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    collapse(container)
+    expect(rotorText(container)).toBe('Running A')
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(rotorText(container)).toBe('Running B')
+    expect(container.querySelector('.dock-rotor-index')?.textContent).toBe('2/2')
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(rotorText(container)).toBe('Running A')
+  })
+
+  it('keeps the static title when collapsed with nothing running', () => {
+    vi.useFakeTimers()
+    const idle = [multiTodoMsg([{ content: 'a', status: 'pending' }, { content: 'b', status: 'completed' }])]
+    const { container } = render(<TodoChecklist messages={idle} working />)
+    collapse(container)
+    // TodoWrite-sourced lists title the bar "TodoList" (only Task* says "TaskList").
+    expect(container.querySelector('.todo-panel-title')?.textContent).toBe('TodoList')
+    expect(container.querySelector('.dock-rotor')).toBeNull()
+    act(() => {
+      vi.advanceTimersByTime(6000)
+    })
+    // Still the static title — no timer churned the header into a rotor.
+    expect(container.querySelector('.todo-panel-title')?.textContent).toBe('TodoList')
+  })
+
+  it('never rotates while expanded', () => {
+    vi.useFakeTimers()
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    expect(container.querySelector('.todo-panel-title')?.textContent).toBe('TodoList')
+    expect(container.querySelector('.dock-rotor')).toBeNull()
+    act(() => {
+      vi.advanceTimersByTime(6000)
+    })
+    expect(container.querySelector('.todo-panel-title')?.textContent).toBe('TodoList')
+  })
+
+  it('pauses the rotation while the header is hovered and resumes on leave', () => {
+    vi.useFakeTimers()
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    collapse(container)
+    const header = container.querySelector('.todo-panel-header')!
+    fireEvent.mouseEnter(header)
+    act(() => {
+      vi.advanceTimersByTime(6000)
+    })
+    expect(rotorText(container)).toBe('Running A')
+    fireEvent.mouseLeave(header)
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(rotorText(container)).toBe('Running B')
+  })
+
+  it('resets the rotor index when the running list changes', () => {
+    // Three running tasks; advance to the THIRD slide, then a fresh snapshot
+    // completes task C. The reset (not a clamp into the shrunken list's last
+    // slot) shows the first remaining running task again.
+    vi.useFakeTimers()
+    const three = [multiTodoMsg([
+      { content: 'run A', status: 'in_progress', activeForm: 'Running A' },
+      { content: 'run B', status: 'in_progress', activeForm: 'Running B' },
+      { content: 'run C', status: 'in_progress', activeForm: 'Running C' },
+    ])]
+    const after = [multiTodoMsg([
+      { content: 'run A', status: 'in_progress', activeForm: 'Running A' },
+      { content: 'run B', status: 'in_progress', activeForm: 'Running B' },
+      { content: 'run C', status: 'completed' },
+    ])]
+    const { container, rerender } = render(<TodoChecklist messages={three} working />)
+    collapse(container)
+    act(() => {
+      vi.advanceTimersByTime(6000)
+    })
+    expect(rotorText(container)).toBe('Running C')
+    rerender(<TodoChecklist messages={after} working />)
+    expect(rotorText(container)).toBe('Running A')
+    expect(container.querySelector('.dock-rotor-index')?.textContent).toBe('1/2')
+  })
+})

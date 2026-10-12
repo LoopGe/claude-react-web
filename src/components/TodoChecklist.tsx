@@ -28,10 +28,12 @@ import type { SdkMessage } from '../types'
 import type { Skin } from '../utils/theme'
 import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox, IconChevronDown, IconRotateCcw } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
+import { DockRotor } from './DockRotor'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { AnimatePresence } from 'motion/react'
 import { BottomCardMotion } from './BottomCardMotion'
 import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useRotor } from '../hooks/useRotor'
 import {
   buildTaskStateMap,
   lastUserInputIndex,
@@ -218,6 +220,23 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   const doneCount = visibleTodos.filter((t) => t.status === 'completed').length
   const hiddenVisibleCount = todos.filter((t) => hiddenSet.has(t.key)).length
 
+  // --- collapsed-header rotor -------------------------------------------
+  // While the card is collapsed (docked behind the composer) and tasks are
+  // running, the header's left slot rotates through the in_progress items'
+  // activeForm — one every 3s (useRotor's shared default; MonitorBar docks
+  // the same way, so the two bars cannot drift apart), wrapping, paused while
+  // the pointer rests on the header (so the expand target stays put under
+  // the cursor). Expanded, idle, or nothing-running headers keep the static
+  // title. The sig is the running items' key-join — a PRIMITIVE, since
+  // visibleTodos is a fresh array every render and during a turn `messages`
+  // churns constantly.
+  const runningTodos = visibleTodos.filter((t) => t.status === 'in_progress')
+  const runningSig = runningTodos.map((t) => t.key).join('\u0000')
+  const rotorActive = collapsed && runningTodos.length > 0
+  const rotor = useRotor({ sig: runningSig, count: runningTodos.length, active: rotorActive })
+  const rotorTask = rotorActive ? runningTodos[rotor.index] : null
+  const rotorLabel = rotorTask ? rotorTask.activeForm || rotorTask.content : ''
+
   // Prune hidden keys that no longer exist in the FULL derived list — an
   // agent `TaskUpdate(status:'deleted')`, a /clear that wiped `messages`, or
   // a provisional `pending:<toolUseId>` key resolving to its real `#N`.
@@ -289,8 +308,21 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
             role="status"
             aria-label="Task checklist"
           >
-            <div className="todo-panel-header">
+            <div
+              className="todo-panel-header"
+              onMouseEnter={rotor.hoverStart}
+              onMouseLeave={rotor.hoverEnd}
+            >
               <span className="todo-panel-title">{renderResult.source === 'todowrite' ? 'TodoList' : 'TaskList'}</span>
+              {rotorActive && (
+                <DockRotor
+                  slideKey={rotorTask?.key ?? ''}
+                  index={rotor.index}
+                  total={runningTodos.length}
+                  label={rotorLabel}
+                  shimmerClass="todo-text-shimmer"
+                />
+              )}
               <div className="todo-panel-header-right">
                 <button
                   type="button"

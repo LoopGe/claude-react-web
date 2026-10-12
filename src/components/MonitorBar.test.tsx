@@ -243,6 +243,111 @@ describe('MonitorBar — collapse', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// collapsed dock + header rotor — mirrors the TodoChecklist card: the docked
+// bar keeps its title and rotates through the running monitors' descriptions
+// ---------------------------------------------------------------------------
+
+describe('MonitorBar — collapsed dock + header rotor', () => {
+  /** Two persistent monitors → two docked-bar rotor slots. */
+  const two = [
+    ...runningMonitor('m1', 'Watch build'),
+    ...runningMonitor('m2', 'Watch tests'),
+  ]
+
+  function collapse(container: HTMLElement): void {
+    fireEvent.click(container.querySelector('.monitor-bar-collapse')!)
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+  }
+
+  function rotorText(container: HTMLElement): string {
+    return container.querySelector('.dock-rotor-text')?.textContent ?? ''
+  }
+
+  it('keeps the title beside the rotor when collapsed', () => {
+    vi.useFakeTimers()
+    const { container } = render(<MonitorBar messages={two} />)
+    collapse(container)
+    // The docked bar KEEPS the "Monitors" title — the rotor joins it with the
+    // first running monitor's description and the position chip. No spinner
+    // glyph; the shimmer on the label is the running signal.
+    expect(container.querySelector('.monitor-bar-title')?.textContent).toBe('Monitors')
+    expect(rotorText(container)).toBe('Watch build')
+    expect(container.querySelector('.dock-rotor-index')?.textContent).toBe('1/2')
+    expect(container.querySelector('.dock-rotor-slide .monitor-text-shimmer')).not.toBeNull()
+    expect(container.querySelector('.dock-rotor-spin')).toBeNull()
+    // The count keeps its own semantics (a bare running total, not done/total).
+    expect(container.querySelector('.monitor-bar-count')?.textContent).toBe('2')
+  })
+
+  it('advances the rotor every 3s and wraps around', () => {
+    vi.useFakeTimers()
+    const { container } = render(<MonitorBar messages={two} />)
+    collapse(container)
+    expect(rotorText(container)).toBe('Watch build')
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(rotorText(container)).toBe('Watch tests')
+    expect(container.querySelector('.dock-rotor-index')?.textContent).toBe('2/2')
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(rotorText(container)).toBe('Watch build')
+  })
+
+  it('never rotates while expanded', () => {
+    vi.useFakeTimers()
+    const { container } = render(<MonitorBar messages={two} />)
+    expect(container.querySelector('.monitor-bar-title')?.textContent).toBe('Monitors')
+    expect(container.querySelector('.dock-rotor')).toBeNull()
+    act(() => {
+      vi.advanceTimersByTime(6000)
+    })
+    expect(container.querySelector('.dock-rotor')).toBeNull()
+  })
+
+  it('pauses the rotation while the header is hovered and resumes on leave', () => {
+    vi.useFakeTimers()
+    const { container } = render(<MonitorBar messages={two} />)
+    collapse(container)
+    const header = container.querySelector('.monitor-bar-header')!
+    fireEvent.mouseEnter(header)
+    act(() => {
+      vi.advanceTimersByTime(6000)
+    })
+    expect(rotorText(container)).toBe('Watch build')
+    fireEvent.mouseLeave(header)
+    act(() => {
+      vi.advanceTimersByTime(3000)
+    })
+    expect(rotorText(container)).toBe('Watch tests')
+  })
+
+  it('resets the rotor index when the running list changes', () => {
+    // Three monitors; advance to the THIRD slot, then the third monitor ends
+    // (dropped from the stream). The reset — not a clamp into the shrunken
+    // list's last slot — shows the first remaining monitor again.
+    const three = [
+      ...runningMonitor('m1', 'Watch build'),
+      ...runningMonitor('m2', 'Watch tests'),
+      ...runningMonitor('m3', 'Watch deploy'),
+    ]
+    vi.useFakeTimers()
+    const { container, rerender } = render(<MonitorBar messages={three} />)
+    collapse(container)
+    act(() => {
+      vi.advanceTimersByTime(6000)
+    })
+    expect(rotorText(container)).toBe('Watch deploy')
+    rerender(<MonitorBar messages={two} />)
+    expect(rotorText(container)).toBe('Watch build')
+    expect(container.querySelector('.dock-rotor-index')?.textContent).toBe('1/2')
+  })
+})
+
 afterEach(() => {
   vi.useRealTimers()
 })
