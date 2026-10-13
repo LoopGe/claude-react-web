@@ -2,6 +2,7 @@ import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
 import type { ContextUsage } from '../hooks/useChatStream'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { emptyWindow, type WindowState } from './seq-window'
+import type { ActiveWorktree } from './normalize'
 
 export interface TranscriptItem {
   id: string
@@ -435,6 +436,22 @@ export interface ServerMirror {
   tailFirstUnsettled: boolean
   items: TranscriptItem[]
   messages: SdkMessage[]
+  /** The session's "isolated in a worktree" state, folded from the
+   *  EnterWorktree / ExitWorktree tool_use blocks in `messages`. Derived
+   *  state with one invariant: it always equals
+   *  `getActiveWorktree(messages)` (normalize.ts — the reference fold).
+   *  Maintained by the reducer instead of being rescanned per read: the
+   *  append path folds just the new message (`foldActiveWorktree`), every
+   *  other path that rewrites `messages` (prepend, front-trim, evict,
+   *  chronology repair, stale-copy replace) rescans with
+   *  `recomputeActiveWorktree`, the consumed / steered stamp swaps rescan
+   *  only when a worktree block is involved, and every mirror reset starts
+   *  from `createInitialServerMirror` (null over empty messages). Both helpers reuse the previous object when the
+   *  value is unchanged (a composite action whose intermediate step changed
+   *  it may still land on a fresh, equal object — `useSessionActiveWorktree`
+   *  dedups by value for its subscribers). The selector is an O(1) read on
+   *  every store emit, including every stream_event delta. */
+  activeWorktree: ActiveWorktree | null
   eventCount: number
   liveTurn: LiveTurnState | null
   contextUsage: ContextUsage | null
@@ -858,6 +875,7 @@ export function createInitialServerMirror(): ServerMirror {
     tailFirstUnsettled: false,
     items: [],
     messages: [],
+    activeWorktree: null,
     eventCount: 0,
     liveTurn: null,
     contextUsage: null,

@@ -18,6 +18,7 @@ import {
 } from './types'
 import {
   extractPlanContent,
+  foldActiveWorktree,
   getPlanResultDecisions,
   getPlanToolUseIds,
   getSkillStarts,
@@ -32,8 +33,10 @@ import {
   isCursorAnchorable,
   isDiskStableMsg,
   isTrimBoundary,
+  messageTouchesWorktree,
   msgTime,
   parseTaskNotification,
+  recomputeActiveWorktree,
   toTranscriptItem,
   topLevelUserPromptSignature,
 } from './normalize'
@@ -831,7 +834,12 @@ function replaceStaleCachedMessages(state: SessionState, incoming: SdkMessage[])
     messages[idx] = msg
   }
   if (items === mirror.items) return state
-  return withMirror(state, { ...mirror, items, messages })
+  return withMirror(state, {
+    ...mirror,
+    items,
+    messages,
+    activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
+  })
 }
 
 /** Apply the `mid` slice of a no-overlap time partition — payload frames that
@@ -993,7 +1001,13 @@ function repairChronology(state: SessionState): SessionState {
     console.warn(`[repairChronology] moved ${moves} displaced item(s) into chronological order`)
   }
   if (!copied) return state
-  return withMirror(state, { ...mirror, items, messages })
+  return withMirror(state, {
+    ...mirror,
+    items,
+    messages,
+    // A reorder can change which worktree block is last — rescan.
+    activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
+  })
 }
 
 /** Overlap-anchor key: the message uuid, or null when the frame must NOT
@@ -1388,10 +1402,14 @@ function prependMessages(
 
   if (newItems.length === 0) return state
 
+  const messages = [...newMessages, ...mirror.messages]
   let next: SessionState = withMirror(state, {
     ...mirror,
     items: [...newItems, ...mirror.items],
-    messages: [...newMessages, ...mirror.messages],
+    messages,
+    // Older frames only decide the state when nothing after them touches a
+    // worktree — not knowable from the current value alone, so rescan.
+    activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
   })
   // Additive index update over just the prepended batch.
   next = rebuildIndexesFromMessages(next, newMessages)
@@ -1592,8 +1610,19 @@ function applyMessageSteered(state: SessionState, uuid: string, steerState: 'inj
     (m) => (typeof m.uuid === 'string' ? m.uuid : null) === uuid,
   )
   const messages = mirror.messages.slice()
+  // Same rule as applyMessageConsumed: the swapped-in copy is built from the
+  // ITEM's msg, so rescan only if either side touches a worktree.
+  const worktreeTouched = mIdx >= 0 &&
+    (messageTouchesWorktree(mirror.messages[mIdx]) || messageTouchesWorktree(nextMsg))
   if (mIdx >= 0) messages[mIdx] = nextMsg
-  return withMirror(state, { ...mirror, items, messages })
+  return withMirror(state, {
+    ...mirror,
+    items,
+    messages,
+    activeWorktree: worktreeTouched
+      ? recomputeActiveWorktree(mirror.activeWorktree, messages)
+      : mirror.activeWorktree,
+  })
 }
 
 function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: number): SessionState {
@@ -1636,6 +1665,11 @@ function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: num
     (m) => (typeof m.uuid === 'string' ? m.uuid : null) === uuid,
   )
   const messages = mIdx >= 0 ? mirror.messages.slice() : mirror.messages
+  // The swapped-in copy only differs by `consumedAt`, but it is built from the
+  // ITEM's msg, which need not be the very object `messages[mIdx]` held — so
+  // rescan whenever either side touches a worktree (O(1) otherwise).
+  const worktreeTouched = mIdx >= 0 &&
+    (messageTouchesWorktree(mirror.messages[mIdx]) || messageTouchesWorktree(nextMsg))
   if (mIdx >= 0) messages[mIdx] = nextMsg
   let pendingConsumedMessages: ReadonlyMap<string, number> = mirror.pendingConsumedMessages
   if (pendingConsumedMessages.has(uuid)) {
@@ -1643,7 +1677,15 @@ function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: num
     nextConsumedMessages.delete(uuid)
     pendingConsumedMessages = nextConsumedMessages
   }
-  return withMirror(state, { ...mirror, items, messages, pendingConsumedMessages })
+  return withMirror(state, {
+    ...mirror,
+    items,
+    messages,
+    pendingConsumedMessages,
+    activeWorktree: worktreeTouched
+      ? recomputeActiveWorktree(mirror.activeWorktree, messages)
+      : mirror.activeWorktree,
+  })
 }
 
 // --- Memory bound: front-trim the in-memory transcript -----------------
@@ -1796,6 +1838,9 @@ function trimFront(state: SessionState): SessionState {
     items,
     messages,
     window,
+    // Rescan the retained window (once per MEMORY_TRIM_SLACK appends): the
+    // Enter that set the current value may be among the dropped frames.
+    activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
     toolStatus: pruneMapToLive(mirror.toolStatus, live),
     toolResults: pruneMapToLive(mirror.toolResults, live),
     pendingResults: prunePendingResults(mirror.pendingResults, retained),
@@ -1864,6 +1909,7 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
     items,
     messages,
     window,
+    activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
     pendingConsumedMessages,
     lastMessageUuid:
       mirror.lastMessageUuid && uuidSet.has(mirror.lastMessageUuid)
@@ -2307,6 +2353,9 @@ function updateTranscriptMirror(mirror: ServerMirror, message: SdkMessage): Serv
     ...mirror,
     items: [...mirror.items, item],
     messages: [...mirror.messages, item.msg],
+    // The one append site: fold just the new message (O(its blocks)) — see
+    // ServerMirror.activeWorktree for the invariant every other path keeps.
+    activeWorktree: foldActiveWorktree(mirror.activeWorktree, item.msg),
   }
 }
 

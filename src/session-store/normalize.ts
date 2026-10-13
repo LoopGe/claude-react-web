@@ -804,6 +804,58 @@ export function getActiveWorktree(messages: readonly SdkMessage[]): ActiveWorktr
   return active
 }
 
+/** True when `msg` carries a block that `getActiveWorktree` would act on — the
+ *  exact same predicate (assistant frames only, any block whose `name` is the
+ *  Enter or Exit tool), so the two can never disagree about which messages
+ *  matter. */
+export function messageTouchesWorktree(msg: SdkMessage): boolean {
+  if (msg.type !== 'assistant') return false
+  for (const block of getBlocks(msg)) {
+    const toolName = block.name
+    if (toolName === ENTER_WORKTREE_TOOL_NAME || toolName === EXIT_WORKTREE_TOOL_NAME) return true
+  }
+  return false
+}
+
+/** Structural equality for the two-field ActiveWorktree (null-safe). */
+export function sameActiveWorktree(a: ActiveWorktree | null, b: ActiveWorktree | null): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.name === b.name && a.enterMsgId === b.enterMsgId
+}
+
+/** One step of the `getActiveWorktree` fold: the state after appending `msg`
+ *  to a transcript whose state was `prev`.
+ *
+ *  The fold is last-writer-wins — every Enter/Exit block overwrites the state
+ *  outright — so a message that carries at least one worktree block decides
+ *  the result on its own (`getActiveWorktree([msg])`, the reference applied to
+ *  that message alone), and any other message leaves `prev` untouched. That
+ *  is exactly `getActiveWorktree([...messages, msg])` given
+ *  `prev === getActiveWorktree(messages)`, at O(blocks of msg) instead of
+ *  O(transcript). The reducer's append path uses it to keep
+ *  `ServerMirror.activeWorktree` current without rescanning; every other path
+ *  that mutates `messages` (prepend, trim, evict, reorder, replace) rescans
+ *  with `recomputeActiveWorktree`.
+ *
+ *  Returns `prev` itself when the value is structurally unchanged, so the
+ *  mirror field (and the chip that renders it) keeps a stable identity. */
+export function foldActiveWorktree(prev: ActiveWorktree | null, msg: SdkMessage): ActiveWorktree | null {
+  if (!messageTouchesWorktree(msg)) return prev
+  const next = getActiveWorktree([msg])
+  return sameActiveWorktree(prev, next) ? prev : next
+}
+
+/** Full-scan recompute for the non-append paths, reusing `prev`'s identity
+ *  when the value did not change. */
+export function recomputeActiveWorktree(
+  prev: ActiveWorktree | null,
+  messages: readonly SdkMessage[],
+): ActiveWorktree | null {
+  const next = getActiveWorktree(messages)
+  return sameActiveWorktree(prev, next) ? prev : next
+}
+
 /** Split a raw `input.skill` value into its namespace prefix and bare name.
  *
  *  Plugin-qualified skills arrive as `plugin:skill`

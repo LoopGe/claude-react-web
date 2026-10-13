@@ -1,7 +1,7 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react'
 import { sessionStoreRegistry } from './registry'
 import type { SessionSnapshot, SessionState } from './types'
-import { countTaskActivity, getActiveWorktree, type ActiveWorktree } from './normalize'
+import { countTaskActivity, type ActiveWorktree } from './normalize'
 
 export function useSessionSnapshot(sessionId: string): SessionSnapshot {
   const store = sessionStoreRegistry.getOrCreate(sessionId)
@@ -105,13 +105,18 @@ export function useSessionTaskCounts(sessionId: string): { all: number; indicato
  *  worktree" state, folded from EnterWorktree/ExitWorktree in the
  *  mirrored transcript. Reference-stable when the derived value is
  *  unchanged, so appending unrelated messages doesn't re-render chips
- *  that merely show this. */
+ *  that merely show this.
+ *
+ *  O(1) per store emit: it reads `ServerMirror.activeWorktree`, which the
+ *  reducer maintains incrementally (see that field's doc). It used to run
+ *  `getActiveWorktree` over the whole transcript inside getSnapshot — once
+ *  per emit, i.e. per stream_event delta, per open panel. */
 export function useSessionActiveWorktree(sessionId: string): ActiveWorktree | null {
   const store = sessionStoreRegistry.getOrCreate(sessionId)
   const prevRef = useRef<ActiveWorktree | null>(null)
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store])
   const getSnapshot = useCallback(() => {
-    const active = getActiveWorktree(store.getState().mirror.messages)
+    const active = store.getState().mirror.activeWorktree
     if (
       prevRef.current &&
       prevRef.current.name === active?.name &&
