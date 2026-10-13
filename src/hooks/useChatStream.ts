@@ -160,6 +160,10 @@ export interface ChatStream {
   hasOlder: boolean
   /** True while a loadOlder() request is in flight. */
   loadingOlder: boolean
+  /** Set when a loadOlder() page fetch failed (network/parse). Non-fatal —
+   *  the transcript keeps working; the float offers a Retry. Cleared when the
+   *  next attempt starts and on session switch. */
+  olderError: string | null
 }
 
 export interface PermissionHandlers {
@@ -282,6 +286,12 @@ export function useChatStream(
   // the session changes (see the effect further down).
   const [hasOlder, setHasOlder] = useState(true)
   const [loadingOlder, setLoadingOlder] = useState(false)
+  const [olderError, setOlderError] = useState<string | null>(null)
+  // Mirrors `sessionId` for async guards: a loadOlder() page fetch still in
+  // flight when the user switches sessions resolves on the OLD closure — its
+  // post-await React state writes (setHasOlder / setOlderError) must not land
+  // on the NEW session's UI. Kept current by the [sessionId] reset effect.
+  const sessionIdRef = useRef(sessionId)
   // Disk index to page before next time (the previous response's startIndex).
   // null means "first page — anchor by uuid instead".
   const cursorRef = useRef<number | null>(null)
@@ -749,6 +759,9 @@ export function useChatStream(
           // back in. Reset on session switch (see the paging effect below).
           clearedRef.current = true
           setHasOlder(false)
+          // The stale failure pill must go with the transcript — its Retry
+          // would early-return on clearedRef and the pill would stick.
+          setOlderError(null)
           break
         }
         default:
@@ -851,9 +864,11 @@ export function useChatStream(
     cursorRef.current = null
     inFlightRef.current = false
     clearedRef.current = false
+    sessionIdRef.current = sessionId
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setHasOlder(true)
     setLoadingOlder(false)
+    setOlderError(null)
   }, [sessionId])
 
   /** Fetch one page from the server /history endpoint (the pre-IDB path, and
@@ -881,7 +896,11 @@ export function useChatStream(
     const page = await api.get<HistoryPageResponse>(
       `/sessions/${sessionId}/history?${params.toString()}`,
     )
-    cursorRef.current = page.startIndex
+    // The cursor is a SHARED ref across session switches (the reset effect
+    // nulls it) — a page resolving after the switch must not seed it with the
+    // OLD session's disk index, or the new session's next scroll-up pages
+    // `before=<foreign index>` into the wrong transcript.
+    if (sessionIdRef.current === sessionId) cursorRef.current = page.startIndex
     return { messages: page.messages, hasMore: page.hasMore }
   }, [sessionId, store])
 
@@ -900,6 +919,9 @@ export function useChatStream(
     if (hub.isReplayBurstOpen(sessionId)) return 0
     inFlightRef.current = true
     setLoadingOlder(true)
+    // A new attempt supersedes the previous failure — the float flips from the
+    // error pill to the loading pill while the retry runs.
+    setOlderError(null)
     try {
       // 1. Try IDB first (local, no server round-trip).
       const idb = await store.loadOlderFromIdb(200)
@@ -923,7 +945,11 @@ export function useChatStream(
         if (combined.length > 0) {
           store.dispatch({ type: 'PREPEND_MESSAGES', messages: combined })
         }
-        setHasOlder(hasMore)
+        // Post-await React state is per-session UI: skip the write when the
+        // session switched mid-flight (the reset effect already reseeded it).
+        // The store.dispatch above stays — it targets the OLD session's own
+        // store, which is exactly where those messages belong.
+        if (sessionIdRef.current === sessionId) setHasOlder(hasMore)
         return combined.length
       }
       // 3. IDB unavailable — full server path.
@@ -931,15 +957,24 @@ export function useChatStream(
       if (server.messages.length > 0) {
         store.dispatch({ type: 'PREPEND_MESSAGES', messages: server.messages })
       }
-      setHasOlder(server.hasMore)
+      if (sessionIdRef.current === sessionId) setHasOlder(server.hasMore)
       return server.messages.length
-    } catch {
-      // Network/parse error — leave hasOlder as-is so the user can retry by
-      // scrolling again. Don't surface to the error banner (non-fatal).
+    } catch (e) {
+      // Network/parse error — leave hasOlder as-is so the user can retry via
+      // the float's Retry button (or by scrolling again). Non-fatal: don't
+      // surface to the error banner. Logged for diagnosis; the float shows a
+      // generic message (the raw failure has no useful user-facing text).
+      console.warn('[loadOlder] paging older history failed:', e)
+      if (sessionIdRef.current === sessionId) setOlderError("Couldn't load earlier messages")
       return 0
     } finally {
-      inFlightRef.current = false
-      setLoadingOlder(false)
+      // Skip the latch-clear when the session switched mid-flight: the reset
+      // effect already cleared it, and this stale closure must not break the
+      // NEW session's in-flight guard or hide its loading pill mid-fetch.
+      if (sessionIdRef.current === sessionId) {
+        inFlightRef.current = false
+        setLoadingOlder(false)
+      }
     }
   }, [store, fetchServerPage, hub, sessionId])
 
@@ -982,7 +1017,8 @@ export function useChatStream(
       loadOlder,
       hasOlder,
       loadingOlder,
+      olderError,
     }),
-    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder, olderError],
   )
 }

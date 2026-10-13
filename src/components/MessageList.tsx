@@ -25,7 +25,7 @@ import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/nor
 import { useOptionalSessionField } from '../session-store/selectors'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { OlderHistoryHeader, StreamingFooter, type StreamingFooterVariant } from './message-list/transcript-chrome'
+import { StreamingFooter, type StreamingFooterVariant } from './message-list/transcript-chrome'
 import { ChatEmptyState } from './ChatEmptyState'
 import { EasterEggGame } from './EasterEggGame'
 import { ResultConsumedCtx } from './message-list/result-consumed-context'
@@ -233,12 +233,16 @@ interface Props {
   subagent?: ActiveSubagent | null
   /** Lazy-load the previous page of history from disk and prepend it.
    *  Only wired for the main transcript (not subagent overlays). When
-   *  provided AND `hasOlder` is true, scrolling to the top triggers it. */
+   *  provided AND `hasOlder` is true, scrolling to the top triggers it.
+   *  Also the Retry action on the float's failure pill. */
   loadOlder?: () => Promise<number>
   /** Whether older history may exist on disk before the first shown message.
-   *  Gates the scroll-to-top trigger and the "loading older" affordance. */
+   *  Gates the scroll-to-top trigger (the float renders from loading/error
+   *  alone, so this no longer gates any UI). */
   hasOlder?: boolean
-  /** True while a loadOlder() request is in flight (drives the top spinner). */
+  /** True while a loadOlder() request is in flight (gates the scroll-up
+   *  trigger against double-fires; the loading/error UI itself is rendered
+   *  by the Chat panel / side drawer, not here). */
   loadingOlder?: boolean
   /** Register a navigator that scrolls the transcript to the previous /
    *  next real user message relative to the current viewport top. Wired up
@@ -1257,24 +1261,14 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // cards) is an overlay, so the spacer lets settled messages scroll underneath
   // it instead of being obscured.
   const virtuosoComponents = useMemo(() => {
-    // The Header slot shows a "loading older history" affordance pinned to
-    // the top. Only relevant for the main transcript (loadOlder provided).
-    // `renderableItems.length > 0` gate: with Virtuoso always mounted, the
-    // Header slot would otherwise render even over the empty-state overlay
-    // (hasOlder defaults true on every session). There is nothing to "scroll
-    // up" for until at least one message exists.
-    const showOlderHeader = loadOlder != null && (loadingOlder || hasOlder) && renderableItems.length > 0
     const components: Record<string, () => React.ReactElement> = {}
-    if (showOlderHeader) {
-      components.Header = () => <OlderHistoryHeader loading={loadingOlder} />
-    }
     if (bottomStackHeight > 0) {
       components.Footer = () => (
         <BottomOverlaySpacer height={bottomStackHeight} />
       )
     }
     return components
-  }, [bottomStackHeight, loadOlder, loadingOlder, hasOlder, renderableItems.length])
+  }, [bottomStackHeight])
 
   // Fold the TaskCreate/TaskUpdate stream into a Map<taskId, TaskState> so
   // the inline TaskMutationView card can resolve a TaskUpdate's subject

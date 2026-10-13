@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef } from 'react'
-import { IconZap } from '../icons/ToolIcons'
+import { IconAlertCircle, IconLoader } from '../icons/ToolIcons'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
@@ -9,21 +9,45 @@ import { useMergedRef } from '../../utils/mergedRef'
 // import { CodeBlock } from '../Markdown'
 // import { splitStreamSegments } from '../../utils/stream-segments'
 
-/** Top-of-transcript affordance for reverse infinite scroll. Renders a
- *  spinner while a page is loading, or a thin idle marker when older
- *  history exists but hasn't been requested yet (scrolling up triggers
- *  the fetch via Virtuoso's startReached). */
-export const OlderHistoryHeader = memo(function OlderHistoryHeader({ loading }: { loading: boolean }) {
+/** Floating top-center pill for reverse infinite scroll. Replaces the old
+ *  in-flow Virtuoso Header strip (which ate layout space and carried a
+ *  permanent idle hint). Always mounted — a stable aria-live region, and the
+ *  visibility transition runs both ways — but visually hidden until a page
+ *  is loading or a page failed. Loading wins over a stale error: once the
+ *  retry attempt starts, the hook has already cleared the error. */
+export const OlderHistoryFloat = memo(function OlderHistoryFloat({
+  loading,
+  error,
+  onRetry,
+}: {
+  loading: boolean
+  error: string | null
+  /** The hook's own loadOlder (it IS the retry — same in-flight guards).
+   *  May return a promise; the click voids it. Callers pass it directly —
+   *  no per-parent wrapper needed, the identity stays memo-stable. */
+  onRetry: () => void
+}) {
+  const visible = loading || error != null
   return (
-    <div className="chat-older-history" aria-live="polite">
+    <div className={`chat-older-float${visible ? ' is-visible' : ''}`} aria-live="polite">
       {loading ? (
-        <span className="chat-older-history-loading">
-          <IconZap size={12} aria-hidden />
-          Loading earlier messages...
+        <span className="chat-older-float-pill">
+          <IconLoader size={12} className="chat-older-float-spin" aria-hidden />
+          <span className="chat-older-float-text">Loading earlier messages...</span>
         </span>
-      ) : (
-        <span className="chat-older-history-hint">Scroll up for earlier messages</span>
-      )}
+      ) : error != null ? (
+        <span className="chat-older-float-pill chat-older-float-pill--error">
+          <IconAlertCircle size={12} aria-hidden />
+          <span className="chat-older-float-text">{error}</span>
+          <button
+            type="button"
+            className="chat-older-float-retry"
+            onClick={() => { void onRetry() }}
+          >
+            Retry
+          </button>
+        </span>
+      ) : null}
     </div>
   )
 })

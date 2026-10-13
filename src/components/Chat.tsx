@@ -51,6 +51,7 @@ import { usePhaseDwell } from '../hooks/usePhaseDwell'
 import { Composer } from './Composer'
 import { ContextOrb } from './ContextOrb'
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
+import { OlderHistoryFloat } from './message-list/transcript-chrome'
 import { ChatEmptyStateEnv } from './ChatEmptyStateEnv'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog, type QuestionDraft } from './QuestionDialog'
@@ -2743,6 +2744,16 @@ export const Chat = memo(function Chat({
             />
           )}
         </AnimatePresence>
+        {/* Older-history paging float (loading / failure-with-retry). A flex
+            sibling — NOT inside AnimatePresence — so it stacks beneath the
+            recap and pinned-question cards instead of overlapping them, and
+            skips their exit animations. Hidden unless a page is loading or
+            the last page failed. */}
+        <OlderHistoryFloat
+          loading={stream.loadingOlder}
+          error={stream.olderError}
+          onRetry={streamLoadOlder}
+        />
       </div>
 
       {subagentStack.length > 0 && (

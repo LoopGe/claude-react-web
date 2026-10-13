@@ -663,26 +663,111 @@ button.chat-empty-env-chip:hover {
   line-height: 1.5;
 }
 
-/* Floating "scroll to bottom" button ?visible only when the user has
-   scrolled up. Shows a count badge when new messages arrived meanwhile. */
-.chat-older-history {
+/* Floating "loading earlier messages" pill and its failure variant with
+   Retry. Replaces the old in-flow Virtuoso Header strip: no reserved layout
+   space, no permanent idle hint. The wrapper is always mounted (stable
+   aria-live region); visibility flips via .is-visible so the fade/slide
+   transition runs both ways.
+   Positioning is MOUNT-SCOPED (see .chat-top-stack and
+   .side-chat-drawer-stage rules) — the component itself stays neutral so
+   each site decides anchor + z-index, mirroring how the overlay stacks do.
+   The wrapper stays pointer-events:none even when visible; only the pill
+   re-enables (its empty flanks must click/wheel through to the transcript). */
+.chat-older-float {
   display: flex;
-  align-items: center;
   justify-content: center;
-  padding: var(--space-2-5) var(--space-3);
-  min-height: 32px;
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(calc(-1 * var(--space-1)));
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard),
+    visibility 0s linear var(--motion-duration-fast);
 }
-
-.chat-older-history-loading {
+.chat-older-float.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition-delay: 0s;
+}
+/* Main panel: a flex sibling inside .chat-top-stack — stacks beneath the
+   recap / pinned-question cards instead of overlapping them (they share the
+   top band; a positioned pill would paint under the z-4 stack cards). */
+.chat-top-stack .chat-older-float {
+  position: static;
+  align-self: center;
+  flex: 0 0 auto;
+}
+/* Side drawer: absolutely anchored inside .side-chat-drawer-stage (the
+   positioned wrapper in SideChatDrawer.tsx) — the body below it scrolls, so
+   the pill must not anchor to anything that scrolls with the content. */
+.side-chat-drawer-stage .chat-older-float {
+  position: absolute;
+  top: var(--space-2);
+  left: 0;
+  right: 0;
+  z-index: 2;
+}
+/* Frosted pill shell — same vocabulary as .pinned-user-message (overlays.css):
+   theme vars only, so light/dark follow the theme with no extra rules. */
+.chat-older-float-pill {
+  pointer-events: auto; /* only the pill; the wrapper's flanks stay click-through */
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
+  max-width: 85%;
+  padding: var(--space-1-5) var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--drawer-shadow);
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
 }
-
-.chat-older-history-hint {
-  opacity: 0.6;
+/* The message line ellipsizes instead of the pill clipping its END — the
+   Retry button must stay reachable on narrow stages. */
+.chat-older-float-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-older-float-pill--error {
+  color: var(--fg);
+  /* Danger-tinted border so the failure reads at a glance without turning
+     the pill into a full alert surface. */
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+.chat-older-float-pill--error svg {
+  color: var(--danger);
+  flex: 0 0 auto;
+}
+.chat-older-float-spin {
+  animation: spin 1s linear infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+  flex: 0 0 auto;
+}
+.chat-older-float-retry {
+  margin-left: var(--space-1);
+  flex: 0 0 auto;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.chat-older-float-retry:hover {
+  background: var(--btn-hover-bg);
+  border-color: var(--danger);
 }
 /* Context-usage bar.
    Default (SettingsPanel Context tab): full-width strip with elevated
@@ -3944,6 +4029,15 @@ button.chat-empty-env-chip:hover {
   font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--fg-muted);
+}
+.side-chat-drawer-stage {
+  /* Positioned ancestor for the older-history float; wraps the scrolling
+     body so the pill stays pinned while messages scroll beneath it. */
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .side-chat-drawer-body {
   flex: 1;

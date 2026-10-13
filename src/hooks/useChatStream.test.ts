@@ -511,6 +511,151 @@ describe('useChatStream', () => {
     expect(mockApiGet).toHaveBeenCalled()
   })
 
+  it('surfaces a paging failure as olderError and clears it on the next successful page', async () => {
+    const { result } = renderHook(() => useChatStream('older-err', noopPerms, false, false))
+    mockApiGet.mockRejectedValueOnce(new Error('boom'))
+    let prepended = -1
+    await act(async () => { prepended = await result.current.loadOlder() })
+    expect(prepended).toBe(0)
+    expect(result.current.olderError).toBeTruthy()
+
+    // Next attempt: the error is gone once a page succeeds.
+    await act(async () => { await result.current.loadOlder() })
+    expect(result.current.olderError).toBeNull()
+  })
+
+  it('sets olderError again when a retry also fails', async () => {
+    const { result } = renderHook(() => useChatStream('older-err2', noopPerms, false, false))
+    mockApiGet.mockRejectedValueOnce(new Error('boom'))
+    await act(async () => { await result.current.loadOlder() })
+    expect(result.current.olderError).toBeTruthy()
+
+    // A successful retry clears it…
+    await act(async () => { await result.current.loadOlder() })
+    expect(result.current.olderError).toBeNull()
+
+    // …and a later failure sets it back.
+    mockApiGet.mockRejectedValueOnce(new Error('boom again'))
+    await act(async () => { await result.current.loadOlder() })
+    expect(result.current.olderError).toBeTruthy()
+  })
+
+  it('clears olderError when the session changes', async () => {
+    const { result, rerender } = renderHook(
+      ({ sid }: { sid: string }) => useChatStream(sid, noopPerms, false, false),
+      { initialProps: { sid: 'older-err-a' } },
+    )
+    mockApiGet.mockRejectedValueOnce(new Error('boom'))
+    await act(async () => { await result.current.loadOlder() })
+    expect(result.current.olderError).toBeTruthy()
+
+    rerender({ sid: 'older-err-b' })
+    expect(result.current.olderError).toBeNull()
+  })
+
+  it('clears olderError when a session-cleared frame lands', async () => {
+    const { result } = renderHook(() => useChatStream('older-clear', noopPerms, false, false))
+    mockApiGet.mockRejectedValueOnce(new Error('boom'))
+    await act(async () => { await result.current.loadOlder() })
+    expect(result.current.olderError).toBeTruthy()
+
+    // The in-band /clear resets paging (hasOlder=false, clearedRef latch) —
+    // the stale failure pill must go with it, or it floats over the empty
+    // transcript with a Retry whose loadOlder early-returns on clearedRef.
+    act(() => {
+      dispatchToSession('older-clear', { kind: 'session-cleared', sessionId: 'older-clear' })
+    })
+    expect(result.current.olderError).toBeNull()
+  })
+
+  it('a loadOlder rejection landing after a session switch does not write the new session state', async () => {
+    const { result, rerender } = renderHook(
+      ({ sid }: { sid: string }) => useChatStream(sid, noopPerms, false, false),
+      { initialProps: { sid: 'stale-rej-a' } },
+    )
+    // Reject SLOWLY so the fetch is still in flight when the session switches.
+    mockApiGet.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => setTimeout(() => reject(new Error('late')), 50)),
+    )
+    let flight: Promise<number> | null = null
+    act(() => { flight = result.current.loadOlder() })
+    rerender({ sid: 'stale-rej-b' })
+    await act(async () => { await flight })
+    // The new session must not inherit the old closure's failure pill.
+    expect(result.current.olderError).toBeNull()
+  })
+
+  it('a loadOlder resolution landing after a session switch does not clobber the new session hasOlder', async () => {
+    const { result, rerender } = renderHook(
+      ({ sid }: { sid: string }) => useChatStream(sid, noopPerms, false, false),
+      { initialProps: { sid: 'stale-res-a' } },
+    )
+    // Resolve SLOWLY with hasMore=false — a late write would set the NEW
+    // session's hasOlder=false and silently disable scroll-up paging there.
+    mockApiGet.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(() => resolve({ messages: [], totalCount: 0, startIndex: 0, hasMore: false }), 50)),
+    )
+    let flight: Promise<number> | null = null
+    act(() => { flight = result.current.loadOlder() })
+    rerender({ sid: 'stale-res-b' })
+    await act(async () => { await flight })
+    expect(result.current.hasOlder).toBe(true)
+  })
+
+  it("a stale in-flight page does not pollute the new session's paging cursor", async () => {
+    // A's page resolves after the switch with startIndex 42; the guarded
+    // cursorRef write is skipped, so B's first page anchors by uuid (no
+    // `before` param) instead of paging `before=42` into B's history.
+    mockApiGet.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(() => resolve({ messages: [], totalCount: 0, startIndex: 42, hasMore: true }), 50)),
+    )
+    const { result, rerender } = renderHook(
+      ({ sid }: { sid: string }) => useChatStream(sid, noopPerms, false, false),
+      { initialProps: { sid: 'cursor-a' } },
+    )
+    let flight: Promise<number> | null = null
+    act(() => { flight = result.current.loadOlder() })
+    rerender({ sid: 'cursor-b' })
+    await act(async () => { await flight })
+
+    mockApiGet.mockClear()
+    await act(async () => { await result.current.loadOlder() })
+    expect(mockApiGet).toHaveBeenCalled()
+    const url = String((mockApiGet.mock.calls[0] as unknown[])[0])
+    expect(url).not.toContain('before=42')
+    expect(url).not.toContain('before=')
+  })
+
+  it("a stale in-flight page's finally does not clear the new session's loading state", async () => {
+    // A resolves at 150ms — AFTER B's flight has started (the switch effect
+    // cleared the in-flight latch, so B could start while A was pending).
+    // A's finally must skip the latch + loading writes; B's own finally
+    // (250ms) is the one that clears them.
+    mockApiGet.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(() => resolve({ messages: [], totalCount: 0, startIndex: 0, hasMore: false }), 150)),
+    )
+    mockApiGet.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(() => resolve({ messages: [], totalCount: 0, startIndex: 0, hasMore: false }), 250)),
+    )
+    const { result, rerender } = renderHook(
+      ({ sid }: { sid: string }) => useChatStream(sid, noopPerms, false, false),
+      { initialProps: { sid: 'fin-a' } },
+    )
+    let aFlight: Promise<number> | null = null
+    act(() => { aFlight = result.current.loadOlder() })
+    rerender({ sid: 'fin-b' })
+    let bFlight: Promise<number> | null = null
+    await act(async () => { bFlight = result.current.loadOlder() })
+    // B's flight is in progress (flushed by the act above).
+    expect(result.current.loadingOlder).toBe(true)
+    // Past A's finally (150ms), before B's (250ms): B must still be loading.
+    await act(async () => { await new Promise((r) => setTimeout(r, 200)) })
+    expect(result.current.loadingOlder).toBe(true)
+    await act(async () => { await bFlight })
+    expect(result.current.loadingOlder).toBe(false)
+    void aFlight
+  })
+
   it('settles out-of-order results even when the terminator lands on a fresh closure', async () => {
     // Effect re-run mid-burst: closure 1 applies the tail, closure 2 (no
     // tailMode) receives the backfill chunk and the terminator. The settle
