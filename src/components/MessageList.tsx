@@ -39,6 +39,7 @@ import {
   advanceRowAnchor,
   buildTranscriptRows,
   initialRowAnchor,
+  shouldLoadOlder,
   type RowAnchor,
   type TranscriptRow,
 } from './message-list/transcript-rows'
@@ -673,16 +674,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     replayReady,
     transcriptRevealKey,
   })
-  // Fires when the user scrolls to the top. Pull the previous page of
-  // history from disk if there's more and we're not already loading.
-  const startReached = useCallback(() => {
-    // With Virtuoso always mounted, startReached can fire on the empty-list
-    // mount (scroller at top, no items). Skip the network page in that case —
-    // there is nothing older to load until at least one message is present.
-    if (!loadOlder || !hasOlder || loadingOlder || renderableItems.length === 0) return
-    void loadOlder()
-  }, [loadOlder, hasOlder, loadingOlder, renderableItems.length])
-
   // Reverse map: full items[] index —Virtuoso (renderableItems) index.
   // Needed because search indices reference the full, unfiltered list.
   //
@@ -956,6 +947,25 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   }, [emitVisibleTop])
   const handleRangeChanged = useCallback(
     (range: { startIndex: number; endIndex: number }) => {
+      // Pull the previous page of history when the visible window rides close
+      // to the top of the list. (Virtuoso's `startReached` can never fire
+      // here: it requires items[0].index === 0 in offset space, but the list
+      // is anchored at firstItemIndex = 1e6.) `range.startIndex` is in offset
+      // space already, so it compares against `firstItemIndex` directly.
+      // Main transcript only — subviews (SubagentOverlay etc.) pass a
+      // sessionId and have no older pages.
+      if (
+        sessionId == null &&
+        shouldLoadOlder({
+          rangeStart: range.startIndex,
+          firstItemIndex: firstItemIndexValRef.current,
+          hasOlder,
+          loadingOlder,
+          itemCount: renderableItems.length,
+        })
+      ) {
+        void loadOlder?.()
+      }
       // `range.startIndex` is the first RENDERED row, and
       // `increaseViewportBy.top` deliberately renders ~600px above the fold —
       // so it is NOT the visible top. Measure the real one and keep the
@@ -963,7 +973,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       // (no scroller, or an empty list).
       emitVisibleTop(getVisibleTopIndex() ?? range.startIndex)
     },
-    [emitVisibleTop, getVisibleTopIndex],
+    [sessionId, emitVisibleTop, getVisibleTopIndex, hasOlder, loadingOlder, loadOlder, renderableItems.length],
   )
   // Recompute when the rendered list changes without a range event (e.g. a
   // new turn arrives while parked at a scroll offset) so the pin tracks the
@@ -1334,7 +1344,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           initialTopMostItemIndex={virtuosoData.length > 0 ? virtuosoData.length - 1 : 0}
           followOutput={followOutput}
           atBottomStateChange={atBottomStateChange}
-          startReached={startReached}
           rangeChanged={handleRangeChanged}
           itemContent={itemContent}
           computeItemKey={computeItemKey}

@@ -558,3 +558,17 @@ export function advanceRowAnchor(prev: RowAnchor, rows: readonly TranscriptRow[]
   // replace, fork, /clear swap). Re-anchor; Virtuoso resets its size tree.
   return reanchoredAnchor(rowIds)
 }
+
+/** 向上加载触发判定：可视顶与窗口顶的距离 ≤ LOAD_OLDER_THRESHOLD 行。
+ *  P0：firstItemIndex 仍是 1e6 锚定；P2 切 seq 后本函数不变（减法天然成立）。 */
+export const LOAD_OLDER_THRESHOLD = 5
+export function shouldLoadOlder(opts: {
+  rangeStart: number
+  firstItemIndex: number
+  hasOlder: boolean
+  loadingOlder: boolean
+  itemCount: number
+}): boolean {
+  if (!opts.hasOlder || opts.loadingOlder || opts.itemCount === 0) return false
+  return opts.rangeStart - opts.firstItemIndex <= LOAD_OLDER_THRESHOLD
+}

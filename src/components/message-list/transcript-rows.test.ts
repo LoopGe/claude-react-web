@@ -10,6 +10,7 @@ import {
   advanceRowAnchor,
   buildTranscriptRows,
   initialRowAnchor,
+  shouldLoadOlder,
   type TranscriptRow,
 } from './transcript-rows'
 
@@ -519,5 +520,26 @@ describe('buildTranscriptRows: tool-group fold', () => {
     const byDefault = buildTranscriptRows(input)
     expect(ids(explicit.rows)).toEqual(ids(byDefault.rows))
     expect(explicit.rows[0]!.toolGroup!.memberIds).toEqual(['t1', 't2'])
+  })
+})
+
+describe('shouldLoadOlder', () => {
+  const base = { hasOlder: true, loadingOlder: false, itemCount: 500 }
+  it('fires when visible range is within threshold of the window top', () => {
+    // firstItemIndex=1_000_000（1e6 锚定），可视顶 1_000_003 → 距顶 3 行 ≤ 阈值 5
+    expect(shouldLoadOlder({ ...base, rangeStart: 1_000_003, firstItemIndex: 1_000_000 })).toBe(true)
+  })
+  it('does not fire when far from the top', () => {
+    expect(shouldLoadOlder({ ...base, rangeStart: 1_000_300, firstItemIndex: 1_000_000 })).toBe(false)
+  })
+  it('does not fire when already at true start (nothing older)', () => {
+    // firstItemIndex === 0 且已到顶 → hasOlder 为 false 由调用方保证；这里验证函数不做多余触发
+    expect(shouldLoadOlder({ ...base, hasOlder: false, rangeStart: 0, firstItemIndex: 0 })).toBe(false)
+  })
+  it('does not fire while a load is in flight', () => {
+    expect(shouldLoadOlder({ ...base, loadingOlder: true, rangeStart: 1_000_001, firstItemIndex: 1_000_000 })).toBe(false)
+  })
+  it('does not fire on empty list', () => {
+    expect(shouldLoadOlder({ ...base, itemCount: 0, rangeStart: 0, firstItemIndex: 0 })).toBe(false)
   })
 })
