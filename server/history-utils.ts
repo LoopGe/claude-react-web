@@ -216,6 +216,75 @@ export function shouldBroadcastMessage(msg: { type?: string; subtype?: string })
   return BROADCAST_SYSTEM_SUBTYPES.has(msg.subtype ?? '')
 }
 
+// ---------------------------------------------------------------------------
+// isRenderableSdkMessage — the shared "belongs in the durable transcript"
+// predicate. Lives HERE because three consumers need the identical judgment:
+//   1. history-reader.isRenderable — which raw JSONL lines render on disk
+//      pages (resume seed, lazy-load, search);
+//   2. the transcript seq store's ingest gate (transcript-sidecar's
+//      recordTranscriptMessage) — which live messages get a seq;
+//   3. (via 2) the reconcile back-fill, so a cold rebuild from the JSONL
+//      assigns the same seq space the live path did.
+// One predicate instead of two near-copies is what keeps live-assigned seqs
+// and disk-rebuilt seqs aligned: any drift would shift every later seq.
+// ---------------------------------------------------------------------------
+
+/** SDK interrupt placeholder. When the user interrupts a turn, the CLI
+ *  writes a synthetic `user` text message into the transcript, e.g.
+ *  "[Request interrupted by user]" or "[Request interrupted by user for
+ *  tool use]". It renders as a bare user bubble on both the live and disk
+ *  paths, so both exclude it. Mirrors the SDK's own pattern: anchored at
+ *  line start, optional trailing text inside the brackets. */
+const INTERRUPT_PLACEHOLDER_RE = /^\s*\[Request interrupted by user[^\]]*\]\s*$/
+
+/** True when a user message's content is *only* the SDK interrupt
+ *  placeholder text. Handles both string content and the text-block array
+ *  shape; any non-text/tool_result block or extra text means it's a real
+ *  message and we keep it. */
+function isInterruptPlaceholder(content: unknown): boolean {
+  if (typeof content === 'string') return INTERRUPT_PLACEHOLDER_RE.test(content)
+  if (!Array.isArray(content)) return false
+  let sawText = false
+  for (const block of content) {
+    if (!block || typeof block !== 'object') return false
+    const b = block as { type?: unknown; text?: unknown }
+    if (b.type !== 'text' || typeof b.text !== 'string') return false
+    if (!INTERRUPT_PLACEHOLDER_RE.test(b.text)) return false
+    sawText = true
+  }
+  return sawText
+}
+
+/** True when a message belongs in the durable transcript — the set the
+ *  client renders as top-level rows. Accepts both shapes that carry the
+ *  decision fields: a live SDKMessage (sidechain marked by
+ *  `parent_tool_use_id`) and a raw disk JSONL line (sidechain marked by
+ *  `isSidechain`; `parent_tool_use_id` absent → the nullish check passes).
+ *  `result` frames have no on-disk lines (the SDK doesn't persist them) but
+ *  ARE part of the rendered transcript (per-turn result summaries), so they
+ *  pass here and are re-attached on the disk side by mergeResultFrames. */
+export function isRenderableSdkMessage(msg: {
+  type?: string
+  subtype?: string
+  message?: { content?: unknown }
+  parent_tool_use_id?: string | null
+  isMeta?: boolean
+  isSidechain?: boolean
+}): boolean {
+  if (msg.isMeta || msg.isSidechain) return false
+  if (msg.parent_tool_use_id != null) return false // subagent inner stream
+  if (msg.type === 'user') {
+    return !isInterruptPlaceholder(msg.message?.content)
+  }
+  if (msg.type === 'assistant' || msg.type === 'result' || msg.type === 'tool_use_summary') {
+    return true
+  }
+  if (msg.type === 'system') {
+    return BROADCAST_SYSTEM_SUBTYPES.has(msg.subtype ?? '')
+  }
+  return false
+}
+
 /** A message that belongs in the durable history ring (and therefore the
  *  WS full-replay surface). Ephemeral `stream_event` deltas are excluded:
  *  they are live-streaming fragments (one per content delta — hundreds per

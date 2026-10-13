@@ -64,15 +64,27 @@ export class TranscriptStore {
     return this.nextSeq
   }
 
-  /** pump 路径：为一条可渲染消息分配 seq 并登记。uuid 重复调用（SDK echo）返回原 seq。 */
-  record(uuid: string | null): number {
+  /** 非墓碑消息总数（getTranscriptWindow 的 totalCount 组装输入；墓碑占用的
+   *  seq 不计入——分页走 seq 空间，滚动比例才需要这个"可见"计数）。 */
+  get visibleCount(): number {
+    let n = 0
+    for (const entry of this.messages.values()) {
+      if (!entry.evicted) n++
+    }
+    return n
+  }
+
+  /** pump 路径：为一条可渲染消息分配 seq 并登记。uuid 重复调用（SDK echo）返回原 seq。
+   *  `msg` 挂在登记条目上（Task 3 的 recordTranscriptMessage 传入 live wire 对象；
+   *  hydrate 路径的 msg 来自 sidecar 行），供 messageAt()/window() 读出。 */
+  record(uuid: string | null, msg?: unknown): number {
     if (uuid !== null) {
       const existing = this.uuidToSeq.get(uuid)
       if (existing !== undefined) return existing
       this.uuidToSeq.set(uuid, this.nextSeq)
     }
     const seq = this.nextSeq++
-    this.messages.set(seq, { seq, uuid, msg: undefined })
+    this.messages.set(seq, { seq, uuid, msg })
     return seq
   }
 

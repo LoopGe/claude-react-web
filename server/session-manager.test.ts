@@ -5450,6 +5450,106 @@ describe('SessionManager', () => {
       await expect(sm.debugSession('nope')).rejects.toThrow()
     })
   })
+
+  describe('transcript seq store (Task 3 wiring)', () => {
+    const waitFor = async (cond: () => boolean, ticks = 60): Promise<boolean> => {
+      for (let i = 0; i < ticks; i++) {
+        if (cond()) return true
+        await tick()
+      }
+      return cond()
+    }
+
+    const emitAssistant = (uuid: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant',
+        uuid,
+        parent_tool_use_id: null,
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+
+    it('seq-assigns sent prompts and pump-ingested messages; window reads back by seq', async () => {
+      const info = sm.create({ cwd: '/tmp' })
+      sm.send(info.id, 'hello')
+      emitAssistant('a1', 'hi there')
+      mockHandles[0].emit({ type: 'system', subtype: 'init', uuid: 'init1' })
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)).toBe(true)
+
+      const win = await sm.getTranscriptWindow(info.id)
+      // Durable rows only: the user prompt, the assistant reply, the result
+      // frame. system/init stays out of the seq space (non-broadcast system).
+      expect(win.messages.map((m) => [(m.msg as { uuid?: string }).uuid, m.seq])).toEqual([
+        [expect.any(String), 0],
+        ['a1', 1],
+        ['r1', 2],
+      ])
+      expect((win.messages[0].msg as { message?: { content?: string } }).message?.content).toBe('hello')
+      expect(win.totalCount).toBe(3)
+      expect(win.headSeq).toBe(3)
+      expect(win.hasMore).toBe(false)
+      expect(sm.transcriptHead(info.id)).toEqual({ generation: 0, headSeq: 3 })
+    })
+
+    it('pages backwards by exclusive seq bound', async () => {
+      const info = sm.create({ cwd: '/tmp' })
+      for (let i = 0; i < 5; i++) emitAssistant(`a${i}`, `m${i}`)
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r', session_id: info.id })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 6)).toBe(true)
+
+      const page = await sm.getTranscriptWindow(info.id, 3, 2)
+      expect(page.messages.map((m) => m.seq)).toEqual([1, 2])
+      expect(page.hasMore).toBe(true)
+      const first = await sm.getTranscriptWindow(info.id, 1, 2)
+      expect(first.messages.map((m) => m.seq)).toEqual([0])
+      expect(first.hasMore).toBe(false)
+    })
+
+    it('persists an ndjson sidecar; evictTranscript tombstones flow through the window and survive a reload', async () => {
+      const info = sm.create({ cwd: '/tmp' })
+      sm.send(info.id, 'evict me')
+      emitAssistant('a1', 'reply')
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)).toBe(true)
+      await sm.getTranscriptWindow(info.id) // ensure reconcile completed
+
+      const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
+      expect(existsSync(sidecarFile)).toBe(true)
+
+      const userUuid = (await sm.getTranscriptWindow(info.id)).messages[0].msg.uuid as string
+      expect(sm.evictTranscript(info.id, [userUuid, 'unknown-uuid'])).toEqual([0])
+      // Idempotent: a repeat evict returns nothing and appends nothing.
+      expect(sm.evictTranscript(info.id, [userUuid])).toEqual([])
+
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(win.messages.map((m) => m.seq)).toEqual([1, 2])
+      expect(win.totalCount).toBe(2)
+      expect(win.headSeq).toBe(3) // seqs are not recycled
+
+      // Simulate a process restart: a fresh manager over the same state dir
+      // rehydrates the store from the sidecar, tombstone included.
+      const store2 = new SessionStore({ stateDir: dir })
+      await store2.load()
+      const sm2 = new SessionManager({ store: store2 })
+      try {
+        const reloaded = await sm2.getTranscriptWindow(info.id)
+        expect(reloaded.messages.map((m) => m.seq)).toEqual([1, 2])
+        expect(reloaded.totalCount).toBe(2)
+        expect(reloaded.generation).toBe(0)
+      } finally {
+        await sm2.shutdown()
+      }
+    })
+
+    it('unknown sessions read as empty: transcriptHead null, window empty', async () => {
+      expect(sm.transcriptHead('no-such-session')).toBeNull()
+      expect(sm.evictTranscript('no-such-session', ['u1'])).toEqual([])
+      const win = await sm.getTranscriptWindow('no-such-session')
+      expect(win.messages).toEqual([])
+      expect(win.totalCount).toBe(0)
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------

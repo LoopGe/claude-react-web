@@ -794,6 +794,16 @@ export interface PumpDeps {
    *  uuid-anchored replay overlap detection works after a restart. Optional so
    *  test fixtures can omit it. */
   onPromptEcho?: (session: Session, echoUuid: string) => void
+  /** Seq-assign a durable transcript message at ring-ingestion time (called
+   *  right after the pushBounded into the ring, BEFORE the subscriber
+   *  broadcast — Task 3 of the transcript seq refactor). The SessionManager
+   *  runs the renderability gate (isRenderableSdkMessage) inside
+   *  recordTranscriptMessage: renderable frames get a store seq + a
+   *  fire-and-forget sidecar append; ephemeral/sidechain frames get nothing.
+   *  The seq→message association rides the manager's WeakMap so Task 5 can
+   *  stamp it onto WS frames. Optional so test fixtures that don't exercise
+   *  the seq store can omit it. */
+  onDurableMessage?: (session: Session, msg: SDKMessage) => void
 }
 
 export function hookLifecycleMessage(msg: SDKMessage): HookRuntimeEvent | null {
@@ -1365,6 +1375,12 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             msg,
             isSubagentFrame ? deps.subagentHistoryCap : deps.historyCap,
           )
+          // Transcript seq assignment (Task 3): assign ONCE per message, at
+          // ingestion, before the broadcast — later tasks attach the seq to
+          // the WS frames. The renderability gate lives inside the manager's
+          // recordTranscriptMessage (isRenderableSdkMessage), so ephemeral
+          // and sidechain frames allocate no seq here.
+          deps.onDurableMessage?.(session, msg)
         }
 
         // Only broadcast system messages that the frontend actually needs.
