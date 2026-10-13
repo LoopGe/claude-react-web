@@ -184,7 +184,7 @@ export interface SessionInfoBase<PM = string> {
   fastModeState?: 'off' | 'cooldown' | 'on'
   /** SDK-reported runtime compaction state — true while the CLI is compacting
    *  the transcript (auto-recap / context-window compression). Surfaced so the
-   *  WorkingBubble can show "Recap (auto)…" instead of a stale phase while the
+   *  WorkingBubble can show "Recap…" instead of a stale phase while the
    *  context window is being compressed mid-turn. Not persisted; the SDK
    *  re-reports it via `system/status` after respawn. */
   compacting?: boolean

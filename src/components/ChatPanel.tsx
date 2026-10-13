@@ -202,11 +202,6 @@ export interface ChatPanelProps {
    *  and returns a fresh session; App swaps the panel id. Triggered by the
    *  `/clear` local command. */
   onClearSession: (panelSessionId: string) => void
-  /** `/compact` this panel — the server summarizes and returns a fresh seeded
-   *  continuation session; App swaps the panel id. Triggered by the `/compact`
-   *  local command. Required (like onClearSession) so a missing pass-through
-   *  fails loudly instead of silently swallowing `/compact`. */
-  onCompactSession: (panelSessionId: string) => void
   /** Discard every message after a given assistant message (right-click
    *  "discard from here"). Server forks from the anchor and swaps the
    *  panel id; `deleteOriginal` also unlinks the source transcript. */
@@ -314,7 +309,6 @@ export const ChatPanel = memo(function ChatPanel({
   historyOpen,
   onCloseHistory,
   onClearSession,
-  onCompactSession,
   onDiscard,
   onOpenSettingsTab,
   onShowHelp,
@@ -1274,7 +1268,6 @@ export const ChatPanel = memo(function ChatPanel({
             historyOpen={historyOpen}
             onCloseHistory={onCloseHistory}
             onClearSession={onClearSession}
-            onCompactSession={onCompactSession}
             onDiscard={onDiscard}
             onOpenSettingsTab={onOpenSettingsTab}
             onShowHelp={onShowHelp}

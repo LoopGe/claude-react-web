@@ -681,9 +681,9 @@ export function App() {
   // State mirror of clearingIdsRef so the panel can re-render to show the
   // clearing blur (view-only — does NOT gate the data swap). The WS guard
   // reads the ref; the UI reads the state. NOT an exact mirror of the ref's
-  // key set: /clear and /discard populate it; /compact and /restart arm only
-  // the ref (they swap X→Y without the blur). Same state+ref-mirror pattern
-  // as openIds/openIdsRef.
+  // key set: /clear and /discard populate it; /restart arms only the ref (it
+  // swaps X→Y without the blur; /compact is a CLI pass-through and touches
+  // neither). Same state+ref-mirror pattern as openIds/openIdsRef.
   const [clearingIds, setClearingIds] = useState<Set<string>>(new Set())
   // Set by the guarded `session-removed` handler when the server has confirmed
   // X's removal during a /clear. Read by handleClear's catch to distinguish
@@ -4317,29 +4317,22 @@ export function App() {
    *  confirmations (the clearingIdsRef guard keeps X fully alive until the
    *  swap). X's transcript survives on disk, recoverable via the resume
    *  picker. The cleared panel blurs (view-only, via `clearingIds`) during the
-   *  POST — /clear only; compact shares this function but skips the state
-   *  mirror, so it swaps X→Y without the blur. Y mounts fresh and plays
-   *  `.entering`. */
+   *  POST. Y mounts fresh and plays `.entering`. */
 
   const resetSession = useCallback(
-    async (id: string, kind: 'clear' | 'compact') => {
-      // Guard: the server broadcasts session-removed(X) during the reset (a
-      // clear, or a compact — which is clear-with-summary-seed); the
+    async (id: string) => {
+      // Guard: the server broadcasts session-removed(X) during the reset; the
       // guarded handler skips ALL teardown (incl. setSessions) so X stays
       // fully alive until swapSession replaces it — no sidebar churn, no
       // panel compaction across the WS-vs-POST race.
       clearingIdsRef.current.add(id)
-      // The blur is a /clear affordance: the reset path mirrors into state
-      // only for /clear — compact keeps the WS guard (ref) but no state
-      // mirror, so it swaps X→Y silently (handleRestart takes the same
-      // ref-only route). /discard is a separate flow and does mirror.
-      if (kind === 'clear') {
-        setClearingIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
-      }
+      // The blur is a /clear affordance: mirror the reset into state.
+      // (/discard is a separate flow and does the same.)
+      setClearingIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
       clearingInFlightRef.current.set(id, (clearingInFlightRef.current.get(id) ?? 0) + 1)
       try {
         // POST only — no 180 ms veil gate. Data swaps the instant Y is known.
-        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/${kind}`, {})
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/clear`, {})
         const newId = res.session.id
         if (newId !== id) {
           // X hosted a Side Chat? Tear it down (the guarded session-removed
@@ -4380,7 +4373,7 @@ export function App() {
             return changed ? next : prev
           })
         }
-        toast.error(`Couldn't ${kind} session: ${(e as Error).message}`)
+        toast.error(`Couldn't clear session: ${(e as Error).message}`)
       } finally {
         // Release the guard + blur only when this is the last in-flight clear
         // for id. A short-circuited second call (same-tab double-/clear) leaves
@@ -4405,8 +4398,7 @@ export function App() {
     [toast, cleanupSideChat, swapSession, teardownRemovedSession, pruneSession],
   )
 
-  const handleClear = useCallback((id: string) => resetSession(id, 'clear'), [resetSession])
-  const handleCompact = useCallback((id: string) => resetSession(id, 'compact'), [resetSession])
+  const handleClear = useCallback((id: string) => resetSession(id), [resetSession])
 
   /** Discard every message after a given assistant message (right-click
    *  "discard from here"). The server forks from the anchor (inclusive) and
@@ -4975,7 +4967,6 @@ export function App() {
                       historyOpen={historyPanelOpen && focusedId === s.id}
                       onCloseHistory={handleCloseHistory}
                       onClearSession={handleClear}
-                      onCompactSession={handleCompact}
                       onDiscard={handleDiscard}
                       onOpenSettingsTab={openSettingsTab}
                       onShowHelp={showHelpWithCommands}

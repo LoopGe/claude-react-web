@@ -333,7 +333,7 @@ export interface Session {
   fastModeState?: FastModeState
   /** SDK-reported runtime compaction state — true while the CLI is compacting
    *  the transcript (`system/status` frames with `status: 'compacting'`), so
-   *  the WorkingBubble can show "Recap (auto)…" instead of a stale phase.
+   *  the WorkingBubble can show "Recap…" instead of a stale phase.
    *  Mirrors fastModeState: read-only, transient, not persisted; the SDK
    *  re-reports it via a later status frame after respawn. Cleared at turn
    *  end as a lifecycle bound (compaction is a mid-turn phenomenon). */

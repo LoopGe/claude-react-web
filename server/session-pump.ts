@@ -1169,7 +1169,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // Track the SDK-reported compaction state. It rides on `system/status`
         // frames (`status: 'compacting'` while the CLI compacts the transcript;
         // a later status frame clears it). When it changes, broadcast a
-        // session-update so the WorkingBubble can show "Recap (auto)…" instead
+        // session-update so the WorkingBubble can show "Recap…" instead
         // of a stale phase. Not persisted — the SDK re-reports it after respawn.
         {
           const compacting = compactingOf(msg)
@@ -1566,7 +1566,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // Compaction is a mid-turn phenomenon — a `result` means the turn
           // (and any compaction it triggered) is done. The CLI normally clears
           // `compacting` via a status frame; this is a lifecycle bound so a
-          // missed frame can't stick the "Recap (auto)…" label on forever.
+          // missed frame can't stick the "Recap…" label on forever.
           if (session.compacting) {
             session.compacting = undefined
             deps.broadcastInfo?.(session)

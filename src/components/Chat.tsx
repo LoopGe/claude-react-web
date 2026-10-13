@@ -245,11 +245,6 @@ interface Props {
    *  detaches the pre-clear conversation and returns a fresh session under a
    *  new id). Invoked by the `/clear` local command. */
   onClearSession: (panelSessionId: string) => void
-  /** `/compact` this panel. App owns the POST + panel id-swap: the server
-   *  summarizes and returns a fresh seeded continuation session under a new
-   *  id. Invoked by the `/compact` local command. Required (like /clear) so a
-   *  missing pass-through fails loudly rather than swallowing `/compact`. */
-  onCompactSession: (panelSessionId: string) => void
   /** Nonce-stamped request to switch the settings tab ?forwarded to
    *  SettingsPanel, which applies it when the nonce changes. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
@@ -441,7 +436,7 @@ export const Chat = memo(function Chat({
   worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onCompactSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -1555,13 +1550,6 @@ export const Chat = memo(function Chat({
     onClearSession(sessionId)
   }, [clearError, onClearSession])
 
-  const requestCompactSession = useCallback((sessionId: string) => {
-    // Same owned-by-App contract as /clear: the server returns a fresh
-    // continuation session Y (seeded with the summary); App swaps this panel
-    // from X to Y. No local error/clearing state — failures toast in App.
-    onCompactSession(sessionId)
-  }, [onCompactSession])
-
   /** Run a `!`/`!!` bash command: optimistic placeholder → POST /exec →
    *  ack/rollback. `share:true` (`!!`) injects the result into the SDK
    *  transcript so the model sees it (triggers a model turn); the default
@@ -1621,7 +1609,8 @@ export const Chat = memo(function Chat({
       return
     }
     // Expanded here, after routing, so every path below works on the pasted
-    // bodies instead of `[Pasted text #N]`.
+    // bodies instead of `[Pasted text #N]`. composeOutgoing also rewrites the
+    // /summarize legacy alias to /compact (see outgoing-text.ts).
     const { text, full } = composeOutgoing(input, attachmentList, expandPastedText)
     // Client-side local commands (e.g. /resume) are intercepted here and
     // handled in-app instead of being POSTed to the SDK. Matched strictly
@@ -1636,7 +1625,6 @@ export const Chat = memo(function Chat({
         openSettingsTab: onOpenSettingsTab,
         showHelp: onShowHelp,
         clearSession: requestClearSession,
-        compactSession: requestCompactSession,
       })
       return
     }
@@ -1715,7 +1703,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, requestCompactSession, runBashCommand])
+  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, runBashCommand])
 
   // The Overlay primitive owns the focus traps and presence for the settings
   // + git overlays; its `mounted && open` active gate reproduces the old

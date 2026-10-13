@@ -43,10 +43,11 @@ export const WorkingBubble = memo(function WorkingBubble({
   activePhase?: import('../../hooks/useChatStream').ActivePhase
   /** True while the CLI is compacting the transcript mid-turn (SDK
    *  `system/status` `status: 'compacting'`, mirrored from
-   *  `session.compacting`). Overrides the phase label with a "Recap (auto)…"
+   *  `session.compacting`). Overrides the phase label with a "Recap…"
    *  cue — the compaction produces no stream events, so without this the
    *  bubble would sit on a stale phase while the context window is
-   *  compressed. */
+   *  compressed. Probe-verified to fire for MANUAL /compact pass-throughs
+   *  too, not just CLI auto-compact — hence the trigger-neutral label. */
   recapping?: boolean
   /** True when the parent turn has ended but `pending` background subagents
    *  are still in flight. The bubble stays mounted and shows "Waiting..."
@@ -100,7 +101,7 @@ export const WorkingBubble = memo(function WorkingBubble({
   const labelText = waiting
     ? 'Waiting...'
     : recapping
-      ? 'Recap (auto)...'
+      ? 'Recap...'
       : activePhase === 'thinking'
         ? 'Thinking...'
         : activePhase === 'writing'
