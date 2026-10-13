@@ -2496,6 +2496,28 @@
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
 }
+/* Un-dock while the dock shows an error. The dock-fold pull lifts the NEXT
+   sibling (.chat-dock) 18px over the card's reserved glass band, and the
+   design assumes the composer is what covers that band. But .chat-dock's
+   first child is the always-mounted .error-bar — when an error is visible
+   ('Stream reconnecting…' during a WS reconnect, a panel error, …) the RED
+   error card is what lands in the overlap zone, smeared across the docked
+   card's squared glass band with its text riding the glass line. So while a
+   visible error-bar exists in the dock, both collapsed cards release the
+   tuck and sit as ordinary header-only cards above the error card: the
+   values below revert EXACTLY to the base geometry (base margin/padding
+   shorthands + glass.css's --radius-xl), and since the transition lives on
+   the base rules, the release and the re-dock when the error clears both
+   animate. :has() keys off the dock itself — no JS, and the empty
+   error-bar (error-bar-empty, 1×1 absolute) never matches. Pinned by
+   styles/bottom-dock.test.ts (lockstep with the geometry pins above). */
+.chat-bottom-overlay:has(.chat-dock > .error-bar:not(.error-bar-empty)) .todo-panel.todo-panel-collapsed,
+.chat-bottom-overlay:has(.chat-dock > .error-bar:not(.error-bar-empty)) .monitor-bar.monitor-bar-collapsed {
+  margin-bottom: var(--chat-row-gap);
+  padding-bottom: var(--space-2-5);
+  border-bottom-left-radius: var(--radius-xl);
+  border-bottom-right-radius: var(--radius-xl);
+}
 /* The collapsed-header rotor's STRUCTURE is the shared .dock-rotor* block in
    the TaskList section above (rendered by src/components/DockRotor.tsx) —
    only the shimmer class differs here, and it is already this card's own

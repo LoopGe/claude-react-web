@@ -116,6 +116,42 @@ describe('TaskList collapsed dock (prototype variant B)', () => {
   })
 })
 
+describe('collapsed dock vs a visible dock error-bar (un-dock counter-rule)', () => {
+  // The dock-fold pull (margin-bottom -30px) lifts the dock's TOP 18px over
+  // the card's reserved glass band. The design assumes that band is covered
+  // by the composer (later tree order → paints above the frosted glass). But
+  // .chat-dock's first child is the always-mounted .error-bar, which becomes
+  // a visible card whenever an error is showing (e.g. 'Stream reconnecting…'
+  // while the WS hub is reconnecting) — the red strip then lands IN the
+  // overlap zone, smeared across the collapsed card's squared glass band.
+  // The counter-rule un-docks the card while a visible error-bar exists so
+  // the error card sits below it with the normal row gap; both docked cards
+  // must carry it (lockstep), reverting EXACTLY to the base geometry (the
+  // base rules own the transition, so both directions animate).
+  const head = '.chat-bottom-overlay:has(.chat-dock > .error-bar:not(.error-bar-empty))'
+
+  it('un-docks the collapsed TaskList card while a dock error-bar is visible', () => {
+    const start = css.indexOf(`${head} .todo-panel.todo-panel-collapsed`)
+    expect(start, 'un-dock counter-rule present in messages.css').toBeGreaterThanOrEqual(0)
+    const body = css.slice(start, css.indexOf('\n}', start)).replace(/\/\*[\s\S]*?\*\//g, '')
+    // Exact revert to the base-rule geometry (the same values the base
+    // `margin:` / `padding:` shorthands and glass.css's radius resolve to) —
+    // anything else would make the un-docked state a third geometry.
+    expect(body).toContain('margin-bottom: var(--chat-row-gap)')
+    expect(body).toContain('padding-bottom: var(--space-2-5)')
+    expect(body).toContain('border-bottom-left-radius: var(--radius-xl)')
+    expect(body).toContain('border-bottom-right-radius: var(--radius-xl)')
+  })
+
+  it('un-docks the collapsed MonitorBar card in the same grouped rule (lockstep)', () => {
+    const start = css.indexOf(`${head} .todo-panel.todo-panel-collapsed`)
+    expect(start, 'un-dock counter-rule present in messages.css').toBeGreaterThanOrEqual(0)
+    const headEnd = css.indexOf('{', start)
+    const groupHead = css.slice(start, headEnd)
+    expect(groupHead).toContain(`${head} .monitor-bar.monitor-bar-collapsed`)
+  })
+})
+
 describe('MonitorBar collapsed dock (same recipe as the TaskList card)', () => {
   it('collapsed bar docks behind the composer with the shared geometry', () => {
     const body = declarations('.monitor-bar.monitor-bar-collapsed')
