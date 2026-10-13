@@ -396,8 +396,9 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     // Cwd first: it can 400/409 after the existsSync pre-check (TOCTOU, live
     // session). Applying rename first would persist a title the caller
     // treats as part of a failed patch.
-    let info = hasCwd ? sm.setCwd(id, body.cwd as string) : undefined
-    if (hasTitle) info = sm.rename(id, body.title as string)
+    // Both wait on the session's op lock (e.g. behind an in-flight resume).
+    let info = hasCwd ? await sm.setCwd(id, body.cwd as string) : undefined
+    if (hasTitle) info = await sm.rename(id, body.title as string)
     return c.json({ session: info })
   })
 

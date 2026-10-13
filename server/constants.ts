@@ -24,6 +24,14 @@ export const DEBOUNCE_MS = 500
  *  3 s while the stream runs. */
 export const GIT_BROADCAST_MAX_WAIT_MS = 3_000
 
+/** How long SessionManager.delete() queues on the session's op lock before
+ *  it runs anyway. A locked setter awaits an in-band SDK control request
+ *  that has no deadline; if the CLI never answers, the lock is never
+ *  released, and delete is the user's escape hatch. Set above the slowest
+ *  legitimate locked op (fork's snapshot capture is capped at 15 s), so
+ *  delete only overtakes a holder that is actually wedged. */
+export const DELETE_LOCK_MAX_WAIT_MS = 20_000
+
 /** Default cap (bytes) on untracked files captured by the file-snapshot
  *  sidecar. Backs the `fileSnapshotsMaxUntrackedBytes` config default and
  *  the SnapshotService / shadow-git fallbacks, so the default cannot drift

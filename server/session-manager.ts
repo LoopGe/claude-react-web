@@ -31,6 +31,7 @@ import { join } from 'node:path'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
+import { SessionOpLock } from './session-op-lock.js'
 import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
 import { SnapshotService, type RewindPreview } from './snapshot/snapshot-service.js'
@@ -157,7 +158,7 @@ import {
 import { SUPPORTED_DIALOG_KINDS } from '../shared/user-dialog.js'
 import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
 import { raceWithFallback } from './with-timeout.js'
-import { COMMAND_PREVIEW_CAP } from './constants.js'
+import { COMMAND_PREVIEW_CAP, DELETE_LOCK_MAX_WAIT_MS } from './constants.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -702,6 +703,14 @@ type SdkModelInfo = {
   supportedEffortLevels: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[]
 }
 
+type ForkOpts = {
+  resumeSessionAt?: string
+  historySeed?: SDKMessage[]
+  inheritIdentity?: boolean
+  replacesSource?: boolean
+  forkFromLastSafe?: boolean
+}
+
 export class SessionManager {
   private sessions = new Map<string, Session>()
   private historyCap: number
@@ -720,6 +729,8 @@ export class SessionManager {
    *  that may crash again, and the user should take over after a couple of
    *  failures. Configurable via SessionManagerOptions.maxCrashRecovery. */
   private maxCrashRecovery: number
+  /** delete()'s bound on queueing for the op lock (see DELETE_LOCK_MAX_WAIT_MS). */
+  private readonly deleteLockMaxWaitMs: number
   private healthMonitor: SessionHealthMonitor
   private store?: SessionStore
   private promptUuidStore: PromptUuidStore
@@ -814,6 +825,7 @@ export class SessionManager {
     this.autoResumeEnabled = opts.autoResume ?? false
     this.crashRecoveryEnabled = opts.crashRecovery ?? false
     this.maxCrashRecovery = opts.maxCrashRecovery ?? 2
+    this.deleteLockMaxWaitMs = opts.deleteLockMaxWaitMs ?? DELETE_LOCK_MAX_WAIT_MS
     this.store = opts.store ?? new SessionStore()
     this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
     this.turnAnchorStore = new TurnAnchorStore(this.store.getDir(), this.historyCap)
@@ -1536,21 +1548,21 @@ export class SessionManager {
    *  - Refuses to resume terminated sessions; the SDK can't continue past
    *    a `result` message anyway.
    */
-  async resume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo> {
+  resume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo> {
     // Coalesce: resume() awaits hasSdkTranscript / history / MCP refresh before
     // spawning, so two racing calls (parallel /resume POSTs) both pass the live
     // guard above and both reach spawn() — the second sessions.set() orphans the
     // first Query, leaving a duplicate claude.exe (observed). Return the in-flight
-    // promise so a concurrent second call awaits the SAME spawn.
+    // promise so a concurrent second call awaits the SAME spawn. (Deliberately
+    // not `async`: an async wrapper would hand each caller a distinct promise.)
     const inflight = this.resumeInFlight.get(id)
     if (inflight) return inflight
-    // Meta-write lock held across the WHOLE doResume (probe → spawn →
-    // writeStore). setCwd / rename must not interleave: writeStore is a
-    // wholesale replace from a snapshot captured here, so a field update in
-    // the await window would be silently reverted (TOCTOU).
-    this.metaWriteInFlight.add(id)
-    const p = this.doResume(id, opts).finally(() => {
-      this.metaWriteInFlight.delete(id)
+    // The op lock is held across the WHOLE doResume (probe → spawn →
+    // writeStore), so setCwd / rename / clear / sleep etc. queue behind it
+    // instead of interleaving: writeStore is a wholesale replace from a
+    // snapshot captured here, so a field update in the await window would be
+    // silently reverted (TOCTOU).
+    const p = this.opLock.run(id, () => this.doResume(id, opts)).finally(() => {
       // Only clear if we're still tracked — a later resume may have replaced
       // us while we were settling (don't remove the replacement).
       if (this.resumeInFlight.get(id) === p) this.resumeInFlight.delete(id)
@@ -1921,10 +1933,20 @@ export class SessionManager {
       `(cwd=${meta.cwd ?? '<none>'}, lastTurnAt=${meta.lastTurnAt ?? 'none'}, ` +
       `messageCount=${meta.messageCount})`,
     )
-    meta.terminated = true
-    meta.terminatedReason = 'transcript_missing'
-    this.store?.upsert(meta)
-    this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(meta) })
+    const mark: Pick<SessionMeta, 'terminated' | 'terminatedReason'> = {
+      terminated: true,
+      terminatedReason: 'transcript_missing',
+    }
+    // Field-scoped patch of the CURRENT entry, so a meta snapshot the caller
+    // took before its transcript probe can't revert a concurrent write. A
+    // session with no store entry (caller-built fallback meta) is inserted
+    // whole, as before.
+    let next = this.store?.patch(meta.id, mark)
+    if (!next) {
+      next = { ...meta, ...mark }
+      this.store?.upsert(next)
+    }
+    this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(next) })
   }
 
   private readProviderHistoryPage(
@@ -1955,7 +1977,13 @@ export class SessionManager {
    *  `result` message, so forking earlier fails with `No conversation
    *  found with session ID: <uuid>` from the CLI. `lastTurnAt` is our
    *  ground-truth signal (set only by the pump on a real `result`). */
-  async fork(id: string, opts?: { resumeSessionAt?: string; historySeed?: SDKMessage[]; inheritIdentity?: boolean; replacesSource?: boolean; forkFromLastSafe?: boolean }): Promise<SessionInfo> {
+  async fork(id: string, opts?: ForkOpts): Promise<SessionInfo> {
+    // Locked on the SOURCE id (see opLock): the source's meta / sidecars are
+    // what fork reads across its awaits.
+    return this.opLock.run(id, () => this.doFork(id, opts))
+  }
+
+  private async doFork(id: string, opts?: ForkOpts): Promise<SessionInfo> {
     const live = this.sessions.get(id)
     const meta = live ?? this.store?.get(id)
     if (!meta) throw new HttpError(404, `session ${id} not found`)
@@ -2166,6 +2194,14 @@ export class SessionManager {
    *  later discard on Y can still cut at any earlier turn (the feature
    *  composes — repeated discards walk back through history). */
   async discard(
+    id: string,
+    fromAssistantUuid: string,
+    opts?: { deleteOriginal?: boolean },
+  ): Promise<SessionInfo> {
+    return this.opLock.run(id, () => this.doDiscard(id, fromAssistantUuid, opts))
+  }
+
+  private async doDiscard(
     id: string,
     fromAssistantUuid: string,
     opts?: { deleteOriginal?: boolean },
@@ -2588,17 +2624,21 @@ export class SessionManager {
     if (!session.cwd) return
     if (!session.gitStartSha) {
       void tryCaptureGitHead(session.cwd).then((sha) => {
-        if (!sha || session.terminated || !this.sessions.has(session.id)) return
+        // Identity check (not .has): a replaced Session object under the same
+        // id must not write. Patch only this field — these callbacks land at
+        // an arbitrary point relative to any locked op on the session, so a
+        // wholesale writeStore here could revert a concurrent meta write.
+        if (!sha || session.terminated || this.sessions.get(session.id) !== session) return
         session.gitStartSha = sha
-        this.writeStore(session)
+        this.store?.patch(session.id, { gitStartSha: sha })
         this.broadcastGlobal({ kind: 'update', session: this.info(session) })
       }).catch(() => {})
     }
     if (!session.repoRoot) {
       void tryCaptureRepoRoot(session.cwd).then((root) => {
-        if (!root || session.terminated || !this.sessions.has(session.id)) return
+        if (!root || session.terminated || this.sessions.get(session.id) !== session) return
         session.repoRoot = root
-        this.writeStore(session)
+        this.store?.patch(session.id, { repoRoot: root })
       }).catch(() => {})
     }
   }
@@ -2729,11 +2769,12 @@ export class SessionManager {
       createdAt,
       lastActivityAt: Date.now(),
       ...metaSnapshot,
-      // Title / cwd are NOT snapshotted from opts alone: writeStore is a
-      // wholesale replace, so a concurrent setCwd / rename (or any future
-      // dormant meta writer) would be reverted by this spawn. Re-read them
-      // like gitStartSha / lastTurnAt / hooks below — the existingMeta
-      // carry-forward is the write-store-level half of the meta-write lock.
+      // Title / cwd are re-read from the persisted meta, like gitStartSha /
+      // lastTurnAt / hooks below: the persisted meta is the carry path for a
+      // same-id spawn (resume / respawnFresh). The op lock serializes setCwd /
+      // rename against resume, so they can no longer land inside the
+      // resume → spawn window; writeStore below is still a wholesale replace
+      // from this projection.
       title: existingMeta?.title ?? metaSnapshot.title,
       cwd: existingMeta?.cwd ?? metaSnapshot.cwd,
       // Carry a spawn-scoped tool-surface profile. A caller-supplied profile
@@ -3691,6 +3732,15 @@ export class SessionManager {
    *  Idempotent: a second clear() while one is already in flight returns the
    *  current SessionInfo without re-driving the lifecycle. */
   async clear(id: string, opts?: { seedText?: string }): Promise<SessionInfo> {
+    // Idempotency fast path BEFORE queueing on the op lock: a second clear()
+    // while one is in flight returns the current info at once, as it always
+    // has, instead of waiting for the first to remove X and then 404ing.
+    const inFlight = this.sessions.get(id)
+    if (inFlight?.clearing) return this.info(inFlight)
+    return this.opLock.run(id, () => this.doClear(id, opts))
+  }
+
+  private async doClear(id: string, opts?: { seedText?: string }): Promise<SessionInfo> {
     const s = this.requireRunnable(id)
     if (s.clearing) return this.info(s)
 
@@ -4037,29 +4087,31 @@ export class SessionManager {
    *  Terminated sessions fail `requireLive` (410); already-dormant sessions
    *  aren't in the live map, so `requireLive` → `require` throws 404. */
   async sleep(id: string): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    if (this.phaseOf(s) !== 'idle') {
-      // The parent turn may have already finished while a background
-      // subagent is still running — blame the real blocker, not the turn.
-      const hasBackgroundSubagent = this.backgroundSubagentCount(s) > 0
-      throw new HttpError(
-        409,
-        hasBackgroundSubagent
-          ? `session ${id} has a background subagent still running — wait for it to finish before sleeping`
-          : `session ${id} is working — wait for the turn to finish before sleeping`,
-      )
-    }
-    log.info(`[session ${id}] sleep: unloading to dormant (releasing SDK subprocess + subscribers)`)
-    // Mark the session as deliberately-slept BEFORE unload persists it, so
-    // the flag survives a server restart and the client can distinguish
-    // this from a passive restart/crash dormant state (and skip auto-resume
-    // paths). Cleared on the next spawn() (resume / fresh).
-    s.slept = true
-    await this.unload(id) // no opts => dormant, not terminated; keep store + transcript
-    // Read the info off the (now-detached) session object directly rather
-    // than this.get(id): `s` is the ground truth we just unloaded, and this
-    // avoids a store lookup (and works even when no store is configured).
-    return this.info(s)
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      if (this.phaseOf(s) !== 'idle') {
+        // The parent turn may have already finished while a background
+        // subagent is still running — blame the real blocker, not the turn.
+        const hasBackgroundSubagent = this.backgroundSubagentCount(s) > 0
+        throw new HttpError(
+          409,
+          hasBackgroundSubagent
+            ? `session ${id} has a background subagent still running — wait for it to finish before sleeping`
+            : `session ${id} is working — wait for the turn to finish before sleeping`,
+        )
+      }
+      log.info(`[session ${id}] sleep: unloading to dormant (releasing SDK subprocess + subscribers)`)
+      // Mark the session as deliberately-slept BEFORE unload persists it, so
+      // the flag survives a server restart and the client can distinguish
+      // this from a passive restart/crash dormant state (and skip auto-resume
+      // paths). Cleared on the next spawn() (resume / fresh).
+      s.slept = true
+      await this.unload(id) // no opts => dormant, not terminated; keep store + transcript
+      // Read the info off the (now-detached) session object directly rather
+      // than this.get(id): `s` is the ground truth we just unloaded, and this
+      // avoids a store lookup (and works even when no store is configured).
+      return this.info(s)
+    })
   }
 
   /** Switch the MAIN-THREAD agent (persona) on a live session. `name` must
@@ -4120,116 +4172,125 @@ export class SessionManager {
   }
 
   async setModel(id: string, model?: string): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    const wasGroup = !!s.modelGroupId
-    await this.requireHandleMethod<(model?: string) => Promise<void>>(
-      s,
-      'setModel',
-      'model switching',
-      'supportsModelSwitch',
-    )(model)
-    if (wasGroup) {
-      // Switching to a single model fully reverts today's behavior: clear
-      // the group reference AND the fallback degradation chain so no
-      // residual aliases survive the switch.
-      await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      const wasGroup = !!s.modelGroupId
+      await this.requireHandleMethod<(model?: string) => Promise<void>>(
         s,
-        'applyFlagSettings',
-        'fallback model',
+        'setModel',
+        'model switching',
         'supportsModelSwitch',
-      )({ fallbackModel: null })
-    }
-    s.model = model
-    s.modelGroupId = undefined
-    s.lastActivityAt = Date.now()
-    // The model changed — recompute its effort capability (keyword-based,
-    // so a switch between model classes changes what's available), then
-    // carry the new effortLevels.
-    s.effortLevels = effortLevelsForModel(s.model)
-    // Thinking capability tracks the model family too — recompute on switch.
-    s.thinkingSupported = supportsThinkingForModel(s.model)
-    // The CLI's cached auto-compact threshold was computed for the OLD model's
-    // window. resolveAutoCompactThreshold gates on the model name so a stale
-    // entry can't leak into the bar, but drop it eagerly so the next turn
-    // doesn't carry a dead object around.
-    s.lastSdkAutoCompact = undefined
-    this.persist(s)
-    return this.info(s)
+      )(model)
+      if (wasGroup) {
+        // Switching to a single model fully reverts today's behavior: clear
+        // the group reference AND the fallback degradation chain so no
+        // residual aliases survive the switch.
+        await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+          s,
+          'applyFlagSettings',
+          'fallback model',
+          'supportsModelSwitch',
+        )({ fallbackModel: null })
+      }
+      s.model = model
+      s.modelGroupId = undefined
+      s.lastActivityAt = Date.now()
+      // The model changed — recompute its effort capability (keyword-based,
+      // so a switch between model classes changes what's available), then
+      // carry the new effortLevels.
+      s.effortLevels = effortLevelsForModel(s.model)
+      // Thinking capability tracks the model family too — recompute on switch.
+      s.thinkingSupported = supportsThinkingForModel(s.model)
+      // The CLI's cached auto-compact threshold was computed for the OLD model's
+      // window. resolveAutoCompactThreshold gates on the model name so a stale
+      // entry can't leak into the bar, but drop it eagerly so the next turn
+      // doesn't carry a dead object around.
+      s.lastSdkAutoCompact = undefined
+      this.persist(s)
+      return this.info(s)
+    })
   }
 
   /** Point a session at a ModelGroup. The main model + fallback chain switch
    *  immediately (live); the tier env vars (subagent routing) land on the
    *  next respawn — an SDK runtime limitation, not a bug (spec §7). */
   async setModelGroup(id: string, groupId: string): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    const profile = effectiveProfileFor(s.profileId)
-    const group = profile.modelGroups.find((g) => g.id === groupId)
-    if (!group) throw new HttpError(400, `model group ${groupId} not found`)
-    const r = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList))
-    await this.requireHandleMethod<(model?: string) => Promise<void>>(
-      s,
-      'setModel',
-      'model switching',
-      'supportsModelSwitch',
-    )(r.main)
-    const fallback = fallbackAliasesFor(group.main ?? 'opus')
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
-      'fallback model',
-      'supportsModelSwitch',
-    )({ fallbackModel: fallback.length > 0 ? fallback : null })
-    s.model = r.main
-    s.modelGroupId = groupId
-    s.lastActivityAt = Date.now()
-    s.effortLevels = effortLevelsForModel(s.model)
-    s.thinkingSupported = supportsThinkingForModel(s.model)
-    this.persist(s)
-    return this.info(s)
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      const profile = effectiveProfileFor(s.profileId)
+      const group = profile.modelGroups.find((g) => g.id === groupId)
+      if (!group) throw new HttpError(400, `model group ${groupId} not found`)
+      const r = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList))
+      await this.requireHandleMethod<(model?: string) => Promise<void>>(
+        s,
+        'setModel',
+        'model switching',
+        'supportsModelSwitch',
+      )(r.main)
+      const fallback = fallbackAliasesFor(group.main ?? 'opus')
+      await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+        s,
+        'applyFlagSettings',
+        'fallback model',
+        'supportsModelSwitch',
+      )({ fallbackModel: fallback.length > 0 ? fallback : null })
+      s.model = r.main
+      s.modelGroupId = groupId
+      s.lastActivityAt = Date.now()
+      s.effortLevels = effortLevelsForModel(s.model)
+      s.thinkingSupported = supportsThinkingForModel(s.model)
+      this.persist(s)
+      return this.info(s)
+    })
   }
 
   /** Pin a session to a provider profile. Live-applies the profile's default
    *  model/group, persists the pin, and (when apply==='now' and the session is
    *  idle) restarts the Query so the new credentials take effect immediately.
-   *  `deferred` only persists — credentials apply on the next respawn. */
+   *  `deferred` only persists — credentials apply on the next respawn. The
+   *  nested setModel / setModelGroup / restart calls re-enter the op lock. */
   async setProfile(id: string, profileId: string, apply: 'now' | 'deferred' = 'now'): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    if (s.profileId === profileId) return this.info(s)
-    const profile = findProfile(defaultConfig.profiles, profileId)
-    if (!profile) throw new HttpError(400, `profile ${profileId} not found`)
-    s.profileId = profileId
-    s.lastActivityAt = Date.now()
-    // Live-apply the profile's default model/group. A group pin only survives
-    // if the new profile still has that group id; otherwise collapse to the
-    // profile's default model (the old group's slots may not exist here).
-    if (s.modelGroupId) {
-      const group = profile.modelGroups.find((g) => g.id === s.modelGroupId)
-      if (group) {
-        await this.setModelGroup(id, s.modelGroupId)
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      if (s.profileId === profileId) return this.info(s)
+      const profile = findProfile(defaultConfig.profiles, profileId)
+      if (!profile) throw new HttpError(400, `profile ${profileId} not found`)
+      s.profileId = profileId
+      s.lastActivityAt = Date.now()
+      // Live-apply the profile's default model/group. A group pin only survives
+      // if the new profile still has that group id; otherwise collapse to the
+      // profile's default model (the old group's slots may not exist here).
+      if (s.modelGroupId) {
+        const group = profile.modelGroups.find((g) => g.id === s.modelGroupId)
+        if (group) {
+          await this.setModelGroup(id, s.modelGroupId)
+        } else {
+          await this.setModel(id, profileDefaultModel(profile))
+        }
       } else {
         await this.setModel(id, profileDefaultModel(profile))
       }
-    } else {
-      await this.setModel(id, profileDefaultModel(profile))
-    }
-    this.persist(s)
-    if (apply === 'now') {
-      await this.restart(id)
-    }
-    return this.info(s)
+      this.persist(s)
+      if (apply === 'now') {
+        await this.restart(id)
+      }
+      return this.info(s)
+    })
   }
 
   /** Restart a live session's Query in-place, preserving the transcript
    *  (same id, `resume: id`). No-op (deferred) while a turn is in flight or a
    *  clear is already driving its own respawn. */
   async restart(id: string): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    if (s.pendingTurns > 0 || s.handle.queueDepth > 0 || s.clearing) {
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      if (s.pendingTurns > 0 || s.handle.queueDepth > 0 || s.clearing) {
+        return this.info(s)
+      }
+      const resumeOpts = await this.buildResumeOpts(s)
+      this.respawnInPlace(s, resumeOpts, 'restart')
       return this.info(s)
-    }
-    const resumeOpts = await this.buildResumeOpts(s)
-    this.respawnInPlace(s, resumeOpts, 'restart')
-    return this.info(s)
+    })
   }
 
   /** Relocate a session's workspace (e.g. the project directory was moved).
@@ -4239,86 +4300,81 @@ export class SessionManager {
    *  state (updating the cwd is how a user recovers from a gone workspace)
    *  and the git anchors (repoRoot / gitStartSha belong to the OLD tree; the
    *  next spawn recaptures them against the new cwd). */
-  setCwd(id: string, cwd: string): SessionInfo {
-    if (this.metaWriteInFlight.has(id)) {
-      throw new HttpError(
-        409,
-        `session ${id} has a resume in flight — wait for it to finish, ` +
-        `then change the workspace (the spawn would overwrite it)`,
-      )
-    }
-    if (cwdMissing(cwd)) {
-      throw new HttpError(400, workingDirMissingMsg(cwd))
-    }
-    const live = this.sessions.get(id)
-    if (live) {
-      throw new HttpError(
-        409,
-        `session ${id} is running — sleep it first, then change the workspace ` +
-        `(a live CLI keeps the cwd it was spawned with)`,
-      )
-    }
-    if (!this.store) throw new HttpError(404, `session ${id} not found`)
-    const meta = this.store.get(id)
-    if (!meta) throw new HttpError(404, `session ${id} not found`)
-    // Both reasons mean "the old path was wrong/missing". transcript_missing
-    // is how the pre-id-scoped hasTranscript false-negative used to
-    // permanently kill relocated sessions — a PATCH cwd is the user saying
-    // "here is where the project lives now", so re-arm resume. The id-scoped
-    // probe will authoritatively accept or refuse the transcript.
-    const cleared =
-      meta.terminatedReason === 'spawn_failed' ||
-      meta.terminatedReason === 'transcript_missing'
-    const nextMeta: SessionMeta = {
-      ...meta,
-      cwd,
-      lastActivityAt: Date.now(),
-      // Git anchors were captured against the OLD tree.
-      repoRoot: undefined,
-      gitStartSha: undefined,
-      ...(cleared
-        ? { terminated: false, terminatedReason: undefined, error: undefined }
-        : {}),
-    }
-    this.store.upsert(nextMeta)
-    const info = this.infoFromMeta(nextMeta)
-    this.broadcastGlobal({ kind: 'update', session: info })
-    return info
+  async setCwd(id: string, cwd: string): Promise<SessionInfo> {
+    // Under the op lock: a PATCH cwd that lands during a resume waits for the
+    // resume to finish (and then hits the "running — sleep it first" 409
+    // below, since the session is live by then) instead of racing spawn's
+    // wholesale writeStore.
+    return this.opLock.run(id, () => {
+      if (cwdMissing(cwd)) {
+        throw new HttpError(400, workingDirMissingMsg(cwd))
+      }
+      const live = this.sessions.get(id)
+      if (live) {
+        throw new HttpError(
+          409,
+          `session ${id} is running — sleep it first, then change the workspace ` +
+          `(a live CLI keeps the cwd it was spawned with)`,
+        )
+      }
+      if (!this.store) throw new HttpError(404, `session ${id} not found`)
+      const meta = this.store.get(id)
+      if (!meta) throw new HttpError(404, `session ${id} not found`)
+      // Both reasons mean "the old path was wrong/missing". transcript_missing
+      // is how the pre-id-scoped hasTranscript false-negative used to
+      // permanently kill relocated sessions — a PATCH cwd is the user saying
+      // "here is where the project lives now", so re-arm resume. The id-scoped
+      // probe will authoritatively accept or refuse the transcript.
+      const cleared =
+        meta.terminatedReason === 'spawn_failed' ||
+        meta.terminatedReason === 'transcript_missing'
+      // Field-scoped patch (not a wholesale upsert of the snapshot above).
+      const nextMeta = this.store.patch(id, {
+        cwd,
+        lastActivityAt: Date.now(),
+        // Git anchors were captured against the OLD tree.
+        repoRoot: undefined,
+        gitStartSha: undefined,
+        ...(cleared
+          ? { terminated: false, terminatedReason: undefined, error: undefined }
+          : {}),
+      })!
+      const info = this.infoFromMeta(nextMeta)
+      this.broadcastGlobal({ kind: 'update', session: info })
+      return info
+    })
   }
 
   /** Rename a session. Accepts both live and dormant sessions (title is
    *  pure UI metadata — no SDK call needed). Empty string / whitespace
-   *  clears the title so the UI falls back to the id prefix. */
-  rename(id: string, title: string): SessionInfo {
-    if (this.metaWriteInFlight.has(id)) {
-      throw new HttpError(
-        409,
-        `session ${id} has a resume in flight — the title would be ` +
-        `overwritten by the spawn; retry once it finishes`,
-      )
-    }
-    const trimmed = title.trim() || undefined
-    const live = this.sessions.get(id)
-    if (live) {
-      live.title = trimmed
-      live.lastActivityAt = Date.now()
-      this.persist(live)
-      // Best-effort: mirror the manual title into the provider's on-disk
-      // transcript so it survives an external `claude --resume` (which prefers
-      // the transcript title over this app's metadata). Fire-and-forget — the
-      // metadata rename is authoritative and must not block on a failed write.
-      void this.persistTitleToTranscript(live.provider, id, trimmed)
-      return this.info(live)
-    }
-    if (!this.store) throw new HttpError(404, `session ${id} not found`)
-    const meta = this.store?.get(id)
-    if (!meta) throw new HttpError(404, `session ${id} not found`)
-    const nextMeta: SessionMeta = { ...meta, title: trimmed, lastActivityAt: Date.now() }
-    this.store.upsert(nextMeta)
-    const info = this.infoFromMeta(nextMeta)
-    this.broadcastGlobal({ kind: 'update', session: info })
-    void this.persistTitleToTranscript(meta.provider, id, trimmed)
-    return info
+   *  clears the title so the UI falls back to the id prefix. Under the op
+   *  lock: a rename during a resume waits for it, then applies to the
+   *  freshly-spawned live session. */
+  async rename(id: string, title: string): Promise<SessionInfo> {
+    return this.opLock.run(id, () => {
+      const trimmed = title.trim() || undefined
+      const live = this.sessions.get(id)
+      if (live) {
+        live.title = trimmed
+        live.lastActivityAt = Date.now()
+        this.persist(live)
+        // Best-effort: mirror the manual title into the provider's on-disk
+        // transcript so it survives an external `claude --resume` (which prefers
+        // the transcript title over this app's metadata). Fire-and-forget — the
+        // metadata rename is authoritative and must not block on a failed write.
+        void this.persistTitleToTranscript(live.provider, id, trimmed)
+        return this.info(live)
+      }
+      if (!this.store) throw new HttpError(404, `session ${id} not found`)
+      const meta = this.store.get(id)
+      if (!meta) throw new HttpError(404, `session ${id} not found`)
+      // Field-scoped patch (not a wholesale upsert of the snapshot above).
+      const nextMeta = this.store.patch(id, { title: trimmed, lastActivityAt: Date.now() })!
+      const info = this.infoFromMeta(nextMeta)
+      this.broadcastGlobal({ kind: 'update', session: info })
+      void this.persistTitleToTranscript(meta.provider, id, trimmed)
+      return info
+    })
   }
 
   /** Best-effort durability: append a custom-title entry to the provider's
@@ -4345,6 +4401,10 @@ export class SessionManager {
   }
 
   async setPermissionMode(id: string, mode: PermissionMode): Promise<SessionInfo> {
+    return this.opLock.run(id, () => this.doSetPermissionMode(id, mode))
+  }
+
+  private async doSetPermissionMode(id: string, mode: PermissionMode): Promise<SessionInfo> {
     const s = this.requireLive(id)
     // Local state is updated FIRST and unconditionally — it is the source of
     // truth for canUseTool and the UI, and guarantees the switch never fails
@@ -4514,16 +4574,18 @@ export class SessionManager {
     cliDebug: { global: boolean; perSession?: boolean; effective: boolean }
     note: string
   }> {
-    const s = this.require(id)
-    const v = body?.cliDebug
-    if (v === undefined) throw new HttpError(400, 'cliDebug (boolean or null) is required')
-    s.cliDebug = v === null ? undefined : v
-    this.writeStore(s)
-    const global = defaultConfig.cliDebug ?? false
-    return {
-      cliDebug: { global, perSession: s.cliDebug, effective: s.cliDebug ?? global },
-      note: 'applies on the next session start',
-    }
+    return this.opLock.run(id, () => {
+      const s = this.require(id)
+      const v = body?.cliDebug
+      if (v === undefined) throw new HttpError(400, 'cliDebug (boolean or null) is required')
+      s.cliDebug = v === null ? undefined : v
+      this.writeStore(s)
+      const global = defaultConfig.cliDebug ?? false
+      return {
+        cliDebug: { global, perSession: s.cliDebug, effective: s.cliDebug ?? global },
+        note: 'applies on the next session start',
+      }
+    })
   }
 
   /** Dev-only (`appdebug` client-debug): broadcast one DOM debug op to the
@@ -4646,17 +4708,21 @@ export class SessionManager {
     mutate: (s: Session) => void,
     capability?: keyof ProviderCapabilities,
   ): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
-      action,
-      capability,
-    )(flags)
-    mutate(s)
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    // The op lock is taken HERE (not in each caller): this helper is the sole
+    // persist path of every setter that delegates to it — see opLock.
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+        s,
+        'applyFlagSettings',
+        action,
+        capability,
+      )(flags)
+      mutate(s)
+      s.lastActivityAt = Date.now()
+      this.persist(s)
+      return this.info(s)
+    })
   }
 
   /** Toggle fast mode for a session. Forwards the intent to the SDK via
@@ -4745,25 +4811,27 @@ export class SessionManager {
       showMessageHeaders?: boolean | undefined
     },
   ): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    if ('showPinnedUserMessage' in partial) {
-      s.showPinnedUserMessage = partial.showPinnedUserMessage
-    }
-    if ('autoRecap' in partial) {
-      s.autoRecap = partial.autoRecap
-    }
-    if ('toolGroupCards' in partial) {
-      s.toolGroupCards = partial.toolGroupCards
-    }
-    if ('autoExpandRunningGroups' in partial) {
-      s.autoExpandRunningGroups = partial.autoExpandRunningGroups
-    }
-    if ('showMessageHeaders' in partial) {
-      s.showMessageHeaders = partial.showMessageHeaders
-    }
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    return this.opLock.run(id, () => {
+      const s = this.requireLive(id)
+      if ('showPinnedUserMessage' in partial) {
+        s.showPinnedUserMessage = partial.showPinnedUserMessage
+      }
+      if ('autoRecap' in partial) {
+        s.autoRecap = partial.autoRecap
+      }
+      if ('toolGroupCards' in partial) {
+        s.toolGroupCards = partial.toolGroupCards
+      }
+      if ('autoExpandRunningGroups' in partial) {
+        s.autoExpandRunningGroups = partial.autoExpandRunningGroups
+      }
+      if ('showMessageHeaders' in partial) {
+        s.showMessageHeaders = partial.showMessageHeaders
+      }
+      s.lastActivityAt = Date.now()
+      this.persist(s)
+      return this.info(s)
+    })
   }
 
   /** Per-session override for the first-party `git-tools` git MCP server
@@ -4854,26 +4922,28 @@ export class SessionManager {
    *  (spawn re-applies from meta); reconciling it automatically would require
    *  distinguishing display rejections from other errors by message text. */
   async setThinking(id: string, setting: ThinkingSetting, opts?: { clearDisplay?: boolean }): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    if (setting.type === 'enabled' && (setting.budgetTokens == null || setting.budgetTokens <= 0)) {
-      throw new HttpError(400, "thinking 'enabled' requires a positive budgetTokens for a live switch")
-    }
-    const tokens = setting.type === 'adaptive' ? null
-      : setting.type === 'disabled' ? 0
-      : (setting.budgetTokens as number)
-    const display = setting.type === 'disabled'
-      ? undefined
-      : opts?.clearDisplay ? null : setting.display
-    await this.requireHandleMethod<(tokens: number | null, display?: 'summarized' | 'omitted' | 'highlights' | null) => Promise<void>>(
-      s,
-      'setMaxThinkingTokens',
-      'thinking config',
-      'supportsThinkingControl',
-    )(tokens, display)
-    s.thinking = setting
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      if (setting.type === 'enabled' && (setting.budgetTokens == null || setting.budgetTokens <= 0)) {
+        throw new HttpError(400, "thinking 'enabled' requires a positive budgetTokens for a live switch")
+      }
+      const tokens = setting.type === 'adaptive' ? null
+        : setting.type === 'disabled' ? 0
+        : (setting.budgetTokens as number)
+      const display = setting.type === 'disabled'
+        ? undefined
+        : opts?.clearDisplay ? null : setting.display
+      await this.requireHandleMethod<(tokens: number | null, display?: 'summarized' | 'omitted' | 'highlights' | null) => Promise<void>>(
+        s,
+        'setMaxThinkingTokens',
+        'thinking config',
+        'supportsThinkingControl',
+      )(tokens, display)
+      s.thinking = setting
+      s.lastActivityAt = Date.now()
+      this.persist(s)
+      return this.info(s)
+    })
   }
 
   /** Toggle a marketplace plugin for a session. Two layers:
@@ -5015,7 +5085,9 @@ export class SessionManager {
 
   /** Add/remove MCP servers on a live session via the SDK's setMcpServers API. */
   async setMcpServers(id: string, servers: Record<string, unknown>) {
-    return this.mcp.setMcpServers(id, servers)
+    // Locked: persists the session's mcpServerNames, which clear / fork /
+    // resume read to rebuild the next spawn's MCP set.
+    return this.opLock.run(id, () => this.mcp.setMcpServers(id, servers))
   }
 
   /** Pin (or clear, mode:null) a per-MCP-server permission-mode override on a
@@ -5037,7 +5109,7 @@ export class SessionManager {
   /** Set a per-session first-party tool server override. See
    *  SessionMcpManager.setFirstPartyTool. */
   async setFirstPartyTool(id: string, name: string, enabled: boolean | null): Promise<SessionInfo> {
-    return this.mcp.setFirstPartyTool(id, name, enabled)
+    return this.opLock.run(id, () => this.mcp.setFirstPartyTool(id, name, enabled))
   }
 
   /** Merge global MCP configs with session-specific overrides. See
@@ -5073,7 +5145,8 @@ export class SessionManager {
   /** Pin a session's skill policy override. See
    *  SessionSkillManager.setSkillOverride. */
   async setSkillOverride(id: string, override: SessionSkillOverride | undefined): Promise<SessionInfo> {
-    return this.skills.setSkillOverride(id, override)
+    // Locked: clear() / fork() carry skillOverride onto the next session.
+    return this.opLock.run(id, () => this.skills.setSkillOverride(id, override))
   }
 
   /** Read the session's current RAM tool-surface profile. See
@@ -6049,22 +6122,31 @@ export class SessionManager {
   /** Delete a session for good: close its Query AND erase its persistence
    *  entry. Use when the user explicitly clicks "delete" in the UI. */
   async delete(id: string): Promise<void> {
-    await this.unload(id, { terminated: true, reason: 'deleted' })
-    this.store?.remove(id)
-    // Drop the promptUuids sidecar too — the session is gone for good.
-    void this.promptUuidStore.remove(id)
-    // And the turn-anchor sidecar (legal discard cut points).
-    void this.turnAnchorStore.remove(id)
-    // And the result-frame sidecar (per-turn result summaries).
-    void this.resultFrameStore.remove(id)
-    // And the snapshot sidecar (shadow-repo file snapshots + anchors).
-    void this.snapshotStore.remove(id)
-    // Drop any stored recap — otherwise a new session that happens to
-    // reuse this id (rare, but possible under --state-dir swaps) would
-    // see the old summary. unload() already calls invalidate() but we
-    // do it again here as a safety net for delete-without-unload paths.
-    this.recapManager.invalidate(id)
-    this.broadcastGlobal({ kind: 'removed', id })
+    // Locked. unload({ terminated }) awaits the pump from inside the lock;
+    // that's safe because the pump's teardown only reaches unlocked methods
+    // (see the deadlock rule at opLock) and the await is capped at 1 s.
+    // The queueing is bounded too (deleteLockMaxWaitMs): a setter wedged on
+    // an SDK control request that never answers holds the lock forever, and
+    // delete must still work then — it already tolerates running alongside
+    // other work (unload is idempotent; the health monitor calls it unlocked).
+    return this.opLock.run(id, async () => {
+      await this.unload(id, { terminated: true, reason: 'deleted' })
+      this.store?.remove(id)
+      // Drop the promptUuids sidecar too — the session is gone for good.
+      void this.promptUuidStore.remove(id)
+      // And the turn-anchor sidecar (legal discard cut points).
+      void this.turnAnchorStore.remove(id)
+      // And the result-frame sidecar (per-turn result summaries).
+      void this.resultFrameStore.remove(id)
+      // And the snapshot sidecar (shadow-repo file snapshots + anchors).
+      void this.snapshotStore.remove(id)
+      // Drop any stored recap — otherwise a new session that happens to
+      // reuse this id (rare, but possible under --state-dir swaps) would
+      // see the old summary. unload() already calls invalidate() but we
+      // do it again here as a safety net for delete-without-unload paths.
+      this.recapManager.invalidate(id)
+      this.broadcastGlobal({ kind: 'removed', id })
+    }, { maxWaitMs: this.deleteLockMaxWaitMs })
   }
 
   /** Close the Query and drop the in-memory session, but keep metadata on
@@ -6964,13 +7046,78 @@ export class SessionManager {
    *  caller await the SAME spawn. */
   private readonly resumeInFlight = new Map<string, Promise<SessionInfo>>()
 
-  /** Ids whose resume() holds the meta-write lock. SessionMeta writers
-   *  (setCwd / rename) refuse while a resume is in flight: spawn()'s
-   *  writeStore is a wholesale replace from a snapshot taken at the start
-   *  of resume, so any interleaved field update is reverted — the PATCH
-   *  cwd vs in-flight resume TOCTOU. Held for the whole doResume span,
-   *  which is a strict superset of the spawn/writeStore window. */
-  private readonly metaWriteInFlight = new Set<string>()
+  /** Per-session operation lock (keyed by session id). Lifecycle operations
+   *  and meta-persisting setters are serialized per session so they can't
+   *  interleave across their awaits — e.g. a clear() and a fork() of the same
+   *  session, a setProfile() racing a restart(), or a rename() landing inside
+   *  resume()'s probe window (spawn's writeStore is a wholesale replace from a
+   *  snapshot, so an interleaved field update would be reverted). Re-entrant
+   *  per async context with released tokens — see session-op-lock.ts — so the
+   *  nested public→public chains below just work.
+   *
+   *  Classification of every public method that reaches persist() /
+   *  writeStore() / store.upsert() / store.patch():
+   *
+   *  LOCKED (body runs under opLock.run(id)):
+   *    resume            — via resumeInFlight coalescing (concurrent calls get
+   *                        the SAME promise; only the first takes the lock)
+   *    fork              — key = SOURCE id. Takes the NEW id's lock briefly
+   *                        (setFastMode re-apply); nothing holding a new id
+   *                        ever waits on its source, so no ordering cycle.
+   *    discard           — nests fork (re-entrant)
+   *    clear             — a concurrent clear while one is in flight still
+   *                        returns the current info at once (s.clearing fast
+   *                        path, checked before queueing)
+   *    restart, sleep, setCwd, rename
+   *    delete            — queueing bounded by deleteLockMaxWaitMs, then runs
+   *                        anyway (escape hatch vs a setter wedged on an SDK
+   *                        control request that never answers)
+   *    setProfile        — nests setModel / setModelGroup / restart (re-entrant)
+   *    setModel, setModelGroup, setPermissionMode, setThinking, setPrefs,
+   *    setCliDebug, setFirstPartyTool (setAppTools nests it), setMcpServers,
+   *    setSkillOverride
+   *    applyFlagSettingAndPersist — the sole persist path of setAgent,
+   *                        applySettings, applyHooks, setFastMode,
+   *                        setMemorySettings, setSandbox, setEffortLevel,
+   *                        setAutoCompactWindow, togglePlugin; locked there.
+   *
+   *  NOT LOCKED:
+   *    compact           — its summary is a long outbound model call; holding
+   *                        the lock across it would stall Shift+Tab / rename
+   *                        for seconds and serialize a mode change made during
+   *                        compact BEHIND it (today it is carried to Y). Its
+   *                        only mutation is the final clear(), which locks.
+   *    autoGenerateTitle — same shape: outbound title call, then a synchronous
+   *                        mutation of the live object.
+   *    send, sendContent, interrupt, backgroundTasks, stopTask — turn traffic;
+   *                        they only persist the activity stamp, and interrupt
+   *                        must never queue behind a parked restart / clear.
+   *    decide, answerQuestion, clarifyQuestion, decideElicitation,
+   *    decideDialog      — resolve SDK awaiters; must not queue. (decide's
+   *                        plan-approval mode switch goes through the locked
+   *                        setPermissionMode AFTER the permission resolved.)
+   *    reads / queries / subscriptions (list, get, subscribe*, contextUsage, …)
+   *    create, createSideChat — fresh random id, nothing to contend with.
+   *                        (createSideChat's transcript-missing mark on the
+   *                        PARENT is a field-scoped store.patch.)
+   *    unload            — internal primitive used under locks (clear, discard,
+   *                        sleep, delete, resume) and by the health monitor /
+   *                        shutdown; delete is its locked public entry.
+   *    CLI-event-driven  — autoResume, attemptCrashRecovery, crashRecoveryStep1,
+   *                        respawnInPlace, handleProcessExit, unloadSpawnFailed,
+   *                        terminateCrashedSession, reconcileTasksFromStopHook:
+   *                        driven by the process and already guarded by
+   *                        `clearing` / `terminated` / identity checks.
+   *
+   *  DEADLOCK RULE: a locked op must never await work that runs in a
+   *  DIFFERENT async context and itself takes the same session's lock (the
+   *  token is per context, so that work would queue behind its own waiter).
+   *  The one cross-context await is unload({ terminated: true }) awaiting the
+   *  pump (delete, discard with deleteOriginal); the pump's teardown only
+   *  reaches unlocked methods (PumpDeps: persist, autoResume,
+   *  attemptCrashRecovery, broadcasters, recorders), and that await is
+   *  additionally capped at 1 s by raceWithFallback. */
+  private readonly opLock = new SessionOpLock()
 
   /** Re-spawn a session's Query after a clean exit (idle timeout).
    *  Returns true if the session was successfully re-spawned. */

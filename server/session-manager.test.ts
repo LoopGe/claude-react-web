@@ -3658,7 +3658,7 @@ describe('SessionManager', () => {
 
     const next = join(dir, 'moved', 'web')
     mkdirSync(next, { recursive: true })
-    const updated = sm.setCwd(info.id, next)
+    const updated = await sm.setCwd(info.id, next)
 
     expect(updated.cwd).toBe(next)
     expect(store.get(info.id)!.cwd).toBe(next)
@@ -3671,11 +3671,11 @@ describe('SessionManager', () => {
     expect(store.get(info.id)!.gitStartSha).toBeUndefined()
   })
 
-  it('setCwd() 409s on a running session (the live CLI keeps its spawn cwd)', () => {
+  it('setCwd() 409s on a running session (the live CLI keeps its spawn cwd)', async () => {
     const info = sm.create({ cwd: dir, model: 'm1' })
     const next = join(dir, 'moved')
     mkdirSync(next, { recursive: true })
-    expect(() => sm.setCwd(info.id, next)).toThrow(/sleep it first/)
+    await expect(sm.setCwd(info.id, next)).rejects.toThrow(/sleep it first/)
     expect(store.get(info.id)!.cwd ?? sm.get(info.id).cwd).toBe(dir)
   })
 
@@ -3685,7 +3685,7 @@ describe('SessionManager', () => {
     return (async () => {
       await tick()
       await sm.unload(info.id)
-      expect(() => sm.setCwd(info.id, join(dir, 'no-such-subdir'))).toThrow(
+      await expect(sm.setCwd(info.id, join(dir, 'no-such-subdir'))).rejects.toThrow(
         /Working directory not found/,
       )
       expect(store.get(info.id)!.cwd).toBe(dir)
@@ -3698,7 +3698,7 @@ describe('SessionManager', () => {
     return (async () => {
       await tick()
       await sm.unload(info.id)
-      expect(() => sm.setCwd(info.id, '')).toThrow(/Working directory not found/)
+      await expect(sm.setCwd(info.id, '')).rejects.toThrow(/Working directory not found/)
     })()
   })
 
@@ -3716,7 +3716,7 @@ describe('SessionManager', () => {
     })
     const next = join(dir, 'moved')
     mkdirSync(next, { recursive: true })
-    const updated = sm.setCwd(info.id, next)
+    const updated = await sm.setCwd(info.id, next)
     expect(updated.terminated).toBe(false)
     expect(store.get(info.id)!.terminated).toBe(false)
     expect(store.get(info.id)!.terminatedReason).toBeUndefined()
@@ -3730,7 +3730,7 @@ describe('SessionManager', () => {
     return (async () => {
       await tick()
       await sm.unload(info.id)
-      expect(() => sm.setCwd(info.id, file)).toThrow(/Working directory not found/)
+      await expect(sm.setCwd(info.id, file)).rejects.toThrow(/Working directory not found/)
     })()
   })
 
@@ -3747,7 +3747,7 @@ describe('SessionManager', () => {
 
     const next = join(dir, 'moved')
     mkdirSync(next, { recursive: true })
-    sm.setCwd(info.id, next)
+    await sm.setCwd(info.id, next)
     mockGetSessionInfo.mockClear()
 
     const resumed = await sm.resume(info.id)
@@ -3759,11 +3759,13 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.terminatedReason).not.toBe('transcript_missing')
   })
 
-  it('setCwd() 409s while a resume is in flight (spawn writeStore would clobber it)', async () => {
+  it('setCwd() during a resume waits for it, then 409s on the now-live session', async () => {
     // TOCTOU: doResume reads meta, awaits (transcript/history/MCP), then
     // spawn() writeStores a WHOLESALE replace from that earlier snapshot.
-    // A PATCH cwd landing in the await window is silently reverted. The
-    // meta-write lock makes the two writers mutually exclusive.
+    // A PATCH cwd landing in the await window would be silently reverted.
+    // The per-session op lock queues it behind the resume instead; once the
+    // resume has spawned, the session is live and the dormant-only guard
+    // refuses the relocate.
     const info = sm.create({ cwd: dir, model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
     await tick()
@@ -3783,22 +3785,25 @@ describe('SessionManager', () => {
     const resuming = sm.resume(info.id)
     await tick() // doResume is now parked on the transcript probe
 
-    // Must fail because resume holds the meta-write lock — NOT because the
-    // session looks "running" (it is not in the live map yet).
-    expect(() => sm.setCwd(info.id, next)).toThrow(/resume|busy|in flight/i)
-    // And the rejected write must not have landed.
+    let settled = false
+    const relocating = sm.setCwd(info.id, next)
+    void relocating.then(() => { settled = true }, () => { settled = true })
+    await tick()
+    // Queued behind the resume — neither applied nor refused yet.
+    expect(settled).toBe(false)
     expect(store.get(info.id)!.cwd).toBe(dir)
 
     releaseProbe()
     await resuming
-    // After resume completes the lock is released; a later relocate works
-    // once the session is dormant again.
+    await expect(relocating).rejects.toThrow(/sleep it first/)
+    expect(store.get(info.id)!.cwd).toBe(dir)
+    // Once dormant again, a relocate works.
     await sm.unload(info.id)
-    expect(sm.setCwd(info.id, next).cwd).toBe(next)
+    expect((await sm.setCwd(info.id, next)).cwd).toBe(next)
     expect(store.get(info.id)!.cwd).toBe(next)
   })
 
-  it('rename() 409s while a resume is in flight (same wholesale-replace clobber)', async () => {
+  it('rename() during a resume waits for it, then applies to the live session', async () => {
     const info = sm.create({ cwd: dir, model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
     await tick()
@@ -3815,13 +3820,31 @@ describe('SessionManager', () => {
     const resuming = sm.resume(info.id)
     await tick()
 
-    expect(() => sm.rename(info.id, 'Hijacked')).toThrow(/resume|busy|in flight/i)
-    expect(store.get(info.id)!.title).not.toBe('Hijacked')
+    let settled = false
+    const renaming = sm.rename(info.id, 'Renamed mid-resume')
+    void renaming.then(() => { settled = true }, () => { settled = true })
+    await tick()
+    expect(settled).toBe(false)
+    expect(store.get(info.id)!.title).not.toBe('Renamed mid-resume')
 
     releaseProbe()
     await resuming
+    expect((await renaming).title).toBe('Renamed mid-resume')
+    // Applied AFTER the spawn's wholesale writeStore, so it isn't reverted.
+    expect(sm.get(info.id).running).toBe(true)
+    expect(sm.get(info.id).title).toBe('Renamed mid-resume')
+    expect(store.get(info.id)!.title).toBe('Renamed mid-resume')
+  })
+
+  it('a dormant rename survives the next resume (title carry path)', async () => {
+    const info = sm.create({ cwd: dir, model: 'm1', title: 'old' })
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
     await sm.unload(info.id)
-    expect(sm.rename(info.id, 'Safe').title).toBe('Safe')
+    await sm.rename(info.id, 'dormant title')
+    const resumed = await sm.resume(info.id)
+    expect(resumed.title).toBe('dormant title')
+    expect(store.get(info.id)!.title).toBe('dormant title')
   })
 
   it('setThinking() persists display so it survives resume', async () => {
@@ -4344,9 +4367,9 @@ describe('SessionManager', () => {
     expect(sm.get(info.id).effortLevels).toEqual([])
   })
 
-  it('rename() updates title on a live session', () => {
+  it('rename() updates title on a live session', async () => {
     const info = sm.create({ title: 'before' })
-    const updated = sm.rename(info.id, 'after')
+    const updated = await sm.rename(info.id, 'after')
     expect(updated.title).toBe('after')
     expect(sm.get(info.id).title).toBe('after')
   })
@@ -4354,22 +4377,22 @@ describe('SessionManager', () => {
   it('rename() updates title on a dormant session', async () => {
     const info = sm.create({ title: 'alive' })
     await sm.unload(info.id)
-    const updated = sm.rename(info.id, 'dormant-renamed')
+    const updated = await sm.rename(info.id, 'dormant-renamed')
     expect(updated.title).toBe('dormant-renamed')
     await store.flush()
     expect(store.get(info.id)?.title).toBe('dormant-renamed')
   })
 
-  it('rename() with blank string clears the title', () => {
+  it('rename() with blank string clears the title', async () => {
     const info = sm.create({ title: 'keep me' })
-    const updated = sm.rename(info.id, '   ')
+    const updated = await sm.rename(info.id, '   ')
     expect(updated.title).toBeUndefined()
   })
 
   it('rename() also writes the manual title into the CLI transcript (best-effort renameSession)', async () => {
     const info = sm.create({ cwd: '/tmp' })
     mockRenameSession.mockClear()
-    const renamed = sm.rename(info.id, '  My Title  ')
+    const renamed = await sm.rename(info.id, '  My Title  ')
     expect(renamed.title).toBe('My Title')
     await tick()
     // Id-scoped (no `dir`): same rationale as hasTranscript — a title write
@@ -4381,7 +4404,7 @@ describe('SessionManager', () => {
   it('rename() does not write an empty/cleared title to the CLI transcript', async () => {
     const info = sm.create({ cwd: '/tmp' })
     mockRenameSession.mockClear()
-    sm.rename(info.id, '   ')
+    await sm.rename(info.id, '   ')
     await tick()
     expect(mockRenameSession).not.toHaveBeenCalled()
   })
@@ -4390,7 +4413,7 @@ describe('SessionManager', () => {
     const info = sm.create({ cwd: '/tmp' })
     mockRenameSession.mockClear()
     mockRenameSession.mockRejectedValueOnce(new Error('boom'))
-    const renamed = sm.rename(info.id, 'Still Works')
+    const renamed = await sm.rename(info.id, 'Still Works')
     expect(renamed.title).toBe('Still Works')
     await tick()
   })
@@ -5463,6 +5486,218 @@ describe('SessionManager', () => {
     it('throws for an unknown session id', async () => {
       expect(() => sm.debugSessions()).not.toThrow()
       await expect(sm.debugSession('nope')).rejects.toThrow()
+    })
+  })
+
+  describe('per-session op lock', () => {
+    function deferred(): { promise: Promise<void>; resolve: () => void } {
+      let resolve!: () => void
+      const promise = new Promise<void>((r) => { resolve = r })
+      return { promise, resolve }
+    }
+
+    /** Reject when `p` hasn't settled within `ms` — the deadlock guard. */
+    function within<T>(p: Promise<T>, ms = 2000): Promise<T> {
+      return Promise.race([
+        p,
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`timed out after ${ms}ms (deadlock?)`)), ms)),
+      ])
+    }
+
+    type PrivateSm = {
+      applySessionMcpServers: (...args: unknown[]) => Promise<unknown>
+      buildResumeOpts: (...args: unknown[]) => Promise<unknown>
+    }
+
+    /** Park the FIRST call of a private async seam on a gate; later calls pass
+     *  straight through. Returns the gate and the call log (first arg). */
+    function parkFirstCall(name: keyof PrivateSm): { gate: ReturnType<typeof deferred>; calls: unknown[] } {
+      const target = sm as unknown as PrivateSm
+      const orig = target[name].bind(sm)
+      const gate = deferred()
+      const calls: unknown[] = []
+      vi.spyOn(target, name).mockImplementation(async (...args: unknown[]) => {
+        calls.push(args[0])
+        if (calls.length === 1) await gate.promise
+        return orig(...args)
+      })
+      return { gate, calls }
+    }
+
+    /** A live session with one completed turn (lastTurnAt set). */
+    async function liveWithTurn(opts: Record<string, unknown> = {}): Promise<string> {
+      const info = sm.create({ cwd: dir, model: 'm1', ...opts } as Parameters<SessionManager['create']>[0])
+      const h = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } })
+      h.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      for (let i = 0; i < 60 && sm.get(info.id).lastTurnAt === undefined; i++) await tick()
+      expect(sm.get(info.id).lastTurnAt).toBeDefined()
+      return info.id
+    }
+
+    it('concurrent clear(X) + fork(X) do not interleave', async () => {
+      const x = await liveWithTurn()
+      const { gate, calls } = parkFirstCall('applySessionMcpServers')
+      const probesBefore = mockGetSessionInfo.mock.calls.length
+
+      const clearing = sm.clear(x)
+      const forking = sm.fork(x)
+      for (let i = 0; i < 5; i++) await tick()
+      // clear is parked inside its body; fork hasn't entered (no transcript
+      // probe, no MCP resolution of its own).
+      expect(calls).toHaveLength(1)
+      expect(mockGetSessionInfo.mock.calls.length).toBe(probesBefore)
+
+      gate.resolve()
+      const [cleared, forked] = await within(Promise.allSettled([clearing, forking]))
+      expect(cleared.status).toBe('fulfilled')
+      const y = (cleared as PromiseFulfilledResult<{ id: string }>).value.id
+      // fork ran AFTER clear removed X — a clean 404/410, never a crash.
+      expect(forked.status).toBe('rejected')
+      expect([404, 410]).toContain(((forked as PromiseRejectedResult).reason as HttpError).status)
+      // Meta consistent: X gone from the store, Y present and healthy.
+      expect(store.get(x)).toBeUndefined()
+      expect(store.get(y)?.terminated).toBe(false)
+      expect(sm.get(y).running).toBe(true)
+    })
+
+    it('concurrent sleep(X) + resume(X) end in a consistent state', async () => {
+      const x = await liveWithTurn()
+      const results = await within(Promise.allSettled([sm.sleep(x), sm.resume(x)]))
+      expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled'])
+      // Serialized: sleep unloaded first, then resume re-spawned.
+      const info = sm.get(x)
+      expect(info.running).toBe(true)
+      expect(store.get(x)?.slept).toBe(false)
+
+      // And the other order: resume (no-op, live) then sleep → dormant + slept.
+      const again = await within(Promise.allSettled([sm.resume(x), sm.sleep(x)]))
+      expect(again.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled'])
+      expect(sm.list().find((s) => s.id === x)?.running).toBe(false)
+      expect(store.get(x)?.slept).toBe(true)
+    })
+
+    it("setProfile(X, p, 'now') + restart(X) run serially with the pin persisted", async () => {
+      const before = {
+        profiles: defaultConfig.profiles,
+        activeProfileId: defaultConfig.activeProfileId,
+        modelGroups: defaultConfig.modelGroups,
+      }
+      const profile = (id: string): import('./config.js').ProviderProfile => ({
+        id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
+        modelList: ['vendor/model-' + id], modelGroups: [], recapModel: '', commitMessageModel: '',
+      })
+      try {
+        __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A', modelGroups: [] })
+        const x = await liveWithTurn({ profileId: 'A', model: 'vendor/model-A' })
+        const { gate, calls } = parkFirstCall('buildResumeOpts')
+        const handlesBefore = mockHandles.length
+
+        const pinning = sm.setProfile(x, 'B', 'now')
+        const restarting = sm.restart(x)
+        for (let i = 0; i < 5; i++) await tick()
+        // setProfile's nested restart is parked; the outer restart is queued.
+        expect(calls).toHaveLength(1)
+
+        gate.resolve()
+        await within(Promise.all([pinning, restarting]))
+        expect(calls).toHaveLength(2)
+        // One respawn per restart, in order: setProfile's, then the queued one.
+        expect(mockHandles.length).toBe(handlesBefore + 2)
+        expect(sm.get(x).profileId).toBe('B')
+        expect(store.get(x)?.profileId).toBe('B')
+        expect(store.get(x)?.model).toBe('vendor/model-B')
+      } finally {
+        __setConfigForTest({ ...before })
+      }
+    })
+
+    it('interrupt(X) is not blocked by a parked restart(X)', async () => {
+      const x = await liveWithTurn()
+      const { gate } = parkFirstCall('buildResumeOpts')
+      const restarting = sm.restart(x)
+      await tick()
+      await within(sm.interrupt(x), 1000)
+      gate.resolve()
+      await within(restarting)
+    })
+
+    it('interrupt(X) is not blocked by a parked clear(X)', async () => {
+      const x = await liveWithTurn()
+      const { gate } = parkFirstCall('applySessionMcpServers')
+      const clearing = sm.clear(x)
+      await tick()
+      await within(sm.interrupt(x), 1000)
+      gate.resolve()
+      await within(clearing)
+    })
+
+    it('nested public calls re-enter instead of deadlocking', async () => {
+      // compact → clear
+      const a = await liveWithTurn()
+      const compacted = await within(sm.compact(a))
+      expect(compacted.id).not.toBe(a)
+
+      // setProfile → setModel + restart
+      const before = { profiles: defaultConfig.profiles, activeProfileId: defaultConfig.activeProfileId }
+      const profile = (id: string): import('./config.js').ProviderProfile => ({
+        id, name: id, authToken: 'sk-' + id, baseUrl: 'https://gw-' + id,
+        modelList: ['vendor/model-' + id], modelGroups: [], recapModel: '', commitMessageModel: '',
+      })
+      try {
+        __setConfigForTest({ profiles: [profile('A'), profile('B')], activeProfileId: 'A' })
+        const b = await liveWithTurn({ profileId: 'A' })
+        const pinned = await within(sm.setProfile(b, 'B', 'now'))
+        expect(pinned.profileId).toBe('B')
+      } finally {
+        __setConfigForTest({ ...before })
+      }
+
+      // discard → fork (needs the anchor sidecar for asst-1)
+      const c = await liveWithTurn()
+      const smAny = sm as unknown as { turnAnchorStore: { load: (id: string) => Promise<Array<{ assistantUuid: string }> | null> } }
+      for (let i = 0; i < 60 && ((await smAny.turnAnchorStore.load(c)) ?? []).length === 0; i++) await tick()
+      const y = await within(sm.discard(c, 'asst-1'))
+      expect(y.id).not.toBe(c)
+    })
+
+    it('delete(X) during a live turn resolves', async () => {
+      const info = sm.create({ cwd: dir, model: 'm1' })
+      sm.send(info.id, 'long task')
+      mockHandles[0].emit({ type: 'assistant', uuid: 'a-mid', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'working…' }] } })
+      await tick()
+      expect(sm.get(info.id).phase).toBe('working')
+      await within(sm.delete(info.id))
+      expect(sm.list().some((s) => s.id === info.id)).toBe(false)
+      expect(store.get(info.id)).toBeUndefined()
+    })
+
+    it('delete(X) still resolves while a setter is wedged on a control request that never answers', async () => {
+      await sm.shutdown()
+      sm = new SessionManager({ store, deleteLockMaxWaitMs: 50 })
+      const info = sm.create({ cwd: dir, model: 'm1' })
+      const h = mockHandles.at(-1)!
+      h.setModel.mockImplementationOnce(() => new Promise<never>(() => { /* CLI never answers */ }))
+      const setting = sm.setModel(info.id, 'm2')
+      await tick()
+      expect(h.setModel).toHaveBeenCalledWith('m2')
+
+      await within(sm.delete(info.id), 1000)
+      expect(sm.list().some((s) => s.id === info.id)).toBe(false)
+      expect(store.get(info.id)).toBeUndefined()
+      void setting
+    })
+
+    it('two concurrent resume(X) calls return the identical promise', async () => {
+      const x = await liveWithTurn()
+      await sm.unload(x)
+      const handlesBefore = mockHandles.length
+      const p1 = sm.resume(x)
+      const p2 = sm.resume(x)
+      expect(p2).toBe(p1)
+      await within(p1)
+      expect(mockHandles.length).toBe(handlesBefore + 1)
     })
   })
 })

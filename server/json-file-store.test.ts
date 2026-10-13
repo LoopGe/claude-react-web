@@ -80,6 +80,45 @@ describe('JsonFileStore', () => {
     })
   })
 
+  // ─── patch ──────────────────────────────────────────────────────
+
+  describe('patch', () => {
+    it('merges into the existing entry without touching other fields', async () => {
+      store.upsert({ id: 'a', value: 'v1', nested: { a: 1 } })
+      const merged = store.patch('a', { value: 'v2' })
+      expect(merged).toEqual({ id: 'a', value: 'v2', nested: { a: 1 } })
+      expect(store.get('a')).toEqual({ id: 'a', value: 'v2', nested: { a: 1 } })
+      await store.flush()
+      const data = JSON.parse(readFileSync(join(tmpDir, 'test.json'), 'utf-8')) as TestEntry[]
+      expect(data).toEqual([{ id: 'a', value: 'v2', nested: { a: 1 } }])
+    })
+
+    it('an explicit undefined clears the field', () => {
+      store.upsert({ id: 'a', value: 'v1', nested: { a: 1 } })
+      const merged = store.patch('a', { nested: undefined })
+      expect(merged).toEqual({ id: 'a', value: 'v1' })
+      expect('nested' in store.get('a')!).toBe(false)
+    })
+
+    it('returns undefined and inserts nothing when the key is absent', async () => {
+      expect(store.patch('missing', { value: 'x' })).toBeUndefined()
+      expect(store.get('missing')).toBeUndefined()
+      expect(store.count()).toBe(0)
+      // Nothing was scheduled: a flush writes no file.
+      await store.flush()
+      const { existsSync } = await import('node:fs')
+      expect(existsSync(join(tmpDir, 'test.json'))).toBe(false)
+    })
+
+    it('replaces the stored object (a previously read reference is not mutated)', () => {
+      store.upsert({ id: 'a', value: 'v1' })
+      const before = store.get('a')!
+      store.patch('a', { value: 'v2' })
+      expect(before.value).toBe('v1')
+      expect(store.get('a')!.value).toBe('v2')
+    })
+  })
+
   // ─── Persistence (flush) ────────────────────────────────────────
 
   describe('flush', () => {

@@ -844,6 +844,9 @@ export interface SessionManagerOptions {
    *  user Resume / Fork-from-last-completed. Default 2 (two in-place resumes,
    *  third crash shows the banner); raising it adds more in-place resumes. */
   maxCrashRecovery?: number
+  /** How long delete() waits for the session's op lock before running
+   *  anyway. Default DELETE_LOCK_MAX_WAIT_MS; tests shorten it. */
+  deleteLockMaxWaitMs?: number
 }
 
 /** Global session-list update event. Broadcast whenever a session's
