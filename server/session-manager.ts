@@ -1771,8 +1771,10 @@ export class SessionManager {
     // Transcript seq reconciliation BEFORE spawn starts the pump (Task 3):
     // the seq store must cover the full pre-restart history before any live
     // ingest can allocate seqs into it, or a first-turn message would land
-    // at seq 0 ahead of hundreds of older messages. Fresh-spawn paths skip
-    // this by construction (new id ⇒ empty JSONL).
+    // at seq 0 ahead of hundreds of older messages. (The fresh-id fork /
+    // Side-Chat paths have the same ordering guarantee via
+    // preseedForkTranscript — their JSONL is non-empty from birth because
+    // forkSession copies the source transcript into the new id's file.)
     await this.ensureTranscriptReconciled(id)
     return this.spawn(id, resumeOpts, undefined, historySeed, undefined, undefined, undefined, undefined, promptUuids ?? [])
   }
@@ -2105,8 +2107,20 @@ export class SessionManager {
     // below can re-pin the same map at the flag layer if the parent had
     // moved away from `inherit`.
     const parentOverride = live?.skillOverride
+    // Seq-space ordering guarantee (Task 3, review round 1): pre-seed the
+    // fork's store from the source's composition BEFORE spawn starts the
+    // fork's pump — same contract as resume()'s pre-spawn reconcile.
+    // forkSession makes the CLI copy the source transcript into the fork's
+    // own JSONL only when its subprocess starts, so a post-spawn reconcile
+    // could never see the pre-fork rows before the first live ingest.
+    // discard() passes its finalized historySeed (the kept prefix, with
+    // result frames merged and prompt uuids rewritten); a plain fork composes
+    // the source's full renderable transcript, which is what the copy will
+    // contain.
+    const forkId = randomUUID()
+    await this.preseedForkTranscript(forkId, id, { seed: opts?.historySeed })
     const forkInfo = this.spawn(
-      randomUUID(),
+      forkId,
       forkOpts,
       undefined,
       opts?.historySeed,
@@ -2596,7 +2610,15 @@ export class SessionManager {
     }
     // Re-apply the parent's OWN MCP selection (same as fork).
     await this.applySessionMcpServers(sideChatOpts, meta.mcpServerNames, parentId)
-    return this.spawn(randomUUID(), sideChatOpts)
+    // Seq-space ordering guarantee (Task 3, review round 1) — same forkSession
+    // hazard as fork(): the Side Chat's own JSONL is a copy of the parent's
+    // that only materializes when its CLI starts, so the inherited tail is
+    // pre-seeded from the PARENT's JSONL bounded by the fork boundary (the
+    // same afterUuid filter every Side-Chat history read applies). Without
+    // this, a first live message would take seq 0 ahead of the inherited rows.
+    const sideChatId = randomUUID()
+    await this.preseedForkTranscript(sideChatId, parentId, { afterUuid: forkBoundaryUuid })
+    return this.spawn(sideChatId, sideChatOpts)
   }
 
   /** Fire-and-forget capture of git anchors at session spawn: the
@@ -6117,12 +6139,17 @@ export class SessionManager {
    *  uuid bridge applied — i.e. exactly the finalization resume() gives its
    *  ring seed, but over the FULL history rather than the ring-cap tail.
    *  Mirroring resume() here is what keeps a rebuilt seq space aligned with
-   *  what the live path assigned (same set, same order). */
-  private async composeTranscriptEntries(id: string): Promise<SDKMessage[]> {
+   *  what the live path assigned (same set, same order).
+   *  `afterUuidOverride` re-points the boundary filter at an explicit uuid —
+   *  preseedForkTranscript uses it to compose a Side Chat's inherited-tail
+   *  view from the PARENT's JSONL (the Side Chat's own file doesn't exist
+   *  until its CLI subprocess copies it). Undefined = the session's own
+   *  meta.forkBoundaryUuid (the normal readHistoryPage semantics). */
+  private async composeTranscriptEntries(id: string, afterUuidOverride?: string): Promise<SDKMessage[]> {
     const meta = this.sessions.get(id) ?? this.store?.get(id)
     const provider = this.providers.get(meta?.provider ?? this.defaultProvider)
     if (!provider?.readHistoryEntries) return []
-    const afterUuid = meta?.forkBoundaryUuid
+    const afterUuid = afterUuidOverride ?? meta?.forkBoundaryUuid
     const entries = await provider.readHistoryEntries(id, afterUuid ? { afterUuid } : {})
     const messages = entries.map((e) => e.message) as SDKMessage[]
     // readHistoryEntries normalizes untrimmed (it feeds search recall);
@@ -6148,7 +6175,8 @@ export class SessionManager {
    *  holder is `reconciled` and later calls return immediately.
    *
    *  Timing contract: resume() awaits this BEFORE spawn() starts the pump,
-   *  and a fresh session's JSONL is empty by construction — so by the time
+   *  and the remaining fresh-id spawn paths (fork / Side Chat) pre-seed
+   *  their store via preseedForkTranscript before spawn — so by the time
    *  any ingest can race here, the seq space is complete. */
   private async ensureTranscriptReconciled(id: string): Promise<TranscriptHolder> {
     const t = this.getOrCreateTranscript(id)
@@ -6171,6 +6199,46 @@ export class SessionManager {
     })()
     this.transcriptReconciles.set(id, p)
     return p
+  }
+
+  /** Pre-seed a FORK's seq store from its source's transcript BEFORE the
+   *  fork's pump starts — the fork-path counterpart of resume()'s
+   *  pre-spawn reconcile, closing the same chronology hole.
+   *
+   *  The hole: fork()/createSideChat() spawn a NEW id with
+   *  `resume: sourceId, forkSession: true`, and the CLI copies the source
+   *  conversation into the fork's own JSONL only when its subprocess
+   *  starts — so a generic jsonl reconcile can never see the pre-fork
+   *  rows in time. Without pre-seeding, a post-fork live message ingested
+   *  before any reconcile takes seqs 0..k and the pre-fork back-fill
+   *  would land at k+1.. — chronological, append-stable ordering
+   *  permanently broken for that session. Pre-seeding assigns the
+   *  pre-fork rows seqs 0..n-1 FIRST (from the source's composition, or
+   *  the caller's finalized seed — discard passes its truncated
+   *  historySeed, which is exactly the kept prefix), so every live
+   *  message the fork's pump ingests lands at n or above.
+   *
+   *  Prefix-property guarantee: for a truncated fork the seed is a prefix
+   *  of the source composition in the same order, so a later restart
+   *  rebuild from the fork's (truncated-copy) JSONL yields the SAME seqs
+   *  for the surviving rows. */
+  private async preseedForkTranscript(
+    forkId: string,
+    sourceId: string,
+    opts: { seed?: SDKMessage[]; afterUuid?: string } = {},
+  ): Promise<void> {
+    const t = this.getOrCreateTranscript(forkId)
+    if (t.reconciled) return
+    try {
+      t.store.hydrate(foldSidecarRows(await t.sidecar.load()))
+      const entries = opts.seed ?? (await this.composeTranscriptEntries(sourceId, opts.afterUuid))
+      backfillFromEntries(t, entries)
+    } catch (err) {
+      // Degraded but usable — same posture as ensureTranscriptReconciled.
+      log.warn(`[session ${forkId}] transcript pre-seed failed: ${(err as Error).message ?? err}`)
+    } finally {
+      t.reconciled = true
+    }
   }
 
   /** Page the session's durable transcript by seq. `before` is an exclusive

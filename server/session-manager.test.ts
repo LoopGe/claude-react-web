@@ -6,7 +6,7 @@ import * as nodeFs from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { rmRf } from './__test-utils__/index.js'
-import { subagentTranscriptPath } from './subagent-watcher.js'
+import { encodeCwd, subagentTranscriptPath } from './subagent-watcher.js'
 
 // Wrap node:fs/promises so `stat` is a controllable mock that defaults to the
 // real implementation (preexisting stat users keep working) but individual
@@ -5517,7 +5517,7 @@ describe('SessionManager', () => {
       const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
       expect(existsSync(sidecarFile)).toBe(true)
 
-      const userUuid = (await sm.getTranscriptWindow(info.id)).messages[0].msg.uuid as string
+      const userUuid = ((await sm.getTranscriptWindow(info.id)).messages[0].msg as { uuid?: string }).uuid as string
       expect(sm.evictTranscript(info.id, [userUuid, 'unknown-uuid'])).toEqual([0])
       // Idempotent: a repeat evict returns nothing and appends nothing.
       expect(sm.evictTranscript(info.id, [userUuid])).toEqual([])
@@ -5548,6 +5548,63 @@ describe('SessionManager', () => {
       const win = await sm.getTranscriptWindow('no-such-session')
       expect(win.messages).toEqual([])
       expect(win.totalCount).toBe(0)
+    })
+
+    it('fork pre-seeds the seq space: a post-fork live message seq exceeds every pre-fork row (chronology holds)', async () => {
+      // Give the SOURCE a completed turn so fork() allows the branch.
+      const sourceCwd = '/tmp/fork-seq-src'
+      const source = sm.create({ cwd: sourceCwd })
+      sm.send(source.id, 'before fork')
+      emitAssistant('live-pre-1', 'prefork reply')
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'live-pre-r', session_id: source.id })
+      expect(await waitFor(() => sm.get(source.id).lastTurnAt !== undefined)).toBe(true)
+
+      // Write the source's transcript JSONL where findTranscriptFile looks
+      // for it — the fork's pre-seed composes its pre-fork rows from the
+      // SOURCE's on-disk transcript (the fork's own file only materializes
+      // when its CLI copies it at subprocess start).
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      let forked: Awaited<ReturnType<typeof sm.fork>>
+      try {
+        const jsonlPath = join(dir, 'projects', encodeCwd(sourceCwd), `${source.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(
+          jsonlPath,
+          [
+            JSON.stringify({ type: 'user', uuid: 'disk-u1', sessionId: source.id, parent_tool_use_id: null, message: { role: 'user', content: 'before fork' } }),
+            JSON.stringify({ type: 'assistant', uuid: 'disk-a1', sessionId: source.id, message: { role: 'assistant', content: [{ type: 'text', text: 'prefork reply' }] } }),
+            '',
+          ].join('\n'),
+        )
+        forked = await sm.fork(source.id)
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+
+      // The fork is LIVE with its own pump — ingest a message into it.
+      const forkHandle = mockHandles[mockHandles.length - 1]
+      forkHandle.emit({
+        type: 'assistant',
+        uuid: 'post-fork-1',
+        parent_tool_use_id: null,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'live after fork' }] },
+      })
+      forkHandle.emit({ type: 'result', subtype: 'success', uuid: 'post-fork-r', session_id: forked.id })
+      expect(await waitFor(() => sm.get(forked.id).lastTurnAt !== undefined)).toBe(true)
+
+      const win = await sm.getTranscriptWindow(forked.id)
+      const byUuid = new Map(win.messages.map((m) => [(m.msg as { uuid?: string }).uuid, m.seq]))
+      // The pre-fork rows were assigned first, dense from 0.
+      expect(byUuid.get('disk-u1')).toBe(0)
+      expect(byUuid.get('disk-a1')).toBe(1)
+      // The post-fork live message and its result came AFTER every
+      // pre-fork seq — the regression would put them at 0..k ahead of the
+      // back-filled pre-fork rows.
+      expect(byUuid.get('post-fork-1')).toBe(2)
+      expect(byUuid.get('post-fork-r')).toBe(3)
+      expect(win.totalCount).toBe(4)
     })
   })
 })
