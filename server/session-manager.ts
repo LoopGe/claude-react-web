@@ -898,7 +898,7 @@ export class SessionManager {
       broadcastGlobal: (ev) => this.broadcastGlobal(ev),
       info: (s) => this.info(s),
       historyCap: this.historyCap,
-      isLive: (id) => this.sessions.has(id),
+      getSession: (id) => this.sessions.get(id),
     })
 
     this.skills = new SessionSkillManager({
@@ -974,8 +974,10 @@ export class SessionManager {
     // fresh watcher; a late real completion still overrides an over-eager
     // `stopped`. Deliberately NOT done on the clean-exit path above (idle
     // timeout → auto-resume commonly re-arms the same watcher, and a settle
-    // there would flap stopped→done).
-    this.settleBackgroundWatchersOnProcessExit(s)
+    // there would flap stopped→done). The watchers are claimed synchronously
+    // here; their transcript reads and synthesized frames land asynchronously
+    // (into whatever session is live under this id by then).
+    const watcherTaskIds = this.settleBackgroundWatchersOnProcessExit(s)
     // The watcher above only covers the subagent dispatches IT tracks; every
     // other record in the task map (background shell / workflow / ambient) is
     // equally orphaned by the exit and would otherwise spin in the TasksPanel
@@ -990,8 +992,10 @@ export class SessionManager {
     // shell / workflow / ambient records changes no observable field — broadcast
     // only when the count actually moved. The settled RECORDS still reach open
     // panels either way: settleTasksOnProcessExit pushes a task snapshot.
+    // The watcher-claimed records are skipped: their async settle folds the
+    // real outcome (and re-broadcasts the info frame itself).
     const countBefore = this.backgroundSubagentCount(s)
-    if (settleTasksOnProcessExit(s) && this.backgroundSubagentCount(s) !== countBefore) {
+    if (settleTasksOnProcessExit(s, watcherTaskIds) && this.backgroundSubagentCount(s) !== countBefore) {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
 
@@ -1147,19 +1151,27 @@ export class SessionManager {
   ): void {
     const session = this.sessions.get(sessionId)
     if (!session) return
-    this.backgroundWatchers.settleByAgentId(session, info.agentId, {
+    void this.backgroundWatchers.settleByAgentId(session, info.agentId, {
       transcriptPath: info.transcriptPath,
       lastAssistantMessage: info.lastAssistantMessage,
       backgroundTasks: info.backgroundTasks,
+    }).catch((err) => {
+      log.warn(`[session ${sessionId}] SubagentStop settle failed (agentId=${info.agentId}):`, err)
     })
   }
 
   /** Settle all background-subagent watchers for a session because its CLI
    *  subprocess exited — see BackgroundWatcherRegistry.settleAllOnProcessExit.
    *  Uses the process-exit as the certain completion signal instead of waiting
-   *  out the watcher's 2 h backstop. */
-  private settleBackgroundWatchersOnProcessExit(session: Session): void {
-    this.backgroundWatchers.settleAllOnProcessExit(session)
+   *  out the watcher's 2 h backstop. The claim is synchronous; returns the
+   *  task-record ids the asynchronous settle will fold, for the caller's
+   *  process-exit sweep to skip. */
+  private settleBackgroundWatchersOnProcessExit(session: Session): Set<string> {
+    const { claimedTaskIds, done } = this.backgroundWatchers.settleAllOnProcessExit(session)
+    void done.catch((err) => {
+      log.warn(`[session ${session.id}] background watcher process-exit settle failed:`, err)
+    })
+    return claimedTaskIds
   }
 
   /** Unload a spawn-failed session to dormant (resumable) state with the
@@ -3000,7 +3012,11 @@ export class SessionManager {
       includePartialMessages: fullOpts.includePartialMessages,
       includeHookEvents: true,
       inProcessHookForward: (_sid, event) => this.recordHookRun(id, event),
-      inProcessTaskSnapshot: (_sid, tasks) => this.reconcileTasksFromStopHook(id, tasks),
+      inProcessTaskSnapshot: (_sid, tasks) => {
+        void this.reconcileTasksFromStopHook(id, tasks).catch((err) => {
+          log.warn(`[session ${id}] Stop-hook task reconcile failed:`, err)
+        })
+      },
       inProcessSubagentStop: (_sid, info) => this.settleBackgroundSubagentFromHook(id, info),
       // Forward subagent text/thinking frames so SubagentOverlay can render
       // the nested transcript. Spawn-time SDK Options key (config-gated;
@@ -5857,18 +5873,24 @@ export class SessionManager {
    *  settlement re-broadcasts the sidebar count when it changed: each agent
    *  transition (pause, wake, finish) injects a notification turn whose end
    *  fires this hook, so the count self-corrects within one turn cycle. */
-  reconcileTasksFromStopHook(id: string, tasks: StopHookTaskSummary[]): void {
+  async reconcileTasksFromStopHook(id: string, tasks: StopHookTaskSummary[]): Promise<void> {
     const s = this.sessions.get(id)
     if (!s) return
     const live = new Set(tasks.map((t) => t.id))
-    const settled = this.backgroundWatchers.settleUnlisted(s, live)
-    const swept = reconcileTaskMapFromStopHook(s, tasks)
+    // Awaited BEFORE the sweep: the synthesized 'completed' (transcript read)
+    // must land before the sweep would mark the same record 'stopped'.
+    const settled = await this.backgroundWatchers.settleUnlisted(s, live)
+    // Re-resolve by id: the session may have been unloaded or replaced while
+    // the transcript reads were in flight.
+    const current = this.sessions.get(id)
+    if (!current) return
+    const swept = reconcileTaskMapFromStopHook(current, tasks)
     if (settled || swept) {
       // The task map (and with it the sidebar's backgroundSubagentCount)
       // changed — re-broadcast the info frame so the count dot updates in
       // the same tick as the CLI's authoritative list. One frame per Stop
       // hook, after both the settlement and the sweep have touched the map.
-      this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+      this.broadcastGlobal({ kind: 'update', session: this.info(current) })
     }
   }
 
@@ -7251,7 +7273,11 @@ export class SessionManager {
       enabledPlugins: session.enabledPlugins,
       includeHookEvents: true,
       inProcessHookForward: (_sid, event) => this.recordHookRun(session.id, event),
-      inProcessTaskSnapshot: (_sid, tasks) => this.reconcileTasksFromStopHook(session.id, tasks),
+      inProcessTaskSnapshot: (_sid, tasks) => {
+        void this.reconcileTasksFromStopHook(session.id, tasks).catch((err) => {
+          log.warn(`[session ${session.id}] Stop-hook task reconcile failed:`, err)
+        })
+      },
       inProcessSubagentStop: (_sid, info) => this.settleBackgroundSubagentFromHook(session.id, info),
       forwardSubagentText: this.forwardSubagentText,
       resume: session.id,

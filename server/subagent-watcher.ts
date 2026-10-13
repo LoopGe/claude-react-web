@@ -36,6 +36,13 @@
 // The polling described below is the FALLBACK for what the hook cannot cover:
 // a CLI too old to deliver the hook, or a hook that never arrives. Whichever
 // path resolves first deletes the watcher entry, so the others become no-ops.
+// Because it is only a fallback it polls slowly (every 2 s for the first 30 s,
+// then every 15 s, 2 h backstop) and reads incrementally: each watcher owns a
+// TranscriptTail that async-reads only the bytes appended since its last read
+// and feeds them line by line to a stateful parser, so a long transcript is
+// never re-read or re-parsed and no poll blocks the event loop. Completions
+// resolve the session BY ID at completion time (a resume can replace the
+// Session object a watcher was armed against).
 //
 // SOLUTION (fallback): the CLI DOES write the subagent's transcript to
 //   <cliHome>/projects/<encodedCwd>/<sessionId>/subagents/agent-<agentId>.jsonl
@@ -55,8 +62,8 @@
 // so it is no longer relied upon: the maxMs backstop synthesizes a frame so
 // the record can never strand.
 
-import { readFileSync } from 'node:fs'
-import { cp, mkdir, readdir } from 'node:fs/promises'
+import { cp, mkdir, open, readdir, type FileHandle } from 'node:fs/promises'
+import { StringDecoder } from 'node:string_decoder'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { claudeConfigDir } from './claude-config-dir.js'
@@ -193,68 +200,183 @@ const NON_TERMINAL_STOP_REASONS = new Set(['tool_use', 'pause_turn'])
  *  text, so the two are distinguished precisely. */
 const API_ERROR_TRUNCATION_RE = /API Error: .*mid-response/i
 
-/** Read the subagent's transcript and, if it contains a final assistant
+/** Classify one transcript line: the final text when it is a TERMINAL
+ *  assistant message, else null (blank, malformed/partial, non-assistant,
+ *  non-terminal stop_reason, or an API-error truncation). */
+function terminalTextOf(line: string): string | null {
+  const trimmed = line.trim()
+  if (!trimmed) return null
+  let obj: { type?: string; message?: { stop_reason?: unknown; content?: unknown } }
+  try {
+    obj = JSON.parse(trimmed)
+  } catch {
+    return null // partial line (file mid-write) — skip, retry next poll
+  }
+  if (!obj || obj.type !== 'assistant' || !obj.message) return null
+  const sr = obj.message.stop_reason
+  if (typeof sr !== 'string') return null
+  if (NON_TERMINAL_STOP_REASONS.has(sr)) return null // mid-tool-call — keep polling
+  // A response truncated by a transient API/connection error is NOT a
+  // completion — the subagent recovers and keeps producing on its next
+  // turn. The CLI writes the error notice as the whole text of the
+  // stop_sequence message, so a text match distinguishes it from a genuine
+  // stop_sequence (the model hit a configured stop sequence and returned
+  // its final output), which stays a normal completion.
+  const blockText = extractTextBlocks(obj.message.content)
+  if (API_ERROR_TRUNCATION_RE.test(blockText)) return null // transient error — keep polling
+  return blockText
+}
+
+/** Stateful, line-at-a-time form of the transcript completion grammar, so a
+ *  tail can feed only the lines appended since its last read. The last
+ *  terminal assistant message wins (a later one overwrites an earlier one).
+ *
+ *  Any terminal stop_reason means the subagent stopped producing and
+ *  returned its final text — a normal completion. stop_sequence / max_turns /
+ *  max_tokens are NOT errors: the subagent ran within its bounds and returned
+ *  output, exactly like end_turn. Mapping them to 'stopped' (which the reducer
+ *  renders as the interrupted/error state → exclamation icon) was a false
+ *  positive for subagents ending on a non-end_turn terminal reason. Only the
+ *  maxMs backstop (no terminal frame at all — the subagent was killed /
+ *  stranded mid-work) synthesizes 'stopped'; a real terminal frame is always
+ *  'completed'. */
+export class SubagentCompletionParser {
+  private lastText: string | null = null
+
+  feedLine(line: string): void {
+    const text = terminalTextOf(line)
+    if (text !== null) this.lastText = text
+  }
+
+  /** The completion so far. `trailingPartial` (the bytes after the last
+   *  newline) is parsed speculatively WITHOUT committing it: a final line with
+   *  no trailing newline is a complete record more often than not (the old
+   *  whole-file parse accepted it), but if it later turns out to be the head
+   *  of a longer line the committed state must not have absorbed it. */
+  result(trailingPartial?: string): SubagentCompletion | null {
+    const speculative = trailingPartial ? terminalTextOf(trailingPartial) : null
+    const text = speculative ?? this.lastText
+    if (text === null) return null
+    return { status: 'completed', summary: text }
+  }
+
+  reset(): void {
+    this.lastText = null
+  }
+}
+
+/** Upper bound for one read() call into a transcript, so a large first read
+ *  (a long-running subagent the watcher armed late) is streamed through the
+ *  decoder in bounded chunks instead of one giant buffer. */
+const TAIL_CHUNK_BYTES = 1024 * 1024
+
+/** Incremental async reader of one subagent transcript. Each `read()` reads
+ *  only the bytes appended since the previous read, decodes them through a
+ *  persistent UTF-8 decoder (a multi-byte character can straddle two reads),
+ *  feeds the complete lines to a {@link SubagentCompletionParser}, and keeps
+ *  the unterminated tail for the next read. A file that SHRANK since the last
+ *  read was rewritten — the state resets and the new content is re-parsed.
+ *
+ *  Never throws: a missing file (ENOENT — the subagent hasn't written yet) or
+ *  any other read error resolves to the completion parsed so far (null for a
+ *  fresh tail), i.e. "not done yet".
+ *
+ *  Reads never overlap (they share offset/decoder/parser state): a `read()`
+ *  issued while one is in flight is queued behind it, and every caller queued
+ *  during the same in-flight read shares that one follow-up read. Queuing
+ *  rather than returning the in-flight promise means a settle path that reads
+ *  the poller's tail always sees bytes written before its own call. */
+export class TranscriptTail {
+  private offset = 0
+  private partial = ''
+  private decoder = new StringDecoder('utf8')
+  private readonly parser = new SubagentCompletionParser()
+  private running: Promise<SubagentCompletion | null> | null = null
+  private queued: Promise<SubagentCompletion | null> | null = null
+
+  constructor(readonly filePath: string) {}
+
+  /** Bytes consumed so far (test observability). */
+  get consumedBytes(): number {
+    return this.offset
+  }
+
+  read(): Promise<SubagentCompletion | null> {
+    if (!this.running) return this.startRead()
+    if (!this.queued) {
+      this.queued = this.running.then(() => {
+        this.queued = null
+        return this.startRead()
+      })
+    }
+    return this.queued
+  }
+
+  private startRead(): Promise<SubagentCompletion | null> {
+    const p = this.readOnce().finally(() => {
+      if (this.running === p) this.running = null
+    })
+    this.running = p
+    return p
+  }
+
+  private reset(): void {
+    this.offset = 0
+    this.partial = ''
+    this.decoder = new StringDecoder('utf8')
+    this.parser.reset()
+  }
+
+  private consume(text: string): void {
+    if (!text) return
+    const pieces = (this.partial + text).split('\n')
+    this.partial = pieces.pop() ?? ''
+    for (const line of pieces) this.parser.feedLine(line)
+  }
+
+  private async readOnce(): Promise<SubagentCompletion | null> {
+    let fh: FileHandle | undefined
+    try {
+      fh = await open(this.filePath, 'r')
+      const { size } = await fh.stat()
+      if (size < this.offset) this.reset()
+      if (size > this.offset) {
+        const buf = Buffer.allocUnsafe(Math.min(TAIL_CHUNK_BYTES, size - this.offset))
+        while (this.offset < size) {
+          const len = Math.min(buf.length, size - this.offset)
+          const { bytesRead } = await fh.read(buf, 0, len, this.offset)
+          if (bytesRead === 0) break
+          this.offset += bytesRead
+          this.consume(this.decoder.write(buf.subarray(0, bytesRead)))
+        }
+      }
+    } catch {
+      // ENOENT (not written yet) or a transient read error: report what has
+      // been parsed so far and retry on the next read.
+    } finally {
+      if (fh) await fh.close().catch(() => { /* ignore */ })
+    }
+    return this.parser.result(this.partial)
+  }
+}
+
+/** Read the subagent's transcript once and, if it contains a final assistant
  *  message (one with a terminal `message.stop_reason`), return the completion.
  *  Returns null if the transcript doesn't exist yet, is mid-write, or hasn't
- *  reached a terminal assistant message. Never throws — malformed/partial
- *  lines are skipped, read errors return null (treated as "not done yet"). */
-export function readSubagentCompletion(filePath: string): SubagentCompletion | null {
-  let text: string
-  try {
-    text = readFileSync(filePath, 'utf8')
-  } catch {
-    return null
-  }
-  return parseSubagentCompletion(text)
+ *  reached a terminal assistant message. Never rejects — malformed/partial
+ *  lines are skipped, read errors resolve null (treated as "not done yet"). */
+export function readSubagentCompletion(filePath: string): Promise<SubagentCompletion | null> {
+  return new TranscriptTail(filePath).read()
 }
 
 /** Parse a subagent transcript's raw JSONL text for its completion — the
- *  pure half of {@link readSubagentCompletion}, split out so non-polling
- *  callers (the resume seed's backfill reads the same files async, off the
- *  hot path) reuse the exact same terminal-frame grammar. */
+ *  same grammar {@link TranscriptTail} applies incrementally, for callers that
+ *  already hold the whole text (the resume seed's backfill reads the files
+ *  itself, off the hot path). */
 export function parseSubagentCompletion(text: string): SubagentCompletion | null {
-  let lastStopReason: string | null = null
-  let lastText = ''
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-    let obj: { type?: string; message?: { stop_reason?: unknown; content?: unknown } }
-    try {
-      obj = JSON.parse(trimmed)
-    } catch {
-      continue // partial line (file mid-write) — skip, retry next poll
-    }
-    if (obj.type !== 'assistant' || !obj.message) continue
-    const sr = obj.message.stop_reason
-    if (typeof sr !== 'string') continue
-    if (NON_TERMINAL_STOP_REASONS.has(sr)) continue // mid-tool-call — keep polling
-    // A response truncated by a transient API/connection error is NOT a
-    // completion — the subagent recovers and keeps producing on its next
-    // turn. The CLI writes the error notice as the whole text of the
-    // stop_sequence message, so a text match distinguishes it from a genuine
-    // stop_sequence (the model hit a configured stop sequence and returned
-    // its final output), which stays a normal completion.
-    const blockText = extractTextBlocks(obj.message.content)
-    if (API_ERROR_TRUNCATION_RE.test(blockText)) continue // transient error — keep polling
-    // The last terminal assistant message is the subagent's final response.
-    // A later one (if any) overwrites.
-    lastStopReason = sr
-    lastText = blockText
-  }
-  if (lastStopReason === null) return null
-  // Any terminal stop_reason means the subagent stopped producing and
-  // returned its final text — a normal completion. stop_sequence /
-  // max_turns / max_tokens are NOT errors: the subagent ran within its
-  // bounds and returned output, exactly like end_turn. Mapping them to
-  // 'stopped' (which the reducer renders as the interrupted/error state
-  // → exclamation icon) was a false positive for subagents ending on a
-  // non-end_turn terminal reason. Only the maxMs backstop below (no
-  // terminal frame at all — the subagent was killed/stranded mid-work)
-  // synthesizes 'stopped'; a real terminal frame is always 'completed'.
-  return {
-    status: 'completed',
-    summary: lastText,
-  }
+  const parser = new SubagentCompletionParser()
+  for (const line of text.split('\n')) parser.feedLine(line)
+  return parser.result()
 }
 
 /** Copy a session's subagent sidecar transcripts to another session's
@@ -300,22 +422,25 @@ export interface WatchOptions {
   agentId: string
   toolUseId: string
   onCompleted: (completion: SubagentCompletion) => void
-  /** Steady-state poll interval, in ms (default 2000). Used after the fast
-   *  phase (see fastPhaseMs) elapses — long-running subagents settle into this
-   *  cadence, keeping GC/read churn low over a multi-hour backstop window. */
+  /** The incremental reader to poll. The registry passes the one it shares
+   *  with its settle paths (so a settle reads only the bytes since the last
+   *  poll); when omitted the watcher creates its own for the transcript path. */
+  tail?: TranscriptTail
+  /** Steady-state poll interval, in ms (default 15000). Used after the fast
+   *  phase (see fastPhaseMs) elapses. Polling is only the FALLBACK settle path
+   *  (the SubagentStop hook and the Stop-hook list sweep settle first on any
+   *  CLI that delivers them), so a long-running subagent can afford a relaxed
+   *  cadence over the multi-hour backstop window. */
   intervalMs?: number
-  /** Fast-phase poll interval, in ms (default 500). Applied for the first
+  /** Fast-phase poll interval, in ms (default 2000). Applied for the first
    *  `fastPhaseMs` after launch, when a SHORT subagent (the common case) is
-   *  most likely to finish. Tightening the early cadence cuts perceived
-   *  completion latency from up to `intervalMs` (2 s) down to this — the
-   *  extra reads are bounded to the fast phase, so they can't accumulate over
-   *  a long run. */
+   *  most likely to finish — bounds the fallback's completion latency for a
+   *  CLI whose hooks never arrive, without paying it over a long run. */
   fastIntervalMs?: number
   /** How long the fast phase lasts, in ms (default 30000). After this much
    *  wall-clock time the watcher drops to `intervalMs`. Chosen so the vast
-   *  majority of short subagents (which finish within seconds) get the tight
-   *  cadence, while genuinely long ones pay the denser polling for only their
-   *  first 30 s. */
+   *  majority of short subagents (which finish within seconds) get the tighter
+   *  cadence, while genuinely long ones pay it for only their first 30 s. */
   fastPhaseMs?: number
   /** Absolute backstop, in ms (default 2 h). If the watcher reaches this
    *  without detecting a terminal `stop_reason`, it synthesizes a `stopped`
@@ -373,11 +498,11 @@ export interface WatchOptions {
  *  Returns a `stop()` to cancel early (called on session unload so a watcher
  *  can't fire into a dead session). */
 export function watchBackgroundSubagent(opts: WatchOptions): () => void {
-  const intervalMs = opts.intervalMs ?? 2000
-  const fastIntervalMs = opts.fastIntervalMs ?? 500
+  const intervalMs = opts.intervalMs ?? 15_000
+  const fastIntervalMs = opts.fastIntervalMs ?? 2000
   const fastPhaseMs = opts.fastPhaseMs ?? 30_000
   const maxMs = opts.maxMs ?? 2 * 60 * 60 * 1000
-  const filePath = subagentTranscriptPath(opts.cwd, opts.sessionId, opts.agentId)
+  const tail = opts.tail ?? new TranscriptTail(subagentTranscriptPath(opts.cwd, opts.sessionId, opts.agentId))
   // Wall-clock for the backstop (not an `elapsed += intervalMs` counter, which
   // undercounts real time when the event loop delays ticks).
   const startMs = Date.now()
@@ -385,10 +510,10 @@ export function watchBackgroundSubagent(opts: WatchOptions): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined
   let pollCount = 0
 
-  // Adaptive cadence: poll densely (fastIntervalMs) for the first fastPhaseMs
-  // — short subagents (the common case) finish here and settle within ~½ s
-  // instead of up to 2 s — then relax to intervalMs for the long tail, so a
-  // multi-hour backstop window doesn't pay dense-poll read/GC churn.
+  // Adaptive cadence: poll more often (fastIntervalMs) for the first
+  // fastPhaseMs — short subagents (the common case) finish here — then relax
+  // to intervalMs for the long tail, so a multi-hour backstop window doesn't
+  // pay the early cadence.
   const nextDelay = (): number =>
     Date.now() - startMs < fastPhaseMs ? fastIntervalMs : intervalMs
 
@@ -403,7 +528,16 @@ export function watchBackgroundSubagent(opts: WatchOptions): () => void {
     opts.onCompleted(completion)
   }
 
-  const tick = () => {
+  // Timer / microtask entry point: the tick is async (it awaits the tail
+  // read), so surface an unexpected throw from onCompleted as a log line
+  // instead of an unhandled rejection.
+  const runTick = () => {
+    tick().catch((err) => {
+      log.warn(`[${opts.sessionId}] background subagent watcher tick failed (agentId=${opts.agentId}):`, err)
+    })
+  }
+
+  const tick = async (): Promise<void> => {
     if (done) return
     // The never-strand guarantee, shared by both branches below.
     const backstopFinish = () =>
@@ -427,11 +561,14 @@ export function watchBackgroundSubagent(opts: WatchOptions): () => void {
         return
       }
       // Cap at the remaining backstop budget so the deadline stays precise.
-      timer = setTimeout(tick, Math.min(Math.max(nextDelay(), SUPPRESSED_POLL_INTERVAL_MS), remaining))
+      timer = setTimeout(runTick, Math.min(Math.max(nextDelay(), SUPPRESSED_POLL_INTERVAL_MS), remaining))
       return
     }
-    // 1. Real terminal completion?
-    const completion = readSubagentCompletion(filePath)
+    // 1. Real terminal completion? (Incremental: only the bytes appended since
+    // the previous read.) Re-check `done` after the await — stop() or a
+    // settle path may have claimed this watcher while the read was in flight.
+    const completion = await tail.read()
+    if (done) return
     if (completion) {
       finish(completion, 'info', 'completed (terminal stop_reason)')
       return
@@ -444,11 +581,11 @@ export function watchBackgroundSubagent(opts: WatchOptions): () => void {
     // Not done — reschedule at the current adaptive cadence. A
     // self-rescheduling setTimeout (rather than a fixed setInterval) is what
     // lets the delay shrink/grow across the fast-phase boundary, and it also
-    // guarantees no re-entrancy: the next poll is only armed after this one
-    // returns, so a slow readSubagentCompletion can't stack overlapping ticks.
+    // guarantees no re-entrancy: the next poll is only armed after this one's
+    // read has resolved, so a slow read can't stack overlapping ticks.
     const delayMs = nextDelay()
     pollCount += 1
-    timer = setTimeout(tick, delayMs)
+    timer = setTimeout(runTick, delayMs)
     opts.onPoll?.({ pollCount, delayMs })
   }
   // The subagent may have already finished by the time the ack reaches us —
@@ -463,7 +600,7 @@ export function watchBackgroundSubagent(opts: WatchOptions): () => void {
   // present when the first poll fires; the `done` flag still lets stop()
   // (session unload) cancel the poll before it runs. The first tick also arms
   // the recurring timer via its own reschedule tail.
-  queueMicrotask(tick)
+  queueMicrotask(runTick)
   return () => {
     done = true
     if (timer) clearTimeout(timer)
@@ -498,21 +635,26 @@ export interface BackgroundWatcherRegistryDeps {
   /** History ring cap, used when pushing the synthesized frame into
    *  session.history (mirrors every other history-ring write). */
   historyCap: number
-  /** Live sessions map — used to detect a session unloaded between watcher
-   *  dispatch and completion, so a late completion never broadcasts into a
-   *  dead session. */
-  isLive(sessionId: string): boolean
+  /** The CURRENT live Session for an id (undefined once unloaded). Every
+   *  completion resolves its target through this AT COMPLETION TIME rather
+   *  than writing into the object captured at start(): a resume replaces the
+   *  Session object under the same id, and a late completion must land in the
+   *  one subscribers are actually attached to — or nowhere, when the session
+   *  was unloaded between dispatch and completion. */
+  getSession(sessionId: string): Session | undefined
 }
 
 /** One armed watcher's runtime handle. `stop()` cancels its poller; `agentId`
- *  is retained so a settle-on-process-exit can locate the subagent's on-disk
- *  transcript (the transcript path is keyed by agentId, not toolUseId).
- *  `settleGate.paused` latches the poller's transcript path while the
- *  subagent is pause-held — see the module header; resolution comes from
- *  settleUnlisted / the backstop / stop(). */
+ *  is retained so the hook / sweep / process-exit settles can match it (the
+ *  transcript is keyed by agentId, not toolUseId). `tail` is the transcript
+ *  reader shared by the poller and every settle path, so a settle reads only
+ *  the bytes appended since the last poll. `settleGate.paused` latches the
+ *  poller's transcript path while the subagent is pause-held — see the module
+ *  header; resolution comes from settleUnlisted / the backstop / stop(). */
 interface WatcherEntry {
   stop: () => void
   agentId: string
+  tail: TranscriptTail
   settleGate: { paused: boolean }
 }
 
@@ -553,29 +695,34 @@ export class BackgroundWatcherRegistry {
     if (perSession.has(toolUseId)) return
     if (!session.cwd) return // without a cwd the subagent transcript path can't be computed
     const settleGate = { paused: false }
+    const tail = new TranscriptTail(subagentTranscriptPath(session.cwd, sessionId, agentId))
     const stop = watchBackgroundSubagent({
       cwd: session.cwd,
       sessionId,
       agentId,
       toolUseId,
+      tail,
       isSettleSuppressed: () => settleGate.paused,
       onCompleted: (completion) => {
-        // Remove the watcher entry before broadcasting so the unload guard
-        // can't race a concurrent stop. onCompleted fires on EVERY resolution
-        // path (real completion / staleness / maxMs backstop), so the entry is
-        // always cleared here — a later re-arm (e.g. an autoResume re-seeing
-        // the launch ack) is never blocked by a stale entry.
-        perSession!.delete(toolUseId)
+        // Claim the watcher entry before broadcasting. onCompleted fires on
+        // EVERY poller resolution path (real completion / maxMs backstop), so
+        // the entry is always cleared here — a later re-arm (e.g. an
+        // autoResume re-seeing the launch ack) is never blocked by a stale
+        // entry. Identity-checked: if a settle path already claimed it (and a
+        // re-arm put a fresh entry under the same toolUseId), this poller has
+        // lost the race and must not touch the new entry or re-broadcast.
+        const current = this.watchers.get(sessionId)
+        if (current?.get(toolUseId) !== entry) return
+        current.delete(toolUseId)
         // The sidebar reads `backgroundSubagentCount` for its status dot;
         // broadcast the updated info so it flips out of 'waiting' the moment
-        // the subagent settles (skip when the session was unloaded mid-poll).
-        if (this.deps.isLive(session.id)) {
-          this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(session) })
-        }
-        this.broadcastSynthesizedTaskNotification(session, toolUseId, agentId, completion)
+        // the subagent settles (skipped when the session was unloaded mid-poll).
+        this.broadcastInfo(sessionId)
+        this.broadcastSynthesizedTaskNotification(sessionId, toolUseId, agentId, completion)
       },
     })
-    perSession.set(toolUseId, { stop, agentId, settleGate })
+    const entry: WatcherEntry = { stop, agentId, tail, settleGate }
+    perSession.set(toolUseId, entry)
     // Seed a TaskRecord for this watcher-tracked subagent. CLI versions that
     // emit no task_* frames for background Agent dispatches (the watcher's
     // reason to exist) would otherwise never surface in session.tasks /
@@ -604,9 +751,14 @@ export class BackgroundWatcherRegistry {
     // so the sidebar can switch this session away from a plain 'live' dot
     // (the parent turn is still running right now; the `result` frame that
     // ends it re-broadcasts info via persist(), carrying the same count).
-    if (this.deps.isLive(session.id)) {
-      this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(session) })
-    }
+    this.broadcastInfo(sessionId)
+  }
+
+  /** Re-broadcast the sidebar info frame for the CURRENT session under `id`
+   *  (no-op once it was unloaded). */
+  private broadcastInfo(sessionId: string): void {
+    const s = this.deps.getSession(sessionId)
+    if (s) this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(s) })
   }
 
   /** Cancel the subagent watcher for a (session, toolUseId) when a REAL SDK
@@ -659,15 +811,18 @@ export class BackgroundWatcherRegistry {
    *  `interrupted` for a non-completed status), capturing the subagent's
    *  final text as the merged result. */
   private broadcastSynthesizedTaskNotification(
-    session: Session,
+    sessionId: string,
     toolUseId: string,
     agentId: string,
     completion: SubagentCompletion,
   ): void {
-    // Drop the watcher if the session was unloaded between dispatch and
-    // completion — no subscribers to push to, and persisting would race
-    // unload's terminal write.
-    if (!this.deps.isLive(session.id)) return
+    // Resolve the session BY ID now, not the object the watcher was armed
+    // against: a resume may have replaced it, and a frame pushed into the old
+    // object would reach no subscriber and no replay. Drop the frame if the
+    // session was unloaded between dispatch and completion — no subscribers
+    // to push to, and persisting would race unload's terminal write.
+    const session = this.deps.getSession(sessionId)
+    if (!session) return
     const msg = buildTaskNotificationFrame({
       sessionId: session.id,
       toolUseId,
@@ -707,8 +862,13 @@ export class BackgroundWatcherRegistry {
    *  fragility this module's header warns about. It is only used to recover the
    *  subagent's final text; when the file isn't readable/terminal yet, the
    *  hook's own `last_assistant_message` is the fallback, so a settle never
-   *  depends on the filesystem. */
-  settleByAgentId(
+   *  depends on the filesystem.
+   *
+   *  The CLAIM (stop the poller + delete the entry) happens synchronously,
+   *  before the async transcript read, so a poll tick or another settle path
+   *  that runs while the read is in flight finds no entry. Resolves true when
+   *  this call settled the watcher. */
+  async settleByAgentId(
     session: Session,
     agentId: string,
     opts: {
@@ -721,7 +881,7 @@ export class BackgroundWatcherRegistry {
        *  settle-on-hook behaviour. */
       backgroundTasks?: Array<{ id: string; status?: string }>
     } = {},
-  ): boolean {
+  ): Promise<boolean> {
     const perSession = this.watchers.get(session.id)
     if (!perSession) return false
     let match: { toolUseId: string; entry: WatcherEntry } | undefined
@@ -743,28 +903,29 @@ export class BackgroundWatcherRegistry {
       )
       return false
     }
-    try { match.entry.stop() } catch { /* ignore */ }
-    perSession.delete(match.toolUseId)
+    // Claim synchronously, before the first await.
+    const sessionId = session.id
+    const { toolUseId, entry } = match
+    try { entry.stop() } catch { /* ignore */ }
+    perSession.delete(toolUseId)
     // Prefer the transcript's own final text (same source the poll path uses,
     // so a hook-settled record and a poll-settled one read identically), then
-    // the hook's last_assistant_message, then empty.
+    // the hook's last_assistant_message, then empty. Without a hook path the
+    // entry's own tail (our reconstruction of the CLI layout) is read — only
+    // the bytes since the last poll.
     const fromDisk = opts.transcriptPath
-      ? readSubagentCompletion(opts.transcriptPath)
-      : session.cwd
-        ? readSubagentCompletion(subagentTranscriptPath(session.cwd, session.id, agentId))
-        : null
+      ? await readSubagentCompletion(opts.transcriptPath)
+      : await entry.tail.read()
     const summary = fromDisk?.summary || opts.lastAssistantMessage?.trim() || ''
     log.info(
-      `[${session.id}] background subagent agentId=${agentId} toolUseId=${match.toolUseId} ` +
+      `[${sessionId}] background subagent agentId=${agentId} toolUseId=${toolUseId} ` +
       `settled by SubagentStop hook (summary ${fromDisk?.summary ? 'from transcript' : opts.lastAssistantMessage ? 'from hook' : 'empty'})`,
     )
     // SubagentStop only fires when the agent stopped of its own accord, so this
     // is always a normal completion — never the synthesized 'stopped' the maxMs
     // backstop and the process-exit path use.
-    if (this.deps.isLive(session.id)) {
-      this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(session) })
-    }
-    this.broadcastSynthesizedTaskNotification(session, match.toolUseId, agentId, {
+    this.broadcastInfo(sessionId)
+    this.broadcastSynthesizedTaskNotification(sessionId, toolUseId, agentId, {
       status: 'completed',
       summary,
     })
@@ -794,9 +955,13 @@ export class BackgroundWatcherRegistry {
    *  Watchers whose agent is still listed stay armed (the subagent merely
    *  paused, or is mid-run). Does NOT broadcast the sidebar info frame itself —
    *  the caller (the Stop-hook reconcile) broadcasts once after both the
-   *  settlement and the sweep have touched the task map. Returns true when
-   *  anything was settled. */
-  settleUnlisted(session: Session, live: Set<string>): boolean {
+   *  settlement and the sweep have touched the task map. Resolves true when
+   *  anything was settled.
+   *
+   *  Every unlisted entry is CLAIMED synchronously before the transcript
+   *  reads are awaited, so a concurrent poll tick / hook settle is a no-op;
+   *  the caller awaits this before running the generic sweep. */
+  async settleUnlisted(session: Session, live: Set<string>): Promise<boolean> {
     const perSession = this.watchers.get(session.id)
     if (!perSession || perSession.size === 0) return false
     // Id-space guard, mirroring the generic sweep's bail (session-pump.ts):
@@ -821,24 +986,25 @@ export class BackgroundWatcherRegistry {
         return false
       }
     }
-    let settled = false
+    const sessionId = session.id
+    const claimed: Array<[string, WatcherEntry]> = []
     for (const [toolUseId, entry] of Array.from(perSession.entries())) {
       if (live.has(entry.agentId)) continue
       try { entry.stop() } catch { /* ignore */ }
       perSession.delete(toolUseId)
-      const completion: SubagentCompletion = (session.cwd
-        ? readSubagentCompletion(subagentTranscriptPath(session.cwd, session.id, entry.agentId))
-        : null) ?? STOPPED_SUBAGENT_COMPLETION
+      claimed.push([toolUseId, entry])
+    }
+    if (claimed.length === 0) return false
+    const completions = await Promise.all(claimed.map(([, entry]) => entry.tail.read()))
+    claimed.forEach(([toolUseId, entry], i) => {
+      const completion: SubagentCompletion = completions[i] ?? STOPPED_SUBAGENT_COMPLETION
       log.info(
-        `[${session.id}] background subagent agentId=${entry.agentId} toolUseId=${toolUseId} ` +
+        `[${sessionId}] background subagent agentId=${entry.agentId} toolUseId=${toolUseId} ` +
         `left the CLI's in-flight list (status=${completion.status})`,
       )
-      if (this.deps.isLive(session.id)) {
-        this.broadcastSynthesizedTaskNotification(session, toolUseId, entry.agentId, completion)
-      }
-      settled = true
-    }
-    return settled
+      this.broadcastSynthesizedTaskNotification(sessionId, toolUseId, entry.agentId, completion)
+    })
+    return true
   }
 
   /** Settle every armed watcher for a session because its CLI subprocess just
@@ -857,42 +1023,58 @@ export class BackgroundWatcherRegistry {
    *
    *  Both funnel through the same broadcast path as a normal completion, so
    *  the client reducer flips the `background`/`pending` record to done /
-   *  interrupted. Called BEFORE the crash-recovery ladder or termination runs,
-   *  while the session is still live in the map, so the synthesized frame
-   *  reaches subscribers. A subsequent in-place recovery that re-sees the
-   *  launch ack simply re-arms a fresh watcher (per-toolUseId dedup makes that
+   *  interrupted. Called BEFORE the crash-recovery ladder or termination runs.
+   *  The frame lands once the (incremental) transcript read resolves, in
+   *  whatever Session is live under the id by then: on the recovery path the
+   *  same object with its subscribers still attached; after an immediate
+   *  termination the history ring only (subscribers were already ended, the
+   *  replay carries it); after an unload, nowhere. A subsequent in-place
+   *  recovery that re-sees the launch ack simply re-arms a fresh watcher (per-toolUseId dedup makes that
    *  safe), and a late real completion still overrides an over-eager `stopped`
    *  (the reducer accepts a later terminal frame). No-op when the session has
-   *  no armed watchers. */
-  settleAllOnProcessExit(session: Session): void {
-    const perSession = this.watchers.get(session.id)
-    if (!perSession || perSession.size === 0) return
-    // Snapshot entries first: broadcastSynthesizedTaskNotification →
-    // applyTaskEvent mutates session.tasks, and we delete from perSession as
-    // we go, so iterate a copy to avoid mutating-while-iterating.
+   *  no armed watchers.
+   *
+   *  Every entry is CLAIMED synchronously (the map is empty and count() reads
+   *  0 when this returns); the transcript reads and broadcasts complete in
+   *  `done`. `claimedTaskIds` are the task-record ids (the agentIds) whose
+   *  synthesized notification `done` will fold — the caller's synchronous
+   *  process-exit sweep must skip them so they don't flash to `stopped` before
+   *  their real (possibly `completed`) outcome lands. */
+  settleAllOnProcessExit(session: Session): { claimedTaskIds: Set<string>; done: Promise<void> } {
+    const sessionId = session.id
+    const perSession = this.watchers.get(sessionId)
+    if (!perSession || perSession.size === 0) {
+      return { claimedTaskIds: new Set(), done: Promise.resolve() }
+    }
     const entries = Array.from(perSession.entries())
-    for (const [toolUseId, entry] of entries) {
+    for (const [, entry] of entries) {
       try { entry.stop() } catch { /* ignore */ }
-      perSession.delete(toolUseId)
+    }
+    // The map for this session is now empty; drop it so count() reads 0.
+    perSession.clear()
+    this.watchers.delete(sessionId)
+    const claimedTaskIds = new Set(entries.map(([, entry]) => entry.agentId))
+    const done = (async () => {
       // Path 1: the subagent may have finished a terminal frame just before
       // the crash — prefer its real output over a synthesized `stopped`.
       // EXCEPT for a latched (pause-held) watcher: its transcript's terminal
       // line is the PAUSE narration, not a result, and with the host process
-      // gone the subagent can never resume to produce a real one.
-      const completion: SubagentCompletion = (!entry.settleGate.paused && session.cwd
-        ? readSubagentCompletion(subagentTranscriptPath(session.cwd, session.id, entry.agentId))
-        : null) ?? STOPPED_SUBAGENT_COMPLETION
-      log.info(
-        `[${session.id}] settling background subagent agentId=${entry.agentId} ` +
-        `toolUseId=${toolUseId} on process exit (status=${completion.status})`,
+      // gone the subagent can never resume to produce a real one — so its
+      // read is skipped entirely.
+      const completions = await Promise.all(
+        entries.map(([, entry]) => (entry.settleGate.paused ? null : entry.tail.read())),
       )
-      this.broadcastSynthesizedTaskNotification(session, toolUseId, entry.agentId, completion)
-    }
-    // The map for this session is now empty; drop it so count() reads 0.
-    this.watchers.delete(session.id)
-    // Refresh the sidebar dot (waiting → whatever the exit path lands on).
-    if (this.deps.isLive(session.id)) {
-      this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(session) })
-    }
+      entries.forEach(([toolUseId, entry], i) => {
+        const completion: SubagentCompletion = completions[i] ?? STOPPED_SUBAGENT_COMPLETION
+        log.info(
+          `[${sessionId}] settling background subagent agentId=${entry.agentId} ` +
+          `toolUseId=${toolUseId} on process exit (status=${completion.status})`,
+        )
+        this.broadcastSynthesizedTaskNotification(sessionId, toolUseId, entry.agentId, completion)
+      })
+      // Refresh the sidebar dot (waiting → whatever the exit path lands on).
+      this.broadcastInfo(sessionId)
+    })()
+    return { claimedTaskIds, done }
   }
 }

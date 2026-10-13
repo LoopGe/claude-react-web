@@ -546,12 +546,18 @@ export function reconcileTasksFromStopHook(session: Session, summaries: StopHook
  *  still overrides an over-eager `stopped`, since a task_notification frame
  *  writes its own status.
  *
+ *  `skipTaskIds` leaves those records untouched: the subagent watcher's
+ *  process-exit settle has already claimed them and folds their outcome
+ *  (possibly `completed`, read from the transcript) asynchronously, so
+ *  sweeping them here would flash them to `stopped` first.
+ *
  *  Returns true when anything changed. */
-export function settleTasksOnProcessExit(session: Session): boolean {
+export function settleTasksOnProcessExit(session: Session, skipTaskIds?: ReadonlySet<string>): boolean {
   const now = Date.now()
   let changed = false
   for (const [taskId, rec] of session.tasks) {
     if (isTerminalTaskStatus(rec.status)) continue
+    if (skipTaskIds?.has(taskId)) continue
     session.tasks.set(taskId, {
       ...rec,
       status: 'stopped',

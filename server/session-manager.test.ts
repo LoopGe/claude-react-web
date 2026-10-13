@@ -318,6 +318,13 @@ vi.mock('./compact-summary.js', () => ({
 // process whatever the mock just emitted. The pump iterates asynchronously,
 // so a `setImmediate`-tick is enough to drain one message.
 const tick = () => new Promise((r) => setImmediate(r))
+// Wall-clock wait for conditions that depend on real fs I/O (the subagent
+// watcher's async transcript tail), which a fixed number of setImmediate
+// ticks does not reliably span.
+const waitForIo = async (cond: () => boolean, timeoutMs = 2_000): Promise<void> => {
+  const deadline = Date.now() + timeoutMs
+  while (!cond() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5))
+}
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
 import { SessionManager, resolveConfiguredModel, backfillSubagentCompletions } from './session-manager.js'
@@ -825,6 +832,7 @@ describe('SessionManager', () => {
         },
       })
       await tick()
+      await waitForIo(() => sm.get(info.id).backgroundSubagentCount === 0)
 
       const settled = sm.get(info.id)
       expect(settled.backgroundSubagentCount).toBe(0)
@@ -873,6 +881,9 @@ describe('SessionManager', () => {
         },
       })
       await tick()
+      // Give the first (async) transcript read time to land so the assertion
+      // below sees its outcome rather than a not-yet-read watcher.
+      await new Promise((r) => setTimeout(r, 100))
 
       const waiting = sm.get(info.id)
       // NOT false-completed: the watcher is still polling the transcript.
@@ -1246,6 +1257,10 @@ describe('SessionManager', () => {
       })
       await tick()
       await tick()
+      const liveTasks = (sm as unknown as {
+        sessions: Map<string, { tasks: Map<string, { status: string }> }>
+      }).sessions.get(info.id)!.tasks
+      await waitForIo(() => liveTasks.get('agent-seed')?.status === 'completed')
 
       const snapshot = sm.subscribeTasks(info.id)!.snapshot
       expect(snapshot.find((t) => t.taskId === 'agent-seed')).toMatchObject({
@@ -6915,10 +6930,25 @@ describe('setMcpServers (dynamic, on a live session)', () => {
         fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
         await waitFor(() => sm.get(info.id).terminated === true)
 
-        const notif = seen.find((m) => m.subtype === 'task_notification')
-        expect(notif).toBeDefined()
-        expect(notif!.status).toBe('completed')
-        expect(notif!.summary).toBe('finished just in time')
+        // The watcher is claimed synchronously by the crash, but its transcript
+        // read is async: with recovery disabled the immediate termination has
+        // already ended the live subscribers by the time the frame lands, so it
+        // reaches the history ring (replay) and the task map rather than `seen`.
+        const live = (sm as unknown as {
+          sessions: Map<string, { history: Array<{ subtype?: string; status?: string; summary?: string }>; tasks: Map<string, { status: string }> }>
+        }).sessions.get(info.id)!
+        const notifs = () => live.history.filter((m) => m.subtype === 'task_notification')
+        // Wall-clock wait: the read is real fs I/O, which waitFor's
+        // setImmediate budget does not reliably span.
+        const deadline = Date.now() + 2_000
+        while (notifs().length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
+        expect(notifs()).toHaveLength(1)
+        expect(notifs()[0].status).toBe('completed')
+        expect(notifs()[0].summary).toBe('finished just in time')
+        // The process-exit sweep skipped the watcher's record instead of
+        // flashing it to `stopped`; the async settle then folded `completed`.
+        expect(live.tasks.get('agent-done')?.status).toBe('completed')
+        expect(seen.filter((m) => m.subtype === 'task_notification').length).toBeLessThanOrEqual(1)
       } finally {
         if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
         else process.env.CLAUDE_CONFIG_DIR = realConfigDir
@@ -6981,8 +7011,8 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
         // The re-armed watcher completes for real → count returns to 0 with no
         // stranded poller. The re-arm went through the production start() with
-        // default intervals (500ms fast phase), so poll on wall-clock rather
-        // than macrotask ticks — waitFor's setImmediate loop can't span 500ms.
+        // default intervals (2 s fast phase), so poll on wall-clock rather
+        // than macrotask ticks — waitFor's setImmediate loop can't span 2 s.
         const txnPath = subagentTranscriptPath('/tmp/workspace', info.id, 'agent-rearm')
         mkdirSync(dirname(txnPath), { recursive: true })
         writeFileSync(
@@ -6990,7 +7020,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
           JSON.stringify({ type: 'assistant', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'rearm done' }] } }) + '\n',
         )
         const settledToZero = await new Promise<boolean>((resolve) => {
-          const deadline = Date.now() + 3_000
+          const deadline = Date.now() + 5_000
           const poll = () => {
             if (count() === 0) return resolve(true)
             if (Date.now() > deadline) return resolve(false)
@@ -7003,7 +7033,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
         if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
         else process.env.CLAUDE_CONFIG_DIR = realConfigDir
       }
-    })
+    }, 10_000)
   })
 
   describe('restart() (in-place respawn on a live pump)', () => {
