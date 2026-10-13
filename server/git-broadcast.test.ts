@@ -3,9 +3,9 @@ import {
   mutatingToolUseId,
   scheduleGitBroadcast,
   cancelGitBroadcast,
-  _resetGitBroadcastForTests,
 } from './git-broadcast.js'
 import type { SessionBroadcaster } from './session-types.js'
+import { GIT_BROADCAST_MAX_WAIT_MS } from './constants.js'
 
 // ── Pure detection helper ────────────────────────────────────────────
 
@@ -41,6 +41,28 @@ describe('mutatingToolUseId', () => {
     expect(mutatingToolUseId({ type: 'tool_use', name: 'Read', id: 'tu_5' })).toBeNull()
     expect(mutatingToolUseId({ type: 'tool_use', name: 'Glob', id: 'tu_6' })).toBeNull()
     expect(mutatingToolUseId({ type: 'tool_use', name: 'Agent', id: 'tu_7' })).toBeNull()
+  })
+
+  it('returns null for provably read-only Bash / PowerShell commands', () => {
+    for (const name of ['Bash', 'PowerShell']) {
+      expect(mutatingToolUseId({ type: 'tool_use', name, id: 'tu_r1', input: { command: 'git status' } })).toBeNull()
+      expect(mutatingToolUseId({ type: 'tool_use', name, id: 'tu_r2', input: { command: 'ls' } })).toBeNull()
+    }
+  })
+
+  it('still returns the id for mutating or unprovable shell commands', () => {
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'Bash', id: 'tu_m1', input: { command: 'rm x' } })).toBe('tu_m1')
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'Bash', id: 'tu_m2', input: { command: 'npm install' } })).toBe('tu_m2')
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'PowerShell', id: 'tu_m3', input: { command: 'Remove-Item x' } })).toBe('tu_m3')
+    // Read-only verb but shell features → fail-closed, still broadcasts.
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'Bash', id: 'tu_m4', input: { command: 'ls > out.txt' } })).toBe('tu_m4')
+    // No / malformed input → fail-closed.
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'Bash', id: 'tu_m5' })).toBe('tu_m5')
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'Bash', id: 'tu_m6', input: null })).toBe('tu_m6')
+  })
+
+  it('the read-only filter does not apply to non-shell tools', () => {
+    expect(mutatingToolUseId({ type: 'tool_use', name: 'Edit', id: 'tu_e1', input: { command: 'ls' } })).toBe('tu_e1')
   })
 
   it('returns null for non-tool_use blocks', () => {
@@ -83,13 +105,50 @@ function makeStubBroadcaster(
 }
 
 describe('scheduleGitBroadcast', () => {
+  // Debounce state is per manager, so each test's fresh stub starts clean —
+  // no module-level reset hook needed.
   beforeEach(() => {
-    _resetGitBroadcastForTests()
     vi.useFakeTimers()
   })
   afterEach(() => {
     vi.useRealTimers()
-    _resetGitBroadcastForTests()
+  })
+
+  it('caps the delay at GIT_BROADCAST_MAX_WAIT_MS under a continuous trigger stream', () => {
+    const sm = makeStubBroadcaster()
+    const firedAt: number[] = []
+    const start = Date.now()
+    const orig = sm.broadcastGitStatusChanged.bind(sm)
+    sm.broadcastGitStatusChanged = (id: string) => {
+      firedAt.push(Date.now() - start)
+      orig(id)
+    }
+    // A schedule every 100 ms for 5 s — each one would reset a trailing-only
+    // debounce, which would then never fire while the stream runs.
+    for (let t = 0; t < 5000; t += 100) {
+      scheduleGitBroadcast(sm, 'sess-1')
+      vi.advanceTimersByTime(100)
+    }
+    expect(firedAt.length).toBeGreaterThanOrEqual(1)
+    expect(firedAt[0]).toBeLessThanOrEqual(GIT_BROADCAST_MAX_WAIT_MS)
+    // The stream (ending at 5000) is still running when the first fire lands.
+    expect(firedAt[0]).toBeLessThan(5000)
+    // After the stream stops, the trailing broadcast still lands.
+    vi.advanceTimersByTime(1000)
+    expect(firedAt.length).toBe(2)
+  })
+
+  it('debounce state is per manager: two managers never share a timer', () => {
+    const a = makeStubBroadcaster({ 'sess-1': '/repo' })
+    const b = makeStubBroadcaster({ 'sess-1': '/repo' })
+    scheduleGitBroadcast(a, 'sess-1')
+    vi.advanceTimersByTime(200)
+    scheduleGitBroadcast(b, 'sess-1') // same key, other manager — must not reset a's timer
+    vi.advanceTimersByTime(300)
+    expect(a.calls).toEqual(['sess-1'])
+    expect(b.calls).toEqual([])
+    vi.advanceTimersByTime(200)
+    expect(b.calls).toEqual(['sess-1'])
   })
 
   it('fires once after 500ms idle', () => {

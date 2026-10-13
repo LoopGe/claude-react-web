@@ -32,18 +32,30 @@ import type { Pushable } from './pushable.js'
 import { createPushable } from './pushable.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
-import { getStatus, listBranches, listStashes } from './git.js'
+import { getGitSnapshot, type GitSnapshotPayload } from './git.js'
 import { deriveTaskListForSession } from './tasklist-state.js'
-import type { GitStatusResponse, GitBranch, GitStashEntry } from '../shared/git-types.js'
 
 const log = createLogger('git-snapshot')
 const tlog = createLogger('tasklist')
 
-/** The three lists that make up one pushed git snapshot. */
-export interface GitSnapshotPayload {
-  status: GitStatusResponse
-  branches: GitBranch[]
-  stashes: GitStashEntry[]
+/** The three lists that make up one pushed git snapshot (defined next to
+ *  its producer in git.ts; re-exported for the existing importers). */
+export type { GitSnapshotPayload }
+
+/** Per-repoGroup snapshot sequencing. Every compute takes `seq = ++seq`
+ *  when it STARTS; its result is applied (cached + pushed) only when
+ *  `seq > appliedSeq`, so a slow compute that started earlier can never
+ *  overwrite a newer frame or the seed cache. Auto (debounced) computes
+ *  run one at a time: a trigger while one is `inFlight` only sets `dirty`
+ *  (remembering the latest trigger as `dirtyOrigin`), and the finishing
+ *  compute re-triggers once — N triggers during a compute collapse into
+ *  one recompute that observes all of them. */
+interface GitGroupState {
+  seq: number
+  appliedSeq: number
+  inFlight: boolean
+  dirty: boolean
+  dirtyOrigin: string | null
 }
 
 /** Fan-out group key: spawn-captured work-tree top level, falling back to
@@ -234,26 +246,87 @@ export class SessionEventBroadcaster {
    *  routes pass `opts.snapshot` with whatever they already computed
    *  (status for stage/commit, +branches for checkout, +stashes for
    *  stash ops); missing fields are computed here so a field is never
-   *  git-spawned twice in one broadcast. */
+   *  git-spawned twice in one broadcast.
+   *
+   *  Ordering (see GitGroupState): a write (`opts.snapshot`) computes
+   *  immediately and bumps the group's seq, so an auto compute already in
+   *  flight lands stale and is dropped; auto triggers never run two
+   *  computes at once for a group — extra triggers mark it dirty and the
+   *  running compute re-triggers once when it finishes. */
   broadcastGitStatusChanged(id: string, opts?: { snapshot?: Partial<GitSnapshotPayload> }): void {
-    void this.emitGitSnapshot(id, opts?.snapshot).catch((err: unknown) => {
-      log.warn(`git snapshot compute failed session=${id}: ${err instanceof Error ? err.message : String(err)}`)
-    })
-  }
-
-  private async emitGitSnapshot(id: string, partial?: Partial<GitSnapshotPayload>): Promise<void> {
     const s = this.sessions.get(id)
     if (!s || !s.cwd) return
     const key = gitGroupKey(s)
-    const status = await (partial?.status ?? getStatus(s.cwd))
-    const isRepo = 'isRepo' in status && status.isRepo
-    const [branches, stashes] = isRepo
-      ? await Promise.all([
-        partial?.branches ?? listBranches(s.cwd),
-        partial?.stashes ?? listStashes(s.cwd),
-      ])
-      : [partial?.branches ?? [], partial?.stashes ?? []]
-    const frame: WsGitSnapshot = { kind: 'git-snapshot', sessionId: id, cwd: s.cwd, repoRoot: key, status, branches, stashes }
+    const st = this.gitGroupStateFor(key)
+    const onError = (err: unknown): void => {
+      log.warn(`git snapshot compute failed session=${id}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    if (opts?.snapshot) {
+      void this.emitGitSnapshot(s, key, st, ++st.seq, opts.snapshot).catch(onError)
+      return
+    }
+    if (st.inFlight) {
+      st.dirty = true
+      st.dirtyOrigin = id
+      return
+    }
+    st.inFlight = true
+    void this.emitGitSnapshot(s, key, st, ++st.seq)
+      .catch(onError)
+      .finally(() => {
+        st.inFlight = false
+        if (!st.dirty) return
+        // The session that set `dirty` may have unloaded mid-compute; its
+        // peers still need the recompute, so fall back to any live member
+        // of the group (the same origin-yield as cancelGitBroadcast).
+        const origin = this.liveGitGroupMember(key, st.dirtyOrigin ?? id)
+        st.dirty = false
+        st.dirtyOrigin = null
+        if (origin) this.broadcastGitStatusChanged(origin)
+      })
+  }
+
+  /** `preferId` when it is still a live member of group `key`, else any
+   *  live member with a cwd, else null. */
+  private liveGitGroupMember(key: string, preferId: string): string | null {
+    const preferred = this.sessions.get(preferId)
+    if (preferred?.cwd && gitGroupKey(preferred) === key) return preferId
+    for (const other of this.sessions.values()) {
+      if (other.cwd && gitGroupKey(other) === key) return other.id
+    }
+    return null
+  }
+
+  /** Sequencing state per group key; pruned with the seed cache. */
+  private gitGroupStates = new Map<string, GitGroupState>()
+
+  private gitGroupStateFor(key: string): GitGroupState {
+    let st = this.gitGroupStates.get(key)
+    if (!st) {
+      st = { seq: 0, appliedSeq: 0, inFlight: false, dirty: false, dirtyOrigin: null }
+      this.gitGroupStates.set(key, st)
+    }
+    return st
+  }
+
+  private async emitGitSnapshot(
+    s: Session,
+    key: string,
+    st: GitGroupState,
+    seq: number,
+    partial?: Partial<GitSnapshotPayload>,
+  ): Promise<void> {
+    const cwd = s.cwd!
+    const { status, branches, stashes } = await getGitSnapshot(cwd, partial)
+    // Stale: a compute that started later already applied (or the group
+    // was pruned while this one ran — its state object is no longer the
+    // live one). Drop it rather than regress subscribers and the seed.
+    if (this.gitGroupStates.get(key) !== st || seq <= st.appliedSeq) {
+      log.debug(`drop stale git snapshot key=${key} seq=${seq} applied=${st.appliedSeq}`)
+      return
+    }
+    st.appliedSeq = seq
+    const frame: WsGitSnapshot = { kind: 'git-snapshot', sessionId: s.id, cwd, repoRoot: key, status, branches, stashes }
     this.gitSnapshots.set(key, frame)
     this.pruneGitSnapshots()
     for (const other of this.sessions.values()) {
@@ -264,14 +337,19 @@ export class SessionEventBroadcaster {
     }
   }
 
-  /** Drop seed entries whose group no longer has a live session. Cheap
+  /** Drop seed entries and sequencing state whose group no longer has a
+   *  live session (an in-flight compute for such a group then lands stale
+   *  and is dropped). Cheap
    *  (few keys); called after every emit and on subscribe. */
   private pruneGitSnapshots(): void {
-    if (this.gitSnapshots.size === 0) return
+    if (this.gitSnapshots.size === 0 && this.gitGroupStates.size === 0) return
     const live = new Set<string>()
     for (const s of this.sessions.values()) live.add(gitGroupKey(s))
     for (const k of this.gitSnapshots.keys()) {
       if (!live.has(k)) this.gitSnapshots.delete(k)
+    }
+    for (const k of this.gitGroupStates.keys()) {
+      if (!live.has(k)) this.gitGroupStates.delete(k)
     }
   }
 
