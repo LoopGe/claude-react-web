@@ -25,7 +25,7 @@ import type { ProcessExitInfo } from './process-monitor.js'
 import type { AuxLlmTarget } from './anthropic-api.js'
 import { sameCwd } from './cwd-equality.js'
 import { randomUUID } from 'node:crypto'
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
@@ -48,7 +48,7 @@ import {
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
 import { tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
-import { provisionWorktree } from './session-worktree.js'
+import { ensureWorktreeForResume, provisionWorktree } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
@@ -1621,7 +1621,7 @@ export class SessionManager {
     // in our store). Probe the SDK's on-disk metadata and, if it exists,
     // register a SessionMeta so the normal resume path below can run.
     // After this first resume the session is "known" like any other.
-    const meta = this.store.get(id) ?? (await this.adoptDiskSession(id, this.defaultProvider))
+    let meta = this.store.get(id) ?? (await this.adoptDiskSession(id, this.defaultProvider))
     if (!meta) throw new HttpError(404, `session ${id} not found`)
     // Terminal gate FIRST: a hard-ended session is 410 regardless of the
     // workspace. Checking cwd before this sent users to "restore the
@@ -1642,6 +1642,30 @@ export class SessionManager {
         )
       } else {
         throw new HttpError(410, `session ${id} has ended and cannot be resumed`)
+      }
+    }
+    // Worktree recreate chain (spec: 路径在 → 分支在 → baseSha → 回退主仓).
+    // Runs BEFORE the cwdMissing probe: a GC'd worktree dir must reconstruct,
+    // not 400. Mutates the local meta copy and persists the fallback so the
+    // next resume doesn't re-walk the chain. A throw (mainRepoPath exists but
+    // is no longer a git repo — getGitCommonDir fails) means recreate is
+    // impossible: fall back to the main repo path instead of 500 — a session
+    // can still run fine in a non-repo directory.
+    if (meta.worktree && meta.cwd && !existsSync(meta.cwd)) {
+      let ensured: { cwd: string; worktree?: WorktreeInfo }
+      try {
+        ensured = await ensureWorktreeForResume(this.store!.getDir(), id, meta.worktree)
+      } catch (err) {
+        log.warn(
+          `[session ${id}] worktree recreate failed ` +
+          `(main repo ${meta.worktree.mainRepoPath} may no longer be a git repo), ` +
+          `falling back to main repo path: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        ensured = { cwd: meta.worktree.mainRepoPath, worktree: undefined }
+      }
+      if (ensured.cwd !== meta.cwd || ensured.worktree !== meta.worktree) {
+        meta = { ...meta, cwd: ensured.cwd, worktree: ensured.worktree }
+        this.store?.upsert(meta)
       }
     }
     // Pre-spawn probe: a missing workspace is the real fault behind a whole
@@ -1737,6 +1761,10 @@ export class SessionManager {
     const resumeOpts = this.baseSpawnOptions({
       provider,
       cwd: meta.cwd,
+      // Carried so re-spawn's snapshotMeta captures it (spawn's existingMeta
+      // re-read already has it via the upsert above — this keeps both paths
+      // consistent for a resume that did NOT walk the recreate chain too).
+      worktree: meta.worktree,
       model: resolvedModel,
       modelGroupId: meta.modelGroupId,
       // Use the persisted permissionMode if available (sessions we created).
@@ -7300,6 +7328,7 @@ export class SessionManager {
   private baseSpawnOptions(source: {
     provider?: string
     cwd?: string
+    worktree?: WorktreeInfo
     model?: string
     modelGroupId?: string
     permissionMode?: PermissionMode
@@ -7311,10 +7340,15 @@ export class SessionManager {
     hooks?: SessionHooksConfig
     enabledPlugins?: string[]
     cliDebug?: boolean
-  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number; cliDebug?: boolean } {
+  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number; cliDebug?: boolean; worktree?: WorktreeInfo } {
     return {
       provider: source.provider,
       cwd: source.cwd,
+      // Worktree isolation metadata — snapshotMeta reads it off the Options
+      // object handed to spawn(). Call sites that don't pass it (respawnFresh/
+      // fork) leave undefined; spawn's existingMeta?.worktree ?? snapshot
+      // merge keeps the persisted value alive there.
+      worktree: source.worktree,
       model: source.model,
       modelGroupId: source.modelGroupId,
       permissionMode: source.permissionMode,

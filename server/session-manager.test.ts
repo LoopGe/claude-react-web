@@ -8387,3 +8387,116 @@ describe('create() worktree isolation', () => {
     rmRf(plain)
   })
 })
+
+describe('resume() worktree recreate chain', () => {
+  const execFile = promisify(execFileCb)
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+  let repo: string
+
+  beforeAll(async () => {
+    repo = await makeRepo()
+  })
+  afterAll(async () => {
+    await cleanupGitFixtures()
+  })
+  beforeEach(async () => {
+    mockHandles.length = 0
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    sm = new SessionManager({ store })
+  })
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+  })
+
+  /** Create an isolated session, complete one turn, and unload it so the
+   *  next resume takes the store→spawn path (the recreate chain's caller). */
+  async function dormantIsolatedSession() {
+    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await sm.unload(info.id)
+    mockHandles.length = 0
+    return info
+  }
+
+  it('recreates a GC’d worktree from its branch and resumes inside it', async () => {
+    const info = await dormantIsolatedSession()
+    const wtPath = join(dir, 'worktrees', info.id)
+    expect(existsSync(wtPath)).toBe(true)
+    // Realistic manual deletion: plain rm leaves a stale git registration
+    // behind — the recreate path must prune it and re-add at the same path.
+    await nodeFs.rm(wtPath, { recursive: true, force: true })
+
+    const resumed = await sm.resume(info.id)
+
+    expect(existsSync(wtPath)).toBe(true)
+    expect(resumed.cwd).toBe(wtPath)
+    // The subprocess was spawned inside the REBUILT worktree, with resume=id.
+    expect(mockHandles[0].options.cwd).toBe(wtPath)
+    expect(mockHandles[0].options.resume).toBe(info.id)
+    // Isolation metadata survived: same branch, still persisted.
+    const meta = store.get(info.id)!
+    expect(meta.cwd).toBe(wtPath)
+    expect(meta.worktree).toEqual({ mainRepoPath: repo, branch: `crw/${info.id.slice(0, 8)}`, baseSha: expect.any(String) })
+  })
+
+  it('recreates the worktree from baseSha when the branch was deleted too', async () => {
+    const info = await dormantIsolatedSession()
+    const wtPath = join(dir, 'worktrees', info.id)
+    const branch = `crw/${info.id.slice(0, 8)}`
+    await nodeFs.rm(wtPath, { recursive: true, force: true })
+    // Clear the stale registration first — git refuses to delete a branch
+    // that a registered worktree still references.
+    await execFile('git', ['-C', repo, 'worktree', 'prune'])
+    await execFile('git', ['-C', repo, 'branch', '-D', branch])
+
+    const resumed = await sm.resume(info.id)
+
+    expect(existsSync(wtPath)).toBe(true)
+    expect(resumed.cwd).toBe(wtPath)
+    expect(mockHandles[0].options.cwd).toBe(wtPath)
+    // The recreate re-created the same-named branch off baseSha.
+    await expect(execFile('git', ['-C', repo, 'rev-parse', '--verify', branch])).resolves.toBeDefined()
+  })
+
+  it('falls back to the main repo (worktree cleared) when the branch and baseSha are both gone', async () => {
+    const info = await dormantIsolatedSession()
+    const wtPath = join(dir, 'worktrees', info.id)
+    await nodeFs.rm(wtPath, { recursive: true, force: true })
+    // Hand-built metadata pointing at a branch and commit that never existed.
+    const meta = store.get(info.id)!
+    store.upsert({ ...meta, worktree: { ...meta.worktree!, branch: 'crw/nonexistent', baseSha: '0'.repeat(40) } })
+
+    const resumed = await sm.resume(info.id)
+
+    expect(resumed.cwd).toBe(repo)
+    expect(resumed.worktree).toBeUndefined()
+    // The subprocess spawned in the main repo, and the fallback is persisted
+    // so the next resume doesn't re-walk the chain.
+    expect(mockHandles[0].options.cwd).toBe(repo)
+    expect(store.get(info.id)?.worktree).toBeUndefined()
+    expect(store.get(info.id)?.cwd).toBe(repo)
+  })
+
+  it('falls back to the main repo when mainRepoPath is no longer a git repo (recreate throws)', async () => {
+    // Task 3 review ruling: ensureWorktreeForResume THROWS (via
+    // getGitCommonDir) when mainRepoPath exists but lost its .git. Resume
+    // must treat that as "recreate impossible" and fall back — not 500.
+    const info = await dormantIsolatedSession()
+    const wtPath = join(dir, 'worktrees', info.id)
+    await nodeFs.rm(wtPath, { recursive: true, force: true })
+    await nodeFs.rm(join(repo, '.git'), { recursive: true, force: true })
+
+    const resumed = await sm.resume(info.id)
+
+    expect(resumed.cwd).toBe(repo)
+    expect(resumed.worktree).toBeUndefined()
+    expect(mockHandles[0].options.cwd).toBe(repo)
+    expect(store.get(info.id)?.worktree).toBeUndefined()
+  })
+})
