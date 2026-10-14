@@ -343,6 +343,8 @@ import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
 import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
 import { cleanupGitFixtures, makeRepo } from './test-git-fixtures.js'
+import { branchExists } from './git.js'
+import { SnapshotStore } from './snapshot/snapshot-store.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
@@ -8498,5 +8500,84 @@ describe('resume() worktree recreate chain', () => {
     expect(resumed.worktree).toBeUndefined()
     expect(mockHandles[0].options.cwd).toBe(repo)
     expect(store.get(info.id)?.worktree).toBeUndefined()
+  })
+})
+
+describe('delete() / setCwd() worktree cleanup', () => {
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+  let repo: string
+
+  beforeAll(async () => {
+    repo = await makeRepo()
+  })
+  afterAll(async () => {
+    await cleanupGitFixtures()
+  })
+  beforeEach(async () => {
+    mockHandles.length = 0
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    sm = new SessionManager({ store })
+  })
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+  })
+
+  it('delete removes the worktree dir but keeps the branch', async () => {
+    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
+    const wtPath = join(dir, 'worktrees', info.id)
+    expect(existsSync(wtPath)).toBe(true)
+
+    await sm.delete(info.id)
+
+    // The worktree dir is gone — no residual for this session id...
+    expect(existsSync(wtPath)).toBe(false)
+    expect(existsSync(join(dir, 'worktrees', info.id))).toBe(false)
+    // ...but the branch survives (deleted sessions KEEP their branches).
+    const branch = `crw/${info.id.slice(0, 8)}`
+    expect(await branchExists(repo, branch)).toBe(true)
+    // The persistence entry itself is dropped as usual.
+    expect(store.get(info.id)).toBeUndefined()
+  })
+
+  it('setCwd clears the worktree field and invalidates the snapshot-store meta', async () => {
+    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
+    // setCwd is dormant-only — sleep the session first.
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    await sm.unload(info.id)
+    mockHandles.length = 0
+
+    // Seed a snapshot meta for the session through the store's own API
+    // (same stateDir the manager's snapshot store writes to).
+    const snapStore = new SnapshotStore(dir)
+    await snapStore.save(info.id, {
+      version: 1, gitDir: '/g', worktree: '/w', scope: '.', byMessage: {}, patches: [],
+    })
+    expect(await snapStore.load(info.id)).not.toBeNull()
+
+    const newCwd = makeTmpDir()
+    try {
+      const patched = await sm.setCwd(info.id, newCwd)
+
+      expect(patched.worktree).toBeUndefined()
+      expect(store.get(info.id)?.worktree).toBeUndefined()
+      expect(store.get(info.id)?.cwd).toBe(newCwd)
+      // Fire-and-forget remove — poll until the unlink lands.
+      for (let i = 0; i < 50; i++) {
+        if ((await snapStore.load(info.id)) === null) break
+        await new Promise((r) => setTimeout(r, 20))
+      }
+      expect(await snapStore.load(info.id)).toBeNull()
+    } finally {
+      rmRf(newCwd)
+    }
+    // Sanity: the branch the session kept still exists — setCwd must NOT
+    // have tried to clean up the worktree.
+    expect(await branchExists(repo, `crw/${info.id.slice(0, 8)}`)).toBe(true)
   })
 })

@@ -48,7 +48,7 @@ import {
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
 import { tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
-import { ensureWorktreeForResume, provisionWorktree } from './session-worktree.js'
+import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
@@ -4349,7 +4349,10 @@ export class SessionManager {
    *  process silently disagree. Clears stale spawn_failed / transcript_missing
    *  state (updating the cwd is how a user recovers from a gone workspace)
    *  and the git anchors (repoRoot / gitStartSha belong to the OLD tree; the
-   *  next spawn recaptures them against the new cwd). */
+   *  next spawn recaptures them against the new cwd). Worktree isolation is
+   *  cleared too (and the snapshot sidecar dropped) — an explicit cwd
+   *  re-point invalidates everything anchored to the OLD tree; the
+   *  `crw/<id>` branch itself is left behind. */
   async setCwd(id: string, cwd: string): Promise<SessionInfo> {
     // Under the op lock: a PATCH cwd that lands during a resume waits for the
     // resume to finish (and then hits the "running — sleep it first" 409
@@ -4385,10 +4388,18 @@ export class SessionManager {
         // Git anchors were captured against the OLD tree.
         repoRoot: undefined,
         gitStartSha: undefined,
+        // The user re-pointed the session by hand — worktree isolation no
+        // longer applies (and the recreate chain must not resurrect a
+        // worktree at the new cwd's expense).
+        worktree: undefined,
         ...(cleared
           ? { terminated: false, terminatedReason: undefined, error: undefined }
           : {}),
       })!
+      // Stale shadow-repo meta points at the OLD cwd (resolveRepo reuses it
+      // blindly) — drop it so the next capture re-resolves against the new
+      // dir. This also drops the session's snapshot anchors deliberately.
+      void this.snapshotStore.remove(id)
       const info = this.infoFromMeta(nextMeta)
       this.broadcastGlobal({ kind: 'update', session: info })
       return info
@@ -6180,7 +6191,15 @@ export class SessionManager {
     // delete must still work then — it already tolerates running alongside
     // other work (unload is idempotent; the health monitor calls it unlocked).
     return this.opLock.run(id, async () => {
+      // Read the meta BEFORE store.remove drops the entry — the worktree
+      // info must survive long enough to drive the cleanup below.
+      const meta = this.store?.get(id)
       await this.unload(id, { terminated: true, reason: 'deleted' })
+      // Best-effort worktree teardown (dir removed, branch kept). A failure
+      // only warns — deletion must not be blocked by it.
+      if (meta?.worktree && this.store) {
+        await removeWorktreeForSession(this.store.getDir(), id, meta.worktree, log)
+      }
       this.store?.remove(id)
       // Drop the promptUuids sidecar too — the session is gone for good.
       void this.promptUuidStore.remove(id)
