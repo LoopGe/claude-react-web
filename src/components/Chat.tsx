@@ -2243,6 +2243,7 @@ export const Chat = memo(function Chat({
           searchActiveMatchInItem={searchMatches[searchActiveIdx]?.matchInItem ?? -1}
           loadOlder={stream.loadOlder}
           hasOlder={stream.hasOlder}
+          oldestSeq={stream.oldestSeq}
           loadingOlder={stream.loadingOlder}
           onRegisterNavigate={registerNavigate}
           onSwitchModel={handleSwitchModel}

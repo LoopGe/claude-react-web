@@ -239,6 +239,12 @@ interface Props {
   /** Whether older history may exist on disk before the first shown message.
    *  Gates the scroll-to-top trigger and the "loading older" affordance. */
   hasOlder?: boolean
+  /** Seq of the oldest message in the store's seq window (null while the
+   *  window is empty) — the render anchor of the seq protocol: Task 9
+   *  derives virtuoso's `firstItemIndex` from it so a prepended page and
+   *  its anchor commit in the same render. Declared now so the Chat
+   *  passthrough (Task 8) typechecks; consumed by the anchor wiring. */
+  oldestSeq?: number | null
   /** True while a loadOlder() request is in flight (drives the top spinner). */
   loadingOlder?: boolean
   /** Register a navigator that scrolls the transcript to the previous /

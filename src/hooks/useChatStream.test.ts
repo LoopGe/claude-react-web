@@ -12,14 +12,10 @@ const mockSubscribe = vi.fn(
   (
     _sessionId: string,
     _sinceUuid?: string,
-    _opts?: { force?: boolean; replayMode?: 'tail-backfill'; hasCachedTranscript?: boolean },
+    _opts?: { force?: boolean },
   ) => vi.fn(),
 )
 const mockSetLastMessageUuid = vi.fn()
-/** Sessions the hub reports a tail-first burst open on. The hub owns this
- *  latch (it outlives a panel remount); tests drive it directly. */
-let burstOpenSessions: Set<string>
-const mockIsReplayBurstOpen = vi.fn((sessionId: string) => burstOpenSessions.has(sessionId))
 
 // Stable hub object — returned on every useWsHub() call so the hook's
 // useEffect (which depends on `[hub]`) doesn't re-run on every render.
@@ -39,10 +35,18 @@ const mockHub = {
   },
   subscribe: mockSubscribe,
   setLastMessageUuid: mockSetLastMessageUuid,
-  isReplayBurstOpen: mockIsReplayBurstOpen,
 }
 
-const mockApiGet = vi.fn(async () => ({ messages: [], totalCount: 0, startIndex: 0, hasMore: false }))
+// Default open-path answer: an empty transcript page at generation 0.
+const emptyPage = {
+  generation: 0,
+  headSeq: 0,
+  totalCount: 0,
+  startIndex: 0,
+  hasMore: false,
+  messages: [],
+}
+const mockApiGet = vi.fn(async () => ({ ...emptyPage }))
 vi.mock('./useApi', () => ({
   api: { get: (...args: unknown[]) => mockApiGet(...(args as [])), post: vi.fn(), put: vi.fn(), del: vi.fn() },
 }))
@@ -79,16 +83,36 @@ const noopPerms: PermissionHandlers = {
   onResolved: vi.fn(),
 }
 
+/** Seed the store's seq window directly (the seq-protocol equivalent of what
+ *  a replay used to do): one WINDOW_PAGE tail dispatch through the real
+ *  reducer, so replayReady flips and the windowed messages run the full
+ *  applyMessage pipeline. */
+function seedPage(
+  sid: string,
+  messages: Array<{ seq: number; msg: unknown }>,
+  opts?: { hasMore?: boolean; generation?: number; headSeq?: number },
+) {
+  const headSeq = opts?.headSeq ?? (messages.length > 0 ? messages[messages.length - 1].seq + 1 : 0)
+  getSessionStore(sid).dispatch({
+    type: 'WINDOW_PAGE',
+    at: 'tail',
+    generation: opts?.generation ?? 0,
+    headSeq,
+    messages,
+    hasMore: opts?.hasMore ?? false,
+  })
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 describe('useChatStream', () => {
   beforeEach(() => {
     currentSessionListeners = new Map()
     currentGlobalListeners = new Set()
-    burstOpenSessions = new Set()
     mockSubscribe.mockClear()
     mockSetLastMessageUuid.mockClear()
-    mockIsReplayBurstOpen.mockClear()
+    mockApiGet.mockReset()
+    mockApiGet.mockImplementation(async () => ({ ...emptyPage }))
     cacheClear()
     vi.clearAllMocks()
   })
@@ -107,34 +131,32 @@ describe('useChatStream', () => {
       content: [{ type: 'tool_use', id: 'tu_term', name: 'Agent', input: { description: 'sync work' } }],
     },
   }
-  const replaySyncAgent = (sid: string) => {
-    dispatchToSession(sid, { kind: 'replay', sessionId: sid, messages: [syncAgentFrame] })
-    dispatchToSession(sid, { kind: 'replay-done', sessionId: sid })
-  }
+  const seedSyncAgent = (sid: string) => seedPage(sid, [{ seq: 0, msg: syncAgentFrame }])
   const subagentStatus = (sid: string) =>
     getSessionStore(sid).getState().mirror.activeSubagents.get('tu_term')?.status
 
   it('sweeps a stranded sync subagent on a RELOADED terminated session', async () => {
     // The reload flow: on mount the store is empty and `terminated` is already
     // true, so a sweep at mount would no-op — the record only exists once the
-    // replay lands. Gating the dispatch on replayReady is what makes the sweep
-    // hit the rebuilt record, and it also lets a replayed Agent tool_result
-    // (whose merge needs status 'running') be applied BEFORE the sweep.
+    // tail page lands. Gating the dispatch on replayReady is what makes the
+    // sweep hit the rebuilt record, and it also lets a windowed Agent
+    // tool_result (whose merge needs status 'running') be applied BEFORE the
+    // sweep.
     renderHook(() => useChatStream('term-reload', noopPerms, false, true))
-    act(() => { replaySyncAgent('term-reload') })
+    act(() => { seedSyncAgent('term-reload') })
 
     await waitFor(() => expect(subagentStatus('term-reload')).toBe('interrupted'))
   })
 
   it('sweeps a stranded sync subagent when a session terminates LIVE', async () => {
-    // The common case: the session replayed while alive, then terminated. The
+    // The common case: the transcript loaded while alive, then terminated. The
     // record is running first (the in-flight subagent) and must settle when
     // `terminated` flips — no result frame will ever arrive to do it.
     const { rerender } = renderHook(
       ({ terminated }: { terminated: boolean }) => useChatStream('term-live', noopPerms, false, terminated),
       { initialProps: { terminated: false } },
     )
-    act(() => { replaySyncAgent('term-live') })
+    act(() => { seedSyncAgent('term-live') })
     await waitFor(() => expect(subagentStatus('term-live')).toBe('running'))
 
     rerender({ terminated: true })
@@ -146,82 +168,23 @@ describe('useChatStream', () => {
     // output still arrives as the tool_result, and settling early would
     // swallow it.
     renderHook(() => useChatStream('term-alive', noopPerms, true, false))
-    act(() => { replaySyncAgent('term-alive') })
+    act(() => { seedSyncAgent('term-alive') })
 
     await waitFor(() => expect(subagentStatus('term-alive')).toBe('running'))
   })
 
-  // ── Replay buffering ──────────────────────────────────────────
+  // ── Live messages ─────────────────────────────────────────────
 
-  it('buffers replay messages and applies on replay-done', async () => {
-    const { result } = renderHook(
-      ({ sid }) => useChatStream(sid, noopPerms, false, false),
-      { initialProps: { sid: 's1' } },
-    )
-
-    expect(result.current.messages).toEqual([])
-
-    // Dispatch replay + replay-done in a single act() so they hit the
-    // same listener instance (startTransition between act blocks causes
-    // the effect to re-run, resetting the local replayDone flag).
-    act(() => {
-      dispatchToSession('s1', {
-        kind: 'replay',
-        sessionId: 's1',
-        messages: [
-          { type: 'user', message: { content: 'hello' } },
-          { type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } },
-        ],
-      })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-    })
-
-    // startTransition defers the setMessages; use waitFor.
-    await waitFor(() => {
-      expect(result.current.messages).toHaveLength(2)
-    })
-  })
-
-  it('queues live messages until replay-done, then flushes', async () => {
-    const { result } = renderHook(
-      ({ sid }) => useChatStream(sid, noopPerms, false, false),
-      { initialProps: { sid: 's2' } },
-    )
-
-    // Dispatch replay + live message (queued) + replay-done (flushes)
-    // all in one act() to keep the same listener instance.
-    act(() => {
-      dispatchToSession('s2', {
-        kind: 'replay',
-        sessionId: 's2',
-        messages: [{ type: 'user', uuid: 'u1' }],
-      })
-      // Live message arrives before replay-done — queued in `pending`.
-      dispatchToSession('s2', {
-        kind: 'message',
-        sessionId: 's2',
-        message: { type: 'assistant', uuid: 'a1' },
-      })
-      // replay-done flushes the pending live message.
-      dispatchToSession('s2', { kind: 'replay-done', sessionId: 's2' })
-    })
-
-    // startTransition defers the update; wait for it.
-    await waitFor(() => {
-      expect(result.current.messages).toHaveLength(2)
-    })
-  })
-
-  it('appends live messages after replay is done', async () => {
+  it('appends seq-less live messages through the legacy path', async () => {
+    // Frames without seq/generation (pre-seq server, synthetic frames) keep
+    // the legacy MESSAGE dispatch — no window engagement. Seq-carrying
+    // frames take the WINDOW_LIVE path (covered in useChatStream.seq.test.ts).
     const { result } = renderHook(
       ({ sid }) => useChatStream(sid, noopPerms, false, false),
       { initialProps: { sid: 's3' } },
     )
 
-    // Complete replay + send two live messages, all in one act().
     act(() => {
-      dispatchToSession('s3', { kind: 'replay', sessionId: 's3', messages: [] })
-      dispatchToSession('s3', { kind: 'replay-done', sessionId: 's3' })
       dispatchToSession('s3', {
         kind: 'message',
         sessionId: 's3',
@@ -234,393 +197,28 @@ describe('useChatStream', () => {
       })
     })
 
-    // startTransition defers all setMessages calls; wait for them.
     await waitFor(() => {
       expect(result.current.messages).toHaveLength(2)
     })
   })
 
-  // ── Tail-first replay + background backfill ───────────────────
-  //
-  // The no-cache cold-start path: the server sends ONE tail frame
-  // (newest 50, `tail: true`) followed by backfill frames (`backfill:
-  // true`, newest→oldest) and a final replay-done. The tail must
-  // render immediately (no waiting for the backfill to drain), and
-  // each backfill frame must PREPEND above what's already on screen.
+  it('advances the hub reconnect cursor as messages land', async () => {
+    // The hub's lastUuid still drives its reconnect subscribe slicing while
+    // the P1 server replay exists (P3 retires it) — the hook keeps feeding
+    // it from the mirror's newest uuid, ungated (no burst latch anymore).
+    renderHook(() => useChatStream('cursor1', noopPerms, false, false))
 
-  it('applies a tail replay frame immediately (renders before replay-done)', async () => {
-    const { result } = renderHook(
-      () => useChatStream('tail1', noopPerms, false, false),
-    )
-
-    // ONLY the tail frame dispatches — no replay-done yet. The old
-    // buffered path would still show an empty transcript here.
     act(() => {
-      dispatchToSession('tail1', {
-        kind: 'replay',
-        sessionId: 'tail1',
-        tail: true,
-        messages: [
-          { type: 'user', uuid: 'u1' },
-          { type: 'assistant', uuid: 'a1' },
-        ],
+      dispatchToSession('cursor1', {
+        kind: 'message',
+        sessionId: 'cursor1',
+        message: { type: 'user', uuid: 'u1' },
       })
     })
 
     await waitFor(() => {
-      expect(result.current.messages).toHaveLength(2)
+      expect(mockSetLastMessageUuid).toHaveBeenCalledWith('cursor1', 'u1')
     })
-    expect(result.current.replayReady).toBe(true)
-  })
-
-  it('prepends backfill frames above the tail, newest chunk first', async () => {
-    const { result } = renderHook(
-      () => useChatStream('tail2', noopPerms, false, false),
-    )
-
-    act(() => {
-      // Tail: the newest message.
-      dispatchToSession('tail2', {
-        kind: 'replay',
-        sessionId: 'tail2',
-        tail: true,
-        messages: [{ type: 'assistant', uuid: 'tail-msg' }],
-      })
-      // Backfill chunk 1 (newer of the two older chunks).
-      dispatchToSession('tail2', {
-        kind: 'replay',
-        sessionId: 'tail2',
-        backfill: true,
-        messages: [{ type: 'assistant', uuid: 'older-2' }],
-      })
-      // Backfill chunk 2 (oldest).
-      dispatchToSession('tail2', {
-        kind: 'replay',
-        sessionId: 'tail2',
-        backfill: true,
-        messages: [{ type: 'assistant', uuid: 'older-1' }],
-      })
-      dispatchToSession('tail2', { kind: 'replay-done', sessionId: 'tail2' })
-    })
-
-    await waitFor(() => {
-      expect(result.current.messages).toHaveLength(3)
-    })
-    // Chronological order: oldest first, tail last.
-    expect(result.current.messages.map((m) => (m as { uuid?: string }).uuid))
-      .toEqual(['older-1', 'older-2', 'tail-msg'])
-  })
-
-  it('applies the permissions snapshot carried by the tail frame (first paint)', async () => {
-    const perm = {
-      kind: 'permission',
-      id: 'p1',
-      toolName: 'Bash',
-      input: { command: 'ls' },
-      toolUseID: 'toolu_1',
-      createdAt: 1,
-    }
-    const { result } = renderHook(
-      () => useChatStream('tail3', noopPerms, false, false),
-    )
-
-    // The snapshots ride the tail frame itself (same shape as the ordinary
-    // single-frame replay), NOT the terminator — so a pending permission
-    // card appears with the first paint, before the backfill drains.
-    act(() => {
-      dispatchToSession('tail3', {
-        kind: 'replay',
-        sessionId: 'tail3',
-        tail: true,
-        messages: [{ type: 'assistant', uuid: 'a1' }],
-        permissions: [perm],
-      })
-    })
-
-    await waitFor(() => {
-      expect(result.current.messages).toHaveLength(1)
-    })
-    const state = getSessionStore('tail3').getState()
-    expect(state.mirror.permissionPending.get('p1')).toBeDefined()
-  })
-
-  it('declares hasCachedTranscript once rows are on screen, and tail-first before that', async () => {
-    // "Nothing on screen" is STATED, not inferred from an absent cursor: the
-    // store can hold rows with no cursor (an IDB cold-load prepends rows
-    // without setting one), and backfill chunks are NEWER than those rows.
-    const { result, rerender } = renderHook(
-      ({ running }: { running: boolean }) => useChatStream('tail5', noopPerms, running, false),
-      { initialProps: { running: false } },
-    )
-
-    // Cold: no rows, no cursor → opt into tail-first.
-    expect(mockSubscribe).toHaveBeenLastCalledWith('tail5', undefined, {
-      force: true,
-      replayMode: 'tail-backfill',
-    })
-
-    // Rows land (the tail burst), then the effect re-runs.
-    act(() => {
-      dispatchToSession('tail5', {
-        kind: 'replay',
-        sessionId: 'tail5',
-        tail: true,
-        messages: [{ type: 'assistant', uuid: 'a1' }],
-      })
-      dispatchToSession('tail5', { kind: 'replay-done', sessionId: 'tail5' })
-    })
-    await waitFor(() => expect(result.current.messages).toHaveLength(1))
-    mockSubscribe.mockClear()
-    rerender({ running: true })
-
-    // With a transcript on screen the declaration flips — and tail-first is
-    // NOT requested, however the cursor looks.
-    expect(mockSubscribe).toHaveBeenLastCalledWith('tail5', expect.anything(), {
-      force: true,
-      hasCachedTranscript: true,
-    })
-  })
-
-  it('asks for tail-first again while the hub reports the burst still open', async () => {
-    // A partial burst's rows are the TAIL (newest in the ring), so everything
-    // the backfill carries is older and prepending stays correct — the hook
-    // may re-request tail-first even though rows are on screen. The hub owns
-    // that latch (it outlives a panel remount), so the hook asks it.
-    const { result, rerender } = renderHook(
-      ({ running }: { running: boolean }) => useChatStream('tail8', noopPerms, running, false),
-      { initialProps: { running: false } },
-    )
-    act(() => {
-      dispatchToSession('tail8', {
-        kind: 'replay',
-        sessionId: 'tail8',
-        tail: true,
-        messages: [{ type: 'assistant', uuid: 'a1' }],
-      })
-    })
-    await waitFor(() => expect(result.current.messages).toHaveLength(1))
-
-    // The hub says the burst is still open; the effect re-runs (running flip).
-    burstOpenSessions.add('tail8')
-    mockSubscribe.mockClear()
-    rerender({ running: true })
-
-    expect(mockSubscribe).toHaveBeenLastCalledWith('tail8', expect.anything(), {
-      force: true,
-      replayMode: 'tail-backfill',
-    })
-  })
-
-  it('recovers when a reconnect interrupts the burst (ordinary burst after tail)', async () => {
-    // Race: the tail frame lands, the socket drops mid-backfill, and the
-    // reconnect re-subscribes WITH a sinceUuid — the server then serves an
-    // ordinary (unmarked) incremental burst. The ordinary burst must reset
-    // the tailMode latch; otherwise replay-done takes the tailMode branch
-    // and silently drops the buffered incremental messages.
-    const { result } = renderHook(
-      () => useChatStream('tail6', noopPerms, false, false),
-    )
-
-    act(() => {
-      // Tail frame lands (burst opens)...
-      dispatchToSession('tail6', {
-        kind: 'replay',
-        sessionId: 'tail6',
-        tail: true,
-        messages: [{ type: 'assistant', uuid: 'tail-msg' }],
-      })
-    })
-    await waitFor(() => expect(result.current.messages).toHaveLength(1))
-
-    // ...socket drops mid-burst, reconnect re-subscribes with an anchor,
-    // and the server answers with an ordinary chunked burst.
-    act(() => {
-      dispatchToSession('tail6', {
-        kind: 'replay',
-        sessionId: 'tail6',
-        messages: [
-          { type: 'assistant', uuid: 'gap-1' },
-          { type: 'assistant', uuid: 'gap-2' },
-        ],
-      })
-      dispatchToSession('tail6', { kind: 'replay-done', sessionId: 'tail6' })
-    })
-
-    // The reconnect's messages must be applied (REPLAY_REPLACE merge
-    // appends them after the tail), not dropped by a stale tailMode latch.
-    await waitFor(() => {
-      expect(result.current.messages.map((m) => (m as { uuid?: string }).uuid))
-        .toEqual(['tail-msg', 'gap-1', 'gap-2'])
-    })
-  })
-
-  it('settles out-of-order tool results when the burst completes', async () => {
-    // The tail (newest) carries the tool_result; its tool_use sits in a
-    // backfill chunk. Applied in that order the status branch skips the
-    // orphan result, and the prepended tool_use then seeds 'running' forever.
-    // The terminator re-runs the results, now that the transcript is whole.
-    const toolUse = {
-      type: 'assistant',
-      uuid: 'a-use',
-      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu-1', name: 'Read', input: {} }] },
-      parent_tool_use_id: null,
-    }
-    const toolResult = {
-      type: 'user',
-      uuid: 'r-1',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'ok' }] },
-      parent_tool_use_id: 'tu-1',
-    }
-    renderHook(() => useChatStream('tail9', noopPerms, false, false))
-
-    act(() => {
-      // Tail first: the result, with no tool_use on screen yet.
-      dispatchToSession('tail9', { kind: 'replay', sessionId: 'tail9', tail: true, messages: [toolResult] })
-      // Then the older chunk carrying the tool_use it belongs to.
-      dispatchToSession('tail9', { kind: 'replay', sessionId: 'tail9', backfill: true, messages: [toolUse] })
-      dispatchToSession('tail9', { kind: 'replay-done', sessionId: 'tail9' })
-    })
-
-    await waitFor(() => {
-      expect(getSessionStore('tail9').getState().mirror.toolStatus.get('tu-1')).toBe('success')
-    })
-  })
-
-  it('refuses to page history while a tail-first burst is draining', async () => {
-    // A disk page is strictly OLDER than the ring content the backfill is
-    // still delivering, and PREPEND_MESSAGES puts it at the FRONT — the
-    // next chunk would then land above it, rendering mid-history above older
-    // history. The drain is bounded, so refusing (and letting the next
-    // scroll retry) is cheaper than ordering the insert.
-    burstOpenSessions.add('tail10')
-    const { result } = renderHook(() => useChatStream('tail10', noopPerms, false, false))
-    mockApiGet.mockClear()
-
-    let prepended = -1
-    await act(async () => { prepended = await result.current.loadOlder() })
-    expect(prepended).toBe(0)
-    // The distinguishing signal: no page was even requested. (Without the
-    // guard the fetch fails in this environment and loadOlder also returns 0,
-    // so the return value alone proves nothing.)
-    expect(mockApiGet).not.toHaveBeenCalled()
-    expect(result.current.hasOlder).toBe(true) // still retryable
-
-    // Once the burst is over, paging requests a page again.
-    burstOpenSessions.delete('tail10')
-    await act(async () => { await result.current.loadOlder() })
-    expect(mockApiGet).toHaveBeenCalled()
-  })
-
-  it('settles out-of-order results even when the terminator lands on a fresh closure', async () => {
-    // Effect re-run mid-burst: closure 1 applies the tail, closure 2 (no
-    // tailMode) receives the backfill chunk and the terminator. The settle
-    // must still run — closure 2's buffer is empty, so the tail-mode branch
-    // never fires.
-    const toolUse = {
-      type: 'assistant',
-      uuid: 'a-use2',
-      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu-9', name: 'Read', input: {} }] },
-      parent_tool_use_id: null,
-    }
-    const toolResult = {
-      type: 'user',
-      uuid: 'r-9',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-9', content: 'ok' }] },
-      parent_tool_use_id: 'tu-9',
-    }
-    const { rerender } = renderHook(
-      ({ running }: { running: boolean }) => useChatStream('tail11', noopPerms, running, false),
-      { initialProps: { running: false } },
-    )
-
-    act(() => {
-      dispatchToSession('tail11', { kind: 'replay', sessionId: 'tail11', tail: true, messages: [toolResult] })
-    })
-    // The `running` flip tears the effect down; the replacement closure has
-    // no tailMode and an empty buffer.
-    burstOpenSessions.add('tail11')
-    rerender({ running: true })
-
-    act(() => {
-      dispatchToSession('tail11', { kind: 'replay', sessionId: 'tail11', backfill: true, messages: [toolUse] })
-      dispatchToSession('tail11', { kind: 'replay-done', sessionId: 'tail11' })
-    })
-
-    await waitFor(() => {
-      expect(getSessionStore('tail11').getState().mirror.toolStatus.get('tu-9')).toBe('success')
-    })
-  })
-
-  it('settles a burst interrupted by a drop and finished by an ordinary replay', async () => {
-    // The burst's tail carries the tool_result; its tool_use sits in an
-    // unsent backfill chunk. The socket drops, and the reconnect's ordinary
-    // (buffered, non-empty) replay ends in the `else` branch — where a
-    // closure-local "empty buffer" check would skip the settle entirely, and
-    // replayReplace's merge drops the result as overlap. The store marker is
-    // what keeps this case correct.
-    const toolUse = {
-      type: 'assistant',
-      uuid: 'a-use3',
-      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu-5', name: 'Read', input: {} }] },
-      parent_tool_use_id: null,
-    }
-    const toolResult = {
-      type: 'user',
-      uuid: 'r-5',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-5', content: 'ok' }] },
-      parent_tool_use_id: 'tu-5',
-    }
-    renderHook(() => useChatStream('tail12', noopPerms, false, false))
-
-    act(() => {
-      // Tail-first burst opens: the result lands with no tool_use in sight.
-      dispatchToSession('tail12', { kind: 'replay', sessionId: 'tail12', tail: true, messages: [toolResult] })
-    })
-    // ...socket drops mid-burst; the reconnect answers with an ordinary
-    // (unmarked) burst that carries BOTH messages, buffered this time.
-    act(() => {
-      dispatchToSession('tail12', {
-        kind: 'replay',
-        sessionId: 'tail12',
-        messages: [toolUse, toolResult],
-      })
-      dispatchToSession('tail12', { kind: 'replay-done', sessionId: 'tail12' })
-    })
-
-    await waitFor(() => {
-      expect(getSessionStore('tail12').getState().mirror.toolStatus.get('tu-5')).toBe('success')
-    })
-  })
-
-  it('ignores backfill frames that race in after a session-cleared', async () => {
-    const { result } = renderHook(
-      () => useChatStream('tail4', noopPerms, false, false),
-    )
-
-    act(() => {
-      dispatchToSession('tail4', {
-        kind: 'replay',
-        sessionId: 'tail4',
-        tail: true,
-        messages: [{ type: 'assistant', uuid: 'a1' }],
-      })
-    })
-    await waitFor(() => expect(result.current.messages).toHaveLength(1))
-
-    // /clear confirmation lands mid-backfill; the stale backfill frames
-    // (built from the pre-clear ring) must not resurrect the transcript.
-    act(() => {
-      dispatchToSession('tail4', { kind: 'session-cleared', sessionId: 'tail4' })
-      dispatchToSession('tail4', {
-        kind: 'replay',
-        sessionId: 'tail4',
-        backfill: true,
-        messages: [{ type: 'assistant', uuid: 'pre-clear' }],
-      })
-      dispatchToSession('tail4', { kind: 'replay-done', sessionId: 'tail4' })
-    })
-
-    await waitFor(() => expect(result.current.messages).toEqual([]))
   })
 
   // ── Session switch reset ──────────────────────────────────────
@@ -633,8 +231,7 @@ describe('useChatStream', () => {
 
     // Add some messages to s1.
     act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [{ type: 'user', uuid: 'u1' }] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+      seedPage('s1', [{ seq: 0, msg: { type: 'user', uuid: 'u1' } }])
     })
     expect(result.current.messages).toHaveLength(1)
 
@@ -647,7 +244,7 @@ describe('useChatStream', () => {
 
   // ── Frame types ───────────────────────────────────────────────
 
-  it('dispatches permission-request to handler', () => {
+  it('harvests pending permissions from a replay frame', () => {
     const onRequest = vi.fn()
     const onResolved = vi.fn()
     renderHook(
@@ -663,6 +260,9 @@ describe('useChatStream', () => {
       })
     })
 
+    // The replay PAYLOAD is dropped under the seq protocol, but its pending
+    // request snapshots are not transcript content — they are still the
+    // reconnect recovery path for permission cards.
     expect(onRequest).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'p1', toolName: 'Bash' }),
     )
@@ -727,7 +327,7 @@ describe('useChatStream', () => {
     )
   })
 
-  it('seeds elicitations from replay frames', () => {
+  it('seeds elicitations from replay frames (harvest keeps the recovery path)', () => {
     const onElicitationRequest = vi.fn()
     renderHook(
       () => useChatStream('s1', { ...noopPerms, onElicitationRequest }, false, false),
@@ -821,18 +421,15 @@ describe('useChatStream', () => {
       () => useChatStream('s1', noopPerms, false, false),
     )
 
-    // Dispatch replay + replay-done + both message_delta events all in a
-    // single act() so they hit the SAME listener instance (before React
-    // re-renders and re-runs the effect, which resets the local replayDone
-    // flag). The dateSpy mock is set up outside act so it's active when
-    // the listener calls Date.now() (the reducer uses wall-clock ms for
-    // rate timing, not performance.now()).
+    // Dispatch both message_delta events in a single act() so they hit the
+    // same listener instance (startTransition between act blocks causes
+    // the effect to re-run). The dateSpy mock is set up outside act so it's
+    // active when the listener calls Date.now() (the reducer uses wall-clock
+    // ms for rate timing, not performance.now()).
     const dateSpy = vi.spyOn(Date, 'now')
     dateSpy.mockReturnValue(1000)
 
     act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
       // First message_delta — lazily creates liveTurn (startedAt = 1000).
       // First real sample resets the window to [(1000, 50)]; with a single
       // sample there's no rate yet.
@@ -872,8 +469,6 @@ describe('useChatStream', () => {
     )
 
     act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
       // Top-level tool_use block start — the parent turn enters its
       // tool_use phase (this is what the Composer Background morph and the
       // WorkingBubble label key off).
@@ -921,9 +516,6 @@ describe('useChatStream', () => {
     const dateSpy = vi.spyOn(Date, 'now')
 
     act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-
       // Parent turn: straight to a tool_use (Task) with NO top-level text
       // block — the shape that used to freeze the tok/s readout for the
       // whole subagent run once the phase gate landed (nothing ever seeded
@@ -1003,8 +595,6 @@ describe('useChatStream', () => {
     // message_stop clears outputTokens; result clears tokenRate entirely
     // (and nulls the mirror's liveTurn).
     act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
       // Establish baseline (startedAt = 1000, elapsed 0, no rate yet).
       dispatchToSession('s1', {
         kind: 'message',
@@ -1056,9 +646,6 @@ describe('useChatStream', () => {
     const dateSpy = vi.spyOn(Date, 'now')
 
     act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-
       // Writing phase starts (liveTurn lazily created at t=0).
       dateSpy.mockReturnValue(0)
       dispatchToSession('s1', {
@@ -1132,9 +719,6 @@ describe('useChatStream', () => {
     const dateSpy = vi.spyOn(Date, 'now')
 
     act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-
       // Two real deltas establish a rate of 117 tok/s.
       dateSpy.mockReturnValue(1000)
       dispatchToSession('s1', {
@@ -1175,9 +759,6 @@ describe('useChatStream', () => {
     const dateSpy = vi.spyOn(Date, 'now')
 
     act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-
       // Establish 117 tok/s.
       dateSpy.mockReturnValue(1000)
       dispatchToSession('s1', {
@@ -1224,9 +805,6 @@ describe('useChatStream', () => {
     const dateSpy = vi.spyOn(Date, 'now')
 
     act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-
       // Char samples establish an estimated rate of 2 tok/s.
       dateSpy.mockReturnValue(0)
       dispatchToSession('s1', {
@@ -1284,9 +862,6 @@ describe('useChatStream', () => {
     const dateSpy = vi.spyOn(Date, 'now')
 
     act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-
       // Establish 117 tok/s.
       dateSpy.mockReturnValue(1000)
       dispatchToSession('s1', {
@@ -1333,8 +908,7 @@ describe('useChatStream', () => {
 
     // Populate state.
     act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [{ type: 'user', uuid: 'u1' }] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+      seedPage('s1', [{ seq: 0, msg: { type: 'user', uuid: 'u1' } }])
       dispatchToSession('s1', {
         kind: 'context-usage',
         sessionId: 's1',
@@ -1347,7 +921,7 @@ describe('useChatStream', () => {
       })
     })
 
-    expect(result.current.messages).toHaveLength(1)
+    await waitFor(() => expect(result.current.messages).toHaveLength(1))
     expect(result.current.contextUsage).not.toBeNull()
 
     act(() => {
@@ -1359,7 +933,7 @@ describe('useChatStream', () => {
     expect(result.current.tokenRate).toBeNull()
     expect(result.current.error).toBeNull()
     // reset() shares the /clear wipe semantic: the post-reset state is live
-    // and empty with no pending replay, so replayReady must be true —
+    // and empty with no pending page, so replayReady must be true —
     // otherwise MessageList sits on the skeleton (the /clear stuck-skeleton
     // bug, which reset() would silently reintroduce if it diverged).
     expect(result.current.replayReady).toBe(true)
@@ -1367,23 +941,31 @@ describe('useChatStream', () => {
 
   // ── session-cleared ───────────────────────────────────────────
 
-  it('wipes transcript + state on a session-cleared frame', async () => {
+  it('wipes transcript + state on a session-cleared frame and re-anchors the generation', async () => {
+    // Post-clear, the server's transcript store has bumped its generation;
+    // the refetch the handler fires must carry the NEW generation (a page
+    // read before the clear carries pre-clear content and is discarded —
+    // covered by the stale-page retry test in useChatStream.seq.test.ts).
     const { result } = renderHook(
       () => useChatStream('s1', noopPerms, false, false),
     )
-
-    // Populate the transcript.
     act(() => {
-      dispatchToSession('s1', {
-        kind: 'replay',
-        sessionId: 's1',
-        messages: [{ type: 'user', uuid: 'u1' }, { type: 'assistant', uuid: 'a1' }],
-      })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+      seedPage('s1', [
+        { seq: 0, msg: { type: 'user', uuid: 'u1' } },
+        { seq: 1, msg: { type: 'assistant', uuid: 'a1' } },
+      ])
     })
-    await waitFor(() => {
-      expect(result.current.messages).toHaveLength(2)
-    })
+    await waitFor(() => expect(result.current.messages).toHaveLength(2))
+
+    // The post-clear tail page: empty, generation 1.
+    mockApiGet.mockImplementation(async () => ({
+      generation: 1,
+      headSeq: 0,
+      totalCount: 0,
+      startIndex: 0,
+      hasMore: false,
+      messages: [],
+    }))
 
     // Backend confirms /clear — the transcript should reset.
     act(() => {
@@ -1392,63 +974,16 @@ describe('useChatStream', () => {
 
     await waitFor(() => {
       expect(result.current.messages).toEqual([])
+      expect(getSessionStore('s1').getSnapshot().generation).toBe(1)
     })
-    // hasOlder flips false so the cleared transcript can't be paged back.
-    expect(result.current.hasOlder).toBe(false)
-  })
-
-  it('does not resurrect old messages from a replay after a clear', async () => {
-    const { result } = renderHook(
-      () => useChatStream('s1', noopPerms, false, false),
-    )
-
-    act(() => {
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [{ type: 'user', uuid: 'u1' }] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-    })
-    await waitFor(() => expect(result.current.messages).toHaveLength(1))
-
-    // Clear, then a fresh (empty) replay arrives — as the server now sends
-    // after truncating its ring. The transcript stays empty.
-    act(() => {
-      dispatchToSession('s1', { kind: 'session-cleared', sessionId: 's1' })
-      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-    })
-    await waitFor(() => expect(result.current.messages).toEqual([]))
-  })
-
-  it('drops a pre-clear replay that raced ahead (clear lands mid-replay)', async () => {
-    // Race: a reconnect's `replay` (built BEFORE the server truncated its
-    // ring, so it carries pre-clear messages) arrives, then `session-cleared`
-    // lands, then `replay-done`. Without the mid-replay guard, replay-done's
-    // REPLAY_REPLACE would re-apply the buffered pre-clear messages on top of
-    // the reset store and resurrect the cleared transcript.
-    const { result } = renderHook(
-      () => useChatStream('s1', noopPerms, false, false),
-    )
-
-    act(() => {
-      // Stale replay opens (buffered, not yet applied)...
-      dispatchToSession('s1', {
-        kind: 'replay',
-        sessionId: 's1',
-        messages: [{ type: 'user', uuid: 'u1' }, { type: 'assistant', uuid: 'a1' }],
-      })
-      // ...clear confirmation races in BEFORE replay-done...
-      dispatchToSession('s1', { kind: 'session-cleared', sessionId: 's1' })
-      // ...and the (now-stale) replay-done arrives.
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
-    })
-
-    // The pre-clear messages must NOT be resurrected.
-    await waitFor(() => expect(result.current.messages).toEqual([]))
+    // hasOlder flips false: the window is empty and the post-clear page
+    // reported nothing older — the cleared transcript can't be paged back.
     expect(result.current.hasOlder).toBe(false)
   })
 
   it('marks the transcript ready after a session-cleared frame (no stuck skeleton)', async () => {
     // Regression: /clear resets the store, but the post-clear session is
-    // live and empty. There is no pending replay — the WS subscription
+    // live and empty. There is no pending page — the WS subscription
     // persists across clear (no re-subscribe), the server doesn't re-replay,
     // and the fresh Query's system/init is NOT broadcast to clients. So
     // replayReady MUST flip true on session-cleared, otherwise MessageList
@@ -1459,15 +994,18 @@ describe('useChatStream', () => {
 
     // Populate + ready the transcript first.
     act(() => {
-      dispatchToSession('s1', {
-        kind: 'replay',
-        sessionId: 's1',
-        messages: [{ type: 'user', uuid: 'u1' }],
-      })
-      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+      seedPage('s1', [{ seq: 0, msg: { type: 'user', uuid: 'u1' } }])
     })
     await waitFor(() => expect(result.current.replayReady).toBe(true))
 
+    mockApiGet.mockImplementation(async () => ({
+      generation: 1,
+      headSeq: 0,
+      totalCount: 0,
+      startIndex: 0,
+      hasMore: false,
+      messages: [],
+    }))
     act(() => {
       dispatchToSession('s1', { kind: 'session-cleared', sessionId: 's1' })
     })
@@ -1483,14 +1021,11 @@ describe('useChatStream', () => {
       () => useChatStream('s1', noopPerms, false, false),
     )
 
-    // `force` because this listener needs the history itself, not just a live
-    // channel: the server re-serves a replay sliced at the cursor. A missing
-    // cursor means no cached transcript, so the subscribe also opts into
-    // tail-first replay.
-    expect(mockSubscribe).toHaveBeenCalledWith('s1', undefined, {
-      force: true,
-      replayMode: 'tail-backfill',
-    })
+    // `force` because this listener needs the channel established for
+    // itself — the attached handshake (subscribe-result + attached) is the
+    // reconnect catch-up trigger. No sinceUuid / replayMode: content comes
+    // from the REST tail page.
+    expect(mockSubscribe).toHaveBeenCalledWith('s1', undefined, { force: true })
 
     const cleanupFn = mockSubscribe.mock.results[0].value
     expect(cleanupFn).not.toHaveBeenCalled()
@@ -1499,33 +1034,36 @@ describe('useChatStream', () => {
     expect(cleanupFn).toHaveBeenCalled()
   })
 
+  it('fetches the transcript tail page on mount', async () => {
+    renderHook(() => useChatStream('s1', noopPerms, false, false))
+
+    await waitFor(() => {
+      expect(mockApiGet).toHaveBeenCalledWith('/sessions/s1/messages?limit=200')
+    })
+  })
+
   // ── channel state (dormant / slept blank-transcript fix) ─────────────
 
   it('forces the channel on every effect run, including each running flip', () => {
     // The mount itself has to force — the channel may already be live (another
-    // consumer subscribed first, or the resume's own replay landed before this
-    // listener existed), and a confirmed channel would otherwise suppress the
-    // frame and leave the transcript blank. The false→true flip forces for the
-    // same reason (a channel that went dormant is gone). One mechanism, no
-    // "did this instance observe the transition" bookkeeping.
+    // consumer subscribed first, or the resume landed before this listener
+    // existed), and a confirmed channel would otherwise suppress the attached
+    // handshake and leave the transcript blank. The false→true flip forces
+    // for the same reason (a channel that went dormant is gone). One
+    // mechanism, no "did this instance observe the transition" bookkeeping.
     const { rerender } = renderHook(
       ({ running }) => useChatStream('s1', noopPerms, running, false),
       { initialProps: { running: false } },
     )
     expect(mockSubscribe).toHaveBeenCalledTimes(1)
-    expect(mockSubscribe).toHaveBeenLastCalledWith('s1', undefined, {
-      force: true,
-      replayMode: 'tail-backfill',
-    })
+    expect(mockSubscribe).toHaveBeenLastCalledWith('s1', undefined, { force: true })
 
     // Resume completes → running flips true → the effect re-runs and asks
-    // again, so the server serves a replay to this connection.
+    // again, so the server re-answers with attached (the catch-up trigger)
+    // and the tail page refetches over anything missed while dormant.
     rerender({ running: true })
     expect(mockSubscribe).toHaveBeenCalledTimes(2)
-    expect(mockSubscribe).toHaveBeenLastCalledWith('s1', undefined, {
-      force: true,
-      replayMode: 'tail-backfill',
-    })
+    expect(mockSubscribe).toHaveBeenLastCalledWith('s1', undefined, { force: true })
   })
 
   it('clears a stale channel error only when the server confirms the channel', () => {
@@ -1542,8 +1080,8 @@ describe('useChatStream', () => {
     })
     expect(result.current.error).toBe('session not loaded')
 
-    // Being served does clear it — REPLAY_REPLACE preserves `intent.error`, so
-    // nothing else would, and a healed panel would show a stale band.
+    // Being served does clear it — intent.error survives every server-frame
+    // handler, so nothing else would clear it on a healed panel.
     act(() => {
       dispatchToSession('s1', subResult('s1', true, 'served'))
     })
@@ -1555,13 +1093,10 @@ describe('useChatStream', () => {
 
 describe('transcriptSettling', () => {
   // The signal freezes MessageList's pinned "current question" notification
-  // while the transcript is still settling. Its lifecycle is listener-owned:
-  // OPEN on the tail frame (the backfill chunks then prepend until
-  // replay-done), CLOSE on every path that ends the buffer — replay-done,
-  // error, session-cleared — so a burst terminated without its replay-done
-  // can't stick the freeze on forever. A connection drop mid-burst keeping
-  // it open is correct (nothing changes while disconnected) and self-heals
-  // on the reconnect's own burst cycle.
+  // while the transcript is still settling. Its lifecycle has exactly one
+  // settle point under the seq protocol: the tail page landing. The old
+  // burst-drain windows (tail-first backfill, IDB cold-load) are gone with
+  // the replay machinery.
   const sid = 'settling-sid'
   const userMsg = { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } }
 
@@ -1570,57 +1105,44 @@ describe('transcriptSettling', () => {
   beforeEach(() => {
     currentSessionListeners = new Map()
     currentGlobalListeners = new Set()
-    burstOpenSessions = new Set()
     mockSubscribe.mockClear()
     mockSetLastMessageUuid.mockClear()
-    mockIsReplayBurstOpen.mockClear()
+    mockApiGet.mockReset()
+    mockApiGet.mockImplementation(async () => ({ ...emptyPage }))
     cacheClear()
     vi.clearAllMocks()
   })
 
   const waitListening = () =>
     waitFor(() => expect(currentSessionListeners.has(sid)).toBe(true))
-  const openDrain = () =>
-    act(() => {
-      dispatchToSession(sid, { kind: 'replay', sessionId: sid, tail: true, messages: [userMsg] })
-    })
 
-  it('opens on the tail frame and closes on replay-done', async () => {
+  it('is true before the tail page lands', () => {
     const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
-    await waitListening()
-    openDrain()
+    // Asserted synchronously: the mount's tail fetch resolves on a
+    // microtask, so any await would let the (empty) page land and flip the
+    // flag before the assertion.
     expect(result.current.transcriptSettling).toBe(true)
-    act(() => {
-      dispatchToSession(sid, { kind: 'replay-done', sessionId: sid })
-    })
-    await waitFor(() => expect(result.current.transcriptSettling).toBe(false))
   })
 
-  it('closes on an error frame mid-drain (no trailing replay-done needed)', async () => {
+  it('closes once the tail page lands', async () => {
     const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
     await waitListening()
-    openDrain()
+    act(() => {
+      seedPage(sid, [{ seq: 0, msg: userMsg }])
+    })
+    await waitFor(() => expect(result.current.transcriptSettling).toBe(false))
+    expect(result.current.messages).toHaveLength(1)
+  })
+
+  it('closes on an error frame before any page (forced ready, no stuck skeleton)', async () => {
+    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
+    // Same synchronous assertion as above — the empty tail page must not
+    // have landed yet.
     expect(result.current.transcriptSettling).toBe(true)
     act(() => {
       dispatchToSession(sid, { kind: 'error', sessionId: sid, message: 'boom' })
     })
     await waitFor(() => expect(result.current.transcriptSettling).toBe(false))
-  })
-
-  it('closes on session-cleared mid-drain', async () => {
-    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
-    await waitListening()
-    openDrain()
-    expect(result.current.transcriptSettling).toBe(true)
-    act(() => {
-      dispatchToSession(sid, { kind: 'session-cleared', sessionId: sid })
-    })
-    await waitFor(() => expect(result.current.transcriptSettling).toBe(false))
-  })
-
-  it('is true before the replay lands even without a burst (replayReady gate)', async () => {
-    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
-    await waitListening()
-    expect(result.current.transcriptSettling).toBe(true)
+    expect(result.current.error).toBe('boom')
   })
 })

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getSessionLastMessageUuid, getSessionStore, useSessionField } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
-import { isDiskStableMsg } from '../session-store/normalize'
 import { clearAllSessionStorage } from '../session-store/store'
 import type { ActiveSubagent, ActivePhase, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import { useWsHub, useWsHubStatus } from './useWsHub'
@@ -10,26 +9,7 @@ import { randomId } from '../utils/uuid'
 import type { WsServerFrame } from '../ws-types'
 import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter, TaskRecordUi, UserDialogRequestUi, DialogResolved } from '../types'
 import { extractMessagePlainText } from '../../shared/search/extract'
-import { replayAssembler } from '../session-store/replay-assembly'
-
-/** The disk-stable uuid of a message, or null. A message whose uuid matches
- *  between the in-memory ring and the on-disk transcript can anchor the first
- *  history page; plain user PROMPT uuids are minted server-side at send() time
- *  and do NOT match disk, so they return null. The type-level rule lives in
- *  isDiskStableMsg. (The reducer's front-trim uses the stricter isTrimBoundary
- *  — this scan can tolerate loose matches because it walks past them to a real
- *  one, but a forced boundary cannot. See isTrimBoundary's doc comment.) */
-function diskStableUuid(msg: SdkMessage): string | null {
-  if (typeof msg.uuid !== 'string') return null
-  return isDiskStableMsg(msg) ? msg.uuid : null
-}
-
-interface HistoryPageResponse {
-  messages: SdkMessage[]
-  totalCount: number
-  startIndex: number
-  hasMore: boolean
-}
+import type { TranscriptPageResponse } from '../../shared/transcript-page'
 
 export interface ContextUsage {
   totalTokens?: number
@@ -125,13 +105,16 @@ export interface ChatStream {
    *  forked skill into the record SubagentOverlay renders. */
   skillIndex: ReadonlyMap<string, import('../session-store/types').SkillRecord>
   replayReady: boolean
-  /** True while the transcript is still settling for this session: the
-   *  initial replay hasn't completed, the IDB cold-load may still prepend
-   *  rows, or a tail-first backfill burst is draining. MessageList freezes
-   *  the pinned "current question" header's notification while this is set
-   *  (the measured visible-top churns with every prepended chunk) and emits
-   *  exactly once when it lifts. */
+  /** True until the transcript's tail page has landed (the seq protocol's
+   *  initial paint). MessageList freezes the pinned "current question"
+   *  header's notification while this is set and emits exactly once when it
+   *  lifts. (The old IDB-cold-load / backfill-burst drain windows are gone
+   *  with the seq-window protocol — there is exactly one settle point.) */
   transcriptSettling: boolean
+  /** Seq of the oldest message in the store's seq window (null while the
+   *  window is empty). MessageList anchors its virtuoso `firstItemIndex` on
+   *  it so prepends commit in the same render (Task 9). */
+  oldestSeq: number | null
   /** Optimistically insert the user's message into the transcript so it
    *  appears immediately, before the server echoes it back. Returns the
    *  pendingId so the caller can roll it back if the POST fails. The
@@ -154,9 +137,9 @@ export interface ChatStream {
    *  No-op while a load is in flight or when there's nothing older.
    *  Resolves to the number of messages prepended (0 when none). */
   loadOlder: () => Promise<number>
-  /** True when there may be older messages on disk before the first one
-   *  currently displayed. Starts true (unknown) and becomes false once a
-   *  page reports hasMore=false. */
+  /** True when older messages exist on the server below the oldest one
+   *  currently displayed (the last page's `hasMore`, mirrored from the
+   *  seq window). */
   hasOlder: boolean
   /** True while a loadOlder() request is in flight. */
   loadingOlder: boolean
@@ -193,8 +176,8 @@ export function useChatStream(
   sessionId: string,
   permissions: PermissionHandlers,
   /** The session's lifecycle facts, which the message channel cannot show:
-   *  `running` is merged into the subscribe/replay effect's deps, and
-   *  `terminated` gates the SESSION_TERMINATED sweep (see below).
+   *  `running` is merged into the subscribe effect's deps, and `terminated`
+   *  gates the SESSION_TERMINATED sweep (see below).
    *
    *  BOTH REQUIRED. They are a pair of facts about the session, not tuning
    *  knobs, and every value is meaningful — `terminated: false` means "still
@@ -212,27 +195,6 @@ export function useChatStream(
 ): ChatStream {
   const hub = useWsHub()
   const hubStatus = useWsHubStatus()
-  // True while THIS listener's tail-first burst is mid-drain (between the
-  // `tail` frame and its `replay-done`). Deliberately listener-owned, NOT a
-  // mirror of the hub's burst latch: the latch exists for cursor-anchor
-  // semantics and terminates on five paths (error / session-cleared /
-  // refused subscribe / idle session-update / connection close) that don't
-  // all reach this listener — mirroring it would stick the pin freeze on
-  // exactly those paths. The drain flag tracks the one thing the freeze
-  // needs — "backfill chunks are still prepending" — and every path that
-  // ends the buffer resets it below (replay-done, session-cleared, error).
-  // A connection drop mid-burst keeps it true, which is correct: nothing is
-  // changing while disconnected, and the reconnect's own tail→replay-done
-  // cycle re-closes it. Re-read when the session id changes (the side-chat
-  // hook instance survives a target switch) — render-phase adjustment, the
-  // React-documented pattern, so the flag is correct before anything
-  // renders with it.
-  const [burstDraining, setBurstDraining] = useState(false)
-  const [burstDrainingFor, setBurstDrainingFor] = useState(sessionId)
-  if (burstDrainingFor !== sessionId) {
-    setBurstDrainingFor(sessionId)
-    setBurstDraining(false)
-  }
   const store = useMemo(() => getSessionStore(sessionId), [sessionId])
   // Individual field subscriptions — only re-render when the specific
   // field's reference changes (Object.is check). During streaming content
@@ -259,33 +221,34 @@ export function useChatStream(
   const workflowIndex = useSessionField(sessionId, 'workflowIndex')
   const skillIndex = useSessionField(sessionId, 'skillIndex')
   const replayReady = useSessionField(sessionId, 'replayReady')
-  // True once the store's deferred localStorage hydrate has completed. The
-  // subscribe effect gates on it so the WS subscribe carries the cached
-  // lastMessageUuid (incremental replay) instead of null (full replay).
-  const hydrateReady = useSessionField(sessionId, 'hydrateReady')
-  // Gated together with hydrateReady: the IDB cold-load can still land rows
-  // (and prepend them) after hydration, so the cache declaration this hook
-  // sends — and the tail-first opt-in that depends on it — must wait for the
-  // store's cache state to settle (see SessionSnapshot.idbReady).
-  const idbReady = useSessionField(sessionId, 'idbReady')
+  // Seq-window view (the single source for the paging UI state now — no
+  // hook-local hasOlder React state: WINDOW_PAGE writes it, the snapshot
+  // mirrors it, and this subscription keeps the return object reactive).
+  const oldestSeq = useSessionField(sessionId, 'oldestSeq')
+  const hasOlder = useSessionField(sessionId, 'hasOlder')
   const permsRef = useRef(permissions)
-  // Set true when a `session-cleared` frame lands for this session. Blocks
-  // loadOlder() from paging the pre-/clear transcript back in from disk
-  // (the on-disk log still holds it; the server only truncated its
-  // in-memory ring). Reset on session switch.
-  const clearedRef = useRef(false)
   // --- Lazy history paging (scroll-up) ---------------------------------
-  // hasOlder/loadingOlder are React state (drive UI). The cursor index and
-  // in-flight guard are refs (don't need to trigger renders). Declared here
-  // (above the WS listener effect) so the session-cleared handler can call
-  // setHasOlder(false) without a temporal-dead-zone reference. Reset whenever
-  // the session changes (see the effect further down).
-  const [hasOlder, setHasOlder] = useState(true)
+  // loadingOlder is React state (drives UI). The in-flight guard is a ref
+  // (doesn't need to trigger renders). Reset when the session changes.
   const [loadingOlder, setLoadingOlder] = useState(false)
-  // Disk index to page before next time (the previous response's startIndex).
-  // null means "first page — anchor by uuid instead".
-  const cursorRef = useRef<number | null>(null)
   const inFlightRef = useRef(false)
+  // Armed when the server's seq space is known to have moved (session-cleared,
+  // an attached generation bump): any tail page read at a LOWER generation is
+  // a pre-reset read — pre-clear content that must not resurrect on the
+  // emptied window. Cleared on session switch.
+  const minGenerationRef = useRef<number | null>(null)
+  // ── REST gap-fill worker state ────────────────────────────────────────
+  // Serial worker: at most one fillGap loop per hook instance. A call that
+  // lands while the loop is running only sets `rerun` — the loop re-reads
+  // the window snapshot every iteration, so a hole created between the
+  // final snapshot check and the worker's exit is picked up by the rerun
+  // pass instead of stranding.
+  const fillGapRunningRef = useRef(false)
+  const fillGapRerunRef = useRef(false)
+  /** Highest missing seq the current gap-fill must reach (from an `attached`
+   *  frame's headSeq - 1); null when no attached-driven gap is open. Live
+   *  holes don't need it — the window's own `hole` marker tracks them. */
+  const gapTargetRef = useRef<number | null>(null)
 
   useEffect(() => {
     permsRef.current = permissions
@@ -293,12 +256,11 @@ export function useChatStream(
 
   useEffect(() => {
     // Gated on replayReady, NOT just `terminated`: this effect also runs on
-    // mount, which for a reloaded terminated session happens BEFORE the replay
-    // lands — exactly when the store is still empty, and one frame before the
-    // transcript (and any subagent record in it) is rebuilt. Sweeping there
-    // would be a no-op on the empty store and then leave the just-replayed
-    // records unswept (terminated never flips again), and it would also beat a
-    // replayed Agent tool_result to the punch — that merge needs status
+    // mount, which for a reloaded terminated session happens BEFORE the tail
+    // page lands — exactly when the store is still empty. Sweeping there
+    // would be a no-op on the empty store and then leave the just-windowed
+    // records unswept (terminated never flips again), and it would also beat
+    // a windowed Agent tool_result to the punch — that merge needs status
     // 'running', so an early sweep would drop a finished subagent's output.
     // Waiting for replayReady means the records exist and any payload has
     // already been applied.
@@ -308,7 +270,8 @@ export function useChatStream(
     // one TASKS_SNAPSHOT leaves `running` on the assumption that the
     // result-frame sweep will cover it — would otherwise keep its card
     // spinning forever on a dead session. Idempotent (see the action), so
-    // re-firing per replay and on a terminate→resume→terminate cycle is safe.
+    // re-firing per page load and on a terminate→resume→terminate cycle is
+    // safe.
     store.dispatch({ type: 'SESSION_TERMINATED' })
   }, [terminated, replayReady, store])
 
@@ -319,232 +282,204 @@ export function useChatStream(
     }
   }, [sessionId])
 
+  // ── REST gap-fill (the seq protocol's only hole-repair path) ─────────
+  //
+  // One loop shape serves every caller:
+  //  · a live frame whose seq jumped (the window parked it and marked
+  //    `hole`) — anchor at the hole's top edge and walk down;
+  //  · an `attached` reconnect catch-up (newestSeq < headSeq - 1, nothing
+  //    parked yet) — anchor at headSeq and let the walk-down take over once
+  //    the first page parks behind the hole.
+  // Every iteration re-reads the window snapshot, so frames that landed
+  // while a fetch was in flight are folded in without a second fetch chain.
+  /** Every transcript page read, funnelled through the generation floor: a
+   *  page read at a generation BELOW minGenerationRef was served before the
+   *  server's reset landed (pre-clear content at the old generation) and
+   *  must not be applied — on an emptied window it would resurrect the
+   *  cleared transcript AND pin the dead generation (every later page would
+   *  then mismatch and be ignored). Retry instead: once the server's reset
+   *  has landed every fetch returns the new generation, so this terminates
+   *  in one round trip in practice; the cap turns a server that never
+   *  actually resets into a loud error instead of a spin. Shared by the
+   *  tail-page path AND the gap-fill path — a pre-clear page landing inside
+   *  an in-flight fillGap is the same hazard. */
+  const fetchValidatedPage = useCallback(
+    async (url: string): Promise<TranscriptPageResponse> => {
+      let page = await api.get<TranscriptPageResponse>(url)
+      let retries = 0
+      while (minGenerationRef.current != null && page.generation < minGenerationRef.current) {
+        if (++retries > 5) throw new Error('transcript generation moved')
+        page = await api.get<TranscriptPageResponse>(url)
+      }
+      return page
+    },
+    [],
+  )
+
+  const fillGap = useCallback(async (): Promise<void> => {
+    if (fillGapRunningRef.current) {
+      fillGapRerunRef.current = true
+      return
+    }
+    fillGapRunningRef.current = true
+    try {
+      for (;;) {
+        fillGapRerunRef.current = false
+        for (;;) {
+          const snap = store.getSnapshot()
+          const hole = snap.hole
+          const target = gapTargetRef.current
+          let before: number
+          if (hole) {
+            // The endpoint returns messages with seq < before, so anchoring
+            // just above the missing range's top edge covers [from, to] on
+            // the first page (limit 200) and walks further down on the next
+            // iteration when the gap is wider than one page.
+            before = hole[1] + 1
+          } else if (target != null && snap.newestSeq != null && snap.newestSeq < target) {
+            before = target + 1
+          } else {
+            gapTargetRef.current = null
+            break
+          }
+          let page: TranscriptPageResponse
+          try {
+            page = await fetchValidatedPage(
+              `/sessions/${sessionId}/messages?before=${before}&limit=200`,
+            )
+          } catch {
+            // Network/parse error (or a generation floor that never
+            // resolves) — stop; the next live frame (or the next attached
+            // handshake) re-arms the fill.
+            gapTargetRef.current = null
+            return
+          }
+          const pre = store.getSnapshot()
+          store.dispatch({
+            type: 'WINDOW_PAGE',
+            at: 'tail',
+            generation: page.generation,
+            headSeq: page.headSeq,
+            messages: page.messages,
+            // OR, not overwrite: a hole-fill page runs mid-transcript, and
+            // the page's hasMore describes content below the PAGE — which
+            // the window may already hold. OR-ing can only keep hasOlder
+            // true (one wasted loadOlder at worst); overwriting could flip
+            // it falsely false and strand the older history.
+            hasMore: page.hasMore || pre.hasOlder,
+          })
+          const post = store.getSnapshot()
+          const progressed =
+            post.newestSeq !== pre.newestSeq ||
+            post.hole?.[0] !== pre.hole?.[0] ||
+            post.hole?.[1] !== pre.hole?.[1]
+          if (!progressed) {
+            // The page changed nothing (stale generation, all seqs already
+            // owned, empty range): stop — otherwise this loops forever.
+            gapTargetRef.current = null
+            break
+          }
+        }
+        if (!fillGapRerunRef.current) return
+      }
+    } finally {
+      fillGapRunningRef.current = false
+    }
+  }, [store, sessionId, fetchValidatedPage])
+
   useEffect(() => {
     if (!sessionId) return
-    // The store hydrates its localStorage cache in a microtask after the
-    // constructor, so on a cold panel mount this effect's first run happens
-    // with an empty store. Subscribing now would send sinceUuid=null and force
-    // a full server replay; waiting for hydrateReady lets the incremental
-    // (sinceUuid) replay be used when a cache exists. hydrateReady is always
-    // set (cache or not), so this never deadlocks.
-    if (!hydrateReady) return
-    // Hold the channel, and require a replay for THIS listener. The hold is
-    // ref-counted and deduped (the same panel's header subscribes too); the
-    // force is what makes the transcript independent of subscription order —
-    // the server re-serves the replay, sliced at `sinceUuid`, so a warm store
-    // costs nothing and a cold one gets the history. Relying on the hold alone
-    // is what left the reported panel blank: it subscribed while the session
-    // was unservable, the hub counted the holder anyway, and this hook mounts
-    // only after the resume lands — by then its subscribe looked like a
-    // duplicate.
-    // Replay buffering lives in the session-scoped ReplayAssembler (keyed by
-    // the server's burstId), NOT in this closure. The closure buffer was the
-    // root cause of the 96b4eaaa transcript reorder: a burst superseded
-    // server-side never delivers its replay-done, so `replaying` stayed true
-    // with a dirty buffer, and the NEXT burst's done flushed the MIXED
-    // payload [truncated older burst][newer burst] — a non-chronological
-    // payload the reducer's contiguous-slice merge mis-brackets. The
-    // assembler supersedes on burstId change (mirroring the server one-for-
-    // one) and flushes only the burst its terminator names, so every
-    // REPLAY_REPLACE carries exactly one contiguous server burst. Being
-    // session-scoped, it also survives panel effect re-runs (the old
-    // teardown discarded the in-flight buffer and forced a replay rebuild).
-    // True between a `tail: true` replay frame and its replay-done — the
-    // tail-first burst. Messages were applied on arrival (tail frame) or
-    // prepended per chunk (backfill frames), and the pending-request
-    // snapshots rode the tail frame, so replay-done must NOT run the
-    // buffered REPLAY_REPLACE — it only closes the burst (and finally
-    // allows the replay cursor to advance; see replayCursor).
-    let tailMode = false
-    // Cursor for this listener's forced replay (see the `subscribe` call at the
-    // bottom of the effect). While a tail-first burst is open the store's
-    // newest uuid is the TAIL's — not a valid resume anchor — and the hub
-    // (which outlives a panel remount, unlike a per-hook ref) silently
-    // substitutes the last complete position. `burstOpen` is read here for the
-    // opt-in decision below: a partial burst's rows are all NEWER than the
-    // pending backfill chunks, so it is safe to ask for tail-first again.
-    const replayCursor = (): string | undefined =>
-      getSessionLastMessageUuid(sessionId) ?? undefined
-    // Phase 2 of the layered-state refactor removed the `pendingLive` buffer.
-    // Previously, live frames arriving between `replay` and `replay-done` had
-    // to be parked because REPLAY_REPLACE's fresh-state branch rebuilt the
-    // entire state from scratch (createInitialSessionState), wiping anything a
-    // direct dispatch had already written — permissionPending, contextUsage,
-    // error, the optimistic placeholder. After the refactor, REPLAY_REPLACE
-    // only rebuilds `state.mirror` and PRESERVES `state.intent` plus the
-    // current mirror's already-set live fields, so a live frame can dispatch
-    // immediately and its effect survives the replay-done that follows.
+    // ── Open path (seq-window protocol): subscribe + REST tail page ─────
     //
-    // Result: zero buffering, zero ordering guesswork, and the
-    // StrictMode-double-mount race that motivated this whole refactor cannot
-    // wipe the user's first optimistic message anymore.
+    // Ordering contract: the subscribe and the tail-page fetch run
+    // concurrently. Frames that arrive BEFORE the page lands are dropped by
+    // construction — the window is empty with generation -1, so WINDOW_LIVE's
+    // liveAppend no-ops on the generation mismatch, and replay payloads are
+    // retired (see the handler). The page is authoritative for everything up
+    // to its read point; anything newer either contiguous-appends, parks
+    // behind a hole (healed by fillGap), or is caught by the attached
+    // handshake. Nothing can be lost: a frame the page predates carries a
+    // seq ≥ the page's headSeq, so the next live frame re-arms the fill.
+    let cancelled = false
+    // Per-run reset of the cross-session refs. This effect re-runs on
+    // session switch BEFORE the session-switch reset effect below (React
+    // runs effects in declaration order), so arming/clearing these here —
+    // keyed to the run's own session — is what keeps a previous session's
+    // generation floor or gap target from leaking into the new session's
+    // open fetch.
+    minGenerationRef.current = null
+    gapTargetRef.current = null
+    fillGapRerunRef.current = false
+
+    const refetchTail = async (): Promise<void> => {
+      try {
+        const page = await fetchValidatedPage(`/sessions/${sessionId}/messages?limit=200`)
+        if (cancelled) return
+        store.dispatch({
+          type: 'WINDOW_PAGE',
+          at: 'tail',
+          generation: page.generation,
+          headSeq: page.headSeq,
+          messages: page.messages,
+          hasMore: page.hasMore,
+        })
+      } catch {
+        if (!cancelled) store.dispatch({ type: 'ERROR', message: 'Failed to load transcript history' })
+      }
+    }
 
     const off = hub.addSessionListener(sessionId, (frame: WsServerFrame) => {
       switch (frame.kind) {
-        case 'replay': {
-          if (frame.backfill) {
-            // Tail-first replay backfill chunk: strictly older than
-            // everything on screen, so PREPEND it immediately — no
-            // buffering, no waiting for replay-done. The server only
-            // sends these on a no-cache cold start, so prepend-to-front
-            // can never land above cached items (see replay-plan.ts). A
-            // /clear that raced in mid-backfill built these chunks from
-            // the pre-clear ring — drop them so they can't resurrect the
-            // cleared transcript. trustUuidDedup skips the prompt
-            // content-signature overlap check: backfill chunks share the
-            // ring's uuid space with the on-screen tail, so uuid dedup is
-            // exact and the signature check would false-drop a distinct
-            // older prompt whose text repeats ("continue") across a chunk
-            // boundary.
-            if (!clearedRef.current && frame.messages.length > 0) {
-              store.dispatch({
-                type: 'PREPEND_MESSAGES',
-                messages: frame.messages as SdkMessage[],
-                trustUuidDedup: true,
-              })
-            }
-            break
+        case 'replay':
+        case 'replay-done': {
+          // The P1 server still serves replay bursts on subscribe (the hub
+          // re-subscribes with the session's cursor on reconnect; P3 retires
+          // it server-side). The transcript's content authority is the REST
+          // tail page now, so the payload is applied by NOTHING: a replay
+          // landing after a WINDOW_PAGE would write uuid-keyed rows the seq
+          // window doesn't know about — the ordered log and the window would
+          // diverge, and liveAppend would silently drop later live frames
+          // (message loss). What IS still harvested: the pending
+          // permission / elicitation / dialog snapshots, which ride the
+          // replay (tail frame or chunked terminator) as their reconnect
+          // recovery path and are not transcript content.
+          if (frame.kind === 'replay' && frame.messages.length > 0) {
+            console.debug('[useChatStream] dropped replay payload (seq-window protocol)', sessionId)
           }
-          if (frame.tail) {
-            // Tail-first replay tail frame: the newest chunk, a complete
-            // first screen. Apply it IMMEDIATELY — this is the whole point
-            // of the mode (first paint after one frame, not after the full
-            // ring drains). The pending-request snapshots (permissions /
-            // elicitations / dialogs) ride THIS frame — same shape as the
-            // ordinary single-frame replay — so a permission card appears
-            // with the first paint, not after the backfill drains. The
-            // trailing replay-done carries nothing and only closes the
-            // burst. The server gates this mode on the client having no
-            // cached transcript (no sinceUuid), so REPLAY_REPLACE runs its
-            // fresh-state path; the merge path would still be correct if a
-            // cache somehow existed.
-            tailMode = true
-            // Open the transcriptSettling drain window: backfill chunks will
-            // prepend until replay-done closes it.
-            setBurstDraining(true)
-            // A tail frame ends any ordinary burst this session had open (the
-            // server superseded it to serve this tail-first burst) — its
-            // partial assembly can never be flushed, drop it.
-            replayAssembler.discard(sessionId)
-            // Same /clear race guard as the backfill branch above: a tail
-            // frame that was in flight when an SDK in-band /clear landed
-            // carries PRE-clear messages — applying it would resurrect the
-            // cleared transcript (usually healed by the trailing
-            // replay-done's empty REPLAY_REPLACE, but a connection drop
-            // before that replay-done would leave the resurrection up).
-            if (!clearedRef.current) {
-              if (frame.permissions?.length) {
-                for (const req of frame.permissions) permsRef.current.onRequest(req)
-              }
-              if (frame.elicitations?.length) {
-                for (const req of frame.elicitations) permsRef.current.onElicitationRequest?.(req)
-              }
-              if (frame.dialogs?.length) {
-                for (const req of frame.dialogs) permsRef.current.onDialogRequest?.(req)
-              }
-              store.dispatch({
-                type: 'REPLAY_REPLACE',
-                messages: frame.messages as SdkMessage[],
-                // Tolerant of a frame that omits the field (older server
-                // builds / hand-rolled frames) — same leniency as the
-                // buffered path's optional-chain reads.
-                permissions: (frame.permissions ?? []) as PermissionRequest[],
-              })
-              // The newest chunk went in first, so any tool_result whose
-              // tool_use is still in an unsent backfill chunk was skipped.
-              // Mark it in the STORE (not in this closure): the burst can be
-              // interrupted and finished later by an ordinary replay, and the
-              // marker has to outlive both this closure and this effect.
-              store.dispatch({ type: 'MARK_TAIL_FIRST_APPLIED' })
-            }
-            // NOTE: no hub.setLastMessageUuid here. The burst is
-            // incomplete until replay-done; advancing the reconnect
-            // anchor now would make a mid-backfill disconnect resume
-            // from the tail's uuid and permanently skip the unsent
-            // backfill chunks (the server only re-sends what is strictly
-            // after the anchor). replayCursor() below enforces the same
-            // rule for live messages while the burst is open.
-            break
-          }
-          // Ordinary replay frame: hand it to the session assembler. A burstId
-          // change supersedes any open assembly inside the assembler (the
-          // mirrored server-side supersede rule); re-delivery to a second
-          // listener of the same session is folded once there.
-          // An ordinary (unmarked) frame also means any earlier tail-first
-          // burst is over — most commonly a reconnect that re-subscribed with
-          // a sinceUuid, so the server serves the ordinary incremental path.
-          // Leaving tailMode latched here would make the pending replay-done
-          // take the tailMode branch and silently drop this burst's payload.
-          tailMode = false
-          replayAssembler.add(
-            sessionId,
-            (frame as { burstId?: number }).burstId,
-            frame.messages as SdkMessage[],
-            (frame.permissions ?? []) as PermissionRequest[],
-          )
           if (frame.permissions?.length) {
             for (const req of frame.permissions) permsRef.current.onRequest(req)
           }
-          // Pending elicitations ride the same replay burst — this is the
-          // reconnect/refresh recovery path for auth dialogs.
           if (frame.elicitations?.length) {
             for (const req of frame.elicitations) permsRef.current.onElicitationRequest?.(req)
           }
-          // Pending user dialogs ride the same burst (refusal fallback etc).
           if (frame.dialogs?.length) {
             for (const req of frame.dialogs) permsRef.current.onDialogRequest?.(req)
           }
           break
         }
-        case 'replay-done': {
-          // Burst terminator: close the transcriptSettling drain window
-          // regardless of which replay mode served the burst (a no-op after
-          // an ordinary buffered replay, which never opened it).
-          setBurstDraining(false)
-          // Flush ONLY the burst this terminator names. A null flush means a
-          // stale done (its burst was superseded and its partial assembly
-          // discarded) or a done that raced a newer burst — expected and
-          // handled inside the assembler. The old closure-buffer code
-          // flushed the MIXED buffer here, which is exactly the reorder
-          // bug; the assembler makes that state unreachable.
-          const flushed = tailMode
-            ? null
-            : replayAssembler.finalize(sessionId, (frame as { burstId?: number }).burstId)
-          if (frame.permissions?.length) {
-            for (const req of frame.permissions) permsRef.current.onRequest(req)
+        case 'attached': {
+          // Seq-space handshake (server sends it after every successful
+          // subscribe — the reconnect catch-up trigger, spec §6).
+          const snap = store.getSnapshot()
+          if (snap.newestSeq == null) {
+            // Empty window: the open path's tail page adopts the server's
+            // generation — reconciling here would double-fetch on every
+            // panel open (the handshake usually races the initial page).
+            break
           }
-          if (frame.elicitations?.length) {
-            for (const req of frame.elicitations) permsRef.current.onElicitationRequest?.(req)
+          if (frame.generation !== snap.generation) {
+            // Dead universe (/clear or a server-side reset): whole-window
+            // invalidation, then re-fetch the tail under the new generation.
+            store.dispatch({ type: 'WINDOW_BUMP', generation: frame.generation, headSeq: frame.headSeq })
+            minGenerationRef.current = frame.generation
+            void refetchTail()
+          } else if (snap.newestSeq < frame.headSeq - 1) {
+            // Missed live frames while disconnected: page the REST gap
+            // [newestSeq + 1, headSeq - 1] closed — the same paging code
+            // path scroll-up loadOlder uses.
+            gapTargetRef.current = frame.headSeq - 1
+            void fillGap()
           }
-          if (frame.dialogs?.length) {
-            for (const req of frame.dialogs) permsRef.current.onDialogRequest?.(req)
-          }
-          if (tailMode) {
-            // Tail-first burst terminator: messages and pending-request
-            // snapshots all rode the tail frame (applied on arrival) and
-            // the backfill frames (prepended). Nothing to fold — the
-            // server's tail-mode replay-done carries no payload. This is
-            // also the point where the burst is complete, so the reconnect
-            // anchor may finally advance (see the tail-frame NOTE above).
-            tailMode = false
-          } else if (flushed != null) {
-            // Chunked bursts carry their pending-request snapshots on this
-            // terminator — fold them into the flushed payload's dispatch.
-            store.dispatch({
-              type: 'REPLAY_REPLACE',
-              messages: flushed.messages,
-              permissions: [...flushed.permissions, ...((frame.permissions ?? []) as PermissionRequest[])],
-            })
-          }
-          // One settle point for every terminator. It is dispatched
-          // unconditionally and gated INSIDE the reducer on the store's
-          // marker, which is what makes it correct in the paths a
-          // closure-local check misses: a burst applied by a previous
-          // closure, and a burst interrupted by a socket drop whose results
-          // are only re-paired by the NEXT (ordinary, buffered) replay.
-          store.dispatch({ type: 'SETTLE_RESULT_INDEXES' })
-          const lastUuid = getSessionLastMessageUuid(sessionId)
-          if (lastUuid) hub.setLastMessageUuid(sessionId, lastUuid)
           break
         }
         case 'message': {
@@ -560,18 +495,34 @@ export function useChatStream(
             }
             break
           }
-          store.dispatch({ type: 'MESSAGE', message })
-          // The hub ignores this while a tail-first burst is open — a live
-          // message landing mid-backfill must not advance the resume anchor
-          // either (same rationale as the tail-frame NOTE above). An open
-          // ordinary burst suppresses it the same way: the replay's own
-          // replay-done advance is the authoritative one, and a live message
-          // mid-burst would anchor the resume cursor past content the burst
-          // has buffered but not yet applied.
-          if (!replayAssembler.isOpen(sessionId)) {
-            const lastUuid = getSessionLastMessageUuid(sessionId)
-            if (lastUuid) hub.setLastMessageUuid(sessionId, lastUuid)
+          if (frame.seq != null && frame.generation != null) {
+            // Seq-carrying frame — the seq-window protocol path. WINDOW_LIVE
+            // REPLACES the legacy MESSAGE dispatch here (dispatching both
+            // would append the message to the ordered log twice).
+            store.dispatch({ type: 'WINDOW_LIVE', seq: frame.seq, generation: frame.generation, message })
+            // Hole detection, snapshot convention (Task 7's plan decision —
+            // the reducer keeps returning SessionState; no return-value side
+            // channel): the parked-frame hole travels on the window and is
+            // read from the snapshot after the dispatch. liveAppend parks
+            // any seq beyond newestSeq + 1 and marks the hole; the REST page
+            // over that range is fetched here.
+            const snap = store.getSnapshot()
+            if (snap.hole) void fillGap()
+          } else {
+            // No seq on the frame (pre-seq server / synthetic frame) —
+            // legacy ordered-log append, no window engagement.
+            store.dispatch({ type: 'MESSAGE', message })
           }
+          const lastUuid = getSessionLastMessageUuid(sessionId)
+          if (lastUuid) hub.setLastMessageUuid(sessionId, lastUuid)
+          break
+        }
+        case 'messages-evicted': {
+          // Server tombstones by seq (refusal-fallback retraction, resolved
+          // user-dialog eviction). The reducer maps the seqs to their uuids
+          // and reuses the uuid eviction machinery, so the ordered log and
+          // the lifecycle maps stay in lockstep with the window.
+          store.dispatch({ type: 'WINDOW_EVICT', seqs: frame.seqs })
           break
         }
         case 'permission-request': {
@@ -661,7 +612,7 @@ export function useChatStream(
           // Flip the matching user bubble from "queued" to "consumed". If
           // the message itself hasn't arrived yet (frame raced ahead), the
           // reducer stashes the timestamp in pendingConsumedMessages and the
-          // message's own broadcast / next replay folds it in. Either way
+          // message's own broadcast / next page folds it in. Either way
           // the placeholder lookup in applyMessageConsumed self-heals.
           store.dispatch({ type: 'MESSAGE_CONSUMED', uuid: frame.uuid, consumedAt: frame.consumedAt })
           break
@@ -678,21 +629,17 @@ export function useChatStream(
           break
         }
         case 'error': {
-          // If the replay never completed (e.g. subscribe failed because
-          // the session was already torn down), replayReady is still false
-          // and the MessageList shows an infinite loading skeleton. Force
-          // replayReady=true so the skeleton clears and the error becomes
-          // visible. Clear the replay assembly so a stale replay-done that
-          // arrives later can't overwrite the error with error:null.
-          // An error frame ends any in-flight burst for this listener (the
-          // hub drops its latch here too) — release the pin freeze, or a
-          // mid-backfill error with no trailing replay-done would stick
-          // transcriptSettling on forever.
-          setBurstDraining(false)
-          replayAssembler.discard(sessionId)
+          // If the transcript never became ready (e.g. the subscribe failed
+          // because the session was already torn down), MessageList shows an
+          // infinite skeleton. Force the ready state so the error becomes
+          // visible. WINDOW_BUMP with the CURRENT cursor is the seq-protocol
+          // equivalent of the old empty REPLAY_REPLACE: it wipes to the empty
+          // live state and flips replayReady. Reached only while no tail page
+          // has landed (a landed page sets replayReady) — so the window is
+          // empty and nothing is lost by the wipe.
           if (!store.getSnapshot().replayReady) {
-            tailMode = false
-            store.dispatch({ type: 'REPLAY_REPLACE', messages: [], permissions: [] })
+            const snap = store.getSnapshot()
+            store.dispatch({ type: 'WINDOW_BUMP', generation: snap.generation, headSeq: snap.headSeq })
           }
           store.dispatch({ type: 'ERROR', message: frame.message })
           break
@@ -701,54 +648,33 @@ export function useChatStream(
           // The state half of a subscribe answer (the `error` frame above
           // carries the prose). `ok` means this connection is being served —
           // so a band left by an earlier refusal is stale and must go, since
-          // REPLAY_REPLACE deliberately preserves `intent.error` and nothing
-          // else clears it on a healed panel. Read + guarded through the store
-          // (not the `error` field) so the effect doesn't gain a dep that
-          // would re-run — and re-force a replay — on every band change.
+          // nothing else clears intent.error on a healed panel.
           if (frame.ok === true && store.getSnapshot().error != null) {
             store.dispatch({ type: 'ERROR', message: null })
           }
-          // A refused/closed subscribe is one of the hub's burst terminators
-          // (it clears its own latch) — the assembly must follow or it would
-          // linger open: the isOpen gate would suppress live-message anchor
-          // advances (forcing full replays on the next reconnect) and pin the
-          // buffered chunks in the singleton.
-          if (frame.ok !== true) replayAssembler.discard(sessionId)
           break
         }
         case 'session-cleared': {
           // SDK-emitted `cleared` control event (forwarded at server/ws.ts).
-          // The local `/clear` command no longer emits this frame: it mints a
-          // fresh session under a new id and the client swaps panels, so there
-          // is no in-place transcript to reset. This handler stays for the
-          // SDK's own in-band clears, which append a new init to the on-disk
-          // transcript — the store + cache reset + reverse-page block below
-          // keep the pre-clear rows from resurrecting on scroll-up.
-          //
-          // Mid-replay guard: if a reconnect's replay raced ahead of this
-          // frame, the open assembly holds PRE-clear messages (the server's
-          // ring wasn't truncated yet when it built that replay). Were we
-          // to leave it, the pending replay-done's REPLAY_REPLACE would
-          // re-apply them on top of the freshly-reset store and resurrect
-          // the cleared transcript. So drop the assembly and force
-          // replay-mode off — the next subscribe (or the post-clear live
-          // stream) repaints from the truncated ring.
-          replayAssembler.discard(sessionId)
-          tailMode = false
-          // The burst is dead along with its buffer — release the pin freeze
-          // so the post-clear (empty) transcript re-evaluates the header.
-          setBurstDraining(false)
-          // Reset in-memory state AND erase the cache with no pending write
-          // left behind (clearPersisted cancels the debounced save that a
-          // plain reset() would schedule — otherwise that timer rewrites the
-          // key with the empty state and the cache reappears).
-          store.clearPersisted()
+          // The local `/clear` command mints a fresh session under a new id
+          // and the client swaps panels, so there is no in-place transcript
+          // for that path; this handler stays for the SDK's own in-band
+          // clears, which append a new init to the on-disk transcript. The
+          // server's transcript store bumped its generation
+          // (transcript-store.reset: generation+1, seq space zeroed). Wipe
+          // to the empty live state (CLEAR_TRANSCRIPT preserves the cursor
+          // values — meaningless until the next page re-anchors them), arm
+          // the generation floor, and re-fetch the tail: an in-flight tail
+          // page that was read BEFORE the clear carries pre-clear content
+          // at the old generation, and adopting it on the emptied window
+          // would resurrect the cleared transcript AND pin the dead
+          // generation (every later page would then mismatch and be
+          // ignored). The floor makes such a page retry — the role
+          // clearedRef played before the seq protocol.
+          store.dispatch({ type: 'CLEAR_TRANSCRIPT' })
+          minGenerationRef.current = store.getSnapshot().generation + 1
           permsRef.current.onCleared?.()
-          // Block reverse-paging: the on-disk transcript still holds the
-          // pre-clear messages; without this, scrolling up would pull them
-          // back in. Reset on session switch (see the paging effect below).
-          clearedRef.current = true
-          setHasOlder(false)
+          void refetchTail()
           break
         }
         default:
@@ -756,44 +682,24 @@ export function useChatStream(
       }
     })
 
-    const cursor = replayCursor()
-    // "Nothing on screen" is stated, not inferred: the store can hold rows
-    // with no cursor at all (an IDB cold-load prepends rows without setting
-    // one), and backfill chunks are NEWER than those rows while the client
-    // prepends them to the FRONT — the server must not serve them to a
-    // client with a transcript. A PARTIAL burst is the exception: its rows
-    // are the tail (newest in the ring), so everything the backfill carries
-    // is older and prepending stays correct.
-    const burstOpen = hub.isReplayBurstOpen(sessionId)
-    const hasCachedTranscript = !burstOpen && (cursor != null || store.getSnapshot().items.length > 0)
-    const release = hub.subscribe(
-      sessionId,
-      // A cache whose persist projection dropped image blocks (see
-      // projectMessage's cacheDroppedMedia stamp) can never be refreshed by an
-      // incremental replay — the server only sends messages STRICTLY AFTER the
-      // cursor, and the degraded copies predate it. Skip the cursor so the
-      // server serves a full replay; the merge then replaces the image-less
-      // cached copies with authoritative ones (replaceStaleCachedMessages) and
-      // previously-pasted images come back after a reload. Sessions whose
-      // cache is intact keep the cheap incremental cursor.
-      store.getSnapshot().cacheHasDroppedMedia ? undefined : cursor,
-      // This listener needs the history itself, not just a live channel: the
-      // server re-serves the replay sliced at the cursor above, so a warm
-      // store gets a near-empty burst and a cold one gets everything.
-      hasCachedTranscript
-        ? { force: true, hasCachedTranscript: true }
-        : { force: true, replayMode: 'tail-backfill' },
-    )
+    // Subscribe. `force` — this listener needs the channel established (or
+    // re-established) for itself: a confirmed-live channel alone doesn't
+    // mean THIS listener's attached handshake ran (a panel mounts after a
+    // resume; the server answers the subscribe with subscribe-result +
+    // attached, and attached is the reconnect catch-up trigger). No
+    // sinceUuid cursor, no replayMode: transcript content comes from the
+    // REST tail page + gap fills; whatever replay the P1 server still
+    // serves for the subscribe is dropped by the handler above (P3 removes
+    // it server-side).
+    const release = hub.subscribe(sessionId, undefined, { force: true })
+    void refetchTail()
+
     return () => {
-      // The replay assembly is session-scoped and SURVIVES this teardown —
-      // that is the point of the assembler (the old closure buffer was
-      // discarded here mid-burst, forcing the replacement effect to pay for
-      // a full replay rebuild and opening the stale-mix window). Nothing to
-      // clean up beyond the listener + hold.
+      cancelled = true
       off()
       release()
     }
-  }, [hub, sessionId, store, hydrateReady, idbReady, running])
+  }, [hub, sessionId, store, running, fillGap, fetchValidatedPage])
 
   const displayedError = useMemo(() => {
     if (hubStatus === 'reconnecting') {
@@ -843,73 +749,48 @@ export function useChatStream(
   }, [store])
 
   useEffect(() => {
-    // New session: reset paging state. The setState calls are intentional —
-    // paging UI state is derived from `sessionId` and must reset when it
-    // changes; there's no render-time value to compute it from. The reset
-    // runs once per session switch (not every render), so the cascading-
-    // render concern the rule guards against doesn't apply here.
-    cursorRef.current = null
-    inFlightRef.current = false
-    clearedRef.current = false
+    // New session: reset the hook-owned paging state. The setState call is
+    // intentional — loadingOlder is derived from `sessionId` and must reset
+    // when it changes; there's no render-time value to compute it from. The
+    // reset runs once per session switch (not every render), so the
+    // cascading-render concern the rule guards against doesn't apply here.
+    // (hasOlder/oldestSeq live in the store's window and reset with it;
+    // minGenerationRef/gapTargetRef are reset per subscribe-effect run —
+    // see the open path — which is ordered BEFORE this effect.)
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setHasOlder(true)
     setLoadingOlder(false)
+    inFlightRef.current = false
   }, [sessionId])
-
-  /** Fetch one page from the server /history endpoint (the pre-IDB path, and
-   *  the gap-probe when IDB is exhausted/has a boundary gap). Manages
-   *  `cursorRef` (server startIndex) across calls. Returns the messages (NOT
-   *  dispatched — the caller prepends them, possibly combined with IDB
-   *  messages) + hasMore. */
-  const fetchServerPage = useCallback(async (): Promise<{ messages: SdkMessage[]; hasMore: boolean }> => {
-    const params = new URLSearchParams({ limit: '200' })
-    if (cursorRef.current != null) {
-      // Subsequent pages: page strictly before the last startIndex.
-      params.set('before', String(cursorRef.current))
-    } else {
-      // First page: anchor on the oldest disk-stable message on screen.
-      const current = store.getState().mirror.items
-      let anchor: string | null = null
-      for (const it of current) {
-        const u = diskStableUuid(it.msg)
-        if (u) { anchor = u; break }
-      }
-      if (anchor) params.set('beforeUuid', anchor)
-      // If no anchor exists (transcript is only user prompts so far), omit
-      // both — the server returns the newest page, dedup-by-uuid drops dupes.
-    }
-    const page = await api.get<HistoryPageResponse>(
-      `/sessions/${sessionId}/history?${params.toString()}`,
-    )
-    cursorRef.current = page.startIndex
-    return { messages: page.messages, hasMore: page.hasMore }
-  }, [sessionId, store])
 
   const loadOlder = useCallback(async (): Promise<number> => {
     if (inFlightRef.current) return 0
-    // After a /clear, the pre-clear transcript still exists on disk but
-    // must stay hidden — refuse to page it back in for this session.
-    if (clearedRef.current) return 0
-    // While a tail-first burst is draining, a disk page would be PREPENDED to
-    // the front — above the backfill chunks still to arrive, which are NEWER
-    // than that page (they are ring content; a paged page is strictly older).
-    // The transcript would render mid-history above older history, and the
-    // chunk's trustUuidDedup skips the signature check that would otherwise
-    // catch a duplicated prompt. The drain is bounded (the ring, one frame per
-    // chunk), so refuse and let the user's next scroll-up retry.
-    if (hub.isReplayBurstOpen(sessionId)) return 0
+    // Both guards read the WINDOW snapshot (single source of truth — the
+    // old cursorRef/clearedRef/burst-gate dual bookkeeping is gone):
+    //  · oldestSeq == null — the window is empty (hasOlder can be stale-true
+    //    on an emptied window, and paging "before null" is meaningless);
+    //  · !hasOlder — the last page reported nothing older.
+    // A post-/clear resurrection is structurally impossible now: the clear
+    // wipes the window and bumps the server generation, so the pre-clear
+    // pages mismatch and are ignored.
+    const snap = store.getSnapshot()
+    if (!snap.hasOlder || snap.oldestSeq == null) return 0
     inFlightRef.current = true
     setLoadingOlder(true)
     try {
-      // Server-only path since the seq-window refactor (Task 7) deleted the
-      // IDB layer: there is no local cache to try first. (Task 8 rewrites
-      // this to page GET /sessions/:id/messages by seq.)
-      const server = await fetchServerPage()
-      if (server.messages.length > 0) {
-        store.dispatch({ type: 'PREPEND_MESSAGES', messages: server.messages })
-      }
-      setHasOlder(server.hasMore)
-      return server.messages.length
+      const page = await api.get<TranscriptPageResponse>(
+        `/sessions/${sessionId}/messages?before=${snap.oldestSeq}&limit=200`,
+      )
+      store.dispatch({
+        type: 'WINDOW_PAGE',
+        at: 'head',
+        generation: page.generation,
+        headSeq: page.headSeq,
+        messages: page.messages,
+        hasMore: page.hasMore,
+      })
+      // hasOlder needs no setter: pageLoaded (at:'head') writes hasMore into
+      // the window and the snapshot mirrors it.
+      return page.messages.length
     } catch {
       // Network/parse error — leave hasOlder as-is so the user can retry by
       // scrolling again. Don't surface to the error banner (non-fatal).
@@ -918,13 +799,12 @@ export function useChatStream(
       inFlightRef.current = false
       setLoadingOlder(false)
     }
-  }, [store, fetchServerPage, hub, sessionId])
+  }, [store, sessionId])
 
-  // True while the transcript is still settling: the replay hasn't completed,
-  // the IDB cold-load may still prepend rows, or this listener's tail-first
-  // burst is mid-drain (burstDraining). MessageList freezes the pinned-header
-  // notification during this window — see its `transcriptSettling` prop.
-  const transcriptSettling = !replayReady || !idbReady || burstDraining
+  // True until the tail page lands — the one settle point of the seq
+  // protocol. MessageList freezes the pinned-header notification during this
+  // window — see its `transcriptSettling` prop.
+  const transcriptSettling = !replayReady
 
   return useMemo(
     () => ({
@@ -950,6 +830,7 @@ export function useChatStream(
       skillIndex,
       replayReady,
       transcriptSettling,
+      oldestSeq,
       insertUserMessage,
       ackUserMessage,
       rollbackUserMessage,
@@ -960,6 +841,6 @@ export function useChatStream(
       hasOlder,
       loadingOlder,
     }),
-    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, oldestSeq, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
   )
 }
