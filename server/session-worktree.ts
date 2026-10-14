@@ -66,7 +66,18 @@ export async function provisionWorktree(
   const worktreePath = worktreePathFor(stateDir, sessionId)
   const branch = await branchForUnique(mainRepoCwd, sessionId)
   const commonDir = await getGitCommonDir(mainRepoCwd)
-  await withRepoLock(commonDir, () => createWorktree(mainRepoCwd, worktreePath, branch, baseSha, true))
+  try {
+    await withRepoLock(commonDir, () => createWorktree(mainRepoCwd, worktreePath, branch, baseSha, true))
+  } catch (err) {
+    // runGit surfaces a git failure as HttpError(500, trimmed stderr). A
+    // failed create is a USER-input problem (dirty path, branch collision,
+    // repo state) — the spec's error table promises 400 with git stderr, not
+    // a 500.
+    if (err instanceof HttpError && err.status === 500) {
+      throw new HttpError(400, err.message)
+    }
+    throw err
+  }
   return { worktreePath, branch, baseSha }
 }
 

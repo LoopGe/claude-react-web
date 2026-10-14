@@ -110,7 +110,7 @@ PATCH cwd 改隔离 session 的目录:清 `worktree` 字段,并**失效该 sessi
 | cwd 非 git 仓库 | 400,内联文案 |
 | unborn HEAD(无 commit) | 400:"worktree 隔离需要至少一个 commit" |
 | 分支名撞车 | 理论不可能;保底时间戳后缀重试一次 |
-| `worktree add` 失败 | 400 返回 git stderr,session 不创建 |
+| `worktree add` 失败 | 400 返回 git stderr,session 不创建(已确认:provisionWorktree 将 runGit 的 HttpError(500) 转为 400) |
 | `worktree remove` 失败 | best-effort log,删除继续;残留被同路径重建覆盖 |
 | resume 时 worktree 没了 | 重建链(见上) |
 | 主仓没了 | 现有 `cwdMissing` 400 流程 |
@@ -124,6 +124,11 @@ PATCH cwd 改隔离 session 的目录:清 `worktree` 字段,并**失效该 sessi
 ## 明确不做(YAGNI)
 
 merge-back 按钮、复制 untracked/ignored 文件、per-turn worktree、worktree 列表管理页、fork 出独立 worktree、客户端 git 预判。
+
+## 已知偏差(实现相对本设计的偏差)
+
+- NewSessionDialog 的 400 错误走既有全局 toast 通道,而非设计中的"内联展示错误"(与对话框其余错误处理保持一致)。
+- discard 语义 = fork 回主仓 + 清理源 session 的 worktree(遵循 fork ruling:两个 session 共享一个 worktree 是 clobber 隐患);设计原文未涵盖 discard 路径。
 
 ## 测试策略
 

@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { execFile as execFileCb } from 'node:child_process'
 import { promises as fsPromises } from 'node:fs'
+import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { promisify } from 'node:util'
 import { HttpError } from './errors.js'
@@ -72,6 +73,26 @@ describe('provisionWorktree', () => {
     expect(err).toBeInstanceOf(HttpError)
     expect((err as HttpError).status).toBe(400)
     expect((err as HttpError).message).toContain('commit')
+  })
+
+  it('surfaces a failed worktree add as HttpError 400 with git stderr', async () => {
+    const repo = await makeRepo()
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    // Block the target path: git refuses `worktree add` onto a non-empty dir
+    // ("fatal: '<path>' already exists"), a user-input failure — not a server
+    // fault, so the spec's error table maps it to 400, not runGit's 500.
+    const target = worktreePathFor(stateDir, 'prov-dddd-1')
+    await fsPromises.mkdir(target, { recursive: true })
+    await fsPromises.writeFile(join(target, 'occupied.txt'), 'x\n')
+
+    const err = await provisionWorktree(stateDir, 'prov-dddd-1', repo).then(
+      () => null,
+      (e: unknown) => e,
+    )
+
+    expect(err).toBeInstanceOf(HttpError)
+    expect((err as HttpError).status).toBe(400)
+    expect((err as HttpError).message).toContain('already exists')
   })
 
   it('appends a timestamp suffix when the derived branch name is taken', async () => {

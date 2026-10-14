@@ -1,10 +1,10 @@
 // @vitest-environment node
 import { execFile as execFileCb } from 'node:child_process'
 import { promises as fsPromises } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterAll, describe, expect, it } from 'vitest'
+import { cleanupGitFixtures, makeRepo, worktreePathUnder } from './test-git-fixtures.js'
 import {
   branchExists, commitExists, createWorktree, getGitCommonDir,
   listWorktrees, removeWorktreeDir, worktreeIsDirty,
@@ -12,45 +12,14 @@ import {
 
 const execFile = promisify(execFileCb)
 
-// Temp dirs (main repos AND worktrees) created by each test, removed at the end.
-const dirs: string[] = []
-
-async function makeRepo(): Promise<string> {
-  const dir = await mkdtempUnderTmp()
-  await execFile('git', ['-C', dir, 'init', '-b', 'main'])
-  await execFile('git', ['-C', dir, 'config', 'user.email', 't@t.test'], { cwd: dir })
-  await execFile('git', ['-C', dir, 'config', 'user.name', 't'], { cwd: dir })
-  await execFile('git', ['-C', dir, 'config', 'commit.gpgsign', 'false'], { cwd: dir })
-  await fsPromises.writeFile(join(dir, 'a.txt'), 'hello\n')
-  await execFile('git', ['-C', dir, 'add', '.'], { cwd: dir })
-  await execFile('git', ['-C', dir, 'commit', '-m', 'init'], { cwd: dir })
-  return dir
-}
-
-async function mkdtempUnderTmp(): Promise<string> {
-  const dir = await fsPromises.mkdtemp(join(tmpdir(), 'crw-wt-'))
-  dirs.push(dir)
-  return dir
-}
-
-/** Worktrees live OUTSIDE the main repo (sibling dir) to avoid nested repos.
- *  macOS hands out /var/folders/... paths that are symlinks of
- *  /private/var/... and git canonicalizes worktree paths in its output, so
- *  tests compare through realpath, never raw string equality. */
-async function worktreePath(repo: string, name: string): Promise<string> {
-  const p = join(repo, '..', name)
-  dirs.push(p)
-  return p
-}
-
 afterAll(async () => {
-  for (const d of dirs) await fsPromises.rm(d, { recursive: true, force: true }).catch(() => {})
+  await cleanupGitFixtures()
 })
 
 describe('worktree primitives', () => {
   it('creates a linked worktree on a new branch and reports it', async () => {
     const repo = await makeRepo()
-    const wt = await worktreePath(repo, 'wt-a')
+    const wt = await worktreePathUnder(repo, 'wt-a')
     await createWorktree(repo, wt, 'crw/test1', 'HEAD', true)
     expect(await branchExists(repo, 'crw/test1')).toBe(true)
     const listed = await listWorktrees(repo)
@@ -60,7 +29,7 @@ describe('worktree primitives', () => {
 
   it('recreates a worktree on an existing branch (newBranch=false)', async () => {
     const repo = await makeRepo()
-    const wt = await worktreePath(repo, 'wt-b')
+    const wt = await worktreePathUnder(repo, 'wt-b')
     await createWorktree(repo, wt, 'crw/test2', 'HEAD', true)
     await removeWorktreeDir(repo, wt)
     expect(await branchExists(repo, 'crw/test2')).toBe(true) // branch survives removal
@@ -70,7 +39,7 @@ describe('worktree primitives', () => {
 
   it('worktreeIsDirty reflects uncommitted changes', async () => {
     const repo = await makeRepo()
-    const wt = await worktreePath(repo, 'wt-c')
+    const wt = await worktreePathUnder(repo, 'wt-c')
     await createWorktree(repo, wt, 'crw/test3', 'HEAD', true)
     expect(await worktreeIsDirty(wt)).toBe(false)
     await fsPromises.writeFile(join(wt, 'b.txt'), 'x\n')
@@ -79,7 +48,7 @@ describe('worktree primitives', () => {
 
   it('getGitCommonDir resolves to the shared object store', async () => {
     const repo = await makeRepo()
-    const wt = await worktreePath(repo, 'wt-d')
+    const wt = await worktreePathUnder(repo, 'wt-d')
     await createWorktree(repo, wt, 'crw/test4', 'HEAD', true)
     const common = await getGitCommonDir(wt)
     const repoCommon = await getGitCommonDir(repo)
@@ -95,7 +64,7 @@ describe('worktree primitives', () => {
 
   it('listWorktrees sees worktrees when queried FROM a linked worktree cwd (regression)', async () => {
     const repo = await makeRepo()
-    const wt = await worktreePath(repo, 'wt-e')
+    const wt = await worktreePathUnder(repo, 'wt-e')
     await createWorktree(repo, wt, 'crw/test5', 'HEAD', true)
     // Before the common-dir probe fix: probing <toplevel>/.git/worktrees from
     // a worktree cwd (where .git is a FILE) always came up empty.

@@ -95,4 +95,16 @@ describe('GET /sessions/:id/worktree-status', () => {
     const { body } = await get(app, 's4')
     expect(body).toEqual({ available: false })
   })
+
+  it('reports unavailable (not 500) when the worktree dir is broken (.git file deleted)', async () => {
+    await provisionWorktree(stateDir, 's5', repo)
+    // The dirty probe shells out to git inside the worktree; with its .git
+    // file gone git fails — the delete confirmation must degrade to the
+    // plain dialog instead of 500ing.
+    await rmRf(join(worktreePathFor(stateDir, 's5'), '.git'))
+    const { app } = makeApp(stateDir, sessionWithWorktree('s5'))
+    const { status, body } = await get(app, 's5')
+    expect(status).toBe(200)
+    expect(body).toEqual({ available: false })
+  })
 })

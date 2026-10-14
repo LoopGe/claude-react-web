@@ -400,8 +400,15 @@ export function buildSessionRouter(
     if (!wt || !stateDir) return c.json({ available: false })
     const worktreePath = worktreePathFor(stateDir, id)
     if (!existsSync(worktreePath)) return c.json({ available: false })
-    const dirty = await worktreeIsDirty(worktreePath)
-    return c.json({ available: true, dirty, branch: wt.branch, mainRepoPath: wt.mainRepoPath })
+    // A broken worktree dir (deleted .git file, corrupt registration) makes
+    // the dirty probe throw — that must not 500 the delete confirmation. The
+    // client already tolerates an unavailable status (plain confirm dialog).
+    try {
+      const dirty = await worktreeIsDirty(worktreePath)
+      return c.json({ available: true, dirty, branch: wt.branch, mainRepoPath: wt.mainRepoPath })
+    } catch {
+      return c.json({ available: false })
+    }
   })
 
   // Patch session metadata (title and/or cwd). `cwd` is how a user recovers

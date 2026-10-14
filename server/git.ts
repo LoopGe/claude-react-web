@@ -621,13 +621,15 @@ export async function createWorktree(
     ? ['worktree', 'add', '-b', branch, worktreePath, baseRef]
     : ['worktree', 'add', worktreePath, branch]
   // runGit throws (HttpError with trimmed stderr) when git exits non-zero.
-  await runGit(mainRepoCwd, args)
+  // 30s (vs the 10s default): `worktree add` checks out the whole tree, so a
+  // large repo can legitimately approach the default timeout.
+  await runGit(mainRepoCwd, args, { timeoutMs: 30_000 })
 }
 
 /** Remove a linked worktree (force — the delete-session flow has already
  *  confirmed the loss of uncommitted changes). Branch is NOT touched. */
 export async function removeWorktreeDir(mainRepoCwd: string, worktreePath: string): Promise<void> {
-  await runGit(mainRepoCwd, ['worktree', 'remove', '--force', worktreePath])
+  await runGit(mainRepoCwd, ['worktree', 'remove', '--force', worktreePath], { timeoutMs: 30_000 })
 }
 
 /** Clear stale worktree registrations — entries whose directory was deleted
