@@ -4172,3 +4172,63 @@ describe('MessageList — tasklist snapshot integration', () => {
     expect(title?.textContent).toBe('Snapshot subject')
   })
 })
+
+describe('MessageList — rangeChanged → loadOlder trigger', () => {
+  // The P0 defect this locks: the trigger was guarded on `sessionId == null`,
+  // but the MAIN transcript passes a sessionId (and a working loadOlder), so
+  // scroll-up history loading was dead end-to-end. The guard must key on the
+  // subview discriminators (`parentToolUseIdFilter` / `subagent`) instead.
+  const OLDEST_SEQ = 100
+
+  function renderList(props: Partial<Parameters<typeof MessageList>[0]> = {}) {
+    const loadOlder = vi.fn(async () => 2)
+    const items = toItems([
+      makeMsg('user', { uuid: 'm-0', message: { content: [{ type: 'text', text: 'hello' }] } }),
+      makeMsg('assistant', { uuid: 'a-0', message: { content: [{ type: 'text', text: 'hi' }] } }),
+    ] as SdkMessage[])
+    render(
+      <MessageList
+        items={items}
+        loadOlder={loadOlder}
+        hasOlder
+        oldestSeq={OLDEST_SEQ}
+        {...props}
+      />,
+    )
+    return { loadOlder }
+  }
+
+  /** rangeChanged reports OFFSET space; on the first build the anchor seeds
+   *  from oldestSeq, so startIndex === OLDEST_SEQ means "window top reached". */
+  function fireRangeAtWindowTop() {
+    act(() => {
+      virtuosoMockState.rangeChanged?.({ startIndex: OLDEST_SEQ, endIndex: OLDEST_SEQ + 1 })
+    })
+  }
+
+  it('main transcript (no subview discriminators): fires loadOlder at the window top', () => {
+    const { loadOlder } = renderList()
+    fireRangeAtWindowTop()
+    expect(loadOlder).toHaveBeenCalledTimes(1)
+  })
+
+  it('subagent drill-in (parentToolUseIdFilter set): never fires loadOlder', () => {
+    const { loadOlder } = renderList({ parentToolUseIdFilter: 'tool-1' })
+    fireRangeAtWindowTop()
+    expect(loadOlder).not.toHaveBeenCalled()
+  })
+
+  it('subagent view (subagent set, no filter): never fires loadOlder', () => {
+    const { loadOlder } = renderList({ subagent: subagentRecord('tool-1') })
+    fireRangeAtWindowTop()
+    expect(loadOlder).not.toHaveBeenCalled()
+  })
+
+  it('main transcript far from the window top: does not fire (threshold guard)', () => {
+    const { loadOlder } = renderList()
+    act(() => {
+      virtuosoMockState.rangeChanged?.({ startIndex: OLDEST_SEQ + 50, endIndex: OLDEST_SEQ + 51 })
+    })
+    expect(loadOlder).not.toHaveBeenCalled()
+  })
+})

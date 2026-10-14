@@ -967,10 +967,15 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       // here: it requires items[0].index === 0 in offset space, but the list
       // is anchored at firstItemIndex = 1e6.) `range.startIndex` is in offset
       // space already, so it compares against `firstItemIndex` directly.
-      // Main transcript only — subviews (SubagentOverlay etc.) pass a
-      // sessionId and have no older pages.
+      // Main-transcript views only — sub-views (SubagentOverlay /
+      // WorkflowOverlay drill-ins) render a slice of the same already-paged
+      // window and must not re-trigger paging on their own. The discriminators
+      // are the subview markers themselves (`parentToolUseIdFilter` /
+      // `subagent`), NOT `sessionId`: the main transcript and the Side Chat
+      // drawer both pass a sessionId AND a working `loadOlder`.
       if (
-        sessionId == null &&
+        parentToolUseIdFilter == null &&
+        !subagent &&
         shouldLoadOlder({
           rangeStart: range.startIndex,
           firstItemIndex: firstItemIndexValRef.current,
@@ -988,7 +993,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       // (no scroller, or an empty list).
       emitVisibleTop(getVisibleTopIndex() ?? range.startIndex)
     },
-    [sessionId, emitVisibleTop, getVisibleTopIndex, hasOlder, loadingOlder, loadOlder, renderableItems.length],
+    [parentToolUseIdFilter, subagent, emitVisibleTop, getVisibleTopIndex, hasOlder, loadingOlder, loadOlder, renderableItems.length],
   )
   // Recompute when the rendered list changes without a range event (e.g. a
   // new turn arrives while parked at a scroll offset) so the pin tracks the
