@@ -178,6 +178,50 @@ describe('reducer: optimistic user message + server echo', () => {
     expect(state.mirror.pendingConsumedMessages.size).toBe(0)
   })
 
+  it('MESSAGE_STEERED injected flips an injecting bubble to injected', () => {
+    let state = createInitialSessionState('s1')
+    // steered 消息的广播带 steeredAt（server 在 pushToSession 前打戳）
+    const message: SdkMessage = {
+      type: 'user',
+      uuid: 'steer-1',
+      message: { role: 'user', content: 'pivot' },
+      parent_tool_use_id: null,
+      receivedAt: 100,
+      steeredAt: 100,
+    } as unknown as SdkMessage
+    state = reduceSessionState(state, { type: 'MESSAGE', message })
+    expect(renderedItems(state)[0].deliveryStatus).toBe('injecting')
+
+    state = reduceSessionState(state, { type: 'MESSAGE_STEERED', uuid: 'steer-1', state: 'injected' })
+    expect(renderedItems(state)[0].deliveryStatus).toBe('injected')
+    expect((renderedItems(state)[0].msg as { injectedAt?: number }).injectedAt).toEqual(expect.any(Number))
+  })
+
+  it('MESSAGE_STEERED requeued falls back to the queued flow', () => {
+    let state = createInitialSessionState('s1')
+    const message: SdkMessage = {
+      type: 'user',
+      uuid: 'steer-2',
+      message: { role: 'user', content: 'pivot' },
+      parent_tool_use_id: null,
+      receivedAt: 100,
+      steeredAt: 100,
+    } as unknown as SdkMessage
+    state = reduceSessionState(state, { type: 'MESSAGE', message })
+    state = reduceSessionState(state, { type: 'MESSAGE_STEERED', uuid: 'steer-2', state: 'requeued' })
+    expect(renderedItems(state)[0].deliveryStatus).toBe('queued')
+    expect((renderedItems(state)[0].msg as { requeuedAt?: number }).requeuedAt).toEqual(expect.any(Number))
+    // requeue 后 consumed 流转照常
+    state = reduceSessionState(state, { type: 'MESSAGE_CONSUMED', uuid: 'steer-2', consumedAt: 200 })
+    expect(renderedItems(state)[0].deliveryStatus).toBe('consumed')
+  })
+
+  it('MESSAGE_STEERED for an unknown uuid is a harmless no-op', () => {
+    const state = createInitialSessionState('s1')
+    const next = reduceSessionState(state, { type: 'MESSAGE_STEERED', uuid: 'ghost', state: 'injected' })
+    expect(next).toBe(state)
+  })
+
   it('does not downgrade an acked consumed row when the user message broadcast arrives later', () => {
     let state = createInitialSessionState('s1')
     state = applyOptimistic(state, 'hello', 'optimistic:abc')

@@ -70,9 +70,10 @@ export interface TranscriptRow {
    *  server's broadcast lands and the optimistic gets swapped out. */
   sending?: boolean
   /** Queue-delivery state of a top-level user turn ('queued' = waiting
-   *  behind an in-flight turn, 'consumed' = SDK has started processing).
+   *  behind an in-flight turn, 'consumed' = SDK has started processing,
+   *  'injecting'/'injected' = mid-run steering states, spec §10).
    *  Undefined for everything else. Drives the queued/processing chip. */
-  deliveryStatus?: 'queued' | 'consumed'
+  deliveryStatus?: 'queued' | 'consumed' | 'injecting' | 'injected'
   /** Wall-clock ms when first observed. Carried from the TranscriptItem so
    *  the entrance-animation gate can tell a live arrival (timestamp present)
    *  from disk-restored history (undefined). */

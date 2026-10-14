@@ -676,6 +676,14 @@ export function useChatStream(
           store.dispatch({ type: 'MESSAGE_CONSUMED', uuid: frame.uuid, consumedAt: frame.consumedAt })
           break
         }
+        case 'message-steered': {
+          // Steered delivery transition: 'injected' flips the bubble chip to
+          // 已注入当前轮; 'requeued' means the turn ended before delivery and
+          // the message went back to the SDK input queue (chip falls back to
+          // the normal queued→consumed flow).
+          store.dispatch({ type: 'MESSAGE_STEERED', uuid: frame.uuid, state: frame.state })
+          break
+        }
         case 'messages-withdrawn': {
           // Queued user turns withdrawn by an interrupt with cancelQueued —
           // the server already removed them from its replay ring, so evict

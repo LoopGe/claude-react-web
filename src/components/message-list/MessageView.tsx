@@ -117,10 +117,11 @@ export const MessageView = memo(function MessageView({
   sending?: boolean
   /** Queue-delivery state of a top-level user turn. 'queued' renders a
    *  "queued" chip (the SDK is busy and hasn't read this turn yet);
-   *  'consumed' renders a brief "processing" chip; undefined renders
+   *  'consumed' renders a brief "processing" chip; 'injecting'/'injected'
+   *  are the mid-run steering states (spec §10); undefined renders
    *  nothing. Mutually exclusive with `sending` in practice (sending is
    *  the pre-ack optimistic state, deliveryStatus is post-ack). */
-  deliveryStatus?: 'queued' | 'consumed'
+  deliveryStatus?: 'queued' | 'consumed' | 'injecting' | 'injected'
   /** Whether the session is currently working. Gates the processing
    *  indicator so it only shows on active turns, not on historical
    *  consumed messages after a reconnect. */
