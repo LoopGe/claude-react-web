@@ -7,6 +7,9 @@ import type { ProviderProfile } from '../config.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../shared/structured.js'
 import type { SandboxSetting } from '../../shared/sandbox.js'
 import type { InProcessHookForward, InProcessSubagentStop, InProcessTaskSnapshot } from './claude/inprocess-hooks.js'
+import type { SupplementOutcome } from './claude/steering.js'
+
+export type { SupplementOutcome } from './claude/steering.js'
 
 export interface CreateSessionOptions {
   id: string
@@ -74,6 +77,10 @@ export interface CreateSessionOptions {
    *  doesn't know where to cut and the fork subprocess hangs. SDK option. */
   resumeSessionAt?: string
   onUserMessageConsumed?: (message: AgentUserMessage) => void
+  /** Mid-run steering：一条注入消息在钩子边界投递完成（或 aborted）时回调
+   *  （spec §4 接口契约）。ok=false 仅出现在 handle 销毁路径（aborted）；
+   *  turn 结束的余量由 drainSupplements + 宿主 requeue 处理，不经此回调。 */
+  onSupplementDelivered?: (uuid: string, outcome: SupplementOutcome) => void
   canUseTool?: (...args: unknown[]) => Promise<unknown>
   /** MCP elicitation (OAuth auth / server-initiated form) callback.
    *  SDK-agnostic loose signature mirroring canUseTool — the claude provider
@@ -127,6 +134,15 @@ export interface ProviderSessionHandle {
   sendControlMessage(message: AgentUserMessage): void
   /** Drop queued user turns that have not yet been consumed by the provider. */
   clearQueuedInput(): number
+  /** Enqueue a mid-run steering supplement (injected into the CURRENT turn at
+   *  the next tool-hook boundary instead of queueing as a next-turn prompt).
+   *  Returns false when admission is closed (turn ending/not started) or the
+   *  provider lacks steering — the caller falls back to the normal queue
+   *  path (spec §4). */
+  enqueueSupplement?(entry: { uuid: string; text: string }): boolean
+  /** Remove and return undelivered supplement entries (turn-end fallback /
+   *  interrupt withdrawal); mirrors drainQueuedInput. */
+  drainSupplements?(): Array<{ uuid: string }>
   /** Remove and return queued user turns that have not yet been consumed by
    *  the provider — used by crash recovery to carry a pending user turn
    *  across a re-resume (otherwise the turn is silently lost: the UI already
@@ -254,6 +270,12 @@ export interface ProviderCapabilities {
   supportsStructuredOutput: boolean
   supportsReadFile: boolean
   supportsSubagentTranscripts: boolean
+  /** Mid-run steering (inject mid-turn text at tool-hook boundaries). The
+   *  claude provider implements it; runtime degradation on old CLIs (< 2.1.110)
+   *  is handled inside the handle (supplement session absent → enqueue always
+   *  false), so this flag is about the provider's mechanism, not the CLI
+   *  version of a particular spawn (spec §5.5). */
+  supportsSteering: boolean
 }
 
 export interface ListResumableOptions {

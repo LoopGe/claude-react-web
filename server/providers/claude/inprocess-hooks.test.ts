@@ -279,7 +279,12 @@ describe('buildInProcessHooks with steering', () => {
     expect(Object.keys(hooks)).toEqual(
       expect.arrayContaining(['Stop', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure']),
     )
-    const stopCb = hooks.Stop![0]!.hooks[0]!
+    // 宽松签名：测试只关心 agent_id/session_id 的运行时行为，不构造完整 HookInput
+    const stopCb = hooks.Stop![0]!.hooks[0]! as unknown as (
+      input: unknown,
+      toolUseID?: string,
+      deps?: { signal?: AbortSignal },
+    ) => Promise<unknown>
     // 空 pending：返回 undefined（现状不变），且 run-log forward 照常触发
     expect(await stopCb({ session_id: 's1' }, undefined, {})).toBeUndefined()
     expect(forward).toHaveBeenCalledWith('s1', expect.objectContaining({ kind: 'completed' }))
@@ -295,7 +300,11 @@ describe('buildInProcessHooks with steering', () => {
   it('PreToolUse matcher returns additionalContext when pending, undefined otherwise', async () => {
     const steering = mkSteering()
     const hooks = buildInProcessHooks(undefined, undefined, undefined, steering)
-    const cb = hooks.PreToolUse![0]!.hooks[0]!
+    const cb = hooks.PreToolUse![0]!.hooks[0]! as unknown as (
+      input: unknown,
+      toolUseID?: string,
+      deps?: { signal?: AbortSignal },
+    ) => Promise<unknown>
     expect(await cb({}, undefined, {})).toBeUndefined()
     steering.enqueue({ uuid: 'u1', text: 'go' })
     expect(await cb({}, undefined, {})).toEqual({
@@ -307,7 +316,11 @@ describe('buildInProcessHooks with steering', () => {
     const steering = mkSteering()
     steering.enqueue({ uuid: 'u1', text: 'go' })
     const hooks = buildInProcessHooks(undefined, undefined, undefined, steering)
-    const cb = hooks.PreToolUse![0]!.hooks[0]!
+    const cb = hooks.PreToolUse![0]!.hooks[0]! as unknown as (
+      input: unknown,
+      toolUseID?: string,
+      deps?: { signal?: AbortSignal },
+    ) => Promise<unknown>
     expect(await cb({ agent_id: 'agent-9' }, undefined, {})).toBeUndefined()
     expect(steering.drainUndelivered()).toEqual([{ uuid: 'u1' }])
   })
@@ -316,7 +329,11 @@ describe('buildInProcessHooks with steering', () => {
     const steering = mkSteering()
     steering.enqueue({ uuid: 'u1', text: 'go' })
     const hooks = buildInProcessHooks(undefined, undefined, undefined, steering)
-    const cb = hooks.PreToolUse![0]!.hooks[0]!
+    const cb = hooks.PreToolUse![0]!.hooks[0]! as unknown as (
+      input: unknown,
+      toolUseID?: string,
+      deps?: { signal?: AbortSignal },
+    ) => Promise<unknown>
     const ac = new AbortController()
     ac.abort()
     expect(await cb({}, undefined, { signal: ac.signal })).toBeUndefined()
