@@ -8,6 +8,7 @@ import { usePresenceValue } from '../../hooks/useExitPresence'
 import { shortenPath } from '../../utils/paths'
 import { statusLabel } from '../../utils/session-status'
 import { sessionTitleOrFallback } from '../../utils/session-title'
+import { worktreeDeleteWarning } from './worktree-delete-warning'
 import { cx } from '../../utils/cx'
 import type { SessionInfo } from '../../types'
 import { Tooltip } from '../Tooltip'
@@ -397,13 +398,21 @@ export const SessionCard = memo(function SessionCard({
             <button
               className="session-item-delete"
               aria-label="Delete session"
-              onClick={(e) => {
+              onClick={async (e) => {
                 e.stopPropagation()
                 if (onAskConfirm) {
                   const title = sessionTitleOrFallback(s)
                   onAskConfirm({
                     title: 'Delete session?',
-                    message: <p>Delete &ldquo;{title}&rdquo;? This permanently removes the conversation.</p>,
+                    message: (
+                      <>
+                        <p>Delete &ldquo;{title}&rdquo;? This permanently removes the conversation.</p>
+                        {/* Resolved before the dialog opens (async onClick) —
+                            an isolated session's uncommitted worktree changes
+                            die with the delete. */}
+                        {await worktreeDeleteWarning(s)}
+                      </>
+                    ),
                     confirmLabel: 'Delete',
                     destructive: true,
                     onConfirm: () => onDelete(s.id),

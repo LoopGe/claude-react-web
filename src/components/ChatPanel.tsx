@@ -9,6 +9,7 @@ import { Chat } from './Chat'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
+import { WorktreeIsolationBadge } from './WorktreeIsolationBadge'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
@@ -1192,6 +1193,11 @@ export const ChatPanel = memo(function ChatPanel({
                 </span>
               </Tooltip>
             )}
+            {/* Worktree-isolation badge — the session was created with the
+                new-session dialog's isolate checkbox, so its cwd IS a
+                server-provisioned linked worktree (crw/<id> branch). The cwd
+                tooltip alone doesn't say that; this badge does. */}
+            {session.worktree && <WorktreeIsolationBadge worktree={session.worktree} />}
             {/* Git chip — surfaces branch + dirty/ahead/behind/untracked
                 counts at a glance. Lives on row 2, right-aligned, so it
                 no longer competes with the row-1 badges. Hidden when the
