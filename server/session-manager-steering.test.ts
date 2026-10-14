@@ -287,7 +287,7 @@ describe('turn-end steer fallback', () => {
     const first = sm.send(info.id, 'first message')
     const second = sm.send(info.id, 'pivot now')
     expect(s.steeredInFlight.size).toBe(1)
-    handle.drainSupplements.mockReturnValue([{ uuid: second.uuid }])
+    handle.drainSupplements.mockReturnValue([{ uuid: second.uuid! }])
     handle.enqueueUserMessage.mockClear()
 
     ;(sm as unknown as { drainAndRequeueSteered: (s: unknown) => void }).drainAndRequeueSteered(s)
