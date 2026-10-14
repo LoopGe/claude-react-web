@@ -6221,7 +6221,22 @@ export class SessionManager {
    *  Prefix-property guarantee: for a truncated fork the seed is a prefix
    *  of the source composition in the same order, so a later restart
    *  rebuild from the fork's (truncated-copy) JSONL yields the SAME seqs
-   *  for the surviving rows. */
+   *  for the surviving rows.
+   *
+   *  The prompt-uuid bridge (review round 2) closes the restart half:
+   *  pre-seeded rows carry server-minted `u` uuids (composeTranscriptEntries
+   *  rewrote them with the SOURCE's mappings), but the fork's own promptUuid
+   *  store starts empty — a fork restart's reconcile backfills from the
+   *  fork's JSONL copy (SDK `v` uuids) and, with no mappings to rewrite
+   *  them, uuid dedup misses and every inherited user prompt is re-appended
+   *  at a fresh tail seq. bridgeInheritedPromptUuids copies exactly the
+   *  mappings the composed rows used, so the restart reconcile rewrites the
+   *  copied `v` rows back to the same `u` and dedups against the sidecar.
+   *  Mechanism choice: COPY the mappings (not "keep raw v uuids in
+   *  pre-seeded rows") because the server's canonical identity for a user
+   *  prompt is `u` everywhere else (ring, withdraw/evict, rewindFiles) —
+   *  keeping `v` would mix identity spaces across the fork's transcript and
+   *  break uuid-keyed eviction for inherited rows. */
   private async preseedForkTranscript(
     forkId: string,
     sourceId: string,
@@ -6233,12 +6248,47 @@ export class SessionManager {
       t.store.hydrate(foldSidecarRows(await t.sidecar.load()))
       const entries = opts.seed ?? (await this.composeTranscriptEntries(sourceId, opts.afterUuid))
       backfillFromEntries(t, entries)
+      await this.bridgeInheritedPromptUuids(forkId, sourceId, entries)
     } catch (err) {
       // Degraded but usable — same posture as ensureTranscriptReconciled.
       log.warn(`[session ${forkId}] transcript pre-seed failed: ${(err as Error).message ?? err}`)
     } finally {
       t.reconciled = true
     }
+  }
+
+  /** Copy the source's promptUuid mappings for the INHERITED rows into the
+   *  fork's own promptUuid sidecar, so a fork restart's reconcile backfill
+   *  (which reads the fork's JSONL copy under SDK `v` uuids and rewrites via
+   *  the FORK's store) restores the same server `u` uuids the pre-seeded
+   *  rows carry — see preseedForkTranscript. Selection is by row uuid: only
+   *  mappings whose `u` actually appears in the composed rows are bridged,
+   *  so a discard-style truncated seed inherits only the kept prompts'
+   *  mappings. The fork is not live yet (pre-seed runs before spawn), so
+   *  load+save cannot race a concurrent send-append. */
+  private async bridgeInheritedPromptUuids(
+    forkId: string,
+    sourceId: string,
+    entries: readonly SDKMessage[],
+  ): Promise<void> {
+    const sourceMappings = await this.promptUuidStore.load(sourceId)
+    if (!sourceMappings || sourceMappings.length === 0) return
+    const rowUuids = new Set<string>()
+    for (const m of entries) {
+      const u = (m as { uuid?: unknown } | undefined)?.uuid
+      if (typeof u === 'string') rowUuids.add(u)
+    }
+    if (rowUuids.size === 0) return
+    const inherited = sourceMappings.filter((e) => rowUuids.has(e.u))
+    if (inherited.length === 0) return
+    const existing = (await this.promptUuidStore.load(forkId)) ?? []
+    await this.promptUuidStore.save(
+      forkId,
+      retainPromptUuidEntries([...existing, ...inherited], this.historyCap),
+    )
+    log.info(
+      `[session ${forkId}] bridged ${inherited.length} inherited prompt uuid mapping(s) from ${sourceId}`,
+    )
   }
 
   /** Page the session's durable transcript by seq. `before` is an exclusive

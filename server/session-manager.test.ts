@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest'
-import type { Options } from '@anthropic-ai/claude-agent-sdk'
+import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import * as nodeFs from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -5605,6 +5605,148 @@ describe('SessionManager', () => {
       expect(byUuid.get('post-fork-1')).toBe(2)
       expect(byUuid.get('post-fork-r')).toBe(3)
       expect(win.totalCount).toBe(4)
+    })
+
+    it('fork restart reconcile never re-appends an inherited prompt (v→u bridge)', async () => {
+      const sourceCwd = '/tmp/fork-bridge-src'
+      const source = sm.create({ cwd: sourceCwd })
+      sm.send(source.id, 'hello world')
+      // SDK echo: pairs the server-minted `u` with the SDK's on-disk `v` and
+      // persists the mapping into the source's prompt-uuid sidecar (the pump
+      // drops this frame as an input echo — it never enters the seq store).
+      mockHandles[0].emit({
+        type: 'user',
+        uuid: 'sdk-v-1',
+        parent_tool_use_id: null,
+        message: { role: 'user', content: 'hello world' },
+      })
+      const promptUuidFile = join(dir, 'prompt-uuids', `${source.id}.json`)
+      expect(await waitFor(() => existsSync(promptUuidFile))).toBe(true)
+      const sourceMappings = JSON.parse(readFileSync(promptUuidFile, 'utf8')) as Array<{ u: string; v?: string }>
+      const serverU = sourceMappings.find((e) => e.v === 'sdk-v-1')!.u
+      // fork() gates on a completed turn — settle one.
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'pre-r', session_id: source.id })
+      expect(await waitFor(() => sm.get(source.id).lastTurnAt !== undefined)).toBe(true)
+
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      let forked: Awaited<ReturnType<typeof sm.fork>>
+      try {
+        // The source's transcript on disk carries the SDK uuid `v`.
+        const srcJsonl = join(dir, 'projects', encodeCwd(sourceCwd), `${source.id}.jsonl`)
+        mkdirSync(dirname(srcJsonl), { recursive: true })
+        const rows = [
+          JSON.stringify({ type: 'user', uuid: 'sdk-v-1', sessionId: source.id, parent_tool_use_id: null, message: { role: 'user', content: 'hello world' } }),
+          JSON.stringify({ type: 'assistant', uuid: 'sdk-a1', sessionId: source.id, message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } }),
+          '',
+        ].join('\n')
+        writeFileSync(srcJsonl, rows)
+        forked = await sm.fork(source.id)
+        // Simulate the forkSession copy: the fork's own JSONL is the source
+        // conversation under the SAME SDK uuids. (The real CLI performs this
+        // copy at subprocess start; the mock doesn't, so write it by hand.)
+        const forkJsonl = join(dir, 'projects', encodeCwd(sourceCwd), `${forked.id}.jsonl`)
+        writeFileSync(forkJsonl, rows)
+
+        // Fork restart: a fresh manager over the same state dir reconciles
+        // the fork's seq store from its sidecar + its own JSONL, rewriting
+        // the copied `v` rows through the FORK's (bridged) prompt-uuid store.
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const win = await sm2.getTranscriptWindow(forked.id)
+          // The regression: without the bridge the copied `v` uuid misses
+          // dedup and the inherited prompt is appended AGAIN at a fresh tail
+          // seq (totalCount 3, two user rows).
+          expect(win.totalCount).toBe(2)
+          expect(win.messages.map((m) => m.seq)).toEqual([0, 1])
+          const users = win.messages.filter((m) => (m.msg as { type?: string }).type === 'user')
+          expect(users).toHaveLength(1)
+          expect((users[0].msg as { uuid?: string }).uuid).toBe(serverU)
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+    })
+
+    it('discard-style fork (explicit historySeed) bridges only the seed’s prompt mappings', async () => {
+      const sourceCwd = '/tmp/fork-bridge-seed'
+      const source = sm.create({ cwd: sourceCwd })
+      // Two mapped prompts; the seed (discard's kept prefix) contains only
+      // the FIRST — the bridge must not copy the second's mapping.
+      sm.send(source.id, 'first')
+      mockHandles[0].emit({
+        type: 'user', uuid: 'sdk-v-1', parent_tool_use_id: null,
+        message: { role: 'user', content: 'first' },
+      })
+      await tick()
+      sm.send(source.id, 'second')
+      mockHandles[0].emit({
+        type: 'user', uuid: 'sdk-v-2', parent_tool_use_id: null,
+        message: { role: 'user', content: 'second' },
+      })
+      const promptUuidFile = join(dir, 'prompt-uuids', `${source.id}.json`)
+      // Wait for BOTH echoes to be persisted (the file appears after the
+      // first save; existence alone races the second).
+      const readMappings = (): Array<{ u: string; v?: string }> =>
+        existsSync(promptUuidFile) ? (JSON.parse(readFileSync(promptUuidFile, 'utf8')) as Array<{ u: string; v?: string }>) : []
+      expect(await waitFor(() => readMappings().filter((e) => e.v != null).length >= 2)).toBe(true)
+      const sourceMappings = readMappings()
+      const serverU1 = sourceMappings.find((e) => e.v === 'sdk-v-1')!.u
+      // fork() gates on a completed turn — settle one.
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'pre-r', session_id: source.id })
+      expect(await waitFor(() => sm.get(source.id).lastTurnAt !== undefined)).toBe(true)
+
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      let forked: Awaited<ReturnType<typeof sm.fork>>
+      try {
+        // historySeed is what discard() passes: the kept prefix with
+        // rewriteSeedPromptUuids ALREADY applied (server `u` uuids).
+        const seed = [
+          { type: 'user', uuid: serverU1, parent_tool_use_id: null, session_id: source.id, message: { role: 'user', content: 'first' } },
+          { type: 'assistant', uuid: 'sdk-a1', session_id: source.id, message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } },
+        ] as SDKMessage[]
+        forked = await sm.fork(source.id, { historySeed: seed })
+
+        // Bridge selection: only the seed's mapping is copied.
+        const forkMappingFile = join(dir, 'prompt-uuids', `${forked.id}.json`)
+        expect(existsSync(forkMappingFile)).toBe(true)
+        const forkMappings = JSON.parse(readFileSync(forkMappingFile, 'utf8')) as Array<{ u: string; v?: string }>
+        expect(forkMappings).toEqual([{ u: serverU1, v: 'sdk-v-1' }])
+
+        // The truncated fork JSONL copy (kept turn only, SDK `v` uuids);
+        // restart reconcile must rewrite and dedup, not re-append.
+        const forkJsonl = join(dir, 'projects', encodeCwd(sourceCwd), `${forked.id}.jsonl`)
+        mkdirSync(dirname(forkJsonl), { recursive: true })
+        writeFileSync(
+          forkJsonl,
+          [
+            JSON.stringify({ type: 'user', uuid: 'sdk-v-1', sessionId: forked.id, parent_tool_use_id: null, message: { role: 'user', content: 'first' } }),
+            JSON.stringify({ type: 'assistant', uuid: 'sdk-a1', sessionId: forked.id, message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } }),
+            '',
+          ].join('\n'),
+        )
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const win = await sm2.getTranscriptWindow(forked.id)
+          expect(win.totalCount).toBe(2)
+          const users = win.messages.filter((m) => (m.msg as { type?: string }).type === 'user')
+          expect(users).toHaveLength(1)
+          expect((users[0].msg as { uuid?: string }).uuid).toBe(serverU1)
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
     })
   })
 })
