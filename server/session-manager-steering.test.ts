@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { SessionStore } from './persistence.js'
 import { SessionManager } from './session-manager.js'
 import { isSteerableUserText, userTextOf } from './session-manager.js'
+import type { SteeredEntry } from './steered-store.js'
 import { ProviderRegistry } from './providers/registry.js'
 import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle } from './providers/types.js'
 import type { AgentUserMessage } from './agent-message.js'
@@ -378,7 +379,7 @@ describe('getHistoryPage splice integration', () => {
     dirs.push(ctx.dir)
     const { sm, s, info } = ctx
     // 真 sidecar（makeSteeringSession 的 tmp stateDir）
-    const store = (sm as unknown as { steeredStore: { record: (id: string, e: never) => Promise<void> } }).steeredStore
+    const store = (sm as unknown as { steeredStore: { record: (id: string, e: SteeredEntry) => Promise<void> } }).steeredStore
     await store.record(info.id, { u: 'steer-old', text: 'older steer', steeredAt: Date.parse('2026-10-14T09:00:00Z'), injectedAt: 1 })
     await store.record(info.id, { u: 'steer-mid', text: 'mid steer', steeredAt: Date.parse('2026-10-14T10:30:00Z'), injectedAt: 2 })
     await store.record(info.id, { u: 'steer-req', text: 'requeued steer', steeredAt: Date.parse('2026-10-14T10:45:00Z'), requeuedAt: 3 })
@@ -398,7 +399,7 @@ describe('getHistoryPage splice integration', () => {
     const spy = vi
       .spyOn(sm as unknown as { readProviderHistoryPage: () => Promise<unknown> }, 'readProviderHistoryPage')
       .mockResolvedValue(diskPage)
-    const page = (await sm.getHistoryPage(info.id, { limit: 10 })) as { messages: Array<{ uuid?: string }> }
+    const page = (await sm.getHistoryPage(info.id, { limit: 10 })) as { messages: Array<{ uuid?: string }>; totalCount: number }
     expect(page.messages.map((m) => m.uuid)).toEqual(['steer-old', 'd1', 'steer-mid', 'd2']) // requeued 不出现
     expect(page.totalCount).toBe(4)
     spy.mockRestore()
