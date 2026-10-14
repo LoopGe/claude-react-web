@@ -2480,6 +2480,15 @@ export class SessionManager {
       await this.unload(id, { removeFromStore: true })
     }
 
+    // Worktree teardown for the discarded session. Y (the fork) landed in the
+    // main repo per the fork ruling, so X's worktree is ownerless — and
+    // unload() never runs delete()'s cleanup, so without this the worktree
+    // dir + git registration leak forever. Best-effort: the helper never
+    // throws (branch kept, dir removed).
+    if (metaX?.worktree && this.store) {
+      await removeWorktreeForSession(this.store.getDir(), id, metaX.worktree, log)
+    }
+
     log.info(
       `[session ${id}] discarded ${anchors.length - anchorIdx - 1} turn(s) after anchor ` +
       `${fromAssistantUuid.slice(0, 8)} → forked to ${forkInfo.id}` +

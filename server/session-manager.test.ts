@@ -8652,8 +8652,34 @@ describe('delete() / setCwd() worktree cleanup', () => {
     expect(store.get(info.id)).toBeUndefined()
   })
 
-  it('setCwd clears the worktree field and invalidates the snapshot-store meta', async () => {
+  it('discard tears down the discarded session’s worktree (fork lands in the main repo)', async () => {
     const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
+    const wtPath = join(dir, 'worktrees', info.id)
+    expect(existsSync(wtPath)).toBe(true)
+    // Complete a turn with a known assistant uuid so the pump records the
+    // anchor discard() forks from (success result → turnAnchorStore.append).
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } })
+    mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+    // The anchor write is async — poll for the sidecar to land.
+    const smAny = sm as unknown as { turnAnchorStore: { load: (id: string) => Promise<Array<{ assistantUuid: string }> | null> } }
+    for (let i = 0; i < 60; i++) {
+      if ((await smAny.turnAnchorStore.load(info.id))?.length) break
+      await tick()
+    }
+
+    const y = await sm.discard(info.id, 'asst-1')
+
+    // The fork landed in the main repo per the fork ruling, so X's worktree
+    // is ownerless after the discard — unload() alone would leak the dir and
+    // the git registration forever.
+    expect(y.cwd).toBe(repo)
+    expect(existsSync(wtPath)).toBe(false)
+    // Cleanup removes the dir but keeps the branch (same contract as delete).
+    expect(await branchExists(repo, `crw/${info.id.slice(0, 8)}`)).toBe(true)
+  })
+
+  it('setCwd clears the worktree field and invalidates the snapshot-store meta', async () => {    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
     // setCwd is dormant-only — sleep the session first.
     mockHandles[0].emit({ type: 'result' })
     await tick()
