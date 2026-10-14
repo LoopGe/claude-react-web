@@ -16,6 +16,8 @@ import { coerceToolProfile } from '../../shared/tool-profile.js'
 import { isBlockedEnvVar } from '../session-env.js'
 import { createLogger } from '../log.js'
 import { validateSendBody } from '../send-body.js'
+import { HttpError } from '../errors.js'
+import type { TranscriptPageResponse } from '../../shared/transcript-page.js'
 
 const log = createLogger('http')
 
@@ -508,6 +510,37 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : undefined
     const limit = limitRaw != null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : 200
     const page = await sm.getHistoryPage(id, { before, beforeUuid, limit })
+    return c.json(page)
+  })
+
+  // Seq-paginated transcript read — the single transcript read entry of the
+  // seq-window protocol. Unlike /history (disk-paged, uuid-anchored), this
+  // pages the SessionManager's seq store: append-stable seqs, tombstones
+  // filtered out, exclusive `before` bound, cold sessions reconciled on
+  // first read. Query params:
+  //   before — exclusive upper seq bound; omit for the newest page. Pass the
+  //            previous response's `startIndex` to walk further back.
+  //   limit  — page size (default 200, clamped to [1, 1000] like /history).
+  // Errors: unknown session 404 (sm.get); structurally invalid `before`
+  // (non-numeric / negative) 400 — `limit` is clamped, not rejected;
+  // `before > headSeq` 400, because a cursor past the head can only mean a
+  // stale client (e.g. across a generation reset) that must re-attach, not
+  // page an empty tail forever.
+  app.get('/sessions/:id/messages', async (c) => {
+    const id = c.req.param('id')
+    sm.get(id) // live-or-persisted existence check; unknown → HttpError 404
+    const beforeRaw = c.req.query('before')
+    const limitRaw = c.req.query('limit')
+    const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : undefined
+    if (beforeRaw != null && before === undefined) {
+      throw new HttpError(400, 'before must be a non-negative integer')
+    }
+    const limitNum = limitRaw != null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : undefined
+    const limit = Math.min(1000, Math.max(1, limitNum ?? 200))
+    const page: TranscriptPageResponse = await sm.getTranscriptWindow(id, before, limit)
+    if (before !== undefined && before > page.headSeq) {
+      throw new HttpError(400, `before (${before}) is beyond headSeq (${page.headSeq})`)
+    }
     return c.json(page)
   })
 
