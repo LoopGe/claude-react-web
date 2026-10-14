@@ -492,25 +492,63 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
   })
 
-  // Paginated history (lazy-load older messages from disk).
-  //
-  // Query params:
-  //   before — disk index to page backwards from (exclusive). Omit for the
-  //            newest page. Pass the previous response's `startIndex` to walk
-  //            further back.
-  //   limit  — page size (default 200, clamped server-side to [1, 1000]).
-  //
-  // Returns { messages, totalCount, startIndex, hasMore }. Messages are in
-  // chronological order and shape-compatible with live SDK messages.
+  // Legacy history shim — kept one version period for old clients (spec §3:
+  // "现有 /history 保留一个版本期，内部转发新端点，随后删除"). The response
+  // shape { messages, totalCount, startIndex, hasMore } is unchanged, but the
+  // paging space is now the seq store (append-stable seqs, tombstones
+  // filtered out) via sm.getTranscriptWindow — the same read path
+  // GET /sessions/:id/messages serves. Legacy params translate as follows:
+  //   before     — was a disk renderable index, now passed through as a seq
+  //                bound (exclusive). Both spaces chain identically for the
+  //                only legal old-client pattern: the previous response's
+  //                `startIndex` becomes the next request's `before`.
+  //   beforeUuid — translated to its seq via the store's uuid index
+  //                (sm.transcriptSeqOfUuid); an unknown uuid can only mean a
+  //                stale client, so it 400s (the legacy disk reader silently
+  //                served the newest page for an unmatched uuid — the plan
+  //                rules that the shim rejects instead).
+  // A `before` beyond headSeq is NOT an error here (unlike /messages): it is
+  // clamped to headSeq and serves the newest page — exactly the legacy
+  // reader's clamp (`end = min(before, total)`).
+  // `messages` entries are TOP-LEVEL flattened `{ ...msg, seq }`: old clients
+  // read m.uuid / m.type / m.message directly, and the store's msg is the
+  // same normalize() output the legacy reader produced (Task 6 dual-read
+  // parity gate proved the two paths emit identical messages).
   app.get('/sessions/:id/history', async (c) => {
     const id = c.req.param('id')
+    sm.get(id) // live-or-persisted existence check; unknown → HttpError 404
     const beforeRaw = c.req.query('before')
     const beforeUuid = c.req.query('beforeUuid') || undefined
     const limitRaw = c.req.query('limit')
     const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : undefined
-    const limit = limitRaw != null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : 200
-    const page = await sm.getHistoryPage(id, { before, beforeUuid, limit })
-    return c.json(page)
+    if (beforeRaw != null && before === undefined) {
+      throw new HttpError(400, 'before must be a non-negative integer')
+    }
+    const limitNum = limitRaw != null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : undefined
+    const limit = Math.min(1000, Math.max(1, limitNum ?? 200))
+    let beforeSeq: number | undefined
+    if (beforeUuid !== undefined) {
+      const seq = await sm.transcriptSeqOfUuid(id, beforeUuid)
+      if (seq === undefined) {
+        throw new HttpError(400, `beforeUuid ${beforeUuid} is not a known message uuid`)
+      }
+      beforeSeq = seq
+    } else if (before !== undefined) {
+      // Legacy clamp: sliceWindow computed end = min(before, total), so a
+      // stale or oversized `before` served the newest page. The seq window
+      // would land on the same page too, but only after scanning every
+      // missing seq down from the bound — clamp to headSeq first (the cheap
+      // probe read also forces the cold-session reconcile).
+      const head = await sm.getTranscriptWindow(id, undefined, 1)
+      beforeSeq = Math.min(before, head.headSeq)
+    }
+    const page = await sm.getTranscriptWindow(id, beforeSeq, limit)
+    return c.json({
+      messages: page.messages.map((m) => ({ ...(m.msg as object), seq: m.seq })),
+      totalCount: page.totalCount,
+      startIndex: page.startIndex,
+      hasMore: page.hasMore,
+    })
   })
 
   // Seq-paginated transcript read — the single transcript read entry of the

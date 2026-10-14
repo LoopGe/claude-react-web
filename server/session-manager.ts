@@ -6346,6 +6346,16 @@ export class SessionManager {
     return { ...win, totalCount: t.store.visibleCount }
   }
 
+  /** Resolve one message uuid to its seq in the session's seq store — the
+   *  legacy /history shim's `beforeUuid` translation. A cold store is
+   *  reconciled first (an old client's uuid can only resolve against the FULL
+   *  history, not whatever tail is in memory). Undefined when the uuid is
+   *  unknown to the store. */
+  async transcriptSeqOfUuid(id: string, uuid: string): Promise<number | undefined> {
+    const t = await this.ensureTranscriptReconciled(id)
+    return t.store.seqOf(uuid)
+  }
+
   /** Current seq-space cursor for a session, or null when no store exists
    *  yet (never ingested, never read). Cheap snapshot for the WS `attached`
    *  frame (Task 5) and reconnect hole-detection. */
