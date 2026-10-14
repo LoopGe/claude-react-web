@@ -11,11 +11,9 @@ let currentGlobalListeners: Set<WsHubListener>
 const mockSubscribe = vi.fn(
   (
     _sessionId: string,
-    _sinceUuid?: string,
     _opts?: { force?: boolean },
   ) => vi.fn(),
 )
-const mockSetLastMessageUuid = vi.fn()
 
 // Stable hub object — returned on every useWsHub() call so the hook's
 // useEffect (which depends on `[hub]`) doesn't re-run on every render.
@@ -34,7 +32,6 @@ const mockHub = {
     return () => { set!.delete(fn) }
   },
   subscribe: mockSubscribe,
-  setLastMessageUuid: mockSetLastMessageUuid,
 }
 
 // Default open-path answer: an empty transcript page at generation 0.
@@ -110,7 +107,6 @@ describe('useChatStream', () => {
     currentSessionListeners = new Map()
     currentGlobalListeners = new Set()
     mockSubscribe.mockClear()
-    mockSetLastMessageUuid.mockClear()
     mockApiGet.mockReset()
     mockApiGet.mockImplementation(async () => ({ ...emptyPage }))
     cacheClear()
@@ -202,25 +198,6 @@ describe('useChatStream', () => {
     })
   })
 
-  it('advances the hub reconnect cursor as messages land', async () => {
-    // The hub's lastUuid still drives its reconnect subscribe slicing while
-    // the P1 server replay exists (P3 retires it) — the hook keeps feeding
-    // it from the mirror's newest uuid, ungated (no burst latch anymore).
-    renderHook(() => useChatStream('cursor1', noopPerms, false, false))
-
-    act(() => {
-      dispatchToSession('cursor1', {
-        kind: 'message',
-        sessionId: 'cursor1',
-        message: { type: 'user', uuid: 'u1' },
-      })
-    })
-
-    await waitFor(() => {
-      expect(mockSetLastMessageUuid).toHaveBeenCalledWith('cursor1', 'u1')
-    })
-  })
-
   // ── Session switch reset ──────────────────────────────────────
 
   it('resets messages when sessionId changes', () => {
@@ -244,7 +221,10 @@ describe('useChatStream', () => {
 
   // ── Frame types ───────────────────────────────────────────────
 
-  it('harvests pending permissions from a replay frame', () => {
+  it('dispatches subscribe-time pending permission re-broadcasts to the handler', () => {
+    // With replay retired, the server re-broadcasts still-outstanding
+    // requests on subscribe as ordinary `permission-request` frames (the
+    // reconnect recovery path for permission cards).
     const onRequest = vi.fn()
     const onResolved = vi.fn()
     renderHook(
@@ -253,16 +233,12 @@ describe('useChatStream', () => {
 
     act(() => {
       dispatchToSession('s1', {
-        kind: 'replay',
+        kind: 'permission-request',
         sessionId: 's1',
-        messages: [],
-        permissions: [{ id: 'p1', kind: 'permission', toolName: 'Bash' }],
+        payload: { id: 'p1', kind: 'permission', toolName: 'Bash' },
       })
     })
 
-    // The replay PAYLOAD is dropped under the seq protocol, but its pending
-    // request snapshots are not transcript content — they are still the
-    // reconnect recovery path for permission cards.
     expect(onRequest).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'p1', toolName: 'Bash' }),
     )
@@ -324,37 +300,6 @@ describe('useChatStream', () => {
 
     expect(onElicitationResolved).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'e1', decision: { action: 'accept' } }),
-    )
-  })
-
-  it('seeds elicitations from replay frames (harvest keeps the recovery path)', () => {
-    const onElicitationRequest = vi.fn()
-    renderHook(
-      () => useChatStream('s1', { ...noopPerms, onElicitationRequest }, false, false),
-    )
-
-    act(() => {
-      dispatchToSession('s1', {
-        kind: 'replay',
-        sessionId: 's1',
-        messages: [],
-        elicitations: [
-          { id: 'e1', serverName: 'github', message: 'Sign in', createdAt: 1 },
-          { id: 'e2', serverName: 'linear', message: 'Form', createdAt: 2 },
-        ],
-      })
-      dispatchToSession('s1', {
-        kind: 'replay-done',
-        sessionId: 's1',
-        elicitations: [
-          { id: 'e2', serverName: 'linear', message: 'Form', createdAt: 2 },
-        ],
-      })
-    })
-
-    expect(onElicitationRequest).toHaveBeenCalledTimes(3)
-    expect(onElicitationRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'e1' }),
     )
   })
 
@@ -1023,9 +968,9 @@ describe('useChatStream', () => {
 
     // `force` because this listener needs the channel established for
     // itself — the attached handshake (subscribe-result + attached) is the
-    // reconnect catch-up trigger. No sinceUuid / replayMode: content comes
-    // from the REST tail page.
-    expect(mockSubscribe).toHaveBeenCalledWith('s1', undefined, { force: true })
+    // reconnect catch-up trigger. No replay cursor: content comes from the
+    // REST tail page.
+    expect(mockSubscribe).toHaveBeenCalledWith('s1', { force: true })
 
     const cleanupFn = mockSubscribe.mock.results[0].value
     expect(cleanupFn).not.toHaveBeenCalled()
@@ -1056,14 +1001,14 @@ describe('useChatStream', () => {
       { initialProps: { running: false } },
     )
     expect(mockSubscribe).toHaveBeenCalledTimes(1)
-    expect(mockSubscribe).toHaveBeenLastCalledWith('s1', undefined, { force: true })
+    expect(mockSubscribe).toHaveBeenLastCalledWith('s1', { force: true })
 
     // Resume completes → running flips true → the effect re-runs and asks
     // again, so the server re-answers with attached (the catch-up trigger)
     // and the tail page refetches over anything missed while dormant.
     rerender({ running: true })
     expect(mockSubscribe).toHaveBeenCalledTimes(2)
-    expect(mockSubscribe).toHaveBeenLastCalledWith('s1', undefined, { force: true })
+    expect(mockSubscribe).toHaveBeenLastCalledWith('s1', { force: true })
   })
 
   it('clears a stale channel error only when the server confirms the channel', () => {
@@ -1106,7 +1051,6 @@ describe('transcriptSettling', () => {
     currentSessionListeners = new Map()
     currentGlobalListeners = new Set()
     mockSubscribe.mockClear()
-    mockSetLastMessageUuid.mockClear()
     mockApiGet.mockReset()
     mockApiGet.mockImplementation(async () => ({ ...emptyPage }))
     cacheClear()

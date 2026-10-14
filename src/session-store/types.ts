@@ -800,11 +800,7 @@ export interface SessionSnapshot {
   lastMessageUuid: string | null
   /** True when the hydrated localStorage cache holds at least one message
    *  stamped `cacheDroppedMedia` by the persist projection (an image block
-   *  had to be dropped). The chat subscribe path reads it to skip the
-   *  sinceUuid cursor: an incremental replay never re-sends older messages,
-   *  so a cache holding image-less copies could never have them restored.
-   *  Fixed at hydrate time; full replays merge-replace the degraded copies
-   *  (see replaceStaleCachedMessages). */
+   *  had to be dropped). Fixed at hydrate time. */
   cacheHasDroppedMedia: boolean
   /** Transient `api_retry` frame mirrored from ServerMirror (see there). */
   apiRetry: SdkMessage | null

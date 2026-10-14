@@ -3476,9 +3476,9 @@ export class SessionManager {
         // persists at echo time), so no save is needed here.
         s.promptUuids = (s.promptUuids ?? []).filter((e) => !(e.v == null && uuids.has(e.u)))
         // Remember the withdrawal (capped) so a tab that reconnects after the
-        // stop still evicts its bubbles — incremental sinceUuid replay can
-        // never heal this, because the withdrawn messages are gone from the
-        // ring and so are never re-sent to compare against.
+        // stop still evicts its bubbles — no later frame or page ever re-sends
+        // the withdrawn messages, so the synthetic replay of withdrawnUuids is
+        // the only signal a reconnecting tab gets.
         s.withdrawnUuids.push(...uuids)
         if (s.withdrawnUuids.length > WITHDRAWN_UUIDS_CAP) {
           s.withdrawnUuids.splice(0, s.withdrawnUuids.length - WITHDRAWN_UUIDS_CAP)
@@ -6092,11 +6092,11 @@ export class SessionManager {
   }
 
   /**
-   * Subscribe to live events. Returns (1) an AsyncIterable the caller can
-   * stream to clients, and (2) a snapshot of history so the caller can replay
-   * past messages before entering the live loop.
+   * Subscribe to live events. Returns the AsyncIterable the caller streams
+   * to clients. Transcript history is NOT attached — the seq-window
+   * protocol pages it over REST (GET /sessions/:id/messages).
    */
-  subscribe(id: string): { iterable: AsyncIterable<SDKMessage>; history: SDKMessage[]; unsubscribe: () => void } {
+  subscribe(id: string): { iterable: AsyncIterable<SDKMessage>; unsubscribe: () => void } {
     const s = this.require(id)
     const subId = randomUUID()
     const sub = createAsyncSubscription<SDKMessage>(() => {
@@ -6112,7 +6112,6 @@ export class SessionManager {
 
     return {
       iterable: sub.iterable,
-      history: this.mergedHistory(s),
       unsubscribe: () => {
         sub.end()
         s.subscribers.delete(subId)

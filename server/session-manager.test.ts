@@ -1452,14 +1452,15 @@ describe('SessionManager', () => {
     expect(sm.get(info.id).working).toBe(false)
   })
 
-  it('subscribe() replays history and streams live messages', async () => {
+  it('subscribe() streams live messages (history read via getHistory)', async () => {
     const info = sm.create({})
     mockHandles[0].emit({ type: 'assistant', message: { content: 'hello' } })
     await tick()
 
     const sub = sm.subscribe(info.id)
-    expect(sub.history).toHaveLength(1)
-    expect(sub.history[0]).toMatchObject({ type: 'assistant' })
+    const ring = sm.getHistory(info.id) as Array<{ type?: string }>
+    expect(ring).toHaveLength(1)
+    expect(ring[0]).toMatchObject({ type: 'assistant' })
 
     const it = sub.iterable[Symbol.asyncIterator]()
     const pending = it.next()
@@ -1519,7 +1520,7 @@ describe('SessionManager', () => {
       mockHandles[0].emit({ type: 'assistant', uuid: 'm2', parent_tool_use_id: null, receivedAt: 3, message: { content: 'x' } })
       await tick()
       const sub = sm.subscribe(info.id)
-      expect(uuids(sub.history as Array<{ uuid?: string }>)).toEqual(['m1', 's1', 'm2'])
+      expect(uuids(sm.getHistory(info.id) as Array<{ uuid?: string }>)).toEqual(['m1', 's1', 'm2'])
       sub.unsubscribe()
     })
 
@@ -1547,9 +1548,9 @@ describe('SessionManager', () => {
       expect(mainUuids).toHaveLength(2)
       expect(mainUuids[mainUuids.length - 1]).toBe('asst-1')
       expect(uuids(sY.subagentHistory)).toEqual(['s1'])
-      // Merged replay of Y shows the subagent frame in its chronological slot.
+      // Merged view of Y shows the subagent frame in its chronological slot.
       const sub = sm.subscribe(y.id)
-      const merged = uuids(sub.history as Array<{ uuid?: string }>)
+      const merged = uuids(sm.getHistory(y.id) as Array<{ uuid?: string }>)
       expect(merged).toHaveLength(3)
       expect(merged[1]).toBe('s1')
       expect(merged[2]).toBe('asst-1')
@@ -7822,11 +7823,8 @@ describe('setMcpServers (dynamic, on a live session)', () => {
      *  `message-consumed` frame reaches attached tabs only, so a replay-only
      *  client would otherwise render an already-processed turn as
      *  permanently 'queued'. */
-    const replayOf = (sid: string): Array<{ uuid?: string; receivedAt?: number; consumedAt?: number }> => {
-      const sub = sm.subscribe(sid)
-      sub.unsubscribe()
-      return sub.history as unknown as Array<{ uuid?: string; receivedAt?: number; consumedAt?: number }>
-    }
+    const replayOf = (sid: string): Array<{ uuid?: string; receivedAt?: number; consumedAt?: number }> =>
+      sm.getHistory(sid) as unknown as Array<{ uuid?: string; receivedAt?: number; consumedAt?: number }>
 
     it('stamps consumedAt on the replayed copy for the idle direct-handoff path', async () => {
       const info = sm.create({ cwd: dir })

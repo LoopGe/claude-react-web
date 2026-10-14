@@ -153,7 +153,12 @@ export class TranscriptStore {
     return false
   }
 
-  /** 世代切换（/clear）：generation+1，seq 归零，清空索引。 */
+  /** 世代切换（/clear）：generation+1，seq 归零，清空索引。
+   *  注意（frame-bridge.ts messageFrameJson 的 frame-cache 不变量）：
+   *  reset() 之后若该 session 仍在向已连接客户端广播，必须让
+   *  messageFrameJsonCache 失效（或按次重新推导 generation）——
+   *  否则缓存的 live message 帧会带着旧 generation 发出去，
+   *  客户端会误判 seq-space 握手。 */
   reset(): void {
     this.generation++
     this.nextSeq = 0

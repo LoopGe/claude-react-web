@@ -101,10 +101,6 @@ export function useSessionTaskCounts(sessionId: string): { all: number; indicato
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
-export function getSessionLastMessageUuid(sessionId: string): string | null {
-  return sessionStoreRegistry.getOrCreate(sessionId).getState().mirror.lastMessageUuid
-}
-
 /** Reactive subscription to the session's current "isolated in a
  *  worktree" state, folded from EnterWorktree/ExitWorktree in the
  *  mirrored transcript. Reference-stable when the derived value is

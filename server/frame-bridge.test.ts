@@ -7,10 +7,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { WebSocket } from 'ws'
 import { SessionConnection, type FrameSink } from './frame-bridge.js'
-import { WsFrameSink } from './ws-sink.js'
-import type { ReplayBurstToken } from './replay-bursts.js'
 import type {
   DialogEvent,
   ElicitationEvent,
@@ -71,31 +68,17 @@ function chan<T>(): Chan<T> {
 }
 
 /** In-memory FrameSink: records frames, counts the shared-JSON hot path,
- *  and mirrors close() so the bridge's teardown is observable. Also records
- *  the burst token each frame was tagged with (index-aligned with `frames`)
- *  and every dropQueuedReplays call, so the replay-burst tagging contract is
- *  observable. */
+ *  and mirrors close() so the bridge's teardown is observable. */
 class FakeSink implements FrameSink {
   frames: WsServerFrame[] = []
-  bursts: Array<ReplayBurstToken | undefined> = []
   rawCount = 0
   closed = false
-  droppedSessions: string[] = []
-  send(frame: WsServerFrame, burst?: ReplayBurstToken): void {
-    if (!this.closed) {
-      this.frames.push(frame)
-      this.bursts.push(burst)
-    }
+  send(frame: WsServerFrame): void {
+    if (!this.closed) this.frames.push(frame)
   }
   sendRaw(data: string, _kind?: string): void {
     this.rawCount++
-    if (!this.closed) {
-      this.frames.push(JSON.parse(data) as WsServerFrame)
-      this.bursts.push(undefined)
-    }
-  }
-  dropQueuedReplays(sessionId: string): void {
-    this.droppedSessions.push(sessionId)
+    if (!this.closed) this.frames.push(JSON.parse(data) as WsServerFrame)
   }
   close(): void {
     this.closed = true
@@ -103,14 +86,9 @@ class FakeSink implements FrameSink {
   kinds(kind: WsServerFrame['kind']): WsServerFrame[] {
     return this.frames.filter((f) => f.kind === kind)
   }
-  burstOf(frame: WsServerFrame): ReplayBurstToken | undefined {
-    const i = this.frames.indexOf(frame)
-    return i >= 0 ? this.bursts[i] : undefined
-  }
   /** Clear the recording buffers (keeps closed state). */
   reset(): void {
     this.frames.length = 0
-    this.bursts.length = 0
   }
 }
 
@@ -208,27 +186,30 @@ class FakeBroadcaster implements SessionBroadcaster {
   subscribe(sessionId: string) {
     const s = this.require(sessionId)
     if (!s.running) throw new Error(`session ${sessionId} not found`)
-    return { iterable: s.messages.iterable, history: s.history, unsubscribe: () => s.messages.end() }
+    return { iterable: s.messages.iterable, unsubscribe: () => s.messages.end() }
   }
 
   subscribePermissions(sessionId: string) {
     const s = this.require(sessionId)
-    return { iterable: s.perms.iterable, snapshot: [] as PermissionRequestSnapshot[], unsubscribe: () => s.perms.end() }
+    return { iterable: s.perms.iterable, snapshot: this.pendingPerms, unsubscribe: () => s.perms.end() }
   }
 
   subscribeElicitation(sessionId: string) {
     const s = this.require(sessionId)
-    return { iterable: s.elicits.iterable, snapshot: [] as ElicitationRequestUi[], unsubscribe: () => s.elicits.end() }
+    return { iterable: s.elicits.iterable, snapshot: this.pendingElicitations, unsubscribe: () => s.elicits.end() }
   }
 
   subscribeDialog(sessionId: string) {
     const s = this.require(sessionId)
-    return { iterable: s.dialogs.iterable, snapshot: [] as UserDialogRequestUi[], unsubscribe: () => s.dialogs.end() }
+    return { iterable: s.dialogs.iterable, snapshot: this.pendingDialogs, unsubscribe: () => s.dialogs.end() }
   }
 
-  listPending() { return [] }
-  listPendingElicitation() { return [] }
-  listPendingDialogs() { return [] }
+  pendingPerms: PermissionRequestSnapshot[] = []
+  pendingElicitations: ElicitationRequestUi[] = []
+  pendingDialogs: UserDialogRequestUi[] = []
+  listPending() { return this.pendingPerms }
+  listPendingElicitation() { return this.pendingElicitations }
+  listPendingDialogs() { return this.pendingDialogs }
 
   subscribeContextUsage() { return this.ctxUsageSub }
   /** When non-null, subscribeContextUsage hands this to the connection (the
@@ -331,9 +312,10 @@ describe('SessionConnection (in-memory sink)', () => {
     expect(frame).toMatchObject({ kind: 'client-debug-request', id: 'req-1', op: 'dom_query', params: { selector: 'h1' } })
   })
 
-  it('serves replay + ack on subscribe, then streams live messages via sendRaw', async () => {
+  it('serves ack + pending-request re-broadcast on subscribe, then streams live messages via sendRaw', async () => {
     const sm = new FakeBroadcaster()
     const sess = sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
+    sm.pendingPerms = [{ id: 'p1' } as unknown as PermissionRequestSnapshot]
     const { sink, conn } = setup(sm)
     conn.start()
 
@@ -342,11 +324,16 @@ describe('SessionConnection (in-memory sink)', () => {
     // synchronously; a tick makes that deterministic regardless.
     await tick()
 
-    const replay = await waitForFrame(sink, (f) => f.kind === 'replay')
-    if (replay.kind !== 'replay') throw new Error('narrowing')
-    expect(replay.sessionId).toBe('s1')
-    expect(replay.messages).toHaveLength(1)
-    await waitForFrame(sink, (f) => f.kind === 'replay-done')
+    // No transcript history is served on subscribe (seq-window protocol:
+    // history pages over REST) — only the pending-request re-broadcast.
+    expect(
+      sink.frames.some((f) => {
+        const kind = (f as { kind: string }).kind
+        return kind === 'replay' || kind === 'replay-done'
+      }),
+    ).toBe(false)
+    const permReq = await waitForFrame(sink, (f) => f.kind === 'permission-request')
+    expect(permReq).toMatchObject({ kind: 'permission-request', sessionId: 's1' })
     expect(sink.kinds('subscribe-result')[0]).toMatchObject({ ok: true, reason: 'served' })
 
     const rawBefore = sink.rawCount
@@ -357,9 +344,10 @@ describe('SessionConnection (in-memory sink)', () => {
     expect(sink.rawCount).toBeGreaterThan(rawBefore)
   })
 
-  it('re-serves the replay with already-live on a duplicate subscribe', async () => {
+  it('re-broadcasts pending requests with already-live on a duplicate subscribe', async () => {
     const sm = new FakeBroadcaster()
     sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
+    sm.pendingPerms = [{ id: 'p1' } as unknown as PermissionRequestSnapshot]
     const { sink, conn } = setup(sm)
     conn.start()
 
@@ -370,8 +358,8 @@ describe('SessionConnection (in-memory sink)', () => {
     await tick()
 
     expect(sink.kinds('subscribe-result')[0]).toMatchObject({ ok: true, reason: 'already-live' })
-    const replay = await waitForFrame(sink, (f) => f.kind === 'replay')
-    expect(replay.kind === 'replay' && replay.messages).toHaveLength(1)
+    const permReq = await waitForFrame(sink, (f) => f.kind === 'permission-request')
+    expect(permReq).toMatchObject({ kind: 'permission-request', sessionId: 's1' })
   })
 
   it('subscribe with no cached context snapshot requests a zero-turn seed', async () => {
@@ -436,24 +424,23 @@ describe('SessionConnection (in-memory sink)', () => {
     expect(sink.kinds('error')[0]).toMatchObject({ message: 'unknown kind: nope' })
   })
 
-  it('answers an unknown session with error + replay-done + refused (no throw)', async () => {
+  it('answers an unknown session with error + refused (no throw)', async () => {
     const { sink, conn } = setup()
     conn.start()
     send(conn, { kind: 'subscribe', sessionId: 'ghost' })
     await tick()
     expect(sink.kinds('error')[0]).toMatchObject({ message: expect.stringMatching(/not found/i) })
-    expect(sink.kinds('replay-done')).toHaveLength(1)
     expect(sink.kinds('subscribe-result')[0]).toMatchObject({ ok: false, reason: 'refused' })
   })
 
-  it('auto-resumes a known-but-dormant session and serves a replay', async () => {
+  it('auto-resumes a known-but-dormant session on subscribe', async () => {
     const sm = new FakeBroadcaster()
     sm.addSession('s1', { running: false, history: [assistant('old', 'u1')] })
     const { sink, conn } = setup(sm)
     conn.start()
 
     send(conn, { kind: 'subscribe', sessionId: 's1' })
-    await waitForFrame(sink, (f) => f.kind === 'replay-done')
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result')
     expect(sm.resumed).toEqual(['s1'])
     expect(sink.kinds('error')).toHaveLength(0)
     expect(sink.kinds('subscribe-result')[0]).toMatchObject({ ok: true, reason: 'served' })
@@ -532,222 +519,7 @@ describe('SessionConnection (in-memory sink)', () => {
   })
 })
 
-describe('replay burst tagging (supersede contract)', () => {
-  const history120 = (): SDKMessage[] =>
-    Array.from({ length: 120 }, (_, i) => assistant(`m${i}`, `u${i}`))
-
-  it('tags the tail, the backfill chunks, and the replay-done of one tail-first burst with one shared token', async () => {
-    const sm = new FakeBroadcaster()
-    sm.addSession('s1', { running: true, history: history120() })
-    const { sink, conn } = setup(sm)
-    conn.start()
-
-    send(conn, { kind: 'subscribe', sessionId: 's1', replayMode: 'tail-backfill' })
-    await tick()
-
-    const burstFrames = sink.frames.filter((f) => f.kind === 'replay' || f.kind === 'replay-done')
-    // tail(50) + backfill(50) + backfill(20) + replay-done
-    expect(burstFrames).toHaveLength(4)
-    const tokens = burstFrames.map((f) => sink.burstOf(f))
-    expect(tokens[0]).toBeDefined()
-    for (const t of tokens) expect(t).toBe(tokens[0])
-    expect(burstFrames[0]?.kind).toBe('replay')
-    expect((burstFrames[0] as { tail?: boolean }).tail).toBe(true)
-  })
-
-  it('tags the chunked path\'s replay frames and its permission-carrying replay-done with the burst token', async () => {
-    const sm = new FakeBroadcaster()
-    sm.addSession('s1', { running: true, history: history120() })
-    const { sink, conn } = setup(sm)
-    conn.start()
-
-    send(conn, { kind: 'subscribe', sessionId: 's1' })
-    await tick()
-
-    const burstFrames = sink.frames.filter((f) => f.kind === 'replay' || f.kind === 'replay-done')
-    // 120 msgs / 50 per chunk → 3 chunks + replay-done
-    expect(burstFrames).toHaveLength(4)
-    const tokens = burstFrames.map((f) => sink.burstOf(f))
-    expect(tokens[0]).toBeDefined()
-    for (const t of tokens) expect(t).toBe(tokens[0])
-    const done = sink.kinds('replay-done')[0]
-    expect(done).toBeDefined()
-  })
-
-  it('creates a fresh token per re-serve — a duplicate subscribe yields two distinct tokens', async () => {
-    const sm = new FakeBroadcaster()
-    sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
-    const { sink, conn } = setup(sm)
-    conn.start()
-
-    send(conn, { kind: 'subscribe', sessionId: 's1' })
-    await tick()
-    const firstToken = sink.burstOf(sink.kinds('replay')[0]!)
-    expect(firstToken).toBeDefined()
-
-    sink.reset()
-    send(conn, { kind: 'subscribe', sessionId: 's1' })
-    await tick()
-    const secondToken = sink.burstOf(sink.kinds('replay')[0]!)
-    expect(secondToken).toBeDefined()
-    expect(secondToken).not.toBe(firstToken)
-  })
-
-  it('leaves the refused-subscribe error path untagged', async () => {
-    const sm = new FakeBroadcaster()
-    const { sink, conn } = setup(sm)
-    conn.start()
-
-    send(conn, { kind: 'subscribe', sessionId: 'ghost' })
-    await tick()
-
-    const err = sink.kinds('error')[0]
-    const done = sink.kinds('replay-done')[0]
-    expect(err).toBeDefined()
-    expect(done).toBeDefined()
-    expect(sink.burstOf(err!)).toBeUndefined()
-    expect(sink.burstOf(done!)).toBeUndefined()
-  })
-
-  it('calls sink.dropQueuedReplays exactly once on client unsubscribe', async () => {
-    const sm = new FakeBroadcaster()
-    sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
-    const { sink, conn } = setup(sm)
-    conn.start()
-
-    send(conn, { kind: 'subscribe', sessionId: 's1' })
-    await tick()
-    expect(sink.droppedSessions).toEqual([])
-
-    send(conn, { kind: 'unsubscribe', sessionId: 's1' })
-    await tick()
-    expect(sink.droppedSessions).toEqual(['s1'])
-  })
-
-  it('does not call dropQueuedReplays for a session with no channel', async () => {
-    const sm = new FakeBroadcaster()
-    const { sink, conn } = setup(sm)
-    conn.start()
-
-    send(conn, { kind: 'unsubscribe', sessionId: 'ghost' })
-    await tick()
-    expect(sink.droppedSessions).toEqual([])
-  })
-})
-
-describe('replay burst supersede end-to-end (QueueSink: real WsFrameSink)', () => {
-  // Drives SessionConnection through a REAL WsFrameSink over a fake WebSocket
-  // whose socket buffer is permanently full until released — the drain parks
-  // in the backpressure await after the first frame, so every later frame of
-  // the burst stays queued and supersede can be observed on the wire.
-  // This is the regression test for the group-switch "Stream reconnecting…"
-  // force-close: a StrictMode-shaped subscribe→unsubscribe→subscribe used to
-  // put two full bursts on the wire; it must now collapse to one.
-
-  interface FakeWs {
-    OPEN: number
-    readyState: number
-    bufferedAmount: number
-    sent: string[]
-    closeCalls: Array<{ code?: number; reason?: string }>
-    unblock(): void
-    releaseAll(): Promise<void>
-  }
-
-  function makeBlockedWs(): FakeWs & {
-    on(): void
-    off(): void
-    send(data: string, cb?: () => void): void
-    close(code?: number, reason?: string): void
-  } {
-    const sent: string[] = []
-    const closeCalls: Array<{ code?: number; reason?: string }> = []
-    const heldCbs: Array<() => void> = []
-    const ws = {
-      OPEN: 1,
-      readyState: 1,
-      bufferedAmount: 2_000_000,
-      sent,
-      closeCalls,
-      send(data: string, cb?: () => void) {
-        sent.push(data)
-        if (cb) heldCbs.push(cb)
-      },
-      close(code?: number, reason?: string) {
-        closeCalls.push({ code, reason })
-      },
-      on() {},
-      off() {},
-      unblock() {
-        ws.bufferedAmount = 0
-      },
-      async releaseAll() {
-        ws.bufferedAmount = 0
-        const cbs = heldCbs.splice(0)
-        for (const cb of cbs) cb()
-        for (let i = 0; i < 20; i++) await tick()
-      },
-    }
-    return ws
-  }
-
-  function setupQueueSink(sm: FakeBroadcaster) {
-    const ws = makeBlockedWs()
-    const sink = new WsFrameSink(ws as unknown as WebSocket)
-    const conn = new SessionConnection({ sm }, sink)
-    conn.start()
-    const wireFrames = () => ws.sent.map((s) => JSON.parse(s) as WsServerFrame)
-    return { sm, ws, conn, wireFrames }
-  }
-
-  it('subscribe → unsubscribe → subscribe (the StrictMode shape) puts exactly ONE complete burst on the wire', async () => {
-    const sm = new FakeBroadcaster()
-    sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
-    const { ws, conn, wireFrames } = setupQueueSink(sm)
-
-    send(conn, { kind: 'subscribe', sessionId: 's1' })
-    await tick()
-    send(conn, { kind: 'unsubscribe', sessionId: 's1' })
-    await tick()
-    send(conn, { kind: 'subscribe', sessionId: 's1' })
-    await tick()
-
-    await ws.releaseAll()
-
-    const frames = wireFrames()
-    // The drain is blocked on the sessions-snapshot's backpressure the whole
-    // time, so burst 1 is still fully queued when the unsubscribe's
-    // dropQueuedReplays retires it — the wire carries exactly ONE complete
-    // burst (burst 2's), where pre-fix it carried two (and a 12× storm would
-    // force-close the socket).
-    expect(frames.filter((f) => f.kind === 'replay')).toHaveLength(1)
-    expect(frames.filter((f) => f.kind === 'replay-done')).toHaveLength(1)
-    expect(frames.filter((f) => f.kind === 'subscribe-result' && (f as { ok?: boolean }).ok === true)).toHaveLength(2)
-    expect(ws.closeCalls).toHaveLength(0)
-  })
-
-  it('a duplicate subscribe while the first burst is still queued also leaves exactly one replay-done on the wire', async () => {
-    const sm = new FakeBroadcaster()
-    sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
-    const { ws, conn, wireFrames } = setupQueueSink(sm)
-
-    send(conn, { kind: 'subscribe', sessionId: 's1' })
-    await tick()
-    send(conn, { kind: 'subscribe', sessionId: 's1' })
-    await tick()
-
-    await ws.releaseAll()
-
-    const frames = wireFrames()
-    // Burst 2's register supersedes burst 1 while it is still fully queued:
-    // the wire carries exactly one complete burst.
-    expect(frames.filter((f) => f.kind === 'replay')).toHaveLength(1)
-    expect(frames.filter((f) => f.kind === 'replay-done')).toHaveLength(1)
-    expect(ws.closeCalls).toHaveLength(0)
-  })
-
-  // --- transcript seq refactor (Task 5): attached / seq / evicted ------
-
+describe('transcript seq handshake (attached / seq / evicted)', () => {
   it('sends the attached handshake after a successful subscribe-result when a seq store exists', async () => {
     const sm = new FakeBroadcaster()
     sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
@@ -808,8 +580,8 @@ describe('replay burst supersede end-to-end (QueueSink: real WsFrameSink)', () =
     const f1 = await waitForFrame(sink, (f) => f.kind === 'message' && (f.message as { uuid?: string }).uuid === 'u-seq')
     expect(f1.kind === 'message' && f1.seq).toBe(17)
     const f2 = await waitForFrame(sink, (f) => f.kind === 'message' && (f.message as { uuid?: string }).uuid === 'u-plain')
-    expect(f2.kind === 'message' && f2.seq).toBeUndefined()
-    expect(f2.kind === 'message' && f2.generation).toBeUndefined()
+    expect(f2.kind === 'message' && (f2 as { seq?: number }).seq).toBeUndefined()
+    expect(f2.kind === 'message' && (f2 as { generation?: number }).generation).toBeUndefined()
   })
 
   it('stamps generation onto seq-carrying live message frames (client WINDOW_LIVE needs both)', async () => {
@@ -828,7 +600,7 @@ describe('replay burst supersede end-to-end (QueueSink: real WsFrameSink)', () =
 
     const f1 = await waitForFrame(sink, (f) => f.kind === 'message' && (f.message as { uuid?: string }).uuid === 'u-seq')
     // { seq, generation } both present — without generation the client's
-    // `seq != null && generation != null` guard falls to the legacy append.
+    // seq guard falls to the legacy append.
     expect(f1.kind === 'message' && f1.seq).toBe(17)
     expect(f1.kind === 'message' && f1.generation).toBe(3)
   })
@@ -844,28 +616,5 @@ describe('replay burst supersede end-to-end (QueueSink: real WsFrameSink)', () =
     sess.msgstat.push({ kind: 'messages-evicted', sessionId: 's1', seqs: [3, 5, 9], generation: 1 })
     const frame = await waitForFrame(sink, (f) => f.kind === 'messages-evicted')
     expect(frame).toMatchObject({ kind: 'messages-evicted', sessionId: 's1', seqs: [3, 5, 9], generation: 1 })
-  })
-
-  it('untagged frames (live messages) interleaved between bursts are never dropped', async () => {
-    const sm = new FakeBroadcaster()
-    const sess = sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
-    const { ws, conn, wireFrames } = setupQueueSink(sm)
-
-    send(conn, { kind: 'subscribe', sessionId: 's1' })
-    await tick()
-    sess.messages.push(assistant('live', 'u2'))
-    await tick()
-    send(conn, { kind: 'unsubscribe', sessionId: 's1' })
-    await tick()
-    send(conn, { kind: 'subscribe', sessionId: 's1' })
-    await tick()
-
-    await ws.releaseAll()
-
-    const frames = wireFrames()
-    const live = frames.find((f) => f.kind === 'message')
-    expect(live).toBeDefined()
-    expect(frames.filter((f) => f.kind === 'replay-done')).toHaveLength(1)
-    expect(ws.closeCalls).toHaveLength(0)
   })
 })

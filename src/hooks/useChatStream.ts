@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getSessionLastMessageUuid, getSessionStore, useSessionField } from '../session-store/selectors'
+import { getSessionStore, useSessionField } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
 import { clearAllSessionStorage } from '../session-store/store'
 import type { ActiveSubagent, ActivePhase, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
@@ -422,12 +422,12 @@ export function useChatStream(
     // Ordering contract: the subscribe and the tail-page fetch run
     // concurrently. Frames that arrive BEFORE the page lands are dropped by
     // construction — the window is empty with generation -1, so WINDOW_LIVE's
-    // liveAppend no-ops on the generation mismatch, and replay payloads are
-    // retired (see the handler). The page is authoritative for everything up
-    // to its read point; anything newer either contiguous-appends, parks
-    // behind a hole (healed by fillGap), or is caught by the attached
-    // handshake. Nothing can be lost: a frame the page predates carries a
-    // seq ≥ the page's headSeq, so the next live frame re-arms the fill.
+    // liveAppend no-ops on the generation mismatch. The page is authoritative
+    // for everything up to its read point; anything newer either
+    // contiguous-appends, parks behind a hole (healed by fillGap), or is
+    // caught by the attached handshake. Nothing can be lost: a frame the page
+    // predates carries a seq ≥ the page's headSeq, so the next live frame
+    // re-arms the fill.
     let cancelled = false
     // Per-run reset of the cross-session refs. This effect re-runs on
     // session switch BEFORE the session-switch reset effect below (React
@@ -459,33 +459,6 @@ export function useChatStream(
 
     const off = hub.addSessionListener(sessionId, (frame: WsServerFrame) => {
       switch (frame.kind) {
-        case 'replay':
-        case 'replay-done': {
-          // The P1 server still serves replay bursts on subscribe (the hub
-          // re-subscribes with the session's cursor on reconnect; P3 retires
-          // it server-side). The transcript's content authority is the REST
-          // tail page now, so the payload is applied by NOTHING: a replay
-          // landing after a WINDOW_PAGE would write uuid-keyed rows the seq
-          // window doesn't know about — the ordered log and the window would
-          // diverge, and liveAppend would silently drop later live frames
-          // (message loss). What IS still harvested: the pending
-          // permission / elicitation / dialog snapshots, which ride the
-          // replay (tail frame or chunked terminator) as their reconnect
-          // recovery path and are not transcript content.
-          if (frame.kind === 'replay' && frame.messages.length > 0) {
-            console.debug('[useChatStream] dropped replay payload (seq-window protocol)', sessionId)
-          }
-          if (frame.permissions?.length) {
-            for (const req of frame.permissions) permsRef.current.onRequest(req)
-          }
-          if (frame.elicitations?.length) {
-            for (const req of frame.elicitations) permsRef.current.onElicitationRequest?.(req)
-          }
-          if (frame.dialogs?.length) {
-            for (const req of frame.dialogs) permsRef.current.onDialogRequest?.(req)
-          }
-          break
-        }
         case 'attached': {
           // Seq-space handshake (server sends it after every successful
           // subscribe — the reconnect catch-up trigger, spec §6).
@@ -542,12 +515,11 @@ export function useChatStream(
             const snap = store.getSnapshot()
             if (snap.hole) void fillGap()
           } else {
-            // No seq on the frame (pre-seq server / synthetic frame) —
-            // legacy ordered-log append, no window engagement.
+            // No seq on the frame (synthetic / ephemeral frame: stream
+            // events, pump errors) — legacy ordered-log append, no window
+            // engagement.
             store.dispatch({ type: 'MESSAGE', message })
           }
-          const lastUuid = getSessionLastMessageUuid(sessionId)
-          if (lastUuid) hub.setLastMessageUuid(sessionId, lastUuid)
           break
         }
         case 'messages-evicted': {
@@ -725,12 +697,8 @@ export function useChatStream(
     // re-established) for itself: a confirmed-live channel alone doesn't
     // mean THIS listener's attached handshake ran (a panel mounts after a
     // resume; the server answers the subscribe with subscribe-result +
-    // attached, and attached is the reconnect catch-up trigger). No
-    // sinceUuid cursor, no replayMode: transcript content comes from the
-    // REST tail page + gap fills; whatever replay the P1 server still
-    // serves for the subscribe is dropped by the handler above (P3 removes
-    // it server-side).
-    const release = hub.subscribe(sessionId, undefined, { force: true })
+    // attached, and attached is the reconnect catch-up trigger).
+    const release = hub.subscribe(sessionId, { force: true })
     void refetchTail()
 
     return () => {

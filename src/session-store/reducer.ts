@@ -519,8 +519,8 @@ function windowEvict(state: SessionState, seqs: number[]): SessionState {
 /** Keep-first uuid dedup over a REPLAY_REPLACE payload. A single
  *  server-built burst is a contiguous ring slice and never repeats a uuid —
  *  the only shape that does is a superseded-burst concatenation
- *  ([older-burst-prefix][newer-full-burst], produced by the server's
- *  write-queue supersede, see server/replay-bursts.ts), whose overlap the
+ *  ([older-burst-prefix][newer-full-burst], produced by the retired server
+ *  write-queue supersede), whose overlap the
  *  cache-split below cannot see (it only splits against the cache, not
  *  within the payload). Without this, a cold store renders the overlap
  *  twice. Two-pass: the first scan exits without rebuilding when every

@@ -33,8 +33,6 @@ export type WsSessionUpdate = shared.WsSessionUpdate<SessionInfo>
 export type WsSessionCreated = shared.WsSessionCreated<SessionInfo>
 export type { WsSessionRemoved } from '../shared/ws-protocol.js'
 export type WsGlobalPermissionRequest = shared.WsGlobalPermissionRequest<PermissionRequestSnapshot>
-export type WsReplay = shared.WsReplay<SDKMessage, PermissionRequestSnapshot>
-export type WsReplayDone = shared.WsReplayDone<PermissionRequestSnapshot>
 export type WsMessage = shared.WsMessage<SDKMessage>
 export type WsPermissionRequest = shared.WsPermissionRequest<PermissionRequestSnapshot>
 export type WsPermissionResolved = shared.WsPermissionResolved<PermissionDecisionSummary>

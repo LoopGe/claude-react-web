@@ -214,7 +214,7 @@ describe('WebSocket multiplexer', () => {
     await client.close()
   })
 
-  it('replays history + forwards live messages after subscribe', async () => {
+  it('subscribe acks served and forwards live messages (no replay — history pages over REST)', async () => {
     const info = sm.create({})
     // Seed some history through send + result.
     sm.send(info.id, 'hello')
@@ -226,11 +226,19 @@ describe('WebSocket multiplexer', () => {
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
 
-    const replay = await waitForFrame(client.frames, (f) => f.kind === 'replay')
-    if (replay.kind !== 'replay') throw new Error('narrowing')
-    expect(replay.sessionId).toBe(info.id)
-    expect(replay.messages.length).toBeGreaterThanOrEqual(3) // user + assistant + result
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done')
+    const ack = await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id,
+    )
+    if (ack.kind !== 'subscribe-result') throw new Error('narrowing')
+    expect(ack).toMatchObject({ ok: true, reason: 'served' })
+    // No transcript history is served on the wire anymore.
+    expect(
+      client.frames.some((f) => {
+        const kind = (f as { kind: string }).kind
+        return kind === 'replay' || kind === 'replay-done'
+      }),
+    ).toBe(false)
 
     // Emit a new live message; should arrive as a `message` frame.
     mockHandles[0].emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'follow-up' }] } })
@@ -242,240 +250,6 @@ describe('WebSocket multiplexer', () => {
     const m = live.message as { type: string; message?: { content: Array<{ text?: string }> } }
     expect(m.type).toBe('assistant')
 
-    await client.close()
-  })
-
-  it('excludes stream_event deltas from the replay (durable transcript only)', async () => {
-    // Regression: a heavy streaming turn emits many `stream_event` deltas
-    // before the final assistant message. They are live-streamed to
-    // subscribers but must NEVER enter the history ring — otherwise a
-    // 500-cap ring fills with deltas and evicts durable content (a just-sent
-    // user message, assistant messages, tool results) from the WS full-replay
-    // surface, so a reload during/after the flood loses recent messages.
-    const info = sm.create({})
-    sm.send(info.id, 'hello')
-    mockHandles[0].emit({
-      type: 'stream_event',
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'par' } },
-    })
-    mockHandles[0].emit({
-      type: 'stream_event',
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'tial' } },
-    })
-    mockHandles[0].emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
-    mockHandles[0].emit({ type: 'result' })
-    await tick()
-
-    const client = await connect()
-    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
-    client.send({ kind: 'subscribe', sessionId: info.id })
-
-    const replay = await waitForFrame(client.frames, (f) => f.kind === 'replay')
-    if (replay.kind !== 'replay') throw new Error('narrowing')
-    const replayTypes = replay.messages.map((m) => (m as { type?: string }).type)
-    expect(replayTypes.filter((t) => t === 'stream_event')).toHaveLength(0)
-    // The durable content is all still there.
-    expect(replay.messages.length).toBeGreaterThanOrEqual(3) // user + assistant + result
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done')
-    await client.close()
-  })
-
-  /** Emit `count` assistant messages tagged m0..m{count-1} into the session's
-   *  history ring and let the pump drain them. Replay chunks are exact slices
-   *  of this ring, so tests can assert ordering by uuid. */
-  async function seedHistory(count: number) {
-    for (let i = 0; i < count; i++) {
-      mockHandles[0].emit({
-        type: 'assistant',
-        uuid: `m${i}`,
-        message: { role: 'assistant', content: [{ type: 'text', text: `m${i}` }] },
-      })
-    }
-    await tick()
-    await tick()
-  }
-
-  it('serves a no-cache cold start tail-first, newest→oldest backfill chunks', async () => {
-    // Tail-first replay: a cold client (no sinceUuid) opts in and gets the
-    // NEWEST chunk on the first frame so it can paint immediately, then the
-    // older chunks newest→oldest for the client to prepend.
-    const info = sm.create({})
-    const TOTAL = 120
-    await seedHistory(TOTAL)
-
-    const client = await connect()
-    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
-    client.send({ kind: 'subscribe', sessionId: info.id, replayMode: 'tail-backfill' })
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
-
-    const replays = client.frames.filter(
-      (f): f is Extract<WsServerFrame, { kind: 'replay' }> =>
-        f.kind === 'replay' && f.sessionId === info.id,
-    )
-    const uuidOf = (m: unknown) => (m as { uuid?: string }).uuid
-
-    // Frame 0 is the tail: the newest 50, marked `tail`.
-    expect(replays).toHaveLength(3) // tail + 2 backfill chunks
-    expect(replays[0].tail).toBe(true)
-    expect(replays[0].backfill).toBeUndefined()
-    expect(replays[0].messages).toHaveLength(50)
-    expect(uuidOf(replays[0].messages[0])).toBe('m70')
-    expect(uuidOf(replays[0].messages[49])).toBe('m119')
-
-    // The remaining chunks are backfill, ordered newest→oldest, each
-    // internally chronological.
-    const backfill = replays.slice(1)
-    expect(backfill.every((f) => f.backfill === true && f.tail === undefined)).toBe(true)
-    expect(backfill[0].messages).toHaveLength(50)
-    expect(uuidOf(backfill[0].messages[0])).toBe('m20')
-    expect(uuidOf(backfill[0].messages[49])).toBe('m69')
-    expect(backfill[1].messages).toHaveLength(20)
-    expect(uuidOf(backfill[1].messages[0])).toBe('m0')
-    expect(uuidOf(backfill[1].messages[19])).toBe('m19')
-
-    // The split is lossless: backfill reversed + tail reproduces the ring.
-    const reassembled = [
-      ...[...backfill].reverse().flatMap((f) => f.messages),
-      ...replays[0].messages,
-    ].map(uuidOf)
-    expect(reassembled).toEqual(Array.from({ length: TOTAL }, (_, i) => `m${i}`))
-    await client.close()
-  })
-
-  it('ignores replayMode when a sinceUuid is supplied (cached client)', async () => {
-    // A sinceUuid implies a cached transcript on the client, and backfill
-    // chunks are NEWER than a stale cache — prepending them would corrupt the
-    // ordering. So tail mode is honored only with an absent sinceUuid.
-    const info = sm.create({})
-    await seedHistory(120)
-
-    const client = await connect()
-    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
-    client.send({ kind: 'subscribe', sessionId: info.id, sinceUuid: 'm59', replayMode: 'tail-backfill' })
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
-
-    const replays = client.frames.filter(
-      (f): f is Extract<WsServerFrame, { kind: 'replay' }> =>
-        f.kind === 'replay' && f.sessionId === info.id,
-    )
-    // Ordinary incremental chunks — no tail/backfill markers.
-    expect(replays.every((f) => f.tail === undefined && f.backfill === undefined)).toBe(true)
-    // Everything strictly after the anchor (m60..m119), in arrival order.
-    const uuids = replays.flatMap((f) => f.messages).map((m) => (m as { uuid?: string }).uuid)
-    expect(uuids).toEqual(Array.from({ length: 60 }, (_, i) => `m${i + 60}`))
-    await client.close()
-  })
-
-  it('ignores replayMode when the client declares a cached transcript', async () => {
-    // The protocol precondition for tail-first is "the client has NO
-    // transcript on screen", which an absent sinceUuid only APPROXIMATES:
-    // a client can hold cached rows with no cursor (an IDB cold-load
-    // prepends rows without setting one). Backfill chunks are NEWER than
-    // such a cache and are prepended to the FRONT, so the server must not
-    // infer the precondition — it requires the client to state it.
-    const info = sm.create({})
-    await seedHistory(120)
-
-    const client = await connect()
-    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
-    client.send({
-      kind: 'subscribe',
-      sessionId: info.id,
-      replayMode: 'tail-backfill',
-      hasCachedTranscript: true,
-    })
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
-
-    const replays = client.frames.filter(
-      (f): f is Extract<WsServerFrame, { kind: 'replay' }> =>
-        f.kind === 'replay' && f.sessionId === info.id,
-    )
-    // Ordinary oldest-first chunks — no tail/backfill markers anywhere.
-    expect(replays.every((f) => f.tail === undefined && f.backfill === undefined)).toBe(true)
-    const uuids = replays.flatMap((f) => f.messages).map((m) => (m as { uuid?: string }).uuid)
-    expect(uuids).toEqual(Array.from({ length: 120 }, (_, i) => `m${i}`))
-    await client.close()
-  })
-
-  it('re-serves an already-live channel in the shape it was established with', async () => {
-    // A second consumer (useGitStatus mounts beside useChatStream) subscribes
-    // without opts. Re-serving it the ORDINARY full ring would send every
-    // chunk the tail-first burst exists to avoid, and the client would buffer
-    // and merge all of it for nothing.
-    const info = sm.create({})
-    await seedHistory(120)
-
-    const client = await connect()
-    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
-    client.send({ kind: 'subscribe', sessionId: info.id, replayMode: 'tail-backfill' })
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
-
-    // The bare second subscribe hits the already-live path.
-    const before = client.frames.length
-    client.send({ kind: 'subscribe', sessionId: info.id })
-    await waitForFrame(
-      client.frames,
-      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.reason === 'already-live',
-    )
-
-    const reServed = client.frames
-      .slice(before)
-      .filter((f): f is Extract<WsServerFrame, { kind: 'replay' }> => f.kind === 'replay')
-    expect(reServed[0].tail).toBe(true)
-    expect(reServed.slice(1).every((f) => f.backfill === true)).toBe(true)
-    await client.close()
-  })
-
-  it('carries pending snapshots on a re-served tail frame', async () => {
-    // In tail mode the TAIL frame is the only carrier of the pending-request
-    // snapshots (the terminator is payload-free by contract), so a re-serve
-    // that omits them leaves a listener attaching to an already-live channel
-    // with no permission card on its first paint.
-    const info = sm.create({})
-    await seedHistory(120)
-
-    const client = await connect()
-    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
-    client.send({ kind: 'subscribe', sessionId: info.id, replayMode: 'tail-backfill' })
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
-
-    const before = client.frames.length
-    client.send({ kind: 'subscribe', sessionId: info.id, replayMode: 'tail-backfill' })
-    await waitForFrame(
-      client.frames,
-      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.reason === 'already-live',
-    )
-
-    const tail = client.frames
-      .slice(before)
-      .find((f): f is Extract<WsServerFrame, { kind: 'replay' }> => f.kind === 'replay' && f.tail === true)
-    // The snapshot is present as a field (empty here — no pending requests in
-    // this fixture) rather than omitted/null.
-    expect(Array.isArray(tail?.permissions)).toBe(true)
-    expect(Array.isArray(tail?.elicitations)).toBe(true)
-    expect(Array.isArray(tail?.dialogs)).toBe(true)
-    await client.close()
-  })
-
-  it('falls back to one ordinary replay frame when the history matches the tail chunk size', async () => {
-    // The planner returns null (no backfill) and the caller must use the
-    // ordinary path unchanged — the pre-tail behavior for short histories.
-    const info = sm.create({})
-    await seedHistory(50)
-
-    const client = await connect()
-    await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
-    client.send({ kind: 'subscribe', sessionId: info.id, replayMode: 'tail-backfill' })
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
-
-    const replays = client.frames.filter(
-      (f): f is Extract<WsServerFrame, { kind: 'replay' }> =>
-        f.kind === 'replay' && f.sessionId === info.id,
-    )
-    expect(replays).toHaveLength(1)
-    expect(replays[0].tail).toBeUndefined()
-    expect(replays[0].backfill).toBeUndefined()
-    expect(replays[0].messages).toHaveLength(50)
     await client.close()
   })
 
@@ -518,7 +292,10 @@ describe('WebSocket multiplexer', () => {
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done')
+    await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id,
+    )
 
     client.send({ kind: 'unsubscribe', sessionId: info.id })
     // Wait for a real I/O turn so the unsubscribe frame has been READ and
@@ -570,12 +347,13 @@ describe('WebSocket multiplexer', () => {
     await client.close()
   })
 
-  it('answers a served subscribe, and re-serves the replay on a duplicate', async () => {
+  it('answers a served subscribe, and re-attaches (already-live) on a duplicate', async () => {
     // A subscribe is per-connection and the caller's listener may have attached
-    // AFTER the first burst (a panel remount, StrictMode's double mount, a
-    // resume whose replay landed before <Chat> existed). Only the server can
-    // know, so a duplicate must both answer and re-serve rather than being
-    // swallowed — that silence is what left resumed panels blank.
+    // AFTER the first subscribe (a panel remount, StrictMode's double mount, a
+    // resume whose ack landed before <Chat> existed). Only the server can
+    // know, so a duplicate must be answered with the already-live ack + the
+    // pending-request re-broadcast rather than being swallowed — that silence
+    // is what left resumed panels blank.
     const info = sm.create({})
     sm.send(info.id, 'hello')
     mockHandles[0].emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
@@ -588,39 +366,46 @@ describe('WebSocket multiplexer', () => {
     const served = await waitForFrame(client.frames, (f) => f.kind === 'subscribe-result' && f.sessionId === info.id)
     if (served.kind !== 'subscribe-result') throw new Error('narrowing')
     expect(served).toMatchObject({ ok: true, reason: 'served' })
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
 
-    // Discard the first burst so the re-serve is unambiguous.
     client.frames.length = 0
     client.send({ kind: 'subscribe', sessionId: info.id })
     const again = await waitForFrame(client.frames, (f) => f.kind === 'subscribe-result' && f.sessionId === info.id)
     if (again.kind !== 'subscribe-result') throw new Error('narrowing')
     expect(again).toMatchObject({ ok: true, reason: 'already-live' })
-    const replay = await waitForFrame(client.frames, (f) => f.kind === 'replay' && f.sessionId === info.id)
-    if (replay.kind !== 'replay') throw new Error('narrowing')
-    expect(replay.messages.length).toBeGreaterThanOrEqual(3)
+    // The duplicate still delivers the attached handshake (the reconnect
+    // catch-up trigger) and never re-serves transcript history.
+    await waitForFrame(client.frames, (f) => f.kind === 'attached' && f.sessionId === info.id)
+    expect(
+      client.frames.some((f) => {
+        const kind = (f as { kind: string }).kind
+        return kind === 'replay' || kind === 'replay-done'
+      }),
+    ).toBe(false)
     await client.close()
   })
 
-  it('subscribing to a known-but-dormant session auto-resumes it and serves a replay (no error)', async () => {
+  it('subscribing to a known-but-dormant session auto-resumes it and acks served (no error)', async () => {
     // The reported bug: opening a dormant session mounts the Chat panel,
     // which subscribes immediately, while POST /resume is still in flight.
-    // The server used to answer that subscribe with `error` + empty
-    // `replay-done`, and the client never re-subscribed (its hub only
-    // re-subscribes on reconnect) — leaving a white screen. Now the
-    // subscribe should ensure the session is loaded first.
+    // The server used to answer that subscribe with an `error` frame, and
+    // the client never re-subscribed (its hub only re-subscribes on
+    // reconnect) — leaving a white screen. Now the subscribe ensures the
+    // session is loaded first.
     const info = sm.create({})
     await sm.unload(info.id) // → known-but-dormant (persisted, not in memory)
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     // Subscribe WITHOUT any explicit /resume — the server must revive it.
     client.send({ kind: 'subscribe', sessionId: info.id })
-    // The auto-resume broadcast + the replay terminating, in either order.
+    // The auto-resume broadcast + the subscribe ack, in either order.
     await waitForFrame(
       client.frames,
       (f) => f.kind === 'session-created' && f.session?.id === info.id,
     )
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+    await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.ok === true,
+    )
     // No error frame for this session — the hard 404 that dead-ended the UI.
     expect(client.frames.filter((f) => f.kind === 'error' && f.sessionId === info.id)).toHaveLength(0)
     // And the session really is live again (respawned, not errored out).
@@ -634,13 +419,15 @@ describe('WebSocket multiplexer', () => {
     // pump exits), then the user resumes it. The `subs` entry must be
     // removed on natural teardown — a stale entry would make the next
     // subscribe a subs.has() no-op and the resumed session would never get
-    // (re)served a replay on this connection.
+    // (re)wired on this connection.
     const info = sm.create({})
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
-    // Discard the first subscribe's frames so the second replay is unambiguous.
+    await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.ok === true,
+    )
     client.frames.length = 0
 
     await sm.unload(info.id)
@@ -656,9 +443,11 @@ describe('WebSocket multiplexer', () => {
 
     // Re-subscribe (e.g. the client's resume recovery sends a fresh frame).
     client.send({ kind: 'subscribe', sessionId: info.id })
-    // Must be served a fresh replay, not swallowed by the subs.has() guard —
-    // arriving at replay-done without an error proves the subscribe ran.
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+    // Must be served (ok:true), not swallowed by the subs.has() guard.
+    await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.ok === true,
+    )
     expect(client.frames.filter((f) => f.kind === 'error' && f.sessionId === info.id)).toHaveLength(0)
 
     // And live frames now flow through the re-wired channel: emit on the
@@ -680,7 +469,10 @@ describe('WebSocket multiplexer', () => {
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done' && f.sessionId === info.id)
+    await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.ok === true,
+    )
     client.frames.length = 0
 
     client.send({ kind: 'unsubscribe', sessionId: info.id })
@@ -710,7 +502,10 @@ describe('WebSocket multiplexer', () => {
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
-    await waitForFrame(client.frames, (f) => f.kind === 'replay-done')
+    await waitForFrame(
+      client.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.ok === true,
+    )
 
     // Probe the internal subscriber count via the manager's info(). One
     // subscriber right now.
@@ -728,7 +523,7 @@ describe('WebSocket multiplexer', () => {
     expect(sm.get(info.id).subscribers).toBe(0)
   })
 
-  it('concurrent subscribes from two clients each get their own replay', async () => {
+  it('concurrent subscribes from two clients each get their own served ack', async () => {
     const info = sm.create({})
     sm.send(info.id, 'x')
     mockHandles[0].emit({ type: 'result' })
@@ -741,10 +536,19 @@ describe('WebSocket multiplexer', () => {
     a.send({ kind: 'subscribe', sessionId: info.id })
     b.send({ kind: 'subscribe', sessionId: info.id })
 
-    const replayA = await waitForFrame(a.frames, (f) => f.kind === 'replay')
-    const replayB = await waitForFrame(b.frames, (f) => f.kind === 'replay')
-    if (replayA.kind !== 'replay' || replayB.kind !== 'replay') throw new Error('narrowing')
-    expect(replayA.messages.length).toBe(replayB.messages.length)
+    const ackA = await waitForFrame(
+      a.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.ok === true,
+    )
+    const ackB = await waitForFrame(
+      b.frames,
+      (f) => f.kind === 'subscribe-result' && f.sessionId === info.id && f.ok === true,
+    )
+    if (ackA.kind !== 'subscribe-result' || ackB.kind !== 'subscribe-result') throw new Error('narrowing')
+    expect(ackA.reason).toBe('served')
+    expect(ackB.reason).toBe('served')
+    // Each connection holds its own subscriber on the manager.
+    expect(sm.get(info.id).subscribers).toBe(2)
 
     await a.close()
     await b.close()

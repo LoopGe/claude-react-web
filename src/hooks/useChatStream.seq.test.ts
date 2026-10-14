@@ -336,39 +336,6 @@ describe('useChatStream seq-window protocol', () => {
     expect(uuids).not.toContain(`${sid}-m4`)
   })
 
-  /** Open scenario ⑤: the P1 server still serves replay bursts on subscribe —
-   *  their payloads are dropped (the tail page is authoritative), while the
-   *  pending-request snapshots riding them are still harvested. */
-  it('drops replay payloads and keeps their permission snapshots', async () => {
-    const sid = 'seq-replay'
-    const t = transcript(sid)
-    for (let i = 0; i < 5; i++) t.msgs.push({ seq: i, msg: fakeMsg(sid, i) })
-    t.headSeq = 5
-
-    const onRequest = vi.fn()
-    const { result } = renderHook(() => useChatStream(sid, { onRequest, onResolved: vi.fn() }, false, false))
-    await waitFor(() => expect(result.current.messages).toHaveLength(5))
-
-    // A reconnect's replay burst lands AFTER the tail page: its messages
-    // must NOT double-apply (a uuid-keyed REPLAY_REPLACE here would diverge
-    // the ordered log from the seq window).
-    act(() => {
-      dispatchToSession(sid, {
-        kind: 'replay',
-        sessionId: sid,
-        messages: [fakeMsg(sid, 100), fakeMsg(sid, 101)],
-        permissions: [{ id: 'p1', kind: 'permission', toolName: 'Bash' }],
-      })
-      dispatchToSession(sid, { kind: 'replay-done', sessionId: sid })
-    })
-
-    expect(result.current.messages).toHaveLength(5)
-    expect(onRequest).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1' }))
-    const snap = getSessionStore(sid).getSnapshot()
-    expect(snap.oldestSeq).toBe(0)
-    expect(snap.newestSeq).toBe(4)
-  })
-
   // ── loadOlder (seq paging) ────────────────────────────────────────
 
   it('loadOlder pages before=oldestSeq and lets the window drive hasOlder', async () => {

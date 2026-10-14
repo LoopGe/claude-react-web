@@ -615,9 +615,9 @@ export interface Session {
   /** Server-minted uuids of user turns withdrawn by cancelQueued interrupts
    *  (most recent last, capped). Replayed to each NEW message-status
    *  subscriber as a synthetic `messages-withdrawn` frame so a tab that was
-   *  disconnected during the stop still evicts its bubbles: incremental
-   *  sinceUuid replay can never heal this, because the withdrawn messages
-   *  are gone from the ring and so are never re-sent to compare against. */
+   *  disconnected during the stop still evicts its bubbles: no later frame
+   *  or page ever re-sends the withdrawn messages, so this synthetic frame
+   *  is the only signal a reconnecting tab gets. */
   withdrawnUuids: string[]
   commandSubscribers: Set<Pushable<unknown>>
   /** Recent hook lifecycle events, kept outside chat history so the UI can
@@ -907,8 +907,9 @@ export interface SessionBroadcaster {
   resume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo>
   /** Snapshot of the live session's message history (main + sidechain,
    *  ordered), or null when the session is dormant. Read-only — the
-   *  duplicate-subscribe path uses it to re-serve a replay on a channel
-   *  this connection already holds, without wiring new subscribers. */
+   *  duplicate-subscribe path uses it to distinguish an already-live
+   *  channel from one the manager no longer serves, without wiring new
+   *  subscribers. */
   getHistory(id: string): SDKMessage[] | null
   /** Current seq-space cursor for a session, or null when no store exists
    *  (never ingested, never read). Cheap snapshot; backs the WS `attached`
@@ -923,7 +924,6 @@ export interface SessionBroadcaster {
   transcriptSeqOf?(sessionId: string, message: object): number | undefined
   subscribe(sessionId: string): {
     iterable: AsyncIterable<SDKMessage>
-    history: SDKMessage[]
     unsubscribe: () => void
   }
   subscribePermissions(sessionId: string): {
