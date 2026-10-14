@@ -30,6 +30,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
+import { SteeredStore } from './steered-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
 import { SessionOpLock } from './session-op-lock.js'
 import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
@@ -127,7 +128,7 @@ import {
   subagentTranscriptPath,
 } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
-import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
+import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -711,6 +712,30 @@ type ForkOpts = {
   forkFromLastSafe?: boolean
 }
 
+/** True when a user message's content is plain text only (string content, or
+ *  a block array of nothing but text blocks). Only such messages can steer:
+ *  hook `additionalContext` is a string — images and other block types would
+ *  be silently dropped by injection, so they must queue as next-turn prompts
+ *  (spec §6.1). Pure + exported for tests. */
+export function isSteerableUserText(msg: SDKUserMessage): boolean {
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (typeof content === 'string') return true
+  if (!Array.isArray(content)) return false
+  return content.every((b) => (b as { type?: string }).type === 'text')
+}
+
+/** Extract the plain text of a steerable user message (string content, or
+ *  text blocks joined with newlines). Callers gate on isSteerableUserText
+ *  first; a non-steerable message yields the empty string. */
+export function userTextOf(msg: SDKUserMessage): string {
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((b) => (b as { text?: string }).text ?? '')
+    .join('\n')
+}
+
 export class SessionManager {
   private sessions = new Map<string, Session>()
   private historyCap: number
@@ -734,6 +759,7 @@ export class SessionManager {
   private healthMonitor: SessionHealthMonitor
   private store?: SessionStore
   private promptUuidStore: PromptUuidStore
+  private steeredStore: SteeredStore
   private turnAnchorStore: TurnAnchorStore
   private resultFrameStore: ResultFrameStore
   /** Sidecar store for shadow-repo file snapshots. Holds per-session
@@ -828,6 +854,10 @@ export class SessionManager {
     this.deleteLockMaxWaitMs = opts.deleteLockMaxWaitMs ?? DELETE_LOCK_MAX_WAIT_MS
     this.store = opts.store ?? new SessionStore()
     this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
+    // Mid-run steering 的回放 sidecar（spec §8.1）——steered 消息不在 CLI
+    // JSONL 里（additionalContext 落盘为不可渲染的 attachment），这是它
+    // 唯一的磁盘回放来源。
+    this.steeredStore = new SteeredStore(this.store.getDir(), this.historyCap)
     this.turnAnchorStore = new TurnAnchorStore(this.store.getDir(), this.historyCap)
     this.resultFrameStore = new ResultFrameStore(this.store.getDir(), this.historyCap)
     // Shadow-repo file snapshots: build the store and service against the
@@ -2835,6 +2865,7 @@ export class SessionManager {
       tasklistSubscribers: new Set(),
       messageStatusSubscribers: new Set(),
       withdrawnUuids: [],
+      steeredInFlight: new Map(),
       commandSubscribers: new Set(),
       hookRuns: [],
       hookRunSubscribers: new Set(),
@@ -3163,6 +3194,9 @@ export class SessionManager {
     // missing only the rewind-to-this-message option. Spec: capture before
     // tools run — in practice the SDK takes 1–3s to start the first
     // tool_use, while capture typically finishes in <500ms.
+    // (Steered messages never get an anchor: they are always mid-turn here,
+    // so they always take the defer path — and trySteerMessage removes the
+    // deferred uuid the moment the steer decision lands.)
     this.captureAnchor(id, s, userMsg.uuid!)
     this.dispatchUserMessage(s, userMsg)
     // dispatchUserMessage → pushToSession → stampReceivedAt stamps receivedAt
@@ -3279,6 +3313,13 @@ export class SessionManager {
     if (s.lastPromptSuggestion != null) {
       s.lastPromptSuggestion = undefined
     }
+    // Mid-run steering route (spec §6.1): a plain-text message sent while a
+    // turn is active goes into the supplement queue (injected at the next
+    // tool-hook boundary) INSTEAD of the SDK input queue. All downstream
+    // bookkeeping a queued prompt gets — SDK enqueue, promptUuids pairing,
+    // snapshot anchor — is skipped; the turn-end fallback re-routes anything
+    // undelivered back through the normal path.
+    if (this.trySteerMessage(s, userMsg)) return
     const forSdk = { ...userMsg }
     s.handle.enqueueUserMessage(forSdk)
     // Direct-hand-off case: the consume hook already ran, synchronously,
@@ -3288,6 +3329,42 @@ export class SessionManager {
     if (typeof consumedAt === 'number') stampConsumedAt(userMsg, consumedAt)
     this.pushToSession(s, userMsg)
     this.recordPromptUuid(s, userMsg)
+  }
+
+  /** Try to route a mid-turn plain-text message into steering (spec §6.1).
+   *  Returns true when the message took the steering path (broadcast + ring
+   *  still happen via pushToSession); false means the caller must run the
+   *  normal queue path. Four conditions (plan Task 6 / pre-flight ruling):
+   *  the global switch, the provider's steering member, plain-text-only
+   *  content (additionalContext is a string — images cannot ride it), and a
+   *  live turn. enqueue()'s own admission/version gate is the final arbiter
+   *  — a false return here is a transparent fallback, never an error. */
+  private trySteerMessage(s: Session, userMsg: SDKUserMessage): boolean {
+    // Task 11 adds the typed config field; until then the cast keeps this
+    // compiling with default-on semantics (undefined !== false).
+    if ((defaultConfig as { steering?: boolean }).steering === false) return false
+    const enqueue = (s.handle as ProviderSessionHandle & {
+      enqueueSupplement?: (entry: { uuid: string; text: string }) => boolean
+    }).enqueueSupplement
+    if (typeof enqueue !== 'function') return false
+    if (!isSteerableUserText(userMsg)) return false
+    if (!(s.pendingTurns > 0 || s.turnActive === true)) return false
+    if (!userMsg.uuid) return false // 无法跟踪的消息不 steer
+    const text = userTextOf(userMsg)
+    if (!enqueue.call(s.handle, { uuid: userMsg.uuid, text })) return false
+    const steeredAt = stampSteeredAt(userMsg)
+    s.steeredInFlight.set(userMsg.uuid, userMsg)
+    // A steered message never starts a turn, so it must not keep the snapshot
+    // anchor captureAnchor just deferred for it (steering is mid-turn-only,
+    // so the defer path is the only one it can have taken). Drop it now, at
+    // the moment the steer decision is known (spec §6.1 skip list).
+    if (s.pendingSnapshotAnchors?.length) {
+      s.pendingSnapshotAnchors = s.pendingSnapshotAnchors.filter((u) => u !== userMsg.uuid)
+    }
+    void this.steeredStore.record(s.id, { u: userMsg.uuid, text, steeredAt })
+    log.info(`[session ${s.id}] steered ${userMsg.uuid.slice(0, 8)} mid-turn (${text.length} chars)`)
+    this.pushToSession(s, userMsg)
+    return true
   }
 
   /** Record a just-sent top-level prompt's server-minted uuid (`u`) as an
@@ -4655,6 +4732,7 @@ export class SessionManager {
         return tail.map(projectHistoryFrame)
       })(),
       withdrawnUuids: s ? [...s.withdrawnUuids] : [],
+      steeredInFlight: s ? [...s.steeredInFlight.keys()] : [],
       promptUuids: (s?.promptUuids ?? []).map((e) => ({ u: e.u, v: e.v })),
       tasks: (s ? [...s.tasks.values()] : []).map((t) => ({
         taskId: t.taskId,

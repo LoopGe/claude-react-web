@@ -12,6 +12,7 @@ import type {
   PermissionResult,
   PermissionUpdate,
   SDKMessage,
+  SDKUserMessage,
   UserDialogResult,
 } from '@anthropic-ai/claude-agent-sdk'
 import type { Pushable } from './pushable.js'
@@ -95,6 +96,9 @@ export interface DebugSessionDetail extends DebugSessionSummary {
     consumedAt?: number
   }>
   withdrawnUuids: string[]
+  /** Uuids of in-flight steered messages (debug projection of
+   *  Session.steeredInFlight). */
+  steeredInFlight: string[]
   /** app-level uuid → SDK on-disk uuid pairs (the rewind-files mapping). */
   promptUuids: Array<{ u: string; v?: string }>
   tasks: Array<{
@@ -747,6 +751,12 @@ export interface Session {
    *  sessions spawned before this field existed (treated as empty → no bridge,
    *  signature fallback handles dedup). */
   promptUuids?: PromptUuidEntry[]
+  /** In-flight steered messages (uuid → ring message object), populated by
+   *  SessionManager.trySteerMessage and cleared on injected / requeued /
+   *  withdrawn (spec §6.1). Kept as a Map rather than a ring scan so the
+   *  turn-end fallback can recover the original message even after ring
+   *  eviction (historyCap). */
+  steeredInFlight: Map<string, SDKUserMessage>
   /** Snapshot anchor captures deferred because send() fired while the
    *  session was working (pendingTurns>0, queueDepth>0, etc). Each uuid
    *  is a user message that needs capture+recordAnchor when the turn

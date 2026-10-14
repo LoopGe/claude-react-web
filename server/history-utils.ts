@@ -83,6 +83,25 @@ export function stampConsumedAt(msg: unknown, at?: number): number {
   return (m as { consumedAt?: number }).consumedAt ?? at ?? Date.now()
 }
 
+/**
+ * Stamp that this user message took the mid-run steering path (injected into
+ * the CURRENT turn at a tool-hook boundary instead of queueing as a
+ * next-turn prompt — spec §6.1). Mutually exclusive with `consumedAt` in the
+ * normal flow: a steered message never comes off the SDK input queue; a
+ * turn-end requeue re-enters the queue and adds `requeuedAt`, after which the
+ * normal queued→consumed stamps apply.
+ *
+ * Mirrors stampConsumedAt: applied to the ring object, added only when
+ * absent, returns the effective value.
+ */
+export function stampSteeredAt(msg: unknown, at?: number): number {
+  const m = msg as { steeredAt?: number }
+  if (m && typeof m === 'object' && m.steeredAt == null) {
+    m.steeredAt = at ?? Date.now()
+  }
+  return m.steeredAt ?? at ?? Date.now()
+}
+
 /** Extract `parent_tool_use_id` from an SDK message defensively.
  *  Returns the value for user/assistant messages; undefined for types
  *  that don't carry the field. Server-side SDKMessage is a discriminated
