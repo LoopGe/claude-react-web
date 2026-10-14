@@ -34,9 +34,17 @@ function stubHolder(): TranscriptHolder {
   }
 }
 
-/** Wait for the sidecar's fire-and-forget append queue to drain. */
-async function drain(): Promise<void> {
-  await new Promise((r) => setTimeout(r, 5))
+/** Deterministically drain the sidecar's fire-and-forget append queue: the
+ *  queue is serial, so awaiting one MORE append guarantees every earlier
+ *  queued write has landed — a fixed sleep does not (it raced the fs
+ *  callbacks under a loaded test box and flaked the row-count assertions). */
+async function drain(sidecar: TranscriptSidecar): Promise<void> {
+  await sidecar.appendRow({ drainSentinel: true })
+}
+
+/** Drop the drain() sentinel row from a loaded row list. */
+function withoutSentinel(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return rows.filter((r) => r.drainSentinel !== true)
 }
 
 function userMsg(uuid: string, text = 'hi'): Record<string, unknown> {
@@ -133,8 +141,8 @@ describe('recordTranscriptMessage (seq assignment gate)', () => {
     const t = holder(dir)
     expect(recordTranscriptMessage(t, userMsg('u1'))).toBe(0)
     expect(recordTranscriptMessage(t, assistantMsg('a1'))).toBe(1)
-    await drain()
-    const rows = await new TranscriptSidecar(dir, 'sid-1').load()
+    await drain(t.sidecar)
+    const rows = withoutSentinel(await new TranscriptSidecar(dir, 'sid-1').load())
     expect(rows.map((r) => r.seq)).toEqual([0, 1])
     expect(rows[0].uuid).toBe('u1')
     expect(rows[0].type).toBe('user')
@@ -145,8 +153,8 @@ describe('recordTranscriptMessage (seq assignment gate)', () => {
     expect(recordTranscriptMessage(t, userMsg('u1'))).toBe(0)
     expect(recordTranscriptMessage(t, userMsg('u1'))).toBe(0)
     expect(recordTranscriptMessage(t, userMsg('u2'))).toBe(1)
-    await drain()
-    const rows = await new TranscriptSidecar(dir, 'sid-1').load()
+    await drain(t.sidecar)
+    const rows = withoutSentinel(await new TranscriptSidecar(dir, 'sid-1').load())
     expect(rows).toHaveLength(2)
   })
   it('allocates nothing for ephemeral / sidechain / non-broadcast system frames', async () => {

@@ -5648,6 +5648,54 @@ describe('SessionManager', () => {
         const forkJsonl = join(dir, 'projects', encodeCwd(sourceCwd), `${forked.id}.jsonl`)
         writeFileSync(forkJsonl, rows)
 
+        // LIVE USE between fork and restart (the round-3 regression): the
+        // fork's first post-fork prompt + echo + result. onPromptEcho saves
+        // the WHOLE in-memory promptUuids list with writeAtomic REPLACE —
+        // the live session must carry the bridged inherited mappings or the
+        // save wipes them off disk right here.
+        sm.send(forked.id, 'after fork')
+        const forkHandle = mockHandles[mockHandles.length - 1]
+        forkHandle.emit({
+          type: 'user',
+          uuid: 'sdk-v-fork-1',
+          parent_tool_use_id: null,
+          message: { role: 'user', content: 'after fork' },
+        })
+        forkHandle.emit({ type: 'result', subtype: 'success', uuid: 'post-fork-r', session_id: forked.id })
+        expect(await waitFor(() => sm.get(forked.id).lastTurnAt !== undefined)).toBe(true)
+
+        const forkMappingFile = join(dir, 'prompt-uuids', `${forked.id}.json`)
+        const readForkMappings = (): Array<{ u: string; v?: string }> =>
+          existsSync(forkMappingFile) ? (JSON.parse(readFileSync(forkMappingFile, 'utf8')) as Array<{ u: string; v?: string }>) : []
+        // The echo's REPLACE save kept the inherited mapping AND added the
+        // new prompt's pairing.
+        expect(await waitFor(() => readForkMappings().some((e) => e.v === 'sdk-v-fork-1'))).toBe(true)
+        const forkMappings = readForkMappings()
+        expect(forkMappings.some((e) => e.v === 'sdk-v-1' && e.u === serverU)).toBe(true)
+        const forkNewU = forkMappings.find((e) => e.v === 'sdk-v-fork-1')!.u
+
+        // The live fork's seq space: pre-seeded rows + the live prompt + its
+        // result (the echo frame is dropped by the pump — no seq).
+        const liveWin = await sm.getTranscriptWindow(forked.id)
+        expect(liveWin.totalCount).toBe(4)
+        expect(liveWin.messages.map((m) => [(m.msg as { uuid?: string }).uuid, m.seq])).toEqual([
+          [serverU, 0],
+          ['sdk-a1', 1],
+          [forkNewU, 2],
+          ['post-fork-r', 3],
+        ])
+
+        // The SDK appends the new prompt to the fork's JSONL — extend the
+        // copy before the restart reconcile.
+        writeFileSync(
+          forkJsonl,
+          [
+            ...rows.split('\n').filter((l) => l.trim() !== ''),
+            JSON.stringify({ type: 'user', uuid: 'sdk-v-fork-1', sessionId: forked.id, parent_tool_use_id: null, message: { role: 'user', content: 'after fork' } }),
+            '',
+          ].join('\n'),
+        )
+
         // Fork restart: a fresh manager over the same state dir reconciles
         // the fork's seq store from its sidecar + its own JSONL, rewriting
         // the copied `v` rows through the FORK's (bridged) prompt-uuid store.
@@ -5656,14 +5704,17 @@ describe('SessionManager', () => {
         const sm2 = new SessionManager({ store: store2 })
         try {
           const win = await sm2.getTranscriptWindow(forked.id)
-          // The regression: without the bridge the copied `v` uuid misses
-          // dedup and the inherited prompt is appended AGAIN at a fresh tail
-          // seq (totalCount 3, two user rows).
-          expect(win.totalCount).toBe(2)
-          expect(win.messages.map((m) => m.seq)).toEqual([0, 1])
+          // The regression: without the bridge (or with the live echo wiping
+          // it) the copied `sdk-v-1` uuid misses dedup and the inherited
+          // prompt is appended AGAIN at a fresh tail seq (totalCount 5, two
+          // user rows carrying `sdk-v-1` / `serverU` respectively).
+          expect(win.totalCount).toBe(4)
+          expect(win.messages.map((m) => m.seq)).toEqual([0, 1, 2, 3])
           const users = win.messages.filter((m) => (m.msg as { type?: string }).type === 'user')
-          expect(users).toHaveLength(1)
-          expect((users[0].msg as { uuid?: string }).uuid).toBe(serverU)
+          expect(users.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual([serverU, forkNewU])
+          // No raw SDK uuid may survive the rewrite.
+          expect(win.messages.some((m) => (m.msg as { uuid?: string }).uuid === 'sdk-v-1')).toBe(false)
+          expect(win.messages.some((m) => (m.msg as { uuid?: string }).uuid === 'sdk-v-fork-1')).toBe(false)
         } finally {
           await sm2.shutdown()
         }

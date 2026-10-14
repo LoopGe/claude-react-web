@@ -2118,7 +2118,7 @@ export class SessionManager {
     // the source's full renderable transcript, which is what the copy will
     // contain.
     const forkId = randomUUID()
-    await this.preseedForkTranscript(forkId, id, { seed: opts?.historySeed })
+    const bridgedPromptUuids = await this.preseedForkTranscript(forkId, id, { seed: opts?.historySeed })
     const forkInfo = this.spawn(
       forkId,
       forkOpts,
@@ -2138,7 +2138,13 @@ export class SessionManager {
       // slot, never overflowing the cap.
       id,
       undefined, // evictingSource
-      undefined, // promptUuids
+      // promptUuids: seed the live fork's in-memory list with the bridged
+      // inherited mappings (round 3). onPromptEcho persists the WHOLE
+      // in-memory list with writeAtomic REPLACE semantics, so without this
+      // seed the fork's first post-fork echo would overwrite the sidecar
+      // file and wipe the bridged mappings off disk — reintroducing the
+      // restart duplication on the normal fork→send→restart flow.
+      bridgedPromptUuids,
       opts?.replacesSource,
       // Carry the parent's tool-surface profile so a fork doesn't silently
       // drop a configured built-in tool set (RAM-only, like skillOverride).
@@ -2617,8 +2623,21 @@ export class SessionManager {
     // same afterUuid filter every Side-Chat history read applies). Without
     // this, a first live message would take seq 0 ahead of the inherited rows.
     const sideChatId = randomUUID()
-    await this.preseedForkTranscript(sideChatId, parentId, { afterUuid: forkBoundaryUuid })
-    return this.spawn(sideChatId, sideChatOpts)
+    const bridgedPromptUuids = await this.preseedForkTranscript(sideChatId, parentId, { afterUuid: forkBoundaryUuid })
+    // promptUuids (round 3): seed the live Side Chat's in-memory list with
+    // the bridged mappings — same onPromptEcho writeAtomic-REPLACE rationale
+    // as fork().
+    return this.spawn(
+      sideChatId,
+      sideChatOpts,
+      undefined, // customEnv
+      undefined, // historySeed
+      undefined, // skillOverride
+      undefined, // prefs
+      undefined, // joinGroupOf
+      undefined, // evictingSource
+      bridgedPromptUuids,
+    )
   }
 
   /** Fire-and-forget capture of git anchors at session spawn: the
@@ -2674,8 +2693,12 @@ export class SessionManager {
     /** On resume: the promptUuids sidecar loaded from disk, used to seed
      *  `session.promptUuids` (so subsequent sends append to the pre-restart
      *  list) AND — at the resume() call site — to rewrite the historySeed's
-     *  prompt uuids (SDK V → server U). Undefined for every other caller
-     *  (fresh spawn / fork / clear start with an empty list). */
+     *  prompt uuids (SDK V → server U). On fork / Side Chat: the mappings
+     *  preseedForkTranscript bridged from the source — seeding the live
+     *  session's in-memory list is what keeps onPromptEcho's whole-list
+     *  writeAtomic save from wiping the bridged sidecar file on the fork's
+     *  first post-fork echo. Undefined for every other caller (fresh spawn /
+     *  clear start with an empty list). */
     promptUuids?: PromptUuidEntry[],
     /** Set by the crash-recovery "Fork from last completed turn" button: the
      *  source session X is dead and the fork Y is its continuation, so the
@@ -6236,22 +6259,31 @@ export class SessionManager {
    *  pre-seeded rows") because the server's canonical identity for a user
    *  prompt is `u` everywhere else (ring, withdraw/evict, rewindFiles) —
    *  keeping `v` would mix identity spaces across the fork's transcript and
-   *  break uuid-keyed eviction for inherited rows. */
+   *  break uuid-keyed eviction for inherited rows.
+   *
+   *  Returns the bridged entries so the caller can ALSO seed the live
+   *  session's in-memory `promptUuids` at spawn (round 3): onPromptEcho
+   *  persists the whole in-memory list with writeAtomic REPLACE semantics,
+   *  so without the in-memory seed the fork's first post-fork echo would
+   *  overwrite the sidecar file and wipe the bridged mappings off disk —
+   *  reintroducing the very duplication this pre-seed exists to prevent,
+   *  on the normal fork→send→restart flow. */
   private async preseedForkTranscript(
     forkId: string,
     sourceId: string,
     opts: { seed?: SDKMessage[]; afterUuid?: string } = {},
-  ): Promise<void> {
+  ): Promise<PromptUuidEntry[]> {
     const t = this.getOrCreateTranscript(forkId)
-    if (t.reconciled) return
+    if (t.reconciled) return []
     try {
       t.store.hydrate(foldSidecarRows(await t.sidecar.load()))
       const entries = opts.seed ?? (await this.composeTranscriptEntries(sourceId, opts.afterUuid))
       backfillFromEntries(t, entries)
-      await this.bridgeInheritedPromptUuids(forkId, sourceId, entries)
+      return await this.bridgeInheritedPromptUuids(forkId, sourceId, entries)
     } catch (err) {
       // Degraded but usable — same posture as ensureTranscriptReconciled.
       log.warn(`[session ${forkId}] transcript pre-seed failed: ${(err as Error).message ?? err}`)
+      return []
     } finally {
       t.reconciled = true
     }
@@ -6265,22 +6297,24 @@ export class SessionManager {
    *  mappings whose `u` actually appears in the composed rows are bridged,
    *  so a discard-style truncated seed inherits only the kept prompts'
    *  mappings. The fork is not live yet (pre-seed runs before spawn), so
-   *  load+save cannot race a concurrent send-append. */
+   *  load+save cannot race a concurrent send-append. Returns the bridged
+   *  mappings for the caller to seed the live session's `promptUuids`
+   *  with (see preseedForkTranscript's round-3 note). */
   private async bridgeInheritedPromptUuids(
     forkId: string,
     sourceId: string,
     entries: readonly SDKMessage[],
-  ): Promise<void> {
+  ): Promise<PromptUuidEntry[]> {
     const sourceMappings = await this.promptUuidStore.load(sourceId)
-    if (!sourceMappings || sourceMappings.length === 0) return
+    if (!sourceMappings || sourceMappings.length === 0) return []
     const rowUuids = new Set<string>()
     for (const m of entries) {
       const u = (m as { uuid?: unknown } | undefined)?.uuid
       if (typeof u === 'string') rowUuids.add(u)
     }
-    if (rowUuids.size === 0) return
+    if (rowUuids.size === 0) return []
     const inherited = sourceMappings.filter((e) => rowUuids.has(e.u))
-    if (inherited.length === 0) return
+    if (inherited.length === 0) return []
     const existing = (await this.promptUuidStore.load(forkId)) ?? []
     await this.promptUuidStore.save(
       forkId,
@@ -6289,6 +6323,7 @@ export class SessionManager {
     log.info(
       `[session ${forkId}] bridged ${inherited.length} inherited prompt uuid mapping(s) from ${sourceId}`,
     )
+    return inherited
   }
 
   /** Page the session's durable transcript by seq. `before` is an exclusive
