@@ -35,6 +35,25 @@ export function useSessionField<K extends keyof SessionSnapshot>(
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
+/** Subscribe to a value DERIVED from the session snapshot. Re-renders only
+ *  when the derived value changes (Object.is), so derive a primitive — e.g.
+ *  `snap => snap.activePhase != null` lets a component react to a turn
+ *  starting/ending without re-rendering on every phase transition.
+ *  `select` must be referentially stable (a module-level function); an inline
+ *  arrow would re-bind getSnapshot on every render. */
+export function useSessionSelector<T>(
+  sessionId: string,
+  select: (snapshot: SessionSnapshot) => T,
+): T {
+  const store = sessionStoreRegistry.getOrCreate(sessionId)
+  const subscribe = useCallback(
+    (listener: () => void) => store.subscribe(listener),
+    [store],
+  )
+  const getSnapshot = useCallback(() => select(store.getSnapshot()), [store, select])
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
 /** `useSessionField` for call sites that may not have a session id (tests,
  *  static transcripts): without one the subscription is inert and returns
  *  null. Same re-render contract as useSessionField when a id IS provided.

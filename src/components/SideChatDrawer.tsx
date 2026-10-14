@@ -10,7 +10,7 @@ import { memo, useEffect, useRef, useState, useCallback } from 'react'
 import type { SessionInfo } from '../types'
 import type { ChatStream } from '../hooks/useChatStream'
 import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
-import { MessageList, WorkingBubble } from './MessageList'
+import { MessageList, LiveWorkingBubble } from './MessageList'
 import { OlderHistoryFloat } from './message-list/transcript-chrome'
 import { PermissionDialog } from './PermissionDialog'
 import { RichPromptInput } from './RichPromptInput'
@@ -300,12 +300,14 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         <AnimatePresence initial={false}>
           {mountBubble && (
             <BottomCardMotion key="working-bubble" fixed>
-              <WorkingBubble
+              {/* Raw phase (no dwell) and no thinking-token hint — the
+                  drawer's behaviour before the telemetry moved into the
+                  leaf. */}
+              <LiveWorkingBubble
+                sessionId={session.id}
                 active={session.working}
                 startedAt={session.workingSince}
                 activeSubagents={stream.activeSubagents}
-                tokenRate={stream.tokenRate}
-                activePhase={stream.activePhase}
                 waiting={waiting}
                 apiRetry={stream.apiRetry}
               />

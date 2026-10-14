@@ -55,7 +55,22 @@ vi.mock('./useWsHub', () => ({
 
 // Import AFTER mock so useChatStream picks up our stub.
 import { useChatStream, cacheClear, type PermissionHandlers } from './useChatStream'
-import { getSessionStore } from '../session-store/selectors'
+import { getSessionStore, useSessionField } from '../session-store/selectors'
+
+/** `useChatStream` plus the live-turn telemetry it used to expose.
+ *
+ *  `tokenRate` / `activePhase` left ChatStream (the WorkingBubble leaf now
+ *  subscribes to them directly, so Chat no longer re-renders per rate sample
+ *  or phase change). The fields were always plain `useSessionField`
+ *  subscriptions on the store this hook feeds, so reading them the same way
+ *  here keeps every rate / phase assertion below testing exactly what it did:
+ *  the value the hook's WS handling put in the store. */
+function useChatStreamWithTelemetry(...args: Parameters<typeof useChatStream>) {
+  const stream = useChatStream(...args)
+  const tokenRate = useSessionField(args[0], 'tokenRate')
+  const activePhase = useSessionField(args[0], 'activePhase')
+  return { ...stream, tokenRate, activePhase }
+}
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -202,7 +217,7 @@ describe('useChatStream', () => {
 
   it('resets messages when sessionId changes', () => {
     const { result, rerender } = renderHook(
-      ({ sid }) => useChatStream(sid, noopPerms, false, false),
+      ({ sid }) => useChatStreamWithTelemetry(sid, noopPerms, false, false),
       { initialProps: { sid: 's1' } },
     )
 
@@ -363,7 +378,7 @@ describe('useChatStream', () => {
 
   it('computes token rate from stream_event message_delta', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms, false, false),
+      () => useChatStreamWithTelemetry('s1', noopPerms, false, false),
     )
 
     // Dispatch both message_delta events in a single act() so they hit the
@@ -410,7 +425,7 @@ describe('useChatStream', () => {
 
   it('sidechain content_block_start events do not flip the top-level phase', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms, false, false),
+      () => useChatStreamWithTelemetry('s1', noopPerms, false, false),
     )
 
     act(() => {
@@ -453,9 +468,51 @@ describe('useChatStream', () => {
     })
   })
 
-  it('sidechain text starts seed the char-estimate rate without flipping the parent phase', async () => {
+  it('exposes only hasActivePhase: phase transitions inside a turn do not re-render the host', async () => {
     const { result } = renderHook(
       () => useChatStream('s1', noopPerms, false, false),
+    )
+    const blockStart = (content_block: Record<string, unknown>) => ({
+      kind: 'message',
+      sessionId: 's1',
+      message: { type: 'stream_event', event: { type: 'content_block_start', content_block } },
+    })
+
+    act(() => {
+      dispatchToSession('s1', { kind: 'replay', sessionId: 's1', messages: [] })
+      dispatchToSession('s1', { kind: 'replay-done', sessionId: 's1' })
+    })
+    expect(result.current.hasActivePhase).toBe(false)
+
+    act(() => { dispatchToSession('s1', blockStart({ type: 'thinking' })) })
+    await waitFor(() => expect(result.current.hasActivePhase).toBe(true))
+
+    // thinking → writing → tool_use: the store's activePhase changes three
+    // times, the boolean never does — so the hook's host (Chat) is not
+    // re-rendered and hands back the very same stream object.
+    const during = result.current
+    act(() => {
+      dispatchToSession('s1', blockStart({ type: 'text' }))
+      dispatchToSession('s1', {
+        kind: 'message',
+        sessionId: 's1',
+        message: { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hello' } } },
+      })
+      dispatchToSession('s1', blockStart({ type: 'tool_use', name: 'Bash' }))
+    })
+    expect(getSessionStore('s1').getSnapshot().activePhase).toEqual({ type: 'tool_use', name: 'Bash' })
+    expect(result.current).toBe(during)
+
+    // The turn ends → false.
+    act(() => {
+      dispatchToSession('s1', { kind: 'message', sessionId: 's1', message: { type: 'result', uuid: 'r-phase' } })
+    })
+    await waitFor(() => expect(result.current.hasActivePhase).toBe(false))
+  })
+
+  it('sidechain text starts seed the char-estimate rate without flipping the parent phase', async () => {
+    const { result } = renderHook(
+      () => useChatStreamWithTelemetry('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -530,7 +587,7 @@ describe('useChatStream', () => {
 
   it('resets token rate on result (message_stop clears baseline)', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms, false, false),
+      () => useChatStreamWithTelemetry('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -585,7 +642,7 @@ describe('useChatStream', () => {
 
   it('char-fallback rate uses the sliding window with the 500ms throttle', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms, false, false),
+      () => useChatStreamWithTelemetry('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -658,7 +715,7 @@ describe('useChatStream', () => {
 
   it('freezes the displayed rate across a long idle (tool-call gap)', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms, false, false),
+      () => useChatStreamWithTelemetry('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -698,7 +755,7 @@ describe('useChatStream', () => {
 
   it('recomputes from fresh samples after a long idle (pre-idle samples pruned)', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms, false, false),
+      () => useChatStreamWithTelemetry('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -744,7 +801,7 @@ describe('useChatStream', () => {
 
   it('estimate→real seam: first real delta resets the window and keeps the displayed value', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms, false, false),
+      () => useChatStreamWithTelemetry('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -801,7 +858,7 @@ describe('useChatStream', () => {
 
   it('keeps the frozen rate when post-idle deltas report no token growth', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms, false, false),
+      () => useChatStreamWithTelemetry('s1', noopPerms, false, false),
     )
 
     const dateSpy = vi.spyOn(Date, 'now')
@@ -848,7 +905,7 @@ describe('useChatStream', () => {
 
   it('resets all state on reset()', async () => {
     const { result } = renderHook(
-      () => useChatStream('s1', noopPerms, false, false),
+      () => useChatStreamWithTelemetry('s1', noopPerms, false, false),
     )
 
     // Populate state.

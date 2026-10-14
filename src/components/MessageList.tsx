@@ -9,7 +9,6 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
-import { AnimatePresence } from 'motion/react'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
 import { TaskInfoProvider } from '../hooks/useTaskInfo'
@@ -25,7 +24,8 @@ import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/nor
 import { useOptionalSessionField } from '../session-store/selectors'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { StreamingFooter, StreamingRegion, type StreamingFooterVariant } from './message-list/transcript-chrome'
+import { StreamingFooter, type StreamingFooterVariant } from './message-list/transcript-chrome'
+import { OverlayStreamingRegion } from './message-list/OverlayStreamingRegion'
 import { ChatEmptyState } from './ChatEmptyState'
 import { EasterEggGame } from './EasterEggGame'
 import { ResultConsumedCtx } from './message-list/result-consumed-context'
@@ -51,8 +51,10 @@ import { useTranscriptScroll } from './message-list/useTranscriptScroll'
 export type { ActiveSubagent } from '../session-store/types'
 /** `WorkingBubble` moved to ./message-list/WorkingBubble — it is turn-scoped
  *  panel chrome, not a transcript row. Re-exported here so the panels that
- *  render both keep a single import site. */
-export { WorkingBubble } from './message-list/WorkingBubble'
+ *  render both keep a single import site. The panels mount the
+ *  `LiveWorkingBubble` leaf, which subscribes to the live-turn telemetry
+ *  itself (see there). */
+export { WorkingBubble, LiveWorkingBubble } from './message-list/WorkingBubble'
 
 /** Stable empty sentinel for `itemToVirtIdx` while no search is live. Same
  *  referential-stability rationale: a fresh `new Map()` per streaming flush would
@@ -170,9 +172,11 @@ interface Props {
    *  When provided, a ready transcript gets one subtle reveal on mount/load. */
   transcriptRevealKey?: string
   /** Owning session id. When provided, the live streaming text is subscribed
-   *  HERE (useOptionalSessionField) instead of flowing down as a prop — the
-   *  12.5 Hz LIVE_TURN_FLUSH then re-renders only this subtree, not the
-   *  whole Chat body above it. When omitted (tests, static transcripts) the
+   *  from the store (useOptionalSessionField) instead of flowing down as a
+   *  prop — by the OverlayStreamingRegion leaf in overlay mode, so the
+   *  12.5 Hz LIVE_TURN_FLUSH re-renders only that leaf (not this component,
+   *  not the Chat body above it); by this component in inline mode, where
+   *  the text is row data. When omitted (tests, static transcripts) the
    *  `streamingContent` prop below is used directly. */
   sessionId?: string
   /** Accumulated text from streaming deltas. Only read when `sessionId` is
@@ -447,27 +451,29 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     setPrevRevealKey(transcriptRevealKey)
     if (expandedBodies.size > 0) setExpandedBodies(new Set())
   }
-  // An empty string is the turn's pre-text phase: a `liveTurn` already
-  // exists (created on the turn's first stream event) but no text delta
-  // has flushed yet — the "thinking" phase, or a tool-use turn that never
-  // produces assistant prose. Rendering the streaming bubble then yields
-  // an empty placeholder that reserves layout space but shows nothing
-  // (the gradient mask on .streaming-plain fades out the lone cursor),
-  // and WorkingBubble already signals the active phase. Treat "" as null
-  // so the footer doesn't mount until real text arrives. The exit still
-  // works: at turn end `liveTurn` is cleared to null (reducer sets
-  // `liveTurn: null`), AnimatePresence keeps the last-mounted subtree on
-  // its frozen content through the exit tweens (see the render below).
-  // Live source: subscribed here when `sessionId` is provided (the hot
-  // 12.5 Hz field re-renders only this subtree); the prop is the fallback
-  // for prop-fed callers (tests, static transcripts).
-  const storeStreamingContent = useOptionalSessionField(sessionId, 'streamingContent')
-  const effectiveStreamingContent = sessionId != null ? storeStreamingContent : streamingContent
-  const liveStreamingContent = effectiveStreamingContent && effectiveStreamingContent.length > 0 ? effectiveStreamingContent : null
   // Which streaming render mode this transcript uses. Defaults to the module
   // constant (currently 'overlay') so production behavior is unchanged; the
   // prop exists for tests and a future UI setting.
   const resolvedMode = streamingMode ?? DEFAULT_STREAMING_RENDER_MODE
+  // Live-turn text. In OVERLAY mode (the default) this component does not
+  // read it at all: the capped bubble, its 12.5 Hz `streamingContent`
+  // subscription and its AnimatePresence exit live in the
+  // OverlayStreamingRegion leaf rendered into `.chat-bottom-stack` below, so
+  // a LIVE_TURN_FLUSH re-renders only that leaf. (The scroll machinery never
+  // needed this render either: the stack's ResizeObserver sees the bubble's
+  // DOM growth and publishes `bottomStackHeight` itself.) In INLINE mode the
+  // text IS row data — it becomes the tail element of Virtuoso's `data` —
+  // so only then does MessageList subscribe (an inert subscription in
+  // overlay mode). Same "" → null rule as the overlay: an empty pre-text
+  // liveTurn renders no row. Prop-fed callers (no `sessionId`) use the prop.
+  const inlineStoreStreamingContent = useOptionalSessionField(
+    resolvedMode === 'inline' ? sessionId : undefined,
+    'streamingContent',
+  )
+  const inlineStreamingSource = resolvedMode !== 'inline'
+    ? null
+    : sessionId != null ? inlineStoreStreamingContent : streamingContent
+  const liveStreamingContent = inlineStreamingSource && inlineStreamingSource.length > 0 ? inlineStreamingSource : null
 
   // EnterPlanMode has no lifecycle map (it renders as a stateless marker and
   // nothing consumes its result), so its result ids aren't in any of the maps
@@ -1387,24 +1393,12 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         )}
       </div>
       <div className="chat-bottom-stack" ref={bottomStackRef}>
-        {/* The live bubble's overlay slot. AnimatePresence owns the exit
-            (fade/sink first, then the measured-height collapse — see
-            useStreamingRegionMotion) and keeps the last-mounted subtree on
-            its FROZEN content through the tweens, which is what replaced the
-            old manual presence machine + STREAMING_EXIT_MS timer (the timer
-            raced the CSS animation and cut the collapse's tail — the "message
-            card snaps at the end" bug). The clip stays INSIDE the presence
-            child so the sinking bubble is clipped exactly as long as the
-            subtree exists and nothing is mounted while idle. */}
-        <AnimatePresence>
-          {resolvedMode === 'overlay' && liveStreamingContent != null && (
-            <StreamingRegion key="streaming-region">
-              {/* key=variant: remounts on a variant flip so useMergedRef's
-                  first-render ref capture (mergedRef.ts) stays correct. */}
-              <StreamingFooter key="overlay" content={liveStreamingContent} />
-            </StreamingRegion>
-          )}
-        </AnimatePresence>
+        {/* Overlay-mode live bubble: a leaf that owns the streamingContent
+            subscription + AnimatePresence exit (renders nothing until text
+            arrives). */}
+        {resolvedMode === 'overlay' && (
+          <OverlayStreamingRegion sessionId={sessionId} streamingContent={streamingContent} />
+        )}
         <div className="chat-bottom-overlay" ref={bottomOverlayRef}>
           {bottomOverlay}
         </div>

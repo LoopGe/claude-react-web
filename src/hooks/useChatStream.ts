@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getSessionStore, useSessionField } from '../session-store/selectors'
+import { getSessionStore, useSessionField, useSessionSelector } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
 import { clearAllSessionStorage } from '../session-store/store'
-import type { ActiveSubagent, ActivePhase, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
+import type { ActiveSubagent, ActivePhase, PlanStatus, SessionSnapshot, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import { useWsHub, useWsHubStatus } from './useWsHub'
 import { api } from './useApi'
 import { randomId } from '../utils/uuid'
@@ -74,19 +74,20 @@ export interface ChatStream {
    *  no retry is in flight. Routed to a dedicated slot (not items/messages) —
    *  the WorkingBubble's RetryLabel renders it as the retrying phase label. */
   apiRetry: SdkMessage | null
-  /** Live thinking-token estimate for the current thinking block
-   *  (`system/thinking_tokens` frames), or null when none is in flight.
-   *  Drives the WorkingBubble's token hint. */
-  thinkingTokens: number | null
-  tokenRate: number | null
-  // NOTE: `streamingContent` is deliberately NOT exposed here. It is the
-  // 12.5 Hz hot field (LIVE_TURN_FLUSH cadence); subscribing to it at hook
-  // level re-rendered the entire Chat body (and every SideChatDrawer) on
-  // every 80ms flush. The live turn's text is consumed at exactly two
-  // leaves — MessageList (via the optional `sessionId` prop + its own
-  // useOptionalSessionField subscription) — which keeps the flush render
-  // bounded to the transcript subtree.
-  activePhase: ActivePhase
+  // NOTE: the live-turn telemetry is deliberately NOT exposed here —
+  // `streamingContent` (the 12.5 Hz LIVE_TURN_FLUSH field), `tokenRate`,
+  // `activePhase` and `thinkingTokens` (one frame per delta during redacted
+  // thinking). Every field this hook subscribes to re-renders its host — the
+  // whole Chat body, or ChatPanel for the side chat — so the leaves that
+  // DISPLAY them subscribe directly instead (useSessionField):
+  //   - streamingContent → MessageList's OverlayStreamingRegion (and, in the
+  //     'inline' render mode, MessageList itself, which owns the data row);
+  //   - tokenRate / activePhase / thinkingTokens → LiveWorkingBubble.
+  /** `activePhase != null`: the SDK is streaming a turn (the SDK
+   *  auto-continuation leg of `computeTurnActive`). A boolean subscription,
+   *  so hosts re-render when a turn starts / ends — not on every
+   *  thinking → writing → tool_use phase transition. */
+  hasActivePhase: boolean
   permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
   planContent: ReadonlyMap<string, string>
@@ -170,6 +171,9 @@ export interface PermissionHandlers {
   onEditPrompt?: (text: string) => void
 }
 
+/** Module-level (stable) selector for `ChatStream.hasActivePhase`. */
+const selectHasActivePhase = (snapshot: SessionSnapshot): boolean => snapshot.activePhase != null
+
 /** Clear all cached session state. Used in tests to avoid cross-test leaks. */
 export function cacheClear() {
   void sessionStoreRegistry.clear()
@@ -204,17 +208,16 @@ export function useChatStream(
   const store = useMemo(() => getSessionStore(sessionId), [sessionId])
   // Individual field subscriptions — only re-render when the specific
   // field's reference changes (Object.is check). During streaming content
-  // deltas, only streamingContent / activePhase / tokenRate change; all
-  // other fields keep their references stable.
+  // deltas only the live-turn telemetry changes, and none of it is
+  // subscribed here (see the ChatStream NOTE): the one live-turn fact this
+  // hook needs is the `activePhase != null` boolean.
   const items = useSessionField(sessionId, 'items')
   const messages = useSessionField(sessionId, 'messages')
-  const activePhase = useSessionField(sessionId, 'activePhase')
-  const tokenRate = useSessionField(sessionId, 'tokenRate')
+  const hasActivePhase = useSessionSelector(sessionId, selectHasActivePhase)
   const contextUsage = useSessionField(sessionId, 'contextUsage')
   const promptSuggestion = useSessionField(sessionId, 'promptSuggestion')
   const tasks = useSessionField(sessionId, 'tasks')
   const apiRetry = useSessionField(sessionId, 'apiRetry')
-  const thinkingTokens = useSessionField(sessionId, 'thinkingTokens')
   const error = useSessionField(sessionId, 'error')
   const permissionDecisions = useSessionField(sessionId, 'permissionDecisions')
   const planStatus = useSessionField(sessionId, 'planStatus')
@@ -863,9 +866,7 @@ export function useChatStream(
       promptSuggestion,
       tasks,
       apiRetry,
-      thinkingTokens,
-      tokenRate,
-      activePhase,
+      hasActivePhase,
       permissionDecisions,
       planStatus,
       planContent,
@@ -890,6 +891,6 @@ export function useChatStream(
       loadingOlder,
       olderError,
     }),
-    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, oldestSeq, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder, olderError],
+    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, hasActivePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, oldestSeq, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder, olderError],
   )
 }

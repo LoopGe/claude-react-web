@@ -49,10 +49,9 @@ import { toPersistedImage, deleteDraftImages } from '../state/inputHistoryImages
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useElicitationChannel } from '../hooks/useElicitationChannel'
 import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
-import { usePhaseDwell } from '../hooks/usePhaseDwell'
 import { Composer } from './Composer'
 import { ContextOrb } from './ContextOrb'
-import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
+import { MessageList, LiveWorkingBubble, type ScrollNavigator } from './MessageList'
 import { OlderHistoryFloat } from './message-list/transcript-chrome'
 import { ChatEmptyStateEnv } from './ChatEmptyStateEnv'
 import { PermissionDialog } from './PermissionDialog'
@@ -570,7 +569,7 @@ export const Chat = memo(function Chat({
 
   // Permissions first — its onRequest/onResolved are passed into the
   // stream hook so SDK messages and permission events share one WebSocket.
-  // Moved here (before the pendingTurnSince effect) so stream.activePhase
+  // Moved here (before the pendingTurnSince effect) so stream.hasActivePhase
   // is available in the effect's closure and dep array.
   const permissions = usePermissionChannel(session.id)
   const elicitations = useElicitationChannel(session.id)
@@ -623,13 +622,13 @@ export const Chat = memo(function Chat({
     // bridge otherwise keeps `turnActive`, `turnActiveRef` and the
     // WorkingBubble's ACTIVE state true on a dead session until the safety net
     // fires 30s later.
-    if (session.terminated || session.working || stream.activePhase != null) {
+    if (session.terminated || session.working || stream.hasActivePhase) {
       setPendingTurnSince(null)
       return
     }
     const t = setTimeout(() => setPendingTurnSince(null), PENDING_TURN_SAFETY_MS)
     return () => clearTimeout(t)
-  }, [pendingTurnSince, session.working, stream.activePhase, session.terminated])
+  }, [pendingTurnSince, session.working, stream.hasActivePhase, session.terminated])
   // Drop any pending bridge when switching the panel to another session.
   useEffect(() => {
     setPendingTurnSince(null)
@@ -910,8 +909,9 @@ export const Chat = memo(function Chat({
   // Also active during an SDK-driven auto-continuation turn (e.g. the model
   // processing a background subagent's <task-notification> after the parent
   // turn ended): those turns don't go through send() so `session.working`
-  // stays false and `pendingTurnSince` is null, but `stream.activePhase` is
-  // non-null while the SDK streams its response. `activePhase` is cleared by
+  // stays false and `pendingTurnSince` is null, but the store's `activePhase`
+  // is non-null (`stream.hasActivePhase`) while the SDK streams its response.
+  // `activePhase` is cleared by
   // the result frame (in both replay and live), so this never false-fires on
   // a reconnect replay whose final state has no live turn.
   // The liveness gate lives in computeTurnActive — see it for why the whole
@@ -919,13 +919,14 @@ export const Chat = memo(function Chat({
   const turnActive = computeTurnActive({
     working: session.working,
     pendingTurnSince,
-    hasActivePhase: stream.activePhase != null,
+    hasActivePhase: stream.hasActivePhase,
     terminated: session.terminated,
   })
-  // Dwelled phase label for the WorkingBubble — transient sub-300ms blips
-  // between phases don't churn the label. `turnActive` above keeps the raw
-  // activePhase so turn-end detection stays immediate.
-  const displayPhase = usePhaseDwell(stream.activePhase)
+  // The WorkingBubble's dwelled phase label (transient sub-300ms blips between
+  // phases don't churn it) is computed inside LiveWorkingBubble, which owns
+  // the phase / token-rate subscriptions so their changes re-render only that
+  // leaf. `turnActive` above reads the raw `activePhase != null`, so turn-end
+  // detection stays immediate.
   // Authoritative background-task counts from the session store's `tasks`
   // mirror (same data TasksPanel reads). Read via a primitive-count selector
   // so unrelated task-list identity changes don't re-render Chat.
@@ -2510,13 +2511,15 @@ export const Chat = memo(function Chat({
           <AnimatePresence initial={false}>
             {mountWorkingBubble && (
               <BottomCardMotion key="working-bubble" fixed>
-                <WorkingBubble
+                {/* tokenRate / activePhase (dwelled) / thinkingTokens are
+                    subscribed inside the leaf — see LiveWorkingBubble. */}
+                <LiveWorkingBubble
+                  sessionId={session.id}
+                  dwellPhase
+                  showThinkingTokens
                   active={turnActive}
                   startedAt={turnStartedAt}
                   activeSubagents={stream.activeSubagents}
-                  tokenRate={stream.tokenRate}
-                  thinkingTokens={stream.thinkingTokens}
-                  activePhase={displayPhase}
                   recapping={session.compacting ?? false}
                   waiting={waiting}
                   apiRetry={stream.apiRetry}

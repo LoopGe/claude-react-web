@@ -10,11 +10,14 @@
 // entry point while idle.)
 
 import { memo, useEffect, useState } from 'react'
+import { useIsPresent } from 'motion/react'
 import type { ActiveSubagent } from '../../session-store/types'
+import { useOptionalSessionField, useSessionField } from '../../session-store/selectors'
 import type { SdkMessage } from '../../types'
 import { formatTokens } from '../../utils/format'
 import { ElapsedTimer } from '../ElapsedTimer'
 import { useCountUp } from '../../hooks/useCountUp'
+import { usePhaseDwell } from '../../hooks/usePhaseDwell'
 import { IconClock, IconZap } from '../icons/ToolIcons'
 import { SubagentSwarmPill } from './SubagentSwarm'
 
@@ -143,18 +146,7 @@ function RetryLabel({ msg }: { msg: SdkMessage }) {
   )
 }
 
-export const WorkingBubble = memo(function WorkingBubble({
-  startedAt,
-  activeSubagents,
-  tokenRate,
-  thinkingTokens,
-  activePhase,
-  recapping,
-  waiting,
-  apiRetry,
-  onOpenSubagent,
-  active: _active,
-}: {
+export interface WorkingBubbleProps {
   startedAt?: number
   activeSubagents?: ActiveSubagent[]
   tokenRate?: number | null
@@ -194,7 +186,20 @@ export const WorkingBubble = memo(function WorkingBubble({
    *  bubble has nothing to show unless subagents are still listed — it
    *  renders null rather than an empty bar shell. */
   active?: boolean
-}) {
+}
+
+export const WorkingBubble = memo(function WorkingBubble({
+  startedAt,
+  activeSubagents,
+  tokenRate,
+  thinkingTokens,
+  activePhase,
+  recapping,
+  waiting,
+  apiRetry,
+  onOpenSubagent,
+  active: _active,
+}: WorkingBubbleProps) {
   const subagents = activeSubagents ?? EMPTY_SUBAGENTS
   const hasSubagents = subagents.length > 0
   const active = _active ?? true
@@ -314,5 +319,76 @@ export const WorkingBubble = memo(function WorkingBubble({
           popover, which is also the drill-in path to SubagentOverlay. */}
       {hasSubagents && <SubagentSwarmPill subagents={subagents} onOpenSubagent={onOpenSubagent} />}
     </div>
+  )
+})
+
+export type LiveWorkingBubbleProps = Omit<WorkingBubbleProps, 'tokenRate' | 'activePhase' | 'thinkingTokens'> & {
+  /** Session whose live-turn telemetry this bubble shows. */
+  sessionId: string
+  /** Hold the phase label until a new phase has been stable for 300ms
+   *  (usePhaseDwell), so sub-300ms blips don't churn it. The main panel's
+   *  behaviour; the side drawer shows the raw phase. */
+  dwellPhase?: boolean
+  /** Show the redacted-thinking token estimate (`thinkingTokens`). The main
+   *  panel's behaviour; the side drawer never showed it. */
+  showThinkingTokens?: boolean
+}
+
+/** WorkingBubble that subscribes to the live-turn telemetry ITSELF —
+ *  `tokenRate`, `activePhase` and (opt-in) `thinkingTokens` — instead of
+ *  receiving them from the panel. Those fields change many times per turn (a
+ *  rate sample every ~500ms, a phase per content block, a thinking estimate
+ *  per delta), and taking them as props meant the whole host (Chat, or
+ *  ChatPanel for the side chat) re-rendered for each one. Here only this leaf
+ *  and the memoized bubble do.
+ *
+ *  Parity with the old prop-fed path, which is why this is more than three
+ *  `useSessionField` calls:
+ *    - `dwellPhase` runs the same `usePhaseDwell` the panel used to run. The
+ *      dwell state now lives with the bubble instead of the panel, which is
+ *      equivalent: a non-null → non-null phase transition can only happen
+ *      while a turn is active, and an active (non-terminated) turn always
+ *      mounts the bubble (`shouldMountWorkingBubble` ⊇ `turnActive` ⊇
+ *      `activePhase != null`), while null → phase / phase → null commit
+ *      immediately on both sides.
+ *    - While AnimatePresence plays the bubble's EXIT, the old bubble was a
+ *      retained element whose props were frozen at its last present render;
+ *      a live subscription would keep updating through the fade (e.g. the
+ *      turn-end sweep nulling the rate mid-fade). `useIsPresent` freezes the
+ *      three values for the exit, so the fading bubble shows exactly what the
+ *      old one did. Outside a presence context (tests) it is always present. */
+export const LiveWorkingBubble = memo(function LiveWorkingBubble({
+  sessionId,
+  dwellPhase = false,
+  showThinkingTokens = false,
+  ...bubbleProps
+}: LiveWorkingBubbleProps) {
+  const isPresent = useIsPresent()
+  const liveTokenRate = useSessionField(sessionId, 'tokenRate')
+  const rawPhase = useSessionField(sessionId, 'activePhase')
+  // Inert subscription (null) when not shown — no re-render per estimate.
+  const liveThinkingTokens = useOptionalSessionField(showThinkingTokens ? sessionId : undefined, 'thinkingTokens')
+  // Always called (rules of hooks); only its output is optional.
+  const dwelledPhase = usePhaseDwell(rawPhase)
+  const livePhase = dwellPhase ? dwelledPhase : rawPhase
+  // Last values seen while present — React's "adjust state during render"
+  // pattern (same as usePhaseDwell / MessageList's presence state).
+  const [frozen, setFrozen] = useState(() => ({ tokenRate: liveTokenRate, activePhase: livePhase, thinkingTokens: liveThinkingTokens }))
+  if (
+    isPresent &&
+    (frozen.tokenRate !== liveTokenRate || frozen.activePhase !== livePhase || frozen.thinkingTokens !== liveThinkingTokens)
+  ) {
+    setFrozen({ tokenRate: liveTokenRate, activePhase: livePhase, thinkingTokens: liveThinkingTokens })
+  }
+  const tokenRate = isPresent ? liveTokenRate : frozen.tokenRate
+  const activePhase = isPresent ? livePhase : frozen.activePhase
+  const thinkingTokens = isPresent ? liveThinkingTokens : frozen.thinkingTokens
+  return (
+    <WorkingBubble
+      {...bubbleProps}
+      tokenRate={tokenRate}
+      activePhase={activePhase}
+      thinkingTokens={showThinkingTokens ? thinkingTokens : undefined}
+    />
   )
 })
