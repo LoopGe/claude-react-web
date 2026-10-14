@@ -75,12 +75,36 @@ function pageFor(sid: string, before: number | undefined, limit: number) {
  *  resumes. */
 let staleNext: { gen: number; msgs: Array<{ seq: number; msg: unknown }> } | null = null
 
+/** Deferred in-flight fetches: the FIRST matching request is held un-handled
+ *  (a promise the test resolves later with a hand-built page) — how the
+ *  race tests park a fetch mid-flight while the clear lands. */
+interface DeferredFetch {
+  pattern: RegExp
+  resolve: (page: unknown) => void
+}
+let deferredFetches: DeferredFetch[] = []
+interface DeferredHandle {
+  promise: Promise<unknown>
+  resolve: (page: unknown) => void
+}
+function queueDeferredFetch(pattern: RegExp): DeferredHandle {
+  let resolve!: (page: unknown) => void
+  const promise = new Promise<unknown>((r) => { resolve = r })
+  deferredFetches.push({ pattern, resolve })
+  return { promise, resolve }
+}
+
 const mockApiGet = vi.fn(async (url: string) => {
   const m = /\/sessions\/([^/]+)\/messages\?(?:before=(\d+)&)?limit=(\d+)/.exec(url)
   if (!m) throw new Error(`unexpected api.get url: ${url}`)
   const sid = m[1]
   const before = m[2] !== undefined ? Number(m[2]) : undefined
   const limit = Number(m[3])
+  const di = deferredFetches.findIndex((d) => d.pattern.test(url))
+  if (di >= 0) {
+    const [d] = deferredFetches.splice(di, 1)
+    return d.resolve(pageFor(sid, before, limit))
+  }
   if (before === undefined && staleNext) {
     const s = staleNext
     staleNext = null
@@ -133,6 +157,7 @@ describe('useChatStream seq-window protocol', () => {
     currentSessionListeners = new Map()
     transcripts.clear()
     staleNext = null
+    deferredFetches = []
     mockSubscribe.mockClear()
     mockApiGet.mockClear()
     cacheClear()
@@ -434,5 +459,145 @@ describe('useChatStream seq-window protocol', () => {
 
     await waitFor(() => expect(result.current.messages).toHaveLength(5))
     expect(gapFetchUrls()).toContain(`/sessions/${sid}/messages?before=4&limit=200`)
+  })
+
+  // ── /clear races against in-flight pages (round-1 fix regressions) ──
+
+  it('discards a loadOlder head page that was in flight when session-cleared lands', async () => {
+    // CLEAR_TRANSCRIPT PRESERVES the window's generation and empties it, and
+    // pageLoaded bootstraps ANY generation onto an empty window — so a
+    // pre-clear head page resolving onto the emptied window would resurrect
+    // the cleared transcript and pin the dead generation. loadOlder must go
+    // through the same clear-epoch validation as every other page read.
+    const sid = 'fix-older-clear'
+    const t = transcript(sid)
+    for (let i = 0; i < 250; i++) t.msgs.push({ seq: i, msg: fakeMsg(sid, i) })
+    t.headSeq = 250
+
+    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
+    await waitFor(() => {
+      expect(result.current.messages).toHaveLength(200)
+      expect(result.current.oldestSeq).toBe(50)
+    })
+
+    // Park the loadOlder fetch mid-flight, THEN clear.
+    const inFlight = queueDeferredFetch(/before=50&limit=200/)
+    let loadResult: number | null = null
+    let loadPromise!: Promise<number>
+    act(() => {
+      loadPromise = result.current.loadOlder().then((n) => { loadResult = n; return n })
+    })
+
+    t.generation = 1
+    t.msgs = []
+    t.headSeq = 0
+    act(() => {
+      dispatchToSession(sid, { kind: 'session-cleared', sessionId: sid })
+    })
+    // The handler's own post-clear refetch has landed: empty, generation 1.
+    await waitFor(() => {
+      expect(getSessionStore(sid).getSnapshot().generation).toBe(1)
+      expect(result.current.messages).toEqual([])
+    })
+
+    // NOW the pre-clear head page resolves: epoch-invalidated, retried into
+    // a post-clear (empty, gen 1) page.
+    await act(async () => {
+      inFlight.resolve({
+        generation: 0,
+        headSeq: 50,
+        totalCount: 50,
+        startIndex: 0,
+        hasMore: false,
+        messages: Array.from({ length: 50 }, (_, i) => ({ seq: i, msg: fakeMsg(sid, i) })),
+      })
+      await loadPromise
+    })
+    // The pre-clear content did NOT resurrect; the retry adopted gen 1.
+    expect(loadResult).toBe(0)
+    expect(result.current.messages).toEqual([])
+    expect(getSessionStore(sid).getSnapshot().generation).toBe(1)
+
+    // The new generation is live: seq-carrying frames at gen 1 are NOT
+    // dropped by a stale window generation.
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    act(() => {
+      dispatchToSession(sid, {
+        kind: 'message',
+        sessionId: sid,
+        seq: 0,
+        generation: 1,
+        message: fakeMsg(sid, 0),
+      })
+    })
+    await waitFor(() => expect(result.current.messages).toHaveLength(1))
+  })
+
+  it('discards the open tail page when session-cleared lands before any generation was adopted (multi-tab race)', async () => {
+    // The window has NOT adopted a generation yet (cursor −1), so the
+    // session-cleared floor `generation + 1` degenerates to 0 and a pre-clear
+    // gen-0 page would PASS it and bootstrap the cleared transcript onto the
+    // empty window. The clear-epoch check is what invalidates the in-flight
+    // request here.
+    const sid = 'fix-epoch-clear'
+    const t = transcript(sid)
+    for (let i = 0; i < 3; i++) t.msgs.push({ seq: i, msg: fakeMsg(sid, i) })
+    t.headSeq = 3
+
+    // Park the OPEN tail fetch mid-flight.
+    const inFlight = queueDeferredFetch(/\/sessions\/[^/]+\/messages\?limit=200/)
+    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
+    expect(result.current.messages).toEqual([])
+
+    // Another tab's /clear broadcast arrives while the fetch is in flight.
+    t.generation = 1
+    t.msgs = []
+    t.headSeq = 0
+    act(() => {
+      dispatchToSession(sid, { kind: 'session-cleared', sessionId: sid })
+    })
+    // The handler's own refetch: post-clear, gen 1, adopted.
+    await waitFor(() => {
+      expect(getSessionStore(sid).getSnapshot().generation).toBe(1)
+      expect(result.current.replayReady).toBe(true)
+    })
+
+    // The pre-clear gen-0 tail page resolves — epoch-invalidated, retried
+    // into the post-clear empty page.
+    await act(async () => {
+      inFlight.resolve({
+        generation: 0,
+        headSeq: 3,
+        totalCount: 3,
+        startIndex: 0,
+        hasMore: false,
+        messages: [
+          { seq: 0, msg: fakeMsg(sid, 0) },
+          { seq: 1, msg: fakeMsg(sid, 1) },
+          { seq: 2, msg: fakeMsg(sid, 2) },
+        ],
+      })
+    })
+    await waitFor(() => {
+      // Give the retry chain a tick to settle; the transcript must stay
+      // empty and the adopted generation must stay 1.
+      expect(getSessionStore(sid).getSnapshot().generation).toBe(1)
+      expect(result.current.messages).toEqual([])
+    })
+
+    // Live frames of the new generation flow (not dropped).
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    act(() => {
+      dispatchToSession(sid, {
+        kind: 'message',
+        sessionId: sid,
+        seq: 0,
+        generation: 1,
+        message: fakeMsg(sid, 0),
+      })
+    })
+    await waitFor(() => expect(result.current.messages).toHaveLength(1))
   })
 })

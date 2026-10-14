@@ -237,6 +237,12 @@ export function useChatStream(
   // a pre-reset read — pre-clear content that must not resurrect on the
   // emptied window. Cleared on session switch.
   const minGenerationRef = useRef<number | null>(null)
+  // Monotonic counter bumped by the session-cleared handler; see
+  // fetchValidatedPage for why a floor alone cannot express "this page was
+  // REQUESTED before the clear" (before any generation is adopted the floor
+  // degenerates to 0 and accepts the pre-clear gen-0 page). Reset per
+  // subscribe-effect run (session switch).
+  const clearEpochRef = useRef(0)
   // ── REST gap-fill worker state ────────────────────────────────────────
   // Serial worker: at most one fillGap loop per hook instance. A call that
   // lands while the loop is running only sets `rerun` — the loop re-reads
@@ -292,26 +298,39 @@ export function useChatStream(
   //    the first page parks behind the hole.
   // Every iteration re-reads the window snapshot, so frames that landed
   // while a fetch was in flight are folded in without a second fetch chain.
-  /** Every transcript page read, funnelled through the generation floor: a
-   *  page read at a generation BELOW minGenerationRef was served before the
-   *  server's reset landed (pre-clear content at the old generation) and
-   *  must not be applied — on an emptied window it would resurrect the
-   *  cleared transcript AND pin the dead generation (every later page would
-   *  then mismatch and be ignored). Retry instead: once the server's reset
-   *  has landed every fetch returns the new generation, so this terminates
-   *  in one round trip in practice; the cap turns a server that never
-   *  actually resets into a loud error instead of a spin. Shared by the
-   *  tail-page path AND the gap-fill path — a pre-clear page landing inside
-   *  an in-flight fillGap is the same hazard. */
+  /** Every transcript page read — tail pages, gap-fill pages, AND loadOlder
+   *  head pages — funnels through this validation, because a page served
+   *  before the server's reset landed (pre-clear content) must never be
+   *  applied: on an emptied window it would resurrect the cleared transcript
+   *  AND pin the dead generation (every later page would then mismatch and
+   *  be ignored, live frames of the new generation dropped). TWO stale
+   *  signals, because neither alone covers every race:
+   *  · **clear epoch** — a monotonic counter bumped by the session-cleared
+   *    handler. Each attempt captures the epoch at request time; a result
+   *    that comes back under an advanced epoch was REQUESTED before the
+   *    clear. This is the only signal that works before any generation has
+   *    been adopted (the window's cursor is still −1, so a floor of
+   *    `generation + 1` degenerates to 0 and accepts the pre-clear gen-0
+   *    page — the multi-tab /clear race).
+   *  · **generation floor** (minGenerationRef) — armed by session-cleared
+   *    and by the attached generation bump: a page at a LOWER generation is
+   *    stale even when this client's own request raced nothing (another
+   *    tab's clear moved the universe between our attach and our read).
+   *  Retry on either signal: once the server's reset has landed every fetch
+   *  returns the new generation, so this terminates in one round trip in
+   *  practice; the cap turns a server that never actually resets into a
+   *  loud error instead of a spin. */
   const fetchValidatedPage = useCallback(
     async (url: string): Promise<TranscriptPageResponse> => {
-      let page = await api.get<TranscriptPageResponse>(url)
-      let retries = 0
-      while (minGenerationRef.current != null && page.generation < minGenerationRef.current) {
-        if (++retries > 5) throw new Error('transcript generation moved')
-        page = await api.get<TranscriptPageResponse>(url)
+      for (let retries = 0; ; retries++) {
+        const epochAtRequest = clearEpochRef.current
+        const page = await api.get<TranscriptPageResponse>(url)
+        const stale =
+          clearEpochRef.current !== epochAtRequest ||
+          (minGenerationRef.current != null && page.generation < minGenerationRef.current)
+        if (!stale) return page
+        if (retries >= 5) throw new Error('transcript generation moved')
       }
-      return page
     },
     [],
   )
@@ -375,7 +394,14 @@ export function useChatStream(
             post.hole?.[1] !== pre.hole?.[1]
           if (!progressed) {
             // The page changed nothing (stale generation, all seqs already
-            // owned, empty range): stop — otherwise this loops forever.
+            // owned, empty range — including a tombstoned seq sitting inside
+            // the hole, which no page can ever return): stop — otherwise
+            // this loops forever. Known residual: a tombstone inside the
+            // hole strands the parked frames until the panel is REOPENED (a
+            // fresh tail page re-anchors the window); a reconnect does NOT
+            // heal it — with an equal generation the attached handshake
+            // finds nothing to reconcile and the gap-fill hits the same
+            // no-progress wall.
             gapTargetRef.current = null
             break
           }
@@ -408,6 +434,7 @@ export function useChatStream(
     // generation floor or gap target from leaking into the new session's
     // open fetch.
     minGenerationRef.current = null
+    clearEpochRef.current = 0
     gapTargetRef.current = null
     fillGapRerunRef.current = false
 
@@ -465,6 +492,10 @@ export function useChatStream(
             // Empty window: the open path's tail page adopts the server's
             // generation — reconciling here would double-fetch on every
             // panel open (the handshake usually races the initial page).
+            // Accepted trade: if the open fetch FAILED (error band up), an
+            // attached frame arriving afterwards does not retry it — the
+            // failure is surfaced loudly and the next subscribe (panel
+            // reopen, running flip) re-fetches.
             break
           }
           if (frame.generation !== snap.generation) {
@@ -672,7 +703,13 @@ export function useChatStream(
           // ignored). The floor makes such a page retry — the role
           // clearedRef played before the seq protocol.
           store.dispatch({ type: 'CLEAR_TRANSCRIPT' })
+          // Arm both stale signals: the floor (post-adoption case) and the
+          // epoch — the epoch is what actually invalidates in-flight page
+          // requests when NO generation has been adopted yet (the window's
+          // cursor is still −1 here, so `generation + 1` degenerates to a
+          // floor of 0 that a pre-clear gen-0 page would pass).
           minGenerationRef.current = store.getSnapshot().generation + 1
+          clearEpochRef.current++
           permsRef.current.onCleared?.()
           void refetchTail()
           break
@@ -769,15 +806,23 @@ export function useChatStream(
     //  · oldestSeq == null — the window is empty (hasOlder can be stale-true
     //    on an emptied window, and paging "before null" is meaningless);
     //  · !hasOlder — the last page reported nothing older.
-    // A post-/clear resurrection is structurally impossible now: the clear
-    // wipes the window and bumps the server generation, so the pre-clear
-    // pages mismatch and are ignored.
+    // A post-/clear resurrection is blocked by the validated fetch below,
+    // NOT by generation mismatching alone: CLEAR_TRANSCRIPT PRESERVES the
+    // window's generation (it does not bump it) and empties it, and
+    // pageLoaded bootstraps ANY generation onto an empty window — so a
+    // pre-clear head page landing on the emptied window would adopt the
+    // dead generation and prepend the cleared transcript. The fetch's
+    // clear-epoch/floor validation discards such a page and retries.
     const snap = store.getSnapshot()
     if (!snap.hasOlder || snap.oldestSeq == null) return 0
     inFlightRef.current = true
     setLoadingOlder(true)
     try {
-      const page = await api.get<TranscriptPageResponse>(
+      // Through the validated fetch like every other page read: a head page
+      // in flight when a session-cleared lands is pre-clear content, and
+      // pageLoaded bootstraps ANY generation onto the emptied window — the
+      // same resurrection hazard the tail and gap-fill paths guard against.
+      const page = await fetchValidatedPage(
         `/sessions/${sessionId}/messages?before=${snap.oldestSeq}&limit=200`,
       )
       store.dispatch({
@@ -799,7 +844,7 @@ export function useChatStream(
       inFlightRef.current = false
       setLoadingOlder(false)
     }
-  }, [store, sessionId])
+  }, [store, sessionId, fetchValidatedPage])
 
   // True until the tail page lands — the one settle point of the seq
   // protocol. MessageList freezes the pinned-header notification during this
