@@ -8549,6 +8549,68 @@ describe('fork() worktree fallback', () => {
   })
 })
 
+describe('clear() worktree isolation', () => {
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+  let repo: string
+
+  beforeAll(async () => {
+    repo = await makeRepo()
+  })
+  afterAll(async () => {
+    await cleanupGitFixtures()
+  })
+  beforeEach(async () => {
+    mockHandles.length = 0
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    sm = new SessionManager({ store })
+  })
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+  })
+
+  it('clear keeps the fresh session inside the worktree with the isolation metadata', async () => {
+    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
+    const wtPath = join(dir, 'worktrees', info.id)
+    // Complete one turn so clear() passes its phase guards.
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+
+    const next = await sm.clear(info.id)
+
+    // Y runs in X's worktree dir (X's cwd IS the worktree path)...
+    expect(next.cwd).toBe(wtPath)
+    // ...and carries the isolation metadata X had — without it Y would be an
+    // unbadged session in a worktree whose delete-confirm dirty check and
+    // cleanup never engage.
+    expect(next.worktree).toEqual(info.worktree)
+    expect(store.get(next.id)?.worktree).toEqual(info.worktree)
+    expect(store.get(next.id)?.cwd).toBe(wtPath)
+    // The fresh spawn actually happened inside the worktree.
+    expect(mockHandles[1].options.cwd).toBe(wtPath)
+    // The worktree dir survives the clear (clear unloads X, never deletes it).
+    expect(existsSync(wtPath)).toBe(true)
+  })
+
+  it('clear of a non-isolated session stays clean of worktree metadata', async () => {
+    const info = await sm.create({ cwd: repo, model: 'test-model' })
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+
+    const next = await sm.clear(info.id)
+
+    expect(next.cwd).toBe(repo)
+    expect(next.worktree).toBeUndefined()
+    expect(store.get(next.id)?.worktree).toBeUndefined()
+  })
+})
+
 describe('delete() / setCwd() worktree cleanup', () => {
   let dir: string
   let store: SessionStore

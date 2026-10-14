@@ -3867,6 +3867,13 @@ export class SessionManager {
         // the session's configuration. Dropping it here would silently hand
         // back a plain session after twenty turns as a custom agent.
         agent: s.agent,
+        // Carry X's worktree isolation onto Y: X's cwd IS the worktree path,
+        // so Y runs there — without the metadata Y would be an unbadged
+        // session inside a worktree dir the delete-confirm dirty check never
+        // sees and whose registration would orphan when Y is deleted. /clear
+        // resets the conversation, not the isolation (unlike fork, which
+        // deliberately lands in the main repo).
+        worktree: s.worktree,
       }
 
       // Pure-UI pref overrides + per-server first-party tool pins ride the
@@ -3914,6 +3921,10 @@ export class SessionManager {
         betas: settings.betas,
         hooks: settings.hooks,
         enabledPlugins: settings.enabledPlugins,
+        // snapshotMeta captures this — Y keeps the isolation metadata (badge,
+        // delete-confirm dirty check, worktree cleanup) while running in the
+        // inherited worktree dir.
+        worktree: settings.worktree,
       }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting; parentId?: string }
       // Carry the auto-memory intent onto the fresh session (new id —
       // snapshotMeta captures it from here, same as fork).
