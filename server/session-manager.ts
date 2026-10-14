@@ -47,7 +47,7 @@ import {
 } from '../shared/tool-profile.js'
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
-import { tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
+import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
 import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
@@ -1647,19 +1647,29 @@ export class SessionManager {
     // Worktree recreate chain (spec: 路径在 → 分支在 → baseSha → 回退主仓).
     // Runs BEFORE the cwdMissing probe: a GC'd worktree dir must reconstruct,
     // not 400. Mutates the local meta copy and persists the fallback so the
-    // next resume doesn't re-walk the chain. A throw (mainRepoPath exists but
-    // is no longer a git repo — getGitCommonDir fails) means recreate is
-    // impossible: fall back to the main repo path instead of 500 — a session
-    // can still run fine in a non-repo directory.
+    // next resume doesn't re-walk the chain. A throw is split by ground truth:
+    // when the main repo is still a valid git repo the failure is TRANSIENT
+    // (lock contention, FS hiccup) — rethrow so resume fails loudly and the
+    // user can retry rather than silently losing isolation. Only a main repo
+    // that is genuinely no longer a git repo justifies the de-isolating
+    // fallback (a session can still run fine in a non-repo directory).
     if (meta.worktree && meta.cwd && !existsSync(meta.cwd)) {
       let ensured: { cwd: string; worktree?: WorktreeInfo }
       try {
         ensured = await ensureWorktreeForResume(this.store!.getDir(), id, meta.worktree)
       } catch (err) {
+        if (await isInsideWorkTree(meta.worktree.mainRepoPath)) {
+          log.warn(
+            `[session ${id}] worktree recreate failed transiently ` +
+            `(main repo ${meta.worktree.mainRepoPath} is still a git repo); ` +
+            `failing resume so the user can retry: ${err instanceof Error ? err.message : String(err)}`,
+          )
+          throw err
+        }
         log.warn(
           `[session ${id}] worktree recreate failed ` +
-          `(main repo ${meta.worktree.mainRepoPath} may no longer be a git repo), ` +
-          `falling back to main repo path: ${err instanceof Error ? err.message : String(err)}`,
+          `(main repo ${meta.worktree.mainRepoPath} is no longer a git repo), ` +
+          `de-isolating: falling back to main repo path: ${err instanceof Error ? err.message : String(err)}`,
         )
         ensured = { cwd: meta.worktree.mainRepoPath, worktree: undefined }
       }

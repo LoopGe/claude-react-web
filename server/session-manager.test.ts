@@ -314,6 +314,17 @@ vi.mock('./compact-summary.js', () => ({
   summarizeForCompact: vi.fn(async () => 'MOCK SUMMARY'),
 }))
 
+// session-worktree wrapped so tests can force ensureWorktreeForResume to
+// throw once (worktree-resume transient-failure split). Everything defaults
+// to the real implementation; only tests that opt in mock it.
+vi.mock('./session-worktree.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./session-worktree.js')>()
+  return {
+    ...orig,
+    ensureWorktreeForResume: vi.fn(orig.ensureWorktreeForResume),
+  }
+})
+
 // Helper: yield to the event loop so the SessionManager's pump() can
 // process whatever the mock just emitted. The pump iterates asynchronously,
 // so a `setImmediate`-tick is enough to drain one message.
@@ -328,6 +339,7 @@ const waitForIo = async (cond: () => boolean, timeoutMs = 2_000): Promise<void> 
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
 import { SessionManager, resolveConfiguredModel, backfillSubagentCompletions } from './session-manager.js'
+import { ensureWorktreeForResume } from './session-worktree.js'
 import type { Session } from './session-types.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
 import { SessionStore } from './persistence.js'
@@ -8485,8 +8497,28 @@ describe('resume() worktree recreate chain', () => {
     expect(store.get(info.id)?.cwd).toBe(repo)
   })
 
-  it('falls back to the main repo when mainRepoPath is no longer a git repo (recreate throws)', async () => {
-    // Task 3 review ruling: ensureWorktreeForResume THROWS (via
+  it('rethrows a transient recreate failure while the main repo is still a git repo (isolation kept)', async () => {
+    const info = await dormantIsolatedSession()
+    const wtPath = join(dir, 'worktrees', info.id)
+    await nodeFs.rm(wtPath, { recursive: true, force: true })
+    // The main repo is untouched and still a valid git repo — the recreate
+    // throw is transient (e.g. lock contention). Forced via the wrapped
+    // module mock; the real chain would be exercised again on retry.
+    vi.mocked(ensureWorktreeForResume).mockImplementationOnce(
+      () => Promise.reject(new Error('ELOCK: index.lock')),
+    )
+
+    // Resume fails LOUDLY with the underlying error instead of silently
+    // de-isolating the session.
+    await expect(sm.resume(info.id)).rejects.toThrow(/ELOCK/)
+
+    // No persisted de-isolation: meta keeps the worktree + worktree cwd, so
+    // a retry walks the recreate chain again.
+    expect(store.get(info.id)?.worktree).toEqual(info.worktree)
+    expect(store.get(info.id)?.cwd).toBe(wtPath)
+  })
+
+  it('falls back to the main repo when mainRepoPath is no longer a git repo (recreate throws)', async () => {    // Task 3 review ruling: ensureWorktreeForResume THROWS (via
     // getGitCommonDir) when mainRepoPath exists but lost its .git. Resume
     // must treat that as "recreate impossible" and fall back — not 500.
     const info = await dormantIsolatedSession()
