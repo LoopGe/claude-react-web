@@ -421,7 +421,7 @@ export const MessageView = memo(function MessageView({
               aria-label="Injecting into the current turn"
             >
               <span className="msg-queued-dot" aria-hidden />
-              <span className="msg-queued-label">注入中</span>
+              <span className="msg-queued-label">injecting</span>
             </span>
           )}
           {showInjectedChip && (
@@ -431,7 +431,7 @@ export const MessageView = memo(function MessageView({
               aria-label="Injected into the current turn"
             >
               <span className="msg-queued-dot" aria-hidden />
-              <span className="msg-queued-label">已注入当前轮</span>
+              <span className="msg-queued-label">injected</span>
             </span>
           )}
           {showProcessing && (

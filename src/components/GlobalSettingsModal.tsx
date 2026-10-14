@@ -743,15 +743,15 @@ function ServerTab({
           </span>
         </div>
         <SettingsRow
-          title="注入正在运行的轮次（mid-run steering）"
+          title="Inject into the running turn (mid-run steering)"
           hint={<>On (default): plain-text messages sent while the agent is
             working are injected into the current turn at the next tool
-            boundary (「注入中 → 已注入」chips), instead of queueing for the
-            next turn. Images and other multimodal content always queue —
+            boundary (injecting → injected chips), instead of queueing for
+            the next turn. Images and other multimodal content always queue —
             injection is text-only. Off restores pure queueing.</>}
         >
           <Switch
-            label="注入正在运行的轮次"
+            label="Inject into the running turn"
             checked={steering}
             onChange={onSteeringChange}
           />
