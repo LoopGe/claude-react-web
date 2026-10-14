@@ -6,7 +6,7 @@ import { SessionStore } from './persistence.js'
 import { SessionManager } from './session-manager.js'
 import { isSteerableUserText, userTextOf } from './session-manager.js'
 import { ProviderRegistry } from './providers/registry.js'
-import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle } from './providers/types.js'
+import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle } from './providers/types.js'
 import type { AgentUserMessage } from './agent-message.js'
 import { createPushable } from './pushable.js'
 import { randomUUID } from 'node:crypto'
@@ -21,6 +21,7 @@ class FakeHandle implements ProviderSessionHandle {
   readonly input = createPushable<AgentUserMessage>('fake-input')
   readonly abortController = new AbortController()
   isClosed = false
+  interrupt?: (opts?: { cancelQueued?: boolean }) => Promise<ProviderInterruptReceipt | void> = undefined
   enqueueUserMessage = vi.fn((m: AgentUserMessage) => this.input.push(m))
   enqueueSupplement = vi.fn((_entry: { uuid: string; text: string }): boolean => true)
   drainSupplements = vi.fn((): Array<{ uuid: string }> => [])
@@ -61,7 +62,7 @@ const FAKE_CAPS: ProviderCapabilities = {
   supportsFineGrainedPermissions: false,
   supportsMcp: false,
   supportsModelSwitch: false,
-  supportsInterrupt: false,
+  supportsInterrupt: true,
   supportsResume: false,
   supportsFork: false,
   supportsPlugins: false,
@@ -105,6 +106,9 @@ async function makeSteeringSession() {
 
 let dirs: string[] = []
 afterEach(async () => {
+  // steeredStore 的写链是异步的（PerSessionSidecar update chain）——先让在途
+  // 写落盘再删临时目录，否则 Windows 上 rmdir 撞上打开的句柄报 ENOTEMPTY。
+  await new Promise((r) => setTimeout(r, 80))
   for (const d of dirs) await rm(d, { recursive: true, force: true })
   dirs = []
 })
@@ -311,6 +315,57 @@ describe('turn-end steer fallback', () => {
     handle.enqueueUserMessage.mockClear()
     ;(sm as unknown as { drainAndRequeueSteered: (s: unknown) => void }).drainAndRequeueSteered(s)
     expect(handle.enqueueUserMessage).not.toHaveBeenCalled()
+    await sm.shutdown()
+  })
+})
+
+// ── Task 9: interrupt 集成（先 drain，两态语义）──────────────────────────
+
+function seedSteeredPending(sm: SessionManager, s: { id: string; steeredInFlight: Map<string, AgentUserMessage> }, handle: FakeHandle, text = 'pivot') {
+  // 直接复用 send 路径置 mid-turn + steer，然后让 drain 返回该 uuid
+  sm.send(s.id, 'first')
+  const steered = sm.send(s.id, text)
+  handle.drainSupplements.mockReturnValue([{ uuid: steered.uuid! }])
+  return steered
+}
+
+describe('interrupt steer integration', () => {
+  it('plain interrupt requeues steer pending (queued-message semantics)', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, s, handle, info } = ctx
+    const steered = seedSteeredPending(sm, s, handle)
+    handle.interrupt = vi.fn(async () => undefined)
+    handle.enqueueUserMessage.mockClear()
+    await sm.interrupt(info.id) // 无 cancelQueued
+    expect(handle.enqueueUserMessage).toHaveBeenCalledWith(expect.objectContaining({ uuid: steered.uuid }))
+    expect((steered as { requeuedAt?: number }).requeuedAt).toEqual(expect.any(Number))
+    expect(s.steeredInFlight.size).toBe(0)
+    await sm.shutdown()
+  })
+  it('cancelQueued withdraws steer pending AFTER draining them, before the provider interrupt', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, s, handle, info } = ctx
+    const steered = seedSteeredPending(sm, s, handle)
+    const calls: string[] = []
+    handle.drainSupplements.mockImplementation(() => {
+      calls.push('drain')
+      return [{ uuid: steered.uuid! }]
+    })
+    handle.interrupt = vi.fn(async () => {
+      calls.push('provider-interrupt')
+      return undefined
+    })
+    await sm.interrupt(info.id, { cancelQueued: true })
+    // 顺序：先 drain（竞态对策——drain 后并发 hook 见空队列）
+    expect(calls).toEqual(['drain', 'provider-interrupt'])
+    // 撤回：ring 移除、withdrawnUuids、帧、sidecar、in-flight 清空
+    expect(s.history.find((m) => (m as { uuid?: string }).uuid === steered.uuid)).toBeUndefined()
+    expect((s as unknown as { withdrawnUuids: string[] }).withdrawnUuids).toContain(steered.uuid)
+    expect(s.steeredInFlight.size).toBe(0)
+    const sidecar = await (sm as unknown as { steeredStore: { load(id: string): Promise<Array<{ u: string; withdrawnAt?: number }>> } }).steeredStore.load(info.id)
+    expect(sidecar?.[0]).toMatchObject({ u: steered.uuid, withdrawnAt: expect.any(Number) })
     await sm.shutdown()
   })
 })

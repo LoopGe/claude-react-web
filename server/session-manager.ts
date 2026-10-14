@@ -3489,6 +3489,15 @@ export class SessionManager {
     // conservative filter keeps the live ring and the transcript consistent
     // even if that ever changes) out of the removal set.
     const queuedUserUuids = new Set((s.promptUuids ?? []).filter((e) => e.v == null).map((e) => e.u))
+    // Steer pending 先于一切（spec §6.4 竞态对策）：drain 清空后，interrupt
+    // 期间并发的 hook 边界只见空队列——这是 multica writing-flag 串行化的
+    // 进程内等价物。plain interrupt 与「queued 消息在 Stop 后存活」语义对齐
+    // → 余量转排队；cancelQueued 的余量并入下方撤回集合。
+    const steerLeftovers =
+      (s.handle as ProviderSessionHandle & { drainSupplements?: () => Array<{ uuid: string }> }).drainSupplements?.() ?? []
+    if (!opts?.cancelQueued && steerLeftovers.length > 0) {
+      this.requeueSteeredLeftovers(s, steerLeftovers)
+    }
     // Withdraw leg 1 (host queue) before the interrupt lands — see above for
     // the ordering rationale.
     const { msgs: withdrawnMsgs, uuids: drainedUuids } = opts?.cancelQueued
@@ -3510,6 +3519,17 @@ export class SessionManager {
       }
       for (const u of receipt?.cancelledQueued ?? []) {
         if (stillUnpaired(u)) uuids.add(u)
+      }
+      // Steer 撤回（cancelQueued 路径）：steered 消息从不在 promptUuids 里
+      // （dispatch 即跳过记录，requeue 时才补录——而被撤回的不会再 requeue），
+      // 所以绕过 stillUnpaired 过滤直接并入。ring 移除 / withdrawnUuids /
+      // messages-withdrawn 广播全部复用下方现有 uuids 集合路径。
+      for (const { uuid: steerUuid } of steerLeftovers) {
+        if (opts?.cancelQueued) {
+          uuids.add(steerUuid)
+          s.steeredInFlight.delete(steerUuid)
+          void this.steeredStore.markWithdrawn(s.id, steerUuid, Date.now())
+        }
       }
       let removed = 0
       if (uuids.size > 0) {
