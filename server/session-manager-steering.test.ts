@@ -370,5 +370,42 @@ describe('interrupt steer integration', () => {
   })
 })
 
+// ── Task 10: history 页拼接集成 ──────────────────────────────────────────
+
+describe('getHistoryPage splice integration', () => {
+  it('splices injected sidecar entries into provider pages and skips requeued', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, s, info } = ctx
+    // 真 sidecar（makeSteeringSession 的 tmp stateDir）
+    const store = (sm as unknown as { steeredStore: { record: (id: string, e: never) => Promise<void> } }).steeredStore
+    await store.record(info.id, { u: 'steer-old', text: 'older steer', steeredAt: Date.parse('2026-10-14T09:00:00Z'), injectedAt: 1 })
+    await store.record(info.id, { u: 'steer-mid', text: 'mid steer', steeredAt: Date.parse('2026-10-14T10:30:00Z'), injectedAt: 2 })
+    await store.record(info.id, { u: 'steer-req', text: 'requeued steer', steeredAt: Date.parse('2026-10-14T10:45:00Z'), requeuedAt: 3 })
+    // 假 provider 页：readProviderHistoryPage 走 provider.readHistoryPage——
+    // FakeProvider 没实现它 → manager 的 fallback 路径。直接替换内部方法
+    // 太重；改为断言 splice 已在 getHistoryPage 出口生效：用 vi.spyOn 锁
+    // readProviderHistoryPage 返回一页带 timestamp 的磁盘消息。
+    const diskPage = {
+      messages: [
+        { type: 'user', uuid: 'd1', timestamp: '2026-10-14T10:00:00Z', message: { role: 'user', content: 'd1' } },
+        { type: 'user', uuid: 'd2', timestamp: '2026-10-14T11:00:00Z', message: { role: 'user', content: 'd2' } },
+      ],
+      totalCount: 2,
+      startIndex: 0,
+      hasMore: false,
+    }
+    const spy = vi
+      .spyOn(sm as unknown as { readProviderHistoryPage: () => Promise<unknown> }, 'readProviderHistoryPage')
+      .mockResolvedValue(diskPage)
+    const page = (await sm.getHistoryPage(info.id, { limit: 10 })) as { messages: Array<{ uuid?: string }> }
+    expect(page.messages.map((m) => m.uuid)).toEqual(['steer-old', 'd1', 'steer-mid', 'd2']) // requeued 不出现
+    expect(page.totalCount).toBe(4)
+    spy.mockRestore()
+    void s
+    await sm.shutdown()
+  })
+})
+
 // 抑制 randomUUID 未使用告警的引用（vitest tree-shake 友好）
 void randomUUID

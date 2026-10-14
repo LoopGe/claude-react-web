@@ -30,7 +30,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
-import { SteeredStore } from './steered-store.js'
+import { SteeredStore, spliceSteeredIntoPage } from './steered-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
 import { SessionOpLock } from './session-op-lock.js'
 import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
@@ -2453,6 +2453,7 @@ export class SessionManager {
       await this.resultFrameStore.remove(id)
       await this.snapshotStore.remove(id)
       await this.promptUuidStore.remove(id)
+      await this.steeredStore.remove(id)
     } else {
       await this.unload(id, { removeFromStore: true })
     }
@@ -3132,6 +3133,7 @@ export class SessionManager {
     this.turnAnchorStore.revive(id)
     this.resultFrameStore.revive(id)
     this.promptUuidStore.revive(id)
+    this.steeredStore.revive(id)
     this.sessions.set(id, session)
     metrics.gauge('sessions_active', this.sessions.size)
     log.info(`[session ${id}] spawned model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
@@ -6285,6 +6287,8 @@ export class SessionManager {
       this.store?.remove(id)
       // Drop the promptUuids sidecar too — the session is gone for good.
       void this.promptUuidStore.remove(id)
+      // And the steered-message sidecar (mid-run steering replay source).
+      void this.steeredStore.remove(id)
       // And the turn-anchor sidecar (legal discard cut points).
       void this.turnAnchorStore.remove(id)
       // And the result-frame sidecar (per-turn result summaries).
@@ -6618,10 +6622,19 @@ export class SessionManager {
     // paging (the client's loadOlder scroll-up) never surfaces the parent's
     // history inside the Side Chat UI. Undefined for non-Side-Chat sessions.
     const afterUuid = live?.forkBoundaryUuid ?? meta?.forkBoundaryUuid
-    return this.readProviderHistoryPage(live?.provider ?? meta?.provider ?? this.defaultProvider, id, {
+    let page = await this.readProviderHistoryPage(live?.provider ?? meta?.provider ?? this.defaultProvider, id, {
       ...opts,
       ...(afterUuid ? { afterUuid } : {}),
     })
+    // Mid-run steering 回放拼接（spec §8.2）：steered 消息不在 CLI JSONL 里
+    // （additionalContext 落盘为不可渲染的 attachment），sidecar 是它唯一的
+    // 磁盘回放来源——按 steeredAt 时间戳拼进页面。splice 自带去重规则
+    // （requeued/withdrawn 跳过；比页内最新还新跳过）。
+    const steered = await this.steeredStore.load(id)
+    if (steered && steered.length > 0) {
+      page = spliceSteeredIntoPage(page, steered)
+    }
+    return page
   }
 
   async searchMessages(
