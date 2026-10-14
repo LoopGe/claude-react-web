@@ -48,6 +48,7 @@ import {
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
 import { tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
+import { provisionWorktree } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
@@ -1450,7 +1451,7 @@ export class SessionManager {
    *
    *  For resume, use `resume()` instead — this path always allocates a
    *  fresh UUID and won't wire up SDK `resume`. */
-  create(
+  async create(
     opts: Options & { provider?: string; modelGroupId?: string },
     customEnv?: Record<string, string>,
     /** Set by the restart flow: the id of the session Y joins. Threaded
@@ -1462,7 +1463,7 @@ export class SessionManager {
      *  `created` broadcast carries `evictingSource`, letting the client
      *  bypass its maxGroupSize cap when appending Y. */
     evictingSource?: boolean,
-  ): SessionInfo {
+  ): Promise<SessionInfo> {
     // Validate profileId first so we can use the effective profile for
     // downstream checks (modelGroupId, default model).
     const profileId = (opts as { profileId?: unknown }).profileId
@@ -1535,6 +1536,24 @@ export class SessionManager {
           firstPartyTools: firstParty,
         }
       : undefined
+    // Worktree isolation (方案 A"创建即替换"): provision BEFORE spawn so
+    // opts.cwd / opts.worktree are final when snapshotMeta captures them.
+    const isolate = (opts as { isolateWorktree?: unknown }).isolateWorktree
+    if (isolate !== undefined && typeof isolate !== 'boolean') {
+      throw new HttpError(400, 'isolateWorktree must be a boolean')
+    }
+    if (isolate === true) {
+      const id = randomUUID()
+      if (!this.store) throw new HttpError(400, 'worktree isolation requires a state dir')
+      const mainRepo = withDefault.cwd
+      if (!mainRepo) throw new HttpError(400, 'worktree isolation requires a cwd')
+      const prov = await provisionWorktree(this.store.getDir(), id, mainRepo)
+      withDefault.cwd = prov.worktreePath
+      ;(withDefault as Options & { worktree?: WorktreeInfo }).worktree = {
+        mainRepoPath: mainRepo, branch: prov.branch, baseSha: prov.baseSha,
+      }
+      return this.spawn(id, withDefault, customEnv, undefined, undefined, createPrefs, joinGroupOf, evictingSource)
+    }
     return this.spawn(randomUUID(), withDefault, customEnv, undefined, undefined, createPrefs, joinGroupOf, evictingSource)
   }
 

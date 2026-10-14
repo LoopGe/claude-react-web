@@ -94,6 +94,7 @@ const CREATE_BODY_FIELDS = new Set([
   'showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups',
   'showMessageHeaders',
   'mcpServers', 'enabledMcpServers', 'enabledPlugins',
+  'isolateWorktree',
 ])
 
 /** Whitelist + validate the fields that flow from POST /sessions into the SDK
@@ -135,7 +136,7 @@ function narrowCreateBody(body: Record<string, unknown>): { ok: true; value: Rec
     const err = validateStringArray(name, rest[name])
     if (err) return { ok: false, error: err }
   }
-  for (const name of ['includePartialMessages', 'includeHookEvents']) {
+  for (const name of ['includePartialMessages', 'includeHookEvents', 'isolateWorktree']) {
     const v = rest[name]
     if (v !== undefined && typeof v !== 'boolean') {
       return { ok: false, error: `${name} must be a boolean` }
@@ -353,7 +354,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     // create that omitted cwd reached the SDK with no cwd at all, leaving the
     // CLI to inherit whatever directory the host process happened to be in.
     const createBody = withDefaultCwd(narrowed.value, serverDefaultCwd())
-    const info = sm.create(createBody as Options & { provider?: string }, customEnv as Record<string, string> | undefined, joinGroupOf as string | undefined, evicting)
+    const info = await sm.create(createBody as Options & { provider?: string }, customEnv as Record<string, string> | undefined, joinGroupOf as string | undefined, evicting)
     return c.json({ session: info }, 201)
   })
 

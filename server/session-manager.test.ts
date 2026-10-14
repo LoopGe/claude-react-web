@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest'
 import type { Options } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
@@ -339,7 +339,10 @@ import { execCommand as mockExecCommand } from './exec.js'
 import { summarizeForCompact } from './compact-summary.js'
 import { buildSessionRouter } from './routes/sessions.js'
 import { HttpError } from './errors.js'
+import { execFile as execFileCb } from 'node:child_process'
+import { promisify } from 'node:util'
 import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
+import { cleanupGitFixtures, makeRepo } from './test-git-fixtures.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
@@ -408,8 +411,8 @@ describe('SessionManager', () => {
     rmRf(dir)
   })
 
-  it('create() spawns a Query and returns info with working=false', () => {
-    const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+  it('create() spawns a Query and returns info with working=false', async () => {
+    const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
     expect(info.running).toBe(true)
     expect(info.working).toBe(false)
     expect(info.cwd).toBe('/tmp')
@@ -421,8 +424,8 @@ describe('SessionManager', () => {
     expect(mockHandles[0].options.sessionId).toBe(info.id)
   })
 
-  it('create() defaults betas to the 1M-context flag when none is supplied', () => {
-    const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+  it('create() defaults betas to the 1M-context flag when none is supplied', async () => {
+    const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
     // The SDK subprocess must be spawned with the 1M beta, exactly like the
     // New Session dialog does on every create.
     expect(mockHandles[0].options.betas).toEqual([ONE_M_CONTEXT_BETA])
@@ -431,8 +434,8 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.betas).toEqual([ONE_M_CONTEXT_BETA])
   })
 
-  it('create() leaves explicitly supplied betas untouched', () => {
-    const info = sm.create({
+  it('create() leaves explicitly supplied betas untouched', async () => {
+    const info = await sm.create({
       cwd: '/tmp',
       model: 'test-model',
       betas: ['some-custom-beta'],
@@ -441,8 +444,8 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.betas).toEqual(['some-custom-beta'])
   })
 
-  it('create() respects an explicit empty betas list as an opt-out (no 1M default)', () => {
-    const info = sm.create({
+  it('create() respects an explicit empty betas list as an opt-out (no 1M default)', async () => {
+    const info = await sm.create({
       cwd: '/tmp',
       model: 'test-model',
       betas: [],
@@ -453,8 +456,8 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.betas).toEqual([])
   })
 
-  it('pins subagent model-alias env vars to the session model', () => {
-    sm.create({ cwd: '/tmp', model: 'gw/some-model' })
+  it('pins subagent model-alias env vars to the session model', async () => {
+    await sm.create({ cwd: '/tmp', model: 'gw/some-model' })
     const env = mockHandles[0].options.env as Record<string, string>
     // All four aliases resolve to the session's explicit model so subagents
     // (Task/Agent/Explore) never fall back to an ID the gateway rejects.
@@ -464,16 +467,16 @@ describe('SessionManager', () => {
     expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('gw/some-model')
   })
 
-  it('falls back to the default model for the alias env vars when none is given', () => {
-    sm.create({ cwd: '/tmp' })
+  it('falls back to the default model for the alias env vars when none is given', async () => {
+    await sm.create({ cwd: '/tmp' })
     const env = mockHandles[0].options.env as Record<string, string>
     expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(defaultConfig.defaultModel)
     expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe(defaultConfig.defaultModel)
   })
 
-  it('does not contaminate the shared env cache across sessions with different models', () => {
-    sm.create({ cwd: '/tmp', model: 'model-a' })
-    sm.create({ cwd: '/tmp', model: 'model-b' })
+  it('does not contaminate the shared env cache across sessions with different models', async () => {
+    await sm.create({ cwd: '/tmp', model: 'model-a' })
+    await sm.create({ cwd: '/tmp', model: 'model-b' })
     const envA = mockHandles[0].options.env as Record<string, string>
     const envB = mockHandles[1].options.env as Record<string, string>
     // Shallow-copy isolation: session A's aliases must not be overwritten by
@@ -496,9 +499,9 @@ describe('SessionManager', () => {
       __setConfigForTest({ modelGroups: [] })
     })
 
-    it('maps the four tier env vars to the group slots and sets the main model', () => {
+    it('maps the four tier env vars to the group slots and sets the main model', async () => {
       __setConfigForTest({ modelGroups: [GROUP] })
-      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      const info = await sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
       const env = mockHandles[0].options.env as Record<string, string>
       expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-opus-4-20250514')
       expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
@@ -509,24 +512,24 @@ describe('SessionManager', () => {
       expect(mockHandles[0].options.model).toBe('anthropic/claude-opus-4-20250514')
     })
 
-    it('resolves the aux target to the group haiku tier, not the main', () => {
+    it('resolves the aux target to the group haiku tier, not the main', async () => {
       // The aux calls (recap / commit message / auto-mode classifier) ask the
       // manager for their target when the matching config field is empty. For
       // a group session the model must be the HAIKU slot — the class of model
       // the CLI itself routes internal queries to — while session.model (and
       // the info projection) stays the group's main.
       __setConfigForTest({ modelGroups: [GROUP] })
-      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      const info = await sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
       expect(info.model).toBe('anthropic/claude-opus-4-20250514')
       expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({ model: 'claude-haiku-3-5-20241022' })
     })
 
-    it('resolves the aux target model to the session model without a group', () => {
-      const info = sm.create({ cwd: '/tmp', model: 'gw/some-model' })
+    it('resolves the aux target model to the session model without a group', async () => {
+      const info = await sm.create({ cwd: '/tmp', model: 'gw/some-model' })
       expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({ model: 'gw/some-model' })
     })
 
-    it('prefers the profile override, and reads it from the SESSION profile', () => {
+    it('prefers the profile override, and reads it from the SESSION profile', async () => {
       // The override is a per-profile field, so a session pinned to B must
       // use B's — reading the active profile's would apply one profile's model
       // to another profile's session.
@@ -545,7 +548,7 @@ describe('SessionManager', () => {
           activeProfileId: 'A',
           modelGroups: [],
         })
-        const info = sm.create({ cwd: '/tmp', profileId: 'B', model: 'vendor/model' } as Parameters<SessionManager['create']>[0])
+        const info = await sm.create({ cwd: '/tmp', profileId: 'B', model: 'vendor/model' } as Parameters<SessionManager['create']>[0])
         expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({
           model: 'vendor/from-b',
           baseUrl: 'https://gw-B',
@@ -563,7 +566,7 @@ describe('SessionManager', () => {
       }
     })
 
-    it('persists the profile pin so a dormant session still resolves its own profile', () => {
+    it('persists the profile pin so a dormant session still resolves its own profile', async () => {
       // The pin is what identifies WHICH profile's credentials and model
       // groups apply. It is not derivable from the active profile, so it has
       // to survive a restart — otherwise a dormant session is resolved against
@@ -587,7 +590,7 @@ describe('SessionManager', () => {
           activeProfileId: 'A',
           modelGroups: [],
         })
-        const info = sm.create({
+        const info = await sm.create({
           cwd: '/tmp', profileId: 'B', modelGroupId: 'g_b',
         } as Parameters<SessionManager['create']>[0])
         expect(sm.auxTargetFor(info.id, 'recap')).toMatchObject({
@@ -607,17 +610,17 @@ describe('SessionManager', () => {
       }
     })
 
-    it('applies the fallback degradation chain on spawn for a group session', () => {
+    it('applies the fallback degradation chain on spawn for a group session', async () => {
       __setConfigForTest({ modelGroups: [GROUP] })
-      sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      await sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
       expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: ['sonnet', 'haiku'] })
     })
 
-    it('empty slots fall back to the main model', () => {
+    it('empty slots fall back to the main model', async () => {
       __setConfigForTest({
         modelGroups: [{ id: 'g_sonnet_only', name: 'Sonnet Only', sonnet: 'anthropic/claude-sonnet-4-20250514', main: 'sonnet' }],
       })
-      sm.create({ cwd: '/tmp', modelGroupId: 'g_sonnet_only' } as Parameters<SessionManager['create']>[0])
+      await sm.create({ cwd: '/tmp', modelGroupId: 'g_sonnet_only' } as Parameters<SessionManager['create']>[0])
       const env = mockHandles[0].options.env as Record<string, string>
       expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
       expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
@@ -625,11 +628,11 @@ describe('SessionManager', () => {
       expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('anthropic/claude-sonnet-4-20250514')
     })
 
-    it('single-model sessions still collapse all four aliases to the model', () => {
+    it('single-model sessions still collapse all four aliases to the model', async () => {
       // Regression guard for the single-model path (the existing tests above
       // cover it; this one pins it against accidental group leakage).
       __setConfigForTest({ modelGroups: [GROUP] })
-      sm.create({ cwd: '/tmp', model: 'gw/some-model' })
+      await sm.create({ cwd: '/tmp', model: 'gw/some-model' })
       const env = mockHandles[0].options.env as Record<string, string>
       expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('gw/some-model')
       expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('gw/some-model')
@@ -637,14 +640,14 @@ describe('SessionManager', () => {
       expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe('gw/some-model')
     })
 
-    it('create rejects an unknown modelGroupId with 400', () => {
+    it('create rejects an unknown modelGroupId with 400', async () => {
       __setConfigForTest({ modelGroups: [GROUP] })
-      expect(() => sm.create({ cwd: '/tmp', modelGroupId: 'g_missing' } as Parameters<SessionManager['create']>[0])).toThrow(/model group g_missing not found/)
+      await expect(sm.create({ cwd: '/tmp', modelGroupId: 'g_missing' } as Parameters<SessionManager['create']>[0])).rejects.toThrow(/model group g_missing not found/)
     })
 
     it('setModelGroup resolves main, switches model live, applies fallback, persists', async () => {
       __setConfigForTest({ modelGroups: [GROUP] })
-      const info = sm.create({ cwd: '/tmp', model: 'gw/start' })
+      const info = await sm.create({ cwd: '/tmp', model: 'gw/start' })
       const updated = await sm.setModelGroup(info.id, 'g_flagship')
       expect(updated.model).toBe('anthropic/claude-opus-4-20250514')
       expect(updated.modelGroupId).toBe('g_flagship')
@@ -662,7 +665,7 @@ describe('SessionManager', () => {
         main: 'haiku' as const,
       }
       __setConfigForTest({ modelGroups: [GROUP, BUDGET] })
-      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      const info = await sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
       mockHandles[0].applyFlagSettings.mockClear()
       const updated = await sm.setModelGroup(info.id, 'g_budget')
       expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: null })
@@ -672,13 +675,13 @@ describe('SessionManager', () => {
 
     it('setModelGroup rejects an unknown group with 400', async () => {
       __setConfigForTest({ modelGroups: [GROUP] })
-      const info = sm.create({ cwd: '/tmp' })
+      const info = await sm.create({ cwd: '/tmp' })
       await expect(sm.setModelGroup(info.id, 'g_missing')).rejects.toThrow(/model group g_missing not found/)
     })
 
     it('setModel clears modelGroupId and the fallback chain', async () => {
       __setConfigForTest({ modelGroups: [GROUP] })
-      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      const info = await sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
       mockHandles[0].applyFlagSettings.mockClear()
       const updated = await sm.setModel(info.id, 'gw/other')
       expect(updated.modelGroupId).toBeUndefined()
@@ -688,7 +691,7 @@ describe('SessionManager', () => {
 
     it('respawn with a deleted group self-heals: clears the reference and collapses', async () => {
       __setConfigForTest({ modelGroups: [GROUP] })
-      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      const info = await sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
       const id = info.id
       // Unload the session so it goes dormant — self-heal triggers on respawn
       await sm.unload(id)
@@ -705,7 +708,7 @@ describe('SessionManager', () => {
 
     it('respawn re-applies the persisted group', async () => {
       __setConfigForTest({ modelGroups: [GROUP] })
-      const info = sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
+      const info = await sm.create({ cwd: '/tmp', modelGroupId: 'g_flagship' } as Parameters<SessionManager['create']>[0])
       // Unload so resume goes through spawn() and re-applies the group
       await sm.unload(info.id)
       const resumed = await sm.resume(info.id)
@@ -719,7 +722,7 @@ describe('SessionManager', () => {
   it('global stream emits `created` on spawn and `update` on subsequent changes', async () => {
     const sub = sm.subscribeGlobal()
     const it = sub.iterable[Symbol.asyncIterator]()
-    const info = sm.create({})
+    const info = await sm.create({})
     const first = await it.next()
     expect(first.done).toBe(false)
     expect(first.value).toMatchObject({ kind: 'created', session: { id: info.id } })
@@ -747,7 +750,7 @@ describe('SessionManager', () => {
   })
 
   it('send() marks the session as working; result clears it and stamps lastTurnAt', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'hi')
     expect(sm.get(info.id).working).toBe(true)
 
@@ -761,7 +764,7 @@ describe('SessionManager', () => {
   })
 
   it('reports backgroundSubagentCount + a working phase while a background subagent is in flight', async () => {
-    const info = sm.create({ cwd: '/tmp/workspace' })
+    const info = await sm.create({ cwd: '/tmp/workspace' })
     expect(info.backgroundSubagentCount).toBe(0)
     expect(info.phase).toBe('idle')
 
@@ -801,7 +804,7 @@ describe('SessionManager', () => {
   })
 
   it('clears backgroundSubagentCount once the background subagent settles', async () => {
-    const info = sm.create({ cwd: '/tmp/workspace' })
+    const info = await sm.create({ cwd: '/tmp/workspace' })
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = dir
     try {
@@ -850,7 +853,7 @@ describe('SessionManager', () => {
     // recovers and keeps producing. If the watcher treated that as completion,
     // backgroundSubagentCount would drop to 0 (sidebar 'live') while the
     // subagent is still running. It must stay at 1 ('waiting').
-    const info = sm.create({ cwd: '/tmp/workspace' })
+    const info = await sm.create({ cwd: '/tmp/workspace' })
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = dir
     try {
@@ -905,7 +908,7 @@ describe('SessionManager', () => {
   // -------------------------------------------------------------------------
 
   it('backgroundTasks() forwards to the Query and returns the SDK boolean', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].backgroundTasks.mockResolvedValueOnce(true)
     const result = await sm.backgroundTasks(info.id, 'tu_1')
     expect(result).toBe(true)
@@ -916,7 +919,7 @@ describe('SessionManager', () => {
   })
 
   it('stopTask() forwards the taskId to the Query', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.stopTask(info.id, 'task-7')
     expect(mockHandles[0].stopTask).toHaveBeenCalledWith('task-7')
   })
@@ -924,7 +927,7 @@ describe('SessionManager', () => {
   it('backgroundTasks() 501s when the provider handle lacks the method', async () => {
     // requireHandleMethod's guard: a handle without backgroundTasks must
     // surface a clean HttpError 501, not a TypeError from calling undefined.
-    const info = sm.create({})
+    const info = await sm.create({})
     const proto = ClaudeSessionHandle.prototype as unknown as Record<string, unknown>
     const desc = Object.getOwnPropertyDescriptor(ClaudeSessionHandle.prototype, 'backgroundTasks')!
     delete proto.backgroundTasks
@@ -936,7 +939,7 @@ describe('SessionManager', () => {
   })
 
   it('a background launch ack seeds a running TaskRecord; a real task_notification cancels the watcher and settles it', async () => {
-    const info = sm.create({ cwd: '/tmp/workspace' })
+    const info = await sm.create({ cwd: '/tmp/workspace' })
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = dir
     try {
@@ -993,7 +996,7 @@ describe('SessionManager', () => {
   })
 
   it('a real task_notification whose task_id differs from the agentId drops the phantom seed', async () => {
-    const info = sm.create({ cwd: '/tmp/workspace' })
+    const info = await sm.create({ cwd: '/tmp/workspace' })
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = dir
     try {
@@ -1178,7 +1181,7 @@ describe('SessionManager', () => {
   it('resume() backfills missing background-subagent completions into the seeded ring', async () => {
     // A REAL workspace directory — resume() validates the cwd exists.
     const workspace = makeTmpDir()
-    const info = sm.create({ cwd: workspace })
+    const info = await sm.create({ cwd: workspace })
     // The durable sidecar transcript: the agent really finished (end_turn).
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = dir
@@ -1226,7 +1229,7 @@ describe('SessionManager', () => {
   })
 
   it('the watcher\'s synthesized notification settles the seeded TaskRecord to terminal', async () => {
-    const info = sm.create({ cwd: '/tmp/workspace' })
+    const info = await sm.create({ cwd: '/tmp/workspace' })
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = dir
     try {
@@ -1274,7 +1277,7 @@ describe('SessionManager', () => {
   })
 
   it('carries a user turn sent during the autoResume window to the resumed handle (parked SDK waiter detached on abort)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const firstHandle = mockHandles[0]
     // Complete a first turn so autoResume's `lastTurnAt` guard passes. The
     // result re-arms the mock SDK's input waiter, so the SDK's streamInput is
@@ -1331,7 +1334,7 @@ describe('SessionManager', () => {
   })
 
   it('drains and surfaces a user turn stranded when buildResumeOpts throws during autoResume', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const internals = sm as unknown as {
       sessions: Map<string, unknown>
       autoResume: (session: unknown) => Promise<boolean>
@@ -1381,7 +1384,7 @@ describe('SessionManager', () => {
   })
 
   it('autoResume bails (no respawn) if the session is unloaded while buildResumeOpts is pending', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const internals = sm as unknown as {
       sessions: Map<string, unknown>
       autoResume: (session: unknown) => Promise<boolean>
@@ -1408,8 +1411,8 @@ describe('SessionManager', () => {
     expect(mockHandles).toHaveLength(1)
   })
 
-  it('rejects a user turn when the provider input is already closed', () => {
-    const info = sm.create({})
+  it('rejects a user turn when the provider input is already closed', async () => {
+    const info = await sm.create({})
     const internals = sm as unknown as {
       sessions: Map<string, { handle: { destroy: (reason: string) => void } }>
     }
@@ -1423,7 +1426,7 @@ describe('SessionManager', () => {
     // Multiple back-to-back sends never inflate pendingTurns past 1
     // (which would otherwise stick the UI in "working" forever once
     // the SDK merged queued messages into fewer turns than were sent).
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'first')
     sm.send(info.id, 'second')
     sm.send(info.id, 'third')
@@ -1448,7 +1451,7 @@ describe('SessionManager', () => {
     // bumped it back. The fix: if the input pushable still has queued
     // items when result lands, keep pendingTurns=1 so the working state
     // stays continuous.
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'first')
     sm.send(info.id, 'second')
     // Mock SDK drains 'first' immediately on spawn (initial drainOne).
@@ -1468,7 +1471,7 @@ describe('SessionManager', () => {
   })
 
   it('subscribe() replays history and streams live messages', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].emit({ type: 'assistant', message: { content: 'hello' } })
     await tick()
 
@@ -1496,7 +1499,7 @@ describe('SessionManager', () => {
     const uuids = (frames: Array<{ uuid?: string }>) => frames.map((m) => m.uuid)
 
     it('routes frames by parent_tool_use_id into separate rings', async () => {
-      const info = sm.create({})
+      const info = await sm.create({})
       mockHandles[0].emit({ type: 'assistant', uuid: 'm1', parent_tool_use_id: null, message: { content: 'main' } })
       mockHandles[0].emit({ type: 'assistant', uuid: 's1', parent_tool_use_id: 'tu_task', message: { content: 'subagent text' } })
       await tick()
@@ -1507,7 +1510,7 @@ describe('SessionManager', () => {
 
     it('subagent volume evicts only subagent frames — the main ring is untouched', async () => {
       const smSmall = new SessionManager({ store, historyCap: 3, subagentHistoryCap: 2 })
-      const info = smSmall.create({})
+      const info = await smSmall.create({})
       const h = mockHandles.at(-1)!
       // Fill the main ring to its cap…
       for (let i = 0; i < 3; i++) {
@@ -1526,7 +1529,7 @@ describe('SessionManager', () => {
     })
 
     it('subscribe() returns the merged chronological view of both rings', async () => {
-      const info = sm.create({})
+      const info = await sm.create({})
       // Pre-stamp receivedAt (stampReceivedAt is set-only-if-absent, so the
       // pump keeps these) to force a deterministic interleaved order.
       mockHandles[0].emit({ type: 'assistant', uuid: 'm1', parent_tool_use_id: null, receivedAt: 1, message: { content: 'x' } })
@@ -1539,7 +1542,7 @@ describe('SessionManager', () => {
     })
 
     it('discard() seeds the fork with subagent frames re-split by origin', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'go investigate')
       // Subagent frames arrive between the main user prompt and the anchor
@@ -1572,7 +1575,7 @@ describe('SessionManager', () => {
     })
 
     it('messageCount counts both rings', async () => {
-      const info = sm.create({})
+      const info = await sm.create({})
       mockHandles[0].emit({ type: 'assistant', uuid: 'm1', parent_tool_use_id: null, message: { content: 'x' } })
       mockHandles[0].emit({ type: 'assistant', uuid: 's1', parent_tool_use_id: 'tu_t', message: { content: 'x' } })
       mockHandles[0].emit({ type: 'assistant', uuid: 's2', parent_tool_use_id: 'tu_t', message: { content: 'x' } })
@@ -1581,7 +1584,7 @@ describe('SessionManager', () => {
     })
 
     it('passes forwardSubagentText (resolved from config default) to the SDK Options', async () => {
-      sm.create({})
+      await sm.create({})
       // Compare against defaultConfig, not literal true: the test process
       // shares the machine's real ~/.claude-react-web/config.json, and the
       // wiring under test is config → manager → provider → sdkOptions.
@@ -1590,7 +1593,7 @@ describe('SessionManager', () => {
 
     it('forwards an explicit forwardSubagentText: false override', async () => {
       const smOff = new SessionManager({ store, forwardSubagentText: false })
-      smOff.create({})
+      await smOff.create({})
       expect(mockHandles.at(-1)!.options.forwardSubagentText).toBe(false)
       await smOff.shutdown()
     })
@@ -1606,8 +1609,8 @@ describe('SessionManager', () => {
       return s
     }
 
-    it('spawns with the atomic onUserDialog + supportedDialogKinds pair', () => {
-      sm.create({})
+    it('spawns with the atomic onUserDialog + supportedDialogKinds pair', async () => {
+      await sm.create({})
       const opts = mockHandles.at(-1)!.options as {
         onUserDialog?: unknown
         supportedDialogKinds?: string[]
@@ -1617,7 +1620,7 @@ describe('SessionManager', () => {
     })
 
     it('parks a known-kind dialog via the SDK callback and resolves it via decideDialog', async () => {
-      const info = sm.create({})
+      const info = await sm.create({})
       const opts = mockHandles.at(-1)!.options as {
         onUserDialog?: (
           req: { dialogKind: string; payload: Record<string, unknown> },
@@ -1645,7 +1648,7 @@ describe('SessionManager', () => {
     })
 
     it('auto-cancels unknown dialog kinds without parking', async () => {
-      const info = sm.create({})
+      const info = await sm.create({})
       const opts = mockHandles.at(-1)!.options as {
         onUserDialog?: (
           req: { dialogKind: string; payload: Record<string, unknown> },
@@ -1662,7 +1665,7 @@ describe('SessionManager', () => {
   })
 
   it('clear() removes the pre-clear session from the sidebar and returns a fresh session under a new id', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     expect(mockHandles).toHaveLength(1)
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     await tick()
@@ -1692,7 +1695,7 @@ describe('SessionManager', () => {
   })
 
   it("clear() does not carry X's title onto the fresh session Y", async () => {
-    const info = sm.create({ title: 'My Title' })
+    const info = await sm.create({ title: 'My Title' })
     expect(info.title).toBe('My Title')
 
     const next = await sm.clear(info.id)
@@ -1707,7 +1710,7 @@ describe('SessionManager', () => {
   })
 
   it('clear() removes X from the store but keeps it resumable via the on-disk transcript; Y is empty', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     await tick()
     expect(sm.getHistory(info.id)!).toHaveLength(1)
@@ -1744,7 +1747,7 @@ describe('SessionManager', () => {
     const FULL = 'anthropic/claude-sonnet-4-20250514'
     const SHORT = 'claude-sonnet-4-20250514'
 
-    const info = sm.create({ cwd: '/tmp', model: FULL })
+    const info = await sm.create({ cwd: '/tmp', model: FULL })
     sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
@@ -1780,7 +1783,7 @@ describe('SessionManager', () => {
     const FULL = 'anthropic/claude-sonnet-4-20250514'
     const SHORT = 'claude-sonnet-4-20250514'
 
-    const info = sm.create({ cwd: '/tmp', model: SHORT })
+    const info = await sm.create({ cwd: '/tmp', model: SHORT })
     sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
@@ -1793,7 +1796,7 @@ describe('SessionManager', () => {
   })
 
   it('clear() does not broadcast session-cleared (Y has no pre-clear content to hide)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     await tick()
 
@@ -1811,7 +1814,7 @@ describe('SessionManager', () => {
     // values — clear() must pass them as the explicit `prefs` arg or every
     // override silently reverts to the global default (and writeStore()
     // then clobbers the on-disk value).
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setPrefs(info.id, {
       showPinnedUserMessage: false,
       autoRecap: false,
@@ -1839,7 +1842,7 @@ describe('SessionManager', () => {
   it('clear() carries the plugin subset onto Y (a narrowed subset must not widen)', async () => {
     // `undefined` = all enabled, `[]` = none — a dropped subset silently
     // widens the session to every globally-enabled plugin.
-    const info = sm.create({ enabledPlugins: [] } as Parameters<SessionManager['create']>[0])
+    const info = await sm.create({ enabledPlugins: [] } as Parameters<SessionManager['create']>[0])
     expect(info.enabledPlugins).toEqual([])
 
     const next = await sm.clear(info.id)
@@ -1850,7 +1853,7 @@ describe('SessionManager', () => {
   it('clear() of an all-default session passes no prefs arg (fallback stays live)', async () => {
     // An empty prefs OBJECT would shadow spawn's `prefs?.field ?? meta?.field`
     // fallback for a future same-id caller; all-undefined must collapse.
-    const info = sm.create({})
+    const info = await sm.create({})
     const spawnSpy = vi.spyOn(
       sm as unknown as { spawn: (...args: unknown[]) => unknown },
       'spawn',
@@ -1863,7 +1866,7 @@ describe('SessionManager', () => {
   })
 
   it('clear() resets stale working state from the interrupted turn', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'busy')
     expect(sm.get(info.id).working).toBe(true)
 
@@ -1876,7 +1879,7 @@ describe('SessionManager', () => {
   })
 
   it('clear() drops hook run records on the fresh session', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     // Seed two hook runs before the clear.
     sm.recordHookRun(info.id, {
       kind: 'completed',
@@ -1904,7 +1907,7 @@ describe('SessionManager', () => {
     // Regression: clear() must forward X.skillOverride to spawn() (5th arg,
     // same as fork()) or Y silently falls back to the global — possibly
     // permissive — policy, losing a pinned restrictive override.
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setSkillOverride(info.id, { kind: 'disabled' })
     expect(sm.get(info.id).skillOverride).toEqual({ kind: 'disabled' })
 
@@ -1922,7 +1925,7 @@ describe('SessionManager', () => {
     // Regression: clear() used to unload X BEFORE spawning Y, so a spawn
     // throw orphaned the tab (X gone, Y never registered). Now Y is spawned
     // first; on throw X stays live and runnable, clearing is reset.
-    const info = sm.create({})
+    const info = await sm.create({})
     // Stub the first spawn() call (Y) to throw synchronously. spawn is private
     // but the internal this.spawn dispatches through the instance method, so a
     // spy intercepts it. X must survive untouched.
@@ -1949,7 +1952,7 @@ describe('SessionManager', () => {
     // left lastTurnAt set on the fresh Y while Y's history ring is empty,
     // the hook would fire requestGenerate on empty history and pop up
     // "No messages yet." Y must start with lastTurnAt undefined.
-    const info = sm.create({})
+    const info = await sm.create({})
     // Complete a real turn so X.lastTurnAt is stamped + history non-empty.
     sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
@@ -1969,7 +1972,7 @@ describe('SessionManager', () => {
     // still handles parentId sessions: Y inherits parentId + the Side Chat
     // boundary prompt, and X is removed from the store just like a regular
     // session (transcript kept for resume).
-    const parent = sm.create({ cwd: '/tmp' })
+    const parent = await sm.create({ cwd: '/tmp' })
     const side = await sm.createSideChat(parent.id)
     expect(side.parentId).toBe(parent.id)
 
@@ -1984,7 +1987,7 @@ describe('SessionManager', () => {
   })
 
   it('clear(id, { seedText }) seeds Y with a compact boundary + synthetic summary', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     await tick()
     expect(sm.getHistory(info.id)!).toHaveLength(1)
@@ -2024,7 +2027,7 @@ describe('SessionManager', () => {
     // jsonl either). After a restart the divider is absent from the UI but the
     // summary text remains inside the SDK's transcript. Guard against the
     // seed being persisted as a meta field here.
-    const info = sm.create({})
+    const info = await sm.create({})
     await tick()
     const next = await sm.clear(info.id, { seedText: 'HAND-OFF SUMMARY' })
     const meta = store.get(next.id)
@@ -2033,7 +2036,7 @@ describe('SessionManager', () => {
   })
 
   it("compact() keeps X's title on the continuation session Y (plain /clear drops it)", async () => {
-    const info = sm.create({ title: 'My Title' })
+    const info = await sm.create({ title: 'My Title' })
     expect(info.title).toBe('My Title')
 
     const next = await sm.compact(info.id)
@@ -2052,7 +2055,7 @@ describe('SessionManager', () => {
     await expect(sm.compact('ghost')).rejects.toMatchObject({ status: 404 })
 
     // Working → 409.
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'busy')
     expect(sm.get(info.id).phase).toBe('working')
     await expect(sm.compact(info.id)).rejects.toMatchObject({ status: 409 })
@@ -2074,7 +2077,7 @@ describe('SessionManager', () => {
     // require() throws 404 before the phase guard. The 412 branch in compact()
     // is defensive parity with RecapManager for a hypothetical in-map-but-not-
     // running session — not reachable through the public API today.
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.sleep(info.id)
     // unload removed it from the live map (listActivity only sees live
     // sessions); get() still resolves it from the store as a dormant meta.
@@ -2084,7 +2087,7 @@ describe('SessionManager', () => {
 
   it('compact() summarises an idle session and swaps to a fresh seeded session', async () => {
     vi.mocked(summarizeForCompact).mockResolvedValueOnce('HAND-OFF')
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     // A main-thread assistant frame while no turn is accounted now stamps the
     // session working (CLI-driven continuation detection); a real turn ALWAYS
@@ -2113,7 +2116,7 @@ describe('SessionManager', () => {
 
   it('compact() falls back to a plain clear when the summary is empty', async () => {
     vi.mocked(summarizeForCompact).mockResolvedValueOnce('')
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     // Turn ran to completion — see the unaccounted-turn stamp note above.
     mockHandles[0].emit({ type: 'result', session_id: info.id })
@@ -2128,7 +2131,7 @@ describe('SessionManager', () => {
 
   it('two concurrent compacts never double-spawn a fresh session', async () => {
     vi.mocked(summarizeForCompact).mockResolvedValue('HAND-OFF')
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     // Turn ran to completion — see the unaccounted-turn stamp note above.
     mockHandles[0].emit({ type: 'result', session_id: info.id })
@@ -2146,8 +2149,8 @@ describe('SessionManager', () => {
     expect(sm.getHistory(live[0].id)!).toHaveLength(2)
   })
 
-  it('listActivity() emits coarse activity snapshots for live sessions', () => {
-    const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+  it('listActivity() emits coarse activity snapshots for live sessions', async () => {
+    const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
     const activity = sm.listActivity()
     expect(activity).toHaveLength(1)
     expect(activity[0]).toMatchObject({
@@ -2171,7 +2174,7 @@ describe('SessionManager', () => {
   })
 
   it('getCachedContextUsage() reads the pump-cached snapshot, or null', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     expect(sm.getCachedContextUsage(info.id)).toBeNull()
     expect(sm.getCachedContextUsage('ghost')).toBeNull()
 
@@ -2206,7 +2209,7 @@ describe('SessionManager', () => {
     // should see the Context bar value immediately rather than waiting for
     // the next `result`. The pump caches every result's usage on the
     // session; subscribeContextUsage returns it as `snapshot`.
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'hi')
     mockHandles[0].emit({
       type: 'result',
@@ -2221,8 +2224,8 @@ describe('SessionManager', () => {
     sub!.unsubscribe()
   })
 
-  it('subscribeContextUsage() snapshot is undefined before any result lands', () => {
-    const info = sm.create({})
+  it('subscribeContextUsage() snapshot is undefined before any result lands', async () => {
+    const info = await sm.create({})
     const sub = sm.subscribeContextUsage(info.id)
     expect(sub).not.toBeNull()
     expect(sub!.snapshot).toBeUndefined()
@@ -2230,7 +2233,7 @@ describe('SessionManager', () => {
   })
 
   it('send() invalidates a stale prompt-suggestion snapshot', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     // A previous turn produced a predicted next-prompt.
     mockHandles[0].emit({ type: 'prompt_suggestion', suggestion: 'stale prediction' })
     await tick()
@@ -2253,7 +2256,7 @@ describe('SessionManager', () => {
   })
 
   it('persists metadata on create and on send', async () => {
-    const info = sm.create({ title: 'hello', cwd: '/x' })
+    const info = await sm.create({ title: 'hello', cwd: '/x' })
     await store.flush()
     expect(store.get(info.id)).toMatchObject({ id: info.id, title: 'hello' })
 
@@ -2265,7 +2268,7 @@ describe('SessionManager', () => {
   })
 
   it('list() merges live sessions with dormant persisted ones', async () => {
-    const live = sm.create({ title: 'live-one' })
+    const live = await sm.create({ title: 'live-one' })
     // Fake a dormant entry by upserting directly into the store.
     store.upsert({
       id: 'dormant-id',
@@ -2286,7 +2289,7 @@ describe('SessionManager', () => {
   })
 
   it('delete() closes the Query and removes from the persistence index', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'q')
     expect(sm.get(info.id).working).toBe(true)
 
@@ -2301,7 +2304,7 @@ describe('SessionManager', () => {
   })
 
   it('delete() resolves pending permissions as deny so SDK awaiters never hang', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
       input: unknown,
@@ -2325,7 +2328,7 @@ describe('SessionManager', () => {
   })
 
   it('sleep() unloads an idle session to dormant (reversible, transcript kept)', async () => {
-    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    const info = await sm.create({ cwd: '/tmp', model: 'm1' })
     // A freshly-created session with no in-flight turn is idle.
     expect(sm.get(info.id).phase).toBe('idle')
     expect(sm.get(info.id).slept).toBeFalsy()
@@ -2356,7 +2359,7 @@ describe('SessionManager', () => {
   })
 
   it('sleep() rejects a working session with 409 (idle guard)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'in-flight')
     expect(sm.get(info.id).working).toBe(true)
 
@@ -2367,14 +2370,14 @@ describe('SessionManager', () => {
   })
 
   it('sleep() on an already-dormant session throws (not live)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.sleep(info.id)
     // A second sleep hits requireLive → require → 404 (not in the live map).
     await expect(sm.sleep(info.id)).rejects.toThrow(/not found/)
   })
 
   it('resume() spawns a new Query with options.resume set to the original id', async () => {
-    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    const info = await sm.create({ cwd: '/tmp', model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.unload(info.id)
@@ -2393,7 +2396,7 @@ describe('SessionManager', () => {
   })
 
   it('resume() is idempotent when the session is already live', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const again = await sm.resume(info.id)
     expect(again.id).toBe(info.id)
     // No extra Query was spawned.
@@ -2401,7 +2404,7 @@ describe('SessionManager', () => {
   })
 
   it('resume() refuses hard-terminated sessions (deleted / transcript_missing / crash_recovered_fork)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     // Simulate the pump finishing naturally — queue a result then close.
     // This leaves terminated:true with terminatedReason:'query_ended' (a
     // TRANSIENT reason — covered by the next test). Overwrite it with a
@@ -2425,7 +2428,7 @@ describe('SessionManager', () => {
     // spawn failure), but the SDK transcript can still be intact on disk.
     // resume() must defer to the hasSdkTranscript probe rather than
     // hard-410-ing — the user's manual retry should succeed.
-    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    const info = await sm.create({ cwd: '/tmp', model: 'm1' })
     sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     mockHandles[0].finish()
@@ -2456,7 +2459,7 @@ describe('SessionManager', () => {
     // transcript is gone — the hasSdkTranscript probe must catch it,
     // mark it transcript_missing, and 410 (mirroring the existing
     // !hasTranscript + lastTurnAt branch for non-terminated sessions).
-    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    const info = await sm.create({ cwd: '/tmp', model: 'm1' })
     sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
@@ -2480,7 +2483,7 @@ describe('SessionManager', () => {
     // binary. Without a pre-spawn probe the user is told to reinstall the
     // CLI while the real fault is a moved/deleted project directory.
     const gone = join(dir, 'moved-away')
-    const info = sm.create({ cwd: gone, model: 'm1' })
+    const info = await sm.create({ cwd: gone, model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.unload(info.id)
@@ -2499,7 +2502,7 @@ describe('SessionManager', () => {
     // through to the store/disk path to actually re-spawn. This is the
     // live-crash case (server still running), distinct from the post-restart
     // dormant case covered above.
-    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    const info = await sm.create({ cwd: '/tmp', model: 'm1' })
     sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     mockHandles[0].finish()
@@ -2534,7 +2537,7 @@ describe('SessionManager', () => {
     // new completed turn, the NEXT resume tripped the `!meta.lastTurnAt`
     // guard and threw "the first turn never completed", marking the
     // session terminated — so a session could be resumed exactly once.
-    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    const info = await sm.create({ cwd: '/tmp', model: 'm1' })
     // Complete a real turn so lastTurnAt is stamped + persisted.
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
@@ -2569,7 +2572,7 @@ describe('SessionManager', () => {
     // restructure this dead-ended as terminated:'no_data' ("the first turn
     // never completed") — a permanent dead end whose only "recovery" was
     // "create a new session", abandoning the id / cwd / grouping.
-    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    const info = await sm.create({ cwd: '/tmp', model: 'm1' })
     // No send / no result → lastTurnAt undefined, and (simulated) no
     // transcript on disk.
     await sm.unload(info.id)
@@ -2595,7 +2598,7 @@ describe('SessionManager', () => {
     // dead-end as terminated:'no_data'. The disk probe (hasSdkTranscript)
     // is ground truth; lastTurnAt is only a fallible proxy, so the guard
     // keys off the probe.
-    const info = sm.create({ cwd: '/tmp', model: 'm1' })
+    const info = await sm.create({ cwd: '/tmp', model: 'm1' })
     sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
@@ -2617,14 +2620,14 @@ describe('SessionManager', () => {
   })
 
   it('setModel() updates the session and forwards to the Query', async () => {
-    const info = sm.create({ model: 'old' })
+    const info = await sm.create({ model: 'old' })
     await sm.setModel(info.id, 'new-model')
     expect(mockHandles[0].setModel).toHaveBeenCalledWith('new-model')
     expect(sm.get(info.id).model).toBe('new-model')
   })
 
   it('setFastMode() records the intent and forwards applyFlagSettings({ fastMode }) to the Query', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     expect(info.fastMode).toBeUndefined()
     const updated = await sm.setFastMode(info.id, true)
     expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fastMode: true })
@@ -2636,14 +2639,14 @@ describe('SessionManager', () => {
   })
 
   it('setFastMode() persists the intent so it survives resume', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setFastMode(info.id, true)
     await store.flush()
     expect(store.get(info.id)?.fastMode).toBe(true)
   })
 
   it('setEffortLevel() records the level and forwards applyFlagSettings({ effortLevel })', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     expect(info.effortLevel).toBeUndefined()
     const updated = await sm.setEffortLevel(info.id, 'low')
     expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'low' })
@@ -2652,14 +2655,14 @@ describe('SessionManager', () => {
   })
 
   it("setEffortLevel() forwards 'max' (Settings typedef omits it, but the API accepts it)", async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const updated = await sm.setEffortLevel(info.id, 'max')
     expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'max' })
     expect(updated.effortLevel).toBe('max')
   })
 
   it('setEffortLevel() persists the level so it survives resume', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setEffortLevel(info.id, 'xhigh')
     await store.flush()
     expect(store.get(info.id)?.effortLevel).toBe('xhigh')
@@ -2668,7 +2671,7 @@ describe('SessionManager', () => {
   // --- auto-compact window (SDK Settings.autoCompactWindow via applyFlagSettings) ---
 
   it('setAutoCompactWindow() pins a positive token window and enables auto-compact', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     expect(info.autoCompactWindow).toBeUndefined()
     const updated = await sm.setAutoCompactWindow(info.id, 180000)
     expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
@@ -2680,7 +2683,7 @@ describe('SessionManager', () => {
   })
 
   it('setAutoCompactWindow() rounds fractional tokens', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const updated = await sm.setAutoCompactWindow(info.id, 180000.6)
     expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
       autoCompactWindow: 180001,
@@ -2690,7 +2693,7 @@ describe('SessionManager', () => {
   })
 
   it('setAutoCompactWindow() with null clears back to "auto"', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setAutoCompactWindow(info.id, 180000)
     expect(sm.get(info.id).autoCompactWindow).toBe(180000)
     const updated = await sm.setAutoCompactWindow(info.id, null)
@@ -2703,7 +2706,7 @@ describe('SessionManager', () => {
   })
 
   it('setAutoCompactWindow() persists the window so it survives resume', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setAutoCompactWindow(info.id, 100000)
     await store.flush()
     expect(store.get(info.id)?.autoCompactWindow).toBe(100000)
@@ -2740,7 +2743,7 @@ describe('SessionManager', () => {
   }
 
   it('contextUsage() harvests the CLI threshold and folds it into the live snapshot', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedSnapshot(info.id)
     mockHandles[0].getContextUsage.mockResolvedValueOnce({
       model: 'claude-opus-4-7',
@@ -2761,14 +2764,14 @@ describe('SessionManager', () => {
   })
 
   it('contextUsage() still returns the raw response it harvested from', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const raw = { model: 'm', autoCompactThreshold: 1000, isAutoCompactEnabled: true, categories: [] }
     mockHandles[0].getContextUsage.mockResolvedValueOnce(raw)
     await expect(sm.contextUsage(info.id)).resolves.toBe(raw)
   })
 
   it('contextUsage() tolerates a response with no auto-compact fields', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedSnapshot(info.id)
     mockHandles[0].getContextUsage.mockResolvedValueOnce({ categories: [] })
 
@@ -2779,7 +2782,7 @@ describe('SessionManager', () => {
   })
 
   it('setAutoCompactWindow() probes the CLI in the background and lands its threshold', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedSnapshot(info.id)
     // Hold the probe open: getContextUsage has no SDK-side timeout, so the pin
     // response must not be waiting on it.
@@ -2806,7 +2809,7 @@ describe('SessionManager', () => {
   })
 
   it('a failing background probe leaves the derived threshold in place', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedSnapshot(info.id)
     mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('subprocess busy'))
 
@@ -2817,7 +2820,7 @@ describe('SessionManager', () => {
   })
 
   it('setAutoCompactWindow() skips the probe mid-turn (a busy subprocess stalls control requests)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedSnapshot(info.id)
     const s = usageStateOf(info.id) as unknown as { pendingTurns: number }
     s.pendingTurns = 1
@@ -2831,7 +2834,7 @@ describe('SessionManager', () => {
   })
 
   it('setModel() drops facts computed for the previous model', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedSnapshot(info.id)
     mockHandles[0].getContextUsage.mockResolvedValueOnce({
       model: 'claude-opus-4-7',
@@ -2893,7 +2896,7 @@ describe('SessionManager', () => {
   }
 
   it('a result fires a background reconcile probe that corrects the cached snapshot', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedAggregateSnapshot(info.id)
     emitAggregateResult()
     await tick()
@@ -2933,7 +2936,7 @@ describe('SessionManager', () => {
   })
 
   it('a failing reconcile probe leaves the derived snapshot and clears the in-flight flag', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedAggregateSnapshot(info.id)
 
     mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('subprocess busy'))
@@ -2956,7 +2959,7 @@ describe('SessionManager', () => {
   })
 
   it('the reconcile probe is skipped while one is already in flight', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedAggregateSnapshot(info.id)
 
     let resolveProbe: (v: unknown) => void = () => {}
@@ -2984,7 +2987,7 @@ describe('SessionManager', () => {
   })
 
   it('the reconcile probe runs even with a turn still pending (queued-input sessions never idle)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedAggregateSnapshot(info.id)
 
     // Simulate the queued-input state: the pump keeps pendingTurns=1 across
@@ -3011,7 +3014,7 @@ describe('SessionManager', () => {
   })
 
   it('a threshold-less reconcile response preserves the CLI threshold the correction carried', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedAggregateSnapshot(info.id)
 
     // Probe 1 reports the CLI's OWN threshold — 800000, distinct from the
@@ -3045,7 +3048,7 @@ describe('SessionManager', () => {
   })
 
   it('a stale reconcile response never overwrites a newer snapshot', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedAggregateSnapshot(info.id)
 
     // Hold a probe open against the CURRENT snapshot object…
@@ -3108,7 +3111,7 @@ describe('SessionManager', () => {
   })
 
   it('caps stale re-arms so a churning snapshot cannot loop control requests', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedAggregateSnapshot(info.id)
     // Settle + clear the spawn-time seed probe so the call counts below
     // belong to the reconcile probe alone.
@@ -3171,7 +3174,7 @@ describe('SessionManager', () => {
   })
 
   it('an identical reconcile reading does not replace the cached snapshot (no churn)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedAggregateSnapshot(info.id)
     // First correction lands (fresh numbers).
     mockHandles[0].getContextUsage.mockResolvedValueOnce({
@@ -3203,7 +3206,7 @@ describe('SessionManager', () => {
   })
 
   it('a wedged reconcile probe times out, frees the in-flight flag, and ignores the late resolve', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     seedAggregateSnapshot(info.id)
 
     let neverResolve: (v: unknown) => void = () => {}
@@ -3284,7 +3287,7 @@ describe('SessionManager', () => {
   }
 
   it('init landing fires a background seed probe that paints the zero-turn bar', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await settleSpawnProbe(info.id)
     const sub = sm.subscribeContextUsage(info.id)!
     const it = sub.iterable[Symbol.asyncIterator]()
@@ -3310,7 +3313,7 @@ describe('SessionManager', () => {
   })
 
   it('a garbage seed answer leaves the cache empty and the session unharmed', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await settleSpawnProbe(info.id)
     // Default mock resolves {} — liteContextUsageFromSdkUsage refuses it.
     emitInit(info.id)
@@ -3319,7 +3322,7 @@ describe('SessionManager', () => {
   })
 
   it('a rejected seed probe is silent and does not wedge later usage updates', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await settleSpawnProbe(info.id)
     mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('subprocess busy'))
     emitInit(info.id)
@@ -3349,7 +3352,7 @@ describe('SessionManager', () => {
   })
 
   it('the seed probe is skipped while a turn is already pending (resume with queued input)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await settleSpawnProbe(info.id)
     sm.send(info.id, 'hi')
     mockHandles[0].getContextUsage.mockClear()
@@ -3361,7 +3364,7 @@ describe('SessionManager', () => {
   })
 
   it('a delayed seed response never overwrites a newer turn-derived snapshot', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await settleSpawnProbe(info.id)
     // Seed probe fired at init and HANGS (control responses have no SDK-side
     // timeout — the reason every probe races its own 10s timer).
@@ -3401,7 +3404,7 @@ describe('SessionManager', () => {
   })
 
   it('a seed still in flight does not block turn-1 reconcile on the aggregate wire', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await settleSpawnProbe(info.id)
     // Seed probe in flight when turn 1 completes…
     let resolveSeed: (v: unknown) => void = () => {}
@@ -3446,7 +3449,7 @@ describe('SessionManager', () => {
   })
 
   it('a completed turn whose own snapshots all failed voids the stale seed answer', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await settleSpawnProbe(info.id)
     let resolveSeed: (v: unknown) => void = () => {}
     mockHandles[0].getContextUsage.mockClear()
@@ -3473,7 +3476,7 @@ describe('SessionManager', () => {
     // The mify-proxy backend can delay the pump's `system/init` frame by
     // minutes (or forever) while control requests answer in ~2s — the seed
     // must therefore fire at spawn, not wait for init.
-    const info = sm.create({})
+    const info = await sm.create({})
     // The spawn-time probe is the first control call of the session's life.
     expect(mockHandles[0].getContextUsage).toHaveBeenCalledWith({ detail: 'summary' })
 
@@ -3488,7 +3491,7 @@ describe('SessionManager', () => {
   })
 
   it('ensureContextUsageSeed() stands down when the cache already holds a snapshot', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await settleSpawnProbe(info.id)
     mockHandles[0].getContextUsage.mockClear()
     mockHandles[0].getContextUsage.mockResolvedValueOnce(freshSessionUsage)
@@ -3508,7 +3511,7 @@ describe('SessionManager', () => {
   })
 
   it('ensureContextUsageSeed() rate-limits repeated attempts while the cache stays empty', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await settleSpawnProbe(info.id)
     mockHandles[0].getContextUsage.mockClear()
 
@@ -3535,7 +3538,7 @@ describe('SessionManager', () => {
   })
 
   it('a mid-turn seed attempt is skipped WITHOUT consuming the cooldown window', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await settleSpawnProbe(info.id)
     mockHandles[0].getContextUsage.mockClear()
 
@@ -3564,7 +3567,7 @@ describe('SessionManager', () => {
   // --- thinking config (Options.thinking at spawn + setMaxThinkingTokens live) ---
 
   it("setThinking() maps adaptive → null and forwards setMaxThinkingTokens(null, undefined) — absent display keeps the current mode", async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const updated = await sm.setThinking(info.id, { type: 'adaptive' })
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null, undefined)
     expect(updated.thinking).toEqual({ type: 'adaptive' })
@@ -3572,26 +3575,26 @@ describe('SessionManager', () => {
   })
 
   it("setThinking() maps disabled → (0, undefined)", async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setThinking(info.id, { type: 'disabled' })
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(0, undefined)
   })
 
   it("setThinking() maps enabled N → (N, undefined)", async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const updated = await sm.setThinking(info.id, { type: 'enabled', budgetTokens: 16384 })
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(16384, undefined)
     expect(updated.thinking).toEqual({ type: 'enabled', budgetTokens: 16384 })
   })
 
   it("setThinking() clears the display back to the API default only via the explicit clearDisplay opt", async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setThinking(info.id, { type: 'adaptive' }, { clearDisplay: true })
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenLastCalledWith(null, null)
   })
 
   it("setThinking() forwards display as the 2nd param", async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const updated = await sm.setThinking(info.id, { type: 'adaptive', display: 'omitted' })
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null, 'omitted')
     expect(updated.thinking).toEqual({ type: 'adaptive', display: 'omitted' })
@@ -3602,17 +3605,17 @@ describe('SessionManager', () => {
   })
 
   it("setThinking() forwards display 'highlights' (SDK 0.3.295) as the 2nd param", async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const updated = await sm.setThinking(info.id, { type: 'adaptive', display: 'highlights' })
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null, 'highlights')
     expect(updated.thinking).toEqual({ type: 'adaptive', display: 'highlights' })
   })
 
-  it("spawn strips display:'highlights' from Options.thinking (spawn union is summarized|omitted only) and re-applies it post-spawn", () => {
+  it("spawn strips display:'highlights' from Options.thinking (spawn union is summarized|omitted only) and re-applies it post-spawn", async () => {
     // Cast: 'highlights' is deliberately NOT in the SDK spawn-time
     // ThinkingConfig union — it arrives here from the persisted intent, and
     // the strip under test is what keeps the spawn options type-honest.
-    sm.create({ thinking: { type: 'enabled', budgetTokens: 8192, display: 'highlights' } as unknown as Options['thinking'] })
+    await sm.create({ thinking: { type: 'enabled', budgetTokens: 8192, display: 'highlights' } as unknown as Options['thinking'] })
     // Spawn options carry the budget intent but NOT the highlights display.
     expect(mockHandles[0].options.thinking).toEqual({ type: 'enabled', budgetTokens: 8192 })
     // Post-spawn re-apply RE-STATES the spawn-time budget explicitly (the
@@ -3621,14 +3624,14 @@ describe('SessionManager', () => {
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(8192, 'highlights')
   })
 
-  it("spawn re-applies highlights with tokens null for adaptive (no budget to restate)", () => {
-    sm.create({ thinking: { type: 'adaptive', display: 'highlights' } as unknown as Options['thinking'] })
+  it("spawn re-applies highlights with tokens null for adaptive (no budget to restate)", async () => {
+    await sm.create({ thinking: { type: 'adaptive', display: 'highlights' } as unknown as Options['thinking'] })
     expect(mockHandles[0].options.thinking).toEqual({ type: 'adaptive' })
     expect(mockHandles[0].setMaxThinkingTokens).toHaveBeenCalledWith(null, 'highlights')
   })
 
   it('readMcpAppResource() delegates to the handle readMcpResource (MCP Apps ui:// read)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const r = await sm.readMcpAppResource(info.id, 'basic', 'ui://get-time/mcp-app.html') as {
       contents?: Array<{ uri?: string; mimeType?: string }>
     }
@@ -3636,14 +3639,14 @@ describe('SessionManager', () => {
     expect(r.contents?.[0]).toMatchObject({ uri: 'ui://get-time/mcp-app.html', mimeType: 'text/html;profile=mcp-app' })
   })
 
-  it("spawn forwards non-highlights thinking displays verbatim (no strip, no post-spawn re-apply)", () => {
-    sm.create({ thinking: { type: 'adaptive', display: 'summarized' } })
+  it("spawn forwards non-highlights thinking displays verbatim (no strip, no post-spawn re-apply)", async () => {
+    await sm.create({ thinking: { type: 'adaptive', display: 'summarized' } })
     expect(mockHandles[0].options.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
     expect(mockHandles[0].setMaxThinkingTokens).not.toHaveBeenCalled()
   })
 
   it('setCwd() relocates the workspace and clears a stale spawn_failed error', async () => {
-    const info = sm.create({ cwd: dir, model: 'm1' })
+    const info = await sm.create({ cwd: dir, model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.unload(info.id)
@@ -3672,15 +3675,15 @@ describe('SessionManager', () => {
   })
 
   it('setCwd() 409s on a running session (the live CLI keeps its spawn cwd)', async () => {
-    const info = sm.create({ cwd: dir, model: 'm1' })
+    const info = await sm.create({ cwd: dir, model: 'm1' })
     const next = join(dir, 'moved')
     mkdirSync(next, { recursive: true })
     await expect(sm.setCwd(info.id, next)).rejects.toThrow(/sleep it first/)
     expect(store.get(info.id)!.cwd ?? sm.get(info.id).cwd).toBe(dir)
   })
 
-  it('setCwd() 400s when the directory does not exist', () => {
-    const info = sm.create({ cwd: dir, model: 'm1' })
+  it('setCwd() 400s when the directory does not exist', async () => {
+    const info = await sm.create({ cwd: dir, model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
     return (async () => {
       await tick()
@@ -3692,8 +3695,8 @@ describe('SessionManager', () => {
     })()
   })
 
-  it('setCwd() 400s on an empty cwd string', () => {
-    const info = sm.create({ cwd: dir, model: 'm1' })
+  it('setCwd() 400s on an empty cwd string', async () => {
+    const info = await sm.create({ cwd: dir, model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
     return (async () => {
       await tick()
@@ -3703,7 +3706,7 @@ describe('SessionManager', () => {
   })
 
   it('setCwd() un-kills a transcript_missing session (relocating is the recovery)', async () => {
-    const info = sm.create({ cwd: dir, model: 'm1' })
+    const info = await sm.create({ cwd: dir, model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.unload(info.id)
@@ -3722,8 +3725,8 @@ describe('SessionManager', () => {
     expect(store.get(info.id)!.terminatedReason).toBeUndefined()
   })
 
-  it('setCwd() 400s when the path is a file, not a directory', () => {
-    const info = sm.create({ cwd: dir, model: 'm1' })
+  it('setCwd() 400s when the path is a file, not a directory', async () => {
+    const info = await sm.create({ cwd: dir, model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
     const file = join(dir, 'notes.txt')
     writeFileSync(file, 'x')
@@ -3739,7 +3742,7 @@ describe('SessionManager', () => {
     // meta.cwd`, so after PATCH cwd the probe looked in the NEW path's
     // encoded projects/ subtree, missed the jsonl under the OLD encoding,
     // and markTranscriptMissing permanently killed the session.
-    const info = sm.create({ cwd: dir, model: 'm1' })
+    const info = await sm.create({ cwd: dir, model: 'm1' })
     sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
@@ -3766,7 +3769,7 @@ describe('SessionManager', () => {
     // The per-session op lock queues it behind the resume instead; once the
     // resume has spawned, the session is live and the dormant-only guard
     // refuses the relocate.
-    const info = sm.create({ cwd: dir, model: 'm1' })
+    const info = await sm.create({ cwd: dir, model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.unload(info.id)
@@ -3804,7 +3807,7 @@ describe('SessionManager', () => {
   })
 
   it('rename() during a resume waits for it, then applies to the live session', async () => {
-    const info = sm.create({ cwd: dir, model: 'm1' })
+    const info = await sm.create({ cwd: dir, model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.unload(info.id)
@@ -3837,7 +3840,7 @@ describe('SessionManager', () => {
   })
 
   it('a dormant rename survives the next resume (title carry path)', async () => {
-    const info = sm.create({ cwd: dir, model: 'm1', title: 'old' })
+    const info = await sm.create({ cwd: dir, model: 'm1', title: 'old' })
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.unload(info.id)
@@ -3848,33 +3851,33 @@ describe('SessionManager', () => {
   })
 
   it('setThinking() persists display so it survives resume', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setThinking(info.id, { type: 'adaptive', display: 'omitted' })
     await store.flush()
     expect(store.get(info.id)?.thinking).toEqual({ type: 'adaptive', display: 'omitted' })
   })
 
   it("setThinking() 400s on enabled-without-budget (not expressible via setMaxThinkingTokens)", async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await expect(sm.setThinking(info.id, { type: 'enabled' })).rejects.toThrow('budgetTokens')
     expect(mockHandles[0].setMaxThinkingTokens).not.toHaveBeenCalled()
   })
 
   it('setThinking() persists the setting so it survives resume', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setThinking(info.id, { type: 'disabled' })
     await store.flush()
     expect(store.get(info.id)?.thinking).toEqual({ type: 'disabled' })
   })
 
   it('create({ thinking }) forwards Options.thinking to the SDK and records it', async () => {
-    const info = sm.create({ thinking: { type: 'enabled', budgetTokens: 8192 } } as unknown as Parameters<typeof sm.create>[0])
+    const info = await sm.create({ thinking: { type: 'enabled', budgetTokens: 8192 } } as unknown as Parameters<typeof sm.create>[0])
     expect(mockHandles[0].options.thinking).toEqual({ type: 'enabled', budgetTokens: 8192 })
     expect(info.thinking).toEqual({ type: 'enabled', budgetTokens: 8192 })
   })
 
   it('fork() carries the thinking config onto the new session', async () => {
-    const source = sm.create({})
+    const source = await sm.create({})
     await sm.setThinking(source.id, { type: 'enabled', budgetTokens: 4096 })
     sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
@@ -3897,7 +3900,7 @@ describe('SessionManager', () => {
     const sm2 = new SessionManager({ store, agentStore })
     try {
       // create with a start-as agent → SDK receives Options.agent, meta persists it
-      const info = sm2.create({ model: 'test-model', agent: 'reviewer' })
+      const info = await sm2.create({ model: 'test-model', agent: 'reviewer' })
       expect(mockHandles[0].options.agent).toBe('reviewer')
       expect(store.get(info.id)?.agent).toBe('reviewer')
 
@@ -3922,17 +3925,17 @@ describe('SessionManager', () => {
   })
 
   it('thinkingSupported is classified from the model id at spawn', async () => {
-    const opus = sm.create({ model: 'claude-opus-4-8' })
+    const opus = await sm.create({ model: 'claude-opus-4-8' })
     expect(sm.get(opus.id).thinkingSupported).toBe(true)
     expect(opus.thinkingSupported).toBe(true)
-    const haiku = sm.create({ model: 'claude-haiku-4-5' })
+    const haiku = await sm.create({ model: 'claude-haiku-4-5' })
     expect(haiku.thinkingSupported).toBe(false)
-    const other = sm.create({ model: 'deepseek/deepseek-v4-pro' })
+    const other = await sm.create({ model: 'deepseek/deepseek-v4-pro' })
     expect(other.thinkingSupported).toBe(false)
   })
 
   it('setModel() recomputes thinkingSupported for the new model', async () => {
-    const info = sm.create({ model: 'claude-opus-4-8' })
+    const info = await sm.create({ model: 'claude-opus-4-8' })
     expect(sm.get(info.id).thinkingSupported).toBe(true)
     const updated = await sm.setModel(info.id, 'deepseek/deepseek-v4-pro')
     expect(updated.thinkingSupported).toBe(false)
@@ -3943,7 +3946,7 @@ describe('SessionManager', () => {
   // --- accountInfo (SDK accountInfo control read) ---
 
   it('accountInfo() forwards the control request and narrows the raw response', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].accountInfo.mockResolvedValueOnce({
       email: 'user@example.com',
       organization: 'Acme',
@@ -3965,7 +3968,7 @@ describe('SessionManager', () => {
   })
 
   it('accountInfo() collapses a malformed / empty response to undefined', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].accountInfo.mockResolvedValueOnce({ email: '  ', apiProvider: 'not-a-provider' })
     expect(await sm.accountInfo(info.id)).toBeUndefined()
     mockHandles[0].accountInfo.mockResolvedValueOnce(null)
@@ -3993,7 +3996,7 @@ describe('SessionManager', () => {
 
   it('rewindFiles() delegates to snapshots.dryRun and narrows the result', async () => {
     const spies = spySnapshots()
-    const info = sm.create({})
+    const info = await sm.create({})
     const sent = sm.send(info.id, 'edit a file')
     // Complete the turn so the session is idle (phase guard passes).
     mockHandles[0].emit({ type: 'result', subtype: 'success' })
@@ -4016,7 +4019,7 @@ describe('SessionManager', () => {
 
   it('rewindFiles() delegates to snapshots.rewind for a real rewind', async () => {
     const spies = spySnapshots()
-    const info = sm.create({})
+    const info = await sm.create({})
     const sent = sm.send(info.id, 'edit a file')
     mockHandles[0].emit({ type: 'result', subtype: 'success' })
     await tick()
@@ -4029,7 +4032,7 @@ describe('SessionManager', () => {
 
   it('rewindFiles() 409s while the session is working on a REAL rewind', async () => {
     const spies = spySnapshots()
-    const info = sm.create({})
+    const info = await sm.create({})
     const sent = sm.send(info.id, 'hi') // pendingTurns=1 → phase 'working'
     await expect(sm.rewindFiles(info.id, sent.uuid!)).rejects.toThrow('working')
     expect(spies.rewind).not.toHaveBeenCalled()
@@ -4039,7 +4042,7 @@ describe('SessionManager', () => {
 
   it('rewindFiles() allows a dry-run while the session is working', async () => {
     const spies = spySnapshots()
-    const info = sm.create({})
+    const info = await sm.create({})
     const sent = sm.send(info.id, 'hi') // pendingTurns=1 → phase 'working'
     spies.dryRun.mockResolvedValueOnce({ canRewind: true, filesChanged: ['x.ts'] })
     const res = await sm.rewindFiles(info.id, sent.uuid!, { dryRun: true })
@@ -4057,7 +4060,7 @@ describe('SessionManager', () => {
   it('rewindFiles() broadcasts a git-status refresh after a real rewind (not a dry run)', async () => {
     const spies = spySnapshots()
     const bcast = vi.spyOn(sm, 'broadcastGitStatusChanged').mockImplementation(() => {})
-    const info = sm.create({})
+    const info = await sm.create({})
     const sent = sm.send(info.id, 'edit a file')
     mockHandles[0].emit({ type: 'result', subtype: 'success' })
     await tick()
@@ -4073,7 +4076,7 @@ describe('SessionManager', () => {
   it('rewindFiles() does NOT broadcast when rewind reports canRewind=false', async () => {
     const spies = spySnapshots()
     const bcast = vi.spyOn(sm, 'broadcastGitStatusChanged').mockImplementation(() => {})
-    const info = sm.create({})
+    const info = await sm.create({})
     const sent = sm.send(info.id, 'edit a file')
     mockHandles[0].emit({ type: 'result', subtype: 'success' })
     await tick()
@@ -4085,7 +4088,7 @@ describe('SessionManager', () => {
 
   it('send() captures a snapshot anchor before dispatch (fire-and-forget)', async () => {
     const spies = spySnapshots()
-    const info = sm.create({ cwd: dir })
+    const info = await sm.create({ cwd: dir })
     spies.capture.mockResolvedValueOnce('tree-1')
     sm.send(info.id, 'hi')
     // Capture was invoked synchronously (fire-and-forget but started
@@ -4099,7 +4102,7 @@ describe('SessionManager', () => {
   it('send() never blocks on capture failure (continues to dispatch)', async () => {
     const spies = spySnapshots()
     spies.capture.mockRejectedValueOnce(new Error('git missing'))
-    const info = sm.create({ cwd: dir })
+    const info = await sm.create({ cwd: dir })
     // send must not throw even though capture rejects.
     const sent = sm.send(info.id, 'hi')
     expect(sent.uuid).toBeTruthy()
@@ -4110,7 +4113,7 @@ describe('SessionManager', () => {
   it('queued send defers the anchor and captures on consume (no re-defer loop)', async () => {
     const spies = spySnapshots()
     spies.capture.mockResolvedValue('tree-q')
-    const info = sm.create({ cwd: dir })
+    const info = await sm.create({ cwd: dir })
     // First send starts a turn — session is now working.
     sm.send(info.id, 'first')
     // Second send is queued while working: must NOT capture at enqueue.
@@ -4138,7 +4141,7 @@ describe('SessionManager', () => {
   // --- readFile: SDK readFile + CLI read-state seeding (seedReadState) ---
 
   it('readFile() seeds the CLI read-state cache after a successful read', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].readFile.mockResolvedValueOnce({ available: true, contents: 'body' })
     const statMock = nodeFs.stat as MockedFunction<typeof nodeFs.stat>
     statMock.mockResolvedValue({ mtimeMs: 12345.9 } as Awaited<ReturnType<typeof nodeFs.stat>>)
@@ -4154,7 +4157,7 @@ describe('SessionManager', () => {
   })
 
   it('readFile() does not seed when the read is denied or missing', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].readFile.mockResolvedValueOnce({ available: false })
     const res = await sm.readFile(info.id, '/repo/secret.txt')
     expect(res).toEqual({ available: false })
@@ -4162,7 +4165,7 @@ describe('SessionManager', () => {
   })
 
   it('readFile() still returns contents when seeding fails (best-effort)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].readFile.mockResolvedValueOnce({ available: true, contents: 'body' })
     const statMock = nodeFs.stat as MockedFunction<typeof nodeFs.stat>
     statMock.mockRejectedValueOnce(new Error('ENOENT'))
@@ -4178,14 +4181,14 @@ describe('SessionManager', () => {
   // --- tool-profile (per-session built-in tool surface) ---
 
   it('captures create-body tool fields into the session tool profile and projects them at spawn', async () => {
-    const info = sm.create({ tools: ['Bash'], allowedTools: ['Read'] })
+    const info = await sm.create({ tools: ['Bash'], allowedTools: ['Read'] })
     expect(sm.getToolProfile(info.id)).toEqual({ tools: ['Bash'], allowedTools: ['Read'] })
     expect(mockHandles[0].options.tools).toEqual(['Bash'])
     expect(mockHandles[0].options.allowedTools).toEqual(['Read'])
   })
 
   it('setToolProfile()/getToolProfile() round-trip a RAM-only profile and clear it with undefined', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     expect(sm.getToolProfile(info.id)).toBeUndefined()
     await sm.setToolProfile(info.id, { tools: ['Edit'], toolAliases: { Bash: 'mcp__ws__bash' } })
     expect(sm.getToolProfile(info.id)).toEqual({ tools: ['Edit'], toolAliases: { Bash: 'mcp__ws__bash' } })
@@ -4194,7 +4197,7 @@ describe('SessionManager', () => {
   })
 
   it('create-body passthrough wins over a session tool profile at spawn', async () => {
-    const info = sm.create({ tools: ['Edit'] }) // body passes tools through
+    const info = await sm.create({ tools: ['Edit'] }) // body passes tools through
     await sm.setToolProfile(info.id, { tools: ['Bash'] }) // later RAM profile
     const cleared = await sm.clear(info.id)
     expect(cleared).toBeDefined()
@@ -4205,7 +4208,7 @@ describe('SessionManager', () => {
   })
 
   it('clear() carries the RAM tool profile onto the fresh session spawn', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setToolProfile(info.id, { tools: ['Edit'], disallowedTools: ['WebFetch'] })
     const cleared = await sm.clear(info.id)
     expect(cleared).toBeDefined()
@@ -4219,7 +4222,7 @@ describe('SessionManager', () => {
   })
 
   it('setMemorySettings() forwards only present keys and records them on the session', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     expect(info.memory).toBeUndefined()
     const updated = await sm.setMemorySettings(info.id, { autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
     expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
@@ -4231,14 +4234,14 @@ describe('SessionManager', () => {
   })
 
   it('setMemorySettings() treats an empty partial as a no-op', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const updated = await sm.setMemorySettings(info.id, {})
     expect(mockHandles[0].applyFlagSettings).not.toHaveBeenCalled()
     expect(updated.memory).toBeUndefined()
   })
 
   it('setMemorySettings() null clears a key; clearing the last key drops the object', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setMemorySettings(info.id, { autoMemoryEnabled: true })
     await sm.setMemorySettings(info.id, { autoMemoryEnabled: null })
     // null forwards to the SDK so the flag tier clears too.
@@ -4247,7 +4250,7 @@ describe('SessionManager', () => {
   })
 
   it('setMemorySettings() forwards a trimmed directory and null-normalises whitespace-only', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setMemorySettings(info.id, { autoMemoryDirectory: '  ~/mem  ' })
     // The SDK must see the trimmed value — matching what gets recorded.
     expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({ autoMemoryDirectory: '~/mem' })
@@ -4261,7 +4264,7 @@ describe('SessionManager', () => {
   })
 
   it('setMemorySettings() persists the intent so it survives resume', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setMemorySettings(info.id, { autoMemoryEnabled: true, autoDreamEnabled: false })
     await store.flush()
     expect(store.get(info.id)?.memory).toEqual({ autoMemoryEnabled: true, autoDreamEnabled: false })
@@ -4270,7 +4273,7 @@ describe('SessionManager', () => {
   it('create({ memory }) seeds the session intent and re-applies it at spawn', async () => {
     // `memory` is an app-level create-body field (not an SDK Options key), so
     // cast through unknown the same way the route does.
-    const info = sm.create({ memory: { autoMemoryEnabled: true } } as unknown as Parameters<typeof sm.create>[0])
+    const info = await sm.create({ memory: { autoMemoryEnabled: true } } as unknown as Parameters<typeof sm.create>[0])
     expect(info.memory).toEqual({ autoMemoryEnabled: true })
     // The provider re-applies the intent post-spawn (spawn-time values are
     // never null — nulls only arrive via the live route).
@@ -4280,7 +4283,7 @@ describe('SessionManager', () => {
   })
 
   it('fork() carries the auto-memory intent onto the new session', async () => {
-    const source = sm.create({})
+    const source = await sm.create({})
     await sm.setMemorySettings(source.id, { autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
     sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
@@ -4294,7 +4297,7 @@ describe('SessionManager', () => {
   })
 
   it('applyHooks() forwards, records, and persists structured hooks', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const hooks = {
       PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command' as const, command: 'echo ok' }] }],
     }
@@ -4309,7 +4312,7 @@ describe('SessionManager', () => {
   })
 
   it('applySettings() validates raw hooks and persists them only after SDK success', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const hooks = {
       Notification: [{ hooks: [{ type: 'http' as const, url: 'https://example.com/hook' }] }],
     }
@@ -4328,7 +4331,7 @@ describe('SessionManager', () => {
   // holds for the HTTP doors that happen to validate, and any other caller of
   // this public method reopens the override.
   it('applySettings() strips a blocked env override before forwarding', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
 
     await sm.applySettings(info.id, {
       env: { CLAUDE_CONFIG_DIR: '/tmp/sess-home', MY_FLAG: '1' },
@@ -4344,38 +4347,38 @@ describe('SessionManager', () => {
   // setModel and read the projected SessionInfo (synchronous now).
 
   it('effortLevels is the full 5 for an opus-family id (provider prefix tolerated)', async () => {
-    const info = sm.create({ model: 'm-a' })
+    const info = await sm.create({ model: 'm-a' })
     await sm.setModel(info.id, 'ppio/pa/claude-opus-4-8')
     expect(sm.get(info.id).effortLevels).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
   })
 
   it('effortLevels omits xhigh for a sonnet-family id', async () => {
-    const info = sm.create({ model: 'm-a' })
+    const info = await sm.create({ model: 'm-a' })
     await sm.setModel(info.id, 'anthropic/claude-sonnet-4-20250514')
     expect(sm.get(info.id).effortLevels).toEqual(['low', 'medium', 'high', 'max'])
   })
 
   it('effortLevels is [] for haiku (no effort support → chip hidden)', async () => {
-    const info = sm.create({ model: 'm-a' })
+    const info = await sm.create({ model: 'm-a' })
     await sm.setModel(info.id, 'claude-haiku-3-5-20241022')
     expect(sm.get(info.id).effortLevels).toEqual([])
   })
 
   it('effortLevels is [] for a non-Claude model (chip hidden)', async () => {
-    const info = sm.create({ model: 'm-a' })
+    const info = await sm.create({ model: 'm-a' })
     await sm.setModel(info.id, 'xiaomi/mimo-v2.5-pro')
     expect(sm.get(info.id).effortLevels).toEqual([])
   })
 
   it('rename() updates title on a live session', async () => {
-    const info = sm.create({ title: 'before' })
+    const info = await sm.create({ title: 'before' })
     const updated = await sm.rename(info.id, 'after')
     expect(updated.title).toBe('after')
     expect(sm.get(info.id).title).toBe('after')
   })
 
   it('rename() updates title on a dormant session', async () => {
-    const info = sm.create({ title: 'alive' })
+    const info = await sm.create({ title: 'alive' })
     await sm.unload(info.id)
     const updated = await sm.rename(info.id, 'dormant-renamed')
     expect(updated.title).toBe('dormant-renamed')
@@ -4384,13 +4387,13 @@ describe('SessionManager', () => {
   })
 
   it('rename() with blank string clears the title', async () => {
-    const info = sm.create({ title: 'keep me' })
+    const info = await sm.create({ title: 'keep me' })
     const updated = await sm.rename(info.id, '   ')
     expect(updated.title).toBeUndefined()
   })
 
   it('rename() also writes the manual title into the CLI transcript (best-effort renameSession)', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     mockRenameSession.mockClear()
     const renamed = await sm.rename(info.id, '  My Title  ')
     expect(renamed.title).toBe('My Title')
@@ -4402,7 +4405,7 @@ describe('SessionManager', () => {
   })
 
   it('rename() does not write an empty/cleared title to the CLI transcript', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     mockRenameSession.mockClear()
     await sm.rename(info.id, '   ')
     await tick()
@@ -4410,7 +4413,7 @@ describe('SessionManager', () => {
   })
 
   it('rename() keeps the app-level rename even when transcript persistence fails', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     mockRenameSession.mockClear()
     mockRenameSession.mockRejectedValueOnce(new Error('boom'))
     const renamed = await sm.rename(info.id, 'Still Works')
@@ -4419,7 +4422,7 @@ describe('SessionManager', () => {
   })
 
   it('setPermissionMode() to a non-plan mode forwards "default" to the SDK (canUseTool owns it)', async () => {
-    const info = sm.create({ permissionMode: 'default' })
+    const info = await sm.create({ permissionMode: 'default' })
     await sm.setPermissionMode(info.id, 'acceptEdits')
     expect(sm.get(info.id).permissionMode).toBe('acceptEdits')
     // Only SDK-forwarded modes (plan/auto — see SDK_FORWARDED_PERMISSION_MODES)
@@ -4429,14 +4432,14 @@ describe('SessionManager', () => {
   })
 
   it('setPermissionMode() to plan forwards "plan" to the SDK (read-only steering)', async () => {
-    const info = sm.create({ permissionMode: 'default' })
+    const info = await sm.create({ permissionMode: 'default' })
     await sm.setPermissionMode(info.id, 'plan')
     expect(sm.get(info.id).permissionMode).toBe('plan')
     expect(mockHandles[0].setPermissionMode).toHaveBeenCalledWith('plan')
   })
 
   it('setPermissionMode() OUT of plan forwards "default" to release the SDK lock', async () => {
-    const info = sm.create({ permissionMode: 'plan' })
+    const info = await sm.create({ permissionMode: 'plan' })
     await sm.setPermissionMode(info.id, 'acceptEdits')
     // Switching away from plan must send 'default' to disengage the SDK's
     // read-only lock, otherwise the model stays stuck unable to edit.
@@ -4444,7 +4447,7 @@ describe('SessionManager', () => {
   })
 
   it('setPermissionMode() to auto forwards "auto" to the SDK (native CLI classifier)', async () => {
-    const info = sm.create({ permissionMode: 'default' })
+    const info = await sm.create({ permissionMode: 'default' })
     await sm.setPermissionMode(info.id, 'auto')
     expect(sm.get(info.id).permissionMode).toBe('auto')
     expect(mockHandles[0].setPermissionMode).toHaveBeenCalledWith('auto')
@@ -4454,7 +4457,7 @@ describe('SessionManager', () => {
     // Old --claude-binary binaries predating 'auto' reject the mode. Without
     // the fallback the CLI would keep the plan lock engaged while the UI
     // shows Autonomous (model stuck read-only).
-    const info = sm.create({ permissionMode: 'plan' })
+    const info = await sm.create({ permissionMode: 'plan' })
     mockHandles[0].setPermissionMode.mockRejectedValueOnce(new Error('unknown mode auto'))
     const updated = await sm.setPermissionMode(info.id, 'auto')
     expect(updated.permissionMode).toBe('auto')
@@ -4467,7 +4470,7 @@ describe('SessionManager', () => {
     // Only a previously-held plan lock needs releasing; the broker enforces
     // 'auto' locally when the CLI refuses it, and a release round-trip after
     // an ambiguous failure (e.g. timeout) could strip a mode that engaged.
-    const info = sm.create({ permissionMode: 'default' })
+    const info = await sm.create({ permissionMode: 'default' })
     mockHandles[0].setPermissionMode.mockRejectedValueOnce(new Error('unknown mode auto'))
     const updated = await sm.setPermissionMode(info.id, 'auto')
     expect(updated.permissionMode).toBe('auto')
@@ -4476,7 +4479,7 @@ describe('SessionManager', () => {
   })
 
   it('setPermissionMode() never fails even if the SDK control request throws', async () => {
-    const info = sm.create({ permissionMode: 'default' })
+    const info = await sm.create({ permissionMode: 'default' })
     mockHandles[0].setPermissionMode.mockRejectedValueOnce(new Error('SDK boom'))
     const updated = await sm.setPermissionMode(info.id, 'bypassPermissions')
     expect(updated.permissionMode).toBe('bypassPermissions')
@@ -4487,22 +4490,22 @@ describe('SessionManager', () => {
   // omission as "leave it to Claude Code" (see SDK_FORWARDED_PERMISSION_MODES
   // in server/permission-modes.ts); the broker's enforcement depends on the
   // CLI actually being in default mode.
-  it('spawn forwards only SDK-forwarded modes (plan/auto) to the SDK options; other modes pin default', () => {
-    sm.create({ permissionMode: 'acceptEdits' })
+  it('spawn forwards only SDK-forwarded modes (plan/auto) to the SDK options; other modes pin default', async () => {
+    await sm.create({ permissionMode: 'acceptEdits' })
     expect(mockHandles[0].options.permissionMode).toBe('default')
 
-    sm.create({})
+    await sm.create({})
     expect(mockHandles[1].options.permissionMode).toBe('default')
 
-    sm.create({ permissionMode: 'plan' })
+    await sm.create({ permissionMode: 'plan' })
     expect(mockHandles[2].options.permissionMode).toBe('plan')
 
-    sm.create({ permissionMode: 'auto' })
+    await sm.create({ permissionMode: 'auto' })
     expect(mockHandles[3].options.permissionMode).toBe('auto')
   })
 
   it('fork() spawns a new session with resume=sourceId + forkSession=true', async () => {
-    const source = sm.create({ cwd: '/tmp', model: 'm1', permissionMode: 'default', title: 'parent' })
+    const source = await sm.create({ cwd: '/tmp', model: 'm1', permissionMode: 'default', title: 'parent' })
     // The SDK only writes its conversation log after the first completed
     // turn. Simulate one so the fork guard allows the call.
     sm.send(source.id, 'hi')
@@ -4526,7 +4529,7 @@ describe('SessionManager', () => {
   })
 
   it('fork() works on dormant (unloaded) sessions too', async () => {
-    const source = sm.create({ title: 'dormant-source' })
+    const source = await sm.create({ title: 'dormant-source' })
     sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
@@ -4539,7 +4542,7 @@ describe('SessionManager', () => {
   })
 
   it('fork() broadcasts a created event for the new session', async () => {
-    const source = sm.create({})
+    const source = await sm.create({})
     sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
@@ -4561,7 +4564,7 @@ describe('SessionManager', () => {
   })
 
   it('fork({ replacesSource: true }) broadcasts created tagged replacesSource (crash-recovery fork)', async () => {
-    const source = sm.create({})
+    const source = await sm.create({})
     sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
@@ -4580,7 +4583,7 @@ describe('SessionManager', () => {
   })
 
   it('fork({ forkFromLastSafe: true }) resolves resumeSessionAt to the newest completed turn', async () => {
-    const source = sm.create({})
+    const source = await sm.create({})
     sm.send(source.id, 'hi')
     // Complete one real turn so the fork() lastTurnAt guard passes.
     mockHandles[0].emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'one' }] } })
@@ -4612,7 +4615,7 @@ describe('SessionManager', () => {
   })
 
   it('fork({ forkFromLastSafe: true, replacesSource: true }) broadcasts created tagged replacesSource', async () => {
-    const source = sm.create({})
+    const source = await sm.create({})
     sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
     mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: source.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
@@ -4633,7 +4636,7 @@ describe('SessionManager', () => {
   })
 
   it('fork({ forkFromLastSafe: true }) still refuses a source with no completed turn', async () => {
-    const source = sm.create({ title: 'fresh' })
+    const source = await sm.create({ title: 'fresh' })
     // The lastTurnAt guard fires first: no result was ever emitted, so there
     // is no completed turn (and no anchor) to fork from. Same 400 as the
     // base path — forkFromLastSafe does not bypass it.
@@ -4642,7 +4645,7 @@ describe('SessionManager', () => {
   })
 
   it('clear() broadcasts a created event for the fresh session tagged with joinGroupOf + evictingSource', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
     await tick()
     const sub = sm.subscribeGlobal()
@@ -4659,7 +4662,7 @@ describe('SessionManager', () => {
   })
 
   it('fork() refuses a source with no completed turns (avoids SDK "No conversation found" error)', async () => {
-    const source = sm.create({ title: 'fresh' })
+    const source = await sm.create({ title: 'fresh' })
     // No send → no result → no jsonl on disk. Fork should throw with a
     // 400 (user-actionable) rather than letting the SDK blow up later
     // with a cryptic "No conversation found with session ID: <uuid>".
@@ -4669,13 +4672,13 @@ describe('SessionManager', () => {
   })
 
   it('fork() refuses a dormant source that never completed a turn', async () => {
-    const source = sm.create({ title: 'fresh-dormant' })
+    const source = await sm.create({ title: 'fresh-dormant' })
     await sm.unload(source.id)
     await expect(sm.fork(source.id)).rejects.toThrow(/no completed turns yet/i)
   })
 
   it('fork() refuses when the SDK transcript file is missing on disk', async () => {
-    const source = sm.create({ cwd: '/tmp', title: 'orphan-fork' })
+    const source = await sm.create({ cwd: '/tmp', title: 'orphan-fork' })
     // Complete a turn so the lastTurnAt guard passes — we want this test
     // to land squarely on the on-disk-probe guard, not the in-memory one.
     sm.send(source.id, 'hi')
@@ -4699,7 +4702,7 @@ describe('SessionManager', () => {
   })
 
   it('resume() refuses when the SDK transcript file is missing on disk', async () => {
-    const info = sm.create({ cwd: '/tmp', title: 'orphan-resume' })
+    const info = await sm.create({ cwd: '/tmp', title: 'orphan-resume' })
     sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
@@ -4723,7 +4726,7 @@ describe('SessionManager', () => {
     // history read passes it as `afterUuid` so only the Side Chat's own
     // messages surface.
     it('captures the parent tail uuid as forkBoundaryUuid and excludes the inherited prefix from getHistoryPage', async () => {
-      const parent = sm.create({ cwd: '/tmp', title: 'parent' })
+      const parent = await sm.create({ cwd: '/tmp', title: 'parent' })
       // Complete a turn so the parent has a transcript (hasSdkTranscript probe
       // — mocked getSessionInfo returns truthy by default).
       sm.send(parent.id, 'hi')
@@ -4774,7 +4777,7 @@ describe('SessionManager', () => {
     })
 
     it('persists forkBoundaryUuid so a dormant Side Chat still filters after resume', async () => {
-      const parent = sm.create({ cwd: '/tmp', title: 'parent' })
+      const parent = await sm.create({ cwd: '/tmp', title: 'parent' })
       sm.send(parent.id, 'hi')
       mockHandles[0].emit({ type: 'result' })
       await tick()
@@ -4802,7 +4805,7 @@ describe('SessionManager', () => {
   })
 
   it('canUseTool short-circuits when permissionMode is bypassPermissions', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setPermissionMode(info.id, 'bypassPermissions')
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
@@ -4832,7 +4835,7 @@ describe('SessionManager', () => {
   // neither hook path actually short-circuits the built-in handler).
 
   it('canUseTool parks an AskUserQuestion as a pending question (kind=question)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
       input: unknown,
@@ -4878,7 +4881,7 @@ describe('SessionManager', () => {
   })
 
   it('answerQuestion resolves the SDK promise with a deny + JSON message payload', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
       input: unknown,
@@ -4920,7 +4923,7 @@ describe('SessionManager', () => {
   })
 
   it('answerQuestion encodes skipped questions as null', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
       input: unknown,
@@ -4949,7 +4952,7 @@ describe('SessionManager', () => {
   })
 
   it('decide refuses to act on a pending question', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
       input: unknown,
@@ -4971,7 +4974,7 @@ describe('SessionManager', () => {
   })
 
   it('answerQuestion refuses to act on a pending permission', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
       input: unknown,
@@ -4991,7 +4994,7 @@ describe('SessionManager', () => {
   })
 
   it('approving an ExitPlanMode plan switches the session to the chosen execution mode', async () => {
-    const info = sm.create({ permissionMode: 'plan' })
+    const info = await sm.create({ permissionMode: 'plan' })
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
       input: unknown,
@@ -5014,7 +5017,7 @@ describe('SessionManager', () => {
   })
 
   it('approving an ExitPlanMode plan with no target defaults to "default" mode', async () => {
-    const info = sm.create({ permissionMode: 'plan' })
+    const info = await sm.create({ permissionMode: 'plan' })
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
       input: unknown,
@@ -5029,7 +5032,7 @@ describe('SessionManager', () => {
   })
 
   it('AskUserQuestion is never auto-allowed under bypassPermissions (interactive is not bypassable)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.setPermissionMode(info.id, 'bypassPermissions')
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
@@ -5052,7 +5055,7 @@ describe('SessionManager', () => {
   })
 
   it('aborting a pending question resolves the SDK promise as deny(aborted)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const canUseTool = mockHandles[0].options.canUseTool as (
       tool: string,
       input: unknown,
@@ -5074,7 +5077,7 @@ describe('SessionManager', () => {
 
   describe('listResumable', () => {
     it('maps SDK listSessions output and annotates known/running/terminated', async () => {
-      const live = sm.create({ cwd: '/tmp/live' })
+      const live = await sm.create({ cwd: '/tmp/live' })
       mockListSessions.mockResolvedValueOnce([
         // a live session this app created
         { sessionId: live.id, summary: 'Live one', cwd: '/tmp/live', lastModified: 300, createdAt: 100 },
@@ -5114,7 +5117,7 @@ describe('SessionManager', () => {
     })
 
     it('prefers the app-known title over the SDK display title for known sessions', async () => {
-      const live = sm.create({ cwd: '/tmp/live2' })
+      const live = await sm.create({ cwd: '/tmp/live2' })
       await sm.rename(live.id, 'App-side title')
       mockListSessions.mockResolvedValueOnce([
         // The SDK's display title prefers the LAST user prompt — the manager
@@ -5230,7 +5233,7 @@ describe('SessionManager', () => {
   // aborts, otherwise hangs like a long-running command.
   describe('exec abort (Ctrl+C analogue)', () => {
     it('abortExec() aborts the in-flight command and returns interrupted:true', async () => {
-      const info = sm.create({ cwd: dir, model: 'm1' })
+      const info = await sm.create({ cwd: dir, model: 'm1' })
       // Don't await — run in the background so we can abort mid-flight. The
       // mock hangs until the signal aborts.
       const execP = sm.execInSession(info.id, 'long-running-cmd')
@@ -5245,14 +5248,14 @@ describe('SessionManager', () => {
       expect(callOpts?.signal).toBeInstanceOf(AbortSignal)
     })
 
-    it('abortExec() is a no-op when no command is running', () => {
-      const info = sm.create({ cwd: dir, model: 'm1' })
+    it('abortExec() is a no-op when no command is running', async () => {
+      const info = await sm.create({ cwd: dir, model: 'm1' })
       // No exec in flight — must not throw.
       expect(() => sm.abortExec(info.id)).not.toThrow()
     })
 
     it('the AbortController is cleared after execInSession settles', async () => {
-      const info = sm.create({ cwd: dir, model: 'm1' })
+      const info = await sm.create({ cwd: dir, model: 'm1' })
       const execP = sm.execInSession(info.id, 'long-running-cmd')
       await tick()
       sm.abortExec(info.id)
@@ -5264,7 +5267,7 @@ describe('SessionManager', () => {
     })
 
     it('unload() aborts an in-flight exec so it does not hang', async () => {
-      const info = sm.create({ cwd: dir, model: 'm1' })
+      const info = await sm.create({ cwd: dir, model: 'm1' })
       const execP = sm.execInSession(info.id, 'long-running-cmd')
       await tick()
       await sm.unload(info.id)
@@ -5291,7 +5294,7 @@ describe('SessionManager', () => {
     }
 
     it('resets to idle when no turn was pending (the local path triggers no SDK turn, so no result will ever arrive)', async () => {
-      const info = sm.create({ cwd: dir, model: 'm1' })
+      const info = await sm.create({ cwd: dir, model: 'm1' })
       vi.mocked(mockExecCommand).mockResolvedValueOnce({ stdout: 'out', stderr: '', exitCode: 0, interrupted: false, truncated: false })
       await sm.execInSession(info.id, 'local-cmd')
       const s = turnStateOf(info.id)
@@ -5305,7 +5308,7 @@ describe('SessionManager', () => {
       // unconditional reset after a mid-turn local `!` wiped a genuinely
       // running SDK turn's state — WorkingBubble vanished, phase-gated
       // routes opened, and the health monitor stopped watching the session.
-      const info = sm.create({ cwd: dir, model: 'm1' })
+      const info = await sm.create({ cwd: dir, model: 'm1' })
       const h = mockHandles.at(-1)!
       sm.send(info.id, 'in-flight turn')
       const s = turnStateOf(info.id)
@@ -5325,8 +5328,8 @@ describe('SessionManager', () => {
   })
 
   describe('debug introspection', () => {
-    it('lists a live session with a derived phase and zeroed counters', () => {
-      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+    it('lists a live session with a derived phase and zeroed counters', async () => {
+      const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
       const row = sm.debugSessions().find((r) => r.id === info.id)
       expect(row).toMatchObject({
         id: info.id,
@@ -5340,7 +5343,7 @@ describe('SessionManager', () => {
     })
 
     it('derives phase dormant for a session that is in the store but not live', async () => {
-      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+      const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
       await sm.unload(info.id)
       const row = sm.debugSessions().find((r) => r.id === info.id)
       expect(row?.phase).toBe('dormant')
@@ -5349,7 +5352,7 @@ describe('SessionManager', () => {
     })
 
     it('counts queued inputs via receivedAt-without-consumedAt predicate', async () => {
-      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+      const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
       sm.send(info.id, 'hello')
       const row = sm.debugSessions().find((r) => r.id === info.id)
       // In the test mock, the SDK drains the input queue synchronously
@@ -5359,7 +5362,7 @@ describe('SessionManager', () => {
     })
 
     it('does not count non-user frames (assistant) as queued inputs', async () => {
-      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+      const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
       const h = mockHandles.at(-1)!
       // The pump stamps receivedAt on every frame that enters the ring.
       // An assistant frame has receivedAt but is NOT a user message —
@@ -5375,7 +5378,7 @@ describe('SessionManager', () => {
     })
 
     it('projects historyTail to routing metadata only and nulls the live-only sections off-live', async () => {
-      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+      const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
       sm.send(info.id, 'hello')
       const detail = await sm.debugSession(info.id, 10)
       expect(detail.id).toBe(info.id)
@@ -5406,7 +5409,7 @@ describe('SessionManager', () => {
     })
 
     it('exposes the cached Lite snapshot beside the live breakdown and flags a large mismatch', async () => {
-      const info = sm.create({ cwd: '/tmp', model: 'test-model' })
+      const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
       sm.send(info.id, 'hello')
 
       // Seed the pump-cached snapshot with the aggregate-bug signature
@@ -5526,7 +5529,7 @@ describe('SessionManager', () => {
 
     /** A live session with one completed turn (lastTurnAt set). */
     async function liveWithTurn(opts: Record<string, unknown> = {}): Promise<string> {
-      const info = sm.create({ cwd: dir, model: 'm1', ...opts } as Parameters<SessionManager['create']>[0])
+      const info = await sm.create({ cwd: dir, model: 'm1', ...opts } as Parameters<SessionManager['create']>[0])
       const h = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       h.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } })
@@ -5663,7 +5666,7 @@ describe('SessionManager', () => {
     })
 
     it('delete(X) during a live turn resolves', async () => {
-      const info = sm.create({ cwd: dir, model: 'm1' })
+      const info = await sm.create({ cwd: dir, model: 'm1' })
       sm.send(info.id, 'long task')
       mockHandles[0].emit({ type: 'assistant', uuid: 'a-mid', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'working…' }] } })
       await tick()
@@ -5676,7 +5679,7 @@ describe('SessionManager', () => {
     it('delete(X) still resolves while a setter is wedged on a control request that never answers', async () => {
       await sm.shutdown()
       sm = new SessionManager({ store, deleteLockMaxWaitMs: 50 })
-      const info = sm.create({ cwd: dir, model: 'm1' })
+      const info = await sm.create({ cwd: dir, model: 'm1' })
       const h = mockHandles.at(-1)!
       h.setModel.mockImplementationOnce(() => new Promise<never>(() => { /* CLI never answers */ }))
       const setting = sm.setModel(info.id, 'm2')
@@ -5845,7 +5848,7 @@ describe('MCP re-spawn semantics', () => {
   }
 
   it('resume carries the session\'s own selection instead of the current global set', async () => {
-    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
+    const info = await sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
     expect(info.mcpServerNames).toEqual(['global-a'])
     await sm.unload(info.id)
     await sm.resume(info.id)
@@ -5854,7 +5857,7 @@ describe('MCP re-spawn semantics', () => {
   })
 
   it('an explicit empty selection stays empty across resume', async () => {
-    const info = sm.create({ cwd: dir, enabledMcpServers: [] } as any)
+    const info = await sm.create({ cwd: dir, enabledMcpServers: [] } as any)
     expect(info.mcpServerNames).toEqual([])
     await sm.unload(info.id)
     const resumed = await sm.resume(info.id)
@@ -5865,7 +5868,7 @@ describe('MCP re-spawn semantics', () => {
   })
 
   it('a legacy session without recorded names falls back to the global set', async () => {
-    const info = sm.create({ cwd: dir } as any)
+    const info = await sm.create({ cwd: dir } as any)
     expect(info.mcpServerNames).toBeUndefined()
     await sm.unload(info.id)
     const resumed = await sm.resume(info.id)
@@ -5877,7 +5880,7 @@ describe('MCP re-spawn semantics', () => {
   })
 
   it('names that no longer resolve are dropped instead of blocking the spawn', async () => {
-    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-a', 'ghost'] } as any)
+    const info = await sm.create({ cwd: dir, enabledMcpServers: ['global-a', 'ghost'] } as any)
     expect(info.mcpServerNames).toEqual(['global-a', 'ghost'])
     await sm.unload(info.id)
     const resumed = await sm.resume(info.id)
@@ -5890,14 +5893,14 @@ describe('MCP re-spawn semantics', () => {
     // A globally-disabled server is "off by default", but a create-time
     // opt-in is the user's explicit choice — the carry-forward must honor
     // it, same as the create path does.
-    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-off'] } as any)
+    const info = await sm.create({ cwd: dir, enabledMcpServers: ['global-off'] } as any)
     await sm.unload(info.id)
     await sm.resume(info.id)
     expect(userMcpNames()).toEqual(['global-off'])
   })
 
   it('fork carries the source session\'s own selection', async () => {
-    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
+    const info = await sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
     // fork() refuses turn-less sessions — complete one turn first
     sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
@@ -5914,7 +5917,7 @@ describe('MCP re-spawn semantics', () => {
     // stripped there too, or the CLI arg builder sees a non-SDK key.
     // Driven via buildResumeOpts → respawnInPlace directly (the exact leak
     // path) rather than through autoResume's lifecycle guards.
-    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
+    const info = await sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
     sm.send(info.id, 'first')
     await tick()
     mockHandles[0].emit({ type: 'result', session_id: info.id })
@@ -5951,7 +5954,7 @@ describe('MCP re-spawn semantics', () => {
     // layer can re-apply it post-spawn), so an in-place respawn must
     // project it again or the recovered session silently regains the
     // disallowed tools.
-    const info = sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
+    const info = await sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
     await sm.setToolProfile(info.id, { disallowedTools: ['WebSearch'] } as never)
     sm.send(info.id, 'first')
     await tick()
@@ -6010,8 +6013,8 @@ describe('plugin subset selection', () => {
     rmRf(dir)
   })
 
-  it('create() with enabledPlugins injects only the selected plugin paths', () => {
-    const info = sm.create({
+  it('create() with enabledPlugins injects only the selected plugin paths', async () => {
+    const info = await sm.create({
       cwd: dir,
       enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
     } as any)
@@ -6021,16 +6024,16 @@ describe('plugin subset selection', () => {
     expect(info.enabledPlugins).toEqual([MpStore.keyOf('plugA', 'mp1')])
   })
 
-  it('create() without enabledPlugins injects all enabled plugins (default)', () => {
-    sm.create({ cwd: dir })
+  it('create() without enabledPlugins injects all enabled plugins (default)', async () => {
+    await sm.create({ cwd: dir })
     expect(mockHandles[0].options.plugins).toEqual([
       { type: 'local', path: '/fake/plugA' },
       { type: 'local', path: '/fake/plugB' },
     ])
   })
 
-  it('create() with enabledPlugins: [] injects no plugins', () => {
-    const info = sm.create({
+  it('create() with enabledPlugins: [] injects no plugins', async () => {
+    const info = await sm.create({
       cwd: dir,
       enabledPlugins: [],
     } as any)
@@ -6039,7 +6042,7 @@ describe('plugin subset selection', () => {
   })
 
   it('resume() re-injects the persisted plugin subset', async () => {
-    const info = sm.create({
+    const info = await sm.create({
       cwd: dir,
       enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
     } as any)
@@ -6051,7 +6054,7 @@ describe('plugin subset selection', () => {
   })
 
   it('clear() re-injects the persisted plugin subset', async () => {
-    const info = sm.create({
+    const info = await sm.create({
       cwd: dir,
       enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
     } as any)
@@ -6068,7 +6071,7 @@ describe('plugin subset selection', () => {
     // which is the other respawnFresh precondition.
     mockGetSessionInfo.mockReset()
     mockGetSessionInfo.mockResolvedValue(undefined)
-    const info = sm.create({
+    const info = await sm.create({
       cwd: dir,
       enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
     } as any)
@@ -6080,11 +6083,11 @@ describe('plugin subset selection', () => {
     expect(store.get(info.id)?.enabledPlugins).toEqual([MpStore.keyOf('plugA', 'mp1')])
   })
 
-  it('does not leak the app-level enabledPlugins string[] into SDK Options', () => {
+  it('does not leak the app-level enabledPlugins string[] into SDK Options', async () => {
     // SDK Options.enabledPlugins is a {[k:string]: ...} map, not a string[].
     // The app-level selection must be stripped from sdkOptions before reaching
     // query() (only Options.plugins — resolved paths — should reach the SDK).
-    sm.create({
+    await sm.create({
       cwd: dir,
       enabledPlugins: [MpStore.keyOf('plugA', 'mp1')],
     } as any)
@@ -6099,7 +6102,7 @@ describe('plugin subset selection', () => {
   // client a durable per-session truth source that survives refresh/respawn.
 
   it('togglePlugin({ materialize }) on an all-enabled session resolves the global list minus the disabled key', async () => {
-    const info = sm.create({ cwd: dir } as any)
+    const info = await sm.create({ cwd: dir } as any)
     await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), false, { materialize: true })
     // The live switch still forwards to the Query.
     expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
@@ -6113,13 +6116,13 @@ describe('plugin subset selection', () => {
   it('togglePlugin({ materialize }) enabling an already-enabled key on an unpinned session leaves it unpinned', async () => {
     // Content no-op on the resolved base list: the key is already on, the
     // session follows the global list, so there is nothing to pin.
-    const info = sm.create({ cwd: dir } as any)
+    const info = await sm.create({ cwd: dir } as any)
     await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), true, { materialize: true })
     expect(sm.get(info.id)?.enabledPlugins).toBeUndefined()
   })
 
   it('togglePlugin({ materialize }) re-enabling a key on a pinned session appends it to the subset', async () => {
-    const info = sm.create({
+    const info = await sm.create({
       cwd: dir,
       enabledPlugins: [MpStore.keyOf('plugB', 'mp1')],
     } as any)
@@ -6135,7 +6138,7 @@ describe('plugin subset selection', () => {
   })
 
   it('togglePlugin({ materialize }) disabling a key on a pinned session removes it from the subset', async () => {
-    const info = sm.create({
+    const info = await sm.create({
       cwd: dir,
       enabledPlugins: [MpStore.keyOf('plugA', 'mp1'), MpStore.keyOf('plugB', 'mp1')],
     } as any)
@@ -6144,7 +6147,7 @@ describe('plugin subset selection', () => {
   })
 
   it('togglePlugin without materialize (global-ripple path) forwards the live switch but leaves the subset untouched', async () => {
-    const info = sm.create({ cwd: dir } as any)
+    const info = await sm.create({ cwd: dir } as any)
     await sm.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), false)
     expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
       enabledPlugins: { [MpStore.keyOf('plugA', 'mp1')]: false },
@@ -6158,7 +6161,7 @@ describe('plugin subset selection', () => {
     // Disabling a key that is not in the resolved global list is a content
     // no-op — pinning the session to the toggle-time global set would freeze
     // it against future global ripples for a toggle that changed nothing.
-    const info = sm.create({ cwd: dir } as any)
+    const info = await sm.create({ cwd: dir } as any)
     // plugC@mp1 is not a marketplace plugin at all → absent from the base list.
     await sm.togglePlugin(info.id, MpStore.keyOf('plugC', 'mp1'), false, { materialize: true })
     expect(sm.get(info.id)?.enabledPlugins).toBeUndefined()
@@ -6172,7 +6175,7 @@ describe('plugin subset selection', () => {
     mockHandles.length = 0
     const smNoMp = new SessionManager({ store })
     try {
-      const info = smNoMp.create({ cwd: dir } as any)
+      const info = await smNoMp.create({ cwd: dir } as any)
       await smNoMp.togglePlugin(info.id, MpStore.keyOf('plugA', 'mp1'), false, { materialize: true })
       expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
         enabledPlugins: { [MpStore.keyOf('plugA', 'mp1')]: false },
@@ -6214,7 +6217,7 @@ describe('provider control-op error wrapping', () => {
   }
 
   it('wraps a plain SDK error from a handle method as HttpError 502 naming the action', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     mockHandles[0].setMcpServers.mockRejectedValueOnce(new Error('Connection closed'))
     const err = await rejectOf(sm.setMcpServers(info.id, { x: { type: 'stdio', command: 'node' } }))
     expect(err).toBeInstanceOf(HttpError)
@@ -6223,7 +6226,7 @@ describe('provider control-op error wrapping', () => {
   })
 
   it('passes an existing HttpError through unchanged', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const original = new HttpError(409, 'phase guard')
     mockHandles[0].getContextUsage.mockRejectedValueOnce(original)
     const err = await rejectOf(sm.contextUsage(info.id))
@@ -6231,7 +6234,7 @@ describe('provider control-op error wrapping', () => {
   })
 
   it('wraps a plain SDK error on the timeSdkControl path too', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('Connection closed'))
     const err = await rejectOf(sm.contextUsage(info.id))
     expect(err).toBeInstanceOf(HttpError)
@@ -6244,7 +6247,7 @@ describe('provider control-op error wrapping', () => {
     // SessionMcpManager deps are satisfied by arrows whose fewer parameters
     // still typecheck, so a dropped `opts` would silently turn every
     // `{ classify: true }` into dead plumbing (no code/hint on the wire).
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     mockHandles[0].toggleMcpServer.mockRejectedValueOnce(new Error('Connection closed'))
     const err = await rejectOf(sm.toggleMcpServer(info.id, 'x', true))
     expect(err).toBeInstanceOf(HttpError)
@@ -6254,7 +6257,7 @@ describe('provider control-op error wrapping', () => {
   })
 
   it('does not attach MCP-flavored hints to non-MCP control actions', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     mockHandles[0].interrupt.mockRejectedValueOnce(new Error('Connection closed'))
     const err = await rejectOf(sm.interrupt(info.id))
     expect(err).toBeInstanceOf(HttpError)
@@ -6301,7 +6304,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('forwards the given servers straight to query.setMcpServers (plus git-tools)', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const servers = { x: { type: 'stdio', command: 'node' } }
     const result = await sm.setMcpServers(info.id, servers)
     // The first-party git-tools server is appended to the map (spawn + live
@@ -6314,12 +6317,12 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('spawn sets perTaskStopAffordance so the per-task stop control is declared', async () => {
-    sm.create({ cwd: '/tmp' })
+    await sm.create({ cwd: '/tmp' })
     expect(mockHandles[0].options.perTaskStopAffordance).toBe(true)
   })
 
   it('setMcpPermissionModeOverride forwards to the handle and surfaces the warning', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     mockHandles[0].setMcpPermissionModeOverride.mockResolvedValueOnce({ warning: 'unknown server' })
     const result = await sm.setMcpPermissionModeOverride(info.id, 'global-a', 'auto')
     expect(mockHandles[0].setMcpPermissionModeOverride).toHaveBeenCalledWith('global-a', 'auto')
@@ -6327,7 +6330,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('setMcpPermissionModeOverride forwards a null (clear) mode verbatim', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     await sm.setMcpPermissionModeOverride(info.id, 'global-a', null)
     expect(mockHandles[0].setMcpPermissionModeOverride).toHaveBeenCalledWith('global-a', null)
   })
@@ -6337,7 +6340,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('listSubagents forwards to the SDK standalone scanner with the session cwd', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     mockListSubagents.mockResolvedValueOnce(['agent-1', 'agent-2'])
     const result = await sm.listSubagents(info.id)
     expect(mockListSubagents).toHaveBeenCalledWith(info.id, { dir: '/tmp' })
@@ -6345,7 +6348,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('getSubagentMessages forwards agentId + pagination to the SDK standalone reader', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const fake = [{ type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: 'hi' } }]
     mockGetSubagentMessages.mockResolvedValueOnce(fake)
     const result = await sm.getSubagentMessages(info.id, 'agent-1', { limit: 50, offset: 0 })
@@ -6359,7 +6362,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('injects the git-tools server into spawn mcpServers when the session has a cwd', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown>
     expect(mcpServers['git-tools']).toBeDefined()
     expect(mockInjectAll).toHaveBeenCalledWith('/tmp', expect.any(Function), expect.any(Function))
@@ -6367,13 +6370,13 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('omits git-tools when the session has no cwd', async () => {
-    sm.create({})
+    await sm.create({})
     const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown> | undefined
     expect(mcpServers?.['git-tools']).toBeUndefined()
   })
 
-  it('create() seeds a create-time firstPartyTools override so the first spawn honors it', () => {
-    const info = sm.create({ cwd: '/tmp', firstPartyTools: { 'git-tools': false } } as Parameters<SessionManager['create']>[0])
+  it('create() seeds a create-time firstPartyTools override so the first spawn honors it', async () => {
+    const info = await sm.create({ cwd: '/tmp', firstPartyTools: { 'git-tools': false } } as Parameters<SessionManager['create']>[0])
     // The override lands on the session (persisted via writeStore) AND the
     // first spawn injection already skips git-tools — no create-then-toggle
     // round-trip needed.
@@ -6382,20 +6385,20 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(mcpServers?.['git-tools']).toBeUndefined()
   })
 
-  it('create() migrates a pre-rename apptools firstPartyTools key so the first spawn honors it', () => {
+  it('create() migrates a pre-rename apptools firstPartyTools key so the first spawn honors it', async () => {
     // A stale client / raw API body still sending the old key must not store
     // a pin that firstPartyEnabled never reads.
-    const info = sm.create({ cwd: '/tmp', firstPartyTools: { apptools: false } } as Parameters<SessionManager['create']>[0])
+    const info = await sm.create({ cwd: '/tmp', firstPartyTools: { apptools: false } } as Parameters<SessionManager['create']>[0])
     expect(info.firstPartyTools).toEqual({ 'git-tools': false })
     expect(info.appToolsGit).toBe(false)
     const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown> | undefined
     expect(mcpServers?.['git-tools']).toBeUndefined()
   })
 
-  it('create() seeds create-time UI prefs (the client restart flow)', () => {
+  it('create() seeds create-time UI prefs (the client restart flow)', async () => {
     // The restart flow creates a fresh id via POST /sessions; without these
     // riding the body, Y's panel would silently revert to the global defaults.
-    const info = sm.create({
+    const info = await sm.create({
       cwd: '/tmp',
       showPinnedUserMessage: false,
       autoRecap: false,
@@ -6414,18 +6417,18 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(meta?.showMessageHeaders).toBe(false)
   })
 
-  it('create() with no UI prefs leaves them undefined (inherit global)', () => {
-    const info = sm.create({ cwd: '/tmp' } as Parameters<SessionManager['create']>[0])
+  it('create() with no UI prefs leaves them undefined (inherit global)', async () => {
+    const info = await sm.create({ cwd: '/tmp' } as Parameters<SessionManager['create']>[0])
     expect(info.showPinnedUserMessage).toBeUndefined()
     expect(info.autoExpandRunningGroups).toBeUndefined()
     expect(info.showMessageHeaders).toBeUndefined()
   })
 
-  it('create() strips the app-level UI prefs from the SDK options', () => {
+  it('create() strips the app-level UI prefs from the SDK options', async () => {
     // They ride the create body (restart flow) but are app state only — the
     // SDK has no such Options keys, and the CLI arg builder would choke on
     // unknown fields.
-    sm.create({
+    await sm.create({
       cwd: '/tmp',
       showPinnedUserMessage: false,
       toolGroupCards: false,
@@ -6440,7 +6443,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('omits git-tools from live setMcpServers when the session override disables it', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     // Simulate a per-session override turning git-tools off (setAppTools path).
     const session = (sm as unknown as { sessions: Map<string, { appToolsGit?: boolean }> }).sessions.get(info.id)!
     session.appToolsGit = false
@@ -6449,7 +6452,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('setFirstPartyTool persists the override and re-injects immediately on a live session', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const next = await sm.setFirstPartyTool(info.id, 'git-tools', false)
     expect(next.firstPartyTools?.['git-tools']).toBe(false)
     expect(next.appToolsGit).toBe(false)
@@ -6462,7 +6465,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('setFirstPartyTool normalizes a pre-rename apptools server name', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const next = await sm.setFirstPartyTool(info.id, 'apptools', false)
     expect(next.firstPartyTools?.['git-tools']).toBe(false)
     expect(next.firstPartyTools?.apptools).toBeUndefined()
@@ -6470,7 +6473,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('firstPartyEnabled honors an unmigrated apptools session override', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const session = (sm as unknown as { sessions: Map<string, { firstPartyTools?: Record<string, boolean | null> }> }).sessions.get(info.id)!
     session.firstPartyTools = { apptools: false }
     const mcp = (sm as unknown as { mcp: { firstPartyEnabled(s: unknown, name: string): boolean } }).mcp
@@ -6478,7 +6481,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('setFirstPartyTool reverts the override when the live re-injection fails', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     mockHandles[0].setMcpServers.mockRejectedValueOnce(new Error('sdk down'))
     await expect(sm.setFirstPartyTool(info.id, 'git-tools', false)).rejects.toThrow('sdk down')
     const session = (sm as unknown as { sessions: Map<string, { firstPartyTools?: Record<string, boolean | null> }> }).sessions.get(info.id)!
@@ -6486,7 +6489,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('setFirstPartyTool on a non-running session only persists (no SDK call)', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const session = (sm as unknown as { sessions: Map<string, { running: boolean }> }).sessions.get(info.id)!
     session.running = false
     mockHandles[0].setMcpServers.mockClear()
@@ -6496,7 +6499,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('toolServerStatus reports enabled/injected/hasCwd per registered server', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const status = sm.toolServerStatus(info.id)
     const gitTools = status.find((s) => s.name === 'git-tools')!
     expect(gitTools.enabled).toBe(true)
@@ -6507,7 +6510,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('toolServerStatus embeds the registry static tool listing per server', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const status = sm.toolServerStatus(info.id)
     const gitTools = status.find((s) => s.name === 'git-tools')!
     expect(gitTools.tools).toEqual([{ name: 'stub_tool', description: 'stub', readOnly: true }])
@@ -6532,7 +6535,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   }
 
   it('resolves enabledMcpServers names before calling setMcpServers', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const res = await post(`/sessions/${info.id}/mcp/servers`, {
       enabledMcpServers: ['global-a'],
     })
@@ -6544,7 +6547,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('merges inline servers with enabled global names', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     await post(`/sessions/${info.id}/mcp/servers`, {
       enabledMcpServers: ['global-a'],
       servers: { inline: { type: 'http', url: 'http://x' } },
@@ -6557,7 +6560,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('passes an empty object (clear-all) when nothing resolves', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const res = await post(`/sessions/${info.id}/mcp/servers`, { servers: {} })
     expect(res.status).toBe(200)
     // Empty user set → only the injected first-party git-tools remains.
@@ -6565,26 +6568,26 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   it('400s when neither servers nor enabledMcpServers is provided', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const res = await post(`/sessions/${info.id}/mcp/servers`, {})
     expect(res.status).toBe(400)
   })
 
   it('400s when servers is not an object', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const res = await post(`/sessions/${info.id}/mcp/servers`, { servers: ['nope'] })
     expect(res.status).toBe(400)
   })
 
   it('400s when enabledMcpServers is a string (not an array)', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const res = await post(`/sessions/${info.id}/mcp/servers`, { enabledMcpServers: 'global-a' })
     expect(res.status).toBe(400)
     expect(mockHandles[0].setMcpServers).not.toHaveBeenCalled()
   })
 
   it('400s when enabledMcpServers contains a non-string element', async () => {
-    const info = sm.create({ cwd: '/tmp' })
+    const info = await sm.create({ cwd: '/tmp' })
     const res = await post(`/sessions/${info.id}/mcp/servers`, { enabledMcpServers: ['global-a', 123] })
     expect(res.status).toBe(400)
     expect(mockHandles[0].setMcpServers).not.toHaveBeenCalled()
@@ -6695,7 +6698,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('Step 1: re-resumes in-place after a crash (keeps same id, no terminate)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       // Complete one turn so lastTurnAt + lastSafeResumeUuid are set
       // (recovery needs a disk transcript / completed turn to resume from).
@@ -6716,7 +6719,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('crash recovery disabled: terminates immediately (legacy behavior)', async () => {
       sm = new SessionManager({ store, crashRecovery: false })
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
@@ -6732,7 +6735,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('spawn failures unload to dormant (resumable), not terminated (binary unavailable is transient)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
@@ -6762,7 +6765,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('spawn ENOENT with a missing cwd blames the working directory, not the binary', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const missingCwd = join(dir, 'moved-away')
-      const info = sm.create({ cwd: missingCwd })
+      const info = await sm.create({ cwd: missingCwd })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
@@ -6780,7 +6783,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('ladder exhausted: a 3rd crash gives up transiently (no auto-fork) so the client can offer Resume/Fork', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
@@ -6825,7 +6828,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('MAX=3 gives three in-place resumes, then give-up on the 4th crash (no fork at any rung)', async () => {
       sm = new SessionManager({ store, crashRecovery: true, maxCrashRecovery: 3 })
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
@@ -6852,7 +6855,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('manual fork starts a fresh crash counter (its own first crash is Step 1 in-place)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
@@ -6877,7 +6880,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('recovery counter does NOT reset on user message (ladder still exhausts on the 3rd crash)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
@@ -6914,7 +6917,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('Step 1 clears the crash error so the next clean idle-exit auto-resumes (not terminate)', async () => {
       sm = new SessionManager({ store, crashRecovery: true, autoResume: true })
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
@@ -6951,7 +6954,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
         ),
       } as unknown as AgentDefinitionStore
       sm = new SessionManager({ store, agentStore, crashRecovery: true })
-      const info = sm.create({ cwd: dir, agent: 'reviewer' })
+      const info = await sm.create({ cwd: dir, agent: 'reviewer' })
       const h0 = mockHandles.at(-1)!
       expect(h0.options.agent).toBe('reviewer')
       sm.send(info.id, 'hi')
@@ -6969,7 +6972,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('rejects sends during the recovering window (no message loss)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
@@ -6985,7 +6988,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('clear() works during the recovering window (reset escape hatch not blocked)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
@@ -7003,7 +7006,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('give-up preserves the crash reason (process_exited, not query_error)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       // No result emitted — no completed turn. The ladder probes the disk
       // for a transcript (hasSdkTranscript); a session with no completed
       // turn has no jsonl on disk, so mock getSessionInfo to return
@@ -7026,7 +7029,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // completion signal. handleProcessExit settles it to `stopped` (no
       // terminal frame on disk), dropping backgroundSubagentCount to 0 at once.
       sm = new SessionManager({ store }) // recovery disabled → terminate on crash
-      const info = sm.create({ cwd: '/tmp/workspace' })
+      const info = await sm.create({ cwd: '/tmp/workspace' })
       const realConfigDir = process.env.CLAUDE_CONFIG_DIR
       process.env.CLAUDE_CONFIG_DIR = dir
       try {
@@ -7073,7 +7076,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // session never fires one). Observed live before this fix: a background
       // `sleep` shell record survived its session's CLI being killed.
       sm = new SessionManager({ store }) // recovery disabled → terminate on crash
-      const info = sm.create({ cwd: '/tmp/workspace' })
+      const info = await sm.create({ cwd: '/tmp/workspace' })
       const sessions = (sm as unknown as {
         sessions: Map<string, { tasks: Map<string, { status: string; endedAt?: number }> }>
       }).sessions
@@ -7103,7 +7106,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // by auto-resume, where settling would flap stopped→done), so this pins
       // the pump-tail call that covers the terminate-after-clean-exit case.
       sm = new SessionManager({ store }) // no autoResume → the tail terminates
-      const info = sm.create({ cwd: '/tmp/workspace' })
+      const info = await sm.create({ cwd: '/tmp/workspace' })
       const sessions = (sm as unknown as {
         sessions: Map<string, { tasks: Map<string, { status: string }> }>
       }).sessions
@@ -7126,7 +7129,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // `stopped`. The synthesized task_notification then carries status
       // `completed` with the subagent's final text.
       sm = new SessionManager({ store })
-      const info = sm.create({ cwd: '/tmp/workspace' })
+      const info = await sm.create({ cwd: '/tmp/workspace' })
       const realConfigDir = process.env.CLAUDE_CONFIG_DIR
       process.env.CLAUDE_CONFIG_DIR = dir
       try {
@@ -7198,7 +7201,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // double-count — count cycles 1 → 0 (settle) → 1 (re-arm) → 0 (re-settle),
       // and the per-toolUseId dedup means exactly one watcher is armed at a time.
       sm = new SessionManager({ store, crashRecovery: true })
-      const info = sm.create({ cwd: '/tmp/workspace' })
+      const info = await sm.create({ cwd: '/tmp/workspace' })
       const realConfigDir = process.env.CLAUDE_CONFIG_DIR
       process.env.CLAUDE_CONFIG_DIR = dir
       try {
@@ -7282,7 +7285,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     // the session terminated with terminatedReason 'query_ended' — the UI's
     // "Connection closed" banner.
     it('leaves the session running (the superseded pump must not terminate it)', async () => {
-      const info = sm.create({ cwd: '/tmp', model: 'm1' })
+      const info = await sm.create({ cwd: '/tmp', model: 'm1' })
       sm.send(info.id, 'hi')
       mockHandles[0].emit({
         type: 'result',
@@ -7317,7 +7320,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     // (~0.7s apart, observed in the field) and dies with 'query_ended'.
     it('does not cascade re-spawns when autoResume is enabled', async () => {
       sm = new SessionManager({ store, autoResume: true })
-      const info = sm.create({ cwd: '/tmp', model: 'm1' })
+      const info = await sm.create({ cwd: '/tmp', model: 'm1' })
       sm.send(info.id, 'hi')
       mockHandles[0].emit({
         type: 'result',
@@ -7361,8 +7364,8 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     /** Session with one in-flight turn (no result emitted) and `n` user
      *  messages queued behind it in the host input Pushable. Returns the
      *  queued messages' server-minted uuids. */
-    const setupQueued = (n: number) => {
-      const info = sm.create({ cwd: dir })
+    const setupQueued = async (n: number) => {
+      const info = await sm.create({ cwd: dir })
       const h = mockHandles.at(-1)!
       sm.send(info.id, 'in-flight turn seed')
       const queuedUuids: string[] = []
@@ -7374,7 +7377,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     }
 
     it('drains the host queue, forwards cancelQueued, and reports the withdrawn count', async () => {
-      const { info, h, queuedUuids } = setupQueued(2)
+      const { info, h, queuedUuids } = await setupQueued(2)
       const withdrawnFrames: Array<{ kind?: string; uuids?: string[] }> = []
       const sub = sm.subscribeMessageStatus(info.id)
       void (async () => {
@@ -7400,7 +7403,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('a plain interrupt leaves the queue intact (queued turns start the next turn)', async () => {
-      const { info, h, queuedUuids } = setupQueued(1)
+      const { info, h, queuedUuids } = await setupQueued(1)
       const removed = await sm.interrupt(info.id)
       expect(removed).toBe(0)
       // The manager forwards opts through; the provider normalizes absent →
@@ -7411,7 +7414,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('folds the interrupt receipt cancellations into the withdrawal set (unknown uuids + overlap dedupe)', async () => {
-      const { info, h, queuedUuids } = setupQueued(1)
+      const { info, h, queuedUuids } = await setupQueued(1)
       // The receipt here replays the SDK contract: 'cli-internal-1' is a
       // CLI-internal uuid we never sent (docs: "ignore unknown uuids rather
       // than treating them as an error" — the ring lookup misses it), and
@@ -7427,7 +7430,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('restores drained messages when the interrupt fails', async () => {
-      const { info, h, queuedUuids } = setupQueued(1)
+      const { info, h, queuedUuids } = await setupQueued(1)
       h.interrupt.mockRejectedValueOnce(new Error('cli died'))
       await expect(sm.interrupt(info.id, { cancelQueued: true })).rejects.toThrow('cli died')
       // The drained message was re-enqueued, not lost.
@@ -7442,7 +7445,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     }
 
     it('drops the withdrawn turns from the promptUuids sidecar (unpaired entries would mispair the next FIFO echo)', async () => {
-      const { info, queuedUuids } = setupQueued(2)
+      const { info, queuedUuids } = await setupQueued(2)
       // Both queued turns recorded an unpaired {u} entry at dispatch (the
       // same entries onPromptEcho pairs FIFO-style with the SDK echo).
       for (const u of queuedUuids) {
@@ -7460,7 +7463,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('puts non-user-turn queue entries (the compact hand-off seed) back instead of withdrawing them', async () => {
-      const { info, queuedUuids } = setupQueued(1)
+      const { info, queuedUuids } = await setupQueued(1)
       // A control seed rides the same input Pushable (sendControlMessage —
       // shouldQuery:false, its own uuid, but NO promptUuids entry: it never
       // went through dispatchUserMessage). Destroying it would silently
@@ -7489,7 +7492,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('seeds a late message-status subscriber with the withdrawal window (a tab that missed the live frame still evicts)', async () => {
-      const { info, queuedUuids } = setupQueued(1)
+      const { info, queuedUuids } = await setupQueued(1)
       await sm.interrupt(info.id, { cancelQueued: true })
       // Subscribe AFTER the stop — a tab reconnecting post-stop missed the
       // live frame, and incremental sinceUuid replay can never heal it (the
@@ -7523,7 +7526,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // clear pendingTurns; before this fix the session stayed working=true
       // forever (WorkingBubble pinned, phase-gated routes 409ing, health
       // check only after workingStuckMs).
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h = mockHandles.at(-1)!
       const sent = sm.send(info.id, 'stop me before the CLI starts') as { uuid: string }
       h.interrupt.mockResolvedValueOnce({ cancelled: [sent.uuid] })
@@ -7563,7 +7566,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // pendingTurns here — the owed result stays the authority. (Guarding
       // on unpaired entries alone would miss this: the in-flight turn's
       // entry is PAIRED.)
-      const { info, h } = setupQueued(2)
+      const { info, h } = await setupQueued(2)
       // Land the seed's echo: the pump's top-level-user drop-filter hands the
       // SDK uuid to onPromptEcho, which pairs the oldest unpaired entry.
       h.emit({
@@ -7597,7 +7600,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // started, nothing queued, no unpaired entries) must unstick on the
       // next Stop — the probe reads the live state, not `removed > 0`, so a
       // zero-withdrawal interrupt still clears it without a server restart.
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const s = turnStateOf(info.id)
       s.pendingTurns = 1
       s.workingSince = Date.now()
@@ -7624,7 +7627,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     }
 
     it('stamps consumedAt on the replayed copy for the idle direct-handoff path', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const sent = sm.send(info.id, 'hello') as { uuid: string }
       await tick()
       const entry = replayOf(info.id).find((m) => m.uuid === sent.uuid)!
@@ -7634,7 +7637,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('stamps consumedAt on the replayed copy when a queued turn is consumed later', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h = mockHandles.at(-1)!
       sm.send(info.id, 'first') // taken by the parked waiter immediately
       const queued = sm.send(info.id, 'second') as { uuid: string } // sits in the queue
@@ -7675,7 +7678,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     }
 
     it('records a turn anchor on each successful result', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
@@ -7689,7 +7692,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('discard() forks from the anchor and swaps X out (keeps transcript)', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
@@ -7719,7 +7722,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       const realConfigDir = process.env.CLAUDE_CONFIG_DIR
       process.env.CLAUDE_CONFIG_DIR = dir
       try {
-        const info = sm.create({ cwd: dir })
+        const info = await sm.create({ cwd: dir })
         const h0 = mockHandles.at(-1)!
         h0.emit({
           type: 'user',
@@ -7756,7 +7759,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
         'readProviderHistoryPage',
       )
       try {
-        const info = sm.create({ cwd: dir })
+        const info = await sm.create({ cwd: dir })
         // The agent really finished — its sidecar transcript is durable.
         writeSidecar(dir, info.id, 'agent-dormant', 'end_turn', 'DONE — committed')
         // Anchor sidecar seeded directly (bypasses the pump's async append).
@@ -7801,7 +7804,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('discard() refuses a non-anchor uuid (400)', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
@@ -7811,7 +7814,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('Y inherits X turn anchors truncated to the cut point (composable)', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       // Seed three turn anchors directly into the sidecar (bypassing the
       // pump's fire-and-forget append, which races the test's event loop
       // under the full suite). discard() reads the sidecar, not the pump,
@@ -7840,7 +7843,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('deleteOriginal unlinks the source transcript + sidecar', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
@@ -7857,7 +7860,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('deleteOriginal also removes the snapshot sidecar for X', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
@@ -7877,7 +7880,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('delete() removes the snapshot sidecar', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const smAny = sm as unknown as { snapshotStore: { save: (id: string, m: unknown) => Promise<void>; load: (id: string) => Promise<unknown>; remove: (id: string) => Promise<void> } }
       await smAny.snapshotStore.save(info.id, {
         version: 1, gitDir: '/g', worktree: '/w', scope: '.', byMessage: {}, patches: [],
@@ -7891,7 +7894,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('discard() invokes snapshotStore.copyForFork with keep sets mirroring the cut', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       // Seed three turn anchors directly so discard has a cut to make.
       const smAnchors = sm as unknown as { turnAnchorStore: { save: (id: string, entries: Array<{ assistantUuid: string; completedAt: number }>) => Promise<void> } }
       await smAnchors.turnAnchorStore.save(info.id, [
@@ -7947,7 +7950,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
 
     it('listDiscardAnchors returns anchors with previews', async () => {
-      const info = sm.create({ cwd: dir })
+      const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
@@ -8018,13 +8021,13 @@ describe('create() validates modelGroupId against the effective profile', () => 
     __setConfigForTest({ profiles: [], activeProfileId: 'default', modelGroups: [] })
   })
 
-  it('succeeds when profile B has the group but the active profile does not', () => {
+  it('succeeds when profile B has the group but the active profile does not', async () => {
     __setConfigForTest({
       profiles: [profileA, profileB],
       activeProfileId: 'A',
       modelGroups: [],
     })
-    const info = smLocal.create({
+    const info = await smLocal.create({
       cwd: '/tmp',
       profileId: 'B',
       modelGroupId: 'g_budget',
@@ -8034,17 +8037,17 @@ describe('create() validates modelGroupId against the effective profile', () => 
     expect(info.profileId).toBe('B')
   })
 
-  it('rejects a group that belongs to neither profile', () => {
+  it('rejects a group that belongs to neither profile', async () => {
     __setConfigForTest({
       profiles: [profileA, profileB],
       activeProfileId: 'A',
       modelGroups: [],
     })
-    expect(() => smLocal.create({
+    await expect(smLocal.create({
       cwd: '/tmp',
       profileId: 'B',
       modelGroupId: 'nonexistent',
-    } as Parameters<SessionManager['create']>[0])).toThrow('model group nonexistent not found')
+    } as Parameters<SessionManager['create']>[0])).rejects.toThrow('model group nonexistent not found')
   })
 })
 
@@ -8065,11 +8068,11 @@ describe('cliDebug resolution', () => {
 })
 
 describe('cliDebug persistence', () => {
-  it('writeStore round-trips cliDebug', () => {
+  it('writeStore round-trips cliDebug', async () => {
     const dir = makeTmpDir()
     const store = new SessionStore({ stateDir: dir })
     const smLocal = new SessionManager({ store })
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     // Initially undefined (session-level default)
     expect(store.get(info.id)?.cliDebug).toBeUndefined()
     // Directly mutate the live session's cliDebug to simulate what the
@@ -8087,7 +8090,7 @@ describe('setCliDebug', () => {
     const storeLocal = new SessionStore({ stateDir: makeTmpDir() })
     await storeLocal.load()
     const smLocal = new SessionManager({ store: storeLocal })
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     const result = await smLocal.setCliDebug(info.id, { cliDebug: true })
     expect(result.cliDebug.perSession).toBe(true)
     expect(result.cliDebug.effective).toBe(true)
@@ -8099,7 +8102,7 @@ describe('setCliDebug', () => {
     const storeLocal = new SessionStore({ stateDir: makeTmpDir() })
     await storeLocal.load()
     const smLocal = new SessionManager({ store: storeLocal })
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     await smLocal.setCliDebug(info.id, { cliDebug: true })
     const result = await smLocal.setCliDebug(info.id, { cliDebug: null })
     expect(result.cliDebug.perSession).toBeUndefined()
@@ -8109,7 +8112,7 @@ describe('setCliDebug', () => {
 
   it('throws 400 when cliDebug is missing from body', async () => {
     const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     await expect(smLocal.setCliDebug(info.id, {})).rejects.toThrow(/cliDebug.*required/)
   })
 })
@@ -8117,7 +8120,7 @@ describe('setCliDebug', () => {
 describe('getDiagnostics', () => {
   it('returns the expected diagnostics shape', async () => {
     const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     const result = await smLocal.getDiagnostics(info.id)
     expect(result.cliDebug).toEqual({ global: false, perSession: undefined, effective: false })
     expect(result.stderrTail).toEqual([])
@@ -8126,7 +8129,7 @@ describe('getDiagnostics', () => {
 
   it('reflects per-session override in effective', async () => {
     const smLocal = new SessionManager({ store: new SessionStore({ stateDir: makeTmpDir() }) })
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     await smLocal.setCliDebug(info.id, { cliDebug: true })
     const result = await smLocal.getDiagnostics(info.id)
     expect(result.cliDebug.perSession).toBe(true)
@@ -8158,7 +8161,7 @@ describe('setAgent (mid-session persona switch)', () => {
 
   it('forwards the name through applyFlagSettings and reports it on SessionInfo', async () => {
     const { smLocal, sessionStore } = await setup()
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     const handle = mockHandles[mockHandles.length - 1]
     handle.applyFlagSettings.mockClear()
 
@@ -8173,7 +8176,7 @@ describe('setAgent (mid-session persona switch)', () => {
 
   it('sends null (not undefined) when clearing, so the flag layer is emptied', async () => {
     const { smLocal, sessionStore } = await setup()
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model', agent: 'reviewer' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model', agent: 'reviewer' })
     const handle = mockHandles[mockHandles.length - 1]
     handle.applyFlagSettings.mockClear()
 
@@ -8188,7 +8191,7 @@ describe('setAgent (mid-session persona switch)', () => {
 
   it('rejects an unknown or disabled name without touching the SDK', async () => {
     const { smLocal, sessionStore } = await setup()
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     const handle = mockHandles[mockHandles.length - 1]
     handle.applyFlagSettings.mockClear()
 
@@ -8204,7 +8207,7 @@ describe('setAgent (mid-session persona switch)', () => {
     const sessionStore = new SessionStore({ stateDir: makeTmpDir() })
     await sessionStore.load()
     const smLocal = new SessionManager({ store: sessionStore }) // no agentStore
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     await expect(smLocal.setAgent(info.id, 'reviewer')).rejects.toThrow('agent "reviewer" is not defined')
     // Clearing is still fine — it needs no definition to resolve.
     await expect(smLocal.setAgent(info.id, null)).resolves.toMatchObject({ agent: undefined })
@@ -8216,7 +8219,7 @@ describe('setAgent (mid-session persona switch)', () => {
     // `agent` is a real Options field, so persisting s.agent is enough for
     // resume / fork / crash-respawn to come up in the new persona.
     const { smLocal } = await setup()
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     await smLocal.setAgent(info.id, 'reviewer')
 
     await smLocal.unload(info.id)
@@ -8230,7 +8233,7 @@ describe('setAgent (mid-session persona switch)', () => {
     // fork reads `live ?? store.get(id)`, a different branch from resume's
     // meta lookup — so resume passing doesn't imply fork does.
     const { smLocal } = await setup()
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     await smLocal.setAgent(info.id, 'reviewer')
     // fork refuses a session with no completed turn, so land one first.
     const sourceHandle = mockHandles[mockHandles.length - 1]
@@ -8249,7 +8252,7 @@ describe('setAgent (mid-session persona switch)', () => {
     // session's configuration — the persona must survive like skillOverride
     // and toolProfile do.
     const { smLocal } = await setup()
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     await smLocal.setAgent(info.id, 'reviewer')
 
     await smLocal.clear(info.id)
@@ -8260,7 +8263,7 @@ describe('setAgent (mid-session persona switch)', () => {
 
   it('drops the persona on respawn once its definition is disabled', async () => {
     const { smLocal, agentStore } = await setup()
-    const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+    const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
     await smLocal.setAgent(info.id, 'reviewer')
 
     // effectiveStartAsAgent's drop-guard: a persona the user turned off must
@@ -8282,7 +8285,7 @@ describe('setAgent (mid-session persona switch)', () => {
   describe('via the generic /settings door', () => {
     it('validates a raw Settings.agent and mirrors it onto the session', async () => {
       const { smLocal, sessionStore } = await setup()
-      const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+      const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
       const handle = mockHandles[mockHandles.length - 1]
       handle.applyFlagSettings.mockClear()
 
@@ -8298,7 +8301,7 @@ describe('setAgent (mid-session persona switch)', () => {
 
     it('rejects an unknown / disabled name instead of forwarding it', async () => {
       const { smLocal } = await setup()
-      const info = smLocal.create({ cwd: '/tmp', model: 'test-model' })
+      const info = await smLocal.create({ cwd: '/tmp', model: 'test-model' })
       const handle = mockHandles[mockHandles.length - 1]
       handle.applyFlagSettings.mockClear()
 
@@ -8313,7 +8316,7 @@ describe('setAgent (mid-session persona switch)', () => {
 
     it('normalizes a blank name to null so the CLI never sees an empty agent', async () => {
       const { smLocal } = await setup()
-      const info = smLocal.create({ cwd: '/tmp', model: 'test-model', agent: 'reviewer' })
+      const info = await smLocal.create({ cwd: '/tmp', model: 'test-model', agent: 'reviewer' })
       const handle = mockHandles[mockHandles.length - 1]
       handle.applyFlagSettings.mockClear()
 
@@ -8326,12 +8329,61 @@ describe('setAgent (mid-session persona switch)', () => {
 
     it('leaves the persona untouched when the payload has no agent key', async () => {
       const { smLocal } = await setup()
-      const info = smLocal.create({ cwd: '/tmp', model: 'test-model', agent: 'reviewer' })
+      const info = await smLocal.create({ cwd: '/tmp', model: 'test-model', agent: 'reviewer' })
 
       const next = await smLocal.applySettings(info.id, { autoCompactEnabled: true } as never)
 
       expect(next.agent).toBe('reviewer')
       await smLocal.shutdown()
     })
+  })
+})
+
+describe('create() worktree isolation', () => {
+  const execFile = promisify(execFileCb)
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+  let repo: string
+
+  beforeAll(async () => {
+    repo = await makeRepo()
+  })
+  afterAll(async () => {
+    await cleanupGitFixtures()
+  })
+  beforeEach(async () => {
+    mockHandles.length = 0
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    sm = new SessionManager({ store })
+  })
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+  })
+
+  it('provisions a linked worktree and spawns inside it when isolateWorktree is true', async () => {
+    const head = (await execFile('git', ['-C', repo, 'rev-parse', 'HEAD'])).stdout.trim()
+    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
+    const wtPath = join(dir, 'worktrees', info.id)
+    expect(info.cwd).toBe(wtPath)
+    expect(info.worktree).toEqual({ mainRepoPath: repo, branch: `crw/${info.id.slice(0, 8)}`, baseSha: head })
+    expect(store.get(info.id)?.worktree).toEqual({ mainRepoPath: repo, branch: `crw/${info.id.slice(0, 8)}`, baseSha: head })
+    // the subprocess actually spawned with the worktree as its cwd
+    expect(mockHandles[0].options.cwd).toBe(wtPath)
+  })
+
+  it('rejects a non-boolean isolateWorktree with 400', async () => {
+    await expect(sm.create({ cwd: '/tmp', model: 'test-model', isolateWorktree: 'yes' } as unknown as Parameters<SessionManager['create']>[0]))
+      .rejects.toMatchObject({ status: 400 })
+  })
+
+  it('rejects worktree isolation outside a git repo with 400', async () => {
+    const plain = makeTmpDir()
+    await expect(sm.create({ cwd: plain, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0]))
+      .rejects.toMatchObject({ status: 400 })
+    rmRf(plain)
   })
 })
