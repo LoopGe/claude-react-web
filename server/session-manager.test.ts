@@ -8503,6 +8503,52 @@ describe('resume() worktree recreate chain', () => {
   })
 })
 
+describe('fork() worktree fallback', () => {
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+  let repo: string
+
+  beforeAll(async () => {
+    repo = await makeRepo()
+  })
+  afterAll(async () => {
+    await cleanupGitFixtures()
+  })
+  beforeEach(async () => {
+    mockHandles.length = 0
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    sm = new SessionManager({ store })
+  })
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+  })
+
+  it('fork() of an isolated session lands in the main repo without isolation metadata', async () => {
+    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
+    expect(info.worktree).toBeDefined()
+    // Complete one turn so the fork() lastTurnAt guard passes.
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+
+    const forked = await sm.fork(info.id)
+
+    // The fork falls back to the user's main repo — two sessions sharing one
+    // worktree is a clobber hazard, so the fork never lands in the source's.
+    expect(forked.cwd).toBe(info.worktree!.mainRepoPath)
+    // worktree is not in forkOpts's explicit copy list — isolation does not
+    // propagate; the user re-checks it on the fork's own create path.
+    expect(forked.worktree).toBeUndefined()
+    expect(store.get(forked.id)?.worktree).toBeUndefined()
+    // the fork's subprocess actually spawned in the main repo
+    expect(mockHandles[1].options.cwd).toBe(info.worktree!.mainRepoPath)
+  })
+})
+
 describe('delete() / setCwd() worktree cleanup', () => {
   let dir: string
   let store: SessionStore

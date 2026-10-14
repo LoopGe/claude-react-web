@@ -2117,7 +2117,11 @@ export class SessionManager {
     const sourceProvider = meta.provider ?? this.defaultProvider
     const forkOpts = this.baseSpawnOptions({
       provider: sourceProvider,
-      cwd: meta.cwd,
+      // An isolated source forks back to the user's main repo: two sessions
+      // sharing one worktree is a clobber hazard, and forking INTO a second
+      // worktree is out of scope for v1. The user can re-check isolation on
+      // the fork's own create path.
+      cwd: meta.worktree?.mainRepoPath ?? meta.cwd,
       model: meta.model,
       modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
