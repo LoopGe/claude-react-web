@@ -3,6 +3,7 @@ import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { Pushable } from '../../pushable.js'
 import type { ProviderInterruptReceipt, ProviderSessionHandle } from '../types.js'
 import type { ProcessExitInfo } from '../../process-monitor.js'
+import type { SupplementSession } from './steering.js'
 
 export class ClaudeSessionHandle implements ProviderSessionHandle {
   readonly provider = 'claude'
@@ -30,6 +31,9 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
      *  listSubagents / getSubagentMessages to the right `~/.claude/projects/`
      *  subtree. */
     private readonly cwd = '',
+    /** Mid-run steering 状态机（spec §5）。undefined = CLI 版本门控未过
+     *  （老 CLI）——enqueueSupplement 恒 false，feature 静默退化排队。 */
+    private readonly supplement?: SupplementSession,
   ) {}
 
   /** List subagent ids persisted under this session's transcript dir (SDK
@@ -70,6 +74,25 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     this.input.push(message)
   }
 
+  /** 入队一条 mid-turn 注入消息（spec §4 接口契约）。admission 关闭（turn
+   *  正在结束/尚未开始）或 CLI 版本门控未过时返回 false——调用方透明回退
+   *  到普通排队路径。 */
+  enqueueSupplement(entry: { uuid: string; text: string }): boolean {
+    return this.supplement?.enqueue(entry) ?? false
+  }
+
+  /** 取走全部未投递的注入条目（turn-end fallback / interrupt 撤回用），
+   *  对称于 drainQueuedInput。 */
+  drainSupplements(): Array<{ uuid: string }> {
+    return this.supplement?.drainUndelivered() ?? []
+  }
+
+  /** 本次 spawn 的运行时 steering 状态：supplement session 存在（版本门控
+   *  通过）才为 true——老 CLI 上 false，快照据此隐藏注入态 UI（spec §5.5）。 */
+  get steeringActive(): boolean {
+    return this.supplement != null
+  }
+
   sendControlMessage(message: AgentUserMessage): void {
     this.input.push(message)
   }
@@ -100,6 +123,9 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     this.isClosed = true
     this.input.end()
     this.abortController.abort()
+    // 未投递的注入条目全部回调 aborted（manager 的 delivered 处理器据此不
+    // 标记 injected；条目本身随 session 终结）。
+    this.supplement?.abort()
     // Query.close() is the SDK's authoritative resource cleanup: flush the
     // transcript-mirror batcher, abort every in-flight cancel controller, close
     // the transport (stdin EOF → grace → SIGTERM/SIGKILL) and reject pending

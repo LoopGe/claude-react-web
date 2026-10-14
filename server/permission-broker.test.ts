@@ -74,6 +74,7 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     tasklistSubscribers: new Set(),
     messageStatusSubscribers: new Set(),
     withdrawnUuids: [],
+    steeredInFlight: new Map(),
     commandSubscribers: new Set(),
     hookRuns: [],
     hookRunSubscribers: new Set(),

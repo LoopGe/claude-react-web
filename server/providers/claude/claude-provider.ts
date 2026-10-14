@@ -38,6 +38,7 @@ import { ProcessMonitor, type ProcessExitInfo } from '../../process-monitor.js'
 import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities } from '../types.js'
 import { ClaudeSessionHandle } from './claude-session.js'
 import { buildInProcessHooks } from './inprocess-hooks.js'
+import { SupplementSession } from './steering.js'
 import type { AgentUserMessage } from '../../agent-message.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../../shared/structured.js'
 import type { ResumableSession } from '../../session-types.js'
@@ -65,6 +66,20 @@ function cliSupportsInitializePluginDelivery(): boolean {
   if (!m) return false
   const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])]
   return maj > 2 || (maj === 2 && (min > 1 || (min === 1 && pat >= 261)))
+}
+
+/** True when the CLI version supports mid-run steering hooks — 2.1.110 is the
+ *  floor (fixes PreToolUse additionalContext being lost on tool failure;
+ *  anthropics/claude-code CHANGELOG, mirrored from multica's version gate).
+ *  Pure so tests can assert the boundary directly; the spawn path feeds it
+ *  `cachedClaudeHealth()?.version` (unknown/older → false → feature silently
+ *  degrades to pure queueing, spec §5.5). */
+export function cliSupportsSteeringVersion(version: string | undefined): boolean {
+  if (!version) return false
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(version)
+  if (!m) return false
+  const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  return maj > 2 || (maj === 2 && (min > 1 || (min === 1 && pat >= 110)))
 }
 
 /** True when a base URL points at a first-party Anthropic API host
@@ -329,6 +344,9 @@ export class ClaudeProvider implements AgentProvider {
     supportsStructuredOutput: true,
     supportsReadFile: true,
     supportsSubagentTranscripts: true,
+    // Mid-run steering 机制已实现；旧 CLI 的运行时退化由 supplement session
+    // 不创建 + enqueueSupplement 恒 false 实现（spec §5.5）。
+    supportsSteering: true,
   }
 
   private readonly processMonitor: ProcessMonitor
@@ -362,11 +380,18 @@ export class ClaudeProvider implements AgentProvider {
     if (opts.mcpServers !== undefined) sdkOptions.mcpServers = opts.mcpServers as Options['mcpServers']
     if (opts.includePartialMessages !== undefined) sdkOptions.includePartialMessages = opts.includePartialMessages
     if (opts.includeHookEvents !== undefined) sdkOptions.includeHookEvents = opts.includeHookEvents
-    if (opts.inProcessHookForward || opts.inProcessTaskSnapshot || opts.inProcessSubagentStop) {
+    // Mid-run steering（spec §5）：CLI 版本门控通过才创建 supplement session——
+    // 否则 hooks 不注册、enqueueSupplement 恒 false，feature 静默退化为纯排队。
+    const steeringOn = cliSupportsSteeringVersion(cachedClaudeHealth()?.version)
+    const supplementSession = steeringOn
+      ? new SupplementSession((uuid, outcome) => opts.onSupplementDelivered?.(uuid, outcome))
+      : undefined
+    if (opts.inProcessHookForward || opts.inProcessTaskSnapshot || opts.inProcessSubagentStop || supplementSession) {
       sdkOptions.hooks = buildInProcessHooks(
         opts.inProcessHookForward,
         opts.inProcessTaskSnapshot,
         opts.inProcessSubagentStop,
+        supplementSession,
       ) as Options['hooks']
     }
     if (opts.forwardSubagentText !== undefined) sdkOptions.forwardSubagentText = opts.forwardSubagentText
@@ -450,7 +475,13 @@ export class ClaudeProvider implements AgentProvider {
     const input = createPushable<AgentUserMessage>(
       'input-' + opts.id.slice(0, 8),
       INPUT_QUEUE_MAX_DEPTH,
-      opts.onUserMessageConsumed,
+      // SDK 读走一条 prompt = 新 turn 开始 → steering admission 打开（spec
+      // §5.1）。在现有 onUserMessageConsumed 之前调用：即使 manager 未传
+      // consume 回调，admission 语义也不受影响。
+      (m) => {
+        supplementSession?.notePromptConsumed()
+        opts.onUserMessageConsumed?.(m)
+      },
     )
     const abortController = new AbortController()
     sdkOptions.abortController = abortController
@@ -485,6 +516,7 @@ export class ClaudeProvider implements AgentProvider {
       // narrows the SDK project-dir scan to the right projects subtree.
       opts.id,
       opts.cwd,
+      supplementSession,
     )
 
     if (opts.fastMode) {

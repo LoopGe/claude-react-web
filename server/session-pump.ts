@@ -678,6 +678,11 @@ export function cliNotificationOf(msg: SDKMessage): CliNotification | null {
 
 export interface PumpDeps {
   historyCap: number
+  /** Mid-run steering turn-end fallback (spec §6.3): invoked in the result
+   *  handler before the moreQueued check. The host drains undelivered
+   *  supplements from the provider handle and re-routes them onto the SDK
+   *  input queue as normal next-turn prompts (zero-loss guarantee). */
+  onTurnSettling?: (session: Session) => void
   /** Separate FIFO budget for subagent frames (parent_tool_use_id != null).
    *  Independent of historyCap so subagent volume never evicts main-thread
    *  frames from the replay surface. */
@@ -1536,6 +1541,11 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           if (!emptyResult && session.lastAssistantUuid) {
             deps.recordTurnSnapshot?.(session.id, session.lastAssistantUuid)
           }
+          // Mid-run steering turn-end fallback (spec §6.3): drain undelivered
+          // supplements and requeue them as normal next-turn prompts BEFORE
+          // the moreQueued check so they count toward the working-state
+          // decision (a requeued supplement is exactly a queued turn).
+          deps.onTurnSettling?.(session)
           const moreQueued = session.handle.queueDepth > 0
           log.debug(
             `[session ${session.id}] result received — total msgs: ${msgCount}, ` +

@@ -26,7 +26,7 @@
 
 import type { Session } from './session-types.js'
 import type { SessionRecap } from './session-types.js'
-import type { WsMessageConsumed, WsMessagesWithdrawn, WsGitSnapshot, WsTasklistSnapshot } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsGitSnapshot, WsTasklistSnapshot } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
 import type { Pushable } from './pushable.js'
 import { createPushable } from './pushable.js'
@@ -131,7 +131,7 @@ export class SessionEventBroadcaster {
    *  messages are GONE from the ring — so every new subscriber is seeded
    *  with the recorded withdrawal window instead. */
   subscribeMessageStatus(id: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn>
     unsubscribe: () => void
   } | null {
     const s = this.sessions.get(id)

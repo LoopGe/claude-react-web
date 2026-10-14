@@ -215,6 +215,12 @@ export interface SessionInfoBase<PM = string> {
    *  on gateway deployments). undefined = unknown → UI shows the chip;
    *  false = hide it. Not persisted. */
   thinkingSupported?: boolean
+  /** Whether this session's provider implements mid-run steering (the
+   *  claude provider does; runtime degradation on old CLIs is handled inside
+   *  the handle, so this is the provider mechanism flag — spec §9). Drives
+   *  the composer's "will inject into the running turn" affordance. Not
+   *  persisted — re-derived from the provider registry on every snapshot. */
+  steeringSupported?: boolean
   /** User intent: absolute auto-compact window size in tokens (SDK
    *  Settings.autoCompactWindow). Undefined means "auto" — the CLI derives
    *  the threshold from the model's context window. Persisted so it survives

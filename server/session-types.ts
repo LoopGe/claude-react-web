@@ -12,6 +12,7 @@ import type {
   PermissionResult,
   PermissionUpdate,
   SDKMessage,
+  SDKUserMessage,
   UserDialogResult,
 } from '@anthropic-ai/claude-agent-sdk'
 import type { Pushable } from './pushable.js'
@@ -28,7 +29,7 @@ import type { SessionSkillOverride } from '../shared/skills.js'
 import type { SessionToolProfile } from '../shared/tool-profile.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
-import type { CliNotification, WsMessageConsumed, WsMessagesWithdrawn } from '../shared/ws-protocol.js'
+import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn } from '../shared/ws-protocol.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 import type { FirstPartyToolDef } from '../shared/first-party.js'
 
@@ -95,6 +96,9 @@ export interface DebugSessionDetail extends DebugSessionSummary {
     consumedAt?: number
   }>
   withdrawnUuids: string[]
+  /** Uuids of in-flight steered messages (debug projection of
+   *  Session.steeredInFlight). */
+  steeredInFlight: string[]
   /** app-level uuid → SDK on-disk uuid pairs (the rewind-files mapping). */
   promptUuids: Array<{ u: string; v?: string }>
   tasks: Array<{
@@ -611,7 +615,7 @@ export interface Session {
    *  SessionManager.interrupt). Mirrors gitStatusSubscribers (signal-shaped,
    *  small payload). Each WS subscriber gets its own pushable so a slow tab
    *  can't block another tab's updates. */
-  messageStatusSubscribers: Set<Pushable<WsMessageConsumed | WsMessagesWithdrawn>>
+  messageStatusSubscribers: Set<Pushable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn>>
   /** Server-minted uuids of user turns withdrawn by cancelQueued interrupts
    *  (most recent last, capped). Replayed to each NEW message-status
    *  subscriber as a synthetic `messages-withdrawn` frame so a tab that was
@@ -747,6 +751,12 @@ export interface Session {
    *  sessions spawned before this field existed (treated as empty → no bridge,
    *  signature fallback handles dedup). */
   promptUuids?: PromptUuidEntry[]
+  /** In-flight steered messages (uuid → ring message object), populated by
+   *  SessionManager.trySteerMessage and cleared on injected / requeued /
+   *  withdrawn (spec §6.1). Kept as a Map rather than a ring scan so the
+   *  turn-end fallback can recover the original message even after ring
+   *  eviction (historyCap). */
+  steeredInFlight: Map<string, SDKUserMessage>
   /** Snapshot anchor captures deferred because send() fired while the
    *  session was working (pendingTurns>0, queueDepth>0, etc). Each uuid
    *  is a user message that needs capture+recordAnchor when the turn
@@ -963,7 +973,7 @@ export interface SessionBroadcaster {
    *  payloads). Returns null when the session is unknown (callers
    *  short-circuit). Mirrors subscribeGitStatus. */
   subscribeMessageStatus(sessionId: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn>
     unsubscribe: () => void
   } | null
   subscribeCommandChanges(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null

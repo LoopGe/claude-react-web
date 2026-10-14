@@ -30,6 +30,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
+import { SteeredStore, spliceSteeredIntoPage } from './steered-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
 import { SessionOpLock } from './session-op-lock.js'
 import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
@@ -46,7 +47,7 @@ import {
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
-import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn } from './ws-protocol.js'
 import { tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
@@ -127,7 +128,7 @@ import {
   subagentTranscriptPath,
 } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
-import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
+import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, stampInjectedAt, stampRequeuedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -135,7 +136,7 @@ import { deleteTranscriptFile } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createDefaultProviders } from './providers/default-providers.js'
-import type { ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle } from './providers/types.js'
+import type { ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle, SupplementOutcome } from './providers/types.js'
 import { countMatches, findRanges } from '../shared/search/match.js'
 import { extractMessagePlainText } from '../shared/search/extract.js'
 import type { MessageSearchHit } from '../shared/search-results.js'
@@ -711,6 +712,30 @@ type ForkOpts = {
   forkFromLastSafe?: boolean
 }
 
+/** True when a user message's content is plain text only (string content, or
+ *  a block array of nothing but text blocks). Only such messages can steer:
+ *  hook `additionalContext` is a string — images and other block types would
+ *  be silently dropped by injection, so they must queue as next-turn prompts
+ *  (spec §6.1). Pure + exported for tests. */
+export function isSteerableUserText(msg: SDKUserMessage): boolean {
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (typeof content === 'string') return true
+  if (!Array.isArray(content)) return false
+  return content.every((b) => (b as { type?: string }).type === 'text')
+}
+
+/** Extract the plain text of a steerable user message (string content, or
+ *  text blocks joined with newlines). Callers gate on isSteerableUserText
+ *  first; a non-steerable message yields the empty string. */
+export function userTextOf(msg: SDKUserMessage): string {
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((b) => (b as { text?: string }).text ?? '')
+    .join('\n')
+}
+
 export class SessionManager {
   private sessions = new Map<string, Session>()
   private historyCap: number
@@ -734,6 +759,7 @@ export class SessionManager {
   private healthMonitor: SessionHealthMonitor
   private store?: SessionStore
   private promptUuidStore: PromptUuidStore
+  private steeredStore: SteeredStore
   private turnAnchorStore: TurnAnchorStore
   private resultFrameStore: ResultFrameStore
   /** Sidecar store for shadow-repo file snapshots. Holds per-session
@@ -828,6 +854,10 @@ export class SessionManager {
     this.deleteLockMaxWaitMs = opts.deleteLockMaxWaitMs ?? DELETE_LOCK_MAX_WAIT_MS
     this.store = opts.store ?? new SessionStore()
     this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
+    // Mid-run steering 的回放 sidecar（spec §8.1）——steered 消息不在 CLI
+    // JSONL 里（additionalContext 落盘为不可渲染的 attachment），这是它
+    // 唯一的磁盘回放来源。
+    this.steeredStore = new SteeredStore(this.store.getDir(), this.historyCap)
     this.turnAnchorStore = new TurnAnchorStore(this.store.getDir(), this.historyCap)
     this.resultFrameStore = new ResultFrameStore(this.store.getDir(), this.historyCap)
     // Shadow-repo file snapshots: build the store and service against the
@@ -2423,6 +2453,7 @@ export class SessionManager {
       await this.resultFrameStore.remove(id)
       await this.snapshotStore.remove(id)
       await this.promptUuidStore.remove(id)
+      await this.steeredStore.remove(id)
     } else {
       await this.unload(id, { removeFromStore: true })
     }
@@ -2835,6 +2866,7 @@ export class SessionManager {
       tasklistSubscribers: new Set(),
       messageStatusSubscribers: new Set(),
       withdrawnUuids: [],
+      steeredInFlight: new Map(),
       commandSubscribers: new Set(),
       hookRuns: [],
       hookRunSubscribers: new Set(),
@@ -3067,6 +3099,7 @@ export class SessionManager {
       forkSession: fullOpts.forkSession,
       resumeSessionAt: (fullOpts as { resumeSessionAt?: string }).resumeSessionAt,
       onUserMessageConsumed: (msg) => this.onInputConsumed(id, msg as SDKUserMessage),
+      onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(id, uuid, outcome),
       canUseTool: fullOpts.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: fullOpts.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       // Atomic pair: the SDK requires onUserDialog whenever
@@ -3100,6 +3133,7 @@ export class SessionManager {
     this.turnAnchorStore.revive(id)
     this.resultFrameStore.revive(id)
     this.promptUuidStore.revive(id)
+    this.steeredStore.revive(id)
     this.sessions.set(id, session)
     metrics.gauge('sessions_active', this.sessions.size)
     log.info(`[session ${id}] spawned model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
@@ -3163,6 +3197,9 @@ export class SessionManager {
     // missing only the rewind-to-this-message option. Spec: capture before
     // tools run — in practice the SDK takes 1–3s to start the first
     // tool_use, while capture typically finishes in <500ms.
+    // (Steered messages never get an anchor: they are always mid-turn here,
+    // so they always take the defer path — and trySteerMessage removes the
+    // deferred uuid the moment the steer decision lands.)
     this.captureAnchor(id, s, userMsg.uuid!)
     this.dispatchUserMessage(s, userMsg)
     // dispatchUserMessage → pushToSession → stampReceivedAt stamps receivedAt
@@ -3279,6 +3316,13 @@ export class SessionManager {
     if (s.lastPromptSuggestion != null) {
       s.lastPromptSuggestion = undefined
     }
+    // Mid-run steering route (spec §6.1): a plain-text message sent while a
+    // turn is active goes into the supplement queue (injected at the next
+    // tool-hook boundary) INSTEAD of the SDK input queue. All downstream
+    // bookkeeping a queued prompt gets — SDK enqueue, promptUuids pairing,
+    // snapshot anchor — is skipped; the turn-end fallback re-routes anything
+    // undelivered back through the normal path.
+    if (this.trySteerMessage(s, userMsg)) return
     const forSdk = { ...userMsg }
     s.handle.enqueueUserMessage(forSdk)
     // Direct-hand-off case: the consume hook already ran, synchronously,
@@ -3288,6 +3332,40 @@ export class SessionManager {
     if (typeof consumedAt === 'number') stampConsumedAt(userMsg, consumedAt)
     this.pushToSession(s, userMsg)
     this.recordPromptUuid(s, userMsg)
+  }
+
+  /** Try to route a mid-turn plain-text message into steering (spec §6.1).
+   *  Returns true when the message took the steering path (broadcast + ring
+   *  still happen via pushToSession); false means the caller must run the
+   *  normal queue path. Four conditions (plan Task 6 / pre-flight ruling):
+   *  the global switch, the provider's steering member, plain-text-only
+   *  content (additionalContext is a string — images cannot ride it), and a
+   *  live turn. enqueue()'s own admission/version gate is the final arbiter
+   *  — a false return here is a transparent fallback, never an error. */
+  private trySteerMessage(s: Session, userMsg: SDKUserMessage): boolean {
+    if (defaultConfig.steering === false) return false
+    const enqueue = (s.handle as ProviderSessionHandle & {
+      enqueueSupplement?: (entry: { uuid: string; text: string }) => boolean
+    }).enqueueSupplement
+    if (typeof enqueue !== 'function') return false
+    if (!isSteerableUserText(userMsg)) return false
+    if (!(s.pendingTurns > 0 || s.turnActive === true)) return false
+    if (!userMsg.uuid) return false // 无法跟踪的消息不 steer
+    const text = userTextOf(userMsg)
+    if (!enqueue.call(s.handle, { uuid: userMsg.uuid, text })) return false
+    const steeredAt = stampSteeredAt(userMsg)
+    s.steeredInFlight.set(userMsg.uuid, userMsg)
+    // A steered message never starts a turn, so it must not keep the snapshot
+    // anchor captureAnchor just deferred for it (steering is mid-turn-only,
+    // so the defer path is the only one it can have taken). Drop it now, at
+    // the moment the steer decision is known (spec §6.1 skip list).
+    if (s.pendingSnapshotAnchors?.length) {
+      s.pendingSnapshotAnchors = s.pendingSnapshotAnchors.filter((u) => u !== userMsg.uuid)
+    }
+    void this.steeredStore.record(s.id, { u: userMsg.uuid, text, steeredAt })
+    log.info(`[session ${s.id}] steered ${userMsg.uuid.slice(0, 8)} mid-turn (${text.length} chars)`)
+    this.pushToSession(s, userMsg)
+    return true
   }
 
   /** Record a just-sent top-level prompt's server-minted uuid (`u`) as an
@@ -3411,6 +3489,15 @@ export class SessionManager {
     // conservative filter keeps the live ring and the transcript consistent
     // even if that ever changes) out of the removal set.
     const queuedUserUuids = new Set((s.promptUuids ?? []).filter((e) => e.v == null).map((e) => e.u))
+    // Steer pending 先于一切（spec §6.4 竞态对策）：drain 清空后，interrupt
+    // 期间并发的 hook 边界只见空队列——这是 multica writing-flag 串行化的
+    // 进程内等价物。plain interrupt 与「queued 消息在 Stop 后存活」语义对齐
+    // → 余量转排队；cancelQueued 的余量并入下方撤回集合。
+    const steerLeftovers =
+      (s.handle as ProviderSessionHandle & { drainSupplements?: () => Array<{ uuid: string }> }).drainSupplements?.() ?? []
+    if (!opts?.cancelQueued && steerLeftovers.length > 0) {
+      this.requeueSteeredLeftovers(s, steerLeftovers)
+    }
     // Withdraw leg 1 (host queue) before the interrupt lands — see above for
     // the ordering rationale.
     const { msgs: withdrawnMsgs, uuids: drainedUuids } = opts?.cancelQueued
@@ -3432,6 +3519,17 @@ export class SessionManager {
       }
       for (const u of receipt?.cancelledQueued ?? []) {
         if (stillUnpaired(u)) uuids.add(u)
+      }
+      // Steer 撤回（cancelQueued 路径）：steered 消息从不在 promptUuids 里
+      // （dispatch 即跳过记录，requeue 时才补录——而被撤回的不会再 requeue），
+      // 所以绕过 stillUnpaired 过滤直接并入。ring 移除 / withdrawnUuids /
+      // messages-withdrawn 广播全部复用下方现有 uuids 集合路径。
+      for (const { uuid: steerUuid } of steerLeftovers) {
+        if (opts?.cancelQueued) {
+          uuids.add(steerUuid)
+          s.steeredInFlight.delete(steerUuid)
+          void this.steeredStore.markWithdrawn(s.id, steerUuid, Date.now())
+        }
       }
       let removed = 0
       if (uuids.size > 0) {
@@ -3556,7 +3654,7 @@ export class SessionManager {
    *  message's `consumedAt` (replayed on reconnect) for consumed flips, the
    *  ring removal + `withdrawnUuids` subscribe replay for withdrawals — so a
    *  dropped live frame self-heals. */
-  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessagesWithdrawn): void {
+  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn): void {
     const s = this.sessions.get(id)
     if (!s || s.messageStatusSubscribers.size === 0) return
     for (const sub of s.messageStatusSubscribers) {
@@ -4655,6 +4753,7 @@ export class SessionManager {
         return tail.map(projectHistoryFrame)
       })(),
       withdrawnUuids: s ? [...s.withdrawnUuids] : [],
+      steeredInFlight: s ? [...s.steeredInFlight.keys()] : [],
       promptUuids: (s?.promptUuids ?? []).map((e) => ({ u: e.u, v: e.v })),
       tasks: (s ? [...s.tasks.values()] : []).map((t) => ({
         taskId: t.taskId,
@@ -5903,7 +6002,7 @@ export class SessionManager {
   }
 
   subscribeMessageStatus(id: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn>
     unsubscribe: () => void
   } | null {
     return this.broadcaster.subscribeMessageStatus(id)
@@ -6017,6 +6116,65 @@ export class SessionManager {
    *       carries the stamp across for that one.)
    *    4. Broadcast a live `message-consumed` signal so currently-attached
    *       tabs flip the bubble without waiting for a replay. */
+  /** Provider 的 onSupplementDelivered 回调落点（spec §6.2）：一条 steered
+   *  消息在钩子边界投递完成。ring 条目打 injectedAt（重放正确性的 durable
+   *  半边）、steeredInFlight 清项、sidecar 更新、live 帧广播。ok=false 仅
+   *  出现在 handle 销毁路径（aborted）——条目随 session 终结，不标记。 */
+  private onSupplementDelivered(id: string, uuid: string, outcome: SupplementOutcome): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    if (!outcome.ok) {
+      // aborted = handle 销毁（unload / respawn / crash-recovery 的统一路
+      // 径）：supplement 已不可投递——清掉 in-flight 跟踪，否则残留 uuid 随
+      // 会话存活（终审 Important #2）。ring 条目保留无终态的 steeredAt，
+      // 客户端按 orphan 规则渲染（spec §8.3）。
+      s.steeredInFlight.delete(uuid)
+      return
+    }
+    // 与 onInputConsumed 相同的后向 uuid 扫描：只认主线程用户帧。
+    for (let i = s.history.length - 1; i >= 0; i--) {
+      const entry = s.history[i] as ({ type?: string; uuid?: string } | undefined)
+      if (entry?.type === 'user' && entry.uuid === uuid) {
+        stampInjectedAt(entry)
+        break
+      }
+    }
+    s.steeredInFlight.delete(uuid)
+    void this.steeredStore.markInjected(id, uuid, Date.now())
+    this.pushMessageStatus(id, { kind: 'message-steered', sessionId: id, uuid, state: 'injected' })
+    log.info(`[session ${id}] steered ${uuid.slice(0, 8)} injected at ${outcome.boundary}`)
+  }
+
+  /** Turn-end fallback（spec §6.3，pump 的 onTurnSettling 落点）：drain 全部
+   *  未投递的 supplement 并逐条转回 SDK 输入队列——零丢失保证。必须在
+   *  result 处理器的 moreQueued 检查之前调用（pump 已保证），requeue 后
+   *  的条目要被 queueDepth 检查看见。 */
+  private drainAndRequeueSteered(s: Session): void {
+    const handle = s.handle as ProviderSessionHandle & { drainSupplements?: () => Array<{ uuid: string }> }
+    if (typeof handle.drainSupplements !== 'function') return
+    this.requeueSteeredLeftovers(s, handle.drainSupplements())
+  }
+
+  /** Requeue 一组已 drain 的 steer 余量（turn 结束与 plain interrupt 共用，
+   *  spec §6.3/§6.4）。每条：原文转投 SDK 输入队列 → ring 条目打
+   *  requeuedAt → promptUuids 补录（此刻起才会 echo）→ sidecar 更新 →
+   *  message-steered {state:'requeued'} 帧。 */
+  private requeueSteeredLeftovers(s: Session, leftovers: Array<{ uuid: string }>): void {
+    for (const { uuid } of leftovers) {
+      const userMsg = s.steeredInFlight.get(uuid)
+      s.steeredInFlight.delete(uuid)
+      if (!userMsg) continue
+      const at = stampRequeuedAt(userMsg)
+      s.handle.enqueueUserMessage({ ...userMsg })
+      // 【补录】requeue 后它就是一条会 echo 的普通 prompt——此刻才进
+      // FIFO 配对（spec §6.3；漏掉会让 onPromptEcho 永久错配）。
+      this.recordPromptUuid(s, userMsg)
+      void this.steeredStore.markRequeued(s.id, uuid, at)
+      this.pushMessageStatus(s.id, { kind: 'message-steered', sessionId: s.id, uuid, state: 'requeued' })
+      log.info(`[session ${s.id}] steered ${uuid.slice(0, 8)} requeued as next-turn prompt`)
+    }
+  }
+
   private onInputConsumed(id: string, msg: SDKUserMessage): void {
     if (msg.type !== 'user') return
     if (msg.parent_tool_use_id != null) return
@@ -6134,6 +6292,8 @@ export class SessionManager {
       this.store?.remove(id)
       // Drop the promptUuids sidecar too — the session is gone for good.
       void this.promptUuidStore.remove(id)
+      // And the steered-message sidecar (mid-run steering replay source).
+      void this.steeredStore.remove(id)
       // And the turn-anchor sidecar (legal discard cut points).
       void this.turnAnchorStore.remove(id)
       // And the result-frame sidecar (per-turn result summaries).
@@ -6467,10 +6627,19 @@ export class SessionManager {
     // paging (the client's loadOlder scroll-up) never surfaces the parent's
     // history inside the Side Chat UI. Undefined for non-Side-Chat sessions.
     const afterUuid = live?.forkBoundaryUuid ?? meta?.forkBoundaryUuid
-    return this.readProviderHistoryPage(live?.provider ?? meta?.provider ?? this.defaultProvider, id, {
+    let page = await this.readProviderHistoryPage(live?.provider ?? meta?.provider ?? this.defaultProvider, id, {
       ...opts,
       ...(afterUuid ? { afterUuid } : {}),
     })
+    // Mid-run steering 回放拼接（spec §8.2）：steered 消息不在 CLI JSONL 里
+    // （additionalContext 落盘为不可渲染的 attachment），sidecar 是它唯一的
+    // 磁盘回放来源——按 steeredAt 时间戳拼进页面。splice 自带去重规则
+    // （requeued/withdrawn 跳过；比页内最新还新跳过）。
+    const steered = await this.steeredStore.load(id)
+    if (steered && steered.length > 0) {
+      page = spliceSteeredIntoPage(page, steered)
+    }
+    return page
   }
 
   async searchMessages(
@@ -6810,6 +6979,9 @@ export class SessionManager {
       pluginErrors: s.pluginErrors,
       effortLevels: s.effortLevels,
       thinkingSupported: s.thinkingSupported,
+      steeringSupported:
+        (s.handle as ProviderSessionHandle).steeringActive ??
+        this.providers.get(s.provider).capabilities.supportsSteering,
       running: s.running,
       recovering: s.recovering,
       working: isWorking,
@@ -6914,6 +7086,7 @@ export class SessionManager {
       this.cachedPumpDeps = {
         historyCap: this.historyCap,
         subagentHistoryCap: this.subagentHistoryCap,
+        onTurnSettling: (s) => this.drainAndRequeueSteered(s),
         persist: (s) => this.persist(s),
         denyPendingPermissions: (s) => {
           this.permBroker.denyAll(s)
@@ -7429,6 +7602,7 @@ export class SessionManager {
       forwardSubagentText: this.forwardSubagentText,
       resume: session.id,
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
+      onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(session.id, uuid, outcome),
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onUserDialog: session.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,
