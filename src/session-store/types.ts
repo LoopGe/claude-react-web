@@ -1,6 +1,7 @@
 import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
 import type { ContextUsage } from '../hooks/useChatStream'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
+import { emptyWindow, type WindowState } from './seq-window'
 
 export interface TranscriptItem {
   id: string
@@ -524,6 +525,17 @@ export interface ServerMirror {
    *  skill's inner frames have somewhere to belong. Identity-compared in the
    *  store like the other two, so snapshots only reallocate on real change. */
   activeSkills: Map<string, SkillRecord>
+  /** Seq window — the seq-keyed transcript view of the seq-paginated
+   *  protocol (transcript-seq refactor, Task 7). Purely server-driven:
+   *  written ONLY by the WINDOW_* actions through the pure seq-window
+   *  operators. The ordered `messages`/`items` arrays above remain the
+   *  render log and stay in lockstep with `window.window` by construction:
+   *  every WINDOW_* handler applies freshly-windowed messages through the
+   *  same applyMessage/prependMessages machinery, and evictions/trims evict
+   *  from both. `generation: -1` in the initial mirror means "no server
+   *  generation adopted yet" (server generations start at 0) — the first
+   *  WINDOW_PAGE on an empty window adopts it. */
+  window: WindowState
 }
 
 /** Authoritative CLI session state reported by `system/session_state_changed`
@@ -694,24 +706,54 @@ export type SessionAction =
    *  index keyed by tool_use_ids that lived only in the evicted frames is
    *  dropped so no orphan card lingers. */
   | { type: 'EVICT_MESSAGES'; uuids: string[] }
+  // ── Seq window (transcript-seq refactor, Task 7) ────────────────────
+  // The four server-driven writes of the seq-paginated protocol. All route
+  // through the pure seq-window operators (seq-window.ts) and then apply
+  // freshly-windowed messages to the ordered render log via the existing
+  // applyMessage / prependMessages machinery, so every UI reducer branch
+  // (subagent pairing, task folding, plan cards, …) keeps working unchanged.
+  /** A REST page from GET /sessions/:id/messages landed. `at: 'tail'` is
+   *  the newest page (or a hole-filling page in between) — messages append
+   *  at the transcript tail in seq order; also flips replayReady. `at:
+   *  'head'` is a strictly-older page below oldestSeq — messages prepend.
+   *  `hasMore` becomes the window's hasOlder. An empty window adopts the
+   *  page's generation; a non-empty window with a mismatched generation
+   *  ignores the page (dead universe — dispatch WINDOW_BUMP first). */
+  | {
+      type: 'WINDOW_PAGE'
+      at: 'tail' | 'head'
+      generation: number
+      headSeq: number
+      messages: Array<{ seq: number; msg: unknown }>
+      hasMore: boolean
+    }
+  /** A live `message` WS frame carrying seq/generation. Contiguous seqs
+   *  append at the tail (full applyMessage path); gapped seqs park in the
+   *  window's pending buffer (hole exposed via the snapshot) and are
+   *  applied when the hole fills; old/duplicate seqs are dropped. */
+  | { type: 'WINDOW_LIVE'; seq: number; generation: number; message: SdkMessage }
+  /** Server tombstones (`messages-evicted` WS frame): remove the named
+   *  seqs from the window AND the ordered render log (by uuid mapping),
+   *  pruning the toolUseId-keyed lifecycle maps like EVICT_MESSAGES. */
+  | { type: 'WINDOW_EVICT'; seqs: number[] }
+  /** The server's seq space reset (/clear, or an attach revealed a new
+   *  generation): whole-window invalidation. Resets the transcript to the
+   *  empty live state (same semantics as CLEAR_TRANSCRIPT) with the new
+   *  generation/headSeq cursor. */
+  | { type: 'WINDOW_BUMP'; generation: number; headSeq: number }
 
 export interface SessionSnapshot {
   replayReady: boolean
-  /** True once the store's async IDB open + scan + cold-load has settled (or
-   *  was skipped). The subscribe path waits for it: a cold-load can prepend
-   *  rows into an empty store — flipping this client's cache declaration and
-   *  racing a tail-first burst's backfill chunks — so the WS subscribe must
-   *  not be issued while the store's cache state is still unknown. */
+  /** Constant `true` since the seq-window refactor (Task 7) deleted the IDB
+   *  layer — there is no async store state left to wait for. Kept so the
+   *  subscribe gate consumers keep compiling; Task 8 (P3) removes the gate. */
   idbReady: boolean
-  /** True once the store's synchronous-constructor localStorage hydrate has
-   *  completed (or was skipped because there was no cache). The constructor
-   *  now returns immediately with an empty state and hydrates in a microtask,
-   *  so the subscribe path must wait for this before issuing a WS subscribe —
-   *  otherwise it would read `lastMessageUuid` as null and force a full
-   *  replay instead of the sinceUuid incremental one. Distinct from
-   *  `replayReady`, which means "transcript content is on screen" (cache or
-   *  replay) — a fresh no-cache session has hydrateReady=true but
-   *  replayReady=false until the replay lands. */
+  /** Constant `true` since the seq-window refactor (Task 7) — there is no
+   *  localStorage hydrate to defer anymore (the store constructor is
+   *  synchronous). Kept so the subscribe-gate consumers keep compiling;
+   *  Task 8 removes the gate. Distinct from `replayReady`, which means
+   *  "transcript content is on screen" — a freshly opened session has
+   *  hydrateReady=true but replayReady=false until the tail page lands. */
   hydrateReady: boolean
   items: TranscriptItem[]
   messages: SdkMessage[]
@@ -772,6 +814,28 @@ export interface SessionSnapshot {
   /** Latest authoritative CLI session state mirrored from ServerMirror
    *  (see there). Null until the first frame. */
   sessionState: CliSessionState | null
+  // ── Seq window view (transcript-seq refactor, Task 7) ───────────────
+  // Mirrors of ServerMirror.window for the loadOlder / render-anchor
+  // consumers (Tasks 8/9). Task 9 anchors MessageList rows on `oldestSeq`
+  // (exact name); Task 8's loadOlder pages `before=oldestSeq` gated on
+  // `hasOlder`, and reconnect/hole detection compares these snapshots.
+  /** Seq of the oldest message in the window; null when empty. */
+  oldestSeq: number | null
+  /** Seq of the newest message in the window; null when empty. */
+  newestSeq: number | null
+  /** Older non-tombstoned messages exist below the window (from the last
+   *  page's hasMore). */
+  hasOlder: boolean
+  /** Newer messages exist beyond the window (a live hole is parked). */
+  hasNewer: boolean
+  /** Server seq-space generation the window belongs to (-1 = none adopted). */
+  generation: number
+  /** Next seq the server will allocate (exclusive upper bound). */
+  headSeq: number
+  /** Inclusive live-hole range [newestSeq + 1, lowestPendingSeq - 1] while
+   *  out-of-order live frames sit in the pending buffer; null otherwise.
+   *  Task 8's hook fetches the REST page over this range to fill it. */
+  hole: [number, number] | null
 }
 
 /** Build a fresh ServerMirror. Used by createInitialSessionState and by any
@@ -805,6 +869,10 @@ export function createInitialServerMirror(): ServerMirror {
     activeSubagents: new Map(),
     activeWorkflows: new Map(),
     activeSkills: new Map(),
+    // generation -1 = "no server generation adopted yet" (server generations
+    // start at 0) — the first WINDOW_PAGE on this empty window adopts the
+    // page's generation (see seq-window.ts pageLoaded).
+    window: emptyWindow(-1, 0),
   }
 }
 

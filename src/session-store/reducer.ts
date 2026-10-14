@@ -46,6 +46,14 @@ import { toolDebug, toolDebugEnabled } from './debug'
 import { parseWorkflowOutput } from './workflow-meta'
 import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
 import { isEmptyResultFrame } from '../../shared/results.js'
+import {
+  bumpGeneration,
+  emptyWindow,
+  evictSeqs,
+  liveAppend,
+  pageLoaded,
+  type WindowState,
+} from './seq-window'
 
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -368,7 +376,15 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       // server doesn't re-replay, system/init isn't broadcast). Mark the
       // transcript ready so MessageList shows the empty-state instead of
       // an infinite skeleton.
-      const mirror = { ...createInitialServerMirror(), replayReady: true }
+      // The seq window empties too, but its generation/headSeq cursor is
+      // PRESERVED: the window only re-anchors on the server's WINDOW_BUMP
+      // (the /clear generation+1 arrives via the attached/cleared frame),
+      // so a pre-bump page can't be mistaken for post-clear content.
+      const mirror = {
+        ...createInitialServerMirror(),
+        replayReady: true,
+        window: emptyWindow(state.mirror.window.generation, state.mirror.window.headSeq),
+      }
       return {
         sessionId: state.sessionId,
         mirror,
@@ -377,9 +393,127 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     }
     case 'EVICT_MESSAGES':
       return evictMessages(state, action.uuids)
+    case 'WINDOW_PAGE':
+      return windowPage(state, action)
+    case 'WINDOW_LIVE':
+      return windowLive(state, action.seq, action.generation, action.message)
+    case 'WINDOW_EVICT':
+      return windowEvict(state, action.seqs)
+    case 'WINDOW_BUMP':
+      return {
+        sessionId: state.sessionId,
+        mirror: {
+          ...createInitialServerMirror(),
+          replayReady: true,
+          window: bumpGeneration(state.mirror.window, action.generation, action.headSeq),
+        },
+        intent: createInitialClientIntent(),
+      }
     default:
       return state
   }
+}
+
+// ── Seq window handlers (transcript-seq refactor, Task 7) ────────────────
+//
+// Every WINDOW_* action runs its pure seq-window operator first, then applies
+// the messages that are NEW to the window (freshly inserted seqs + pending
+// runs that just drained) to the ordered render log through the existing
+// applyMessage / prependMessages machinery. This keeps `mirror.messages` /
+// `mirror.items` in lockstep with the window by construction — the UI reducer
+// branches (subagent pairing, task folding, plan cards, permission state)
+// consume only the ordered log and stay seq-agnostic.
+
+/** Messages now held by `nw` but not by `prev`, ordered by seq. These are
+ *  exactly the frames the transcript hasn't applied yet: a prev-window seq
+ *  means applyMessage already ran for it; prev-pending seqs drained into
+ *  `nw` are fresh (they were parked, never applied). */
+function freshWindowMessages(
+  prev: WindowState,
+  nw: WindowState,
+): Array<[number, SdkMessage]> {
+  const out: Array<[number, SdkMessage]> = []
+  for (const [seq, msg] of nw.window) {
+    if (!prev.window.has(seq)) out.push([seq, msg])
+  }
+  out.sort((a, b) => a[0] - b[0])
+  return out
+}
+
+/** WINDOW_LIVE: a seq-carrying live message frame. Contiguous seqs append
+ *  at the tail; gapped seqs park in the window (hole exposed via snapshot)
+ *  and are applied — in seq order — when the hole fills. The new window is
+ *  attached BEFORE the fresh messages run so trimFront/eviction inside
+ *  applyMessage sync the window they'll actually survive into. */
+function windowLive(
+  state: SessionState,
+  seq: number,
+  generation: number,
+  message: SdkMessage,
+): SessionState {
+  const prev = state.mirror.window
+  const nw = liveAppend(prev, seq, message, generation)
+  if (nw === prev) return state
+  let next = withMirror(state, { ...state.mirror, window: nw })
+  for (const [, msg] of freshWindowMessages(prev, nw)) {
+    next = applyMessage(next, msg)
+  }
+  return next
+}
+
+/** WINDOW_PAGE: a REST page from GET /sessions/:id/messages. Tail pages
+ *  (the newest page, a reconnect catch-up, or a hole fill) append in seq
+ *  order and flip replayReady — the tail page IS the transcript's initial
+ *  paint in the seq protocol. Head pages prepend below oldestSeq via
+ *  prependMessages (uuid dedup is exact: the REST page and the live stream
+ *  share one seq space, so the prompt-signature overlap check is skipped —
+ *  the same reasoning as tail-first backfill chunks' trustUuidDedup). */
+function windowPage(
+  state: SessionState,
+  action: Extract<SessionAction, { type: 'WINDOW_PAGE' }>,
+): SessionState {
+  const prev = state.mirror.window
+  const nw = pageLoaded(prev, {
+    at: action.at,
+    messages: action.messages,
+    hasMore: action.hasMore,
+    generation: action.generation,
+    headSeq: action.headSeq,
+  })
+  if (nw === prev) return state
+  const fresh = freshWindowMessages(prev, nw)
+  let next = withMirror(state, { ...state.mirror, window: nw })
+  if (action.at === 'head') {
+    if (fresh.length === 0) return next
+    return prependMessages(
+      next,
+      fresh.map(([, msg]) => msg),
+      { trustUuidDedup: true },
+    )
+  }
+  for (const [, msg] of fresh) {
+    next = applyMessage(next, msg)
+  }
+  return withMirror(next, { ...next.mirror, replayReady: true })
+}
+
+/** WINDOW_EVICT: server tombstones by seq. Maps the seqs to their uuids
+ *  (from the PRE-eviction window) and reuses evictMessages — which also
+ *  syncs the window — so the ordered log and lifecycle-map pruning stay
+ *  identical to the uuid-based path. */
+function windowEvict(state: SessionState, seqs: number[]): SessionState {
+  const prev = state.mirror.window
+  const nw = evictSeqs(prev, seqs)
+  if (nw === prev) return state
+  const uuids = new Set<string>()
+  for (const seq of seqs) {
+    const msg = prev.window.get(seq) ?? prev.pending.get(seq)
+    const u = msg ? (msg as { uuid?: unknown }).uuid : undefined
+    if (typeof u === 'string' && u.length > 0) uuids.add(u)
+  }
+  let next = state
+  if (uuids.size > 0) next = evictMessages(state, Array.from(uuids))
+  return withMirror(next, { ...next.mirror, window: nw })
 }
 
 /** Keep-first uuid dedup over a REPLAY_REPLACE payload. A single
@@ -1620,10 +1754,19 @@ function trimFront(state: SessionState): SessionState {
   console.warn(`[trimFront] Trimmed ${cut} items (${beforeLen} → ${items.length})`)
   const live = collectLiveToolUseIds(items)
   const retained = new Set(items.map((it) => it.id))
+  // Front-trimmed rows leave the seq window too — the window is the seq
+  // view of what the ordered log holds, so oldestSeq must track items[0].
+  const trimmedUuids = new Set<string>()
+  for (const m of mirror.messages.slice(0, cut)) {
+    if (typeof m.uuid === 'string') trimmedUuids.add(m.uuid)
+  }
+  const trimmedSeqs = seqsForUuids(mirror.window, trimmedUuids)
+  const window = trimmedSeqs.length > 0 ? evictSeqs(mirror.window, trimmedSeqs) : mirror.window
   return withMirror(state, {
     ...mirror,
     items,
     messages,
+    window,
     toolStatus: pruneMapToLive(mirror.toolStatus, live),
     toolResults: pruneMapToLive(mirror.toolResults, live),
     pendingResults: prunePendingResults(mirror.pendingResults, retained),
@@ -1634,6 +1777,25 @@ function trimFront(state: SessionState): SessionState {
     activeWorkflows: pruneSettledToLive(mirror.activeWorkflows, live),
     activeSkills: pruneSettledToLive(mirror.activeSkills, live),
   })
+}
+
+/** Seqs currently held by the window (window or pending) for any of the
+ *  given message uuids. Used to keep the seq window in sync with uuid-based
+ *  evictions and front-trims — the window must never hold a seq whose
+ *  message the ordered log no longer does, or oldestSeq/newestSeq would
+ *  describe content the transcript doesn't render (and Task 9's
+ *  firstItemIndex anchor would drift off items[0]). */
+function seqsForUuids(w: WindowState, uuids: ReadonlySet<string>): number[] {
+  const out: number[] = []
+  for (const [seq, msg] of w.window) {
+    const u = (msg as { uuid?: unknown }).uuid
+    if (typeof u === 'string' && uuids.has(u)) out.push(seq)
+  }
+  for (const [seq, msg] of w.pending) {
+    const u = (msg as { uuid?: unknown }).uuid
+    if (typeof u === 'string' && uuids.has(u)) out.push(seq)
+  }
+  return out
 }
 
 /** Remove the given uuids from the transcript (refusal-fallback retraction:
@@ -1653,6 +1815,10 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
   const messages = mirror.messages.filter(
     (m) => !uuidSet.has((m as { uuid?: string }).uuid ?? ''),
   )
+  // Keep the seq window in lockstep: drop every seq the evicted uuids map
+  // to (window + pending) so the boundaries stay honest.
+  const evictedSeqs = seqsForUuids(mirror.window, uuidSet)
+  const window = evictedSeqs.length > 0 ? evictSeqs(mirror.window, evictedSeqs) : mirror.window
   // Clear the consumed-timestamp cache for evicted user turns too, and drop
   // lastMessageUuid if its owner was evicted (the next MESSAGE rebuilds it).
   const pendingConsumedMessages = new Map(mirror.pendingConsumedMessages)
@@ -1665,6 +1831,7 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
     ...mirror,
     items,
     messages,
+    window,
     pendingConsumedMessages,
     lastMessageUuid:
       mirror.lastMessageUuid && uuidSet.has(mirror.lastMessageUuid)

@@ -1,5 +1,4 @@
 import { SessionStore, clearSessionStorage } from './store'
-import { openDb, clearSession } from './idb'
 
 interface StoreEntry {
   store: SessionStore
@@ -51,11 +50,9 @@ class SessionStoreRegistry {
     }
   }
 
-  /** Permanently drop a session's cache. Uses store.purge() (which writes
-   *  NOTHING — it drains in-flight writes via the generation bump, then clears
-   *  LS + IDB) so there's no "save then clear" window where a rapid re-open
-   *  hydrates from a stale LS key. Clears storage unconditionally so a cached
-   *  transcript with no live store entry is still purged. */
+  /** Permanently drop a session's store. Uses store.purge() (cancels timers,
+   *  drops listeners, removes legacy cache keys — there is no persistence
+   *  layer left to drain since the seq-window refactor). */
   async delete(sessionId: string): Promise<void> {
     const entry = this.stores.get(sessionId)
     if (entry) {
@@ -63,13 +60,6 @@ class SessionStoreRegistry {
       this.stores.delete(sessionId)
     } else {
       clearSessionStorage(sessionId)
-      // No live store — clear IDB best-effort.
-      try {
-        const db = await openDb()
-        if (db) await clearSession(db, sessionId)
-      } catch {
-        /* best-effort */
-      }
     }
   }
 

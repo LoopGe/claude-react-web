@@ -901,32 +901,9 @@ export function useChatStream(
     inFlightRef.current = true
     setLoadingOlder(true)
     try {
-      // 1. Try IDB first (local, no server round-trip).
-      const idb = await store.loadOlderFromIdb(200)
-      if (idb) {
-        // 2. Probe the server when IDB is exhausted OR there's a seq gap at
-        // the boundary (tab closed mid-write left a hole in IDB). Do this
-        // BEFORE prepending so fetchServerPage anchors beforeUuid on the
-        // ORIGINAL oldest in memory (the gap sits between the IDB block and
-        // that oldest — anchoring on the post-prepend oldest would page the
-        // wrong window and never bridge the gap). Server messages bridge the
-        // gap (newer than the IDB block, older than memory) so they append
-        // AFTER the IDB block in the combined oldest-first prepend; dedup by
-        // uuid drops any IDB overlap. The next save backfills IDB.
-        let combined = idb.messages
-        let hasMore = idb.hasMore
-        if (!idb.hasMore || !idb.contiguous) {
-          const server = await fetchServerPage()
-          combined = combined.concat(server.messages)
-          hasMore = idb.hasMore || server.hasMore
-        }
-        if (combined.length > 0) {
-          store.dispatch({ type: 'PREPEND_MESSAGES', messages: combined })
-        }
-        setHasOlder(hasMore)
-        return combined.length
-      }
-      // 3. IDB unavailable — full server path.
+      // Server-only path since the seq-window refactor (Task 7) deleted the
+      // IDB layer: there is no local cache to try first. (Task 8 rewrites
+      // this to page GET /sessions/:id/messages by seq.)
       const server = await fetchServerPage()
       if (server.messages.length > 0) {
         store.dispatch({ type: 'PREPEND_MESSAGES', messages: server.messages })
