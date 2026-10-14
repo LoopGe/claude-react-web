@@ -225,5 +225,57 @@ function first_uuid(sm: SessionManager, id: string) {
   return s_of(sm, id).promptUuids![0]!.u
 }
 
+// ── Task 7: 投递确认（onSupplementDelivered → 帧 + 戳 + sidecar）────────
+
+describe('supplement delivery handler', () => {
+  it('injected outcome stamps the ring entry, clears in-flight, updates sidecar, broadcasts the frame', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, s, info, provider } = ctx
+    const delivered = provider.lastOpts!.onSupplementDelivered!
+    expect(typeof delivered).toBe('function')
+    // 订阅 msgstat 通道收帧
+    const msgstat = sm.subscribeMessageStatus(info.id)
+    const frames: Array<{ kind: string; uuid?: string; state?: string }> = []
+    void (async () => {
+      for await (const f of msgstat!.iterable) {
+        frames.push(f as { kind: string; uuid?: string; state?: string })
+      }
+    })()
+    sm.send(info.id, 'first') // 置 mid-turn
+    const second = sm.send(info.id, 'steer me')
+    const steeredAt = (second as { steeredAt?: number }).steeredAt
+    // 模拟 provider 在钩子边界投递完成
+    delivered(second.uuid!, { ok: true, boundary: 'PreToolUse' })
+    await new Promise((r) => setTimeout(r, 20)) // 让订阅循环吃到帧
+    // ring 条目带 injectedAt
+    const ringEntry = s.history.find((m) => (m as { uuid?: string }).uuid === second.uuid) as { injectedAt?: number }
+    expect(ringEntry.injectedAt).toEqual(expect.any(Number))
+    expect(ringEntry.injectedAt).toBeGreaterThanOrEqual(steeredAt!)
+    // in-flight 清空 + sidecar 更新
+    expect(s.steeredInFlight.size).toBe(0)
+    const sidecar = await (sm as unknown as { steeredStore: { load(id: string): Promise<Array<{ u: string; injectedAt?: number }>> } }).steeredStore.load(info.id)
+    expect(sidecar?.[0]).toMatchObject({ u: second.uuid, injectedAt: expect.any(Number) })
+    // live 帧已广播
+    expect(frames).toContainEqual({ kind: 'message-steered', sessionId: info.id, uuid: second.uuid, state: 'injected' })
+    msgstat!.unsubscribe()
+    await sm.shutdown()
+  })
+  it('aborted outcome (handle destroy) marks nothing', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, s, info, provider } = ctx
+    const delivered = provider.lastOpts!.onSupplementDelivered!
+    sm.send(info.id, 'first')
+    const second = sm.send(info.id, 'steer me')
+    delivered(second.uuid!, { ok: false, reason: 'aborted' })
+    const ringEntry = s.history.find((m) => (m as { uuid?: string }).uuid === second.uuid) as { injectedAt?: number }
+    expect(ringEntry.injectedAt).toBeUndefined()
+    // aborted 不清 in-flight（条目由 drain/abort 路径处理——Task 8/9 的领域）
+    expect(s.steeredInFlight.has(second.uuid!)).toBe(true)
+    await sm.shutdown()
+  })
+})
+
 // 抑制 randomUUID 未使用告警的引用（vitest tree-shake 友好）
 void randomUUID

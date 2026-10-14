@@ -29,7 +29,7 @@ import type { SessionSkillOverride } from '../shared/skills.js'
 import type { SessionToolProfile } from '../shared/tool-profile.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
-import type { CliNotification, WsMessageConsumed, WsMessagesWithdrawn } from '../shared/ws-protocol.js'
+import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn } from '../shared/ws-protocol.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 import type { FirstPartyToolDef } from '../shared/first-party.js'
 
@@ -615,7 +615,7 @@ export interface Session {
    *  SessionManager.interrupt). Mirrors gitStatusSubscribers (signal-shaped,
    *  small payload). Each WS subscriber gets its own pushable so a slow tab
    *  can't block another tab's updates. */
-  messageStatusSubscribers: Set<Pushable<WsMessageConsumed | WsMessagesWithdrawn>>
+  messageStatusSubscribers: Set<Pushable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn>>
   /** Server-minted uuids of user turns withdrawn by cancelQueued interrupts
    *  (most recent last, capped). Replayed to each NEW message-status
    *  subscriber as a synthetic `messages-withdrawn` frame so a tab that was
@@ -973,7 +973,7 @@ export interface SessionBroadcaster {
    *  payloads). Returns null when the session is unknown (callers
    *  short-circuit). Mirrors subscribeGitStatus. */
   subscribeMessageStatus(sessionId: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn>
     unsubscribe: () => void
   } | null
   subscribeCommandChanges(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null

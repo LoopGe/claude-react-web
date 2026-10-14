@@ -47,7 +47,7 @@ import {
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
-import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn } from './ws-protocol.js'
 import { tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
@@ -128,7 +128,7 @@ import {
   subagentTranscriptPath,
 } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
-import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
+import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, stampInjectedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -136,7 +136,7 @@ import { deleteTranscriptFile } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createDefaultProviders } from './providers/default-providers.js'
-import type { ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle } from './providers/types.js'
+import type { ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle, SupplementOutcome } from './providers/types.js'
 import { countMatches, findRanges } from '../shared/search/match.js'
 import { extractMessagePlainText } from '../shared/search/extract.js'
 import type { MessageSearchHit } from '../shared/search-results.js'
@@ -3098,6 +3098,7 @@ export class SessionManager {
       forkSession: fullOpts.forkSession,
       resumeSessionAt: (fullOpts as { resumeSessionAt?: string }).resumeSessionAt,
       onUserMessageConsumed: (msg) => this.onInputConsumed(id, msg as SDKUserMessage),
+      onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(id, uuid, outcome),
       canUseTool: fullOpts.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: fullOpts.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       // Atomic pair: the SDK requires onUserDialog whenever
@@ -3633,7 +3634,7 @@ export class SessionManager {
    *  message's `consumedAt` (replayed on reconnect) for consumed flips, the
    *  ring removal + `withdrawnUuids` subscribe replay for withdrawals — so a
    *  dropped live frame self-heals. */
-  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessagesWithdrawn): void {
+  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn): void {
     const s = this.sessions.get(id)
     if (!s || s.messageStatusSubscribers.size === 0) return
     for (const sub of s.messageStatusSubscribers) {
@@ -5981,7 +5982,7 @@ export class SessionManager {
   }
 
   subscribeMessageStatus(id: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn>
     unsubscribe: () => void
   } | null {
     return this.broadcaster.subscribeMessageStatus(id)
@@ -6095,6 +6096,28 @@ export class SessionManager {
    *       carries the stamp across for that one.)
    *    4. Broadcast a live `message-consumed` signal so currently-attached
    *       tabs flip the bubble without waiting for a replay. */
+  /** Provider 的 onSupplementDelivered 回调落点（spec §6.2）：一条 steered
+   *  消息在钩子边界投递完成。ring 条目打 injectedAt（重放正确性的 durable
+   *  半边）、steeredInFlight 清项、sidecar 更新、live 帧广播。ok=false 仅
+   *  出现在 handle 销毁路径（aborted）——条目随 session 终结，不标记。 */
+  private onSupplementDelivered(id: string, uuid: string, outcome: SupplementOutcome): void {
+    if (!outcome.ok) return
+    const s = this.sessions.get(id)
+    if (!s) return
+    // 与 onInputConsumed 相同的后向 uuid 扫描：只认主线程用户帧。
+    for (let i = s.history.length - 1; i >= 0; i--) {
+      const entry = s.history[i] as ({ type?: string; uuid?: string } | undefined)
+      if (entry?.type === 'user' && entry.uuid === uuid) {
+        stampInjectedAt(entry)
+        break
+      }
+    }
+    s.steeredInFlight.delete(uuid)
+    void this.steeredStore.markInjected(id, uuid, Date.now())
+    this.pushMessageStatus(id, { kind: 'message-steered', sessionId: id, uuid, state: 'injected' })
+    log.info(`[session ${id}] steered ${uuid.slice(0, 8)} injected at ${outcome.boundary}`)
+  }
+
   private onInputConsumed(id: string, msg: SDKUserMessage): void {
     if (msg.type !== 'user') return
     if (msg.parent_tool_use_id != null) return
@@ -7507,6 +7530,7 @@ export class SessionManager {
       forwardSubagentText: this.forwardSubagentText,
       resume: session.id,
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
+      onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(session.id, uuid, outcome),
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onUserDialog: session.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,

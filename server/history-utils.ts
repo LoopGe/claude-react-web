@@ -102,6 +102,20 @@ export function stampSteeredAt(msg: unknown, at?: number): number {
   return m.steeredAt ?? at ?? Date.now()
 }
 
+/**
+ * Stamp that a steered message was DELIVERED into the current turn at a
+ * tool-hook boundary (the provider's onSupplementDelivered fired — spec
+ * §6.2). Same shape as stampConsumedAt: ring object, added only when
+ * absent, returns the effective value so the frame and the stamp agree.
+ */
+export function stampInjectedAt(msg: unknown, at?: number): number {
+  const m = msg as { injectedAt?: number }
+  if (m && typeof m === 'object' && m.injectedAt == null) {
+    m.injectedAt = at ?? Date.now()
+  }
+  return m.injectedAt ?? at ?? Date.now()
+}
+
 /** Extract `parent_tool_use_id` from an SDK message defensively.
  *  Returns the value for user/assistant messages; undefined for types
  *  that don't carry the field. Server-side SDKMessage is a discriminated
