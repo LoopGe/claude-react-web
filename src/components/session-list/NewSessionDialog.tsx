@@ -623,10 +623,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                   style={{ marginTop: 2 }}
                 />
                 <span>
-                  隔离到独立 worktree
+                  Isolate in its own worktree
                   <span style={{ display: 'block', color: 'var(--fg-muted)' }}>
-                    改动进独立分支(crw/…),不影响主仓工作区;worktree 从 HEAD 干净检出,不含 gitignore
-                    文件(如 .env、node_modules)
+                    Changes go to a dedicated branch (crw/…) and never touch the main checkout. The
+                    worktree is a clean checkout of HEAD and does not include gitignored files
+                    (e.g. .env, node_modules).
                   </span>
                 </span>
               </label>

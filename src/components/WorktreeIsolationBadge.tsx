@@ -14,7 +14,7 @@ import type { WorktreeInfo } from '../../shared/session-info'
 export function WorktreeIsolationBadge({ worktree }: { worktree: WorktreeInfo }) {
   // Multi-line tooltip — the bubble collapses plain \n (white-space: normal),
   // so each line is its own <div>, same as ChatPanel's git/worktree chips.
-  const lines = ['隔离 worktree', `主仓:${worktree.mainRepoPath}`, `分支:${worktree.branch}`]
+  const lines = ['Isolated worktree', `Main repo: ${worktree.mainRepoPath}`, `Branch: ${worktree.branch}`]
   return (
     <Tooltip label={lines.map((line, i) => <div key={i}>{line}</div>)} placement="bottom" align="start">
       <span className="chat-panel-worktree-badge">

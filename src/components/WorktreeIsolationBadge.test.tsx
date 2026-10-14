@@ -19,8 +19,8 @@ describe('WorktreeIsolationBadge', () => {
     expect(badge.textContent).toBe('worktree')
     // Tooltip bubble is always in the DOM (hidden via CSS until hover).
     const tooltip = container.querySelector('[role="tooltip"]')!
-    expect(tooltip.textContent).toContain('隔离 worktree')
-    expect(tooltip.textContent).toContain('主仓:/home/user/main-repo')
-    expect(tooltip.textContent).toContain('分支:crw/abc12345')
+    expect(tooltip.textContent).toContain('Isolated worktree')
+    expect(tooltip.textContent).toContain('Main repo: /home/user/main-repo')
+    expect(tooltip.textContent).toContain('Branch: crw/abc12345')
   })
 })

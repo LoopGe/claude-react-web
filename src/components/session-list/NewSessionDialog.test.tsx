@@ -634,7 +634,7 @@ describe('NewSessionDialog worktree isolation', () => {
 
   const isolateRow = (root: HTMLElement) => {
     const label = Array.from(root.querySelectorAll('label')).find((l) =>
-      l.textContent?.includes('隔离到独立 worktree'),
+      l.textContent?.includes('Isolate in its own worktree'),
     )
     expect(label, 'worktree isolation row').toBeDefined()
     return label!.querySelector('input[type="checkbox"]') as HTMLInputElement

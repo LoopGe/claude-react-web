@@ -38,8 +38,8 @@ export async function worktreeDeleteWarning(
   if (!st.available || !st.dirty) return null
   return (
     <p>
-      ⚠ 该 session 的 worktree 有未提交改动,删除后丢失(分支 {st.branch ?? session.worktree.branch}{' '}
-      保留)
+      ⚠ This session&apos;s worktree has uncommitted changes. Deleting loses them (branch{' '}
+      {st.branch ?? session.worktree.branch} is kept).
     </p>
   )
 }

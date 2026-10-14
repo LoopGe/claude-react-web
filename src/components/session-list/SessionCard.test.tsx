@@ -470,7 +470,7 @@ describe('SessionCard worktree delete warning', () => {
 
     expect(api.get).toHaveBeenCalledWith('/sessions/abc12345-xxxx/worktree-status')
     const text = messageText(onAskConfirm.mock.calls[0][0].message)
-    expect(text).toContain('未提交改动')
+    expect(text).toContain('uncommitted changes')
     expect(text).toContain('crw/abc12345')
   })
 
@@ -484,7 +484,7 @@ describe('SessionCard worktree delete warning', () => {
     const { container } = render(<SessionCard {...baseProps} session={wtSession()} onAskConfirm={onAskConfirm} />)
     await clickDelete(container, onAskConfirm)
 
-    expect(messageText(onAskConfirm.mock.calls[0][0].message)).not.toContain('未提交改动')
+    expect(messageText(onAskConfirm.mock.calls[0][0].message)).not.toContain('uncommitted changes')
   })
 
   it('does not probe worktree status for a non-isolated session', async () => {
@@ -493,6 +493,6 @@ describe('SessionCard worktree delete warning', () => {
     await clickDelete(container, onAskConfirm)
 
     expect(api.get).not.toHaveBeenCalled()
-    expect(messageText(onAskConfirm.mock.calls[0][0].message)).not.toContain('未提交改动')
+    expect(messageText(onAskConfirm.mock.calls[0][0].message)).not.toContain('uncommitted changes')
   })
 })
