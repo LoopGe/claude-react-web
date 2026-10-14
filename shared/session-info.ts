@@ -133,6 +133,20 @@ export interface PluginLoadError {
   path?: string
 }
 
+/** Worktree isolation metadata. Present (and `cwd` = the worktree path)
+ *  when the session runs in its own linked git worktree. */
+export interface WorktreeInfo {
+  /** The user's MAIN repo checkout — what fork falls back to and what
+   *  recreate reads branches from. */
+  mainRepoPath: string
+  /** Branch created for this session (`crw/<sessionId8>`). Kept after
+   *  session deletion. */
+  branch: string
+  /** Main-repo HEAD at creation time — recreate fallback when the branch
+   *  was deleted externally. */
+  baseSha: string
+}
+
 export interface SessionInfoBase<PM = string> {
   id: string
   provider?: string
@@ -265,6 +279,9 @@ export interface SessionInfoBase<PM = string> {
    *  HEAD was detached/unborn, or git was unavailable. Survives
    *  process restarts via persistence.coerceMeta. */
   gitStartSha?: string
+  /** Worktree isolation metadata. Undefined = the session runs in the user's
+   *  own checkout. Persisted; survives resume/restart. */
+  worktree?: WorktreeInfo
   /** Number of tool-permission requests / AskUserQuestion prompts
    *  awaiting a user decision. Drives the sidebar badge on
    *  SessionCard so users can see at a glance which background

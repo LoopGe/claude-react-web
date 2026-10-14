@@ -101,7 +101,7 @@ import { HttpError, controlHttpError, type ControlWrapOpts } from './errors.js'
 import { filterClientEnv } from './session-env.js'
 import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
-import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
+import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting, type WorktreeInfo } from '../shared/session-info.js'
 import { isTerminalTaskStatus } from '../shared/tasks.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
@@ -1299,6 +1299,7 @@ export class SessionManager {
       lastTurnAt: s.lastTurnAt,
       gitStartSha: s.gitStartSha,
       repoRoot: s.repoRoot,
+      worktree: s.worktree,
       parentId: s.parentId,
       forkBoundaryUuid: s.forkBoundaryUuid,
       mcpServerNames: s.mcpServerNames,
@@ -1368,7 +1369,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -1424,6 +1425,7 @@ export class SessionManager {
         return sb && sb.enabled === true ? sb : undefined
       })(),
       cliDebug: (opts as { cliDebug?: boolean }).cliDebug,
+      worktree: (opts as { worktree?: WorktreeInfo }).worktree,
     }
   }
 
@@ -2777,6 +2779,7 @@ export class SessionManager {
       // from this projection.
       title: existingMeta?.title ?? metaSnapshot.title,
       cwd: existingMeta?.cwd ?? metaSnapshot.cwd,
+      worktree: existingMeta?.worktree ?? metaSnapshot.worktree,
       // Carry a spawn-scoped tool-surface profile. A caller-supplied profile
       // (/clear, fork) wins; otherwise capture any create-body passthrough so
       // it too survives a later /clear. RAM-only — see Session.toolProfile.
@@ -6743,6 +6746,7 @@ export class SessionManager {
     error?: string
     lastTurnAt?: number
     gitStartSha?: string
+    worktree?: WorktreeInfo
     parentId?: string
     mcpServerNames?: string[]
     enabledPlugins?: string[]
@@ -6783,6 +6787,7 @@ export class SessionManager {
       error: x.error,
       lastTurnAt: x.lastTurnAt,
       gitStartSha: x.gitStartSha,
+      worktree: x.worktree,
       parentId: x.parentId,
       mcpServerNames: x.mcpServerNames,
       enabledPlugins: x.enabledPlugins,
