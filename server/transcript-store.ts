@@ -131,7 +131,10 @@ export class TranscriptStore {
       picked.push(entry)
     }
     picked.reverse()
-    const hasMore = picked.length === limit && this.hasVisibleBelow(picked[0].seq)
+    // limit 0 is a legal probe (a cursor-only page): the loop above picks
+    // nothing, so the hasMore computation below must not dereference
+    // picked[0] (it threw RangeError before the guard).
+    const hasMore = limit > 0 && picked.length === limit && this.hasVisibleBelow(picked[0].seq)
     return {
       generation: this.generation,
       headSeq: this.nextSeq,

@@ -45,6 +45,22 @@ import { createLogger } from './log.js'
 const log = createLogger('dialog-broker')
 
 export class DialogBroker {
+  /** Resolution hook (Task 5): fired once per dialog resolution, AFTER the
+   *  per-session `dialog-resolved` fan-out, with the retracted uuid list the
+   *  dialog's payload carried (undefined when it had none). Every
+   *  resolution path funnels through broadcastDialogResolved (user decision,
+   *  interrupt abort, unload cancelAll), so the SessionManager wires its
+   *  seq-store eviction here exactly once — the CLI contract is evict on
+   *  ANY resolution, never on receipt. */
+  constructor(
+    private readonly onResolved?: (
+      session: Session,
+      did: string,
+      decision: UserDialogDecision,
+      retractedMessageUuids?: string[],
+    ) => void,
+  ) {}
+
   /** Build the onUserDialog callback for a session.
    *
    *  `onDialogRequest` is the global-broadcast hook, mirroring
@@ -259,6 +275,7 @@ export class DialogBroker {
     for (const sub of session.dialogSubscribers.values()) {
       sub.push({ kind: 'resolved', did, decision, retractedMessageUuids })
     }
+    this.onResolved?.(session, did, decision, retractedMessageUuids)
   }
 }
 

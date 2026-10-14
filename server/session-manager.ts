@@ -45,7 +45,7 @@ import {
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
-import type { WsMessageConsumed, WsMessagesWithdrawn } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessagesWithdrawn, WsMessagesEvicted } from './ws-protocol.js'
 import { tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
@@ -825,7 +825,15 @@ export class SessionManager {
     // a resolver rather than the raw session model.
     this.permBroker = new PermissionBroker((id) => this.auxTargetFor(id, 'classifier'))
     this.elicitBroker = new ElicitationBroker()
-    this.dialogBroker = new DialogBroker()
+    // Retraction eviction for user dialogs (Task 5): a resolved
+    // refusal_fallback dialog retracts the refused leg
+    // (retractedMessageUuids). The broker funnels EVERY resolution path
+    // (user decision, interrupt abort, unload cancelAll) through
+    // broadcastDialogResolved, so the hook there covers them all — the CLI
+    // contract is evict on ANY resolution, never on receipt.
+    this.dialogBroker = new DialogBroker((s, _did, _decision, retracted) => {
+      if (retracted && retracted.length > 0) this.evictTranscriptAndBroadcast(s.id, retracted)
+    })
     this.clientDebugBroker = new ClientDebugBroker((frame) => {
       // Only real WS connections subscribe to this channel (see the field
       // doc), so its size IS the browser-tab count. Zero live tabs → report
@@ -3574,13 +3582,14 @@ export class SessionManager {
     return { msgs, uuids }
   }
 
-  /** Push a message-status frame (`message-consumed` / `messages-withdrawn`)
-   *  to every subscriber of the session. No-op when the session is unknown or
-   *  has no subscribers. The durable state lives outside these frames — the
-   *  message's `consumedAt` (replayed on reconnect) for consumed flips, the
-   *  ring removal + `withdrawnUuids` subscribe replay for withdrawals — so a
-   *  dropped live frame self-heals. */
-  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessagesWithdrawn): void {
+  /** Push a message-status frame (`message-consumed` / `messages-withdrawn`
+   *  / `messages-evicted`) to every subscriber of the session. No-op when
+   *  the session is unknown or has no subscribers. The durable state lives
+   *  outside these frames — the message's `consumedAt` (replayed on
+   *  reconnect) for consumed flips, the ring removal + `withdrawnUuids`
+   *  subscribe replay for withdrawals, the sidecar tombstone rows for
+   *  evictions — so a dropped live frame self-heals. */
+  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessagesWithdrawn | WsMessagesEvicted): void {
     const s = this.sessions.get(id)
     if (!s || s.messageStatusSubscribers.size === 0) return
     for (const sub of s.messageStatusSubscribers) {
@@ -5901,7 +5910,7 @@ export class SessionManager {
   }
 
   subscribeMessageStatus(id: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn | WsMessagesEvicted>
     unsubscribe: () => void
   } | null {
     return this.broadcaster.subscribeMessageStatus(id)
@@ -6349,15 +6358,60 @@ export class SessionManager {
   /** Tombstone the given message uuids in the session's seq store and
    *  persist one `{ seq, evicted: true }` row per newly-tombstoned seq so
    *  the eviction survives a cold rehydrate (foldSidecarRows re-applies
-   *  it). Returns the tombstoned seqs. Unknown session (no store yet) or
-   *  unknown uuids contribute nothing. Idempotent: an already-evicted uuid
-   *  is not re-tombstoned nor re-persisted. */
-  evictTranscript(id: string, uuids: string[]): number[] {
-    const t = this.transcriptStores.get(id)
-    if (!t) return []
+   *  it). Returns the tombstoned seqs. Unknown uuids contribute nothing.
+   *  Idempotent: an already-evicted uuid is not re-tombstoned nor
+   *  re-persisted.
+   *
+   *  Reconcile-first (Task 5 review ruling): eviction keyed by uuid is only
+   *  correct against a COMPLETE uuid→seq index, so a cold store is
+   *  reconciled (awaited) before the tombstones land — an eviction against
+   *  a half-hydrated index would tombstone the tail the store happens to
+   *  know and silently miss the rest. A session that is neither live nor
+   *  persisted has no transcript to reconcile against; its seq space is
+   *  gone, so the call is a no-op (returning [] rather than resurrecting a
+   *  ghost holder for a deleted id). */
+  async evictTranscript(id: string, uuids: string[]): Promise<number[]> {
+    if (!this.sessions.has(id) && !this.store?.get(id)) return []
+    const t = await this.ensureTranscriptReconciled(id)
     const seqs = t.store.evict(uuids)
     for (const seq of seqs) void t.sidecar.appendRow({ seq, evicted: true })
     return seqs
+  }
+
+  /** Evict + broadcast in one step — the entry point for the two retraction
+   *  paths (pump `model_refusal_fallback.retracted_message_uuids`, and the
+   *  dialog broker's resolved-with-`retractedMessageUuids` hook). Fires the
+   *  `messages-evicted` frame on the per-session message-status channel
+   *  (same channel as `messages-withdrawn`: server-removed-messages signals,
+   *  typed frame union, per-subscriber pushable). An empty seq list (all
+   *  uuids unmapped, or idempotent re-resolution) broadcasts nothing — there
+   *  is no state change to announce. Fire-and-forget at the call sites:
+   *  eviction is durable via the sidecar regardless of whether a frame
+   *  reaches a live tab. */
+  private evictTranscriptAndBroadcast(id: string, uuids: string[]): void {
+    void this.evictTranscript(id, uuids)
+      .then((seqs) => {
+        if (seqs.length === 0) return
+        const head = this.transcriptHead(id)
+        this.pushMessageStatus(id, {
+          kind: 'messages-evicted',
+          sessionId: id,
+          seqs,
+          generation: head?.generation ?? 0,
+        })
+      })
+      .catch((err: unknown) => {
+        log.warn(`[session ${id}] transcript eviction failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
+  }
+
+  /** WeakMap accessor for the WS frame path (Task 5): the seq stamped onto
+   *  a live `message` frame is read here at serialization time, so the
+   *  message objects themselves stay untouched (no enumerable `seq` property
+   *  leaking into ring entries, replay JSON, or equality checks). Undefined
+   *  for messages outside the durable transcript. */
+  transcriptSeqOf(_sessionId: string, message: object): number | undefined {
+    return this.seqByMessage.get(message)
   }
 
   /** Drop a session's in-memory seq-store state and delete its sidecar
@@ -7255,6 +7309,13 @@ export class SessionManager {
         // Transcript seq assignment (Task 3): seq-assign every durable
         // message at its ring-append point, before the broadcast.
         onDurableMessage: (s, msg) => this.recordTranscriptFor(s.id, msg),
+        // Retraction eviction (Task 5): the CLI retracted already-streamed
+        // messages (model_refusal_fallback). Tombstone them in the seq
+        // store and broadcast messages-evicted. Fire-and-forget: the pump
+        // loop must not block on the reconcile/append, and eviction is
+        // durable via the sidecar even if no tab is attached to see the
+        // frame.
+        onTranscriptEvict: (id, uuids) => this.evictTranscriptAndBroadcast(id, uuids),
       }
     }
     return this.cachedPumpDeps

@@ -26,7 +26,7 @@
 
 import type { Session } from './session-types.js'
 import type { SessionRecap } from './session-types.js'
-import type { WsMessageConsumed, WsMessagesWithdrawn, WsGitSnapshot, WsTasklistSnapshot } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessagesWithdrawn, WsMessagesEvicted, WsGitSnapshot, WsTasklistSnapshot } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
 import type { Pushable } from './pushable.js'
 import { createPushable } from './pushable.js'
@@ -107,19 +107,24 @@ export class SessionEventBroadcaster {
     )
   }
 
-  /** AsyncIterable of `message-consumed` / `messages-withdrawn` signal
-   *  frames for one session. Mirrors subscribeGitStatus. A `message-consumed`
-   *  frame carries the uuid + consumedAt of a user message the SDK has just
-   *  read off the input queue, so the client can flip its bubble from
-   *  "queued" to "consumed"; a `messages-withdrawn` frame lists the queued
-   *  turns an interrupt with cancelQueued removed. A small maxDepth is fine
-   *  for consumed frames: the durable truth lives on the message object's
-   *  `consumedAt` (replayed on reconnect), so a dropped live frame self-
-   *  heals on the next replay. Withdrawals have no such replay mirror — the
-   *  messages are GONE from the ring — so every new subscriber is seeded
-   *  with the recorded withdrawal window instead. */
+  /** AsyncIterable of `message-consumed` / `messages-withdrawn` /
+   *  `messages-evicted` signal frames for one session. Mirrors
+   *  subscribeGitStatus. A `message-consumed` frame carries the uuid +
+   *  consumedAt of a user message the SDK has just read off the input queue,
+   *  so the client can flip its bubble from "queued" to "consumed"; a
+   *  `messages-withdrawn` frame lists the queued turns an interrupt with
+   *  cancelQueued removed; a `messages-evicted` frame lists the transcript
+   *  seqs tombstoned by a retraction (refusal fallback / resolved dialog).
+   *  A small maxDepth is fine for consumed frames: the durable truth lives
+   *  on the message object's `consumedAt` (replayed on reconnect), so a
+   *  dropped live frame self-heals on the next replay. Withdrawals have no
+   *  such replay mirror — the messages are GONE from the ring — so every
+   *  new subscriber is seeded with the recorded withdrawal window instead.
+   *  Evictions persist as sidecar tombstone rows, so a dropped evicted
+   *  frame self-heals on any future cold rehydrate; live tabs rely on the
+   *  frame (or the uuid-based refusal/dialog eviction) for the session. */
   subscribeMessageStatus(id: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn | WsMessagesEvicted>
     unsubscribe: () => void
   } | null {
     const s = this.sessions.get(id)

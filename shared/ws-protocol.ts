@@ -209,6 +209,46 @@ export interface WsMessage<Msg> {
   kind: 'message'
   sessionId: string
   message: Msg
+  /** Transcript seq of the message — the server-authoritative position in
+   *  the session's seq space (append-stable, tombstone-preserving). Present
+   *  only on durable transcript messages; ephemeral / synthetic frames
+   *  (stream events, thinking tokens, pump errors) omit it. Optional so a
+   *  client connected to a pre-seq server simply sees absence. */
+  seq?: number
+  /** Seq-space generation the message's seq belongs to. Only meaningful
+   *  together with `seq`; omitted when `seq` is. */
+  generation?: number
+}
+/** Sent immediately after a successful `subscribe-result` (ok:true): the
+ *  current state of the session's transcript seq space. The client (P2)
+ *  uses it as the cursor anchor for seq-window paging and hole detection —
+ *  everything with seq < headSeq is either on screen, paged, or evicted.
+ *  Absent when the session has no seq store yet (never ingested / never
+ *  read): a client treats "no attached" as "seq unknown, uuid semantics
+ *  only". */
+export interface WsAttached {
+  kind: 'attached'
+  sessionId: string
+  /** Seq-space generation (bumped by /clear's reset). */
+  generation: number
+  /** Next seq the server will allocate — the exclusive upper bound of the
+   *  assigned space. */
+  headSeq: number
+}
+/** Server-authoritative eviction notice: the named seqs were tombstoned in
+ *  the session's transcript seq store (refusal-fallback retraction or a
+ *  resolved user dialog's retracted uuids). Complements the uuid-based
+ *  eviction the client already performs from `model_refusal_fallback` /
+ *  `dialog-resolved` frames: a client tracking seq (P2 seq-window store)
+ *  evicts by position instead of by uuid. Idempotent — re-tombstoning the
+ *  same uuids produces no frame (empty seq lists are never broadcast). */
+export interface WsMessagesEvicted {
+  kind: 'messages-evicted'
+  sessionId: string
+  /** The tombstoned seqs (uuids with no seq mapping are silently ignored). */
+  seqs: number[]
+  /** Seq-space generation the seqs belong to. */
+  generation: number
 }
 /** New tool-permission request. */
 export interface WsPermissionRequest<Perm> {
@@ -578,6 +618,8 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsTasklistSnapshot
   | WsMessageConsumed
   | WsMessagesWithdrawn
+  | WsAttached
+  | WsMessagesEvicted
   | WsSessionRecapUpdate<Recap>
   | WsSessionCleared
   | WsCommandsChanged<Command>

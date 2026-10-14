@@ -5518,9 +5518,9 @@ describe('SessionManager', () => {
       expect(existsSync(sidecarFile)).toBe(true)
 
       const userUuid = ((await sm.getTranscriptWindow(info.id)).messages[0].msg as { uuid?: string }).uuid as string
-      expect(sm.evictTranscript(info.id, [userUuid, 'unknown-uuid'])).toEqual([0])
+      expect(await sm.evictTranscript(info.id, [userUuid, 'unknown-uuid'])).toEqual([0])
       // Idempotent: a repeat evict returns nothing and appends nothing.
-      expect(sm.evictTranscript(info.id, [userUuid])).toEqual([])
+      expect(await sm.evictTranscript(info.id, [userUuid])).toEqual([])
 
       const win = await sm.getTranscriptWindow(info.id)
       expect(win.messages.map((m) => m.seq)).toEqual([1, 2])
@@ -5544,7 +5544,7 @@ describe('SessionManager', () => {
 
     it('unknown sessions read as empty: transcriptHead null, window empty', async () => {
       expect(sm.transcriptHead('no-such-session')).toBeNull()
-      expect(sm.evictTranscript('no-such-session', ['u1'])).toEqual([])
+      expect(await sm.evictTranscript('no-such-session', ['u1'])).toEqual([])
       const win = await sm.getTranscriptWindow('no-such-session')
       expect(win.messages).toEqual([])
       expect(win.totalCount).toBe(0)
@@ -5797,6 +5797,126 @@ describe('SessionManager', () => {
       } finally {
         if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
         else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+    })
+  })
+  describe('transcript eviction + messages-evicted broadcast (Task 5 wiring)', () => {
+    const waitFor = async (cond: () => boolean, ticks = 60): Promise<boolean> => {
+      for (let i = 0; i < ticks; i++) {
+        if (cond()) return true
+        await tick()
+      }
+      return cond()
+    }
+
+    const emitAssistant = (uuid: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant',
+        uuid,
+        parent_tool_use_id: null,
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+
+    /** Complete a turn so the seq space has: user prompt (seq 0), assistant
+     *  reply (seq 1), result frame (seq 2). Returns the prompt's uuid. */
+    const seedTurn = async () => {
+      const info = sm.create({ cwd: '/tmp' })
+      sm.send(info.id, 'refuse me')
+      emitAssistant('a1', 'refused leg')
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)).toBe(true)
+      await sm.getTranscriptWindow(info.id) // ensure reconcile completed
+      const win = await sm.getTranscriptWindow(info.id)
+      return { info, userUuid: win.messages[0].uuid as string }
+    }
+
+    const collectMsgStatus = (id: string): Array<Record<string, unknown>> => {
+      const sub = sm.subscribeMessageStatus(id)
+      if (!sub) throw new Error('no message-status channel')
+      const frames: Array<Record<string, unknown>> = []
+      void (async () => {
+        for await (const f of sub.iterable) frames.push(f as unknown as Record<string, unknown>)
+      })()
+      return frames
+    }
+
+    const sessionOf = (id: string) => {
+      const internals = sm as unknown as {
+        sessions: Map<string, { dialogPending: Map<string, unknown> }>
+      }
+      const s = internals.sessions.get(id)
+      if (!s) throw new Error('session not live')
+      return s
+    }
+
+    it('broadcasts messages-evicted (seqs + generation) when the pump sees a refusal retraction', async () => {
+      const { info, userUuid } = await seedTurn()
+
+      const frames = collectMsgStatus(info.id)
+      mockHandles[0].emit({
+        type: 'system',
+        subtype: 'model_refusal_fallback',
+        retracted_message_uuids: [userUuid, 'uuid-never-seen'],
+      })
+      expect(await waitFor(() => frames.some((f) => f.kind === 'messages-evicted'))).toBe(true)
+      const ev = frames.find((f) => f.kind === 'messages-evicted') as {
+        seqs: number[]
+        generation: number
+      }
+      // Unknown uuids contribute nothing; the tombstoned seq matches the
+      // store, and the frame carries the store's generation.
+      expect(ev.seqs).toEqual([0])
+      expect(ev.generation).toBe(0)
+
+      // The tombstone reached the window: seq 0 gone, later rows kept.
+      const after = await sm.getTranscriptWindow(info.id)
+      expect(after.messages.map((m) => m.seq)).not.toContain(0)
+      expect(after.messages.map((m) => m.seq)).toEqual(expect.arrayContaining([1, 2]))
+    })
+
+    it('evicts on dialog resolution carrying retractedMessageUuids (any resolution path)', async () => {
+      const { info, userUuid } = await seedTurn()
+      const opts = mockHandles.at(-1)!.options as {
+        onUserDialog?: (
+          req: { dialogKind: string; payload: Record<string, unknown> },
+          ctx: { signal: AbortSignal },
+        ) => Promise<{ behavior: string; result?: unknown }>
+      }
+      const promise = opts.onUserDialog!(
+        { dialogKind: 'refusal_fallback_prompt', payload: { retractedMessageUuids: [userUuid] } },
+        { signal: new AbortController().signal },
+      )
+      const frames = collectMsgStatus(info.id)
+      const s = sessionOf(info.id)
+      const did = [...s.dialogPending.keys()][0]!
+      sm.decideDialog(info.id, did, { behavior: 'completed', result: 'retry_fallback' })
+      await promise
+
+      expect(await waitFor(() => frames.some((f) => f.kind === 'messages-evicted'))).toBe(true)
+      const ev = frames.find((f) => f.kind === 'messages-evicted') as { seqs: number[] }
+      expect(ev.seqs).toEqual([0])
+    })
+
+    it('evictTranscript reconciles a COLD store before tombstoning (reconcile-first)', async () => {
+      const { info, userUuid } = await seedTurn()
+
+      // Simulate a restart: a fresh manager over the same state dir. The
+      // session is persisted but never loaded — its seq store is cold, and
+      // eviction keyed by uuid would silently miss against a half-empty
+      // index. Reconcile-first must rebuild the index from the sidecar,
+      // then tombstone the right seq.
+      await sm.shutdown()
+      const store2 = new SessionStore({ stateDir: dir })
+      await store2.load()
+      const sm2 = new SessionManager({ store: store2 })
+      try {
+        expect(await sm2.evictTranscript(info.id, [userUuid])).toEqual([0])
+        const win = await sm2.getTranscriptWindow(info.id)
+        expect(win.messages.map((m) => m.seq)).toEqual([1, 2])
+        expect(win.totalCount).toBe(2)
+      } finally {
+        await sm2.shutdown()
       }
     })
   })

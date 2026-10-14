@@ -28,6 +28,18 @@ describe('TranscriptStore', () => {
     for (let i = 0; i < 5; i++) s.record(`u${i}`)
     expect(s.window(2, 10).hasMore).toBe(false)
   })
+  it('window with limit 0 returns an empty cursor-only page without throwing', () => {
+    const s = new TranscriptStore('sid')
+    for (let i = 0; i < 3; i++) s.record(`u${i}`)
+    const w = s.window(undefined, 0)
+    expect(w.messages).toEqual([])
+    expect(w.hasMore).toBe(false)
+    expect(w.startIndex).toBe(3)
+    expect(w.headSeq).toBe(3)
+    // before-bound variant too (the picked[0].seq deref crashed here first)
+    expect(() => s.window(2, 0)).not.toThrow()
+    expect(s.window(2, 0).messages).toEqual([])
+  })
   it('evict tombstones without recycling seqs; window skips them', () => {
     const s = new TranscriptStore('sid')
     for (let i = 0; i < 5; i++) s.record(`u${i}`)

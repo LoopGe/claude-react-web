@@ -22,7 +22,7 @@ import type {
   SessionInfo,
   UserDialogRequestUi,
 } from './session-types.js'
-import type { WsClientDebugRequest, WsClientFrame, WsServerFrame } from './ws-protocol.js'
+import type { WsClientDebugRequest, WsClientFrame, WsMessagesEvicted, WsMessagesWithdrawn, WsMessageConsumed, WsServerFrame } from './ws-protocol.js'
 
 const tick = () => new Promise<void>((r) => setImmediate(r))
 
@@ -124,6 +124,7 @@ interface FakeSession {
   perms: Chan<PermissionEvent>
   elicits: Chan<ElicitationEvent>
   dialogs: Chan<DialogEvent>
+  msgstat: Chan<WsMessageConsumed | WsMessagesWithdrawn | WsMessagesEvicted>
 }
 
 /** Hand-rolled SessionBroadcaster. Only the channels the bridge actually
@@ -157,6 +158,7 @@ class FakeBroadcaster implements SessionBroadcaster {
       perms: chan<PermissionEvent>(),
       elicits: chan<ElicitationEvent>(),
       dialogs: chan<DialogEvent>(),
+      msgstat: chan(),
     }
     this.sessions.set(id, s)
     return s
@@ -242,7 +244,21 @@ class FakeBroadcaster implements SessionBroadcaster {
   subscribeTasks() { return null }
   subscribeGitStatus() { return null }
   subscribeTaskList() { return null }
-  subscribeMessageStatus() { return null }
+  /** Seq-space fixtures for the attached / seq-stamping tests. Empty by
+   *  default = "no seq store", which the bridge must tolerate. */
+  heads = new Map<string, { generation: number; headSeq: number }>()
+  transcriptHead(id: string): { generation: number; headSeq: number } | null {
+    return this.heads.get(id) ?? null
+  }
+  seqs = new WeakMap<object, number>()
+  transcriptSeqOf(_sessionId: string, message: object): number | undefined {
+    return this.seqs.get(message)
+  }
+  subscribeMessageStatus(sessionId: string) {
+    const s = this.sessions.get(sessionId)
+    if (!s) return null
+    return { iterable: s.msgstat.iterable, unsubscribe: () => s.msgstat.end() }
+  }
   subscribeCommandChanges() { return null }
   subscribeHookRuns() { return null }
   subscribeSessionRecap() { return null }
@@ -728,6 +744,85 @@ describe('replay burst supersede end-to-end (QueueSink: real WsFrameSink)', () =
     expect(frames.filter((f) => f.kind === 'replay')).toHaveLength(1)
     expect(frames.filter((f) => f.kind === 'replay-done')).toHaveLength(1)
     expect(ws.closeCalls).toHaveLength(0)
+  })
+
+  // --- transcript seq refactor (Task 5): attached / seq / evicted ------
+
+  it('sends the attached handshake after a successful subscribe-result when a seq store exists', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
+    sm.heads.set('s1', { generation: 2, headSeq: 41 })
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+
+    const results = sink.kinds('subscribe-result')
+    const attached = sink.kinds('attached')
+    expect(attached).toHaveLength(1)
+    expect(attached[0]).toMatchObject({ kind: 'attached', sessionId: 's1', generation: 2, headSeq: 41 })
+    // The handshake lands AFTER the ack, per the brief's ordering.
+    expect(sink.frames.indexOf(attached[0])).toBeGreaterThan(sink.frames.indexOf(results[0]))
+  })
+
+  it('sends attached again on an already-live re-subscribe', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
+    sm.heads.set('s1', { generation: 0, headSeq: 7 })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    expect(sink.kinds('attached')).toHaveLength(2)
+  })
+
+  it('omits attached when the session has no seq store', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true, history: [assistant('old', 'u1')] })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    expect(sink.kinds('subscribe-result')).toHaveLength(1)
+    expect(sink.kinds('attached')).toHaveLength(0)
+  })
+
+  it('stamps the transcript seq onto live message frames', async () => {
+    const sm = new FakeBroadcaster()
+    const sess = sm.addSession('s1', { running: true })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    sink.reset()
+
+    const withSeq = assistant('seq’d', 'u-seq')
+    sm.seqs.set(withSeq, 17)
+    const noSeq = assistant('plain', 'u-plain')
+    sess.messages.push(withSeq)
+    sess.messages.push(noSeq)
+
+    const f1 = await waitForFrame(sink, (f) => f.kind === 'message' && (f.message as { uuid?: string }).uuid === 'u-seq')
+    expect(f1.kind === 'message' && f1.seq).toBe(17)
+    const f2 = await waitForFrame(sink, (f) => f.kind === 'message' && (f.message as { uuid?: string }).uuid === 'u-plain')
+    expect(f2.kind === 'message' && f2.seq).toBeUndefined()
+    expect(f2.kind === 'message' && f2.generation).toBeUndefined()
+  })
+
+  it('forwards a messages-evicted frame from the message-status channel', async () => {
+    const sm = new FakeBroadcaster()
+    const sess = sm.addSession('s1', { running: true })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+
+    sess.msgstat.push({ kind: 'messages-evicted', sessionId: 's1', seqs: [3, 5, 9], generation: 1 })
+    const frame = await waitForFrame(sink, (f) => f.kind === 'messages-evicted')
+    expect(frame).toMatchObject({ kind: 'messages-evicted', sessionId: 's1', seqs: [3, 5, 9], generation: 1 })
   })
 
   it('untagged frames (live messages) interleaved between bursts are never dropped', async () => {

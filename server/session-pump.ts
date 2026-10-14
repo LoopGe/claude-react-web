@@ -804,6 +804,14 @@ export interface PumpDeps {
    *  stamp it onto WS frames. Optional so test fixtures that don't exercise
    *  the seq store can omit it. */
   onDurableMessage?: (session: Session, msg: SDKMessage) => void
+  /** A `system/model_refusal_fallback` frame retracted already-streamed
+   *  messages (`retracted_message_uuids`). The SessionManager tombstones
+   *  them in the transcript seq store and broadcasts a `messages-evicted`
+   *  frame. Fired AFTER the frame's own subscriber broadcast, so live tabs
+   *  see the refusal card before the eviction notice that references it.
+   *  Fire-and-forget; optional so test fixtures that don't exercise the seq
+   *  store can omit it. */
+  onTranscriptEvict?: (sessionId: string, uuids: string[]) => void
 }
 
 export function hookLifecycleMessage(msg: SDKMessage): HookRuntimeEvent | null {
@@ -1396,6 +1404,20 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           }
         }
         metrics.observe('ws_fanout_ms', performance.now() - fanoutStart)
+        // model_refusal_fallback retraction (Task 5): hand the retracted
+        // uuids to the manager for seq-store tombstoning + a
+        // messages-evicted broadcast. Narrowed defensively (uuid strings
+        // only) so a malformed list can't poison the eviction path.
+        if (msg.type === 'system' && (msg as { subtype?: string }).subtype === 'model_refusal_fallback') {
+          const rawRetracted = (msg as { retracted_message_uuids?: unknown }).retracted_message_uuids
+          if (Array.isArray(rawRetracted)) {
+            const uuids = rawRetracted.filter((u): u is string => typeof u === 'string')
+            if (uuids.length > 0) {
+              try { deps.onTranscriptEvict?.(session.id, uuids) }
+              catch (err) { log.warn(`[session ${session.id}] onTranscriptEvict threw: ${err}`) }
+            }
+          }
+        }
         msgCount++
         // Derive a context-usage snapshot directly from the result's own
         // `usage` + `modelUsage` payload — no IPC. The result message is

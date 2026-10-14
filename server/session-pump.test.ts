@@ -3659,3 +3659,39 @@ describe('pump: onTaskListChanged', () => {
     expect(onTaskListChanged).not.toHaveBeenCalled()
   })
 })
+
+// ---------------------------------------------------------------------------
+// model_refusal_fallback retraction (transcript seq refactor, Task 5)
+//
+// The CLI retracts the already-streamed refused leg by uuid
+// (retracted_message_uuids). The pump's only job is to narrow the list and
+// hand it to the manager's eviction hook (seq-store tombstoning +
+// messages-evicted broadcast live there).
+// ---------------------------------------------------------------------------
+describe('pump: model_refusal_fallback retraction hook', () => {
+  it('hands narrowed retracted_message_uuids to onTranscriptEvict', async () => {
+    const onTranscriptEvict = vi.fn()
+    const { session } = makePumpSession([
+      sysFrame('model_refusal_fallback', { retracted_message_uuids: ['u1', 'u2', 42, null] }),
+    ])
+    await pump(session, makePumpDeps({ onTranscriptEvict }))
+
+    expect(onTranscriptEvict).toHaveBeenCalledTimes(1)
+    expect(onTranscriptEvict).toHaveBeenCalledWith(session.id, ['u1', 'u2'])
+  })
+
+  it('does not fire without a retraction list; a thrower dep does not kill the pump', async () => {
+    const onTranscriptEvict = vi.fn()
+    const { session } = makePumpSession([
+      sysFrame('model_refusal_fallback'),
+      sysFrame('model_refusal_fallback', { retracted_message_uuids: 'not-an-array' }),
+    ])
+    await pump(session, makePumpDeps({ onTranscriptEvict }))
+    expect(onTranscriptEvict).not.toHaveBeenCalled()
+
+    const { session: s2 } = makePumpSession([
+      sysFrame('model_refusal_fallback', { retracted_message_uuids: ['u1'] }),
+    ])
+    await pump(s2, makePumpDeps({ onTranscriptEvict: () => { throw new Error('boom') } }))
+  })
+})

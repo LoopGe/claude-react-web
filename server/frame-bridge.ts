@@ -30,6 +30,7 @@ import type {
   WsClientFrame,
   WsGitSnapshot,
   WsMessageConsumed,
+  WsMessagesEvicted,
   WsMessagesWithdrawn,
   WsReplay,
   WsServerFrame,
@@ -98,10 +99,22 @@ function hookSnapshotEvent(run: HookRunRecord): HookRuntimeEvent {
  *  evicts the message object. */
 const messageFrameJsonCache = new WeakMap<object, string>()
 
-function messageFrameJson(sessionId: string, message: object): string {
+function messageFrameJson(sessionId: string, message: object, seq: number | undefined): string {
   let json = messageFrameJsonCache.get(message)
   if (json === undefined) {
-    json = JSON.stringify({ kind: 'message', sessionId, message })
+    // seq rides INSIDE the cached string rather than on the message object:
+    // stamping a property on the SDK message would leak it into the ring
+    // entry, replay JSON and any equality/identity checks; a NON-enumerable
+    // property would not work at all (JSON.stringify only serializes
+    // enumerable own properties). Seq is append-stable and assigned BEFORE
+    // the pump broadcasts (recordTranscriptFor runs ahead of every
+    // subscriber push), so the first serialization already sees the final
+    // value — caching it per message object is safe.
+    json = JSON.stringify(
+      seq === undefined
+        ? { kind: 'message', sessionId, message }
+        : { kind: 'message', sessionId, seq, message },
+    )
     messageFrameJsonCache.set(message, json)
   }
   return json
@@ -316,6 +329,21 @@ export class SessionConnection {
     this.sink.send({ kind: 'subscribe-result', sessionId, ok, reason })
   }
 
+  /** Seq-space handshake (transcript seq refactor, Task 5): right after a
+   *  successful subscribe-result, hand the client the session's current seq
+   *  cursor ({generation, headSeq}) so it can anchor seq-window paging and
+   *  hole detection. Sent on BOTH success paths ('served' and
+   *  'already-live') — a re-serve re-attaches the listener just as much.
+   *  Absent when the session has no seq store yet (never ingested / never
+   *  read); clients treat that as "uuid semantics only". Server-side the
+   *  frame has no side effects — the client (P2) starts consuming it. */
+  private sendAttached(sessionId: string): void {
+    const head = this.sm.transcriptHead?.(sessionId)
+    if (head) {
+      this.sink.send({ kind: 'attached', sessionId, generation: head.generation, headSeq: head.headSeq })
+    }
+  }
+
   /** Build and send one replay burst for a session on THIS connection:
    *  the `sinceUuid`-sliced ring, filtered to what the live broadcast would
    *  send (shouldBroadcastMessage, matching session-pump.ts), chunked, then
@@ -513,6 +541,7 @@ export class SessionConnection {
             hasCachedTranscript,
           )
           this.ackSubscribe(sessionId, true, 'already-live')
+          this.sendAttached(sessionId)
         } else {
           // The connection still lists this session but the manager no
           // longer serves it — the window between a teardown ending the
@@ -791,19 +820,27 @@ export class SessionConnection {
             // Dispatch per channel kind. Each branch maps the channel's value
             // to one or more frames; the retag happens once at the bottom.
             switch (winner.kind) {
-              case 'msg':
-                            // The same message object reference is delivered to every
+              case 'msg': {
+                // The same message object reference is delivered to every
                 // connection subscribed to this session, so serialize the
                 // frame once and reuse across all of them (see
                 // messageFrameJson). Falls back to send() if the value
                 // isn't an object (defensive — it always is in practice).
+                // The transcript seq comes from the manager's WeakMap
+                // (recordTranscriptFor stamped it before this message was
+                // broadcast); undefined for ephemeral / synthetic frames.
+                const msgObj = typeof winner.result.value === 'object' && winner.result.value !== null
+                  ? (winner.result.value as object)
+                  : null
+                const seq = msgObj ? this.sm.transcriptSeqOf?.(sessionId, msgObj) : undefined
                 this.sink.sendRaw(
-                  typeof winner.result.value === 'object' && winner.result.value !== null
-                    ? messageFrameJson(sessionId, winner.result.value as object)
+                  msgObj
+                    ? messageFrameJson(sessionId, msgObj, seq)
                     : JSON.stringify({ kind: 'message', sessionId, message: winner.result.value as never }),
                   'message',
                 )
                 break
+              }
               case 'perm': {
                 const ev = winner.result.value as
                   | { kind: 'request'; payload: never }
@@ -857,9 +894,11 @@ export class SessionConnection {
                 // The channel is typed at the source (see
                 // SessionManager.subscribeMessageStatus), so this is a
                 // plain discriminated-union switch, not a defensive parse.
-                const v = winner.result.value as WsMessageConsumed | WsMessagesWithdrawn
+                const v = winner.result.value as WsMessageConsumed | WsMessagesWithdrawn | WsMessagesEvicted
                 if (v.kind === 'messages-withdrawn') {
                   this.sink.send({ kind: 'messages-withdrawn', sessionId, uuids: v.uuids })
+                } else if (v.kind === 'messages-evicted') {
+                  this.sink.send({ kind: 'messages-evicted', sessionId, seqs: v.seqs, generation: v.generation })
                 } else {
                   this.sink.send({ kind: 'message-consumed', sessionId, uuid: v.uuid, consumedAt: v.consumedAt })
                 }
@@ -934,6 +973,7 @@ export class SessionConnection {
 
       this.subs.set(sessionId, { sessionId, cleanup: stop, replayMode })
       this.ackSubscribe(sessionId, true, 'served')
+      this.sendAttached(sessionId)
     } catch (err) {
       // SessionManager.require() throws HttpError for unknown sessions.
       // Relay that to the client rather than killing the connection;
