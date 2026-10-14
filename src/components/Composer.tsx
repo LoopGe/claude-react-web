@@ -104,13 +104,6 @@ interface Props {
    *  interrupt the parent fires also withdraws them (cancelQueued) — the
    *  tooltip says so instead of leaving the queued messages' fate ambiguous. */
   queuedCount?: number
-  /** Pre-send steering prediction (mid-run steering, spec §10): true while
-   *  the session is working, the provider supports steering, and the global
-   *  switch is on. The composer picks the wording from its OWN pending
-   *  images/attachments state (text → will inject; multimodal → will queue);
-   *  the bubble's status chips remain the authority for what actually
-   *  happened — this is only an affordance. */
-  steeringAvailable?: boolean
   /** Bump this number whenever the parent wants the textarea refocused
    *  (e.g. after a successful send, where the click on the Send button
    *  would otherwise leave focus on the button). */
@@ -198,7 +191,6 @@ export const Composer = memo(function Composer({
   onInterrupt,
   canInterrupt,
   queuedCount,
-  steeringAvailable,
   focusSignal,
   onRecap,
   canRecap,
@@ -799,28 +791,6 @@ export const Composer = memo(function Composer({
           {sharedMode
             ? 'bash mode (shared) — command runs locally AND its output is shared with the model'
             : 'bash mode — command runs in the session cwd, not sent to the model'}
-        </span>
-      </div>,
-    )
-  }
-  // Mid-run steering affordance (spec §10): a pre-send prediction only —
-  // the bubble's status chips render what the server actually did, so a
-  // wrong prediction self-corrects on send. Multimodal content can never
-  // ride additionalContext (it's a string), so images/attachments flip the
-  // wording to the queueing semantics.
-  if (steeringAvailable) {
-    const multimodal = pastedImages.length > 0 || attachments.length > 0
-    composerRows.push(
-      <div
-        className="composer-bash-indicator composer-steering-indicator"
-        aria-label={multimodal ? 'Will queue for the next turn' : 'Will inject into the running turn'}
-        key="steering-indicator"
-      >
-        <span className="composer-bash-badge" aria-hidden>{multimodal ? '⏳' : '⚡'}</span>
-        <span className="composer-bash-label">
-          {multimodal
-            ? '含图片 — 将排队至下一轮（注入仅支持纯文本）'
-            : '将注入当前运行 — 发送后在下一个工具边界送达正在工作的 agent'}
         </span>
       </div>,
     )

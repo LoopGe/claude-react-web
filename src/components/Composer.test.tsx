@@ -130,31 +130,6 @@ describe('Composer', () => {
     expect(onSend).toHaveBeenCalledOnce()
   })
 
-  it('shows the steering inject badge when available and plain-text', () => {
-    const { container } = render(
-      <Composer {...defaultProps} steeringAvailable input="hello" />,
-    )
-    expect(container.textContent).toContain('将注入当前运行')
-  })
-
-  it('flips the steering badge to queueing wording with pending images', () => {
-    const { container } = render(
-      <Composer
-        {...defaultProps}
-        steeringAvailable
-        pastedImages={[{ id: 'p1', previewUrl: 'blob:x', name: 'a.png', size: 10 } as never]}
-      />,
-    )
-    expect(container.textContent).toContain('将排队至下一轮')
-    expect(container.textContent).not.toContain('将注入当前运行')
-  })
-
-  it('renders no steering badge when unavailable', () => {
-    const { container } = render(<Composer {...defaultProps} input="hello" />)
-    expect(container.textContent).not.toContain('将注入当前运行')
-    expect(container.textContent).not.toContain('将排队至下一轮')
-  })
-
   it('does not call onSend on Shift+Enter', () => {
     const onSend = vi.fn()
     const { container } = render(

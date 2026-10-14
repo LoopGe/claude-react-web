@@ -524,27 +524,6 @@ export const Chat = memo(function Chat({
   // include `session.working`, so reading it directly there would be stale.
   const workingRef = useRef(session.working)
   workingRef.current = session.working
-  // Global steering switch, fetched once per mount (the server's config is
-  // the authority; the badge is only a pre-send PREDICTION — the bubble's
-  // status chips always reflect what the server actually did). Failed /
-  // unfetched config defaults to ON (matching the server default).
-  const [steeringConfigOn, setSteeringConfigOn] = useState(true)
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const cfg = await api.get<{ steering?: boolean }>('/config/full')
-        if (!cancelled) setSteeringConfigOn(cfg.steering !== false)
-      } catch {
-        /* config unfetchable — keep the default-on prediction */
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
-  const steeringAvailable =
-    steeringConfigOn && session.working && session.steeringSupported !== false
   // Ref mirror of the turn-active signal for App's Escape / Alt+B guards. It
   // deliberately omits the `activePhase` leg (an SDK auto-continuation turn is
   // not the user's own turn), and goes through the same tested predicate as
@@ -2437,7 +2416,6 @@ export const Chat = memo(function Chat({
               onInterrupt={handleInterrupt}
               canInterrupt={session.working}
               queuedCount={queuedCount}
-              steeringAvailable={steeringAvailable}
               focusSignal={effectiveComposerFocusSignal}
               onRecap={recap.refresh}
               canRecap={!!session.lastTurnAt}
