@@ -1,6 +1,7 @@
 // Session routes: CRUD, messaging, control, MCP/plugin per-session, queries.
 
 import { Hono } from 'hono'
+import { existsSync } from 'node:fs'
 import { serverDefaultCwd, withDefaultCwd } from '../default-cwd.js'
 import { isAbsolute } from 'node:path'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
@@ -16,6 +17,8 @@ import { coerceToolProfile } from '../../shared/tool-profile.js'
 import { isBlockedEnvVar } from '../session-env.js'
 import { createLogger } from '../log.js'
 import { validateSendBody } from '../send-body.js'
+import { worktreeIsDirty } from '../git.js'
+import { worktreePathFor } from '../session-worktree.js'
 
 const log = createLogger('http')
 
@@ -272,7 +275,15 @@ function narrowCreateBody(body: Record<string, unknown>): { ok: true; value: Rec
   return { ok: true, value: rest, dropped }
 }
 
-export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentDefinitionStore?: AgentDefinitionStore): Hono {
+export function buildSessionRouter(
+  sm: SessionManager,
+  mpStore?: MpStore,
+  agentDefinitionStore?: AgentDefinitionStore,
+  // The state dir (AppOptions.configDir — bootstrap passes stateDir here).
+  // Isolated worktrees live under <stateDir>/worktrees/<sessionId>, the same
+  // layout session-worktree.ts provisions against the manager's store dir.
+  stateDir?: string,
+): Hono {
   const app = new Hono()
 
   // List sessions (snapshot only — for push-based updates the frontend
@@ -378,6 +389,19 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
   app.delete('/sessions/:id', async (c) => {
     await sm.delete(c.req.param('id'))
     return c.json({ ok: true })
+  })
+
+  // Dirty-check for the delete confirmation: does this session run in an
+  // isolated worktree, and does that worktree hold uncommitted changes?
+  // Unavailable when there is no worktree meta or the worktree dir is gone.
+  app.get('/sessions/:id/worktree-status', async (c) => {
+    const id = c.req.param('id')
+    const wt = sm.get(id).worktree
+    if (!wt || !stateDir) return c.json({ available: false })
+    const worktreePath = worktreePathFor(stateDir, id)
+    if (!existsSync(worktreePath)) return c.json({ available: false })
+    const dirty = await worktreeIsDirty(worktreePath)
+    return c.json({ available: true, dirty, branch: wt.branch, mainRepoPath: wt.mainRepoPath })
   })
 
   // Patch session metadata (title and/or cwd). `cwd` is how a user recovers
