@@ -164,6 +164,7 @@ export function GlobalSettingsModal({
   const [workingStuckMs, setWorkingStuckMs] = useState(0)
   const [defaultCwd, setDefaultCwd] = useState('')
   const [allowSensitivePathEdits, setAllowSensitivePathEdits] = useState(false)
+  const [steering, setSteering] = useState(true)
 
   // — Appearance tab state ?
   // Display / behaviour defaults for every session. Sessions without an
@@ -229,6 +230,7 @@ export function GlobalSettingsModal({
         setTextSpacing(cfg.textSpacing ?? DEFAULT_TEXT_SPACING)
         setFontSize(cfg.fontSize ?? DEFAULT_FONT_SIZE)
         setAllowSensitivePathEdits(cfg.allowSensitivePathEdits ?? false)
+        setSteering(cfg.steering ?? true)
         setFirstPartyTools(cfg.firstPartyTools ?? {})
       } catch (e) {
         if ((e as Error).name !== 'AbortError') setErr((e as Error).message)
@@ -313,6 +315,7 @@ export function GlobalSettingsModal({
         textSpacing,
         fontSize,
         allowSensitivePathEdits,
+        steering,
       }
       // Structured first-party defaults — written verbatim as the single
       // source of truth (legacy `appToolsGit` is never written; the server
@@ -461,11 +464,13 @@ export function GlobalSettingsModal({
                   maxGroupPanels={maxGroupPanels}
                   workingStuckMs={workingStuckMs}
                   allowSensitivePathEdits={allowSensitivePathEdits}
+                  steering={steering}
                   onMaxUploadBytesChange={setMaxUploadBytes}
                   onHistoryCapChange={setHistoryCap}
                   onMaxGroupPanelsChange={setMaxGroupPanels}
                   onWorkingStuckMsChange={setWorkingStuckMs}
                   onAllowSensitivePathEditsChange={setAllowSensitivePathEdits}
+                  onSteeringChange={setSteering}
                 />
               )}
               {tab === 'appearance' && (
@@ -625,19 +630,22 @@ const MIN_MS = 60 * 1000
 
 function ServerTab({
   maxUploadBytes, historyCap, maxGroupPanels, workingStuckMs, allowSensitivePathEdits,
+  steering,
   onMaxUploadBytesChange, onHistoryCapChange, onMaxGroupPanelsChange,
-  onWorkingStuckMsChange, onAllowSensitivePathEditsChange,
+  onWorkingStuckMsChange, onAllowSensitivePathEditsChange, onSteeringChange,
 }: {
   maxUploadBytes: number
   historyCap: number
   maxGroupPanels: number
   workingStuckMs: number
   allowSensitivePathEdits: boolean
+  steering: boolean
   onMaxUploadBytesChange: (v: number) => void
   onHistoryCapChange: (v: number) => void
   onMaxGroupPanelsChange: (v: number) => void
   onWorkingStuckMsChange: (v: number) => void
   onAllowSensitivePathEditsChange: (v: boolean) => void
+  onSteeringChange: (v: boolean) => void
 }) {
   const uploadMb = Math.round(maxUploadBytes / MB)
   const stuckMin = Math.round(workingStuckMs / MIN_MS)
@@ -723,6 +731,29 @@ function ServerTab({
             label="Allow editing sensitive paths in auto-approve modes"
             checked={allowSensitivePathEdits}
             onChange={onAllowSensitivePathEditsChange}
+          />
+        </SettingsRow>
+      </section>
+
+      <section className="settings-group">
+        <div className="settings-group-head">
+          <h4>Steering</h4>
+          <span className="settings-group-desc">
+            Mid-run message injection while an agent is working.
+          </span>
+        </div>
+        <SettingsRow
+          title="注入正在运行的轮次（mid-run steering）"
+          hint={<>On (default): plain-text messages sent while the agent is
+            working are injected into the current turn at the next tool
+            boundary (「注入中 → 已注入」chips), instead of queueing for the
+            next turn. Images and other multimodal content always queue —
+            injection is text-only. Off restores pure queueing.</>}
+        >
+          <Switch
+            label="注入正在运行的轮次"
+            checked={steering}
+            onChange={onSteeringChange}
           />
         </SettingsRow>
       </section>

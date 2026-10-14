@@ -124,6 +124,10 @@ export interface FullServerConfig {
   /** When true, acceptEdits/bypassPermissions also auto-approve edits/commands
    *  targeting sensitive config paths (.git/, .claude/, shell configs, …). */
   allowSensitivePathEdits: boolean
+  /** Global mid-run steering switch (server config `steering`). Default:
+   *  true — plain-text messages sent while a turn is active inject into the
+   *  current turn at tool-hook boundaries instead of queueing. */
+  steering: boolean
   /** Enable shadow-repo file snapshots. Default: true. */
   fileSnapshots: boolean
   /** Maximum bytes per untracked file the sidecar ingests per capture.
