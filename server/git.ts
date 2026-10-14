@@ -630,6 +630,15 @@ export async function removeWorktreeDir(mainRepoCwd: string, worktreePath: strin
   await runGit(mainRepoCwd, ['worktree', 'remove', '--force', worktreePath])
 }
 
+/** Clear stale worktree registrations — entries whose directory was deleted
+ *  out-of-band (e.g. a user `rm -rf` of the worktree). Without this,
+ *  re-adding a worktree at the same path fails with
+ *  "missing but already registered worktree". Only prunes registrations
+ *  whose directory is gone; live worktrees are untouched. */
+export async function pruneWorktrees(mainRepoCwd: string): Promise<void> {
+  await runGit(mainRepoCwd, ['worktree', 'prune'])
+}
+
 /** Any uncommitted (staged, unstaged or untracked) change in the work tree
  *  that `cwd` belongs to? */
 export async function worktreeIsDirty(cwd: string): Promise<boolean> {

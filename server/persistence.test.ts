@@ -470,4 +470,56 @@ describe('SessionStore', () => {
     const loaded = await store.load()
     for (const m of loaded) expect(m.autoCompactWindow).toBeUndefined()
   })
+
+  // ── worktree (WorktreeInfo) persistence ─────────────────────────
+  it('round-trips a valid worktree object', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    const wt: NonNullable<SessionMeta['worktree']> = {
+      mainRepoPath: '/repo/main', branch: 'crw/abcd1234', baseSha: 'a'.repeat(40),
+    }
+    store.upsert(makeMeta('a', { worktree: wt }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    expect(store2.get('a')?.worktree).toEqual(wt)
+  })
+
+  it('drops malformed worktree shapes during coerce', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        { id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, worktree: { branch: 'crw/x', baseSha: 'sha' } },
+        { id: 'b', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, worktree: { mainRepoPath: '/r', branch: 42, baseSha: 'sha' } },
+        { id: 'c', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, worktree: 'crw/x' },
+        { id: 'd', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, worktree: null },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    for (const m of loaded) expect(m.worktree).toBeUndefined()
+  })
+
+  it('strips unknown extra keys from a worktree object', async () => {
+    writeFileSync(
+      join(dir, 'sessions.json'),
+      JSON.stringify([
+        {
+          id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false,
+          worktree: {
+            mainRepoPath: '/repo/main', branch: 'crw/abcd1234', baseSha: 'a'.repeat(40),
+            futureField: 'whatever',
+          },
+        },
+      ]),
+    )
+    const store = new SessionStore({ stateDir: dir })
+    const loaded = await store.load()
+    // Exactly the three known fields survive — no extras pass through.
+    expect(loaded[0].worktree).toEqual({
+      mainRepoPath: '/repo/main', branch: 'crw/abcd1234', baseSha: 'a'.repeat(40),
+    })
+    expect(Object.keys(loaded[0].worktree!)).toEqual(['mainRepoPath', 'branch', 'baseSha'])
+  })
 })
