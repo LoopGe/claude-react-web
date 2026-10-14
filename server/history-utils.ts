@@ -116,6 +116,21 @@ export function stampInjectedAt(msg: unknown, at?: number): number {
   return m.injectedAt ?? at ?? Date.now()
 }
 
+/**
+ * Stamp that a steered message was NOT delivered before the turn ended and
+ * was re-routed onto the SDK input queue as a normal next-turn prompt (spec
+ * §6.3). The message keeps its `steeredAt` (history: it WAS steered), but
+ * from here the normal queued→consumed stamps apply — delivery-status
+ * derivation skips the steered branch once requeuedAt is present.
+ */
+export function stampRequeuedAt(msg: unknown, at?: number): number {
+  const m = msg as { requeuedAt?: number }
+  if (m && typeof m === 'object' && m.requeuedAt == null) {
+    m.requeuedAt = at ?? Date.now()
+  }
+  return m.requeuedAt ?? at ?? Date.now()
+}
+
 /** Extract `parent_tool_use_id` from an SDK message defensively.
  *  Returns the value for user/assistant messages; undefined for types
  *  that don't carry the field. Server-side SDKMessage is a discriminated

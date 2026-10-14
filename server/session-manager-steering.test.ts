@@ -277,5 +277,43 @@ describe('supplement delivery handler', () => {
   })
 })
 
+// ── Task 8: turn-end fallback（requeue + promptUuids 补录）──────────────
+
+describe('turn-end steer fallback', () => {
+  it('requeues undelivered supplements with prompt-uuid backfill and requeued frame', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, s, handle, info } = ctx
+    const first = sm.send(info.id, 'first message')
+    const second = sm.send(info.id, 'pivot now')
+    expect(s.steeredInFlight.size).toBe(1)
+    handle.drainSupplements.mockReturnValue([{ uuid: second.uuid }])
+    handle.enqueueUserMessage.mockClear()
+
+    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown) => void }).drainAndRequeueSteered(s)
+
+    expect(handle.enqueueUserMessage).toHaveBeenCalledWith(expect.objectContaining({ uuid: second.uuid! }))
+    expect((second as { requeuedAt?: number }).requeuedAt).toEqual(expect.any(Number))
+    // 【补录】promptUuids 现在两条都有（second 此刻起会 echo）
+    expect(s.promptUuids?.map((e) => e.u)).toEqual([first.uuid, second.uuid])
+    const sidecar = await (sm as unknown as { steeredStore: { load(id: string): Promise<Array<{ u: string; requeuedAt?: number }>> } }).steeredStore.load(info.id)
+    expect(sidecar?.[0]).toMatchObject({ u: second.uuid, requeuedAt: expect.any(Number) })
+    expect(s.steeredInFlight.size).toBe(0)
+    await sm.shutdown()
+  })
+  it('leaves delivered entries alone (drain returns empty → no-op)', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, s, handle, info } = ctx
+    sm.send(info.id, 'first')
+    sm.send(info.id, 'second')
+    handle.drainSupplements.mockReturnValue([])
+    handle.enqueueUserMessage.mockClear()
+    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown) => void }).drainAndRequeueSteered(s)
+    expect(handle.enqueueUserMessage).not.toHaveBeenCalled()
+    await sm.shutdown()
+  })
+})
+
 // 抑制 randomUUID 未使用告警的引用（vitest tree-shake 友好）
 void randomUUID

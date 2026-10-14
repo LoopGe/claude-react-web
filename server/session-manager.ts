@@ -128,7 +128,7 @@ import {
   subagentTranscriptPath,
 } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
-import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, stampInjectedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
+import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, stampInjectedAt, stampRequeuedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -6118,6 +6118,36 @@ export class SessionManager {
     log.info(`[session ${id}] steered ${uuid.slice(0, 8)} injected at ${outcome.boundary}`)
   }
 
+  /** Turn-end fallback（spec §6.3，pump 的 onTurnSettling 落点）：drain 全部
+   *  未投递的 supplement 并逐条转回 SDK 输入队列——零丢失保证。必须在
+   *  result 处理器的 moreQueued 检查之前调用（pump 已保证），requeue 后
+   *  的条目要被 queueDepth 检查看见。 */
+  private drainAndRequeueSteered(s: Session): void {
+    const handle = s.handle as ProviderSessionHandle & { drainSupplements?: () => Array<{ uuid: string }> }
+    if (typeof handle.drainSupplements !== 'function') return
+    this.requeueSteeredLeftovers(s, handle.drainSupplements())
+  }
+
+  /** Requeue 一组已 drain 的 steer 余量（turn 结束与 plain interrupt 共用，
+   *  spec §6.3/§6.4）。每条：原文转投 SDK 输入队列 → ring 条目打
+   *  requeuedAt → promptUuids 补录（此刻起才会 echo）→ sidecar 更新 →
+   *  message-steered {state:'requeued'} 帧。 */
+  private requeueSteeredLeftovers(s: Session, leftovers: Array<{ uuid: string }>): void {
+    for (const { uuid } of leftovers) {
+      const userMsg = s.steeredInFlight.get(uuid)
+      s.steeredInFlight.delete(uuid)
+      if (!userMsg) continue
+      const at = stampRequeuedAt(userMsg)
+      s.handle.enqueueUserMessage({ ...userMsg })
+      // 【补录】requeue 后它就是一条会 echo 的普通 prompt——此刻才进
+      // FIFO 配对（spec §6.3；漏掉会让 onPromptEcho 永久错配）。
+      this.recordPromptUuid(s, userMsg)
+      void this.steeredStore.markRequeued(s.id, uuid, at)
+      this.pushMessageStatus(s.id, { kind: 'message-steered', sessionId: s.id, uuid, state: 'requeued' })
+      log.info(`[session ${s.id}] steered ${uuid.slice(0, 8)} requeued as next-turn prompt`)
+    }
+  }
+
   private onInputConsumed(id: string, msg: SDKUserMessage): void {
     if (msg.type !== 'user') return
     if (msg.parent_tool_use_id != null) return
@@ -7015,6 +7045,7 @@ export class SessionManager {
       this.cachedPumpDeps = {
         historyCap: this.historyCap,
         subagentHistoryCap: this.subagentHistoryCap,
+        onTurnSettling: (s) => this.drainAndRequeueSteered(s),
         persist: (s) => this.persist(s),
         denyPendingPermissions: (s) => {
           this.permBroker.denyAll(s)
