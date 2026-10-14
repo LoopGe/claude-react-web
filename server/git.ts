@@ -577,6 +577,66 @@ export async function listWorktrees(cwd: string): Promise<GitLinkedWorktree[]> {
   return out
 }
 
+/** Absolute path of the shared git dir (common dir) for the repo that `cwd`
+ *  lives in — for a linked worktree this is the MAIN repo's .git, which is
+ *  where `worktrees/`, refs and packed-refs.lock live. Concurrency on
+ *  worktree add/remove/prune must be keyed on THIS, not on the worktree
+ *  path. Older git prints a relative path — resolve against cwd. */
+export async function getGitCommonDir(cwd: string): Promise<string> {
+  const r = await runGit(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  const p = r.stdout.trim()
+  return isAbsolute(p) ? p : join(cwd, p)
+}
+
+/** Does a local branch with this exact name exist? */
+export async function branchExists(cwd: string, branch: string): Promise<boolean> {
+  validateRef(branch)
+  // Exit 1 = missing ref, the documented "no" signal — let it resolve.
+  const r = await runGit(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], {
+    allowAnyExitCode: true,
+  })
+  return r.exitCode === 0
+}
+
+/** Does a commit object with this sha exist in the object store? */
+export async function commitExists(cwd: string, sha: string): Promise<boolean> {
+  // Exit 128 for malformed / missing objects — still just "no".
+  const r = await runGit(cwd, ['cat-file', '-e', `${sha}^{commit}`], {
+    allowAnyExitCode: true,
+  })
+  return r.exitCode === 0
+}
+
+/** Create a linked worktree. `newBranch=true` → `worktree add -b <branch> <path> <baseRef>`;
+ *  `false` → check out the EXISTING branch (`worktree add <path> <branch>`, baseRef ignored). */
+export async function createWorktree(
+  mainRepoCwd: string,
+  worktreePath: string,
+  branch: string,
+  baseRef: string,
+  newBranch: boolean,
+): Promise<void> {
+  validateRef(branch)
+  const args = newBranch
+    ? ['worktree', 'add', '-b', branch, worktreePath, baseRef]
+    : ['worktree', 'add', worktreePath, branch]
+  // runGit throws (HttpError with trimmed stderr) when git exits non-zero.
+  await runGit(mainRepoCwd, args)
+}
+
+/** Remove a linked worktree (force — the delete-session flow has already
+ *  confirmed the loss of uncommitted changes). Branch is NOT touched. */
+export async function removeWorktreeDir(mainRepoCwd: string, worktreePath: string): Promise<void> {
+  await runGit(mainRepoCwd, ['worktree', 'remove', '--force', worktreePath])
+}
+
+/** Any uncommitted (staged, unstaged or untracked) change in the work tree
+ *  that `cwd` belongs to? */
+export async function worktreeIsDirty(cwd: string): Promise<boolean> {
+  const r = await runGit(cwd, ['status', '--porcelain'], { noOptionalLocks: true })
+  return r.stdout.trim().length > 0
+}
+
 // ── Snapshot ─────────────────────────────────────────────────────────
 
 /** The three lists that make up one pushed `git-snapshot` frame. */
