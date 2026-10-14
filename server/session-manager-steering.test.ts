@@ -408,5 +408,34 @@ describe('getHistoryPage splice integration', () => {
   })
 })
 
+// ── Task 11: config 开关 ────────────────────────────────────────────────
+
+describe('steering config toggle', () => {
+  it('defaults on; steering === false disables routing; snapshot exposes steeringSupported', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, handle, info } = ctx
+    const { config: liveConfig, __setConfigForTest } = await import('./config.js')
+    const before = { ...liveConfig }
+    try {
+      expect(liveConfig.steering).toBe(true)
+      // 默认开：mid-turn steer 生效 + 快照暴露能力位
+      sm.send(info.id, 'first')
+      const steered = sm.send(info.id, 'steer me')
+      expect(handle.enqueueSupplement).toHaveBeenCalledWith({ uuid: steered.uuid, text: 'steer me' })
+      expect(sm.list().find((i) => i.id === info.id)).toMatchObject({ steeringSupported: true })
+      // 关掉 → mid-turn 回退排队
+      handle.enqueueSupplement.mockClear()
+      __setConfigForTest({ ...before, steering: false })
+      const queued = sm.send(info.id, 'queued now')
+      expect(handle.enqueueSupplement).not.toHaveBeenCalled()
+      expect((queued as { steeredAt?: number }).steeredAt).toBeUndefined()
+    } finally {
+      __setConfigForTest(before)
+      await sm.shutdown()
+    }
+  })
+})
+
 // 抑制 randomUUID 未使用告警的引用（vitest tree-shake 友好）
 void randomUUID

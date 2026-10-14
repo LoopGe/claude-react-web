@@ -3343,9 +3343,7 @@ export class SessionManager {
    *  live turn. enqueue()'s own admission/version gate is the final arbiter
    *  — a false return here is a transparent fallback, never an error. */
   private trySteerMessage(s: Session, userMsg: SDKUserMessage): boolean {
-    // Task 11 adds the typed config field; until then the cast keeps this
-    // compiling with default-on semantics (undefined !== false).
-    if ((defaultConfig as { steering?: boolean }).steering === false) return false
+    if (defaultConfig.steering === false) return false
     const enqueue = (s.handle as ProviderSessionHandle & {
       enqueueSupplement?: (entry: { uuid: string; text: string }) => boolean
     }).enqueueSupplement
@@ -6974,6 +6972,7 @@ export class SessionManager {
       pluginErrors: s.pluginErrors,
       effortLevels: s.effortLevels,
       thinkingSupported: s.thinkingSupported,
+      steeringSupported: this.providers.get(s.provider).capabilities.supportsSteering,
       running: s.running,
       recovering: s.recovering,
       working: isWorking,
