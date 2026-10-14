@@ -18,7 +18,10 @@ export function buildNewLikeThisForm(
   maxGroupSize: number,
 ): NewSessionForm {
   const form: NewSessionForm = {
-    cwd: source.cwd,
+    // An isolated source runs inside its worktree; the copy must land in the
+    // main repo (the source's worktree belongs to the source session and is
+    // removed with it). Mirrors the server fork rule.
+    cwd: source.worktree?.mainRepoPath ?? source.cwd,
     model: source.model,
     // Deliberately NOT copying `source.modelGroupId`: create() 400s on a
     // deleted model group while the source session itself self-heals on

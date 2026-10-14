@@ -2070,7 +2070,10 @@ export function App() {
         // group the instant Y appears — no "Ungrouped" flash before this POST
         // resolves and swapSession runs (swapSession then evicts X).
         const res = await api.post<{ session: SessionInfo }>('/sessions', {
-          cwd: source.cwd,
+          // An isolated source runs inside its worktree; restart Y must land in
+          // the main repo (X's delete removes the worktree dir Y would otherwise
+          // be spawned into). Mirrors the server fork rule.
+          cwd: source.worktree?.mainRepoPath ?? source.cwd,
           model: source.model,
           permissionMode: source.permissionMode,
           // Preserve beta flags (notably `context-1m-...`) so restart
