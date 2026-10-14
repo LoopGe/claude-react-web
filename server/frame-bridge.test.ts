@@ -812,6 +812,27 @@ describe('replay burst supersede end-to-end (QueueSink: real WsFrameSink)', () =
     expect(f2.kind === 'message' && f2.generation).toBeUndefined()
   })
 
+  it('stamps generation onto seq-carrying live message frames (client WINDOW_LIVE needs both)', async () => {
+    const sm = new FakeBroadcaster()
+    const sess = sm.addSession('s1', { running: true })
+    sm.heads.set('s1', { generation: 3, headSeq: 18 })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    sink.reset()
+
+    const withSeq = assistant('seq’d', 'u-seq')
+    sm.seqs.set(withSeq, 17)
+    sess.messages.push(withSeq)
+
+    const f1 = await waitForFrame(sink, (f) => f.kind === 'message' && (f.message as { uuid?: string }).uuid === 'u-seq')
+    // { seq, generation } both present — without generation the client's
+    // `seq != null && generation != null` guard falls to the legacy append.
+    expect(f1.kind === 'message' && f1.seq).toBe(17)
+    expect(f1.kind === 'message' && f1.generation).toBe(3)
+  })
+
   it('forwards a messages-evicted frame from the message-status channel', async () => {
     const sm = new FakeBroadcaster()
     const sess = sm.addSession('s1', { running: true })

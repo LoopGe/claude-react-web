@@ -244,6 +244,40 @@ describe('useChatStream seq-window protocol', () => {
     )
   })
 
+  /** Compat lock: a frame carrying seq but NO generation (pre-generation
+   *  server) must take the legacy MESSAGE append — the WINDOW_LIVE guard
+   *  requires BOTH non-null, so the seq window stays untouched. */
+  it('takes the legacy append path when a live frame has seq but no generation', async () => {
+    const sid = 'seq-no-gen'
+    const t = transcript(sid)
+    for (let i = 0; i < 5; i++) t.msgs.push({ seq: i, msg: fakeMsg(sid, i) })
+    t.headSeq = 5
+
+    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
+    await waitFor(() => expect(result.current.replayReady).toBe(true))
+    expect(result.current.messages).toHaveLength(5)
+    expect(getSessionStore(sid).getSnapshot().newestSeq).toBe(4)
+
+    act(() => {
+      dispatchToSession(sid, {
+        kind: 'message',
+        sessionId: sid,
+        seq: 5,
+        // generation intentionally absent
+        message: fakeMsg(sid, 5),
+      })
+    })
+
+    // The message still lands in the ordered log (legacy append), but the
+    // seq window does not advance and no gap-fill is triggered.
+    await waitFor(() => expect(result.current.messages).toHaveLength(6))
+    const snap = getSessionStore(sid).getSnapshot()
+    expect(snap.newestSeq).toBe(4)
+    expect(snap.oldestSeq).toBe(0)
+    expect(snap.hole).toBeNull()
+    expect(gapFetchUrls()).toEqual([])
+  })
+
   /** Open scenario ③: attached reveals a new generation (server-side /clear)
    *  → WINDOW_BUMP wipes the window, tail page refetched under the new
    *  generation. */

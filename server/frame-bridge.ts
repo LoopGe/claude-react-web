@@ -99,21 +99,32 @@ function hookSnapshotEvent(run: HookRunRecord): HookRuntimeEvent {
  *  evicts the message object. */
 const messageFrameJsonCache = new WeakMap<object, string>()
 
-function messageFrameJson(sessionId: string, message: object, seq: number | undefined): string {
+function messageFrameJson(
+  sessionId: string,
+  message: object,
+  seq: number | undefined,
+  generation: number | undefined,
+): string {
   let json = messageFrameJsonCache.get(message)
   if (json === undefined) {
-    // seq rides INSIDE the cached string rather than on the message object:
-    // stamping a property on the SDK message would leak it into the ring
-    // entry, replay JSON and any equality/identity checks; a NON-enumerable
-    // property would not work at all (JSON.stringify only serializes
-    // enumerable own properties). Seq is append-stable and assigned BEFORE
-    // the pump broadcasts (recordTranscriptFor runs ahead of every
-    // subscriber push), so the first serialization already sees the final
-    // value — caching it per message object is safe.
+    // seq + generation ride INSIDE the cached string rather than on the
+    // message object: stamping a property on the SDK message would leak it
+    // into the ring entry, replay JSON and any equality/identity checks; a
+    // NON-enumerable property would not work at all (JSON.stringify only
+    // serializes enumerable own properties). Seq is append-stable and
+    // assigned BEFORE the pump broadcasts (recordTranscriptFor runs ahead of
+    // every subscriber push), so the first serialization already sees the
+    // final value — caching it per message object is safe. The same holds
+    // for `generation` only under an invariant: the generation can change
+    // solely via TranscriptStore.reset() (the /clear path), which has no
+    // live caller today — a future reset() caller that keeps the session
+    // broadcasting MUST invalidate messageFrameJsonCache (or re-derive the
+    // generation per serialization), or cached frames would carry a stale
+    // generation and clients would misjudge the seq-space handshake.
     json = JSON.stringify(
       seq === undefined
         ? { kind: 'message', sessionId, message }
-        : { kind: 'message', sessionId, seq, message },
+        : { kind: 'message', sessionId, seq, generation, message },
     )
     messageFrameJsonCache.set(message, json)
   }
@@ -833,9 +844,18 @@ export class SessionConnection {
                   ? (winner.result.value as object)
                   : null
                 const seq = msgObj ? this.sm.transcriptSeqOf?.(sessionId, msgObj) : undefined
+                // Generation rides alongside seq (spec §4: live `message`
+                // frames carry { seq, generation } — the client's WINDOW_LIVE
+                // path requires BOTH non-null). Same source as the attached
+                // handshake. Only stamped when a seq exists, matching the
+                // wire contract (`generation` is omitted when `seq` is) and
+                // the frame-cache invariant documented in messageFrameJson.
+                const generation = seq !== undefined
+                  ? this.sm.transcriptHead?.(sessionId)?.generation
+                  : undefined
                 this.sink.sendRaw(
                   msgObj
-                    ? messageFrameJson(sessionId, msgObj, seq)
+                    ? messageFrameJson(sessionId, msgObj, seq, generation)
                     : JSON.stringify({ kind: 'message', sessionId, message: winner.result.value as never }),
                   'message',
                 )
