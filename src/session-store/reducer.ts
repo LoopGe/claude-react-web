@@ -1784,7 +1784,10 @@ function trimFront(state: SessionState): SessionState {
  *  evictions and front-trims — the window must never hold a seq whose
  *  message the ordered log no longer does, or oldestSeq/newestSeq would
  *  describe content the transcript doesn't render (and Task 9's
- *  firstItemIndex anchor would drift off items[0]). */
+ *  firstItemIndex anchor would drift off items[0]). The one sanctioned
+ *  exception is slot-routed frames (api_retry slot, empty results), which
+ *  sit in the window for dedup but are skipped by oldestSeq's derivation —
+ *  see seq-window.ts isSlotRouted. */
 function seqsForUuids(w: WindowState, uuids: ReadonlySet<string>): number[] {
   const out: number[] = []
   for (const [seq, msg] of w.window) {

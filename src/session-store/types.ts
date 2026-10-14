@@ -819,7 +819,11 @@ export interface SessionSnapshot {
   // consumers (Tasks 8/9). Task 9 anchors MessageList rows on `oldestSeq`
   // (exact name); Task 8's loadOlder pages `before=oldestSeq` gated on
   // `hasOlder`, and reconnect/hole detection compares these snapshots.
-  /** Seq of the oldest message in the window; null when empty. */
+  /** Seq of the oldest message that reached the ordered log; null when the
+   *  window is empty. Slot-routed frames (api_retry slot, empty results)
+   *  occupying seqs at the window top are skipped — this is the RENDER
+   *  ANCHOR (MessageList's firstItemIndex), not the numeric window minimum
+   *  (see seq-window.ts isSlotRouted). */
   oldestSeq: number | null
   /** Seq of the newest message in the window; null when empty. */
   newestSeq: number | null

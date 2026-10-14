@@ -51,6 +51,7 @@
  * ordered mirror log through the existing applyMessage/prependMessages
  * machinery (see reducer.ts windowPage / windowLive).
  */
+import { isEmptyResultFrame } from '../../shared/results.js'
 import type { SdkMessage } from '../types'
 
 /** Inclusive hole range [newestSeq + 1, lowestPendingSeq - 1] of missing
@@ -64,7 +65,11 @@ export interface WindowState {
   /** seq → message for everything currently applied to the transcript.
    *  Sparse only where evictions tombstoned seqs. */
   window: Map<number, SdkMessage>
-  /** null = empty window. */
+  /** null = empty window. Otherwise the seq of the oldest message that
+   *  reached the ordered log — slot-routed frames (api_retry slot, empty
+   *  results) occupying seqs at the window top are skipped (see
+   *  isSlotRouted), because this value is the RENDER ANCHOR
+   *  (MessageList's firstItemIndex), not the numeric window minimum. */
   oldestSeq: number | null
   newestSeq: number | null
   hasOlder: boolean
@@ -111,6 +116,22 @@ function clone(w: WindowState): WindowState {
   }
 }
 
+/** Slot-routed frames: the server seq-assigns every isRenderableSdkMessage
+ *  frame, a set WIDER than the client's ordered log. `system/api_retry`
+ *  renders from its transient slot (applyMessage never lets it into
+ *  items/messages) and an empty `result` frame is suppressed outright
+ *  (toTranscriptItem → null). Both still enter the window map — membership
+ *  is what makes pages/live re-sends idempotent — but they never become
+ *  transcript rows, so they must not count toward `oldestSeq`: Task 9
+ *  anchors virtuoso's firstItemIndex on it, and a slot-routed seq at the
+ *  window top would offset the whole row grid relative to the seq space.
+ *  newestSeq is NOT filtered — the tail-contiguity / hole logic is numeric
+ *  seq arithmetic and needs the true max. */
+function isSlotRouted(msg: SdkMessage): boolean {
+  const m = msg as { type?: unknown; subtype?: unknown }
+  return (m.type === 'system' && m.subtype === 'api_retry') || isEmptyResultFrame(msg)
+}
+
 /** Recompute the derived boundary fields after any contents change. */
 function rederive(w: WindowState): WindowState {
   if (w.window.size === 0) {
@@ -118,12 +139,18 @@ function rederive(w: WindowState): WindowState {
     w.newestSeq = null
   } else {
     let min = Infinity
+    let minAny = Infinity
     let max = -Infinity
-    for (const seq of w.window.keys()) {
-      if (seq < min) min = seq
+    for (const [seq, msg] of w.window) {
+      if (seq < minAny) minAny = seq
       if (seq > max) max = seq
+      if (!isSlotRouted(msg) && seq < min) min = seq
     }
-    w.oldestSeq = min
+    // `oldestSeq !== null` must keep meaning "window non-empty" (loadOlder
+    // and the empty-window bootstrap gate on it), so a window holding ONLY
+    // slot-routed frames falls back to the true min — the anchor is then off
+    // by a constant, which virtuoso's row-count arithmetic never sees.
+    w.oldestSeq = min !== Infinity ? min : minAny
     w.newestSeq = max
   }
   w.hole = windowHole(w)

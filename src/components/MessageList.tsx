@@ -240,10 +240,11 @@ interface Props {
    *  Gates the scroll-to-top trigger and the "loading older" affordance. */
   hasOlder?: boolean
   /** Seq of the oldest message in the store's seq window (null while the
-   *  window is empty) — the render anchor of the seq protocol: Task 9
-   *  derives virtuoso's `firstItemIndex` from it so a prepended page and
-   *  its anchor commit in the same render. Declared now so the Chat
-   *  passthrough (Task 8) typechecks; consumed by the anchor wiring. */
+   *  window is empty) — the render anchor of the seq protocol. Task 9
+   *  consumes it: virtuoso's `firstItemIndex` starts at this value and is
+   *  then moved by rendered-row counts (advanceRowAnchor's frontShift), so a
+   *  prepended page and its anchor commit in the same render. Overlays pass
+   *  nothing and keep the legacy 1e6 anchor. */
   oldestSeq?: number | null
   /** True while a loadOlder() request is in flight (drives the top spinner). */
   loadingOlder?: boolean
@@ -371,7 +372,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, sessionId, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, sessionId, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -647,7 +648,15 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // `onUserScrollIntent`) or the list is rebuilt.
   const navCursorRef = useRef<number | null>(null)
   /* eslint-disable react-hooks/refs */
-  const nextRowAnchor = advanceRowAnchor(rowAnchorRef.current, renderableItems)
+  // Task 9: the anchor lives in the server seq space. `oldestSeq` (the seq of
+  // the first message that reached the ordered log — slot-routed frames are
+  // skipped in the window's derivation) seeds the anchor on the initial build
+  // and on re-anchors; ordinary prepends move it by RENDERED ROW count inside
+  // advanceRowAnchor, never by the seq delta. `firstItemIndex = nextRowAnchor.index`
+  // below therefore starts at oldestSeq and stays exact against the row grid
+  // from then on — which is what makes `rangeStart - firstItemIndex` the true
+  // row distance to the window top (shouldLoadOlder's arithmetic).
+  const nextRowAnchor = advanceRowAnchor(rowAnchorRef.current, renderableItems, oldestSeq ?? null)
   rowAnchorRef.current = nextRowAnchor
   if (nextRowAnchor.frontShift != null) {
     topVisibleIdxRef.current += nextRowAnchor.frontShift

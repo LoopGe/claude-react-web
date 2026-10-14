@@ -111,9 +111,11 @@ export interface ChatStream {
    *  lifts. (The old IDB-cold-load / backfill-burst drain windows are gone
    *  with the seq-window protocol — there is exactly one settle point.) */
   transcriptSettling: boolean
-  /** Seq of the oldest message in the store's seq window (null while the
-   *  window is empty). MessageList anchors its virtuoso `firstItemIndex` on
-   *  it so prepends commit in the same render (Task 9). */
+  /** Seq of the oldest message that reached the ordered log (null while the
+   *  window is empty; slot-routed frames at the window top are skipped — see
+   *  seq-window.ts). MessageList anchors its virtuoso `firstItemIndex` on
+   *  it; the anchor then moves by rendered-row counts, so prepends commit in
+   *  the same render (Task 9). loadOlder pages `before=` it. */
   oldestSeq: number | null
   /** Optimistically insert the user's message into the transcript so it
    *  appears immediately, before the server echoes it back. Returns the

@@ -476,7 +476,10 @@ export function subagentResultItem(
 // move. That lands on the re-anchor branch, which is the right answer.
 
 /** Starting anchor. A large value so `loadOlder` prepends can decrement for a
- *  very long time without approaching zero (Virtuoso rejects negatives). */
+ *  very long time without approaching zero (Virtuoso rejects negatives).
+ *  Task 9: now the FALLBACK — the main transcript's anchor is the store's
+ *  `oldestSeq` (server seq space) whenever a seq window exists; overlays and
+ *  empty windows still start here. */
 export const INITIAL_FIRST_ITEM_INDEX = 1_000_000
 
 export interface RowAnchor {
@@ -501,9 +504,12 @@ export const initialRowAnchor = (): RowAnchor => ({
 
 /** A re-anchor: the previous index space is invalid (replay replace, clear
  *  swap, emptied list). frontShift null tells index holders to RESET, not
- *  shift. `rowIds` empty = fully empty list; otherwise the rebuild's ids. */
-const reanchoredAnchor = (rowIds: readonly string[]): RowAnchor => ({
-  index: INITIAL_FIRST_ITEM_INDEX,
+ *  shift. `rowIds` empty = fully empty list; otherwise the rebuild's ids.
+ *  The new index comes from the caller's external seq anchor when one is
+ *  available, falling back to the 1e6 constant (empty window / overlay
+ *  callers with no seq window). */
+const reanchoredAnchor = (rowIds: readonly string[], externalAnchor?: number | null): RowAnchor => ({
+  index: externalAnchor ?? INITIAL_FIRST_ITEM_INDEX,
   rowIds,
   frontShift: null,
 })
@@ -517,20 +523,41 @@ const reanchoredAnchor = (rowIds: readonly string[]): RowAnchor => ({
  * non-empty call; that's O(n) alongside `buildTranscriptRows`' own O(n), and
  * it's what makes the front-removal case detectable.
  *
- * `index` only ever DECREASES on a front insert, from a starting point of 1e6,
- * so it cannot realistically reach zero (Virtuoso rejects negatives).
+ * `externalAnchor` (Task 9) switches the anchor's VALUE SEMANTICS from the
+ * legacy 1e6 constant to the server seq space: the caller passes the store's
+ * `oldestSeq` (the seq of the first message that reached the ordered log —
+ * see seq-window.ts's slot-routed skip). It is consulted ONLY on the initial
+ * adoption and on re-anchors (rebuild / emptied list); every other branch
+ * moves `index` by ROW counts, because Virtuoso shifts its size tree by row
+ * count, not seq count. The server seq space is WIDER than the row grid
+ * (slot-routed api_retry frames, suppressed empty results, tool-group folds),
+ * so re-deriving the anchor from a changed seq mid-window would misalign the
+ * index-keyed size tree by exactly the number of seqs that didn't become
+ * rows. THE INVARIANT: after any prepend, `index` decreases by exactly the
+ * number of newly RENDERED rows — never by the seq delta.
+ *
+ * `index` only ever DECREASES on a front insert, from a starting point of
+ * 1e6 or the (much smaller) seq anchor, so it cannot realistically reach
+ * zero (Virtuoso rejects negatives).
  */
-export function advanceRowAnchor(prev: RowAnchor, rows: readonly TranscriptRow[]): RowAnchor {
+export function advanceRowAnchor(
+  prev: RowAnchor,
+  rows: readonly TranscriptRow[],
+  externalAnchor?: number | null,
+): RowAnchor {
   if (rows.length === 0) {
     // Empty list (session switch / cleared / replay rebuild) — re-anchor.
+    // A null external anchor (empty seq window) takes the 1e6 fallback.
     if (prev.rowIds.length === 0 && prev.index === INITIAL_FIRST_ITEM_INDEX) return prev
-    return reanchoredAnchor([])
+    return reanchoredAnchor([], externalAnchor)
   }
 
   const rowIds = rows.map((r) => r.id)
 
-  // First build for this list — adopt the ids, leave the offset alone.
-  if (prev.rowIds.length === 0) return { index: prev.index, rowIds, frontShift: 0 }
+  // First build for this list — adopt the ids and the external seq anchor.
+  if (prev.rowIds.length === 0) {
+    return { index: externalAnchor ?? prev.index, rowIds, frontShift: 0 }
+  }
 
   const prevFirst = prev.rowIds[0]
   if (rowIds[0] === prevFirst) {
@@ -556,7 +583,7 @@ export function advanceRowAnchor(prev: RowAnchor, rows: readonly TranscriptRow[]
 
   // Neither a front insert nor a front removal — an unrelated rebuild (replay
   // replace, fork, /clear swap). Re-anchor; Virtuoso resets its size tree.
-  return reanchoredAnchor(rowIds)
+  return reanchoredAnchor(rowIds, externalAnchor)
 }
 
 /** 向上加载触发判定：可视顶与窗口顶的距离 ≤ LOAD_OLDER_THRESHOLD 行。

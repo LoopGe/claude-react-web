@@ -243,3 +243,100 @@ describe('seq-window: bumpGeneration', () => {
     expect(next.hole).toBeNull()
   })
 })
+
+// ─── Task 9: oldestSeq skips slot-routed frames ─────────────────────────
+//
+// The server seq-assigns every isRenderableSdkMessage frame — a set WIDER
+// than the client's ordered log. `system/api_retry` renders from its
+// transient slot and an empty `result` frame is suppressed outright; both
+// enter the window map (dedup/idempotence needs the membership) but never
+// become transcript rows. oldestSeq is the RENDER ANCHOR (firstItemIndex),
+// so it must be the seq of the first message that actually reached the
+// ordered log: a slot-routed seq at the window top would offset the whole
+// row grid relative to the seq space. newestSeq stays the numeric max —
+// the tail-contiguity/hole logic is seq arithmetic.
+describe('seq-window: oldestSeq skips slot-routed frames', () => {
+  const apiRetry = (seq: number): SdkMessage =>
+    ({ type: 'system', subtype: 'api_retry', seq, uuid: `r${seq}` }) as unknown as SdkMessage
+  const emptyResult = (seq: number): SdkMessage =>
+    ({ type: 'result', subtype: 'success', num_turns: 0, result: '', seq, uuid: `e${seq}` }) as unknown as SdkMessage
+
+  it('a head page whose oldest entry is api_retry anchors on the first log row below it', () => {
+    let w = stream(emptyWindow(0, 0), 10, 12)
+    w = { ...w, hasOlder: true }
+    const next = pageLoaded(w, {
+      at: 'head',
+      generation: 0,
+      messages: [
+        { seq: 8, msg: apiRetry(8) },
+        { seq: 9, msg: msg('u', 9) },
+      ],
+      hasMore: true,
+    })
+    // seq 8 stays a window member (dedup), but the anchor is 9.
+    expect(next.window.has(8)).toBe(true)
+    expect(next.oldestSeq).toBe(9)
+    expect(next.newestSeq).toBe(12)
+  })
+
+  it('an empty result frame at the window top is skipped the same way', () => {
+    const w = stream(emptyWindow(0, 0), 10, 12)
+    const next = pageLoaded(w, {
+      at: 'head',
+      generation: 0,
+      messages: [{ seq: 9, msg: emptyResult(9) }],
+      hasMore: true,
+    })
+    expect(next.window.has(9)).toBe(true)
+    expect(next.oldestSeq).toBe(10)
+  })
+
+  it('a real result frame (non-empty) is NOT skipped', () => {
+    const realResult = (seq: number): SdkMessage =>
+      ({ type: 'result', subtype: 'success', num_turns: 1, result: 'done', seq, uuid: `e${seq}` }) as unknown as SdkMessage
+    const w = stream(emptyWindow(0, 0), 10, 12)
+    const next = pageLoaded(w, {
+      at: 'head',
+      generation: 0,
+      messages: [{ seq: 9, msg: realResult(9) }],
+      hasMore: true,
+    })
+    expect(next.oldestSeq).toBe(9)
+  })
+
+  it('live api_retry appends advance newestSeq but not the log-row anchor', () => {
+    let w = stream(emptyWindow(0, 0), 0, 2)
+    w = liveAppend(w, 3, apiRetry(3), 0)
+    w = liveAppend(w, 4, msg('u', 4), 0)
+    expect(w.newestSeq).toBe(4)
+    expect(w.oldestSeq).toBe(0)
+  })
+
+  it('falls back to the true min when EVERY window entry is slot-routed (anchor stays non-null)', () => {
+    // Pathological page of nothing but retries. `oldestSeq !== null` must
+    // keep meaning "window non-empty" — loadOlder and the empty-window
+    // bootstrap both gate on it.
+    const w = liveAppend(emptyWindow(0, 0), 0, apiRetry(0), 0)
+    expect(w.window.size).toBe(1)
+    expect(w.oldestSeq).toBe(0)
+  })
+
+  it('recomputes the skip after evicting the log row under a slot-routed top', () => {
+    let w = stream(emptyWindow(0, 0), 10, 12)
+    w = pageLoaded(w, {
+      at: 'head',
+      generation: 0,
+      messages: [
+        { seq: 8, msg: apiRetry(8) },
+        { seq: 9, msg: msg('u', 9) },
+      ],
+      hasMore: true,
+    })
+    expect(w.oldestSeq).toBe(9)
+    // The first log row is tombstoned: the anchor moves past it, and the
+    // slot-routed seq 8 is still skipped.
+    const next = evictSeqs(w, [9])
+    expect(next.window.has(9)).toBe(false)
+    expect(next.oldestSeq).toBe(10)
+  })
+})
