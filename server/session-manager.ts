@@ -6121,9 +6121,16 @@ export class SessionManager {
    *  半边）、steeredInFlight 清项、sidecar 更新、live 帧广播。ok=false 仅
    *  出现在 handle 销毁路径（aborted）——条目随 session 终结，不标记。 */
   private onSupplementDelivered(id: string, uuid: string, outcome: SupplementOutcome): void {
-    if (!outcome.ok) return
     const s = this.sessions.get(id)
     if (!s) return
+    if (!outcome.ok) {
+      // aborted = handle 销毁（unload / respawn / crash-recovery 的统一路
+      // 径）：supplement 已不可投递——清掉 in-flight 跟踪，否则残留 uuid 随
+      // 会话存活（终审 Important #2）。ring 条目保留无终态的 steeredAt，
+      // 客户端按 orphan 规则渲染（spec §8.3）。
+      s.steeredInFlight.delete(uuid)
+      return
+    }
     // 与 onInputConsumed 相同的后向 uuid 扫描：只认主线程用户帧。
     for (let i = s.history.length - 1; i >= 0; i--) {
       const entry = s.history[i] as ({ type?: string; uuid?: string } | undefined)
@@ -6972,7 +6979,9 @@ export class SessionManager {
       pluginErrors: s.pluginErrors,
       effortLevels: s.effortLevels,
       thinkingSupported: s.thinkingSupported,
-      steeringSupported: this.providers.get(s.provider).capabilities.supportsSteering,
+      steeringSupported:
+        (s.handle as ProviderSessionHandle).steeringActive ??
+        this.providers.get(s.provider).capabilities.supportsSteering,
       running: s.running,
       recovering: s.recovering,
       working: isWorking,

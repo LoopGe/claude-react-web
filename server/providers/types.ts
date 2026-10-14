@@ -143,6 +143,12 @@ export interface ProviderSessionHandle {
   /** Remove and return undelivered supplement entries (turn-end fallback /
    *  interrupt withdrawal); mirrors drainQueuedInput. */
   drainSupplements?(): Array<{ uuid: string }>
+  /** RUNTIME steering state for THIS spawn (distinct from the provider-level
+   *  `supportsSteering` capability): true when the spawn's version gate
+   *  passed and a supplement session exists; false on an old CLI where
+   *  enqueueSupplement would always return false. Undefined = undeclared →
+   *  the provider capability decides (spec §5.5: UI 不显示注入态 on old CLIs). */
+  readonly steeringActive?: boolean
   /** Remove and return queued user turns that have not yet been consumed by
    *  the provider — used by crash recovery to carry a pending user turn
    *  across a re-resume (otherwise the turn is silently lost: the UI already

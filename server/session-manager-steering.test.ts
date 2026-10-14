@@ -22,6 +22,9 @@ class FakeHandle implements ProviderSessionHandle {
   readonly input = createPushable<AgentUserMessage>('fake-input')
   readonly abortController = new AbortController()
   isClosed = false
+  /** Runtime steering state (old-CLI gate): undefined = undeclared → the
+   *  provider capability decides; false = this spawn's version gate failed. */
+  steeringActive?: boolean = undefined
   interrupt?: (opts?: { cancelQueued?: boolean }) => Promise<ProviderInterruptReceipt | void> = undefined
   enqueueUserMessage = vi.fn((m: AgentUserMessage) => this.input.push(m))
   enqueueSupplement = vi.fn((_entry: { uuid: string; text: string }): boolean => true)
@@ -266,7 +269,7 @@ describe('supplement delivery handler', () => {
     msgstat!.unsubscribe()
     await sm.shutdown()
   })
-  it('aborted outcome (handle destroy) marks nothing', async () => {
+  it('aborted outcome (handle destroy) marks nothing but clears in-flight tracking', async () => {
     const ctx = await makeSteeringSession()
     dirs.push(ctx.dir)
     const { sm, s, info, provider } = ctx
@@ -276,8 +279,25 @@ describe('supplement delivery handler', () => {
     delivered(second.uuid!, { ok: false, reason: 'aborted' })
     const ringEntry = s.history.find((m) => (m as { uuid?: string }).uuid === second.uuid) as { injectedAt?: number }
     expect(ringEntry.injectedAt).toBeUndefined()
-    // aborted 不清 in-flight（条目由 drain/abort 路径处理——Task 8/9 的领域）
-    expect(s.steeredInFlight.has(second.uuid!)).toBe(true)
+    // aborted = handle 销毁（unload / respawn / crash-recovery 的统一路径）：
+    // supplement 已不可投递，in-flight 跟踪必须清掉，否则残留 uuid 会让
+    // respawn 后的会话带着幽灵条目（终审 Important #2）。
+    expect(s.steeredInFlight.has(second.uuid!)).toBe(false)
+    expect(s.steeredInFlight.size).toBe(0)
+    await sm.shutdown()
+  })
+  it('steeringSupported reflects the handle runtime state, falling back to provider capability', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, handle, info } = ctx
+    // 默认（handle 未申报运行时状态）→ provider 能力位
+    expect(sm.list().find((i) => i.id === info.id)).toMatchObject({ steeringSupported: true })
+    // 老 CLI：handle 申报 steeringActive=false（spawn 时版本门控未过）
+    ;(handle as FakeHandle).steeringActive = false
+    expect(sm.list().find((i) => i.id === info.id)).toMatchObject({ steeringSupported: false })
+    // 申报清空 → 回退能力位
+    ;(handle as FakeHandle).steeringActive = undefined
+    expect(sm.list().find((i) => i.id === info.id)).toMatchObject({ steeringSupported: true })
     await sm.shutdown()
   })
 })

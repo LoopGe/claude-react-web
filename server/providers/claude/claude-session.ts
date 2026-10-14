@@ -87,6 +87,12 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.supplement?.drainUndelivered() ?? []
   }
 
+  /** 本次 spawn 的运行时 steering 状态：supplement session 存在（版本门控
+   *  通过）才为 true——老 CLI 上 false，快照据此隐藏注入态 UI（spec §5.5）。 */
+  get steeringActive(): boolean {
+    return this.supplement != null
+  }
+
   sendControlMessage(message: AgentUserMessage): void {
     this.input.push(message)
   }
