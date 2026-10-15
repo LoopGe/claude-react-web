@@ -137,6 +137,11 @@ export interface NewSessionForm {
   env?: Record<string, string>
   /** Frontend-only: target group for the new session. Required. */
   groupId?: string
+  /** Frontend-only: create a NEW group with this name at submit time and put
+   *  the session in it. Mutually exclusive with `groupId` — set by the
+   *  dialog's inline "Create group …" row; App mints the group once the
+   *  create POST lands, so cancelling the dialog leaves nothing behind. */
+  newGroupName?: string
 }
 
 /** Wire shape of a supported model entry. Defined in shared/model-info.ts

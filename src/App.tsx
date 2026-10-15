@@ -127,6 +127,7 @@ import { buildNewLikeThisForm } from './utils/new-like-this'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
+import { groupNameIssue } from './utils/group-name'
 import { escapeAction } from './utils/escape-action'
 import { prepareGroupFlip } from './utils/flip'
 import { clamp } from './utils/clamp'
@@ -1795,10 +1796,51 @@ export function App() {
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as openIdsRef etc.)
   activeGroupIdRef.current = activeGroupId
 
+  /** Validate a group name. Returns `{ ok: true, name }` (trimmed) on
+   *  success or `{ ok: false, error }` with a user-facing message on
+   *  failure. Pure rules (empty / over-length) live in
+   *  utils/group-name.ts; the case-insensitive duplicate scan stays here
+   *  because it needs the live group list. `ignoreId` skips one group when
+   *  checking duplicates so rename-to-same-name is a no-op, not an error. */
+  const validateGroupName = useCallback(
+    (raw: string, ignoreId?: string): { ok: true; name: string } | { ok: false; error: string } => {
+      const issue = groupNameIssue(raw)
+      if (issue) return { ok: false, error: issue }
+      const name = raw.trim()
+      const lower = name.toLowerCase()
+      const dup = groups.some((g) => g.id !== ignoreId && g.name.trim().toLowerCase() === lower)
+      if (dup) return { ok: false, error: `A group named "${name}" already exists.` }
+      return { ok: true, name }
+    },
+    [groups],
+  )
+
+  /** `initialSessionId` slots a session straight into the fresh group — the
+   *  dialog's inline "Create group …" pick uses it so the new session joins
+   *  by CREATION (one membership write) instead of a create-then-add pair
+   *  that would need handleAddToGroup's stale groupsRef worked around. */
+  const handleCreateGroup = useCallback(
+    (name: string, initialSessionId?: string) => {
+      const res = validateGroupName(name)
+      if (!res.ok) {
+        toast.error(res.error)
+        return ''
+      }
+      const id = randomId()
+      setGroups((prev) => [
+        ...prev,
+        { id, name: res.name, sessionIds: initialSessionId ? [initialSessionId] : [] },
+      ])
+      return id
+    },
+    [setGroups, validateGroupName, toast],
+  )
+
   const handleCreate = useCallback(
     async (form: NewSessionForm) => {
-      // `groupId` is a frontend-only field — don't forward it to the SDK.
-      const { groupId, ...rest } = form
+      // `groupId` / `newGroupName` are frontend-only fields — don't forward
+      // them to the SDK.
+      const { groupId, newGroupName, ...rest } = form
       try {
         const res = await api.post<{ session: SessionInfo }>('/sessions', rest)
         // Add Y to `sessions` locally so openSessions resolves it the instant
@@ -1817,12 +1859,24 @@ export function App() {
         const joinsGroup = targetGroup != null && targetGroup.sessionIds.length < maxGroupSizeRef.current
         if (groupId) handleAddToGroup(res.session.id, groupId)
 
+        // Inline "Create group «name»" pick from the dialog: mint the group
+        // with the session as its initial member (validation + toast live in
+        // handleCreateGroup). '' = invalid name (toast already shown) → the
+        // session stays ungrouped. Not handleAddToGroup: it reads groupsRef,
+        // which won't contain the new group until React commits the append —
+        // and a brand-new group can't be full and can never be the active
+        // group view, so the view logic below reduces to the plain create
+        // path.
+        const newGroupId = newGroupName
+          ? handleCreateGroup(newGroupName, res.session.id) || undefined
+          : undefined
+
         // When viewing a group, only open the new session in the grid if it
         // actually joined that group. A refused add (full group) leaves it in
         // the sidebar so the group view is neither collapsed nor mixed with an
         // ungrouped panel. Otherwise it stays out of the grid too (different
         // group than the one being viewed).
-        const effectiveGroupId = groupId || null
+        const effectiveGroupId = newGroupId ?? groupId ?? null
         if (activeGroupId && (effectiveGroupId !== activeGroupId || !joinsGroup)) {
           setLastSeenTurn((prev) => ({ ...prev, [res.session.id]: res.session.lastTurnAt ?? Date.now() }))
         } else if (activeGroupId && effectiveGroupId === activeGroupId && joinsGroup) {
@@ -1839,7 +1893,7 @@ export function App() {
         toast.error(`Couldn't create session: ${(e as Error).message}`)
       }
     },
-    [handleAddToGroup, activeGroupId, openSession, setLastSeenTurn, toast],
+    [handleAddToGroup, handleCreateGroup, activeGroupId, openSession, setLastSeenTurn, toast],
   )
 
   const handleFork = useCallback(
@@ -3387,40 +3441,6 @@ export function App() {
   )
 
   // --- Session group management ----------------------------------------------
-
-  /** Validate a group name. Returns a user-facing error message on failure
-   *  or null on success. Empty / whitespace-only is rejected, names are
-   *  capped at 40 chars (sidebar pill layout breaks past that), and
-   *  case-insensitive duplicates are blocked because the only way to tell
-   *  them apart in the pill row is to count them. `ignoreId` skips one
-   *  group when checking duplicates so rename-to-same-name is a no-op,
-   *  not an error. */
-  const validateGroupName = useCallback(
-    (raw: string, ignoreId?: string): { ok: true; name: string } | { ok: false; error: string } => {
-      const name = raw.trim()
-      if (!name) return { ok: false, error: 'Group name cannot be empty.' }
-      if (name.length > 40) return { ok: false, error: 'Group name is too long (max 40 chars).' }
-      const lower = name.toLowerCase()
-      const dup = groups.some((g) => g.id !== ignoreId && g.name.trim().toLowerCase() === lower)
-      if (dup) return { ok: false, error: `A group named "${name}" already exists.` }
-      return { ok: true, name }
-    },
-    [groups],
-  )
-
-  const handleCreateGroup = useCallback(
-    (name: string) => {
-      const res = validateGroupName(name)
-      if (!res.ok) {
-        toast.error(res.error)
-        return ''
-      }
-      const id = randomId()
-      setGroups((prev) => [...prev, { id, name: res.name, sessionIds: [] }])
-      return id
-    },
-    [setGroups, validateGroupName, toast],
-  )
 
   /** Delete a group. Orphaned sessions automatically become ungrouped
    *  (they'll appear in the sidebar's "Ungrouped" section). Offers an
