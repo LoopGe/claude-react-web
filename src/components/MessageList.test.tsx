@@ -3294,6 +3294,89 @@ describe('TaskOutput tool card', () => {
   })
 })
 
+describe('ApiRetryView divider', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // ApiRetryView runs a 1s countdown interval whose lifetime scales with
+    // retry_delay_ms (9s in the first test). Under REAL timers that interval
+    // can outlive the file's execution and fire one last setState after the
+    // jsdom environment is torn down ("window is not defined"). None of these
+    // tests need real time — render + assert static labels, or advance fake
+    // timers — so fake them.
+    vi.useFakeTimers()
+  })
+
+  it('renders an api_retry frame as a retry divider with countdown + attempt', () => {
+    // api_retry arrives via the transient `apiRetry` slot (not items), rendered
+    // as a synthetic tail item.
+    const apiRetry = makeMsg('system', {
+      subtype: 'api_retry',
+      attempt: 1,
+      max_retries: 3,
+      retry_delay_ms: 9000,
+      error_status: 429,
+      error: 'rate_limit_error',
+    })
+    const { container } = render(<MessageList items={[]} apiRetry={apiRetry} />)
+
+    const divider = container.querySelector('.msg.result.retry')
+    expect(divider).toBeTruthy()
+
+    // Mark: clock icon + lowercase "rate limited" label.
+    const mark = divider?.querySelector('.result-mark')
+    expect(mark?.querySelector('svg')).toBeTruthy()
+    expect(mark?.textContent).toContain('rate limited')
+
+    // Meta: phase + attempt, tabular.
+    const meta = divider?.querySelector('.result-meta')
+    expect(meta?.textContent).toContain('retrying in')
+    expect(meta?.textContent).toContain('attempt 1/3')
+  })
+
+  it('uses the "overloaded" label for a 529 and omits the /max tail when max_retries is missing', () => {
+    const apiRetry = makeMsg('system', {
+      subtype: 'api_retry',
+      attempt: 2,
+      retry_delay_ms: 4000,
+      error_status: 529,
+      error: 'overloaded_error',
+    })
+    const { container } = render(<MessageList items={[]} apiRetry={apiRetry} />)
+
+    const mark = container.querySelector('.msg.result.retry .result-mark')
+    expect(mark?.textContent).toContain('overloaded')
+
+    const meta = container.querySelector('.msg.result.retry .result-meta')
+    expect(meta?.textContent).toContain('attempt 2')
+    expect(meta?.textContent).not.toContain('/0')
+  })
+
+  it('shows "retrying now" once the countdown reaches zero', () => {
+    const apiRetry = makeMsg('system', {
+      subtype: 'api_retry',
+      attempt: 1,
+      max_retries: 3,
+      retry_delay_ms: 2000,
+      error_status: 429,
+      error: 'rate_limit_error',
+    })
+    const { container } = render(<MessageList items={[]} apiRetry={apiRetry} />)
+
+    // Advance past the 2s deadline.
+    act(() => {
+      vi.advanceTimersByTime(2500)
+    })
+
+    const meta = container.querySelector('.msg.result.retry .result-meta')
+    expect(meta?.textContent).toContain('retrying now')
+  })
+
+  it('renders no divider when apiRetry is not set', () => {
+    const { container } = render(<MessageList items={[]} />)
+    expect(container.querySelector('.msg.result.retry')).toBeNull()
+  })
+})
+
 describe('system error divider', () => {
   beforeEach(() => {
     vi.clearAllMocks()

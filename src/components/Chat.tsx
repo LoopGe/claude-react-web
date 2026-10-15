@@ -2234,6 +2234,7 @@ export const Chat = memo(function Chat({
           clearing={effectiveClearing}
           transcriptRevealKey={session.id}
           sessionId={session.id}
+          apiRetry={stream.apiRetry}
           planStatus={stream.planStatus}
           planContent={stream.planContent}
           questionAnswers={stream.questionAnswers}
