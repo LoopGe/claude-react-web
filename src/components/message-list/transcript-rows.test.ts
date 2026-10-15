@@ -270,6 +270,174 @@ describe('advanceRowAnchor', () => {
     expect(next.frontShift).toBe(2)
   })
 
+  // The regression behind the "scrolled to the top, older history stops
+  // loading" report: react-virtuoso re-arms its startReached stream only when
+  // the first item's index CHANGES (it is distinct-until-changed), so a
+  // loadOlder prepend that leaves firstItemIndex where it was kills scroll-up
+  // paging for the life of the panel. The group-extend shape below is the one
+  // that produced it live: the store's head sat mid-tool-run (a ring/IDB
+  // boundary), and the prepended page's trailing tool run continued that run
+  // backward — foldToolGroupRows re-keys the group to the page's first member,
+  // so the old head row's id VANISHES and the anchor used to mistake the
+  // prepend for an unrelated rebuild.
+  const headRunItems = () => [
+    toolOnlyAssistant('t1', 'Read'),
+    toolOnlyAssistant('t2', 'Grep'),
+    thinkingAssistant('k1'),
+    assistant('a1', 'reply'),
+  ]
+
+  it('DECREASES the offset when a loadOlder prepend extends the head tool group', () => {
+    const before = buildTranscriptRows({ items: headRunItems(), isResultConsumed: never }).rows
+    // The page contributes one row of its own ('p0'), then a tool run that
+    // continues the head group backward (the fold re-keys the group 't1'→'t0'
+    // and swallows the old head row's id).
+    const after = buildTranscriptRows({
+      items: [
+        assistant('p0', 'older page text'),
+        toolOnlyAssistant('t0', 'Edit'),
+        ...headRunItems(),
+      ],
+      isResultConsumed: never,
+    }).rows
+    expect(ids(after)).toEqual(['p0', 't0', 'k1', 'a1'])
+
+    const first = advanceRowAnchor(initialRowAnchor(), before)
+    const next = advanceRowAnchor(first, after)
+    // One row was inserted ahead of every surviving row; the extended group
+    // (now keyed 't0') replaced the old head group in place. A re-anchor here
+    // would pin firstItemIndex and permanently disarm startReached.
+    expect(next.index).toBe(first.index - 1)
+    expect(next.frontShift).toBe(1)
+    expect(next.rowIds).toEqual(['p0', 't0', 'k1', 'a1'])
+  })
+
+  it('keeps the offset when a prepend only grows the head tool group (no rows of its own)', () => {
+    const before = buildTranscriptRows({ items: headRunItems(), isResultConsumed: never }).rows
+    // The page is nothing but a tool run continuing the head group backward:
+    // the fold re-keys the group ('t1'→'t0') and adds ZERO rows.
+    const after = buildTranscriptRows({
+      items: [toolOnlyAssistant('t0', 'Edit'), ...headRunItems()],
+      isResultConsumed: never,
+    }).rows
+    expect(ids(after)).toEqual(['t0', 'k1', 'a1'])
+
+    const first = advanceRowAnchor(initialRowAnchor(), before)
+    const next = advanceRowAnchor(first, after)
+    // Nothing was inserted ahead of any surviving row — the group just grew
+    // backward and re-keyed. frontShift 0 (NOT the re-anchor's null reset):
+    // the head replacement is not a rebuild, so derived indices stay valid.
+    expect(next.index).toBe(first.index)
+    expect(next.frontShift).toBe(0)
+    expect(next.rowIds).toEqual(['t0', 'k1', 'a1'])
+  })
+
+  it('re-anchors when the swallowed head coincides with a mid-tail removal (non-contiguous tail)', () => {
+    // The surviving-tail scan's safety net: a prepend whose build ALSO drops
+    // a tail row — an orphan tool_result merging mid-turn, exactly the live
+    // state the head-mid-run scenario sits in — must not be read as a
+    // uniform prepend. Displacement is not uniform, so the index space is
+    // invalid and the only safe answer is the reset.
+    const before = buildTranscriptRows({
+      items: [...headRunItems(), toolResultFrame('r1', 'orphan-tool')],
+      isResultConsumed: never,
+    }).rows
+    expect(ids(before)).toEqual(['t1', 'k1', 'a1', 'r1'])
+    // The page re-keys the head group AND the orphan merges in the same
+    // build — the old tail maps onto the new rows with a hole.
+    const after = buildTranscriptRows({
+      items: [
+        assistant('p0', 'older page text'),
+        toolOnlyAssistant('t0', 'Edit'),
+        ...headRunItems(),
+        toolResultFrame('r1', 'orphan-tool'),
+      ],
+      isResultConsumed: (id) => id === 'orphan-tool',
+    }).rows
+    expect(ids(after)).toEqual(['p0', 't0', 'k1', 'a1'])
+
+    const first = advanceRowAnchor(initialRowAnchor(), before)
+    const next = advanceRowAnchor(first, after)
+    expect(next.index).toBe(INITIAL_FIRST_ITEM_INDEX)
+    expect(next.frontShift).toBeNull()
+  })
+
+  it('re-anchors when the swallowed head coincides with a front removal (survivor moves backward)', () => {
+    // m < survivor: rows dropped ahead of the first survivor while the head
+    // was replaced — a mixed insert/removal, not a prepend. The guard keeps
+    // the branch from reporting a negative insert as if it were a prepend.
+    const before = buildTranscriptRows({
+      items: [
+        toolOnlyAssistant('t1', 'Read'),
+        thinkingAssistant('k1'),
+        assistant('a1', 'one'),
+        assistant('a2', 'two'),
+      ],
+      isResultConsumed: never,
+    }).rows
+    expect(ids(before)).toEqual(['t1', 'k1', 'a1', 'a2'])
+    const after = buildTranscriptRows({
+      items: [toolOnlyAssistant('t0', 'Edit'), toolOnlyAssistant('t1', 'Read'), assistant('a2', 'two')],
+      isResultConsumed: never,
+    }).rows
+    expect(ids(after)).toEqual(['t0', 'a2'])
+
+    const first = advanceRowAnchor(initialRowAnchor(), before)
+    const next = advanceRowAnchor(first, after)
+    expect(next.index).toBe(INITIAL_FIRST_ITEM_INDEX)
+    expect(next.frontShift).toBeNull()
+  })
+
+  it('still shifts when the swallowed-head prepend lands while rows APPEND at the tail', () => {
+    // The contiguity check covers only the OLD tail; rows appended BEYOND it
+    // (live streaming during the prepend — the head-mid-run scenario is an
+    // active turn) must not break the shift.
+    const before = buildTranscriptRows({ items: headRunItems(), isResultConsumed: never }).rows
+    const after = buildTranscriptRows({
+      items: [
+        assistant('p0', 'older page text'),
+        toolOnlyAssistant('t0', 'Edit'),
+        ...headRunItems(),
+        assistant('a2', 'streamed while the page loaded'),
+      ],
+      isResultConsumed: never,
+    }).rows
+    expect(ids(after)).toEqual(['p0', 't0', 'k1', 'a1', 'a2'])
+
+    const first = advanceRowAnchor(initialRowAnchor(), before)
+    const next = advanceRowAnchor(first, after)
+    expect(next.index).toBe(first.index - 1)
+    expect(next.frontShift).toBe(1)
+    expect(next.rowIds).toEqual(['p0', 't0', 'k1', 'a1', 'a2'])
+  })
+
+  it('answers frontShift 0 (not a reset) when the overlay prompt row is superseded by the SDK echo', () => {
+    // SubagentOverlay's head replacement: the synthetic prompt row leaves and
+    // the echo lands in the same build. The module comment pins this as "not
+    // a rebuild" — frontShift 0, index untouched — where the pre-scan code
+    // re-anchored. Guards the documented answer against a future tightening
+    // of the swallowed-head branch (e.g. requiring inserted > 0).
+    const before = buildTranscriptRows({
+      items: [assistant('c1', 'inner reply', 'agent-1')],
+      parentToolUseIdFilter: 'agent-1',
+      leadingItems: [user('agent-1:prompt', 'do the thing', 'agent-1')],
+      isResultConsumed: never,
+    }).rows
+    expect(ids(before)).toEqual(['agent-1:prompt', 'c1'])
+    const after = buildTranscriptRows({
+      items: [user('e1', 'do the thing', 'agent-1'), assistant('c1', 'inner reply', 'agent-1')],
+      parentToolUseIdFilter: 'agent-1',
+      isResultConsumed: never,
+    }).rows
+    expect(ids(after)).toEqual(['e1', 'c1'])
+
+    const first = advanceRowAnchor(initialRowAnchor(), before)
+    const next = advanceRowAnchor(first, after)
+    expect(next.index).toBe(first.index)
+    expect(next.frontShift).toBe(0)
+    expect(next.rowIds).toEqual(['e1', 'c1'])
+  })
+
   it('INCREASES the offset by the number of rows dropped off the front', () => {
     // The case the old msg-identity bookkeeping collapsed into a no-op reset:
     // SubagentOverlay's synthetic prompt row disappearing once the SDK echoes

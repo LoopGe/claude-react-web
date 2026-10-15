@@ -451,7 +451,8 @@ export function subagentResultItem(
 // the SDK's echo. Both happen in the same build (the echo row is what flips
 // `sdkEchoedSubagentPrompt` true), so the head is REPLACED, not removed — row
 // count before the head is unchanged and `firstItemIndex` genuinely shouldn't
-// move. That lands on the re-anchor branch, which is the right answer.
+// move. The surviving-tail scan answers that with frontShift 0 (nothing
+// shifted, no reset), which is the right answer.
 
 /** Starting anchor. A large value so `loadOlder` prepends can decrement for a
  *  very long time without approaching zero (Virtuoso rejects negatives). */
@@ -463,11 +464,14 @@ export interface RowAnchor {
   /** Row ids from the build this anchor was computed for, in order. */
   rowIds: readonly string[]
   /** Data-space shift of THIS build relative to the previous one: +N when N
-   *  rows were inserted ahead of the previous first row, -N when N rows were
-   *  dropped off the front, 0 when the front is unchanged. null when the list
-   *  was rebuilt (replay replace / clear swap / emptied) and the whole index
-   *  space is invalid — callers holding data-space indices into the previous
-   *  build (the pinned header's visible-top ref) must reset, not shift. */
+   *  rows were inserted ahead of the previous front (the previous first row
+   *  when it survives, else the first SURVIVING row — the swallowed-head
+   *  case), -N when N rows were dropped off the front, 0 when no row moved
+   *  (a head swap that inserts nothing ahead of the survivors included).
+   *  null when the list was rebuilt (replay replace / clear swap / emptied)
+   *  and the whole index space is invalid — callers holding data-space
+   *  indices into the previous build (the pinned header's visible-top ref)
+   *  must reset, not shift. */
   frontShift: number | null
 }
 
@@ -497,6 +501,14 @@ const reanchoredAnchor = (rowIds: readonly string[]): RowAnchor => ({
  *
  * `index` only ever DECREASES on a front insert, from a starting point of 1e6,
  * so it cannot realistically reach zero (Virtuoso rejects negatives).
+ *
+ * A front insert is recognized even when the old head row's id has VANISHED —
+ * a loadOlder page whose trailing tool run continues the head group re-keys
+ * the folded group to its new first member. The surviving old tail then maps
+ * contiguously onto the new rows, and the shift is read from its displacement
+ * (see the swallowed-head branch in the body). Missing this pinned the offset
+ * and permanently disarmed react-virtuoso's startReached (distinct-until-
+ * changed over the first item's index), killing scroll-up paging.
  */
 export function advanceRowAnchor(prev: RowAnchor, rows: readonly TranscriptRow[]): RowAnchor {
   if (rows.length === 0) {
@@ -532,7 +544,47 @@ export function advanceRowAnchor(prev: RowAnchor, rows: readonly TranscriptRow[]
     return { index: prev.index + removed, rowIds, frontShift: -removed }
   }
 
-  // Neither a front insert nor a front removal — an unrelated rebuild (replay
-  // replace, fork, /clear swap). Re-anchor; Virtuoso resets its size tree.
+  // Both the old head and the new head are gone-from/absent-in the other
+  // list. Before concluding a rebuild, rule out the loadOlder group-extend:
+  // a page whose trailing tool run continues the head group folds those
+  // members into it, RE-KEYING the group row to the page's first member —
+  // the old head row's id vanishes even though the prepend is an ordinary
+  // front insert (or, in the degenerate shape, inserts nothing ahead). The
+  // surviving tail betrays it: find the first old row that still exists; if
+  // the whole old tail from there maps contiguously onto the new rows, then
+  // (new position − old position) rows were inserted ahead of it. Missing
+  // this case pinned firstItemIndex at its current value, and react-virtuoso's
+  // startReached — distinct-until-changed over the first item's index — never
+  // re-armed, so scroll-up paging stopped for the life of the panel.
+  const newIdSet = new Set(rowIds)
+  let survivor = 1
+  while (survivor < prev.rowIds.length && !newIdSet.has(prev.rowIds[survivor]!)) survivor++
+  if (survivor < prev.rowIds.length) {
+    const m = rowIds.indexOf(prev.rowIds[survivor]!)
+    if (m >= survivor) {
+      const tailLen = prev.rowIds.length - survivor
+      let contiguous = m + tailLen <= rowIds.length
+      for (let i = 0; contiguous && i < tailLen; i++) {
+        if (rowIds[m + i] !== prev.rowIds[survivor + i]) contiguous = false
+      }
+      if (contiguous) {
+        const inserted = m - survivor
+        // inserted === 0 (the degenerate all-folded page) keeps the offset:
+        // no row moved, so no reset — the head replacement is not a rebuild.
+        // Known limit of that answer: firstItemIndex is unchanged, and
+        // react-virtuoso arms startReached distinct-until-changed over the
+        // first item's index, so a page that folds ENTIRELY into the head
+        // group (zero rows of its own) still leaves scroll-up paging
+        // disarmed. No offset change can fix that — any nonzero decrement
+        // would misalign the survivors — so that shape needs a mechanism
+        // outside the anchor (e.g. loadOlder chaining while still at top).
+        return { index: prev.index - inserted, rowIds, frontShift: inserted }
+      }
+    }
+  }
+
+  // Neither a front insert nor a front removal nor a swallowed-head prepend —
+  // an unrelated rebuild (replay replace, fork, /clear swap). Re-anchor;
+  // Virtuoso resets its size tree.
   return reanchoredAnchor(rowIds)
 }
