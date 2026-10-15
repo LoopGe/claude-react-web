@@ -733,6 +733,55 @@ describe('NewSessionDialog field pickers (model / permission mode / group)', () 
   })
 })
 
+describe('NewSessionDialog worktree isolation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+  })
+  afterEach(() => window.localStorage.clear())
+
+  const isolateRow = (root: HTMLElement) => {
+    const label = Array.from(root.querySelectorAll('label')).find((l) =>
+      l.textContent?.includes('Isolate in its own worktree'),
+    )
+    expect(label, 'worktree isolation row').toBeDefined()
+    return label!.querySelector('input[type="checkbox"]') as HTMLInputElement
+  }
+
+  const clickCreate = async (onSubmit: ReturnType<typeof vi.fn>) => {
+    const createBtn = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Create',
+    )!
+    fireEvent.click(createBtn)
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    return onSubmit.mock.calls[0][0] as NewSessionForm
+  }
+
+  it('submits isolateWorktree: true when the checkbox is checked', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    fireEvent.click(isolateRow(baseElement))
+    expect(isolateRow(baseElement).checked).toBe(true)
+
+    const form = await clickCreate(onSubmit)
+    expect(form.isolateWorktree).toBe(true)
+  })
+
+  it('omits isolateWorktree when the checkbox is left unchecked', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    expect(isolateRow(baseElement).checked).toBe(false)
+
+    const form = await clickCreate(onSubmit)
+    expect(form.isolateWorktree).toBeUndefined()
+  })
+})
+
 describe('NewSessionDialog project prefill', () => {
   beforeEach(() => {
     vi.clearAllMocks()

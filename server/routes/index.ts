@@ -135,7 +135,7 @@ export function buildApiRouter(
   }))
   app.route('/', buildConfigRouter(sm, configDir))
   app.route('/', buildProfilesRouter(configDir, sm))
-  app.route('/', buildSessionRouter(sm, mpStore, agentDefinitionStore))
+  app.route('/', buildSessionRouter(sm, mpStore, agentDefinitionStore, configDir))
   app.route('/', buildHooksRouter(sm))
   app.route('/', buildSkillsRouter(sm))
   app.route('/', buildDiagnosticsRouter(sm))

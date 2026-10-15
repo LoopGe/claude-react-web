@@ -105,4 +105,22 @@ describe('buildNewLikeThisForm', () => {
     const form = buildNewLikeThisForm(mkSource({ id: 's1' }), undefined, 10)
     expect(form.enabledPlugins).toBeUndefined()
   })
+
+  it('maps an isolated source cwd to the main repo (never the live worktree)', () => {
+    const form = buildNewLikeThisForm(
+      mkSource({
+        id: 's1',
+        cwd: '/state/worktrees/ws-x',
+        worktree: { mainRepoPath: '/repo', branch: 'crw-ws-x', baseSha: 'abc123' },
+      }),
+      undefined,
+      10,
+    )
+    expect(form.cwd).toBe('/repo')
+  })
+
+  it('keeps the plain cwd when the source is not isolated', () => {
+    const form = buildNewLikeThisForm(mkSource({ id: 's1', cwd: '/repo' }), undefined, 10)
+    expect(form.cwd).toBe('/repo')
+  })
 })

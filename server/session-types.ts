@@ -20,7 +20,7 @@ import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { MpStore } from './mp-store.js'
 import type { AgentDefinitionStore } from './agent-definition-store.js'
-import type { PluginLoadError, SessionInfoBase, SessionMemorySettings, ThinkingSetting } from '../shared/session-info.js'
+import type { PluginLoadError, SessionInfoBase, SessionMemorySettings, ThinkingSetting, WorktreeInfo } from '../shared/session-info.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import type { ProviderRegistry } from './providers/registry.js'
 import type { ProviderSessionHandle } from './providers/types.js'
@@ -503,6 +503,9 @@ export interface Session {
    *  cwd) and for sessions spawned before this field existed (until their
    *  next respawn). Persisted via SessionMeta. */
   repoRoot?: string
+  /** Worktree isolation metadata. Undefined = the session runs in the user's
+   *  own checkout. Persisted; survives resume/restart. */
+  worktree?: WorktreeInfo
   /** When present, this session is a Side Chat forked from the
    *  indicated parent session. Set by createSideChat(), persisted via
    *  SessionMeta, and mirrored into SessionInfo. */

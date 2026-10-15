@@ -77,6 +77,8 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // already sees the stored list.
   const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
   const [cwd, setCwd] = useState<string>(initialCwd ?? recentCwds[0] ?? defaults.cwd ?? '')
+  // Opt-in worktree isolation — off by default; only sent when checked.
+  const [isolate, setIsolate] = useState(false)
   const [model, setModel] = useState<string>(defaults.model ?? '')
   /** Model Group pin. Mutually exclusive with a concrete `model` — selecting
    *  one clears the other (ChatPanel's ModelPicker has the same contract). */
@@ -506,6 +508,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
 
     onSubmit({
       cwd: cwd.trim() || undefined,
+      isolateWorktree: isolate || undefined,
       model: activeModelGroup ? undefined : model.trim() || undefined,
       // Derived (not raw state): a model group deleted while the dialog is
       // open must not be posted — create() 400s on an unknown group.
@@ -652,6 +655,36 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                 onForget={forgetCwd}
                 onBrowse={() => setShowPicker(true)}
               />
+              {/* Opt-in worktree isolation. Same inline-styled checkbox row
+                  shape as the MCP / first-party / plugin pickers below; the
+                  hint spells out the two surprises (separate branch, no
+                  gitignored files) so the user isn't blindsided after
+                  create. */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 8,
+                  fontSize: 'var(--fs-xs)',
+                  cursor: 'pointer',
+                  marginTop: 6,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={isolate}
+                  onChange={(e) => setIsolate(e.target.checked)}
+                  style={{ marginTop: 2 }}
+                />
+                <span>
+                  Isolate in its own worktree
+                  <span style={{ display: 'block', color: 'var(--fg-muted)' }}>
+                    Changes go to a dedicated branch (crw/…) and never touch the main checkout. The
+                    worktree is a clean checkout of HEAD and does not include gitignored files
+                    (e.g. .env, node_modules).
+                  </span>
+                </span>
+              </label>
             </div>
 
             <div className="settings-field">

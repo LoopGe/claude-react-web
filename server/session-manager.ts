@@ -25,7 +25,7 @@ import type { ProcessExitInfo } from './process-monitor.js'
 import type { AuxLlmTarget } from './anthropic-api.js'
 import { sameCwd } from './cwd-equality.js'
 import { randomUUID } from 'node:crypto'
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
@@ -48,7 +48,8 @@ import {
 } from '../shared/tool-profile.js'
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn } from './ws-protocol.js'
-import { tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
+import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
+import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
@@ -102,7 +103,7 @@ import { HttpError, controlHttpError, type ControlWrapOpts } from './errors.js'
 import { filterClientEnv } from './session-env.js'
 import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
-import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
+import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting, type WorktreeInfo } from '../shared/session-info.js'
 import { isTerminalTaskStatus } from '../shared/tasks.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
@@ -1329,6 +1330,7 @@ export class SessionManager {
       lastTurnAt: s.lastTurnAt,
       gitStartSha: s.gitStartSha,
       repoRoot: s.repoRoot,
+      worktree: s.worktree,
       parentId: s.parentId,
       forkBoundaryUuid: s.forkBoundaryUuid,
       mcpServerNames: s.mcpServerNames,
@@ -1398,7 +1400,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -1454,6 +1456,7 @@ export class SessionManager {
         return sb && sb.enabled === true ? sb : undefined
       })(),
       cliDebug: (opts as { cliDebug?: boolean }).cliDebug,
+      worktree: (opts as { worktree?: WorktreeInfo }).worktree,
     }
   }
 
@@ -1478,7 +1481,7 @@ export class SessionManager {
    *
    *  For resume, use `resume()` instead — this path always allocates a
    *  fresh UUID and won't wire up SDK `resume`. */
-  create(
+  async create(
     opts: Options & { provider?: string; modelGroupId?: string },
     customEnv?: Record<string, string>,
     /** Set by the restart flow: the id of the session Y joins. Threaded
@@ -1490,7 +1493,7 @@ export class SessionManager {
      *  `created` broadcast carries `evictingSource`, letting the client
      *  bypass its maxGroupSize cap when appending Y. */
     evictingSource?: boolean,
-  ): SessionInfo {
+  ): Promise<SessionInfo> {
     // Validate profileId first so we can use the effective profile for
     // downstream checks (modelGroupId, default model).
     const profileId = (opts as { profileId?: unknown }).profileId
@@ -1563,6 +1566,24 @@ export class SessionManager {
           firstPartyTools: firstParty,
         }
       : undefined
+    // Worktree isolation (方案 A"创建即替换"): provision BEFORE spawn so
+    // opts.cwd / opts.worktree are final when snapshotMeta captures them.
+    const isolate = (opts as { isolateWorktree?: unknown }).isolateWorktree
+    if (isolate !== undefined && typeof isolate !== 'boolean') {
+      throw new HttpError(400, 'isolateWorktree must be a boolean')
+    }
+    if (isolate === true) {
+      const id = randomUUID()
+      if (!this.store) throw new HttpError(400, 'worktree isolation requires a state dir')
+      const mainRepo = withDefault.cwd
+      if (!mainRepo) throw new HttpError(400, 'worktree isolation requires a cwd')
+      const prov = await provisionWorktree(this.store.getDir(), id, mainRepo)
+      withDefault.cwd = prov.worktreePath
+      ;(withDefault as Options & { worktree?: WorktreeInfo }).worktree = {
+        mainRepoPath: mainRepo, branch: prov.branch, baseSha: prov.baseSha,
+      }
+      return this.spawn(id, withDefault, customEnv, undefined, undefined, createPrefs, joinGroupOf, evictingSource)
+    }
     return this.spawn(randomUUID(), withDefault, customEnv, undefined, undefined, createPrefs, joinGroupOf, evictingSource)
   }
 
@@ -1630,7 +1651,7 @@ export class SessionManager {
     // in our store). Probe the SDK's on-disk metadata and, if it exists,
     // register a SessionMeta so the normal resume path below can run.
     // After this first resume the session is "known" like any other.
-    const meta = this.store.get(id) ?? (await this.adoptDiskSession(id, this.defaultProvider))
+    let meta = this.store.get(id) ?? (await this.adoptDiskSession(id, this.defaultProvider))
     if (!meta) throw new HttpError(404, `session ${id} not found`)
     // Terminal gate FIRST: a hard-ended session is 410 regardless of the
     // workspace. Checking cwd before this sent users to "restore the
@@ -1651,6 +1672,40 @@ export class SessionManager {
         )
       } else {
         throw new HttpError(410, `session ${id} has ended and cannot be resumed`)
+      }
+    }
+    // Worktree recreate chain (spec: 路径在 → 分支在 → baseSha → 回退主仓).
+    // Runs BEFORE the cwdMissing probe: a GC'd worktree dir must reconstruct,
+    // not 400. Mutates the local meta copy and persists the fallback so the
+    // next resume doesn't re-walk the chain. A throw is split by ground truth:
+    // when the main repo is still a valid git repo the failure is TRANSIENT
+    // (lock contention, FS hiccup) — rethrow so resume fails loudly and the
+    // user can retry rather than silently losing isolation. Only a main repo
+    // that is genuinely no longer a git repo justifies the de-isolating
+    // fallback (a session can still run fine in a non-repo directory).
+    if (meta.worktree && meta.cwd && !existsSync(meta.cwd)) {
+      let ensured: { cwd: string; worktree?: WorktreeInfo }
+      try {
+        ensured = await ensureWorktreeForResume(this.store!.getDir(), id, meta.worktree)
+      } catch (err) {
+        if (await isInsideWorkTree(meta.worktree.mainRepoPath)) {
+          log.warn(
+            `[session ${id}] worktree recreate failed transiently ` +
+            `(main repo ${meta.worktree.mainRepoPath} is still a git repo); ` +
+            `failing resume so the user can retry: ${err instanceof Error ? err.message : String(err)}`,
+          )
+          throw err
+        }
+        log.warn(
+          `[session ${id}] worktree recreate failed ` +
+          `(main repo ${meta.worktree.mainRepoPath} is no longer a git repo), ` +
+          `de-isolating: falling back to main repo path: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        ensured = { cwd: meta.worktree.mainRepoPath, worktree: undefined }
+      }
+      if (ensured.cwd !== meta.cwd || ensured.worktree !== meta.worktree) {
+        meta = { ...meta, cwd: ensured.cwd, worktree: ensured.worktree }
+        this.store?.upsert(meta)
       }
     }
     // Pre-spawn probe: a missing workspace is the real fault behind a whole
@@ -1746,6 +1801,10 @@ export class SessionManager {
     const resumeOpts = this.baseSpawnOptions({
       provider,
       cwd: meta.cwd,
+      // Carried so re-spawn's snapshotMeta captures it (spawn's existingMeta
+      // re-read already has it via the upsert above — this keeps both paths
+      // consistent for a resume that did NOT walk the recreate chain too).
+      worktree: meta.worktree,
       model: resolvedModel,
       modelGroupId: meta.modelGroupId,
       // Use the persisted permissionMode if available (sessions we created).
@@ -2104,7 +2163,11 @@ export class SessionManager {
     const sourceProvider = meta.provider ?? this.defaultProvider
     const forkOpts = this.baseSpawnOptions({
       provider: sourceProvider,
-      cwd: meta.cwd,
+      // An isolated source forks back to the user's main repo: two sessions
+      // sharing one worktree is a clobber hazard, and forking INTO a second
+      // worktree is out of scope for v1. The user can re-check isolation on
+      // the fork's own create path.
+      cwd: meta.worktree?.mainRepoPath ?? meta.cwd,
       model: meta.model,
       modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
@@ -2464,6 +2527,15 @@ export class SessionManager {
       await this.unload(id, { removeFromStore: true })
     }
 
+    // Worktree teardown for the discarded session. Y (the fork) landed in the
+    // main repo per the fork ruling, so X's worktree is ownerless — and
+    // unload() never runs delete()'s cleanup, so without this the worktree
+    // dir + git registration leak forever. Best-effort: the helper never
+    // throws (branch kept, dir removed).
+    if (metaX?.worktree && this.store) {
+      await removeWorktreeForSession(this.store.getDir(), id, metaX.worktree, log)
+    }
+
     log.info(
       `[session ${id}] discarded ${anchors.length - anchorIdx - 1} turn(s) after anchor ` +
       `${fromAssistantUuid.slice(0, 8)} → forked to ${forkInfo.id}` +
@@ -2814,6 +2886,7 @@ export class SessionManager {
       // from this projection.
       title: existingMeta?.title ?? metaSnapshot.title,
       cwd: existingMeta?.cwd ?? metaSnapshot.cwd,
+      worktree: existingMeta?.worktree ?? metaSnapshot.worktree,
       // Carry a spawn-scoped tool-surface profile. A caller-supplied profile
       // (/clear, fork) wins; otherwise capture any create-body passthrough so
       // it too survives a later /clear. RAM-only — see Session.toolProfile.
@@ -3917,6 +3990,13 @@ export class SessionManager {
         // the session's configuration. Dropping it here would silently hand
         // back a plain session after twenty turns as a custom agent.
         agent: s.agent,
+        // Carry X's worktree isolation onto Y: X's cwd IS the worktree path,
+        // so Y runs there — without the metadata Y would be an unbadged
+        // session inside a worktree dir the delete-confirm dirty check never
+        // sees and whose registration would orphan when Y is deleted. /clear
+        // resets the conversation, not the isolation (unlike fork, which
+        // deliberately lands in the main repo).
+        worktree: s.worktree,
       }
 
       // Pure-UI pref overrides + per-server first-party tool pins ride the
@@ -3964,6 +4044,10 @@ export class SessionManager {
         betas: settings.betas,
         hooks: settings.hooks,
         enabledPlugins: settings.enabledPlugins,
+        // snapshotMeta captures this — Y keeps the isolation metadata (badge,
+        // delete-confirm dirty check, worktree cleanup) while running in the
+        // inherited worktree dir.
+        worktree: settings.worktree,
       }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting; parentId?: string }
       // Carry the auto-memory intent onto the fresh session (new id —
       // snapshotMeta captures it from here, same as fork).
@@ -4403,7 +4487,10 @@ export class SessionManager {
    *  process silently disagree. Clears stale spawn_failed / transcript_missing
    *  state (updating the cwd is how a user recovers from a gone workspace)
    *  and the git anchors (repoRoot / gitStartSha belong to the OLD tree; the
-   *  next spawn recaptures them against the new cwd). */
+   *  next spawn recaptures them against the new cwd). Worktree isolation is
+   *  cleared too (and the snapshot sidecar dropped) — an explicit cwd
+   *  re-point invalidates everything anchored to the OLD tree; the
+   *  `crw/<id>` branch itself is left behind. */
   async setCwd(id: string, cwd: string): Promise<SessionInfo> {
     // Under the op lock: a PATCH cwd that lands during a resume waits for the
     // resume to finish (and then hits the "running — sleep it first" 409
@@ -4439,10 +4526,18 @@ export class SessionManager {
         // Git anchors were captured against the OLD tree.
         repoRoot: undefined,
         gitStartSha: undefined,
+        // The user re-pointed the session by hand — worktree isolation no
+        // longer applies (and the recreate chain must not resurrect a
+        // worktree at the new cwd's expense).
+        worktree: undefined,
         ...(cleared
           ? { terminated: false, terminatedReason: undefined, error: undefined }
           : {}),
       })!
+      // Stale shadow-repo meta points at the OLD cwd (resolveRepo reuses it
+      // blindly) — drop it so the next capture re-resolves against the new
+      // dir. This also drops the session's snapshot anchors deliberately.
+      void this.snapshotStore.remove(id)
       const info = this.infoFromMeta(nextMeta)
       this.broadcastGlobal({ kind: 'update', session: info })
       return info
@@ -6294,7 +6389,15 @@ export class SessionManager {
     // delete must still work then — it already tolerates running alongside
     // other work (unload is idempotent; the health monitor calls it unlocked).
     return this.opLock.run(id, async () => {
+      // Read the meta BEFORE store.remove drops the entry — the worktree
+      // info must survive long enough to drive the cleanup below.
+      const meta = this.store?.get(id)
       await this.unload(id, { terminated: true, reason: 'deleted' })
+      // Best-effort worktree teardown (dir removed, branch kept). A failure
+      // only warns — deletion must not be blocked by it.
+      if (meta?.worktree && this.store) {
+        await removeWorktreeForSession(this.store.getDir(), id, meta.worktree, log)
+      }
       this.store?.remove(id)
       // Drop the promptUuids sidecar too — the session is gone for good.
       void this.promptUuidStore.remove(id)
@@ -6921,6 +7024,7 @@ export class SessionManager {
     error?: string
     lastTurnAt?: number
     gitStartSha?: string
+    worktree?: WorktreeInfo
     parentId?: string
     mcpServerNames?: string[]
     enabledPlugins?: string[]
@@ -6961,6 +7065,7 @@ export class SessionManager {
       error: x.error,
       lastTurnAt: x.lastTurnAt,
       gitStartSha: x.gitStartSha,
+      worktree: x.worktree,
       parentId: x.parentId,
       mcpServerNames: x.mcpServerNames,
       enabledPlugins: x.enabledPlugins,
@@ -7458,6 +7563,7 @@ export class SessionManager {
   private baseSpawnOptions(source: {
     provider?: string
     cwd?: string
+    worktree?: WorktreeInfo
     model?: string
     modelGroupId?: string
     permissionMode?: PermissionMode
@@ -7469,10 +7575,15 @@ export class SessionManager {
     hooks?: SessionHooksConfig
     enabledPlugins?: string[]
     cliDebug?: boolean
-  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number; cliDebug?: boolean } {
+  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number; cliDebug?: boolean; worktree?: WorktreeInfo } {
     return {
       provider: source.provider,
       cwd: source.cwd,
+      // Worktree isolation metadata — snapshotMeta reads it off the Options
+      // object handed to spawn(). Call sites that don't pass it (respawnFresh/
+      // fork) leave undefined; spawn's existingMeta?.worktree ?? snapshot
+      // merge keeps the persisted value alive there.
+      worktree: source.worktree,
       model: source.model,
       modelGroupId: source.modelGroupId,
       permissionMode: source.permissionMode,

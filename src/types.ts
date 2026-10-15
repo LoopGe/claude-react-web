@@ -131,6 +131,9 @@ export interface NewSessionForm {
   /** Compound keys of globally-enabled plugins to carry into this session.
    *  Omitted when all enabled plugins are selected (default); `[]` when none. */
   enabledPlugins?: string[]
+  /** Opt-in: run this session in its own git worktree (server provisions
+   *  <stateDir>/worktrees/<sessionId> off the repo HEAD). */
+  isolateWorktree?: boolean
   // Advanced (JSON blobs — rendered as <textarea> and parsed on submit)
   mcpServers?: unknown
   /** Custom environment variables merged into the subprocess environment. */

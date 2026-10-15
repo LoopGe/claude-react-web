@@ -195,8 +195,8 @@ describe('WebSocket multiplexer', () => {
   }
 
   it('emits sessions-snapshot on connect', async () => {
-    sm.create({ title: 'alpha' })
-    sm.create({ title: 'beta' })
+    await sm.create({ title: 'alpha' })
+    await sm.create({ title: 'beta' })
     const client = await connect()
     const snap = await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     if (snap.kind !== 'sessions-snapshot') throw new Error('narrowing')
@@ -207,7 +207,7 @@ describe('WebSocket multiplexer', () => {
   it('broadcasts session-created when a session is spawned after connect', async () => {
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
-    const info = sm.create({ title: 'fresh' })
+    const info = await sm.create({ title: 'fresh' })
     const ev = await waitForFrame(client.frames, (f) => f.kind === 'session-created')
     if (ev.kind !== 'session-created') throw new Error('narrowing')
     expect(ev.session.id).toBe(info.id)
@@ -215,7 +215,7 @@ describe('WebSocket multiplexer', () => {
   })
 
   it('replays history + forwards live messages after subscribe', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     // Seed some history through send + result.
     sm.send(info.id, 'hello')
     mockHandles[0].emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
@@ -252,7 +252,7 @@ describe('WebSocket multiplexer', () => {
     // 500-cap ring fills with deltas and evicts durable content (a just-sent
     // user message, assistant messages, tool results) from the WS full-replay
     // surface, so a reload during/after the flood loses recent messages.
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'hello')
     mockHandles[0].emit({
       type: 'stream_event',
@@ -299,7 +299,7 @@ describe('WebSocket multiplexer', () => {
     // Tail-first replay: a cold client (no sinceUuid) opts in and gets the
     // NEWEST chunk on the first frame so it can paint immediately, then the
     // older chunks newest→oldest for the client to prepend.
-    const info = sm.create({})
+    const info = await sm.create({})
     const TOTAL = 120
     await seedHistory(TOTAL)
 
@@ -346,7 +346,7 @@ describe('WebSocket multiplexer', () => {
     // A sinceUuid implies a cached transcript on the client, and backfill
     // chunks are NEWER than a stale cache — prepending them would corrupt the
     // ordering. So tail mode is honored only with an absent sinceUuid.
-    const info = sm.create({})
+    const info = await sm.create({})
     await seedHistory(120)
 
     const client = await connect()
@@ -373,7 +373,7 @@ describe('WebSocket multiplexer', () => {
     // prepends rows without setting one). Backfill chunks are NEWER than
     // such a cache and are prepended to the FRONT, so the server must not
     // infer the precondition — it requires the client to state it.
-    const info = sm.create({})
+    const info = await sm.create({})
     await seedHistory(120)
 
     const client = await connect()
@@ -402,7 +402,7 @@ describe('WebSocket multiplexer', () => {
     // without opts. Re-serving it the ORDINARY full ring would send every
     // chunk the tail-first burst exists to avoid, and the client would buffer
     // and merge all of it for nothing.
-    const info = sm.create({})
+    const info = await sm.create({})
     await seedHistory(120)
 
     const client = await connect()
@@ -431,7 +431,7 @@ describe('WebSocket multiplexer', () => {
     // snapshots (the terminator is payload-free by contract), so a re-serve
     // that omits them leaves a listener attaching to an already-live channel
     // with no permission card on its first paint.
-    const info = sm.create({})
+    const info = await sm.create({})
     await seedHistory(120)
 
     const client = await connect()
@@ -460,7 +460,7 @@ describe('WebSocket multiplexer', () => {
   it('falls back to one ordinary replay frame when the history matches the tail chunk size', async () => {
     // The planner returns null (no backfill) and the caller must use the
     // ordinary path unchanged — the pre-tail behavior for short histories.
-    const info = sm.create({})
+    const info = await sm.create({})
     await seedHistory(50)
 
     const client = await connect()
@@ -480,7 +480,7 @@ describe('WebSocket multiplexer', () => {
   })
 
   it('replays completed hook runs with completed kind and refreshes activity', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const before = sm.get(info.id).lastActivityAt
     await new Promise((r) => setTimeout(r, 5))
     mockHandles[0].emit({
@@ -514,7 +514,7 @@ describe('WebSocket multiplexer', () => {
   })
 
   it('unsubscribe stops the per-session stream', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
@@ -576,7 +576,7 @@ describe('WebSocket multiplexer', () => {
     // resume whose replay landed before <Chat> existed). Only the server can
     // know, so a duplicate must both answer and re-serve rather than being
     // swallowed — that silence is what left resumed panels blank.
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'hello')
     mockHandles[0].emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
     mockHandles[0].emit({ type: 'result' })
@@ -609,7 +609,7 @@ describe('WebSocket multiplexer', () => {
     // `replay-done`, and the client never re-subscribed (its hub only
     // re-subscribes on reconnect) — leaving a white screen. Now the
     // subscribe should ensure the session is loaded first.
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.unload(info.id) // → known-but-dormant (persisted, not in memory)
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
@@ -635,7 +635,7 @@ describe('WebSocket multiplexer', () => {
     // removed on natural teardown — a stale entry would make the next
     // subscribe a subs.has() no-op and the resumed session would never get
     // (re)served a replay on this connection.
-    const info = sm.create({})
+    const info = await sm.create({})
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
@@ -676,7 +676,7 @@ describe('WebSocket multiplexer', () => {
   it('does not answer a client-initiated unsubscribe with a closed result', async () => {
     // The client closed this channel itself; telling it the channel closed
     // would be noise on a path that runs on every panel unmount.
-    const info = sm.create({})
+    const info = await sm.create({})
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
@@ -706,7 +706,7 @@ describe('WebSocket multiplexer', () => {
   })
 
   it('closing the WS releases all subscribers on the SessionManager side', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
@@ -729,7 +729,7 @@ describe('WebSocket multiplexer', () => {
   })
 
   it('concurrent subscribes from two clients each get their own replay', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'x')
     mockHandles[0].emit({ type: 'result' })
     await tick()
