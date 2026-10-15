@@ -1379,6 +1379,10 @@ button.chat-empty-env-chip:hover {
     transform var(--motion-duration-base) var(--motion-ease-standard);
 }
 .composer-tasks-count {
+  /* A notch larger than the button's --fs-sm — the count is the button's
+     whole point once live, and the slot math in the face comment leaves
+     room (two digits stay inside the button's padding at every fs-scale). */
+  font-size: var(--fs-md);
   animation: tasks-digit-pop var(--motion-duration-base) var(--motion-ease-enter);
 }
 .composer-tasks-live .composer-tasks-icon {
