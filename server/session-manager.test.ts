@@ -8432,6 +8432,70 @@ describe('create() worktree isolation', () => {
   })
 })
 
+describe('clear() worktree inheritance (legacy path-less meta)', () => {
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+  let repo: string
+
+  beforeAll(async () => {
+    repo = await makeRepo()
+  })
+  afterAll(async () => {
+    await cleanupGitFixtures()
+  })
+  beforeEach(async () => {
+    mockHandles.length = 0
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    sm = new SessionManager({ store })
+  })
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+  })
+
+  it('backfills worktree.path from X’s cwd onto Y and the orphan sweep spares the inherited dir', async () => {
+    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
+    const wtPath = join(dir, 'worktrees', info.id)
+    // Simulate the pre-`path` era: strip the recorded path from the live
+    // session AND the persisted meta, then age the dir past the sweep's
+    // grace window so sparing it is meaningful.
+    const xWt = store.get(info.id)!.worktree!
+    const legacyWt = { mainRepoPath: xWt.mainRepoPath, branch: xWt.branch, baseSha: xWt.baseSha }
+    const internals = sm as unknown as {
+      sessions: Map<string, { worktree?: typeof legacyWt }>
+      sweepOrphansTick: () => void
+    }
+    internals.sessions.get(info.id)!.worktree = legacyWt
+    store.upsert({ ...store.get(info.id)!, worktree: legacyWt })
+    const back = new Date(Date.now() - 11 * 60_000)
+    await nodeFs.utimes(wtPath, back, back)
+
+    const next = await sm.clear(info.id)
+
+    // X is gone; Y's meta carries the isolation WITH the dir backfilled —
+    // the successor now claims the inherited dir by recorded path, not by
+    // fallback.
+    expect(store.get(info.id)).toBeUndefined()
+    expect(next.worktree?.path).toBe(wtPath)
+    const yMeta = store.get(next.id)
+    expect(yMeta?.worktree?.path).toBe(wtPath)
+    expect(yMeta?.cwd).toBe(wtPath)
+
+    // The GC tick's sweep must NOT remove the dir Y runs in. A backdated
+    // unclaimed canary (name sorts last) gives a deterministic completion
+    // signal: once the sweep has removed it, the spared dir was examined.
+    const canary = join(dir, 'worktrees', 'zz-orphan-canary')
+    await nodeFs.mkdir(canary, { recursive: true })
+    await nodeFs.utimes(canary, back, back)
+    internals.sweepOrphansTick()
+    await waitForIo(() => !existsSync(canary))
+    await expect(nodeFs.access(wtPath)).resolves.toBeUndefined()
+  })
+})
+
 describe('resume() worktree recreate chain', () => {
   const execFile = promisify(execFileCb)
   let dir: string
@@ -8487,6 +8551,25 @@ describe('resume() worktree recreate chain', () => {
     const meta = store.get(info.id)!
     expect(meta.cwd).toBe(wtPath)
     expect(meta.worktree).toEqual({ mainRepoPath: repo, branch: `crw/${info.id.slice(0, 8)}`, baseSha: expect.any(String), path: wtPath })
+  })
+
+  it('backfills worktree.path onto a legacy path-less meta when recreate runs', async () => {
+    const info = await dormantIsolatedSession()
+    const wtPath = join(dir, 'worktrees', info.id)
+    // Pre-`path` era meta: strip the recorded path, then delete the dir so
+    // resume takes the recreate chain.
+    const xWt = store.get(info.id)!.worktree!
+    const legacyWt = { mainRepoPath: xWt.mainRepoPath, branch: xWt.branch, baseSha: xWt.baseSha }
+    store.upsert({ ...store.get(info.id)!, worktree: legacyWt })
+    await nodeFs.rm(wtPath, { recursive: true, force: true })
+
+    await sm.resume(info.id)
+
+    // The recreated meta is healed: the dir it re-landed in is recorded, so
+    // later cleanup / dirty-check / sweeps need no cwd-hint fallback.
+    const meta = store.get(info.id)!
+    expect(meta.cwd).toBe(wtPath)
+    expect(meta.worktree).toEqual({ ...legacyWt, path: wtPath })
   })
 
   it('recreates the worktree from baseSha when the branch was deleted too', async () => {

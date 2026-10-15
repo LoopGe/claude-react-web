@@ -637,8 +637,8 @@ export async function removeWorktreeDir(mainRepoCwd: string, worktreePath: strin
  *  re-adding a worktree at the same path fails with
  *  "missing but already registered worktree". Only prunes registrations
  *  whose directory is gone; live worktrees are untouched. */
-export async function pruneWorktrees(mainRepoCwd: string): Promise<void> {
-  await runGit(mainRepoCwd, ['worktree', 'prune'])
+export async function pruneWorktrees(mainRepoCwd: string, opts: { timeoutMs?: number } = {}): Promise<void> {
+  await runGit(mainRepoCwd, ['worktree', 'prune'], opts)
 }
 
 /** Any uncommitted (staged, unstaged or untracked) change in the work tree

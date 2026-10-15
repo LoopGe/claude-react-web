@@ -8,7 +8,7 @@
 // sessions sharing a repo never interleave their git mutations.
 
 import { existsSync, promises as fsPromises } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { HttpError } from './errors.js'
 import {
   branchExists, commitExists, createWorktree, getGitCommonDir,
@@ -39,13 +39,37 @@ export function worktreePathFor(stateDir: string, sessionId: string): string {
   return join(stateDir, 'worktrees', sessionId)
 }
 
-/** The directory a session's worktree actually lives at: the meta's
- *  recorded `path` when present, else the session-id-derived path
- *  (identical for every meta persisted before `path` existed). The
- *  recorded path matters for /clear-inherited worktrees — the replacement
- *  session has a NEW id while the directory still lives at the old one. */
-export function worktreePathOf(stateDir: string, sessionId: string, wt: WorktreeInfo): string {
-  return wt.path ?? worktreePathFor(stateDir, sessionId)
+/** The directory a session's worktree actually lives at. Resolution order:
+ *
+ *  1. the meta's recorded `path` — honored when it is still a direct child
+ *     of the CURRENT `<stateDir>/worktrees/` root, or when the dir
+ *     physically still exists (state-dir relocation with the session still
+ *     living at the old root: recreate never runs then because the cwd
+ *     exists, so nothing is rebuilt outside the new root, while the
+ *     delete-confirm dirty check and cleanup keep working).
+ *  2. `cwdHint` (the session's cwd) when it is a direct child of the
+ *     current root — covers legacy /clear inheritance, where the successor
+ *     Y (new id) holds a pre-`path` WorktreeInfo while the directory still
+ *     lives at the X-named path. Deliberately NOT accepted on existence
+ *     alone: the hint must name a managed worktree dir, never an arbitrary
+ *     cwd a destructive cleanup could mistake for this session's worktree.
+ *  3. the session-id-derived path (identical for every meta persisted
+ *     before `path` existed). A recorded path under a foreign root that no
+ *     longer EXISTS is treated as absent: recreate must land inside the
+ *     NEW root, where the orphan sweep can manage the dir. */
+export function worktreePathOf(
+  stateDir: string, sessionId: string, wt: WorktreeInfo, cwdHint?: string,
+): string {
+  const root = resolve(join(stateDir, 'worktrees'))
+  if (wt.path) {
+    const p = resolve(wt.path)
+    if (dirname(p) === root || existsSync(p)) return p
+  }
+  if (cwdHint) {
+    const p = resolve(cwdHint)
+    if (dirname(p) === root) return p
+  }
+  return worktreePathFor(stateDir, sessionId)
 }
 
 export function branchFor(sessionId: string): string {
@@ -93,9 +117,9 @@ export async function provisionWorktree(
 /** Recreate chain for resume: existing dir → existing branch → baseSha →
  *  fall back to the main repo (clearing the worktree metadata). */
 export async function ensureWorktreeForResume(
-  stateDir: string, sessionId: string, wt: WorktreeInfo,
+  stateDir: string, sessionId: string, wt: WorktreeInfo, cwdHint?: string,
 ): Promise<{ cwd: string; worktree?: WorktreeInfo }> {
-  const worktreePath = worktreePathOf(stateDir, sessionId, wt)
+  const worktreePath = worktreePathOf(stateDir, sessionId, wt, cwdHint)
   if (existsSync(worktreePath)) return { cwd: worktreePath, worktree: wt }
   if (!existsSync(wt.mainRepoPath)) return { cwd: wt.mainRepoPath, worktree: undefined }
   const commonDir = await getGitCommonDir(wt.mainRepoPath)
@@ -122,8 +146,9 @@ export async function ensureWorktreeForResume(
  *  Best-effort per spec — a failure logs and does NOT block deletion. */
 export async function removeWorktreeForSession(
   stateDir: string, sessionId: string, wt: WorktreeInfo, log: { warn(msg: string): void },
+  cwdHint?: string,
 ): Promise<void> {
-  const worktreePath = worktreePathOf(stateDir, sessionId, wt)
+  const worktreePath = worktreePathOf(stateDir, sessionId, wt, cwdHint)
   if (!existsSync(worktreePath)) return
   try {
     const commonDir = await getGitCommonDir(wt.mainRepoPath)
@@ -141,13 +166,19 @@ const SWEEP_GRACE_MS = 10 * 60_000
 const SWEEP_GIT_TIMEOUT_MS = 30_000
 
 /** Sweep orphaned worktree dirs: directories under <stateDir>/worktrees/
- *  that no persisted-or-live session claims, older than the grace window
- *  (provision lands in the store seconds after mkdir — mtime grace protects
- *  that window). Branches are NEVER touched (delete-keeps-branch rule).
- *  Best-effort per directory; never throws. */
+ *  that no session claims, older than the grace window (provision lands in
+ *  the store seconds after mkdir — mtime grace protects that window). The
+ *  caller snapshots the claimed set ONCE per tick (`claimedDirs`: every
+ *  session's worktree.path and cwd — persisted metas and live sessions
+ *  alike), so legacy metas of any shape can never be swept out from under
+ *  their session and no per-directory store scans run. A dir is also
+ *  claimed when a claimed path lives INSIDE it (a session re-pointed to a
+ *  subdirectory of its worktree still keeps the workspace alive). Branches
+ *  are NEVER touched (delete-keeps-branch rule). Best-effort per directory;
+ *  never throws. Returns the number of removed dirs. */
 export async function sweepOrphanWorktrees(
   stateDir: string,
-  opts: { hasSession: (sessionId: string) => boolean; log: { warn(msg: string): void; info(msg: string): void } },
+  opts: { claimedDirs: ReadonlySet<string>; log: { warn(msg: string): void; info(msg: string): void } },
 ): Promise<number> {
   const root = join(stateDir, 'worktrees')
   let names: string[]
@@ -157,6 +188,9 @@ export async function sweepOrphanWorktrees(
     // Missing (or unreadable) root — nothing was ever provisioned here.
     return 0
   }
+  const claimed = [...opts.claimedDirs].map((p) => resolve(p))
+  const isClaimed = (dir: string) =>
+    claimed.includes(dir) || claimed.some((p) => p.startsWith(dir + sep))
   let removed = 0
   for (const name of names) {
     const dir = join(root, name)
@@ -164,7 +198,7 @@ export async function sweepOrphanWorktrees(
       const st = await fsPromises.stat(dir)
       if (!st.isDirectory()) continue
       if (Date.now() - st.mtimeMs < SWEEP_GRACE_MS) continue
-      if (opts.hasSession(name)) continue
+      if (isClaimed(resolve(dir))) continue
       await removeOrphanWorktree(dir, opts.log)
       removed++
     } catch (err) {
@@ -196,25 +230,22 @@ async function removeOrphanWorktree(
   await fsPromises.rm(dir, { recursive: true, force: true })
   if (commonDir) {
     try {
-      await runGit(commonDir, ['worktree', 'prune'], { timeoutMs: SWEEP_GIT_TIMEOUT_MS })
+      // Locked like every other prune call site — prune races concurrent
+      // worktree add/remove on the common dir's lockfiles.
+      await withRepoLock(commonDir, () => pruneWorktrees(commonDir, { timeoutMs: SWEEP_GIT_TIMEOUT_MS }))
     } catch {
       // Best-effort — a stale registration is harmless once the dir is gone.
     }
   }
 }
 
-/** Read a linked worktree's `.git` file
- *  (`gitdir: <mainRepo>/.git/worktrees/<name>`) and derive the common git
- *  dir (`<mainRepo>/.git`). Null when the file is missing or malformed. */
+/** The common git dir the worktree registers against — authoritative
+ *  `rev-parse --git-common-dir` run INSIDE the worktree. Null when the dir
+ *  is missing or its registration is corrupt (rev-parse fails). */
 async function worktreeCommonDir(dir: string): Promise<string | null> {
-  let raw: string
   try {
-    raw = await fsPromises.readFile(join(dir, '.git'), 'utf8')
+    return await getGitCommonDir(dir)
   } catch {
     return null
   }
-  // Rest-of-line capture: git writes the raw path and it may contain spaces.
-  const m = /^gitdir:[ \t]*(.+?)[ \t]*$/m.exec(raw)
-  if (!m) return null
-  return dirname(dirname(m[1]))
 }

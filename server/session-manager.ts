@@ -49,7 +49,7 @@ import {
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn } from './ws-protocol.js'
 import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
-import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession, sweepOrphanWorktrees, worktreePathFor } from './session-worktree.js'
+import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession, sweepOrphanWorktrees } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
@@ -1691,7 +1691,7 @@ export class SessionManager {
     if (meta.worktree && meta.cwd && !existsSync(meta.cwd)) {
       let ensured: { cwd: string; worktree?: WorktreeInfo }
       try {
-        ensured = await ensureWorktreeForResume(this.store!.getDir(), id, meta.worktree)
+        ensured = await ensureWorktreeForResume(this.store!.getDir(), id, meta.worktree, meta.cwd)
       } catch (err) {
         if (await isInsideWorkTree(meta.worktree.mainRepoPath)) {
           log.warn(
@@ -1708,8 +1708,17 @@ export class SessionManager {
         )
         ensured = { cwd: meta.worktree.mainRepoPath, worktree: undefined }
       }
-      if (ensured.cwd !== meta.cwd || ensured.worktree !== meta.worktree) {
-        meta = { ...meta, cwd: ensured.cwd, worktree: ensured.worktree }
+      // Heal stale/legacy recorded paths on recreate: the session now lives
+      // at ensured.cwd, so THAT is the dir later cleanup / dirty-check /
+      // sweep lookups must resolve to. A no-op (same reference) when the
+      // meta already records it — no store write on healthy resumes.
+      const worktree = ensured.worktree
+        ? (ensured.worktree.path === ensured.cwd
+            ? ensured.worktree
+            : { ...ensured.worktree, path: ensured.cwd })
+        : undefined
+      if (ensured.cwd !== meta.cwd || worktree !== meta.worktree) {
+        meta = { ...meta, cwd: ensured.cwd, worktree }
         this.store?.upsert(meta)
       }
     }
@@ -2538,7 +2547,7 @@ export class SessionManager {
     // dir + git registration leak forever. Best-effort: the helper never
     // throws (branch kept, dir removed).
     if (metaX?.worktree && this.store) {
-      await removeWorktreeForSession(this.store.getDir(), id, metaX.worktree, log)
+      await removeWorktreeForSession(this.store.getDir(), id, metaX.worktree, log, metaX.cwd)
     }
 
     log.info(
@@ -4001,7 +4010,13 @@ export class SessionManager {
         // sees and whose registration would orphan when Y is deleted. /clear
         // resets the conversation, not the isolation (unlike fork, which
         // deliberately lands in the main repo).
-        worktree: s.worktree,
+        // Legacy metas (persisted before WorktreeInfo.path existed) have no
+        // recorded path — backfill it from X's cwd (the actual dir), so Y's
+        // meta claims the inherited dir for cleanup, the dirty check and the
+        // orphan sweep instead of relying on cwd fallbacks everywhere.
+        worktree: s.worktree
+          ? { ...s.worktree, path: s.worktree.path ?? s.cwd }
+          : undefined,
       }
 
       // Pure-UI pref overrides + per-server first-party tool pins ride the
@@ -6385,20 +6400,26 @@ export class SessionManager {
 
   /** One orphan-worktree sweep, invoked by the health monitor's 60s GC
    *  tick (fire-and-forget — the sweep is best-effort and never throws).
-   *  A dir under <stateDir>/worktrees is orphaned when no live session and
-   *  no persisted meta claims its id — EXCEPT /clear inheritance, where the
-   *  successor Y (new id) claims the predecessor-named dir via
-   *  worktree.path, so claimed-path metas count as owners too. */
+   *  A dir under <stateDir>/worktrees is orphaned when no session claims
+   *  it: the claimed set is snapshotted ONCE per tick — every persisted
+   *  meta's and live session's worktree.path AND cwd — so /clear-inherited
+   *  dirs (successor Y claims the predecessor-named path) and legacy
+   *  path-less metas (whose cwd IS the worktree dir) are spared, with no
+   *  per-directory store scans. */
   private sweepOrphansTick(): void {
     const store = this.store
     if (!store) return
-    void sweepOrphanWorktrees(store.getDir(), {
-      hasSession: (id) => {
-        if (this.sessions.has(id) || store.has(id)) return true
-        const dir = worktreePathFor(store.getDir(), id)
-        return store.list().some((m) => m.worktree?.path === dir)
-      },
-      log,
+    const claimedDirs = new Set<string>()
+    for (const m of store.list()) {
+      if (m.worktree?.path) claimedDirs.add(m.worktree.path)
+      if (m.cwd) claimedDirs.add(m.cwd)
+    }
+    for (const s of this.sessions.values()) {
+      if (s.worktree?.path) claimedDirs.add(s.worktree.path)
+      if (s.cwd) claimedDirs.add(s.cwd)
+    }
+    void sweepOrphanWorktrees(store.getDir(), { claimedDirs, log }).then((n) => {
+      if (n > 0) log.info(`[worktree-gc] swept ${n} orphaned worktree dir(s)`)
     })
   }
 
@@ -6420,7 +6441,7 @@ export class SessionManager {
       // Best-effort worktree teardown (dir removed, branch kept). A failure
       // only warns — deletion must not be blocked by it.
       if (meta?.worktree && this.store) {
-        await removeWorktreeForSession(this.store.getDir(), id, meta.worktree, log)
+        await removeWorktreeForSession(this.store.getDir(), id, meta.worktree, log, meta.cwd)
       }
       this.store?.remove(id)
       // Drop the promptUuids sidecar too — the session is gone for good.

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { execFile as execFileCb } from 'node:child_process'
 import { promises as fsPromises } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { promisify } from 'node:util'
 import { HttpError } from './errors.js'
@@ -38,14 +38,54 @@ describe('worktreePathFor / branchFor', () => {
 })
 
 describe('worktreePathOf', () => {
-  it('prefers the recorded path over the id-derived one', () => {
-    const wt: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h', path: '/elsewhere/wt' }
-    expect(worktreePathOf('/state', 'sess-1', wt)).toBe('/elsewhere/wt')
+  it('prefers a recorded path under the CURRENT worktrees root', () => {
+    const wt: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h', path: '/state/worktrees/sess-1' }
+    expect(worktreePathOf('/state', 'sess-1', wt)).toBe('/state/worktrees/sess-1')
   })
 
   it('falls back to the id-derived path for legacy metas (no path)', () => {
     const wt: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h' }
     expect(worktreePathOf('/state', 'sess-1', wt)).toBe(worktreePathFor('/state', 'sess-1'))
+  })
+
+  it('treats a recorded path under a FOREIGN worktrees root as absent (state-dir relocation)', () => {
+    // The meta was persisted under an old --state-dir; recreating at that
+    // path would land outside the new root where the sweep can't manage it.
+    const wt: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h', path: '/elsewhere/wt' }
+    expect(worktreePathOf('/state', 'sess-1', wt)).toBe(worktreePathFor('/state', 'sess-1'))
+    // A foreign cwd hint does not rescue it either.
+    expect(worktreePathOf('/state', 'sess-1', wt, '/elsewhere/other')).toBe(worktreePathFor('/state', 'sess-1'))
+  })
+
+  it('honors a foreign-root path that still exists on disk', async () => {
+    // State-dir relocation with the session STILL living at the old root:
+    // recreate never runs (the cwd exists), so honoring the recorded path
+    // only keeps the dirty check and cleanup working — nothing lands
+    // outside the root.
+    const foreign = await mkdtempUnderTmp('crw-foreign-')
+    try {
+      const wt: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h', path: foreign }
+      expect(worktreePathOf('/state', 'sess-1', wt)).toBe(resolve(foreign))
+      // The cwd hint, by contrast, is accepted only as a managed worktree
+      // dir (direct child of the current root) — never an arbitrary
+      // existing directory a destructive cleanup could mistake for this
+      // session's worktree.
+      const legacy: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h' }
+      expect(worktreePathOf('/state', 'sess-1', legacy, foreign)).toBe(worktreePathFor('/state', 'sess-1'))
+    } finally {
+      await fsPromises.rm(foreign, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the cwd hint when it is a direct child of the current worktrees root (legacy /clear inheritance)', () => {
+    // Y (new id) holds X's pre-`path` WorktreeInfo; Y's cwd IS the X-named dir.
+    const wt: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h' }
+    expect(worktreePathOf('/state', 'sess-y', wt, '/state/worktrees/sess-x')).toBe('/state/worktrees/sess-x')
+  })
+
+  it('ignores a cwd hint outside the worktrees root', () => {
+    const wt: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h' }
+    expect(worktreePathOf('/state', 'sess-1', wt, '/home/user/project')).toBe(worktreePathFor('/state', 'sess-1'))
   })
 })
 
@@ -178,6 +218,22 @@ describe('ensureWorktreeForResume', () => {
     await expect(fsPromises.access(p.worktreePath)).resolves.toBeUndefined()
   })
 
+  it('recreates at the inherited dir for a legacy path-less meta via the cwd hint', async () => {
+    const repo = await makeRepo()
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    // Pre-`path` era: X's meta has no recorded path; Y (new id) inherits it
+    // and runs with its cwd at the X-named dir. Recreate must rebuild THERE.
+    const p = await provisionWorktree(stateDir, 'inh-dddd-x', repo)
+    const wt: WorktreeInfo = { mainRepoPath: repo, branch: p.branch, baseSha: p.baseSha }
+    await fsPromises.rm(p.worktreePath, { recursive: true, force: true })
+
+    const r = await ensureWorktreeForResume(stateDir, 'inh-dddd-y', wt, p.worktreePath)
+
+    expect(r.cwd).toBe(p.worktreePath)
+    expect(r.worktree).toBe(wt)
+    await expect(fsPromises.access(p.worktreePath)).resolves.toBeUndefined()
+  })
+
   it('falls back to the main repo when the branch and baseSha are both gone', async () => {
     const repo = await makeRepo()
     const { stateDir, worktreePath } = await provisioned(repo, 'res-dddd-1')
@@ -229,6 +285,23 @@ describe('removeWorktreeForSession', () => {
     expect(warnings).toEqual([])
   })
 
+  it('removes the inherited dir for a legacy path-less meta via the cwd hint', async () => {
+    const repo = await makeRepo()
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    // Pre-`path` era inheritance: Y's meta has no recorded path but Y's cwd
+    // is the X-named dir — cleanup must remove THAT dir, not the id-derived
+    // one (which never existed).
+    const p = await provisionWorktree(stateDir, 'inh-cccc-x', repo)
+    const wt: WorktreeInfo = { mainRepoPath: repo, branch: p.branch, baseSha: p.baseSha }
+    const warnings: string[] = []
+
+    await removeWorktreeForSession(stateDir, 'inh-cccc-y', wt, { warn: (m) => warnings.push(m) }, p.worktreePath)
+
+    await expect(fsPromises.access(p.worktreePath)).rejects.toThrow()
+    expect(await branchExists(repo, wt.branch)).toBe(true)
+    expect(warnings).toEqual([])
+  })
+
   it('is a no-op when the worktree dir is already gone', async () => {
     const repo = await makeRepo()
     const { stateDir, wt } = await provisioned(repo, 'rm-bbbb-1')
@@ -267,7 +340,7 @@ describe('sweepOrphanWorktrees', () => {
   it('returns 0 when the worktrees root is missing', async () => {
     const stateDir = await mkdtempUnderTmp('crw-swt-')
     const { log } = makeLog()
-    await expect(sweepOrphanWorktrees(stateDir, { hasSession: () => false, log })).resolves.toBe(0)
+    await expect(sweepOrphanWorktrees(stateDir, { claimedDirs: new Set(), log })).resolves.toBe(0)
   })
 
   it('sweeps an old unclaimed orphan with a valid registration, keeping the branch', async () => {
@@ -277,7 +350,7 @@ describe('sweepOrphanWorktrees', () => {
     await backdate(p.worktreePath)
     const { warns, log } = makeLog()
 
-    await expect(sweepOrphanWorktrees(stateDir, { hasSession: () => false, log })).resolves.toBe(1)
+    await expect(sweepOrphanWorktrees(stateDir, { claimedDirs: new Set(), log })).resolves.toBe(1)
 
     await expect(fsPromises.access(p.worktreePath)).rejects.toThrow()
     // Branch survives (delete-keeps-branch rule) and the registration in the
@@ -287,14 +360,32 @@ describe('sweepOrphanWorktrees', () => {
     expect(warns).toEqual([])
   })
 
-  it('does not sweep an old dir a session still claims (hasSession true)', async () => {
+  it('does not sweep an old dir claimed via worktree.path', async () => {
     const repo = await makeRepo()
     const stateDir = await mkdtempUnderTmp('crw-swt-')
     const p = await provisionWorktree(stateDir, 'swp-bbbb-1', repo)
     await backdate(p.worktreePath)
     const { log } = makeLog()
 
-    await expect(sweepOrphanWorktrees(stateDir, { hasSession: (id) => id === 'swp-bbbb-1', log })).resolves.toBe(0)
+    await expect(
+      sweepOrphanWorktrees(stateDir, { claimedDirs: new Set([p.worktreePath]), log }),
+    ).resolves.toBe(0)
+
+    await expect(fsPromises.access(p.worktreePath)).resolves.toBeUndefined()
+  })
+
+  it('does not sweep an old dir claimed via a session cwd (legacy path-less metas)', async () => {
+    // Belt-and-braces: a legacy meta of ANY shape can never be swept out
+    // from under its session — the session's cwd claims the dir.
+    const repo = await makeRepo()
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    const p = await provisionWorktree(stateDir, 'swp-ffff-1', repo)
+    await backdate(p.worktreePath)
+    const { log } = makeLog()
+
+    await expect(
+      sweepOrphanWorktrees(stateDir, { claimedDirs: new Set([p.worktreePath]), log }),
+    ).resolves.toBe(0)
 
     await expect(fsPromises.access(p.worktreePath)).resolves.toBeUndefined()
   })
@@ -305,7 +396,25 @@ describe('sweepOrphanWorktrees', () => {
     const p = await provisionWorktree(stateDir, 'swp-cccc-1', repo)
     const { log } = makeLog()
 
-    await expect(sweepOrphanWorktrees(stateDir, { hasSession: () => false, log })).resolves.toBe(0)
+    await expect(sweepOrphanWorktrees(stateDir, { claimedDirs: new Set(), log })).resolves.toBe(0)
+
+    await expect(fsPromises.access(p.worktreePath)).resolves.toBeUndefined()
+  })
+
+  it('does not sweep an old dir when a claimed path lives INSIDE it', async () => {
+    // A session re-pointed (setCwd) to a SUBDIRECTORY of its worktree still
+    // keeps the workspace alive — the claimed cwd is nested, not exact.
+    const repo = await makeRepo()
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    const p = await provisionWorktree(stateDir, 'swp-gggg-1', repo)
+    const sub = join(p.worktreePath, 'sub')
+    await fsPromises.mkdir(sub)
+    await backdate(p.worktreePath)
+    const { log } = makeLog()
+
+    await expect(
+      sweepOrphanWorktrees(stateDir, { claimedDirs: new Set([sub]), log }),
+    ).resolves.toBe(0)
 
     await expect(fsPromises.access(p.worktreePath)).resolves.toBeUndefined()
   })
@@ -319,7 +428,7 @@ describe('sweepOrphanWorktrees', () => {
     await backdate(dir)
     const { warns, log } = makeLog()
 
-    await expect(sweepOrphanWorktrees(stateDir, { hasSession: () => false, log })).resolves.toBe(1)
+    await expect(sweepOrphanWorktrees(stateDir, { claimedDirs: new Set(), log })).resolves.toBe(1)
 
     await expect(fsPromises.access(dir)).rejects.toThrow()
     expect(warns.length).toBeGreaterThan(0)
@@ -332,7 +441,7 @@ describe('sweepOrphanWorktrees', () => {
     await backdate(dir)
     const { warns, log } = makeLog()
 
-    await expect(sweepOrphanWorktrees(stateDir, { hasSession: () => false, log })).resolves.toBe(1)
+    await expect(sweepOrphanWorktrees(stateDir, { claimedDirs: new Set(), log })).resolves.toBe(1)
 
     await expect(fsPromises.access(dir)).rejects.toThrow()
     expect(warns.length).toBeGreaterThan(0)

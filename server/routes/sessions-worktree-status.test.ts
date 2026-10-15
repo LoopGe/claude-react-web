@@ -107,6 +107,26 @@ describe('GET /sessions/:id/worktree-status', () => {
     })
   })
 
+  it('reports dirty for a legacy path-less inherited meta via the session cwd', async () => {
+    // Pre-`path` era /clear inheritance: Y's WorktreeInfo has no recorded
+    // path, but Y's cwd IS the X-named dir — the dirty probe must resolve
+    // through the cwd hint, not the id-derived path (which does not exist).
+    const prov = await provisionWorktree(stateDir, 'inh-dddd-x', repo)
+    await writeFile(join(prov.worktreePath, 'untracked.txt'), 'new\n')
+    const { app } = makeApp(stateDir, {
+      id: 'inh-dddd-y',
+      cwd: prov.worktreePath,
+      worktree: { mainRepoPath: repo, branch: prov.branch, baseSha: prov.baseSha },
+    } as SessionInfo)
+    const { body } = await get(app, 'inh-dddd-y')
+    expect(body).toEqual({
+      available: true,
+      dirty: true,
+      branch: prov.branch,
+      mainRepoPath: repo,
+    })
+  })
+
   it('reports unavailable when the worktree dir no longer exists', async () => {
     await provisionWorktree(stateDir, 's4', repo)
     await rmRf(worktreePathFor(stateDir, 's4'))

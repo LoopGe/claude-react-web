@@ -396,9 +396,12 @@ export function buildSessionRouter(
   // Unavailable when there is no worktree meta or the worktree dir is gone.
   app.get('/sessions/:id/worktree-status', async (c) => {
     const id = c.req.param('id')
-    const wt = sm.get(id).worktree
+    const info = sm.get(id)
+    const wt = info.worktree
     if (!wt || !stateDir) return c.json({ available: false })
-    const worktreePath = worktreePathOf(stateDir, id, wt)
+    // info.cwd covers legacy /clear inheritance (pre-`path` metas): the
+    // successor's cwd IS the inherited, predecessor-named worktree dir.
+    const worktreePath = worktreePathOf(stateDir, id, wt, info.cwd)
     if (!existsSync(worktreePath)) return c.json({ available: false })
     // A broken worktree dir (deleted .git file, corrupt registration) makes
     // the dirty probe throw — that must not 500 the delete confirmation. The
