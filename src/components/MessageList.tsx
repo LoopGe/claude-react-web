@@ -959,9 +959,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   const handleRangeChanged = useCallback(
     (range: { startIndex: number; endIndex: number }) => {
       // Pull the previous page of history when the visible window rides close
-      // to the top of the list. (Virtuoso's `startReached` can never fire
-      // here: it requires items[0].index === 0 in offset space, but the list
-      // is anchored at firstItemIndex = 1e6.) `range.startIndex` is in offset
+      // to the top of the list. (Virtuoso's `startReached` requires
+      // items[0].index === 0 in offset space, which only holds at the true
+      // transcript start — the anchor is `oldestSeq`, so mid-history
+      // scroll-ups never trip it.) `range.startIndex` is in offset
       // space already, so it compares against `firstItemIndex` directly.
       // Main-transcript views only — sub-views (SubagentOverlay /
       // WorkflowOverlay drill-ins) render a slice of the same already-paged
