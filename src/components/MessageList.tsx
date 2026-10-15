@@ -19,7 +19,6 @@ import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
 import { buildTaskStateMapFromItems, mergeTaskList, type TasklistSnapshotPayload } from '../utils/task-events'
 import { cx } from '../utils/cx'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
-import type { SdkMessage } from '../types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/normalize'
 import { useOptionalSessionField } from '../session-store/selectors'
@@ -178,11 +177,6 @@ interface Props {
    *  force either mode and a future UI setting can thread through without
    *  touching internals. */
   streamingMode?: StreamingRenderMode
-  /** Transient `api_retry` frame (rate-limit retry indicator), or null when
-   *  no retry is in flight. Rendered as a tail divider via ApiRetryView (it
-   *  lives outside items/messages/IDB — a dedicated transient slot — so this
-   *  synthesizes a tail item for rendering only). */
-  apiRetry?: SdkMessage | null
   /** Precomputed plan status keyed by toolUseId. */
   planStatus?: ReadonlyMap<string, PlanStatus>
   /** Plan body text extracted from ExitPlanMode tool_result outputs. */
@@ -375,7 +369,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, sessionId, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, sessionId, streamingContent, streamingMode, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -591,10 +585,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       isResultConsumed,
       leadingItems,
       trailingItems,
-      apiRetry,
       toolGroupCards,
     }),
-    [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, apiRetry, toolGroupCards],
+    [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, toolGroupCards],
   )
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
@@ -968,9 +961,8 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       // Pull the previous page of history when the visible window rides close
       // to the top of the list. (Virtuoso's `startReached` can never fire
       // here: it requires items[0].index === 0 in offset space, but the list
-      // is anchored at firstItemIndex = oldestSeq.) `range.startIndex` is in
-      // offset space already, so it compares against `firstItemIndex`
-      // directly.
+      // is anchored at firstItemIndex = 1e6.) `range.startIndex` is in offset
+      // space already, so it compares against `firstItemIndex` directly.
       // Main-transcript views only — sub-views (SubagentOverlay /
       // WorkflowOverlay drill-ins) render a slice of the same already-paged
       // window and must not re-trigger paging on their own. The discriminators

@@ -271,7 +271,6 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           replayReady={stream.replayReady}
           transcriptRevealKey={session.id}
           sessionId={session.id}
-          apiRetry={stream.apiRetry}
           planStatus={stream.planStatus}
           planContent={stream.planContent}
           questionAnswers={stream.questionAnswers}
