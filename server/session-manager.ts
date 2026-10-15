@@ -1888,7 +1888,13 @@ export class SessionManager {
       createdAt: info.createdAt ?? info.lastModified ?? now,
       lastActivityAt: info.lastModified ?? now,
       cwd: info.cwd,
-      title: info.title ?? info.firstPrompt,
+      // Only a REAL title (on-disk customTitle — a CLI-side /rename) is
+      // carried. Never derive one from firstPrompt/summary: conversation
+      // content is not a name, and a derived title here would ride the resume
+      // spawn as Options.title — the CLI then persists it as custom-title
+      // entries, permanently masking any future CLI aiTitle. Untitled stays
+      // untitled (sidebar falls back to the id prefix).
+      title: info.title,
       messageCount: 0,
       terminated: false,
       // Non-null so the no_data guard passes — the transcript file existing
@@ -6480,8 +6486,11 @@ export class SessionManager {
         // latest question". Precedence: the on-disk customTitle (a CLI-side
         // /rename must not be masked by our stored title — app-side renames
         // mirror INTO the transcript, so it's the freshest of the two), then
-        // this app's own known title, then the provider's firstPrompt-based
-        // fallback for unknown (CLI-native) sessions.
+        // this app's own known title. There is NO derived fallback: untitled
+        // sessions carry no title at all here (the provider's toResumable no
+        // longer derives one from firstPrompt/summary either) — the picker
+        // labels untitled rows itself from `firstPrompt` as a display-only
+        // preview, and the sidebar falls back to the id prefix.
         const knownTitle = s.customTitle ?? live?.title ?? meta?.title
         mapped.push({
           ...s,

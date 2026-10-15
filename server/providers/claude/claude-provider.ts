@@ -774,12 +774,15 @@ export class ClaudeProvider implements AgentProvider {
     return {
       provider: this.name,
       sessionId: info.sessionId,
-      // customTitle already folds in the CLI's own aiTitle (SDK-side).
-      // firstPrompt deliberately comes BEFORE info.summary: the SDK's
-      // display-title computation prefers `lastPrompt` (the newest user
-      // question), which made the /resume picker label every untitled
-      // session with its latest question instead of a stable name.
-      title: info.customTitle ?? info.firstPrompt ?? info.summary,
+      // The session's REAL title only: customTitle (a CLI-side /rename — the
+      // SDK folds its own aiTitle into this field). NO derived fallback:
+      // firstPrompt/summary are conversation content, not names, and adopting
+      // one as the title both mislabels untitled sessions in the /resume
+      // picker and — via adoptDiskSession → spawn `title` — permanently bakes
+      // the derived name into the transcript as custom-title entries. An
+      // untitled session stays untitled; the picker labels rows itself from
+      // `firstPrompt` as a display-only preview.
+      title: info.customTitle,
       firstPrompt: info.firstPrompt,
       customTitle: info.customTitle,
       cwd: info.cwd,

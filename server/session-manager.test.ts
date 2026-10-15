@@ -5080,11 +5080,11 @@ describe('SessionManager', () => {
         { sessionId: live.id, summary: 'Live one', cwd: '/tmp/live', lastModified: 300, createdAt: 100 },
         // a session the CLI created — unknown to this app
         { sessionId: 'cli-xyz', firstPrompt: 'Hello from CLI', cwd: '/tmp/cli', lastModified: 500 },
-        // customTitle wins over summary/firstPrompt for the display title
+        // a customTitle (CLI /rename) IS the session's real title
         { sessionId: 'title', customTitle: 'My Title', summary: 'ignored', lastModified: 400, gitBranch: 'main' },
-        // firstPrompt beats the SDK display title: the SDK's `summary`
-        // prefers the LAST user prompt, which would label the picker row
-        // with the session's latest question instead of a stable name
+        // NO derived fallback: summary/firstPrompt must never become the
+        // title — an untitled session stays untitled (the picker labels
+        // rows with firstPrompt itself as a display-only preview)
         { sessionId: 'both', summary: 'Latest question text', firstPrompt: 'First question', lastModified: 600 },
       ])
 
@@ -5096,17 +5096,21 @@ describe('SessionManager', () => {
       const cli = list.find((s) => s.sessionId === 'cli-xyz')!
       expect(cli.known).toBe(false)
       expect(cli.running).toBe(false)
-      expect(cli.title).toBe('Hello from CLI')
+      // firstPrompt is NOT adopted as the title — untitled stays untitled.
+      expect(cli.title).toBeUndefined()
+      expect(cli.firstPrompt).toBe('Hello from CLI')
 
-      // Unknown session with both fields: FIRST prompt wins over summary.
+      // Unknown session with both fields: neither summary nor firstPrompt
+      // becomes the title.
       const both = list.find((s) => s.sessionId === 'both')!
       expect(both.known).toBe(false)
-      expect(both.title).toBe('First question')
+      expect(both.title).toBeUndefined()
 
       const liveRow = list.find((s) => s.sessionId === live.id)!
       expect(liveRow.known).toBe(true)
       expect(liveRow.running).toBe(true)
-      expect(liveRow.title).toBe('Live one')
+      // The SDK's display `summary` is not adopted either.
+      expect(liveRow.title).toBeUndefined()
 
       const title = list.find((s) => s.sessionId === 'title')!
       expect(title.title).toBe('My Title')
@@ -5178,6 +5182,32 @@ describe('SessionManager', () => {
       expect(handle.options.resume).toBe('orphan')
       // The session is now adopted into the store (known on next listing).
       expect(store.get('orphan')).toBeTruthy()
+      // NO derived title: the SDK's summary/firstPrompt must never become the
+      // session's title — an untitled session stays untitled (sidebar falls
+      // back to the id prefix), and the resume spawn passes no `title`, so the
+      // CLI never bakes the derived name into the transcript as custom-title.
+      expect(info.title).toBeUndefined()
+      expect(store.get('orphan')?.title).toBeUndefined()
+      expect(handle.options.title).toBeUndefined()
+    })
+
+    it('carries a real on-disk customTitle into the adopted meta (and spawns with it)', async () => {
+      mockGetSessionInfo.mockResolvedValueOnce({
+        sessionId: 'orphan-titled',
+        cwd: dir,
+        summary: 'ignored display title',
+        customTitle: 'Disk rename',
+        lastModified: 1234,
+        createdAt: 1000,
+      })
+
+      const info = await sm.resume('orphan-titled')
+      // A CLI-side /rename is a REAL title — carried into the store and the
+      // spawn options, unlike the derived summary/firstPrompt fallbacks.
+      expect(info.title).toBe('Disk rename')
+      expect(store.get('orphan-titled')?.title).toBe('Disk rename')
+      const handle = mockHandles[mockHandles.length - 1]
+      expect(handle.options.title).toBe('Disk rename')
     })
 
     it('resumes an adopted CLI session with the default 1M beta (no persisted meta)', async () => {
