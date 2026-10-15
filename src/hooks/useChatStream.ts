@@ -92,7 +92,7 @@ export interface ChatStream {
   tasks: TaskRecordUi[]
   /** Transient `api_retry` frame (rate-limit retry indicator), or null when
    *  no retry is in flight. Routed to a dedicated slot (not items/messages) —
-   *  MessageList renders it as a tail divider. */
+   *  the WorkingBubble's RetryLabel renders it as the retrying phase label. */
   apiRetry: SdkMessage | null
   /** Live thinking-token estimate for the current thinking block
    *  (`system/thinking_tokens` frames), or null when none is in flight.

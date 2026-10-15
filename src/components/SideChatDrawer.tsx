@@ -306,6 +306,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
                 tokenRate={stream.tokenRate}
                 activePhase={stream.activePhase}
                 waiting={waiting}
+                apiRetry={stream.apiRetry}
               />
             </BottomCardMotion>
           )}

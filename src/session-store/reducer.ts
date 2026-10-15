@@ -2001,6 +2001,15 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // slot). updateTranscriptMirror is a no-op for api_retry (toTranscriptItem
   // returns null), so it neither appends nor needs the old in-place
   // replace/strip logic.
+  //
+  // No parent_tool_use_id check is needed (verified against the CLI binary's
+  // own emitter, 2.1.x): the host loop converts an internal `api_error` into
+  // `{type:'system', subtype:'api_retry', attempt, max_retries, …}` with NO
+  // parent field, and the subagent-stream forwarding loop explicitly SKIPS
+  // the child's api_retry frames — a subagent's retry instead rides a
+  // `tool_progress` frame (data.type 'agent_api_retry', subagent_retry
+  // payload), which our pump drops with every other tool_progress. So every
+  // `system/api_retry` that reaches this reducer is a MAIN-thread retry.
   const isApiRetry = message.type === 'system' && message.subtype === 'api_retry'
   // `thinking_tokens` is a transient live estimate of the current thinking
   // block's token count (see toTranscriptItem — never a TranscriptItem). It

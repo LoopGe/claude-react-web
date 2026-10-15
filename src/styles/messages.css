@@ -58,15 +58,6 @@
 .msg.result.interrupted::after { background: color-mix(in srgb, var(--warn, var(--danger)) 45%, var(--border)); }
 .msg.result.interrupted .result-mark { color: var(--warn-text, var(--danger)); }
 
-/* Transient API retry: amber divider, same vocabulary as .interrupted.
-   Replaces the old filled .msg.api-retry card. The mark (⏳ + label) is
-   bold amber; the meta (retrying in Ns · attempt X/Y) is muted amber,
-   tabular, nowrap — it's always short, so no truncation is needed. */
-.msg.result.retry { color: var(--msg-rate-limit-fg); }
-.msg.result.retry::before,
-.msg.result.retry::after { background: color-mix(in srgb, var(--warn) 45%, var(--border)); }
-.msg.result.retry .result-mark { color: var(--warn-text); }
-
 /* Fatal system error: red divider. Replaces the old filled .msg.error /
    .msg.error.rate-limit cards. The meta carries the raw error string,
    which is unbounded — so it shrinks and ellipsis-truncates, with the

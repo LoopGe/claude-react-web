@@ -37,7 +37,6 @@ export function shouldHideByDefault(msg: SdkMessage): boolean {
     msg.type === 'system' &&
     msg.subtype !== 'error' &&
     msg.subtype !== 'compact_boundary' &&
-    msg.subtype !== 'api_retry' &&
     // CLI-local command output (/usage, /voice, …) — renderable text body.
     msg.subtype !== 'local_command_output' &&
     // Auto-memory recall — renders as a "Recalled from memory" card.

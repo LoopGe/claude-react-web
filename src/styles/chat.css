@@ -2734,6 +2734,18 @@ button.chat-empty-env-chip:hover {
   color: var(--fg-muted);
 }
 
+/* Retry state: an `api_retry` frame is in flight (429/529 auto-retry). The
+   retry countdown replaces the phase label (nothing streams during the
+   wait, so the phase is stale) and reads as amber — the same warn tier the
+   old transcript divider used, so the color carries the severity.
+   tabular-nums (same reason as .working-timer): the seconds tick every
+   second, and proportional digits would change the label width per tick,
+   visibly shifting the adjacent timer / rate / swarm pill. */
+.working-bar-retry .working-bar-label {
+  color: var(--warn-text);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Idle-with-tasks: the turn has fully ended and nothing is actively working —
    the bar is a remnant shell holding the background-task count pill
    (ambient/housekeeping tasks still in flight) and/or the subagent swarm pill

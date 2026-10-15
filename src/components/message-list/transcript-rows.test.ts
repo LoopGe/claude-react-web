@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest'
 import type { SdkMessage } from '../../types'
 import type { TranscriptItem } from '../../session-store/types'
 import {
-  API_RETRY_ROW_ID,
   INITIAL_FIRST_ITEM_INDEX,
   advanceRowAnchor,
   buildTranscriptRows,
@@ -198,28 +197,15 @@ describe('buildTranscriptRows: synthetic rows', () => {
       isResultConsumed: never,
       leadingItems: [user('p', 'prompt', 'agent-1')],
       trailingItems: [assistant('r', 'result', 'agent-1')],
-      apiRetry: { type: 'system', subtype: 'api_retry' } as unknown as SdkMessage,
     })
     const byId = new Map(rows.map((r) => [r.id, r.itemIndex]))
     // The real child keeps its items[] position; everything synthetic is
     // negative and distinct, so search's itemIndex → row reverse map is
     // unambiguous.
     expect(byId.get('c')).toBe(0)
-    const synthetic = [byId.get('p'), byId.get('r'), byId.get(API_RETRY_ROW_ID)]
+    const synthetic = [byId.get('p'), byId.get('r')]
     expect(synthetic.every((i) => typeof i === 'number' && i < 0)).toBe(true)
-    expect(new Set(synthetic).size).toBe(3)
-  })
-
-  it('appends the api_retry divider last, with no receivedAt', () => {
-    const { rows, lastItemId } = buildTranscriptRows({
-      items: [assistant('a', 'hi')],
-      isResultConsumed: never,
-      apiRetry: { type: 'system', subtype: 'api_retry' } as unknown as SdkMessage,
-    })
-    expect(lastItemId).toBe(API_RETRY_ROW_ID)
-    // No timestamp → the entrance-animation gate can't mistake it for a live
-    // arrival and replay the rise/blur-in on every retry frame.
-    expect(rows.at(-1)?.receivedAt).toBeUndefined()
+    expect(new Set(synthetic).size).toBe(2)
   })
 })
 

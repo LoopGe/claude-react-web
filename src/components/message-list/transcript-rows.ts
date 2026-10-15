@@ -27,10 +27,10 @@
  *      keep its own DOM node — and therefore its measured height and mounted
  *      subtree state — when other rows appear or disappear around it.
  *
- *  I2  Synthetic rows (SubagentOverlay's injected prompt/result, the transient
- *      `api_retry` divider) are ordinary rows with ordinary ids. Callers must
- *      hand in referentially stable `TranscriptItem`s for them; a fresh object
- *      per flush defeats both the row memo and the front-anchor bookkeeping.
+ *  I2  Synthetic rows (SubagentOverlay's injected prompt/result) are
+ *      ordinary rows with ordinary ids. Callers must hand in referentially
+ *      stable `TranscriptItem`s for them; a fresh object per flush defeats
+ *      both the row memo and the front-anchor bookkeeping.
  *
  *  I3  Rows are NOT append-only. `willRenderEmpty(…, isResultConsumed)` drops
  *      a row once its tool_result has been merged into the owning card, and
@@ -116,9 +116,6 @@ export interface BuildTranscriptRowsInput {
    *  (a synchronous subagent's reply, which lands as the Agent tool_result on
    *  the MAIN thread and so has parent_tool_use_id = null). */
   trailingItems?: readonly TranscriptItem[]
-  /** Transient `api_retry` frame. Render-only: it lives in its own slot, not
-   *  in items/messages/IDB, and is appended as a synthetic tail row. */
-  apiRetry?: SdkMessage | null
   /** Whether consecutive tool-only rows fold into collapsible group cards
    *  (the `toolGroupCards` UI pref). False renders each tool row individually
    *  with no fold chrome. Defaults to true. */
@@ -136,11 +133,6 @@ export interface TranscriptRowsResult {
    *  row-level memo. */
   nextItemTypeMap: Map<string, string>
 }
-
-/** Synthetic row id for the transient api_retry divider. Stable across
- *  consecutive retry frames so the slot is overwritten in place (fresh
- *  delayMs props, no remount) instead of appending a new row each time. */
-export const API_RETRY_ROW_ID = '__api_retry__'
 
 function pushRow(
   out: TranscriptRow[],
@@ -244,7 +236,6 @@ export function buildTranscriptRows({
   isResultConsumed,
   leadingItems,
   trailingItems,
-  apiRetry,
   toolGroupCards = true,
 }: BuildTranscriptRowsInput): TranscriptRowsResult {
   const out: TranscriptRow[] = []
@@ -274,20 +265,6 @@ export function buildTranscriptRows({
     for (let ti = 0; ti < trailingItems.length; ti++) {
       pushRow(out, trailingItems[ti], -1000 - ti, isResultConsumed)
     }
-  }
-
-  if (apiRetry) {
-    out.push({
-      id: API_RETRY_ROW_ID,
-      msg: apiRetry,
-      isCompactSummary: false,
-      renderableIndex: out.length,
-      // No receivedAt, so the entrance-animation gate skips it.
-      itemIndex: -2,
-      // Never consumed by the fold predicate (not a human user message),
-      // but the field is required on every row.
-      plainText: null,
-    })
   }
 
   // Fold tool-only assistant runs. Must run before nextItemTypeMap so the

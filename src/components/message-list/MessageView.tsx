@@ -21,7 +21,6 @@ import { extractTag, extractUserText, willRenderEmpty } from './rendering'
 import { FoldableBody } from './FoldableBody'
 import { userBodyFoldKey } from './fold-key'
 import {
-  ApiRetryView,
   BashMessage,
   CompactBoundary,
   CompactSummary,
@@ -661,10 +660,6 @@ export const MessageView = memo(function MessageView({
 
   if (type === 'system' && msg.subtype === 'compact_boundary') {
     return <CompactBoundary msg={msg} />
-  }
-
-  if (type === 'system' && msg.subtype === 'api_retry') {
-    return <ApiRetryView msg={msg} />
   }
 
   if (type === 'system' && msg.subtype === 'local_command_output') {

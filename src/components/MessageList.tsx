@@ -16,7 +16,6 @@ import { McpAppsProvider } from '../hooks/useMcpApps'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { SessionCwdProvider } from '../hooks/useSessionCwd'
 import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
-import type { SdkMessage } from '../types'
 import { buildTaskStateMapFromItems, mergeTaskList, type TasklistSnapshotPayload } from '../utils/task-events'
 import { cx } from '../utils/cx'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
@@ -177,11 +176,6 @@ interface Props {
    *  force either mode and a future UI setting can thread through without
    *  touching internals. */
   streamingMode?: StreamingRenderMode
-  /** Transient `api_retry` frame (rate-limit retry indicator), or null when
-   *  no retry is in flight. Rendered as a tail divider via ApiRetryView (it
-   *  lives outside items/messages/IDB — a dedicated transient slot — so this
-   *  synthesizes a tail item for rendering only). */
-  apiRetry?: SdkMessage | null
   /** Precomputed plan status keyed by toolUseId. */
   planStatus?: ReadonlyMap<string, PlanStatus>
   /** Plan body text extracted from ExitPlanMode tool_result outputs. */
@@ -368,7 +362,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, sessionId, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, sessionId, streamingContent, streamingMode, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -584,10 +578,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       isResultConsumed,
       leadingItems,
       trailingItems,
-      apiRetry,
       toolGroupCards,
     }),
-    [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, apiRetry, toolGroupCards],
+    [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, toolGroupCards],
   )
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
@@ -1208,10 +1201,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   //
   // Keying by id makes React preserve each row's node across mid-list
   // mutations, so only the removed row's DOM goes away and the surviving
-  // rows keep their measured heights. `item.id` is the SdkMessage uuid (or a
-  // synthetic id for the api_retry divider / SubagentOverlay's injected
-  // prompt+result rows) and is unique within a list — the same id the
-  // entrance-animation gate and `nextItemTypeMap` already rely on.
+  // rows keep their measured heights. `item.id` is the SdkMessage uuid (or
+  // a synthetic id for SubagentOverlay's injected prompt+result rows) and
+  // is unique within a list — the same id the entrance-animation gate and
+  // `nextItemTypeMap` already rely on.
   const computeItemKey = useCallback(
     (_index: number, item: VirtuosoItem) => ('kind' in item ? STREAMING_ROW_KEY : item.id),
     [],
