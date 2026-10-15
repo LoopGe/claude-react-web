@@ -237,6 +237,11 @@
 }
 .grid-clip-enter-inner {
   min-height: 0;
+  /* Horizontal analogue of min-height:0 — a grid item's default `min-width:auto`
+     lets nowrap content (a Bash command row, e.g.) blow the implicit column out
+     past the container, where an ancestor's overflow clip hard-cuts it. Opting
+     the item down to 0 keeps it inside the track so inner ellipsis rules fire. */
+  min-width: 0;
 }
 /* `overflow:hidden` is needed ONLY while the track is collapsing/expanding
    (so the content clips to the growing box instead of sticking out). Once
