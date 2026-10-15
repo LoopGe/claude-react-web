@@ -1354,10 +1354,12 @@ button.tool-group-failed-jump:focus-visible {
   .appearance-panel,
   .chat-panel-mode-badge.mode-slide-in,
   .chat-panel-mode-badge.mode-slide-out,
-  .copied-pop {
+  .copied-pop,
+  .composer-tasks-count {
     animation-duration: 0.01ms !important;
   }
   .notification-icon .notification-icon-slash,
+  .composer-tasks-face > *,
   .composer-action-toggle .composer-toggle-send-line,
   .composer-action-toggle .composer-toggle-send-head,
   .composer-action-toggle .composer-toggle-stop {

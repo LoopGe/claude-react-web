@@ -1338,10 +1338,11 @@ button.chat-empty-env-chip:hover {
   flex: none;
 }
 /* Tasks button — always-mounted entry to the Tasks overlay (moved from the
-   working bar, whose pill vanished with the bar itself). Accent-lit icon +
-   tabular digit whenever tasks exist; .composer-tasks-idle dims to muted at
-   zero tasks but keeps the button reachable (the panel also lists terminal
-   history). Color only — the chrome (bg/border/hover) comes from .btn-icon. */
+   working bar, whose pill vanished with the bar itself). Accent-lit icon,
+   swapped for the tabular digit whenever tasks exist; .composer-tasks-idle
+   dims to muted at zero tasks but keeps the button reachable (the panel also
+   lists terminal history). Color only — the chrome (bg/border/hover) comes
+   from .btn-icon. */
 .composer-tasks {
   color: var(--accent-text);
   font-family: var(--mono);
@@ -1352,6 +1353,42 @@ button.chat-empty-env-chip:hover {
 }
 .composer-tasks-idle {
   color: var(--fg-muted);
+}
+/* Icon ⇄ digit share one fixed 18×18 grid cell — the digit REPLACES the icon
+   (same one-slot morph as the Send/Interrupt toggle) so the button's width
+   never changes when tasks appear or count up. The ICON does the crossfade:
+   it stays mounted and .composer-tasks-live flips it out/in via transition.
+   The DIGIT is mounted only while tasks exist — a freshly inserted element
+   has no prior style to transition from, so its entrance is purely the
+   tasks-digit-pop animation (replayed per displayed integer via
+   key={shownCount} in Composer.tsx; useCountUp glides through the
+   intermediate values so a burst of task starts/ends reads as ticking), and
+   its exit is the unmount, masked by the icon crossfading back over the
+   slot. .composer-tasks-idle keeps the icon dimmed at zero tasks. */
+.composer-tasks-face {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+}
+.composer-tasks-face > * {
+  grid-area: 1 / 1;
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-base) var(--motion-ease-standard);
+}
+.composer-tasks-count {
+  animation: tasks-digit-pop var(--motion-duration-base) var(--motion-ease-enter);
+}
+.composer-tasks-live .composer-tasks-icon {
+  opacity: 0;
+  transform: scale(0.6);
+}
+@keyframes tasks-digit-pop {
+  from {
+    transform: scale(1.3);
+  }
 }
 
 /* ── Context orb (pure ring) + hover panel ─────────────────────────────

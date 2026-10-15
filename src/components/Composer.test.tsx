@@ -895,6 +895,21 @@ describe('Composer tasks button', () => {
     expect(btn.textContent).not.toContain('4')
   })
 
+  it('stacks the digit over the icon in one fixed slot when tasks run', () => {
+    // The digit REPLACES the icon (fixed 18×18 grid cell) instead of sitting
+    // beside it — the button's width must not change when tasks appear.
+    const { container } = render(
+      <Composer {...defaultProps} onOpenTasks={noop} taskCount={2} totalTaskCount={2} />,
+    )
+    const face = container.querySelector('.composer-tasks-face')!
+    expect(face).not.toBeNull()
+    expect(container.querySelector('.composer-tasks-icon')).not.toBeNull()
+    expect(container.querySelector('.composer-tasks-count')!.textContent).toBe('2')
+    expect(container.querySelector('.composer-tasks')!.classList.contains('composer-tasks-live')).toBe(
+      true,
+    )
+  })
+
   it('calls onOpenTasks on click', () => {
     const onOpenTasks = vi.fn()
     const { container } = render(
